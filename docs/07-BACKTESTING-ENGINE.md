@@ -73,3 +73,50 @@ strategy-cli backtest run \
 - Backtests for independent symbol/date shards run concurrently without shared mutable
   state issues (verified with `cargo test` under `--test-threads` stress or a loom-style
   concurrency test if warranted).
+
+## Implementation notes (Phase 3)
+
+### Results are in R multiples, not currency
+1R is the risk a trade accepted at entry. Phase 3 deliberately does **not** compound:
+position size is not recomputed from a growing or shrinking balance, so a run of wins
+cannot inflate the size of the next trade and flatter the equity curve. `net_return_pct`
+is derived from summed R, and `FillAssumptions.return_units` says so in the report output
+itself — the numbers are never separated from the assumptions that produced them.
+
+### The ambiguous bar resolves against the trade
+When a single candle's range touches both the stop and the target, the simulator assumes
+the **stop** was hit. Intrabar ordering is unknowable from OHLC data, and the other choice
+would systematically flatter results. `FillAssumptions.ambiguous_bar` names the assumption
+so a reader never has to read the simulator to find it.
+
+### Fills
+Entries and condition-driven exits fill at the **next decision candle's open**, adjusted by
+slippage *against* the trade. Stop and target fills occur at the touched level, with no
+slippage — the simplification the design section above asks to be documented, and it is, in
+`FillAssumptions`.
+
+### No look-ahead is structural, not careful
+`replay` is the only component that decides visibility, and it exposes a candle to the
+strategy only once `open_time + width <= now`. `MarketContext` has no API that can reach a
+future bar, so the invariant is a property of the types rather than of reviewer attention.
+The dedicated test asserts it on **every** bar of a run rather than spot-checking a few.
+
+### Shardability
+`replay` takes its input and returns its output, holding no shared mutable state, so
+independent `(symbol, date-range)` shards run concurrently. A test runs four shards at once
+and asserts each is byte-identical to running alone.
+
+### A declared timeframe with no data is an error
+Rather than leaving that timeframe's context permanently absent — which would silently
+disable a condition and yield a plausible-looking but wrong backtest — `replay` rejects the
+input up front. The decision timeframe with no candles is `MissingData`; a context
+timeframe is `MissingTimeframe(name)`.
+
+### Aggregating a coarser timeframe from a finer one
+A backfill normally populates a single resolution. `analytics-core::resample` aggregates
+OHLCV **exactly** — high/low are extrema, and volume, `buy_volume` and `sell_volume` are
+sums — so a multi-timeframe document can run off one source series without the coarser
+candles disagreeing with the finer ones about volume or delta. The CLI does this
+automatically for any declared timeframe that has no candles of its own
+(`--source-timeframe`, default `1m`), padding the source window so the first and last
+bucket of every resampled series are whole.

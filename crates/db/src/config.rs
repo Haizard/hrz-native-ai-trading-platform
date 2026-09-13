@@ -10,6 +10,15 @@ pub const DEFAULT_MAX_CONNECTIONS: u32 = 10;
 /// Default timeout when acquiring a connection from the pool.
 pub const DEFAULT_ACQUIRE_TIMEOUT_SECS: u64 = 10;
 
+/// Default threshold above which a statement is logged as slow, in milliseconds.
+///
+/// sqlx's own default is one second. That is calibrated for a local database;
+/// against a managed instance over the network, a 500-row chunked upsert
+/// routinely exceeds it, and **every** slow-statement warning logs the whole
+/// statement -- hundreds of kilobytes for a chunked insert. Five seconds keeps
+/// the log readable while still surfacing queries that are genuinely slow.
+pub const DEFAULT_SLOW_STATEMENT_MS: u64 = 5_000;
+
 /// Everything needed to build a [`sqlx::PgPool`].
 #[derive(Debug, Clone)]
 pub struct DatabaseConfig {
@@ -19,6 +28,8 @@ pub struct DatabaseConfig {
     pub max_connections: u32,
     /// How long to wait for a free connection before erroring.
     pub acquire_timeout: Duration,
+    /// How long a statement may run before it is logged as slow.
+    pub slow_statement_threshold: Duration,
 }
 
 impl DatabaseConfig {
@@ -30,6 +41,7 @@ impl DatabaseConfig {
     /// Optional:
     /// * `DB_MAX_CONNECTIONS` (default 10)
     /// * `DB_ACQUIRE_TIMEOUT_SECS` (default 10)
+    /// * `DB_SLOW_STATEMENT_MS` (default 5000)
     pub fn from_env() -> Result<Self, DbError> {
         let url = std::env::var("DATABASE_URL")
             .map_err(|_| DbError::MissingEnv("DATABASE_URL".to_string()))?;
@@ -41,6 +53,7 @@ impl DatabaseConfig {
         let max_connections = parse_env_u32("DB_MAX_CONNECTIONS", DEFAULT_MAX_CONNECTIONS)?;
         let acquire_timeout =
             parse_env_u64("DB_ACQUIRE_TIMEOUT_SECS", DEFAULT_ACQUIRE_TIMEOUT_SECS)?;
+        let slow_statement_ms = parse_env_u64("DB_SLOW_STATEMENT_MS", DEFAULT_SLOW_STATEMENT_MS)?;
 
         if max_connections == 0 {
             return Err(DbError::InvalidConfig(
@@ -52,6 +65,7 @@ impl DatabaseConfig {
             url,
             max_connections,
             acquire_timeout: Duration::from_secs(acquire_timeout),
+            slow_statement_threshold: Duration::from_millis(slow_statement_ms),
         })
     }
 
@@ -63,10 +77,22 @@ impl DatabaseConfig {
     /// Returns [`DbError::Pool`] if the pool cannot be created (usually a
     /// malformed URL).
     pub async fn create_pool(&self) -> Result<sqlx::PgPool, DbError> {
+        // `log_slow_statements` lives on the `ConnectOptions` trait, which has to
+        // be in scope for the method to resolve.
+        use sqlx::ConnectOptions as _;
+
+        let options: sqlx::postgres::PgConnectOptions = self.url.parse()?;
+        // sqlx takes the `log` crate's `LevelFilter`, not `tracing`'s, even
+        // though `tracing` re-exports the former as `tracing::log::LevelFilter`.
+        let options = options.log_slow_statements(
+            tracing::log::LevelFilter::Warn,
+            self.slow_statement_threshold,
+        );
+
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(self.max_connections)
             .acquire_timeout(self.acquire_timeout)
-            .connect(&self.url)
+            .connect_with(options)
             .await?;
         Ok(pool)
     }

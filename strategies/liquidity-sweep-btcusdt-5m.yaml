@@ -1,0 +1,59 @@
+# The reference strategy, calibrated to real BTCUSDT 5m data.
+#
+# Same thesis as `liquidity-sweep.yaml` -- wait for sell-side liquidity to be
+# taken, in an uptrend, then buy the reclaim -- but with two changes that running
+# the spec's version against six months of real candles proved necessary.
+#
+# 1. `delta > threshold(1500)` never fires on BTCUSDT 5m. A 1,500 BTC imbalance
+#    inside five minutes is not a quiet-market event; it is a number written for a
+#    deeper book than this instrument has. The threshold here is calibrated to the
+#    tape: see the notes below.
+#
+# 2. More importantly, `liquidity.swept == "sell_side"` alone fires on the bar
+#    that *takes* the level, and such a bar often closes below it. A long entered
+#    there has no valid stop -- `below_sweep_low` would resolve above the entry
+#    price -- so the engine correctly refused thousands of setups. A sweep is only
+#    tradable once price has reclaimed the level, which is what
+#    `close > liquidity.swept_level` says. Adding it is what turns the sweep from
+#    a description of a bar into a tradeable setup.
+#
+# The stop sits below the level that was swept, and the reclaim condition
+# guarantees the close is above that level, so the stop is always below the entry
+# and the risk distance is never degenerate.
+
+name: "Liquidity Sweep + Reclaim (BTCUSDT 5m)"
+version: "1.0"
+kind: strategy
+market: "BTCUSDT"
+timeframes:
+  trend: "4h"
+  entry: "5m"
+
+entry:
+  direction: long
+  all_of:
+    - timeframe: trend
+      condition: market_structure.trend == "bullish"
+    - timeframe: entry
+      condition: liquidity.swept == "sell_side"
+    - timeframe: entry
+      condition: close > liquidity.swept_level
+    - timeframe: entry
+      condition: close > vwap
+    - timeframe: entry
+      condition: delta > threshold(5)
+
+risk:
+  max_risk_pct: 1.0
+  stop: "below_sweep_low"
+  take_profit:
+    type: "risk_multiple"
+    value: 2.5
+
+invalidation:
+  - timeframe: entry
+    condition: "close_below(stop_price)"
+
+metadata:
+  created_by: "developer_sdk"
+  skill_ref: "liquidity-sweep-reclaim-btcusdt-5m-v1"

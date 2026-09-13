@@ -184,20 +184,44 @@ In short:
 
 | Crate | Phase | Purpose | Status |
 |---|---|---|---|
-| `analytics-core` | 2 | Pure math, no I/O, native + wasm32 | types done; math lands in Phase 2 |
+| `analytics-core` | 2 | Pure math, no I/O, native + wasm32 | **Phase 2 done** |
 | `market-data` | 1 | Exchange collectors, normalization | **Phase 1 done** |
-| `strategy-dsl` | 3 | Schema, parser, validator | stub |
-| `strategy-runtime` | 3 | Executes DSL against any data source | stub |
-| `backtester` | 3 | Deterministic replay + reporting | stub |
+| `strategy-dsl` | 3 | Schema, parser, validator | **Phase 3 done** |
+| `strategy-runtime` | 3 | Executes DSL against any data source | **Phase 3 done** |
+| `backtester` | 3 | Deterministic replay + reporting | **Phase 3 done** |
 | `sandbox` | 4 | WASM isolation for AI-generated strategies | stub |
 | `ai-agent` | 5 | LLM orchestration, tools, skills, thesis | stub |
 | `trading-engine` | 6/8 | Paper + live execution, risk | stub |
 | `api-gateway` | 7 | Axum REST + WebSocket | health endpoints only |
 | `db` | 1+ | sqlx models + migrations | pool + market-data repos done |
 
-Helper binaries: `tools/xtask` (`cargo xtask <cmd>`), `tools/strategy-cli` (Phase 3).
+Helper binaries: `tools/xtask` (`cargo xtask <cmd>`), `tools/strategy-cli`.
 
 xtask commands: `migrate`, `db-status`, `backfill`, `collect`.
+
+## Strategy CLI
+
+```bash
+# Check a document without executing it. Reports every field-level problem at once.
+cargo run -p strategy-cli -- validate --strategy strategies/liquidity-sweep.yaml
+
+# Replay it over a window and write a JSON performance report.
+cargo run -p strategy-cli -- backtest run \
+  --strategy strategies/liquidity-sweep-btcusdt-5m.yaml \
+  --symbol BTCUSDT --from 2026-03-13 --to 2026-09-13 \
+  --source-timeframe 5m \
+  --report-out reports/liquidity-sweep-btcusdt-5m-2026h1.json
+```
+
+`--source-timeframe` (default `1m`) is the resolution a declared timeframe is aggregated
+from when the database holds no candles at that resolution of its own. Aggregation is
+exact for OHLCV, including the buy/sell volume split, so a multi-timeframe document can
+run off a single backfilled series.
+
+`strategies/liquidity-sweep.yaml` is the example from `docs/06-STRATEGY-DSL.md`, kept
+verbatim. `strategies/liquidity-sweep-btcusdt-5m.yaml` is the same thesis calibrated to
+real data — see the implementation notes in `docs/06` for why the spec's version needs
+a reclaim condition and a realistic imbalance threshold to trade at all.
 
 ---
 

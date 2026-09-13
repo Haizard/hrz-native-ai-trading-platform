@@ -9,6 +9,15 @@ pub enum RuntimeError {
     #[error("strategy referenced undeclared timeframe `{0}`")]
     UndeclaredTimeframe(String),
 
+    /// The document cannot be executed as a trading strategy.
+    ///
+    /// An `indicator` has no entry, risk or invalidation blocks, so there is
+    /// nothing to trade; a document with no resolvable direction has nothing to
+    /// trade *with*. Both are reported rather than defaulted, because guessing
+    /// a direction is how a backtest quietly measures the wrong strategy.
+    #[error("document is not tradable: {0}")]
+    NotTradable(String),
+
     /// A condition could not be evaluated against the current context.
     #[error("failed to evaluate condition `{0}`: {1}")]
     ConditionEvaluation(String, String),

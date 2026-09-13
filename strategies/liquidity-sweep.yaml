@@ -1,0 +1,52 @@
+# Liquidity Sweep + Absorption -- the reference strategy document from
+# `docs/06-STRATEGY-DSL.md`, kept byte-compatible with the spec on purpose.
+#
+# This file is the single source of truth for the example: the `strategy-dsl`
+# test suite pulls it in with `include_str!`, so the sample we ship and the
+# sample the validator is tested against cannot drift apart.
+#
+# Run it with:
+#   strategy-cli validate --strategy strategies/liquidity-sweep.yaml
+#   strategy-cli backtest run --strategy strategies/liquidity-sweep.yaml \
+#     --symbol BTCUSDT --from 2026-09-01 --to 2026-09-13
+#
+# Note on `delta > threshold(1500)`: the threshold is written for a deep,
+# liquid book and is deliberately demanding. On a quiet BTCUSDT tape it will
+# rarely trigger, which is why `liquidity-sweep-btcusdt-5m.yaml` exists -- same
+# logic, thresholds calibrated to observed data, so a backtest returns trades
+# that can be checked by hand.
+
+name: "Liquidity Sweep + Absorption"
+version: "2.1"
+kind: strategy
+market: "BTCUSDT"
+timeframes:
+  trend: "4h"
+  setup: "1h"
+  entry: "5m"
+
+entry:
+  all_of:
+    - timeframe: trend
+      condition: market_structure.trend == "bullish"
+    - timeframe: setup
+      condition: absorption.detected == true
+    - timeframe: entry
+      condition: liquidity.swept == "sell_side"
+    - timeframe: entry
+      condition: delta > threshold(1500)
+
+risk:
+  max_risk_pct: 1.0
+  stop: "below_sweep_low"
+  take_profit:
+    type: "risk_multiple"
+    value: 2.5
+
+invalidation:
+  - timeframe: entry
+    condition: "close_below(stop_price)"
+
+metadata:
+  created_by: "ai_agent"
+  skill_ref: "liquidity-sweep-absorption-v2"

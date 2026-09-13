@@ -54,6 +54,7 @@ pub mod imbalance;
 pub mod indicators;
 pub mod liquidity;
 pub mod market_structure;
+pub mod resample;
 pub mod state;
 pub mod types;
 pub mod volume_profile;
@@ -76,6 +77,7 @@ pub use market_structure::{
     detect_market_structure, BreakKind, MarketStructure, StructureBreak, StructureConfig,
     SwingKind, SwingPoint, Trend,
 };
+pub use resample::{resample, resample_all};
 pub use state::{build_market_state, MarketState, MarketStateConfig};
 pub use types::{Candle, FootprintCell, OrderBookLevel, OrderBookSnapshot, Side, Timeframe, Trade};
 pub use volume_profile::{
@@ -98,6 +100,7 @@ pub mod prelude {
     pub use crate::indicators::{atr, ema, rsi, sma, true_range};
     pub use crate::liquidity::{detect_liquidity_levels, LiquidityLevel};
     pub use crate::market_structure::{detect_market_structure, BreakKind, MarketStructure, Trend};
+    pub use crate::resample::{resample, resample_all};
     pub use crate::state::{build_market_state, MarketState, MarketStateConfig};
     pub use crate::types::{Candle, FootprintCell, Side, Timeframe, Trade};
     pub use crate::volume_profile::{calculate_volume_profile, VolumeProfile};

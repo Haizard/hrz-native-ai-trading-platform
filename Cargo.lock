@@ -216,6 +216,7 @@ version = "0.1.0"
 dependencies = [
  "analytics-core",
  "serde",
+ "serde_json",
  "strategy-dsl",
  "strategy-runtime",
  "thiserror",
@@ -2190,10 +2191,18 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 name = "strategy-cli"
 version = "0.1.0"
 dependencies = [
+ "analytics-core",
  "anyhow",
  "backtester",
+ "chrono",
  "clap",
+ "db",
+ "dotenvy",
+ "serde_json",
  "strategy-dsl",
+ "strategy-runtime",
+ "tokio",
+ "tracing",
  "tracing-subscriber",
 ]
 
@@ -2214,6 +2223,7 @@ version = "0.1.0"
 dependencies = [
  "analytics-core",
  "serde",
+ "serde_json",
  "strategy-dsl",
  "thiserror",
 ]

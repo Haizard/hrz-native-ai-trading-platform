@@ -76,6 +76,26 @@ impl Timeframe {
     }
 }
 
+/// Timeframes are ordered by **duration**, not by declaration order.
+///
+/// Written by hand rather than derived on purpose. A derived `Ord` would
+/// silently depend on the order the variants happen to appear in, so adding a
+/// `1s` timeframe in the wrong place would produce a wrong sort with no compile
+/// error. Every comparison routes through [`Timeframe::nanos`], which is the
+/// same source of truth [`crate::resample`] uses to decide whether one
+/// resolution can be aggregated into another.
+impl Ord for Timeframe {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.nanos().cmp(&other.nanos())
+    }
+}
+
+impl PartialOrd for Timeframe {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl fmt::Display for Timeframe {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -292,5 +312,36 @@ mod tests {
         // 90 seconds in -> start of the first minute
         assert_eq!(Timeframe::M1.bucket_of(90 * NS_PER_SEC), minute);
         assert_eq!(Timeframe::M1.bucket_of(0), 0);
+    }
+
+    #[test]
+    fn ordering_follows_duration_not_declaration_order() {
+        // Sorted from the declaration-independent `all()` listing, which is
+        // documented coarse-to-fine; the reverse must be strictly increasing by
+        // duration, which is what a caller comparing coarseness depends on.
+        let mut fine_to_coarse = Timeframe::all().to_vec();
+        fine_to_coarse.reverse();
+        for pair in fine_to_coarse.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "{:?} should sort before {:?}",
+                pair[0],
+                pair[1]
+            );
+            assert!(pair[1] > pair[0]);
+        }
+        assert_eq!(fine_to_coarse[0], Timeframe::M1);
+        assert_eq!(fine_to_coarse[fine_to_coarse.len() - 1], Timeframe::D1);
+        // And sorting a shuffled copy lands in the same place.
+        let mut shuffled = vec![
+            Timeframe::H1,
+            Timeframe::M1,
+            Timeframe::D1,
+            Timeframe::M15,
+            Timeframe::M5,
+            Timeframe::H4,
+        ];
+        shuffled.sort();
+        assert_eq!(shuffled, fine_to_coarse);
     }
 }
