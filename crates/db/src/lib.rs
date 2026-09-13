@@ -22,10 +22,12 @@
 pub mod config;
 pub mod error;
 pub mod models;
+pub mod repositories;
 
 pub use config::DatabaseConfig;
 pub use error::DbError;
 pub use models::Database;
+pub use repositories::{dt_to_ns, ns_to_dt};
 
 /// Embedded migrations from `crates/db/migrations`.
 ///

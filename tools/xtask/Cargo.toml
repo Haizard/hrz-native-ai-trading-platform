@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Repository automation: migrations, codegen, local dev helpers."
+description = "Repository automation: migrations, market-data collection and backfill."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
+analytics-core = { workspace = true }
 db = { workspace = true }
+market-data = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true }
 dotenvy = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

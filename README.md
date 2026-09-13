@@ -123,7 +123,48 @@ curl http://127.0.0.1:8080/readyz
 The gateway starts even with no database configured, reporting `database: "down"` with
 HTTP 503 — intentional, so a bad connection string doesn't cause a crash-loop.
 
-## 5. Verify a clean checkout
+## 5. Collect and backfill market data (Phase 1)
+
+Backfill historical candles:
+
+```bash
+cargo xtask backfill --symbol BTCUSDT --timeframe 1m \
+  --from 2026-01-01 --to 2026-07-01 --dry-run     # fetch + report only
+cargo xtask backfill --symbol BTCUSDT --timeframe 1m \
+  --from 2026-01-01 --to 2026-07-01               # also upsert into Postgres
+```
+
+Run the live collector (Ctrl-C to stop):
+
+```bash
+cargo xtask collect --symbol BTCUSDT          # stream + persist
+cargo xtask collect --symbol BTCUSDT --no-persist   # stream only, no DB needed
+```
+
+### Choosing a backfill source
+
+| `--source` | Speed | Matches live collector exactly? |
+|---|---|---|
+| `klines` (default) | ~1 request per 1000 candles | No — buy/sell split comes from `takerBuyBaseVolume` |
+| `trades` | ~1 request per 1000 trades | **Yes** — feeds the same `CandleBuilder` |
+
+Use `klines` for multi-month windows. Use `trades` for the short windows in the
+"backfilled == live" regression test; it is hard-capped at 24h because replaying raw
+trades over months would be hundreds of thousands of requests.
+
+### What the collector does
+
+- One combined WebSocket; `SUBSCRIBE` control messages; re-subscribes after every
+  reconnect (without that, a dropped socket silently becomes "no data").
+- Candles are built **from the trade stream**, not exchange klines, so the
+  `buy_volume`/`sell_volume` split is consistent with delta/CVD downstream.
+- Order book is maintained from the diff stream using Binance's snapshot+resync
+  algorithm (buffer → drop stale → bridge at `lastUpdateId + 1` → apply).
+- Trade-id gaps and book sequence gaps are **counted and logged**, never swallowed.
+  Resyncing the affected window is still a manual step at this phase.
+- Health is reported every 30s while collecting (connected / messages / gaps / reconnects).
+
+## 6. Verify a clean checkout
 
 ```bash
 cargo fmt --all -- --check
@@ -141,17 +182,19 @@ math" principle has silently broken.
 See `03-PROJECT-STRUCTURE.md` for the authoritative crate map and dependency rules.
 In short:
 
-| Crate | Phase | Purpose |
-|---|---|---|
-| `analytics-core` | 2 | Pure math, no I/O, native + wasm32 |
-| `market-data` | 1 | Exchange collectors, normalization |
-| `strategy-dsl` | 3 | Schema, parser, validator |
-| `strategy-runtime` | 3 | Executes DSL against any data source |
-| `backtester` | 3 | Deterministic replay + reporting |
-| `sandbox` | 4 | WASM isolation for AI-generated strategies |
-| `ai-agent` | 5 | LLM orchestration, tools, skills, thesis |
-| `trading-engine` | 6/8 | Paper + live execution, risk |
-| `api-gateway` | 7 | Axum REST + WebSocket |
-| `db` | 1+ | sqlx models + migrations |
+| Crate | Phase | Purpose | Status |
+|---|---|---|---|
+| `analytics-core` | 2 | Pure math, no I/O, native + wasm32 | types done; math lands in Phase 2 |
+| `market-data` | 1 | Exchange collectors, normalization | **Phase 1 done** |
+| `strategy-dsl` | 3 | Schema, parser, validator | stub |
+| `strategy-runtime` | 3 | Executes DSL against any data source | stub |
+| `backtester` | 3 | Deterministic replay + reporting | stub |
+| `sandbox` | 4 | WASM isolation for AI-generated strategies | stub |
+| `ai-agent` | 5 | LLM orchestration, tools, skills, thesis | stub |
+| `trading-engine` | 6/8 | Paper + live execution, risk | stub |
+| `api-gateway` | 7 | Axum REST + WebSocket | health endpoints only |
+| `db` | 1+ | sqlx models + migrations | pool + market-data repos done |
 
-Helper binaries: `tools/xtask` (`cargo xtask <cmd>`), `tools/strategy-cli`.
+Helper binaries: `tools/xtask` (`cargo xtask <cmd>`), `tools/strategy-cli` (Phase 3).
+
+xtask commands: `migrate`, `db-status`, `backfill`, `collect`.

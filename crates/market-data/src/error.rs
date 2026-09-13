@@ -5,9 +5,10 @@ use thiserror::Error;
 /// Anything that can go wrong while collecting or normalizing market data.
 #[derive(Debug, Error)]
 pub enum MarketDataError {
-    /// WebSocket transport failure.
-    #[error("websocket error: {0}")]
-    Websocket(String),
+    /// Transport failure: WebSocket disconnect, or an HTTP request to the
+    /// exchange REST API that failed or returned a non-2xx status.
+    #[error("transport error: {0}")]
+    Transport(String),
 
     /// The exchange sent a payload we could not interpret.
     #[error("failed to normalize exchange payload: {0}")]

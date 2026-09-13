@@ -14,7 +14,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# Tests don't go through a binary's main(), so nothing loads `.env` for them.
+# These integration tests need DATABASE_URL, hence dotenvy here.
+dotenvy = { workspace = true }
+tokio = { workspace = true }

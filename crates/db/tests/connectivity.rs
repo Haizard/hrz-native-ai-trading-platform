@@ -12,10 +12,16 @@
 
 use db::{Database, MIGRATIONS};
 
+/// Load `.env` so `DATABASE_URL` is visible to the test process.
+fn load_env() {
+    let _ = dotenvy::dotenv();
+}
+
 /// Verifies the connection string works end to end.
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
 async fn connects_and_applies_migrations() {
+    load_env();
     let database = Database::from_env()
         .await
         .expect("DATABASE_URL must point at a reachable Postgres instance");
@@ -35,6 +41,7 @@ async fn connects_and_applies_migrations() {
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
 async fn initial_schema_has_expected_tables() {
+    load_env();
     let database = Database::from_env().await.expect("DATABASE_URL");
     MIGRATIONS.run(database.pool()).await.expect("migrate");
 
