@@ -9,7 +9,9 @@ publish = false
 
 [dependencies]
 analytics-core = { workspace = true }
-strategy-dsl = { workspace = true }
+# This is the crate that reads strategies off disk, and a strategy author writes
+# YAML. It is the one place that has to opt back in.
+strategy-dsl = { workspace = true, features = ["yaml"] }
 strategy-runtime = { workspace = true }
 backtester = { workspace = true }
 db = { workspace = true }

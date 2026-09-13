@@ -20,6 +20,11 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # `crates/sandbox`'s build script compiles `sandbox-guest` for
+  # wasm32-unknown-unknown and embeds the result, so *every* job that builds the
+  # workspace needs that target installed -- not just the `wasm` job below. The
+  # build script fails with an explicit "rustup target add" hint if it is
+  # missing, which is the failure this repetition prevents.
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -27,6 +32,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -37,6 +43,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
@@ -54,11 +62,53 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p analytics-core --target wasm32-unknown-unknown
 
+  # The sandbox guest is the one artifact in this workspace whose dependency
+  # graph is a security boundary rather than a convenience (docs/08-SANDBOX-WASM.md).
+  # Three things are asserted here that no other job can see:
+  #
+  #   1. the guest itself compiles for wasm32 and passes clippy;
+  #   2. `strategy-dsl` still builds with YAML off -- the feature is a real gate,
+  #      not a comment;
+  #   3. the guest's *resolved* dependency graph contains no YAML parser.
+  #
+  # (3) is the one that matters. Feature unification is silent: some future crate
+  # enabling `strategy-dsl/yaml` anywhere on the guest's path would link a YAML
+  # parser into the sandbox and nothing would fail. `cargo tree` reads the graph
+  # Cargo actually resolved, which is the only place that would show up.
+  guest:
+    name: Sandbox guest (no YAML)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the guest for wasm32
+        run: cargo build -p sandbox-guest --target wasm32-unknown-unknown --release
+      - name: Clippy the guest for wasm32
+        run: cargo clippy -p sandbox-guest --target wasm32-unknown-unknown -- -D warnings
+      - name: strategy-dsl still builds without its default features
+        run: cargo build -p strategy-dsl --no-default-features
+      - name: The guest links no YAML parser
+        run: |
+          if cargo tree -p sandbox-guest --target wasm32-unknown-unknown \
+               | grep -E 'serde_yaml|unsafe-libyaml'; then
+            echo "::error::the sandbox guest's dependency graph contains a YAML parser."
+            echo "Something on the guest's path re-enabled strategy-dsl/yaml."
+            echo "YAML is default-off in the workspace [workspace.dependencies] entry;"
+            echo "opt back in per crate instead of flipping the default."
+            exit 1
+          fi
+
   build:
     name: Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace

@@ -76,13 +76,19 @@ criteria in the roadmap are met and committed.
 
 # Running the stack locally
 
-Status: **Phase 0 complete** — workspace skeleton, CI, and database wiring. Feature
-crates are stubs; see `02-ROADMAP.md` for what lands when.
+Status: **Phases 0–4 complete** — workspace, market data, analytics, the strategy
+DSL/runtime/backtester, and the WASM sandbox. `ai-agent` and `trading-engine` are still
+stubs; see `02-ROADMAP.md` for what lands when.
 
 ## 1. Prerequisites
 
 - Rust 1.85+ (`rustup toolchain install stable`)
+- The `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
 - Access to the managed Postgres instance (Northflank). No Docker required.
+
+The WASM target is needed for **any** workspace build, not just the frontend: the
+`sandbox` crate's build script compiles the sandbox guest to WASM and embeds the module
+in the host binary. Building without it fails with a message that says exactly this.
 
 ## 2. Configure the database
 
@@ -171,11 +177,39 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build -p analytics-core --target wasm32-unknown-unknown
+
+# The sandbox guest must link no YAML parser. YAML is default-off in the workspace
+# [workspace.dependencies] entry; if this prints anything, something on the guest's
+# path re-enabled strategy-dsl/yaml and widened the sandbox's attack surface.
+cargo tree -p sandbox-guest --target wasm32-unknown-unknown | grep -E 'serde_yaml|unsafe-libyaml'
 ```
 
-The last command is a hard guarantee, not a nicety: `analytics-core` is the shared
+The `analytics-core` command is a hard guarantee, not a nicety: it is the shared
 deterministic core, and if it stops compiling to WASM the "one implementation of the
 math" principle has silently broken.
+
+The last command should print **nothing** and exit non-zero; CI asserts exactly that.
+The YAML gate is the one place in this workspace where a dependency change is a security
+change, so it is checked against Cargo's *resolved* graph rather than the manifests —
+feature unification would otherwise re-enable it silently.
+
+## 7. The sandbox (Phase 4)
+
+```bash
+cargo test -p sandbox              # 22 adversarial + 5 equivalence + 1 doctest
+cargo test -p sandbox --test equivalence    # native vs WASM, byte-identical results
+cargo test -p sandbox --test adversarial    # malformed / hostile inputs fail safely
+```
+
+Two things are worth knowing before touching this:
+
+- **The guest is built by `sandbox`'s build script**, not committed as a `.wasm`. The
+  module embedded in the host binary is always the one the current source produces.
+  The nested `cargo build` uses its own `--target-dir` (`target/sandbox-guest`) because
+  Cargo holds an exclusive lock on the target directory for the duration of a build.
+- **`serde_json`'s `float_roundtrip` feature is load-bearing.** Without it the default
+  float parser is one ULP off for some inputs, and every sandboxed trade disagrees with
+  its native twin in the last decimal. See the implementation notes in `docs/08`.
 
 ## Repo layout
 
@@ -189,7 +223,8 @@ In short:
 | `strategy-dsl` | 3 | Schema, parser, validator | **Phase 3 done** |
 | `strategy-runtime` | 3 | Executes DSL against any data source | **Phase 3 done** |
 | `backtester` | 3 | Deterministic replay + reporting | **Phase 3 done** |
-| `sandbox` | 4 | WASM isolation for AI-generated strategies | stub |
+| `sandbox` | 4 | WASM isolation for AI-generated strategies | **Phase 4 done** |
+| `sandbox-guest` | 4 | The interpreter compiled to WASM; embedded by `sandbox`'s build script | **Phase 4 done** |
 | `ai-agent` | 5 | LLM orchestration, tools, skills, thesis | stub |
 | `trading-engine` | 6/8 | Paper + live execution, risk | stub |
 | `api-gateway` | 7 | Axum REST + WebSocket | health endpoints only |

@@ -17,3 +17,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# The fixtures are YAML, because that is what a strategy author writes. The
+# backtester takes an already-validated document and never parses one itself.
+strategy-dsl = { workspace = true, features = ["yaml"] }

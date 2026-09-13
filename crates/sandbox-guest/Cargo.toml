@@ -1,0 +1,28 @@
+[package]
+name = "sandbox-guest"
+description = "The Strategy Runtime interpreter, compiled to WASM, for execution inside the sandbox."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+# `cdylib` is the artifact the sandbox host loads. `rlib` exists so the portable
+# half of the crate -- `interpret` -- can be unit-tested on the host, where a
+# debugger and a real assertion message are available. The ABI shim itself is
+# `cfg(target_arch = "wasm32")` and is never compiled for the host.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+analytics-core = { workspace = true }
+strategy-runtime = { workspace = true }
+# YAML stays off here. The workspace entry sets `default-features = false` so
+# this is a no-op locally, but stating it makes the crate's own contract
+# readable without jumping to the root manifest: the sandbox guest links no YAML
+# parser, so a hostile document has no YAML surface to attack
+# (docs/08-SANDBOX-WASM.md).
+strategy-dsl = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }

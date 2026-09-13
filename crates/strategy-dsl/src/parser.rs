@@ -21,6 +21,10 @@ use crate::validator::{Limits, ValidatedStrategy};
 pub const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 
 /// Parse a YAML document.
+///
+/// Absent when the `yaml` feature is off, which is how the sandbox guest is
+/// built: the only encoding accepted inside the sandbox is JSON.
+#[cfg(feature = "yaml")]
 pub fn from_yaml(source: &str) -> Result<StrategyDocument, DslError> {
     check_size(source)?;
     serde_yaml::from_str(source).map_err(|e| DslError::Parse(e.to_string()))
@@ -37,12 +41,24 @@ pub fn from_json(source: &str) -> Result<StrategyDocument, DslError> {
 /// JSON is valid YAML, so a sniff is not strictly necessary -- but feeding JSON
 /// to the YAML parser produces YAML-flavoured error messages, and the agent's
 /// retry loop reads those messages.
+///
+/// Without the `yaml` feature a document that is not JSON is refused with an
+/// explicit reason rather than being reported as malformed JSON, which would
+/// send whoever produced it looking in the wrong place.
 pub fn parse(source: &str) -> Result<StrategyDocument, DslError> {
     check_size(source)?;
     if source.trim_start().starts_with('{') {
-        from_json(source)
-    } else {
+        return from_json(source);
+    }
+    #[cfg(feature = "yaml")]
+    {
         from_yaml(source)
+    }
+    #[cfg(not(feature = "yaml"))]
+    {
+        Err(DslError::Parse(
+            "this build has no YAML support: a strategy document must be JSON".into(),
+        ))
     }
 }
 
@@ -83,6 +99,15 @@ timeframes:
   entry: 5m
 "#;
 
+    const MINIMAL_JSON: &str = r#"{
+        "name": "Test",
+        "version": "1.0",
+        "kind": "indicator",
+        "market": "BTCUSDT",
+        "timeframes": {"entry": "5m"}
+    }"#;
+
+    #[cfg(feature = "yaml")]
     #[test]
     fn parses_yaml() {
         let doc = from_yaml(MINIMAL).unwrap();
@@ -92,28 +117,38 @@ timeframes:
 
     #[test]
     fn parses_json() {
-        let json = r#"{
-            "name": "Test",
-            "version": "1.0",
-            "kind": "indicator",
-            "market": "BTCUSDT",
-            "timeframes": {"entry": "5m"}
-        }"#;
-        let doc = from_json(json).unwrap();
+        let doc = from_json(MINIMAL_JSON).unwrap();
         assert_eq!(doc.name, "Test");
     }
 
     #[test]
     fn sniffing_picks_the_right_format() {
+        assert!(parse(MINIMAL_JSON).is_ok());
+        #[cfg(feature = "yaml")]
         assert!(parse(MINIMAL).is_ok());
-        assert!(parse(
-            r#"{"name":"x","version":"1","kind":"indicator","market":"B","timeframes":{"e":"5m"}}"#
-        )
-        .is_ok());
+    }
+
+    /// The guest build links no YAML parser, so a YAML document must be refused
+    /// with a reason that names the real problem. Reporting it as malformed JSON
+    /// would send the document's producer hunting for a syntax error that is not
+    /// there.
+    #[cfg(not(feature = "yaml"))]
+    #[test]
+    fn without_the_yaml_feature_yaml_is_refused_by_name() {
+        let err = parse(MINIMAL).unwrap_err();
+        match err {
+            DslError::Parse(message) => assert!(message.contains("no YAML support")),
+            other => panic!("expected a parse error, got {other}"),
+        }
     }
 
     #[test]
     fn malformed_input_is_a_parse_error_not_a_panic() {
+        assert!(matches!(
+            from_json(r#"{"name": [unclosed"#),
+            Err(DslError::Parse(_))
+        ));
+        #[cfg(feature = "yaml")]
         assert!(matches!(
             from_yaml("name: [unclosed"),
             Err(DslError::Parse(_))
@@ -123,21 +158,20 @@ timeframes:
     #[test]
     fn an_oversized_document_is_refused() {
         let huge = "x".repeat(MAX_DOCUMENT_BYTES + 1);
-        assert!(matches!(from_yaml(&huge), Err(DslError::TooLarge(_))));
+        assert!(matches!(from_json(&huge), Err(DslError::TooLarge(_))));
     }
 
     #[test]
     fn parse_and_validate_rejects_an_incomplete_document() {
-        let yaml = r#"
-name: "Test"
-version: "1.0"
-kind: strategy
-market: BTCUSDT
-timeframes:
-  entry: 5m
-"#;
+        let json = r#"{
+            "name": "Test",
+            "version": "1.0",
+            "kind": "strategy",
+            "market": "BTCUSDT",
+            "timeframes": {"entry": "5m"}
+        }"#;
         assert!(matches!(
-            parse_and_validate(yaml),
+            parse_and_validate(json),
             Err(DslError::Validation { .. })
         ));
     }

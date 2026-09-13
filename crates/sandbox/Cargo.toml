@@ -5,18 +5,51 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# The build script shells out to `cargo build --target wasm32-unknown-unknown`,
+# which needs a real toolchain on PATH -- not something a published crate can
+# promise. Pinned to 34 rather than latest so the workspace's declared MSRV of
+# 1.85 stays true: newer wasmtime releases require a higher floor.
+publish = false
 
 [dependencies]
-strategy-runtime = { workspace = true }
-strategy-dsl = { workspace = true }
 analytics-core = { workspace = true }
+strategy-dsl = { workspace = true }
+strategy-runtime = { workspace = true }
+# The protocol types -- `Header` and `InitPayload` -- are shared with the guest
+# rather than restated here. A hand-copied header struct that drifted from the
+# guest's would break the "identical results" guarantee silently, which is the
+# one failure mode this phase exists to rule out.
+sandbox-guest = { workspace = true }
 
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
-# NOTE: `wasmtime` is intentionally NOT listed yet. It is a heavy dependency
-# and lands with Phase 4 (docs/08-SANDBOX-WASM.md). Adding it here would slow
-# every Phase 0-3 build for no benefit.
+# `default-features = false` drops a lot: the component model, the async runtime,
+# the pooling allocator, the compilation cache, GC, threads, profiling and the
+# debug tooling. None of it is reachable from a module that imports nothing but
+# `host_emit_signal` and `host_market_state`, and every one of them is code the
+# sandbox would otherwise be trusting.
+#
+# `wat` is kept because the adversarial tests need to hand-write modules that a
+# Rust compiler will not produce for them -- one that imports `wasi_snapshot_preview1`,
+# say, or one that loops forever.
+wasmtime = { version = "34", default-features = false, features = [
+    "cranelift",
+    "runtime",
+    "std",
+    "wat",
+] }
 
 [dev-dependencies]
+# The adversarial and equivalence tests read the shipped strategies, which are
+# YAML. The sandbox itself takes an already-validated document and never parses
+# one.
+strategy-dsl = { workspace = true, features = ["yaml"] }
+# The equivalence test drives the backtester's *own* replay loop with a sandboxed
+# strategy, which is the whole point: if the sandbox had its own loop, "runs
+# identically" would be a claim about two implementations agreeing. A
+# dev-dependency only, so the production graph keeps the documented rule that
+# `sandbox` depends on `strategy-runtime` and nothing above it.
+backtester = { workspace = true }

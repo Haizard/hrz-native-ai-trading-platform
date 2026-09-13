@@ -6,12 +6,22 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["yaml"]
+# YAML is how humans write a document; JSON is how the AI agent emits one.
+#
+# It is a *feature* rather than a hard dependency because the sandbox guest
+# (crates/sandbox-guest) compiles this crate into WASM and deliberately links no
+# YAML parser at all: inside the sandbox the only accepted encoding is JSON, so
+# a hostile document has no YAML surface to attack. See docs/08-SANDBOX-WASM.md.
+yaml = ["dep:serde_yaml"]
+
 [dependencies]
 analytics-core = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+serde_yaml = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

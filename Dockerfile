@@ -15,6 +15,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
+# The wasm32 target, needed *before* it is strictly required.
+#
+# `crates/sandbox`'s build script compiles `sandbox-guest` to WASM and embeds
+# the module, so any build that reaches that crate needs this target installed.
+# The binaries built below (`api-gateway`, `xtask`) do not depend on `sandbox`
+# today, so this is not yet load-bearing -- but `trading-engine` does, and
+# `trading-engine` is what the gateway is for. Installing it here costs one
+# small layer and turns a future "nested cargo build failed with a confusing
+# message" into nothing at all.
+RUN rustup target add wasm32-unknown-unknown
+
 COPY . .
 
 # Only the two binaries we actually deploy. sqlx uses the runtime query API

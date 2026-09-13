@@ -532,7 +532,11 @@ pub fn indexed_path(prefix: &str, index: usize) -> String {
     format!("{prefix}[{index}]")
 }
 
-#[cfg(test)]
+// The schema's serde behaviour is exercised through its YAML form -- that is the
+// encoding a human writes and the one whose quirks (bare strings, mappings,
+// missing keys) are worth pinning. The guest build drops `serde_yaml`, so these
+// are gated with the feature.
+#[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
 

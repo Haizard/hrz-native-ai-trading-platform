@@ -26,10 +26,20 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 analytics-core   = { path = "crates/analytics-core" }
 market-data      = { path = "crates/market-data" }
-strategy-dsl     = { path = "crates/strategy-dsl" }
+# YAML is OFF by default across the workspace, and each crate opts in.
+#
+# This is not tidiness. The sandbox guest (crates/sandbox-guest) compiles
+# strategy-dsl into WASM, and Cargo unifies features across a dependency graph:
+# if any crate on the guest's path enabled `yaml`, the sandbox would link a YAML
+# parser even though the guest only ever reads JSON. `default-features = false`
+# can only be expressed here, in the workspace entry -- Cargo silently ignores it
+# on an inherited dependency. CI asserts the result with
+# `cargo tree -p sandbox-guest --target wasm32-unknown-unknown | grep serde_yaml`.
+strategy-dsl     = { path = "crates/strategy-dsl", default-features = false }
 strategy-runtime = { path = "crates/strategy-runtime" }
 backtester       = { path = "crates/backtester" }
 sandbox          = { path = "crates/sandbox" }
+sandbox-guest    = { path = "crates/sandbox-guest" }
 ai-agent         = { path = "crates/ai-agent" }
 trading-engine   = { path = "crates/trading-engine" }
 db               = { path = "crates/db" }
@@ -41,7 +51,18 @@ futures    = "0.3"
 
 # --- serialization ---
 serde      = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip` is load-bearing, not a nicety.
+#
+# serde_json's default float parser is best-effort: for some inputs it is one ULP
+# off, so `103.19999999999999` can come back as `103.2`. That is invisible until
+# you compare two runs that differ only in whether a number crossed a JSON
+# boundary -- which is exactly what the sandbox does on every candle. Without
+# this feature the sandboxed and native backtests disagree in the last decimal
+# of almost every trade, and no amount of care in the sandbox can fix it.
+#
+# The cost is roughly 2x on float parsing, which is not the bottleneck anywhere
+# in this system.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 serde_yaml = "0.9"
 
 # --- errors ---
@@ -97,3 +118,12 @@ panic = "abort"
 # Keep dev builds usable on large candle datasets.
 [profile.dev]
 opt-level = 1
+
+# The sandbox guest is built by `sandbox`'s build.rs and then embedded, so its
+# artifact size is not something anyone reads. Splitting it into more codegen
+# units buys nothing for a module this small and costs real seconds on every
+# rebuild. `panic = "abort"` is inherited and *is* load-bearing: a guest panic
+# must trap the module rather than unwind across the FFI boundary.
+[profile.release.package.sandbox-guest]
+opt-level = 2
+codegen-units = 16

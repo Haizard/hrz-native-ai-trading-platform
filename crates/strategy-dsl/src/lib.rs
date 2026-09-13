@@ -86,8 +86,10 @@ pub use schema::{
 
 pub use expr::{CompareOp, Expr, ExprError, Field, Func, Type, Value, ALL_FIELDS, ALL_FUNCS};
 
+#[cfg(feature = "yaml")]
+pub use parser::from_yaml;
 pub use parser::{
-    from_json, from_yaml, parse, parse_and_validate, parse_and_validate_with, MAX_DOCUMENT_BYTES,
+    from_json, parse, parse_and_validate, parse_and_validate_with, MAX_DOCUMENT_BYTES,
 };
 
 pub use validator::{
@@ -108,7 +110,11 @@ pub mod prelude {
     };
 }
 
-#[cfg(test)]
+// These exercise the document end to end through its YAML form, which is how a
+// human writes one. The guest build has no YAML parser, so they are gated with
+// the feature rather than rewritten into JSON -- the JSON path is covered by
+// `parser::tests` and by `sandbox-guest`.
+#[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
 
