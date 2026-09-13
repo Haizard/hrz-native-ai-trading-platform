@@ -198,3 +198,69 @@ In short:
 Helper binaries: `tools/xtask` (`cargo xtask <cmd>`), `tools/strategy-cli` (Phase 3).
 
 xtask commands: `migrate`, `db-status`, `backfill`, `collect`.
+
+---
+
+# Docker
+
+`Dockerfile` is a two-stage build (Rust builder → `debian:bookworm-slim`) producing
+the **api-gateway** and **xtask** binaries. It builds with `--locked`, so a stale
+`Cargo.lock` fails the build rather than silently resolving new versions.
+
+## Run locally
+
+```bash
+docker compose up --build
+curl http://localhost:8080/healthz     # {"status":"ok","database":"unknown"}
+curl http://localhost:8080/readyz      # {"status":"ok","database":"up"}
+```
+
+`docker compose up -d postgres` alone gives you a local database without touching
+the gateway — useful if you want to keep running the services with `cargo run`.
+
+## Why these choices
+
+- **`BIND_ADDR=0.0.0.0:8080` is set in the image.** The binary defaults to
+  `127.0.0.1`, which inside a container means unreachable from the outside.
+- **Migrations run from the entrypoint**, not as a deploy step. sqlx takes a Postgres
+  advisory lock, so concurrent migrators serialize instead of racing — safe even with
+  several replicas. Set `RUN_MIGRATIONS=false` to skip.
+- **The healthcheck hits `/healthz`, not `/readyz`.** `/healthz` is liveness only and
+  doesn't touch the database, so a transient DB blip won't flap the container.
+- **`.env` is in `.dockerignore`.** Secrets are injected as environment variables by
+  the platform, never baked into an image layer.
+
+# Deploying to Northflank
+
+Northflank auto-detects the root `Dockerfile`, so no build config file is needed.
+
+1. **Create the service** — *Create* → *Service* → *Deployment*, point it at
+   `Haizard/hrz-native-ai-trading-platform`, branch `main`. Build type: Dockerfile.
+2. **Port** — add an HTTP port `8080`. This matches `EXPOSE 8080` and the
+   `BIND_ADDR` the image sets.
+3. **Health check** — path `/healthz`, port `8080`.
+4. **Environment variables** (do not put these in the repo):
+
+   | Variable | Value |
+   |---|---|
+   | `DATABASE_URL` | the Northflank Postgres addon's **internal** connection string |
+   | `RUST_LOG` | `info` (or `ai_trading_platform=debug,sqlx=warn`) |
+   | `RUN_MIGRATIONS` | `true` for the first deploy |
+
+   `BIND_ADDR` is already set in the image; override it only if you change the port.
+
+5. **Database** — add a Postgres addon and link it to the service so
+   `DATABASE_URL` is injected automatically, or paste the connection string manually.
+   Use the internal host, not the public one, so traffic stays inside the cluster.
+6. **Deploy.** The entrypoint applies migrations, then starts the gateway.
+
+## Notes
+
+- Migrations are idempotent (`CREATE TABLE` runs once; sqlx tracks applied versions in
+  `_sqlx_migrations`), so repeated deploys are safe.
+- The image has no shell tooling beyond `curl` and `ca-certificates`. `xtask` is
+  available inside the container for one-off jobs:
+  `xtask backfill --symbol BTCUSDT --timeframe 1m --from ... --to ...`
+- **Collectors are long-running processes, not web services.** The `collect` command
+  should run as a separate Northflank *Worker* service with no exposed port, not inside
+  the gateway container. That separation lands with the Phase 1 hardening work.

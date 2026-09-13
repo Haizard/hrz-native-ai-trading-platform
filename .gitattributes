@@ -10,6 +10,11 @@
 *.yaml  text eol=lf
 *.json  text eol=lf
 
+# Shell scripts and Dockerfiles MUST stay LF. A CRLF shebang ("#!/bin/sh\r")
+# makes the container fail with a confusing "no such file or directory".
+*.sh       text eol=lf
+Dockerfile text eol=lf
+
 *.png binary
 *.jpg binary
 *.ico binary

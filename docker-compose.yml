@@ -1,0 +1,51 @@
+# Local development stack.
+#
+# This is a convenience for working offline. Production uses the Northflank
+# managed Postgres, so you do NOT need this file to run against the real
+# database -- just put DATABASE_URL in `.env` and use `cargo run`.
+#
+# Usage:
+#   docker compose up -d postgres     # just a local database
+#   docker compose up --build         # database + api-gateway
+#
+# Point the gateway at the local database with:
+#   DATABASE_URL=postgres://trading:trading@localhost:5432/ai_trading
+
+services:
+  postgres:
+    # Plain Postgres, not Timescale: the initial migration is written for
+    # stock PG13+ and needs no extensions. Swap to
+    # `timescale/timescaledb:latest-pg16` if you want hypertables locally.
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: trading
+      POSTGRES_DB: ai_trading
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading -d ai_trading"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://trading:trading@postgres:5432/ai_trading
+      BIND_ADDR: 0.0.0.0:8080
+      RUST_LOG: info
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No restart policy on purpose: local dev, we want to see it die.
+
+volumes:
+  pgdata:

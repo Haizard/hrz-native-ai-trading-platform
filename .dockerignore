@@ -1,0 +1,30 @@
+# Build artifacts -- copying these in would blow up the context and can
+# overwrite the freshly built binaries' sources.
+target/
+**/target/
+
+# Secrets. CRITICAL: .env must never end up baked into an image.
+.env
+.env.*
+!.env.example
+
+# VCS and local tooling state
+.git/
+.github/
+.workbuddy-ai/
+
+# Local SQL / scratch
+*.dump
+*.log
+backups/
+
+# Docs aren't needed at runtime (kept out to shrink the build context)
+docs/
+*.md
+!README.md
+
+# Frontend (not built yet; add back when Phase 7 lands)
+frontend/
+
+# sqlx offline cache
+.sqlx/
