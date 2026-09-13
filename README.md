@@ -211,6 +211,25 @@ Two things are worth knowing before touching this:
   float parser is one ULP off for some inputs, and every sandboxed trade disagrees with
   its native twin in the last decimal. See the implementation notes in `docs/08`.
 
+## 8. Checking the LLM provider (Phase 5)
+
+```bash
+~/.workbuddy-ai/binaries/python/envs/default/Scripts/python.exe tools/bedrock_check.py
+```
+
+Verifies the three properties the agent design depends on, none of which is safe to
+assume: that `AWS_BEDROCK_MODEL_ID` exists in the region (Bedrock often needs a full id
+or an inference-profile ARN), that the model supports the Converse API's tool use, and
+that it can consume a `toolResult` and answer. Needs `boto3`; run it before changing the
+model id.
+
+Verified against `qwen.qwen3-coder-next` in `us-east-1` on 2026-09-13 — all three pass.
+
+One finding from that run shapes the agent: **the model reformats the numbers it is
+given** (`103250.5` came back as `$103,250.50`). The explainable-thesis object must
+therefore carry the structured values straight from the tool results — never recover
+numbers by parsing the model's prose, and never string-match prose to check a claim.
+
 ## Repo layout
 
 See `03-PROJECT-STRUCTURE.md` for the authoritative crate map and dependency rules.
