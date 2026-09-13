@@ -1,0 +1,19 @@
+[package]
+name = "market-data"
+description = "Exchange collectors, normalization, candle aggregation and backfill."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+analytics-core = { workspace = true }
+
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]

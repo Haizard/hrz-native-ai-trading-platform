@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Local agent working memory (project-local scratch, not source)
+.workbuddy-ai/
+
+# Environment / secrets -- NEVER commit real credentials
+.env
+.env.*
+!.env.example
+
+# sqlx offline query cache (generated; regenerate with `cargo sqlx prepare`)
+.sqlx/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local data dumps
+*.dump
+/backups/
+
+# Node (only if the React+TS fallback path from docs/14 is chosen)
+node_modules/
+frontend/app/dist/
+frontend/app/.turbo/

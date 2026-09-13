@@ -1,0 +1,16 @@
+[package]
+name = "strategy-runtime"
+description = "Executes Strategy DSL documents against live, historical or simulated data."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+analytics-core = { workspace = true }
+strategy-dsl = { workspace = true }
+
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

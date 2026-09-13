@@ -1,0 +1,16 @@
+# Normalize line endings -- the repo is LF; checkouts on Windows become CRLF
+# only if core.autocrlf is set, which this overrides.
+* text=auto eol=lf
+
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.sql   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.pdb binary

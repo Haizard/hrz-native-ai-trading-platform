@@ -1,0 +1,22 @@
+[package]
+name = "sandbox"
+description = "WASM sandbox for executing AI-generated and user-authored strategies."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+strategy-runtime = { workspace = true }
+strategy-dsl = { workspace = true }
+analytics-core = { workspace = true }
+
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# NOTE: `wasmtime` is intentionally NOT listed yet. It is a heavy dependency
+# and lands with Phase 4 (docs/08-SANDBOX-WASM.md). Adding it here would slow
+# every Phase 0-3 build for no benefit.
+
+[dev-dependencies]

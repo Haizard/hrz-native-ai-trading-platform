@@ -1,0 +1,20 @@
+[package]
+name = "db"
+description = "sqlx models, migrations and connection-pool wiring for PostgreSQL."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+analytics-core = { workspace = true }
+
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]

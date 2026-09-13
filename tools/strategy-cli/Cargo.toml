@@ -1,0 +1,16 @@
+[package]
+name = "strategy-cli"
+description = "CLI for authoring, validating and backtesting strategy documents."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+strategy-dsl = { workspace = true }
+backtester = { workspace = true }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing-subscriber = { workspace = true }

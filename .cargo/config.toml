@@ -1,0 +1,9 @@
+[alias]
+xtask = "run --package xtask --"
+
+[env]
+# Keep sqlx from requiring a live database at compile time. We use the runtime
+# query API (`sqlx::query`) rather than the `query!` macros precisely so CI
+# stays green without DATABASE_URL. Flip this to false and run
+# `cargo sqlx prepare` if/when we adopt compile-time checked queries.
+SQLX_OFFLINE = { value = "true", force = false }

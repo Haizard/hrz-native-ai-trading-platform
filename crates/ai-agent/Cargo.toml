@@ -1,0 +1,23 @@
+[package]
+name = "ai-agent"
+description = "LLM orchestration, tool registry, skills retrieval and explainable thesis generation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# IMPORTANT (docs/03-PROJECT-STRUCTURE.md):
+#   ai-agent depends on strategy-dsl and analytics-core ONLY.
+#   It must NEVER depend on sandbox or trading-engine -- it emits DSL
+#   documents, which those layers consume independently.
+[dependencies]
+analytics-core = { workspace = true }
+strategy-dsl = { workspace = true }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]

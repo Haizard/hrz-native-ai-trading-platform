@@ -1,0 +1,18 @@
+[package]
+name = "backtester"
+description = "Deterministic event-driven historical replay and performance reporting."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+analytics-core = { workspace = true }
+strategy-runtime = { workspace = true }
+strategy-dsl = { workspace = true }
+
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]

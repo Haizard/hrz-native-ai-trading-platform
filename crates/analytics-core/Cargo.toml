@@ -1,0 +1,18 @@
+[package]
+name = "analytics-core"
+description = "Pure, I/O-free order-flow & indicator math. Single source of truth for chart, backtester, bots and WASM frontend."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+
+# HARD CONSTRAINT (docs/05-ANALYTICS-ENGINE.md):
+#   no async, no network, no filesystem, no database -- ever.
+# This crate is the dependency leaf and MUST build for wasm32-unknown-unknown.
+# CI enforces: cargo build -p analytics-core --target wasm32-unknown-unknown
