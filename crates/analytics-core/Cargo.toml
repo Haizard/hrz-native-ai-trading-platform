@@ -11,6 +11,11 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+proptest   = { workspace = true }
+# Only used by tests, to prove `MarketState` round-trips to JSON without
+# emitting a `null` where a number belongs (a `NaN`/infinity would do exactly
+# that, and the AI agent's tools serialize this type).
+serde_json = { workspace = true }
 
 # HARD CONSTRAINT (docs/05-ANALYTICS-ENGINE.md):
 #   no async, no network, no filesystem, no database -- ever.
