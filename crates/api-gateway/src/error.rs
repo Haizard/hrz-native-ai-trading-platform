@@ -204,14 +204,23 @@ impl From<AgentError> for ApiError {
 
 impl From<db::DbError> for ApiError {
     fn from(err: db::DbError) -> Self {
-        // A database failure is ours, not the caller's. The message names the
-        // problem for the operator; the client gets a code it can show as
-        // "try again" without learning the schema.
-        Self::coded(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "DATABASE_ERROR",
-            err.to_string(),
-        )
+        match err {
+            // Not a database failure at all: the query worked and the answer
+            // was "there is no data in that window". That is the caller's
+            // problem to fix by choosing another window, and answering 500
+            // would tell them to retry something that will never work.
+            db::DbError::CandlesUnavailable(message) => {
+                Self::coded(StatusCode::UNPROCESSABLE_ENTITY, "NO_MARKET_DATA", message)
+            }
+            // Everything else is ours. The message names the problem for the
+            // operator; the client gets a code it can show as "try again"
+            // without learning the schema.
+            other => Self::coded(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DATABASE_ERROR",
+                other.to_string(),
+            ),
+        }
     }
 }
 

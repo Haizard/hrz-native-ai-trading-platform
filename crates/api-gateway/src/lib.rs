@@ -48,6 +48,7 @@ pub mod error;
 pub mod market_data;
 pub mod market_routes;
 pub mod skills_routes;
+pub mod strategy_routes;
 
 /// Shared application state handed to every route handler.
 #[derive(Clone)]
@@ -93,6 +94,23 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/login", post(auth_routes::login))
         .route("/auth/me", get(auth_routes::me))
         .route("/candles", get(market_routes::candles))
+        .route(
+            "/strategies",
+            get(strategy_routes::list).post(strategy_routes::create),
+        )
+        // Before `/strategies/{id}`, or `validate` would be read as an id.
+        .route("/strategies/validate", post(strategy_routes::validate))
+        .route("/strategies/{id}", get(strategy_routes::get))
+        .route(
+            "/strategies/{id}/validate",
+            post(strategy_routes::validate_stored),
+        )
+        .route("/strategies/{id}/backtest", post(strategy_routes::backtest))
+        .route(
+            "/strategies/{id}/backtests",
+            get(strategy_routes::list_backtests),
+        )
+        .route("/backtests/{id}", get(strategy_routes::get_backtest))
         .route("/agent/ask", post(agent_routes::ask))
         .route(
             "/agent/generate-strategy",
