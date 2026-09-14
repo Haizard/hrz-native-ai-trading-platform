@@ -62,6 +62,16 @@ pub struct FootprintQuery {
     pub ratio: Option<f64>,
 }
 
+/// Render unix nanoseconds as `YYYY-MM-DD HH:MM UTC`, for a message a human
+/// reads. A raw nanosecond count in an error is not an instruction.
+fn iso(nanos: i64) -> String {
+    let seconds = nanos.div_euclid(1_000_000_000);
+    chrono::DateTime::from_timestamp(seconds, 0).map_or_else(
+        || nanos.to_string(),
+        |time| time.format("%Y-%m-%d %H:%M UTC").to_string(),
+    )
+}
+
 /// One price level of one candle.
 #[derive(Debug, Serialize)]
 pub struct LevelResponse {
@@ -208,14 +218,36 @@ pub async fn footprint(
         // The honest answer, and a different one from "nothing happened". A
         // footprint built from candles would be a fabrication, which is why
         // `analytics-core` refuses to build one.
+        //
+        // The message names the window that *does* have trades, because a
+        // footprint is the one chart where the user has to choose the window
+        // deliberately -- trades are backfilled in capped chunks, so the newest
+        // candles usually have none.
+        let coverage = db::repositories::trades_range(database.pool(), &symbol)
+            .await
+            .ok()
+            .flatten()
+            .map(|(first, last)| {
+                format!(
+                    " Trades are stored for this symbol from {} to {} -- ask for a window inside \
+                     that.",
+                    iso(first),
+                    iso(last)
+                )
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    " No trades are stored for {symbol} at all yet; run `cargo run -p xtask -- \
+                     backfill-trades --symbol {symbol} --from <start> --to <end>` (capped at 24h)."
+                )
+            });
+
         return Err(ApiError::coded(
             axum::http::StatusCode::NOT_FOUND,
             "NO_TICK_DATA",
             format!(
-                "no trades are stored for {symbol} between {from_ns} and {to_ns}. A footprint \
-                 needs trade-level data, and it cannot be derived from candles -- run \
-                 `cargo run -p xtask -- backfill-trades --symbol {symbol} --from <start> --to \
-                 <end>` to collect some (the window is capped at 24h)."
+                "no trades are stored for {symbol} in this window. A footprint needs trade-level \
+                 data and it cannot be derived from candles.{coverage}"
             ),
         ));
     }

@@ -40,8 +40,10 @@
 
 #![deny(missing_docs)]
 
+pub mod footprint;
 pub mod scene;
 
+pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
 pub use scene::{
     build, heikin_ashi, Bar, Cell, Level, Mode, Plot, Point, ProfileBar, Request, Scene, Tick,
 };

@@ -181,6 +181,7 @@ function draw() {
   // The engine says what to draw, so this is a dispatch rather than a decision.
   // Adding a chart type means adding a case here and a variant in Rust -- not
   // teaching JavaScript what a Heikin-Ashi candle is.
+  if (scene.footprint) drawFootprintGrid(ctx, scene);
   if (scene.cells.length) drawCells(ctx, scene);
   if (scene.profile.length) drawProfile(ctx, scene);
   switch (scene.style) {
@@ -204,6 +205,98 @@ function draw() {
   drawLevels(ctx, scene);
   drawAxis(ctx, scene);
   if (thesis) drawThesis(ctx, scene, thesis);
+}
+
+/// The footprint ladder: bid x ask per level, per candle.
+///
+/// Every coordinate and every string comes from the engine. This function picks
+/// colours and calls fillText -- nothing else.
+function drawFootprintGrid(ctx, scene) {
+  const grid = scene.footprint;
+  const font = Math.max(6, Math.min(11, grid.font_px));
+  const showText = font >= 7;
+
+  // The value-area band, behind everything, so the eye finds it first.
+  for (const row of grid.rows) {
+    const inside = grid.columns.some((column) =>
+      column.cells.some((cell) => cell.y === row.y && cell.in_value_area)
+    );
+    if (!inside) continue;
+    ctx.fillStyle = "rgba(88, 166, 255, 0.05)";
+    ctx.fillRect(scene.plot.x, row.y, scene.plot.w, row.h);
+  }
+
+  ctx.font = `${font}px ui-monospace, monospace`;
+  ctx.textBaseline = "middle";
+
+  for (const column of grid.columns) {
+    const half = column.w / 2;
+
+    for (const cell of column.cells) {
+      // A diagonal imbalance is the signal a footprint exists to show, so it
+      // gets the only saturated fill on the chart. Buy-aggressed volume is the
+      // ask side winning; sell-aggressed is the bid side.
+      if (cell.side === "buy") {
+        ctx.fillStyle = "rgba(194, 100, 216, 0.28)";
+        ctx.fillRect(cell.x + 1, cell.y, cell.w - 2, cell.h);
+      } else if (cell.side === "sell") {
+        ctx.fillStyle = "rgba(74, 158, 218, 0.28)";
+        ctx.fillRect(cell.x + 1, cell.y, cell.w - 2, cell.h);
+      }
+
+      if (cell.is_poc) {
+        ctx.strokeStyle = "rgba(230, 237, 243, 0.55)";
+        ctx.strokeRect(cell.x + 1, cell.y + 0.5, cell.w - 2, Math.max(1, cell.h - 1));
+      }
+
+      if (!showText) continue;
+      const mid = cell.y + cell.h / 2;
+      ctx.fillStyle = cell.bid >= cell.ask ? "#e6edf3" : "#8b949e";
+      ctx.textAlign = "right";
+      ctx.fillText(cell.bid_text, cell.x + half - 3, mid);
+      ctx.fillStyle = cell.ask >= cell.bid ? "#e6edf3" : "#8b949e";
+      ctx.textAlign = "left";
+      ctx.fillText(cell.ask_text, cell.x + half + 3, mid);
+    }
+
+    // The candle summary: total volume over the delta, under the ladder.
+    const summary = column.summary;
+    ctx.fillStyle = "#1c2129";
+    ctx.fillRect(summary.x + 1, summary.y, summary.w - 2, summary.h);
+    if (showText) {
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#e6edf3";
+      ctx.fillText(summary.volume_text, summary.x + summary.w / 2, summary.y + font * 0.9);
+      ctx.fillStyle = summary.delta_positive ? COLORS.up : COLORS.down;
+      ctx.fillText(summary.delta_text, summary.x + summary.w / 2, summary.y + summary.h - font * 0.7);
+    }
+  }
+  ctx.textAlign = "left";
+}
+
+/// The window totals, as a strip under the chart.
+function renderFootprintStats(grid) {
+  const node = el("footprintStats");
+  if (!grid) {
+    node.hidden = true;
+    node.innerHTML = "";
+    return;
+  }
+  const s = grid.stats;
+  const field = (label, value, className) =>
+    `<span><b>${label}</b><span class="${className || ""}">${escapeHtml(value)}</span></span>`;
+  node.innerHTML = [
+    field("trades", s.trades.toLocaleString()),
+    field("columns", s.columns),
+    field("rows", s.rows),
+    field("bid", s.bid_text),
+    field("ask", s.ask_text),
+    field("total", s.total_text),
+    field("delta", s.delta_text, s.delta_positive ? "pass" : "fail"),
+    field("max Δ", s.max_delta_text, "pass"),
+    field("min Δ", s.min_delta_text, "fail"),
+  ].join("");
+  node.hidden = false;
 }
 
 /// OHLC bars: a vertical range with an open tick and a close tick.
@@ -406,13 +499,54 @@ async function loadCandles() {
 }
 
 let candles = [];
+// The trade-level ladders, when the mode asks for them and the window has
+// trades. Kept beside `candles` rather than inside them: a footprint needs both
+// the OHLC for the axis and the ladders for the grid, and they come from two
+// routes.
+let footprint = null;
 
 async function refresh() {
   const message = el("chartMsg");
+  footprint = null;
+
+  if (el("mode").value === "footprint") {
+    // A footprint is built from trades, not candles, so it comes from its own
+    // route -- and when that window has no trades the route says so, which is a
+    // different answer from "nothing happened".
+    try {
+      const data = await api(
+        `/footprint?symbol=${el("symbol").value}&timeframe=${el("timeframe").value}` +
+          `&limit=${Math.min(Number(el("limit").value), 40)}`
+      );
+      footprint = data;
+      // Build the candle series from the same response, so the axis and the
+      // ladders cannot disagree about which window is on screen.
+      candles = data.candles.map((c) => ({
+        symbol: data.symbol,
+        timeframe: data.timeframe,
+        open_time: c.open_time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        buy_volume: c.ask_volume,
+        sell_volume: c.bid_volume,
+      }));
+      render();
+      message.textContent = "";
+      return;
+    } catch (e) {
+      // Fall through to candles: the engine then draws the candle-derived
+      // profile and says why, which is better than an empty canvas.
+      message.textContent = e.message;
+    }
+  }
+
   try {
     candles = await loadCandles();
     render();
-    message.textContent = candles.length ? "" : "no candles in this window";
+    if (!message.textContent) message.textContent = candles.length ? "" : "no candles in this window";
   } catch (e) {
     message.textContent = e.message;
   }
@@ -427,8 +561,11 @@ function render() {
     height: wrap.clientHeight,
     mode: el("mode").value,
     lines: ["vwap", "poc", "vah", "val"],
+    footprint: footprint ? footprint.candles : [],
+    footprint_trades: footprint ? footprint.trades : 0,
   });
   el("chartNote").textContent = scene.note || "";
+  renderFootprintStats(scene.footprint);
   draw();
 }
 

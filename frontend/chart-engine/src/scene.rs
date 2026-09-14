@@ -53,6 +53,8 @@ const BODY_FRACTION: f64 = 0.7;
 const PROFILE_WIDTH: f64 = 74.0;
 /// Rows a volume profile aims for over the visible range.
 const PROFILE_ROWS: f64 = 40.0;
+/// Height of the per-candle summary strip below the footprint.
+const SUMMARY_HEIGHT: f64 = 22.0;
 
 /// What the chart is showing.
 ///
@@ -124,6 +126,16 @@ pub struct Request {
     /// Price bucket for the profile. Derived from the range when absent.
     #[serde(default)]
     pub bucket_size: Option<f64>,
+    /// Per-candle trade-level ladders, when the caller has them.
+    ///
+    /// Empty when the window has no trades -- and then [`Mode::Footprint`] falls
+    /// back to the candle-derived histogram with a note saying so, because a
+    /// fabricated ladder is worse than an honest profile.
+    #[serde(default)]
+    pub footprint: Vec<crate::footprint::Column>,
+    /// Trades behind `footprint`, for the footer.
+    #[serde(default)]
+    pub footprint_trades: usize,
     /// Overlay levels to draw.
     ///
     /// `serde(default = "default_lines")` rather than a bare `#[serde(default)]`:
@@ -148,6 +160,8 @@ impl Default for Request {
             height: 400.0,
             mode: Mode::Candles,
             bucket_size: None,
+            footprint: Vec::new(),
+            footprint_trades: 0,
             lines: default_lines(),
         }
     }
@@ -291,6 +305,11 @@ pub struct Scene {
     pub levels: Vec<Level>,
     /// Price-axis ticks.
     pub ticks: Vec<Tick>,
+    /// The trade-level footprint grid, when one could be built.
+    ///
+    /// `None` for every other mode, and for [`Mode::Footprint`] without trades
+    /// -- in which case [`Scene::cells`] carries the candle-derived fallback.
+    pub footprint: Option<crate::footprint::Grid>,
     /// A caveat about what is being shown, when there is one.
     pub note: Option<String>,
 }
@@ -357,6 +376,7 @@ pub fn build(request: &Request) -> Scene {
         cells: Vec::new(),
         levels: Vec::new(),
         ticks: Vec::new(),
+        footprint: None,
         note: None,
     };
 
@@ -424,15 +444,42 @@ pub fn build(request: &Request) -> Scene {
             );
         }
         Mode::Footprint => {
-            scene.cells = footprint_cells(&profile, &plot, scene.price_min, scene.price_max);
-            // Say which footprint this is. A true one needs trades, and there
-            // are none -- the agent's own tooling reports the same thing, and
-            // the chart should not imply otherwise.
-            scene.note = Some(
-                "volume by price, from candles: this deployment stores no tick data, so a \
-                 trade-level footprint cannot be built. Buy/sell here is the candle's own split."
-                    .into(),
-            );
+            if request.footprint.is_empty() {
+                // No trades for this window. The honest fallback: a
+                // candle-derived profile, labelled as one. A ladder built from
+                // candles would reproduce each candle's aggregate ratio at every
+                // level, so a 3:1 candle would look like a stack of imbalances
+                // it never had -- which is why `analytics-core` refuses to build
+                // one at all.
+                scene.cells = footprint_cells(&profile, &plot, scene.price_min, scene.price_max);
+                scene.note = Some(
+                    "volume by price, from candles: no trades are stored for this window, so a \
+                     trade-level footprint cannot be built. Buy/sell here is the candle's own \
+                     split. Run `xtask backfill-trades` for this window to get the real ladder."
+                        .into(),
+                );
+            } else {
+                // The value area comes from the window profile, which is
+                // `analytics-core`'s own calculation rather than a second one
+                // invented here.
+                let value_area = if profile.is_empty() {
+                    None
+                } else {
+                    Some((profile.val, profile.vah))
+                };
+                scene.footprint = crate::footprint::layout(
+                    &request.footprint,
+                    plot,
+                    value_area,
+                    SUMMARY_HEIGHT,
+                    request.footprint_trades,
+                );
+                scene.note =
+                    crate::footprint::truncation_note(&request.footprint).map(|note| note.message);
+                if scene.footprint.is_none() {
+                    scene.note = Some("the footprint for this window holds no price levels".into());
+                }
+            }
         }
         Mode::Candles | Mode::Bars | Mode::Line | Mode::Area => {}
     }
@@ -665,6 +712,7 @@ pub fn series_timeframe(candles: &[Candle]) -> Option<Timeframe> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::footprint;
 
     fn candle(index: i64, open: f64, close: f64) -> Candle {
         Candle {
@@ -1057,13 +1105,98 @@ mod tests {
     }
 
     #[test]
-    fn footprint_mode_produces_cells_and_says_which_footprint_it_is() {
+    fn footprint_mode_without_trades_falls_back_and_says_which_footprint_it_is() {
+        // No ladders in the request means no trades in the window, so the
+        // candle-derived profile is drawn -- labelled as exactly that. A ladder
+        // built from candles would reproduce each candle's aggregate ratio at
+        // every level, so a 3:1 candle would look like a stack of imbalances it
+        // never had.
         let scene = build(&mode_request(Mode::Footprint, 200));
-        assert!(!scene.cells.is_empty());
+        assert!(
+            !scene.cells.is_empty(),
+            "the fallback still draws something"
+        );
+        assert!(scene.footprint.is_none(), "but not a trade-level grid");
         assert!(scene.profile.is_empty(), "one view at a time");
         assert!(scene.candles.is_empty());
         let note = scene.note.expect("a caveat");
-        assert!(note.contains("no tick data"), "{note}");
+        assert!(note.contains("no trades are stored"), "{note}");
+        assert!(
+            note.contains("backfill-trades"),
+            "and how to fix it: {note}"
+        );
+    }
+
+    #[test]
+    fn footprint_mode_with_trades_builds_the_grid() {
+        // A ladder for two candles, one of them imbalanced.
+        let mut imbalanced = footprint::ColumnCell {
+            price: 100.0,
+            bid: 0.4,
+            ask: 2.4,
+            delta: 2.0,
+            imbalance: None,
+        };
+        imbalanced.imbalance = Some(footprint::Imbalance {
+            side: "buy".into(),
+            ratio: 6.0,
+            stacked: 2,
+        });
+
+        let column = |open_time: i64, cells: Vec<footprint::ColumnCell>| {
+            let bid: f64 = cells.iter().map(|c| c.bid).sum();
+            let ask: f64 = cells.iter().map(|c| c.ask).sum();
+            footprint::Column {
+                open_time,
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.5,
+                volume: bid + ask,
+                bid_volume: bid,
+                ask_volume: ask,
+                delta: ask - bid,
+                poc: Some(100.0),
+                cells,
+            }
+        };
+
+        let request = Request {
+            mode: Mode::Footprint,
+            footprint: vec![
+                column(0, vec![imbalanced]),
+                column(
+                    1,
+                    vec![footprint::ColumnCell {
+                        price: 100.0,
+                        bid: 1.0,
+                        ask: 1.0,
+                        delta: 0.0,
+                        imbalance: None,
+                    }],
+                ),
+            ],
+            footprint_trades: 1_234,
+            ..request(2)
+        };
+        let scene = build(&request);
+
+        let grid = scene.footprint.expect("a trade-level grid");
+        assert_eq!(grid.columns.len(), 2);
+        assert_eq!(grid.rows.len(), 1, "one shared price level");
+        assert_eq!(grid.stats.trades, 1_234);
+        // The fallback must not also run: two footprints at once would draw a
+        // profile over the ladder.
+        assert!(scene.cells.is_empty());
+        assert!(scene.profile.is_empty());
+
+        let first = &grid.columns[0].cells[0];
+        assert_eq!(first.side.as_deref(), Some("buy"));
+        assert_eq!(first.ratio, Some(6.0));
+        assert_eq!(first.bid_text, "0.40");
+        assert_eq!(first.ask_text, "2.40");
+        // And the level is shared, so both columns agree on its height.
+        assert_eq!(grid.columns[1].cells[0].y, first.y);
     }
 
     #[test]

@@ -111,8 +111,88 @@ const footprint = build({ candles: candles(120), width: 900, height: 420, mode: 
 check("footprint mode produces cells", footprint.cells.length > 0, `got ${footprint.cells.length}`);
 check(
   "and says which footprint it is",
-  typeof footprint.note === "string" && footprint.note.includes("no tick data"),
+  typeof footprint.note === "string" && footprint.note.includes("no trades are stored"),
   footprint.note
+);
+
+// --- the trade-level footprint ----------------------------------------------
+//
+// The ladder is the one mode whose data does not come from `/candles`, so it is
+// the one most likely to break at the ABI without anything else noticing.
+
+const ladders = [
+  {
+    open_time: 1_788_998_400_000_000_000,
+    open: 100, high: 102, low: 99, close: 101,
+    volume: 12, bid_volume: 5, ask_volume: 7, delta: 2, poc: 100,
+    cells: [
+      { price: 100, bid: 0.4, ask: 2.4, delta: 2.0, imbalance: { side: "buy", ratio: 6.0, stacked: 2 } },
+      { price: 101, bid: 1.5, ask: 1.6, delta: 0.1, imbalance: null },
+    ],
+  },
+  {
+    open_time: 1_788_998_700_000_000_000,
+    open: 101, high: 103, low: 100, close: 102,
+    volume: 9, bid_volume: 6, ask_volume: 3, delta: -3, poc: 101,
+    cells: [
+      { price: 101, bid: 2.9, ask: 0.4, delta: -2.5, imbalance: { side: "sell", ratio: 7.2, stacked: 1 } },
+    ],
+  },
+];
+
+const footprintScene = build({
+  candles: candles(4),
+  width: 900,
+  height: 420,
+  mode: "footprint",
+  footprint: ladders,
+  footprint_trades: 1_234,
+});
+
+const grid = footprintScene.footprint;
+check("a trade-level grid comes back", Boolean(grid), "footprint: null");
+if (grid) {
+  check("the axis is the union of both ladders", grid.rows.length === 2, `got ${grid.rows.length}`);
+  check("every column is drawn", grid.columns.length === 2, `got ${grid.columns.length}`);
+  // Price 101 is in both ladders; price 100 is only in the first. Comparing
+  // cells[0] of each would compare two different levels and prove nothing.
+  const at = (column, price) => column.cells.find((c) => c.price === price);
+  const sharedLeft = at(grid.columns[0], 101);
+  const sharedRight = at(grid.columns[1], 101);
+  check(
+    "a shared level sits at one height in every column",
+    Boolean(sharedLeft && sharedRight) && sharedLeft.y === sharedRight.y,
+    `left=${sharedLeft && sharedLeft.y} right=${sharedRight && sharedRight.y}`
+  );
+  check(
+    "a level only one column has still lands on the shared axis",
+    Boolean(at(grid.columns[0], 100)) && !at(grid.columns[1], 100),
+    "a sparse ladder must not invent rows"
+  );
+  check(
+    "the imbalance is carried for colouring",
+    grid.columns[0].cells[0].side === "buy" && grid.columns[1].cells[0].side === "sell"
+  );
+  check(
+    "the text is formatted by the engine",
+    grid.columns[0].cells[0].bid_text === "0.40" && grid.columns[0].cells[0].ask_text === "2.40",
+    `${grid.columns[0].cells[0].bid_text} x ${grid.columns[0].cells[0].ask_text}`
+  );
+  check("the stats carry the trade count", grid.stats.trades === 1_234);
+  check("the summary row sits below the plot", grid.columns[0].summary.y > footprintScene.plot.y + footprintScene.plot.h);
+  check(
+    "the fallback profile is not also drawn",
+    footprintScene.cells.length === 0 && footprintScene.profile.length === 0,
+    "two footprints at once would overlap"
+  );
+}
+
+// Without ladders the same mode must fall back, and say so.
+const fallback = build({ candles: candles(60), width: 900, height: 420, mode: "footprint" });
+check(
+  "without trades it falls back and explains",
+  fallback.footprint === null && typeof fallback.note === "string" && fallback.note.includes("no trades"),
+  fallback.note
 );
 
 // --- the failure path -------------------------------------------------------

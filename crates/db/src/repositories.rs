@@ -215,6 +215,28 @@ pub async fn candles_range(
     Ok(lo.and_then(|l| hi.map(|h| (dt_to_ns(l), dt_to_ns(h)))))
 }
 
+/// The span of stored trades for a symbol, if there are any.
+///
+/// Exists for the footprint's 404. "No trades in this window" is a dead end;
+/// "no trades in this window, and you have 2026-09-10 00:00 to 06:00" is an
+/// instruction -- and a footprint is the one chart where the user has to choose
+/// the window deliberately, because trades are backfilled in capped chunks.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn trades_range(pool: &PgPool, symbol: &str) -> Result<Option<(i64, i64)>, DbError> {
+    let row = sqlx::query("SELECT MIN(ts) AS lo, MAX(ts) AS hi FROM trades WHERE symbol = $1")
+        .bind(symbol)
+        .fetch_optional(pool)
+        .await?;
+
+    let Some(row) = row else { return Ok(None) };
+    let lo: Option<DateTime<Utc>> = row.try_get("lo")?;
+    let hi: Option<DateTime<Utc>> = row.try_get("hi")?;
+
+    Ok(lo.and_then(|l| hi.map(|h| (dt_to_ns(l), dt_to_ns(h)))))
+}
+
 fn row_to_candle(row: &sqlx::postgres::PgRow) -> Result<Candle, DbError> {
     let timeframe: String = row.try_get("timeframe")?;
     let timeframe = Timeframe::from_str(&timeframe).map_err(|_| {

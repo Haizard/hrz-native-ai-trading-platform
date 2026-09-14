@@ -91,6 +91,13 @@
   .muted { color: var(--muted); }
   .empty { color: var(--muted); font-style: italic; }
   #chartNote { padding: 6px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; background: var(--panel); }
+  #footprintStats {
+    display: flex; flex-wrap: wrap; gap: 4px 18px;
+    padding: 6px 12px; border-top: 1px solid var(--line);
+    background: var(--panel); font-family: var(--mono); font-size: 11px;
+  }
+  #footprintStats[hidden] { display: none; }
+  #footprintStats b { color: var(--muted); font-weight: 400; margin-right: 4px; }
 </style>
 </head>
 <body>
@@ -196,6 +203,7 @@
   </aside>
 </main>
 
+<div id="footprintStats" hidden></div>
 <div id="chartNote"></div>
 
 <script src="app.js"></script>
