@@ -1,0 +1,23 @@
+[package]
+name = "agent-cli"
+description = "CLI for asking the agent real questions against real data."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ai-agent = { workspace = true }
+analytics-core = { workspace = true }
+strategy-dsl = { workspace = true, features = ["yaml"] }
+db = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+dotenvy = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

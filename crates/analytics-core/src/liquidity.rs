@@ -37,14 +37,23 @@ pub enum LiquidityKind {
 }
 
 impl LiquidityKind {
-    /// Whether this level sits above the market (a supply of sell-side
-    /// liquidity, i.e. buy stops and short stops).
+    /// Whether this level sits above the market.
+    ///
+    /// A level above the market is **buy-side** liquidity: it is where short
+    /// sellers' stops and breakout buys rest, so sweeping it produces buying.
+    /// (An earlier version of this comment called it sell-side, which is
+    /// backwards -- the side names the flow the sweep *releases*, and a sweep
+    /// of highs releases buy orders.)
     #[must_use]
     pub const fn is_above(self) -> bool {
         matches!(self, Self::EqualHighs | Self::SwingHigh)
     }
 
     /// Whether this level sits below the market.
+    ///
+    /// A level below the market is **sell-side** liquidity: longs' stops and
+    /// breakdown sells rest there, so sweeping it produces selling. This is
+    /// the side a long setup wants swept first.
     #[must_use]
     pub const fn is_below(self) -> bool {
         matches!(self, Self::EqualLows | Self::SwingLow)

@@ -12,23 +12,46 @@
 //!
 //! ## Phase 5 deliverables (`docs/09-AI-AGENT-SYSTEM.md`)
 //!
-//! * `tools.rs` -- registry over analytics-core/backtester with strict JSON
+//! * [`tools`] -- registry over analytics-core/backtester with strict JSON
 //!   schemas (`analyze_timeframe`, `get_volume_profile`, `detect_absorption`,
 //!   `backtest_similar_setups`, ...).
-//! * `llm_client.rs` -- provider-agnostic `LlmClient` trait.
-//! * `skills.rs` -- contextual skill retrieval (never wholesale prompt stuffing).
-//! * `multi_timeframe.rs` -- the 1D -> 4H -> 1H -> 5M ladder.
-//! * `thesis.rs` -- the explainable `TradeThesis`.
+//! * [`llm_client`] -- provider-agnostic `LlmClient` trait, plus the Bedrock
+//!   Converse provider in [`providers`].
+//! * [`skills`] -- contextual skill retrieval (never wholesale prompt stuffing).
+//! * [`multi_timeframe`] -- the 1D -> 4H -> 1H -> 5M ladder.
+//! * [`thesis`] -- the explainable `TradeThesis`.
+//! * [`agent`] -- the orchestration loop, and NL -> validated Strategy DSL.
 //!
 //! In the thesis, the prose `narrative` is generated **from** the structured
 //! numeric fields, never the reverse. The numbers are ground truth.
-//!
-//! ## Status
-//!
-//! Phase 0 skeleton.
 
 #![deny(missing_docs)]
 
+pub mod agent;
 pub mod error;
+pub mod llm_client;
+pub mod multi_timeframe;
+pub mod providers;
+pub mod sigv4;
+pub mod skills;
+pub mod thesis;
+pub mod tools;
 
+pub use agent::draft_strategy_spec;
+pub use agent::{
+    Agent, AgentAnswer, AgentConfig, AskRequest, GeneratedStrategy, StrategyRequest,
+    DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
+};
 pub use error::AgentError;
+pub use llm_client::{
+    ContentBlock, LlmClient, LlmRequest, LlmResponse, Message, Role, StopReason, ToolCall,
+    ToolChoice, ToolResult, ToolSpec, Usage,
+};
+pub use multi_timeframe::{LadderView, TimeframeLadder};
+pub use providers::bedrock::{BedrockClient, BedrockConfig};
+pub use skills::{Skill, SkillLibrary, SkillQuery};
+pub use strategy_dsl::StrategyDocument;
+pub use thesis::{Bias, CheckStatus, ConditionCheck, PriceRange, ToolTrace};
+
+pub use thesis::TradeThesis;
+pub use tools::{BacktestRunner, BacktestSummary, MarketDataSource, ToolContext, ToolRegistry};

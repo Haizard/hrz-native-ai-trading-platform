@@ -1,0 +1,33 @@
+name: "Absorption at a Level"
+version: "1.0"
+category: "footprint"
+knowledge: >
+  Absorption is heavy volume at a price level that fails to move price
+  further. In footprint terms it shows up as large traded volume with a
+  narrowing range and improving delta -- one side is being filled into without
+  the level giving way.
+
+  The counter-intuitive part, and the part that is easy to get wrong: bullish
+  absorption usually prints *negative* delta. Sellers are hitting the bid in
+  size and the price is not going down, because those sells are being absorbed
+  by a buyer. So the test for absorption is an improvement in delta versus the
+  previous bar, not a positive delta.
+
+  Absorption is only meaningful where there is a reason for the level to hold
+  -- a swept low, a value-area edge, a prior high-volume node. Absorption in
+  the middle of a range is just two-sided trade.
+rules:
+  - "There must be a level: a swept liquidity level, a value area boundary (VAH/VAL), or a high-volume node."
+  - "`detect_absorption` must report absorption at that level."
+  - "Delta must improve relative to the previous candle. For a long setup the delta is usually still negative; that is expected, not a failure."
+  - "Price must hold the level: the candle must not close through it."
+conditions:
+  timeframes: ["1h", "5m"]
+  risk:
+    max_risk_pct: 1.0
+examples:
+  - description: "Typical 5m print: 3x median volume at VAL, range narrows, delta improves from -800 to -200, next bar breaks up."
+invalidation:
+  - "A close through the level with expanding range: the level gave way, it was not absorption."
+preferred_markets: ["BTCUSDT", "ETHUSDT"]
+preferred_timeframes: ["5m"]

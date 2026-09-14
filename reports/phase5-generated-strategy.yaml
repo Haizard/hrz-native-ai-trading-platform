@@ -1,0 +1,25 @@
+name: "Sweep Reversal Long"
+version: "1.0"
+kind: strategy
+market: "BTCUSDT"
+timeframes:
+  trend: "1h"
+  entry: "5m"
+entry:
+  direction: long
+  all_of:
+    - timeframe: trend
+      condition: "market_structure.trend == \"bullish\""
+    - timeframe: entry
+      condition: "liquidity.swept_level == market_structure.swing_low"
+    - timeframe: entry
+      condition: "close > market_structure.swing_low"
+risk:
+  max_risk_pct: 1.0
+  stop: { kind: below_recent_low, bars: 3 }
+  take_profit:
+    type: "risk_multiple"
+    value: 2.0
+invalidation:
+  - timeframe: entry
+    condition: "close_below(market_structure.swing_low)"

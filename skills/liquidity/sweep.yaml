@@ -1,0 +1,39 @@
+name: "Liquidity Sweep + Absorption"
+version: "2.1"
+category: "liquidity"
+knowledge: >
+  A liquidity sweep occurs when price briefly breaks a prior swing high/low to
+  trigger resting stop orders, then reverses. Combined with absorption (heavy
+  opposing volume failing to continue price), this often marks a
+  high-probability reversal point.
+
+  The sweep is not the signal -- it is the fuel. Stops become market orders,
+  and those orders are the liquidity a large participant needs to fill against.
+  What turns the sweep into a setup is the reclaim: price getting back on the
+  other side of the swept level, which means the sweep's orders were absorbed
+  rather than the start of a continuation.
+
+  Two failure modes dominate. The first is trading the sweep itself: a sweep
+  bar very often closes back beyond the level, and then there is no valid stop
+  on the near side of the entry and no reclaim has happened. The second is
+  treating a sweep as a reversal when the higher timeframe is trending straight
+  through the level -- that is a continuation, and the reclaim is a pullback
+  being sold, not a reversal being bought.
+rules:
+  - "Higher timeframe (4h) structure must be bullish for long setups, bearish for short setups."
+  - "Sell-side liquidity must be swept for a long (buy-side for a short): check `detect_liquidity` reports `swept` true."
+  - "Price must reclaim the swept level: for a long, `detect_liquidity.reclaim.long_reclaim.reclaimed` must be true and the stop belongs beyond its `swept_level` (mirror for a short with `short_reclaim`). A sweep with no reclaim is not a setup. Do not compare the price against a level yourself -- cite the verdict."
+  - "Absorption at the sweep level should be present when tick data is available. When it is not available, mark the check UNKNOWN -- never failed, and never assumed."
+  - "The stop sits beyond the swept level, not beyond an arbitrary swing: `below_sweep_low` for a long."
+conditions:
+  timeframes: ["4h", "1h", "5m"]
+  risk:
+    max_risk_pct: 1.0
+examples:
+  - description: "BTCUSDT 2024-03-12: swept 71,200 low, absorption, reclaimed, +2.8R"
+  - description: "BTCUSDT 5m 2026-01 to 2026-06 backtest (strategies/liquidity-sweep-btcusdt-5m.yaml): 219 trades, 26.9% win rate, PF 0.73 -- the reclaim condition is what separates the two; the raw sweep alone does not pay."
+invalidation:
+  - "5m close below the swept low with no reclaim within N candles."
+  - "Higher timeframe structure flips against the direction of the trade."
+preferred_markets: ["BTCUSDT", "ETHUSDT"]
+preferred_timeframes: ["4h", "1h", "5m"]

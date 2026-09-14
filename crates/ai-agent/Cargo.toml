@@ -10,14 +10,32 @@ license.workspace = true
 #   ai-agent depends on strategy-dsl and analytics-core ONLY.
 #   It must NEVER depend on sandbox or trading-engine -- it emits DSL
 #   documents, which those layers consume independently.
+#
+# The consequence worth spelling out: this crate can *validate* a strategy
+# document but it cannot *run* one, and it cannot read the database. Both of
+# those are reached through traits declared here (`MarketDataSource`,
+# `BacktestRunner`) and implemented one layer up, in `api-gateway` /
+# `agent-cli`. That is what keeps the agent's own dependency graph free of
+# execution and storage concerns -- and what makes it testable against a
+# fixture data source instead of a live database.
 [dependencies]
 analytics-core = { workspace = true }
-strategy-dsl = { workspace = true }
+# YAML is needed here (skills and generated strategies are authored in YAML).
+# This is safe: `sandbox-guest` does not depend on `ai-agent`, so nothing
+# links a YAML parser into the sandbox. See the workspace-level note.
+strategy-dsl = { workspace = true, features = ["yaml"] }
 
 async-trait = { workspace = true }
+chrono = { workspace = true }
+hex = "0.4"
+hmac = "0.12"
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = "0.10"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true }

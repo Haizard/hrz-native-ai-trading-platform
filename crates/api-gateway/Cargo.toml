@@ -9,6 +9,9 @@ license.workspace = true
 [dependencies]
 db = { workspace = true }
 analytics-core = { workspace = true }
+ai-agent = { workspace = true }
+strategy-dsl = { workspace = true, features = ["yaml"] }
+async-trait = { workspace = true }
 
 anyhow = { workspace = true }
 axum = { workspace = true }

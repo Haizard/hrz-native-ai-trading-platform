@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Order-flow terminal — MVP</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f7f8fa;
+    --border: #dfe3e8;
+    --text: #1b1f24;
+    --muted: #6b7280;
+    --up: #16a34a;
+    --down: #dc2626;
+    --accent: #2563eb;
+    --warn: #b45309;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text);
+    background: var(--bg);
+  }
+  header {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 600; }
+  select, input, button {
+    font: inherit;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--text);
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  #ask { flex: 1 1 320px; min-width: 240px; }
+  main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
+  #chartWrap { flex: 1 1 auto; min-width: 0; }
+  canvas { width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 8px; display: block; }
+  aside { flex: 0 0 380px; }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    background: var(--panel);
+  }
+  .card h2 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; }
+  .row span:first-child { color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; color: #fff; background: var(--muted);
+  }
+  .badge.long { background: var(--up); }
+  .badge.short { background: var(--down); }
+  .badge.none { background: var(--muted); }
+  .mark { font-weight: 700; font-size: 11px; padding: 0 5px; border-radius: 4px; }
+  .mark.pass { color: #065f46; background: #d1fae5; }
+  .mark.fail { color: #991b1b; background: #fee2e2; }
+  .mark.unknown { color: #92400e; background: #fef3c7; }
+  .check { margin-bottom: 6px; }
+  .check .detail { color: var(--muted); font-size: 13px; }
+  .check .src { color: var(--muted); font-size: 12px; }
+  .narrative { white-space: pre-wrap; }
+  .error { color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; padding: 8px 10px; border-radius: 6px; }
+  .empty { color: var(--muted); font-style: italic; }
+  pre.raw {
+    max-height: 260px; overflow: auto; background: #fff; border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px; font-size: 12px;
+  }
+  footer { padding: 0 16px 24px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Order-flow terminal</h1>
+  <select id="symbol">
+    <option>BTCUSDT</option>
+    <option>ETHUSDT</option>
+  </select>
+  <select id="timeframe">
+    <option value="1m">1m</option>
+    <option value="5m" selected>5m</option>
+    <option value="15m">15m</option>
+    <option value="1h">1h</option>
+    <option value="4h">4h</option>
+    <option value="1d">1d</option>
+  </select>
+  <select id="limit">
+    <option value="200">200</option>
+    <option value="500" selected>500</option>
+    <option value="1000">1000</option>
+  </select>
+  <button id="load">Load</button>
+  <input id="ask" placeholder="find me a long setup using my liquidity-sweep skill" />
+  <button id="go" class="primary">Ask</button>
+</header>
+
+<main>
+  <div id="chartWrap">
+    <canvas id="chart"></canvas>
+  </div>
+  <aside>
+    <div class="card">
+      <h2>Thesis</h2>
+      <div id="thesis"><p class="empty">Ask a question to see a thesis.</p></div>
+    </div>
+    <div class="card">
+      <h2>Ladder</h2>
+      <div id="ladder"><p class="empty">—</p></div>
+    </div>
+    <div class="card">
+      <h2>Raw response</h2>
+      <pre class="raw" id="raw">—</pre>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  Prices, indicators and the thesis are computed in Rust by <span class="mono">analytics-core</span>
+  and the agent. This page draws what the API returns; it calculates nothing.
+</footer>
+
+<script>
+// ---------------------------------------------------------------------------
+// No trading math lives here. This file draws candles fetched from /candles and
+// overlays levels returned by /agent/ask. Every number it displays came from the
+// API (docs/14: "there must never be a second implementation of the trading math
+// in TypeScript").
+// ---------------------------------------------------------------------------
+
+const state = { candles: [], thesis: null, hover: null };
+
+const el = (id) => document.getElementById(id);
+const canvas = el("chart");
+const ctx = canvas.getContext("2d");
+
+const fmtPrice = (v) =>
+  v == null ? "—" : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtTime = (ms) => new Date(ms).toLocaleString();
+
+function api(path, options) {
+  return fetch(path, options).then(async (r) => {
+    const text = await r.text();
+    let body;
+    try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
+    if (!r.ok) throw new Error(body?.error || `${r.status} ${r.statusText}`);
+    return body;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Candles
+// ---------------------------------------------------------------------------
+
+async function loadCandles() {
+  const symbol = el("symbol").value;
+  const timeframe = el("timeframe").value;
+  const limit = el("limit").value;
+  try {
+    const res = await api(`/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}`);
+    state.candles = res.candles || [];
+    draw();
+  } catch (e) {
+    state.candles = [];
+    draw();
+    showError(`Could not load candles: ${e.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Chart
+// ---------------------------------------------------------------------------
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function draw() {
+  resize();
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, w, h);
+
+  const candles = state.candles;
+  if (!candles.length) {
+    ctx.fillStyle = "#6b7280";
+    ctx.font = "14px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("No candles loaded.", w / 2, h / 2);
+    return;
+  }
+
+  const padL = 8, padR = 64, padT = 10, padB = 22;
+  const volH = Math.max(40, Math.floor(h * 0.18));
+  const priceH = h - padT - padB - volH - 8;
+  const plotW = w - padL - padR;
+
+  let lo = Infinity, hi = -Infinity, maxVol = 0;
+  for (const c of candles) {
+    if (c.low < lo) lo = c.low;
+    if (c.high > hi) hi = c.high;
+    if (c.volume > maxVol) maxVol = c.volume;
+  }
+  // Keep the thesis levels in view even when they sit outside the visible
+  // range -- a stop below the window low is still the most important line.
+  const t = state.thesis;
+  for (const v of [t?.entry_price, t?.stop_price, t?.target_price]) {
+    if (typeof v === "number" && isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  }
+  const span = hi - lo || Math.max(1, hi * 0.001);
+  lo -= span * 0.05; hi += span * 0.05;
+
+  const y = (p) => padT + (hi - p) / (hi - lo) * priceH;
+  const x = (i) => padL + (i + 0.5) * (plotW / candles.length);
+  const bw = Math.max(1, Math.min(14, (plotW / candles.length) * 0.7));
+
+  // grid + price axis
+  ctx.strokeStyle = "#eef0f3";
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.textAlign = "left";
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 5; g++) {
+    const p = lo + (hi - lo) * (g / 5);
+    const yy = Math.round(y(p)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(padL + plotW, yy); ctx.stroke();
+    ctx.fillText(fmtPrice(p), padL + plotW + 6, yy + 3);
+  }
+
+  // candles
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    const up = c.close >= c.open;
+    ctx.strokeStyle = up ? "#16a34a" : "#dc2626";
+    ctx.fillStyle = up ? "#16a34a" : "#dc2626";
+    const cx = x(i);
+    ctx.beginPath();
+    ctx.moveTo(Math.round(cx) + 0.5, y(c.high));
+    ctx.lineTo(Math.round(cx) + 0.5, y(c.low));
+    ctx.stroke();
+    const yo = y(c.open), yc = y(c.close);
+    const top = Math.min(yo, yc);
+    ctx.fillRect(cx - bw / 2, top, bw, Math.max(1, Math.abs(yc - yo)));
+  }
+
+  // volume
+  const volTop = padT + priceH + 8;
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    const up = c.close >= c.open;
+    const vh = maxVol > 0 ? (c.volume / maxVol) * volH : 0;
+    ctx.fillStyle = up ? "rgba(22,163,74,.35)" : "rgba(220,38,38,.35)";
+    ctx.fillRect(x(i) - bw / 2, volTop + (volH - vh), bw, vh);
+  }
+  ctx.fillStyle = "#6b7280";
+  ctx.textAlign = "left";
+  ctx.fillText("volume", padL + 4, volTop + 12);
+
+  // thesis overlays
+  if (t) {
+    const lines = [
+      ["entry", t.entry_price, "#2563eb"],
+      ["stop", t.stop_price, "#dc2626"],
+      ["target", t.target_price, "#16a34a"],
+    ];
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = 1.5;
+    ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+    for (const [label, price, colour] of lines) {
+      if (typeof price !== "number" || !isFinite(price)) continue;
+      const yy = Math.round(y(price)) + 0.5;
+      ctx.strokeStyle = colour;
+      ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(padL + plotW, yy); ctx.stroke();
+      ctx.fillStyle = colour;
+      ctx.textAlign = "left";
+      ctx.fillText(`${label} ${fmtPrice(price)}`, padL + 4, yy - 4);
+    }
+    ctx.setLineDash([]);
+  }
+
+  // time axis
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "11px ui-monospace, monospace";
+  for (let g = 0; g <= 4; g++) {
+    const i = Math.min(candles.length - 1, Math.round((candles.length - 1) * (g / 4)));
+    const ms = candles[i].open_time / 1e6;
+    ctx.textAlign = g === 0 ? "left" : g === 4 ? "right" : "center";
+    ctx.fillText(new Date(ms).toLocaleDateString(), x(i), h - 6);
+  }
+
+  // crosshair
+  if (state.hover) {
+    const { mx, my } = state.hover;
+    ctx.strokeStyle = "rgba(37,99,235,.5)";
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(mx, padT); ctx.lineTo(mx, padT + priceH);
+    ctx.moveTo(padL, my); ctx.lineTo(padL + plotW, my);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (mx > padL && mx < padL + plotW && my > padT && my < padT + priceH) {
+      const price = hi - ((my - padT) / priceH) * (hi - lo);
+      const label = fmtPrice(price);
+      ctx.fillStyle = "#1b1f24";
+      ctx.fillRect(padL + plotW + 2, my - 9, padR - 6, 18);
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "left";
+      ctx.fillText(label, padL + plotW + 6, my + 4);
+    }
+  }
+}
+
+canvas.addEventListener("mousemove", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  state.hover = { mx: e.clientX - rect.left, my: e.clientY - rect.top };
+  draw();
+});
+canvas.addEventListener("mouseleave", () => { state.hover = null; draw(); });
+
+// ---------------------------------------------------------------------------
+// Thesis
+// ---------------------------------------------------------------------------
+
+const markClass = (s) => (s || "unknown").toLowerCase();
+
+function checkList(title, checks) {
+  if (!checks || !checks.length) return "";
+  return `<div class="card"><h2>${title}</h2>` + checks.map((c) => `
+    <div class="check">
+      <span class="mark ${markClass(c.status)}">${c.status}</span>
+      <strong>${escapeHtml(c.label)}</strong>
+      <div class="detail">${escapeHtml(c.detail || "")}</div>
+      ${c.observed != null ? `<div class="src">observed ${c.observed} · via ${escapeHtml(c.source || "unattributed")}</div>` : ""}
+    </div>`).join("") + `</div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderThesis(res) {
+  const t = res.thesis;
+  state.thesis = t;
+  const dir = (t.direction || "none").toLowerCase();
+  const box = el("thesis");
+
+  box.innerHTML = `
+    <div class="row"><span>${escapeHtml(t.symbol)} · ${escapeHtml(t.timeframe)}</span>
+      <span class="badge ${dir}">${(t.direction || "none").toUpperCase()}</span></div>
+    <div class="row"><span>confidence</span><span class="mono">${Number(t.confidence_pct).toFixed(0)}%</span></div>
+    ${t.skill_used ? `<div class="row"><span>skill</span><span class="mono">${escapeHtml(t.skill_used)}</span></div>` : ""}
+    <hr style="border:none;border-top:1px solid var(--border);margin:8px 0" />
+    <div class="row"><span>entry</span><span class="mono">${fmtPrice(t.entry_price)}</span></div>
+    <div class="row"><span>stop</span><span class="mono">${fmtPrice(t.stop_price)}</span></div>
+    <div class="row"><span>target</span><span class="mono">${fmtPrice(t.target_price)}</span></div>
+    <div class="row"><span>R:R</span><span class="mono">${Number(t.risk_reward).toFixed(2)}</span></div>
+    <div class="row"><span>invalidation</span><span>${escapeHtml(t.invalidation || "—")}</span></div>
+    ${t.historical_similar_setups != null ? `<div class="row"><span>history</span><span class="mono">${t.historical_similar_setups} setups${t.historical_win_rate != null ? ` · ${(t.historical_win_rate * 100).toFixed(1)}% win` : ""}</span></div>` : ""}
+  `;
+
+  const checks = checkList("Higher timeframe", t.higher_timeframe_checks)
+    + checkList("Order flow", t.order_flow_checks);
+  box.insertAdjacentHTML("beforeend", checks);
+  box.insertAdjacentHTML("beforeend",
+    `<div class="card"><h2>Narrative</h2><div class="narrative">${escapeHtml(t.narrative || "")}</div></div>`);
+
+  el("ladder").innerHTML = (res.ladder || []).map((f) => `
+    <div class="row"><span>${escapeHtml(f.timeframe)}</span>
+      <span class="mono">${fmtPrice(f.price)} · ${escapeHtml(f.trend)}</span></div>`).join("")
+    || `<p class="empty">—</p>`;
+
+  el("raw").textContent = JSON.stringify(res, null, 2);
+  draw();
+}
+
+function showError(message) {
+  el("thesis").innerHTML = `<div class="error">${escapeHtml(message)}</div>`;
+}
+
+async function ask() {
+  const question = el("ask").value.trim();
+  if (!question) return;
+  const btn = el("go");
+  btn.disabled = true;
+  btn.textContent = "Thinking…";
+  el("thesis").innerHTML = `<p class="empty">Asking the agent…</p>`;
+  try {
+    const res = await api("/agent/ask", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbol: el("symbol").value,
+        question,
+        timeframes: [el("timeframe").value],
+      }),
+    });
+    renderThesis(res);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Ask";
+  }
+}
+
+el("load").addEventListener("click", loadCandles);
+el("go").addEventListener("click", ask);
+el("ask").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
+[el("symbol"), el("timeframe"), el("limit")].forEach((n) =>
+  n.addEventListener("change", loadCandles));
+window.addEventListener("resize", draw);
+
+loadCandles();
+</script>
+</body>
+</html>
