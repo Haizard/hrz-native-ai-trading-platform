@@ -40,17 +40,18 @@
 
 use std::collections::BTreeMap;
 
-use analytics_core::state::{build_market_state, MarketState, MarketStateConfig};
+use analytics_core::state::MarketStateConfig;
 use analytics_core::types::{Candle, Timeframe};
 use strategy_dsl::StrategyDocument;
-use strategy_runtime::context::{MarketContext, TimeframeView};
 use strategy_runtime::engine::Strategy;
 use strategy_runtime::signal::{EnterSignal, ExitTrigger, Signal};
-use strategy_runtime::{RuntimeConfig, StrategyEngine};
+use strategy_runtime::{
+    RollingConfig, RollingLadder, RollingTimeframe, RuntimeConfig, StrategyEngine,
+};
 
 use crate::error::BacktestError;
 use crate::report::{build_report, BacktestReport, FillAssumptions, TradeRecord};
-use crate::simulator::{Simulator, SimulatorConfig};
+use strategy_runtime::{Simulator, SimulatorConfig};
 
 /// Everything the replay needs to know that the document does not say.
 #[derive(Debug, Clone, PartialEq)]
@@ -145,101 +146,36 @@ pub struct ReplayOutput {
     pub refusals: Vec<String>,
 }
 
-/// Per-timeframe rolling state.
+/// A cursor into one input series.
+///
+/// The windowing itself lives in
+/// [`RollingTimeframe`](strategy_runtime::RollingTimeframe), shared with the
+/// live paper trader, so the two cannot drift. Only "how far have we read"
+/// is a replay concern.
 #[derive(Debug)]
-struct TimeframeCache {
-    timeframe: Timeframe,
-    /// Retained candles, oldest first.
-    history: Vec<Candle>,
+struct SeriesCursor {
     /// How many candles have been consumed from the input series.
-    cursor: usize,
-    /// Newest closed candle.
-    candle: Option<Candle>,
-    /// State for the window ending at `candle`.
-    state: Option<MarketState>,
-    /// The state one candle earlier.
-    previous: Option<MarketState>,
+    consumed: usize,
 }
 
-impl TimeframeCache {
-    fn new(timeframe: Timeframe) -> Self {
-        Self {
-            timeframe,
-            history: Vec::new(),
-            cursor: 0,
-            candle: None,
-            state: None,
-            previous: None,
-        }
-    }
-
+impl SeriesCursor {
     /// Consume every candle that has closed at or before `now`.
     ///
     /// This is the visibility rule. Nothing newer than `now` is ever pulled in,
     /// which is what makes look-ahead impossible rather than merely discouraged.
-    fn advance(&mut self, series: &[Candle], now: i64, config: &ReplayConfig) {
-        let width = self.timeframe.nanos();
-        while self.cursor < series.len() && series[self.cursor].open_time + width <= now {
-            let candle = series[self.cursor].clone();
-            self.cursor += 1;
-
-            // The state we were holding described the previous candle.
-            self.previous = self.state.take();
-            self.history.push(candle.clone());
-            self.candle = Some(candle);
-
-            // Trim lazily: draining on every bar would move the whole buffer
-            // each time. `max_history` is therefore a floor on the retained
-            // window, not an exact cap.
-            let max_history = config.runtime.max_history.max(1);
-            if self.history.len() > max_history * 2 {
-                let excess = self.history.len() - max_history;
-                self.history.drain(..excess);
-            }
-
-            self.state = self.build_state(config);
+    fn advance(
+        &mut self,
+        frame: &mut RollingTimeframe,
+        series: &[Candle],
+        now: i64,
+        config: &RollingConfig,
+    ) {
+        let width = frame.timeframe().nanos();
+        while self.consumed < series.len() && series[self.consumed].open_time + width <= now {
+            let candle = series[self.consumed].clone();
+            self.consumed += 1;
+            frame.push(candle, config);
         }
-    }
-
-    /// Build the state over the bounded window.
-    fn build_state(&self, config: &ReplayConfig) -> Option<MarketState> {
-        let start = self
-            .history
-            .len()
-            .saturating_sub(config.state_window.max(1));
-        build_market_state(&self.history[start..], &[], &config.state)
-    }
-
-    /// Materialize the view handed to the strategy.
-    fn view(&self, name: &str) -> Option<TimeframeView> {
-        let candle = self.candle.clone()?;
-        let state = self.state.clone()?;
-
-        // The previous view exists only so `crosses_above` has a bar to compare
-        // against, so it carries no history: the grammar cannot express a
-        // lookback inside `crosses_above` (both operands are numbers).
-        let previous = match (&self.previous, self.history.len().checked_sub(2)) {
-            (Some(state), Some(index)) => self.history.get(index).map(|candle| {
-                Box::new(TimeframeView {
-                    name: name.to_string(),
-                    timeframe: self.timeframe,
-                    candle: candle.clone(),
-                    state: state.clone(),
-                    previous: None,
-                    history: Vec::new(),
-                })
-            }),
-            _ => None,
-        };
-
-        Some(TimeframeView {
-            name: name.to_string(),
-            timeframe: self.timeframe,
-            candle,
-            state,
-            previous,
-            history: self.history.clone(),
-        })
     }
 }
 
@@ -311,10 +247,16 @@ pub fn replay<S: Strategy>(
         });
     }
 
-    let mut caches: BTreeMap<String, TimeframeCache> = input
+    let rolling = RollingConfig::new(
+        config.runtime.max_history,
+        config.state_window,
+        config.state,
+    );
+    let mut ladder = RollingLadder::new(&input.timeframes);
+    let mut cursors: BTreeMap<String, SeriesCursor> = input
         .timeframes
-        .iter()
-        .map(|(name, tf)| (name.clone(), TimeframeCache::new(*tf)))
+        .keys()
+        .map(|name| (name.clone(), SeriesCursor { consumed: 0 }))
         .collect();
 
     let mut simulator = Simulator::new(config.simulator);
@@ -327,9 +269,12 @@ pub fn replay<S: Strategy>(
 
         // Advance every timeframe first, including during warm-up outside the
         // window, so a strategy starting mid-series has real context.
-        for (name, cache) in caches.iter_mut() {
+        for (name, cursor) in cursors.iter_mut() {
+            let Some(frame) = ladder.get_mut(name) else {
+                continue;
+            };
             let series = input.candles.get(name).map_or(&[][..], Vec::as_slice);
-            cache.advance(series, now, config);
+            cursor.advance(frame, series, now, &rolling);
         }
 
         if now < config.from || now > config.to {
@@ -371,33 +316,26 @@ pub fn replay<S: Strategy>(
         }
 
         // 3. Ask the strategy, with the position state as it now stands.
-        let Some(decision_view) = caches.get(&decision_name) else {
+        let Some(decision_frame) = ladder.get(&decision_name) else {
             continue;
         };
-        let Some(decision_view) = decision_view.view(&decision_name) else {
+        let Some(decision_candle_close) = decision_frame.candle().map(|candle| candle.close) else {
             continue;
         };
 
-        let mut timeframes = BTreeMap::new();
-        for (name, cache) in &caches {
-            if let Some(view) = cache.view(name) {
-                timeframes.insert(name.clone(), view);
-            }
-        }
-        if !timeframes.contains_key(&decision_name) {
-            continue;
-        }
-
-        let context = MarketContext {
-            symbol: config.symbol.clone(),
+        let Some(context) = ladder.context(
+            &config.symbol,
             now,
-            decision_timeframe: decision_name.clone(),
-            timeframes,
-            position: simulator.position_view(decision_view.candle.close),
-            equity: config.simulator.starting_equity,
+            &decision_name,
+            simulator.position_view(decision_candle_close),
+            config.simulator.starting_equity,
+        ) else {
+            continue;
         };
 
-        let regime = strategy_runtime::trend_name(decision_view.state.trend);
+        let regime = decision_frame
+            .state()
+            .map_or("unknown", |state| strategy_runtime::trend_name(state.trend));
 
         if let Some(signal) = strategy.on_candle(&context) {
             pending = Some(match signal {
@@ -493,6 +431,7 @@ pub fn run_backtest(
 mod tests {
     use super::*;
     use analytics_core::types::Timeframe;
+    use strategy_runtime::context::MarketContext;
     use strategy_runtime::signal::SignalAction;
 
     const M5: i64 = 5 * 60 * 1_000_000_000;

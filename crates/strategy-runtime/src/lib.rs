@@ -69,7 +69,9 @@
 pub mod context;
 pub mod engine;
 pub mod error;
+pub mod rolling;
 pub mod signal;
+pub mod simulator;
 
 pub use context::{
     divergence_name, swept_level_price, swept_side, trend_name, FieldValue, MarketContext,
@@ -77,7 +79,9 @@ pub use context::{
 };
 pub use engine::{RuntimeConfig, SkipRecord, Strategy, StrategyEngine};
 pub use error::RuntimeError;
+pub use rolling::{RollingConfig, RollingLadder, RollingTimeframe};
 pub use signal::{EnterSignal, ExitSignal, ExitTrigger, Signal, SignalAction};
+pub use simulator::{FillAssumptions, OpenPosition, Simulator, SimulatorConfig, TradeRecord};
 
 /// The types most callers need.
 pub mod prelude {
@@ -85,4 +89,7 @@ pub mod prelude {
     pub use crate::engine::{RuntimeConfig, Strategy, StrategyEngine};
     pub use crate::error::RuntimeError;
     pub use crate::signal::{EnterSignal, ExitSignal, ExitTrigger, Signal, SignalAction};
+    pub use crate::simulator::{
+        FillAssumptions, OpenPosition, Simulator, SimulatorConfig, TradeRecord,
+    };
 }

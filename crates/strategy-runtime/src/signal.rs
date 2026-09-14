@@ -167,6 +167,11 @@ pub enum ExitTrigger {
     /// so the trade is accounted for rather than dropped, which would flatter
     /// the statistics.
     EndOfData,
+    /// The risk engine's kill-switch closed it (`docs/15`). Distinct from
+    /// every other exit because it was not the strategy's decision and not a
+    /// price level: it has to be visible as its own thing in the audit trail,
+    /// or a liquidation at a bad moment looks like a normal exit.
+    KillSwitch,
 }
 
 impl ExitTrigger {
@@ -179,6 +184,7 @@ impl ExitTrigger {
             Self::Invalidation => "invalidation",
             Self::ExitCondition => "exit_condition",
             Self::EndOfData => "end_of_data",
+            Self::KillSwitch => "kill_switch",
         }
     }
 

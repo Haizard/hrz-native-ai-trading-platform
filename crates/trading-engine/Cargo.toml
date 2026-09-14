@@ -15,9 +15,15 @@ db = { workspace = true }
 
 async-trait = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# The fixtures are YAML, because that is what a strategy author writes. The bot
+# takes an already-validated document and never parses one itself, so the
+# feature stays out of the normal graph -- which is what keeps `serde_yaml`
+# off the sandbox guest's path (see the workspace `strategy-dsl` entry).
+strategy-dsl = { workspace = true, features = ["yaml"] }

@@ -83,20 +83,25 @@
 pub mod error;
 pub mod replay;
 pub mod report;
-pub mod simulator;
 
 pub use error::BacktestError;
 pub use replay::{replay, run_backtest, ReplayConfig, ReplayInput, ReplayOutput};
 pub use report::{
-    build_report, compute_metrics, worst_regime, BacktestReport, FillAssumptions, Metrics,
-    ParameterSweep, TradeRecord,
+    build_report, compute_metrics, worst_regime, BacktestReport, Metrics, ParameterSweep,
 };
-pub use simulator::{OpenPosition, Simulator, SimulatorConfig};
+
+// The fill model now lives in `strategy-runtime` so that the replay and the
+// Phase 6 paper trader cannot drift apart (`docs/03` forbids `trading-engine`
+// from depending on this crate). Re-exported here so callers that know these
+// as backtester types keep working.
+pub use strategy_runtime::{
+    FillAssumptions, OpenPosition, Simulator, SimulatorConfig, TradeRecord,
+};
 
 /// The types most callers need.
 pub mod prelude {
     pub use crate::error::BacktestError;
     pub use crate::replay::{replay, run_backtest, ReplayConfig, ReplayInput, ReplayOutput};
     pub use crate::report::{BacktestReport, FillAssumptions, Metrics, TradeRecord};
-    pub use crate::simulator::{Simulator, SimulatorConfig};
+    pub use strategy_runtime::{Simulator, SimulatorConfig};
 }

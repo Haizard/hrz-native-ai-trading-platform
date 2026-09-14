@@ -17,6 +17,10 @@ pub enum DbError {
     #[error("connection pool error: {0}")]
     Pool(#[from] sqlx::Error),
 
+    /// A declared timeframe could not be loaded, or has no usable candles.
+    #[error("candle data unavailable: {0}")]
+    CandlesUnavailable(String),
+
     /// A migration failed to apply.
     #[error("migration error: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),

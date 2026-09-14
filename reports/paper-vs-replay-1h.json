@@ -1,0 +1,16 @@
+{
+  "bot_cumulative_r": -6.268946860419446,
+  "bot_in_position": true,
+  "bot_trades": 20,
+  "decisions": 864,
+  "entries_denied_by_risk": 0,
+  "entries_refused_by_simulator": 0,
+  "halted": null,
+  "mismatches": [],
+  "replay_closed_open_position_at_end": true,
+  "replay_decisions": 864,
+  "replay_final_r": -5.030954322148604,
+  "replay_trades": 21,
+  "strategy": "Liquidity Sweep + Reclaim (1h context, paper harness)",
+  "symbol": "BTCUSDT"
+}

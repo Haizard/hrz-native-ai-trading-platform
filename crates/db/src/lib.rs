@@ -21,12 +21,19 @@
 
 pub mod config;
 pub mod error;
+pub mod loading;
 pub mod models;
+pub mod paper;
 pub mod repositories;
 
 pub use config::DatabaseConfig;
 pub use error::DbError;
+pub use loading::{coverage, load_timeframe_series, warn_about_short_series, MIN_COVERAGE};
 pub use models::Database;
+pub use paper::{
+    count_audit_events, find_or_create_strategy, find_user_by_email, insert_audit_events,
+    insert_bot, insert_executed_trades, set_bot_status, AuditEvent, ExecutedTrade,
+};
 pub use repositories::{dt_to_ns, ns_to_dt};
 
 /// Embedded migrations from `crates/db/migrations`.

@@ -1,0 +1,49 @@
+# The reference thesis with a **1h** context timeframe instead of 4h.
+#
+# This exists for one reason, and it is a data reason rather than a strategy
+# one: the `candles` table currently holds two days of 1m data
+# (2026-09-10 .. 2026-09-11) and no 4h candles at all. The reference
+# `liquidity-sweep-btcusdt-5m.yaml` declares `trend: 4h`, which therefore has
+# to be rebuilt from 1m -- twelve candles covering 40% of a four-day window.
+# The 4h view is cold for the rest of it, `market_structure.trend == "bullish"`
+# is then false everywhere it matters, and the backtest reports zero trades.
+# That is missing data, not a selective strategy.
+#
+# At 1h the same two days of 1m aggregate into 48 candles, which covers a
+# two-day window completely. So this document is what makes the paper-bot
+# versus replay comparison meaningful *today*; it is not a claim that 1h is a
+# better context timeframe than 4h for this thesis.
+#
+# Everything else -- the entry conditions, the stop, the 2.5R target, the
+# invalidation -- is identical to the reference document.
+
+name: "Liquidity Sweep + Reclaim (1h context, paper harness)"
+version: "1.0"
+kind: strategy
+market: "BTCUSDT"
+timeframes:
+  trend: "1h"
+  entry: "5m"
+
+entry:
+  direction: long
+  all_of:
+    - timeframe: trend
+      condition: market_structure.trend == "bullish"
+    - timeframe: entry
+      condition: close > liquidity.swept_level
+
+risk:
+  max_risk_pct: 1.0
+  stop: "below_sweep_low"
+  take_profit:
+    type: "risk_multiple"
+    value: 2.5
+
+invalidation:
+  - timeframe: entry
+    condition: "close_below(stop_price)"
+
+metadata:
+  created_by: "developer_sdk"
+  skill_ref: "liquidity-sweep-reclaim-btcusdt-5m-v1"

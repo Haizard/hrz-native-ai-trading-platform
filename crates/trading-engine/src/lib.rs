@@ -24,10 +24,22 @@
 //!
 //! ## Status
 //!
-//! Phase 0 skeleton.
+//! Phase 6: paper trading. The risk engine, the simulated executor and the
+//! decision audit trail are implemented and tested. The live runner -- 48
+//! hours against a real feed -- is the remaining piece, and it is a scheduling
+//! problem rather than a missing component: [`PaperBot::on_candle`] is the
+//! whole loop, and a runner only has to feed it.
+//!
+//! [`PaperBot::on_candle`]: paper::PaperBot::on_candle
 
 #![deny(missing_docs)]
 
 pub mod error;
+pub mod paper;
+pub mod risk;
+pub mod store;
 
 pub use error::ExecutionError;
+pub use paper::{DecisionOutcome, DecisionRecord, PaperBot, PaperConfig};
+pub use risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict, PLATFORM_MAX_RISK_PCT};
+pub use store::{decision_payload, BotSession, DECISION_EVENT, RISK_EVENT};

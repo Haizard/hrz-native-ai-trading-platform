@@ -20,17 +20,24 @@
 //!
 //! The resampled series is aligned to the target's bucket boundaries, so a
 //! 4h view begins at a real 4h boundary rather than wherever `--from` landed.
+//!
+//! ## A stored series is only used if it covers the window
+//!
+//! "Non-empty" is not the same as "usable". A handful of stale 4h candles left
+//! in the database by an earlier backfill covers a couple of days of a
+//! six-month window, leaves the 4h view cold everywhere else, and turns every
+//! condition written against it permanently false -- a backtest that reports
+//! zero trades and looks perfectly valid. So a stored series must span at
+//! least [`MIN_COVERAGE`] of the requested window, or it is treated as absent
+//! and resampled.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
-use analytics_core::{resample, Candle, Timeframe};
+use analytics_core::Timeframe;
 use anyhow::{bail, Context, Result};
 use backtester::replay::{run_backtest, ReplayConfig, ReplayInput};
 use clap::{Parser, Subcommand};
-use db::repositories::load_candles;
 use db::Database;
-use strategy_dsl::ValidatedStrategy;
 use strategy_runtime::{RuntimeConfig, StrategyEngine};
 
 #[derive(Parser)]
@@ -196,15 +203,16 @@ async fn run_backtest_command(
         .await
         .context("could not connect to postgres")?;
 
-    let series = load_all_timeframes(
-        &database,
+    let series = db::loading::load_timeframe_series(
+        database.pool(),
         symbol,
-        &validated,
+        &validated.document().timeframes,
         from_ns,
         to_ns,
         source_timeframe,
     )
     .await?;
+    db::loading::warn_about_short_series(&series, &validated.document().timeframes, from_ns, to_ns);
 
     for (name, candles) in &series {
         let timeframe = validated.document().timeframes.get(name).copied();
@@ -307,78 +315,6 @@ async fn run_backtest_command(
 /// current data volumes the extra read is the cheaper mistake, and it is worth
 /// revisiting only if a backtest's dominant cost becomes the load rather than the
 /// replay.
-async fn load_all_timeframes(
-    database: &Database,
-    symbol: &str,
-    validated: &ValidatedStrategy,
-    from_ns: i64,
-    to_ns: i64,
-    source_timeframe: Timeframe,
-) -> Result<BTreeMap<String, Vec<Candle>>> {
-    let pool = database.pool();
-    let mut out = BTreeMap::new();
-    let mut missing: Vec<(String, Timeframe)> = Vec::new();
-
-    for (name, timeframe) in &validated.document().timeframes {
-        let direct = load_candles(pool, symbol, *timeframe, from_ns, to_ns)
-            .await
-            .with_context(|| format!("could not load {timeframe} candles for {symbol}"))?;
-
-        if direct.is_empty() {
-            missing.push((name.clone(), *timeframe));
-        } else {
-            out.insert(name.clone(), direct);
-        }
-    }
-
-    if missing.is_empty() {
-        return Ok(out);
-    }
-
-    // Pad the source window by the coarsest declared resolution so that the
-    // first and last bucket of every resampled series are whole.
-    let pad = validated
-        .document()
-        .timeframes
-        .values()
-        .copied()
-        .max()
-        .map_or(0, Timeframe::nanos);
-
-    let source = load_candles(pool, symbol, source_timeframe, from_ns - pad, to_ns + pad)
-        .await
-        .with_context(|| format!("could not load {source_timeframe} candles for {symbol}"))?;
-
-    for (name, timeframe) in missing {
-        // Only a *strictly finer* source is a problem. An equal one is a no-op
-        // copy that `resample` handles, and the trim below then reduces it to
-        // exactly what the direct query would have returned.
-        if timeframe < source_timeframe {
-            bail!(
-                "no {timeframe} candles for {symbol} in this window, and {timeframe} cannot be \
-                 built by aggregating {source_timeframe} candles"
-            );
-        }
-
-        if source.is_empty() {
-            bail!("no {source_timeframe} candles for {symbol} in this window either");
-        }
-
-        let series: Vec<Candle> = resample(&source, timeframe)
-            .into_iter()
-            // Trim the padding back off, keeping only buckets inside the window.
-            .filter(|candle| candle.open_time >= from_ns && candle.open_time < to_ns)
-            .collect();
-
-        if series.is_empty() {
-            bail!("{timeframe} aggregated from {source_timeframe} produced no candles");
-        }
-        out.insert(name, series);
-    }
-
-    Ok(out)
-}
-
 /// Read a document from disk.
 fn read_document(path: &str) -> Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("could not read {path}"))

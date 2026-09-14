@@ -1,4 +1,15 @@
-//! Order, position and PnL simulation (`docs/07-BACKTESTING-ENGINE.md`).
+//! Order, position and PnL simulation (`docs/07-BACKTESTING-ENGINE.md`, `docs/11-BOT-TRADING-ENGINE.md`).
+//!
+//! ## Why this lives in the runtime and not in the backtester
+//!
+//! `docs/11` requires the paper trader to simulate fills the same way a replay
+//! does, and `docs/03` forbids `trading-engine` from depending on `backtester`.
+//! The only way to satisfy both is for the fill model to sit below both of
+//! them -- here, next to the windowing in [`crate::rolling`].
+//!
+//! Left as two implementations, the two would drift, and the drift would be
+//! invisible: paper results would disagree with the backtest that approved the
+//! strategy, with nothing in either to explain the gap.
 //!
 //! ## Two kinds of exit, and why they live in different places
 //!
@@ -29,12 +40,10 @@
 //! curve built on a fixed notional -- looks more impressive and measures less.
 //! The consequence is documented in [`FillAssumptions`] and in the report.
 
+use crate::{EnterSignal, ExitTrigger, PositionView};
 use analytics_core::types::Candle;
 use serde::{Deserialize, Serialize};
 use strategy_dsl::Direction;
-use strategy_runtime::{EnterSignal, ExitTrigger, PositionView};
-
-use crate::report::{FillAssumptions, TradeRecord};
 
 /// Sizing and fill assumptions.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -669,5 +678,114 @@ mod tests {
         assert_eq!(trade.entry_time, 1_234);
         assert_eq!(trade.exit_time, 9_999);
         assert!((trade.r_multiple).abs() < 1e-9);
+    }
+}
+
+/// One completed round trip, with everything needed to explain it later.
+///
+/// The spec requires enough detail that "why did it lose money in June?" can be
+/// answered by inspecting real trades rather than aggregate statistics. That
+/// means the reasons, the regime, and the resolved levels -- not just the P&L.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TradeRecord {
+    /// Which way the trade was.
+    pub direction: Direction,
+    /// Fill time (unix nanos).
+    pub entry_time: i64,
+    /// Fill price, after slippage.
+    pub entry_price: f64,
+    /// Exit time (unix nanos).
+    pub exit_time: i64,
+    /// Exit price.
+    pub exit_price: f64,
+    /// The decision candle's close when the trade was decided. Differs from
+    /// `entry_price` by the gap to the next open plus slippage.
+    pub reference_price: f64,
+    /// The resolved stop.
+    pub stop_price: f64,
+    /// The resolved target, if any.
+    pub take_profit_price: Option<f64>,
+    /// Units held.
+    pub size: f64,
+    /// Risk per unit at entry.
+    pub risk_per_unit: f64,
+    /// Result in R multiples. `-1.0` is a stop-out, `+2.5` is a 2.5R win.
+    pub r_multiple: f64,
+    /// Closed candles the position was held for.
+    pub bars_held: usize,
+    /// What closed it.
+    pub exit_trigger: ExitTrigger,
+    /// Labels of the conditions that opened the trade.
+    pub entry_reasons: Vec<String>,
+    /// Labels of the conditions that closed it, when conditions did.
+    pub exit_reasons: Vec<String>,
+    /// Structural trend on the decision timeframe at entry.
+    pub regime: String,
+}
+
+impl TradeRecord {
+    /// Whether this trade made money.
+    #[must_use]
+    pub fn is_win(&self) -> bool {
+        self.r_multiple > 0.0
+    }
+
+    /// Whether this trade lost money.
+    #[must_use]
+    pub fn is_loss(&self) -> bool {
+        self.r_multiple < 0.0
+    }
+
+    /// How long the trade was held, in nanoseconds.
+    #[must_use]
+    pub const fn holding_nanos(&self) -> i64 {
+        self.exit_time - self.entry_time
+    }
+}
+
+/// What the numbers rest on.
+///
+/// The spec asks for the fill simplifications to be documented *in the report
+/// output* so results are not over-trusted. This is that documentation, carried
+/// as data rather than prose in a doc comment nobody reads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FillAssumptions {
+    /// How entries fill.
+    pub entry_fill: String,
+    /// How condition-driven exits fill.
+    pub exit_fill: String,
+    /// How stop and target exits fill.
+    pub stop_target_fill: String,
+    /// How a bar that touches both the stop and the target is resolved.
+    pub ambiguous_bar: String,
+    /// Slippage applied to market orders, in basis points.
+    pub slippage_bps: f64,
+    /// How positions are sized.
+    pub position_sizing: String,
+    /// What `net_return_pct` and `max_drawdown_pct` are actually measured in.
+    pub return_units: String,
+    /// Whether results compound.
+    pub compounding: String,
+}
+
+impl Default for FillAssumptions {
+    fn default() -> Self {
+        Self {
+            entry_fill: "next decision candle's open, with slippage against the trade".into(),
+            exit_fill: "next decision candle's open, with slippage against the trade".into(),
+            stop_target_fill: "the touched level itself, with no slippage beyond the level; \
+                                timestamped at the bar's close, since OHLC cannot say where \
+                                inside the bar the level was reached"
+                .into(),
+            ambiguous_bar: "a candle touching both stop and target is assumed to hit the stop"
+                .into(),
+            slippage_bps: 2.0,
+            position_sizing: "fixed-fractional against a constant starting equity; size does not \
+                              feed the P&L"
+                .into(),
+            return_units: "R multiples -- 1R is the risk accepted at entry, not a percentage"
+                .into(),
+            compounding: "none; Phase 3 does not reinvest".into(),
+        }
     }
 }
