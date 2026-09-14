@@ -36,11 +36,11 @@ use crate::AppState;
 /// enough for a screen and not enough to hurt.
 const MAX_CANDLES: usize = 400;
 
-/// Default bucket size when the caller does not choose one.
+/// Rows a ladder aims for over the window's own price range.
 ///
-/// $10 on BTCUSDT is coarse enough to keep the ladder readable and fine enough
-/// to see the structure. A caller who wants a different one asks for it.
-const DEFAULT_BUCKET: f64 = 10.0;
+/// The reference footprint shows around this many, and it is what keeps a cell
+/// tall enough to hold `0.44 x 2.75`.
+const TARGET_ROWS: usize = 45;
 
 /// Query for `GET /footprint`.
 #[derive(Debug, Deserialize)]
@@ -146,6 +146,70 @@ pub struct FootprintResponse {
     pub note: Option<String>,
 }
 
+/// Query for `GET /footprint/coverage`.
+#[derive(Debug, Deserialize)]
+pub struct CoverageQuery {
+    /// Instrument, e.g. `BTCUSDT`.
+    pub symbol: String,
+}
+
+/// What trade data exists, so a chart can pick the window that works.
+#[derive(Debug, Serialize)]
+pub struct CoverageResponse {
+    /// Instrument.
+    pub symbol: String,
+    /// Oldest trade, unix **milliseconds** -- what `/footprint` accepts.
+    pub from: i64,
+    /// Newest trade, unix **milliseconds**.
+    pub to: i64,
+    /// How many trades are stored.
+    pub trades: i64,
+    /// How many whole minutes the span covers, for a caller sizing a window.
+    pub minutes: i64,
+}
+
+/// `GET /footprint/coverage`
+///
+/// Exists because a footprint needs the user to choose a window and the trades
+/// are backfilled in capped chunks, so the newest candles almost never have any.
+/// Without this, "select Footprint" is a dead end until the user works out which
+/// window to ask for; with it, the chart can just ask.
+///
+/// # Errors
+/// 404 when no trades are stored for the symbol at all.
+pub async fn coverage(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<CoverageQuery>,
+) -> Result<Json<CoverageResponse>, ApiError> {
+    let database = state
+        .db
+        .as_ref()
+        .ok_or_else(|| ApiError::unavailable("no database configured"))?;
+    let symbol = query.symbol.to_uppercase();
+
+    let Some(coverage) = db::repositories::trades_coverage(database.pool(), &symbol).await? else {
+        return Err(ApiError::coded(
+            axum::http::StatusCode::NOT_FOUND,
+            "NO_TICK_DATA",
+            format!(
+                "no trades are stored for {symbol}. Run `cargo run -p xtask -- backfill-trades \
+                 --symbol {symbol} --from <start> --to <end>` to collect some (the window is \
+                 capped at 24h)."
+            ),
+        ));
+    };
+
+    Ok(Json(CoverageResponse {
+        symbol,
+        from: coverage.first / 1_000_000,
+        // Inclusive of the last trade's own millisecond, so a window ending here
+        // contains it.
+        to: coverage.last / 1_000_000 + 1,
+        trades: coverage.count,
+        minutes: (coverage.last - coverage.first) / 60_000_000_000,
+    }))
+}
+
 /// `GET /footprint`
 ///
 /// # Errors
@@ -167,10 +231,6 @@ pub async fn footprint(
         )
     })?;
     let symbol = query.symbol.to_uppercase();
-    let bucket_size = query
-        .bucket_size
-        .filter(|size| size.is_finite() && *size > 0.0)
-        .unwrap_or(DEFAULT_BUCKET);
     let ratio = query.ratio.filter(|r| *r > 1.0).unwrap_or(3.0);
 
     // Same window rule as `/candles`: with no explicit range, the newest `limit`
@@ -223,16 +283,17 @@ pub async fn footprint(
         // footprint is the one chart where the user has to choose the window
         // deliberately -- trades are backfilled in capped chunks, so the newest
         // candles usually have none.
-        let coverage = db::repositories::trades_range(database.pool(), &symbol)
+        let coverage = db::repositories::trades_coverage(database.pool(), &symbol)
             .await
             .ok()
             .flatten()
-            .map(|(first, last)| {
+            .map(|coverage| {
                 format!(
-                    " Trades are stored for this symbol from {} to {} -- ask for a window inside \
-                     that.",
-                    iso(first),
-                    iso(last)
+                    " {} trades are stored for this symbol, from {} to {} -- ask for a window \
+                     inside that.",
+                    coverage.count,
+                    iso(coverage.first),
+                    iso(coverage.last)
                 )
             })
             .unwrap_or_else(|| {
@@ -251,6 +312,19 @@ pub async fn footprint(
             ),
         ));
     }
+
+    // A caller that does not name a bucket gets one sized to the window. That
+    // matters more here than for a profile: a fixed $10 is coarse on a $2
+    // instrument and produces 800 unreadable rows on a $10,000 one, and the
+    // caller usually does not know the price before asking.
+    let bucket_size = query
+        .bucket_size
+        .filter(|size| size.is_finite() && *size > 0.0)
+        .unwrap_or_else(|| {
+            let low = candles.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+            let high = candles.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
+            analytics_core::volume_profile::round_bucket(high - low, TARGET_ROWS)
+        });
 
     let mut footprints = build_footprints(&candles, &trades, bucket_size);
     if let Some(limit) = limit {

@@ -107,8 +107,38 @@ impl VolumeProfile {
     }
 }
 
-/// Volume profile from executed trades, with the default 70% value area.
+/// A round bucket size that yields about `target_rows` rows over `span`.
+///
+/// Rounded to a power of ten times 1, 2 or 5, so a price axis reads 77,300
+/// rather than 77,341.6667 -- and so a caller can put a label on a level without
+/// inventing a format for an arbitrary number.
+///
+/// This is a *display* concern, and it lives here anyway because there is only
+/// one correct answer: the chart engine and the footprint route both need it,
+/// and two copies of a rounding rule drift.
+///
+/// `span` is a price range. A non-finite or non-positive one yields 1.0, so a
+/// degenerate window cannot produce a zero bucket and divide by it.
 #[must_use]
+pub fn round_bucket(span: f64, target_rows: usize) -> f64 {
+    if !span.is_finite() || span <= 0.0 || target_rows == 0 {
+        return 1.0;
+    }
+    let raw = span / target_rows as f64;
+    if !raw.is_finite() || raw <= 0.0 {
+        return 1.0;
+    }
+    let magnitude = 10f64.powf(raw.log10().floor());
+    for step in [1.0, 2.0, 5.0, 10.0] {
+        let candidate = magnitude * step;
+        if candidate >= raw {
+            return candidate;
+        }
+    }
+    magnitude * 10.0
+}
+
+/// Volume-by-price from trades, with the default value-area percentage.
 pub fn calculate_volume_profile(trades: &[Trade], bucket_size: f64) -> VolumeProfile {
     calculate_volume_profile_with(trades, bucket_size, DEFAULT_VALUE_AREA_PCT, 2)
 }

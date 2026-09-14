@@ -218,29 +218,6 @@ pub struct ProfileBar {
     pub in_value_area: bool,
 }
 
-/// One footprint cell: a bucket with its buy/sell split.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Cell {
-    /// Left edge.
-    pub x: f64,
-    /// Top edge.
-    pub y: f64,
-    /// Width.
-    pub w: f64,
-    /// Height.
-    pub h: f64,
-    /// The bucket's midpoint price.
-    pub price: f64,
-    /// Buy-aggressed volume.
-    pub buy: f64,
-    /// Sell-aggressed volume.
-    pub sell: f64,
-    /// Buy minus sell.
-    pub delta: f64,
-    /// Whether this bucket is inside the value area.
-    pub in_value_area: bool,
-}
-
 /// A horizontal level.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Level {
@@ -299,8 +276,6 @@ pub struct Scene {
     pub line: Vec<Point>,
     /// Volume-profile bars, cheapest first.
     pub profile: Vec<ProfileBar>,
-    /// Footprint cells, cheapest first. Only in [`Mode::Footprint`].
-    pub cells: Vec<Cell>,
     /// Overlay levels.
     pub levels: Vec<Level>,
     /// Price-axis ticks.
@@ -329,21 +304,10 @@ fn price_to_y(price: f64, price_min: f64, price_max: f64, plot: &Plot) -> f64 {
 
 /// Choose a bucket size that yields a readable number of rows.
 ///
-/// A profile with 2 rows says nothing and one with 4,000 is a solid block. The
-/// target is ~40 rows over the visible range, rounded to a power of ten times
-/// 1, 2 or 5 -- so the prices on the axis are round numbers rather than
-/// `77341.6667`.
+/// The rule itself lives in `analytics-core`, because the footprint route needs
+/// the same one and two copies of a rounding rule drift.
 fn choose_bucket(price_min: f64, price_max: f64) -> f64 {
-    let span = (price_max - price_min).max(f64::EPSILON);
-    let raw = span / PROFILE_ROWS;
-    let magnitude = 10f64.powf(raw.log10().floor());
-    for step in [1.0, 2.0, 5.0, 10.0] {
-        let candidate = magnitude * step;
-        if candidate >= raw {
-            return candidate;
-        }
-    }
-    magnitude * 10.0
+    analytics_core::volume_profile::round_bucket(price_max - price_min, PROFILE_ROWS as usize)
 }
 
 /// Build the scene.
@@ -373,7 +337,6 @@ pub fn build(request: &Request) -> Scene {
         candles: Vec::new(),
         line: Vec::new(),
         profile: Vec::new(),
-        cells: Vec::new(),
         levels: Vec::new(),
         ticks: Vec::new(),
         footprint: None,
@@ -445,17 +408,22 @@ pub fn build(request: &Request) -> Scene {
         }
         Mode::Footprint => {
             if request.footprint.is_empty() {
-                // No trades for this window. The honest fallback: a
-                // candle-derived profile, labelled as one. A ladder built from
+                // No trades for this window, so there is no ladder to draw. What
+                // is drawn instead is the **volume profile** -- horizontal bars
+                // sized by volume, anchored to the right -- which is a real
+                // chart of a real quantity.
+                //
+                // What is *not* drawn is a fake ladder. A footprint built from
                 // candles would reproduce each candle's aggregate ratio at every
-                // level, so a 3:1 candle would look like a stack of imbalances
-                // it never had -- which is why `analytics-core` refuses to build
-                // one at all.
-                scene.cells = footprint_cells(&profile, &plot, scene.price_min, scene.price_max);
+                // price level, so a 3:1 candle would look like a stack of
+                // imbalances it never had. That is why `analytics-core` refuses
+                // to build one, and why this falls back to a different chart
+                // rather than a worse version of the same one.
+                scene.profile = profile_bars(&profile, &plot, scene.price_min, scene.price_max);
                 scene.note = Some(
-                    "volume by price, from candles: no trades are stored for this window, so a \
-                     trade-level footprint cannot be built. Buy/sell here is the candle's own \
-                     split. Run `xtask backfill-trades` for this window to get the real ladder."
+                    "no trades are stored for this window, so there is no ladder to draw. This is \
+                     the volume profile instead -- a real chart, but not a footprint. Run \
+                     `xtask backfill-trades` for this window to get the real ladder."
                         .into(),
                 );
             } else {
@@ -618,34 +586,6 @@ fn profile_bars(
                 } else {
                     0.5
                 },
-                in_value_area: node.price_level >= profile.val && node.price_level <= profile.vah,
-            }
-        })
-        .collect()
-}
-
-fn footprint_cells(
-    profile: &VolumeProfile,
-    plot: &Plot,
-    price_min: f64,
-    price_max: f64,
-) -> Vec<Cell> {
-    let row_height = (plot.h / PROFILE_ROWS).max(1.0);
-    profile
-        .histogram
-        .iter()
-        .filter(|node| node.price_level >= price_min && node.price_level <= price_max)
-        .map(|node| {
-            let y = price_to_y(node.price_level, price_min, price_max, plot);
-            Cell {
-                x: plot.x,
-                y: y - row_height / 2.0,
-                w: plot.w,
-                h: row_height,
-                price: node.price_level,
-                buy: node.buy_volume,
-                sell: node.sell_volume,
-                delta: node.buy_volume - node.sell_volume,
                 in_value_area: node.price_level >= profile.val && node.price_level <= profile.vah,
             }
         })
@@ -968,8 +908,13 @@ mod tests {
         for mode in Mode::ALL {
             let scene = build(&mode_request(mode, 120));
             assert_eq!(scene.style, mode, "the scene must say what it drew");
-            let drew_something =
-                !scene.candles.is_empty() || !scene.line.is_empty() || !scene.cells.is_empty();
+            // A mode may draw bars, a path, a profile or a ladder. What it must
+            // never do is draw nothing, because a selector option that renders
+            // an empty canvas makes the user conclude the chart is broken.
+            let drew_something = !scene.candles.is_empty()
+                || !scene.line.is_empty()
+                || !scene.profile.is_empty()
+                || scene.footprint.is_some();
             assert!(drew_something, "{mode:?} drew nothing");
         }
     }
@@ -1105,29 +1050,6 @@ mod tests {
     }
 
     #[test]
-    fn footprint_mode_without_trades_falls_back_and_says_which_footprint_it_is() {
-        // No ladders in the request means no trades in the window, so the
-        // candle-derived profile is drawn -- labelled as exactly that. A ladder
-        // built from candles would reproduce each candle's aggregate ratio at
-        // every level, so a 3:1 candle would look like a stack of imbalances it
-        // never had.
-        let scene = build(&mode_request(Mode::Footprint, 200));
-        assert!(
-            !scene.cells.is_empty(),
-            "the fallback still draws something"
-        );
-        assert!(scene.footprint.is_none(), "but not a trade-level grid");
-        assert!(scene.profile.is_empty(), "one view at a time");
-        assert!(scene.candles.is_empty());
-        let note = scene.note.expect("a caveat");
-        assert!(note.contains("no trades are stored"), "{note}");
-        assert!(
-            note.contains("backfill-trades"),
-            "and how to fix it: {note}"
-        );
-    }
-
-    #[test]
     fn footprint_mode_with_trades_builds_the_grid() {
         // A ladder for two candles, one of them imbalanced.
         let mut imbalanced = footprint::ColumnCell {
@@ -1187,7 +1109,6 @@ mod tests {
         assert_eq!(grid.stats.trades, 1_234);
         // The fallback must not also run: two footprints at once would draw a
         // profile over the ladder.
-        assert!(scene.cells.is_empty());
         assert!(scene.profile.is_empty());
 
         let first = &grid.columns[0].cells[0];
@@ -1197,17 +1118,6 @@ mod tests {
         assert_eq!(first.ask_text, "2.40");
         // And the level is shared, so both columns agree on its height.
         assert_eq!(grid.columns[1].cells[0].y, first.y);
-    }
-
-    #[test]
-    fn a_footprint_cell_delta_is_buy_minus_sell() {
-        let scene = build(&mode_request(Mode::Footprint, 200));
-        for cell in &scene.cells {
-            assert!(
-                (cell.delta - (cell.buy - cell.sell)).abs() < 1e-9,
-                "{cell:?}"
-            );
-        }
     }
 
     #[test]

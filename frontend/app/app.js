@@ -182,7 +182,6 @@ function draw() {
   // Adding a chart type means adding a case here and a variant in Rust -- not
   // teaching JavaScript what a Heikin-Ashi candle is.
   if (scene.footprint) drawFootprintGrid(ctx, scene);
-  if (scene.cells.length) drawCells(ctx, scene);
   if (scene.profile.length) drawProfile(ctx, scene);
   switch (scene.style) {
     case "heikin_ashi":
@@ -393,30 +392,6 @@ function drawProfile(ctx, scene) {
   }
 }
 
-function drawCells(ctx, scene) {
-  for (const cell of scene.cells) {
-    const total = cell.buy + cell.sell;
-    // Opacity carries the volume; hue carries the side. Two encodings, because
-    // one alone is unreadable at this row height.
-    ctx.globalAlpha = total > 0 ? 0.18 : 0.05;
-    ctx.fillStyle = cell.delta >= 0 ? COLORS.up : COLORS.down;
-    ctx.fillRect(cell.x, cell.y, cell.w, cell.h);
-    ctx.globalAlpha = 1;
-
-    ctx.font = "10px ui-monospace, monospace";
-    ctx.fillStyle = cell.in_value_area ? COLORS.text : COLORS.text;
-    ctx.fillText(cell.price.toFixed(2), cell.x + 4, cell.y + cell.h - 1);
-    if (total > 0) {
-      ctx.fillStyle = cell.delta >= 0 ? COLORS.up : COLORS.down;
-      ctx.fillText(
-        `${cell.buy.toFixed(1)} × ${cell.sell.toFixed(1)}`,
-        cell.x + 60,
-        cell.y + cell.h - 1
-      );
-    }
-  }
-}
-
 function drawLevels(ctx, scene) {
   for (const level of scene.levels) {
     ctx.strokeStyle = COLORS[level.kind] || COLORS.text;
@@ -514,10 +489,7 @@ async function refresh() {
     // route -- and when that window has no trades the route says so, which is a
     // different answer from "nothing happened".
     try {
-      const data = await api(
-        `/footprint?symbol=${el("symbol").value}&timeframe=${el("timeframe").value}` +
-          `&limit=${Math.min(Number(el("limit").value), 40)}`
-      );
+      const data = await loadFootprint();
       footprint = data;
       // Build the candle series from the same response, so the axis and the
       // ladders cannot disagree about which window is on screen.
@@ -567,6 +539,49 @@ function render() {
   el("chartNote").textContent = scene.note || "";
   renderFootprintStats(scene.footprint);
   draw();
+}
+
+/// Milliseconds per bar, for sizing a footprint window.
+const BAR_MS = { "1m": 60_000, "5m": 300_000, "1h": 3_600_000, "4h": 14_400_000 };
+
+/// Fetch a footprint for a window that actually has trades.
+///
+/// ## Why this asks for coverage first
+///
+/// Trades are backfilled in capped chunks, so the *newest* candles almost never
+/// have any -- and asking for them returns a 404. That is correct and useless:
+/// the user selects "Footprint" and gets an error naming a window they have to
+/// work out for themselves.
+///
+/// So the chart asks where the trades are and uses that window. Selecting the
+/// chart type is then enough.
+///
+/// ## Why the column count comes from the viewport
+///
+/// A ladder cell has to fit `0.44 x 2.75` -- about nine characters. Below ~54px
+/// per column the two numbers collide and the ladder stops being readable, which
+/// is what the first version of this looked like: 40 columns of smeared text.
+/// The column count is therefore a layout decision, which is the shell's to
+/// make, and the engine is told how many candles to expect.
+async function loadFootprint() {
+  const symbol = el("symbol").value;
+  const timeframe = el("timeframe").value;
+  const width = el("chart").parentElement.clientWidth || 900;
+
+  const MIN_COLUMN_PX = 54;
+  const columns = Math.max(8, Math.min(40, Math.floor(width / MIN_COLUMN_PX)));
+
+  const coverage = await api(`/footprint/coverage?symbol=${symbol}`);
+  const bar = BAR_MS[timeframe] || 300_000;
+  // The newest `columns` bars of the covered span.
+  const to = coverage.to;
+  const from = Math.max(coverage.from, to - columns * bar);
+
+  // No bucket_size: the route picks one from the window's own price range, so
+  // the row count is readable whatever the instrument costs.
+  return await api(
+    `/footprint?symbol=${symbol}&timeframe=${timeframe}&from=${from}&to=${to}`
+  );
 }
 
 /// Follow the live candle channel.
@@ -924,7 +939,9 @@ async function main() {
   el("password").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(false); });
 
   el("load").addEventListener("click", () => { refresh().then(connectLive); });
-  el("mode").addEventListener("change", render);
+  // Changing the chart type can change the *window* (a footprint uses the
+  // span that has trades), so it refetches rather than just redrawing.
+  el("mode").addEventListener("change", () => { refresh(); });
   el("timeframe").addEventListener("change", () => { refresh().then(connectLive); });
   el("symbol").addEventListener("change", () => { refresh().then(connectLive); });
   el("ask").addEventListener("click", ask);

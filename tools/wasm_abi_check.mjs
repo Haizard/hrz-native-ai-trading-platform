@@ -108,7 +108,11 @@ check(
 );
 
 const footprint = build({ candles: candles(120), width: 900, height: 420, mode: "footprint" });
-check("footprint mode produces cells", footprint.cells.length > 0, `got ${footprint.cells.length}`);
+check(
+  "without trades the profile is drawn instead",
+  footprint.profile.length > 0 && footprint.footprint === null,
+  `${footprint.profile.length} profile bars, footprint=${footprint.footprint}`
+);
 check(
   "and says which footprint it is",
   typeof footprint.note === "string" && footprint.note.includes("no trades are stored"),
@@ -182,8 +186,8 @@ if (grid) {
   check("the summary row sits below the plot", grid.columns[0].summary.y > footprintScene.plot.y + footprintScene.plot.h);
   check(
     "the fallback profile is not also drawn",
-    footprintScene.cells.length === 0 && footprintScene.profile.length === 0,
-    "two footprints at once would overlap"
+    footprintScene.profile.length === 0,
+    "two charts at once would overlap"
   );
 }
 

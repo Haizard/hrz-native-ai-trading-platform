@@ -39,6 +39,7 @@ pub use market::{
     TimeframeCoverage,
 };
 pub use models::Database;
+pub use repositories::TradeCoverage;
 pub use paper::{
     bot_summary, count_audit_events, count_executed_trades, create_owner, find_or_create_strategy,
     find_user_by_email, insert_audit_events, insert_bot, insert_executed_trades, purge_bot,

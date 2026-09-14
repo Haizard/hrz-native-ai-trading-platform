@@ -117,6 +117,7 @@ pub fn router(state: AppState) -> Router {
         .route("/candles", get(market_routes::candles))
         .route("/symbols", get(market_routes::symbols))
         .route("/footprint", get(footprint_routes::footprint))
+        .route("/footprint/coverage", get(footprint_routes::coverage))
         .route("/orderbook", get(market_routes::orderbook))
         .route(
             "/strategies",
