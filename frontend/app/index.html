@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Trading Workstation</title>
+<!--
+  The workstation shell.
+
+  docs/14's decision, recorded 2026-09-14: the chart engine is a Rust crate
+  compiled to wasm32-unknown-unknown, and this page is plain JavaScript. No
+  bundler, no framework, no Node in the deployment image.
+
+  Everything this page draws is geometry the engine computed. There is no
+  arithmetic over market data here -- not one moving average, not one level.
+  If something needs calculating, it belongs in analytics-core or the chart
+  engine, where it is unit-tested natively.
+-->
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2129;
+    --line: #2a313c;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --up: #26a69a;
+    --down: #ef5350;
+    --accent: #58a6ff;
+    --warn: #d29922;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 13px; font-weight: 600; margin: 0 8px 0 0; letter-spacing: .02em; }
+  h1 span { color: var(--muted); font-weight: 400; }
+  select, input, button, textarea {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 8px; font: inherit;
+  }
+  input, textarea { font-family: var(--mono); font-size: 12px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06121f; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .spacer { flex: 1; }
+  #session { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+
+  #signin { display: flex; gap: 6px; align-items: center; padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
+  #signin[hidden] { display: none; }
+  #signinMsg { color: var(--muted); font-size: 11px; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #chartWrap { flex: 1; position: relative; min-width: 0; }
+  #chart { display: block; width: 100%; height: 100%; }
+  #chartMsg {
+    position: absolute; inset: auto 0 40% 0; text-align: center;
+    color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 0 20px;
+  }
+
+  aside { width: 380px; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); }
+  .tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 8px; }
+  .tabs button[aria-selected="true"] { color: var(--text); border-bottom: 2px solid var(--accent); }
+  .pane { flex: 1; overflow: auto; padding: 10px 12px; }
+  .pane[hidden] { display: none; }
+
+  .row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+  .row > input { flex: 1; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+  h2:first-child { margin-top: 0; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-family: var(--mono); font-size: 12px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; text-align: right; }
+  .checks { list-style: none; padding: 0; margin: 6px 0; font-size: 12px; }
+  .checks li { padding: 3px 0; border-bottom: 1px solid var(--line); display: flex; gap: 8px; }
+  .checks .status { font-family: var(--mono); font-size: 10px; text-transform: uppercase; min-width: 52px; }
+  .pass { color: var(--up); } .fail { color: var(--down); } .unknown { color: var(--warn); }
+  pre { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow: auto; font-size: 11px; max-height: 220px; }
+  textarea { width: 100%; min-height: 150px; resize: vertical; }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); font-style: italic; }
+  #chartNote { padding: 6px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; background: var(--panel); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Order-flow workstation <span>· chart by <code>chart-engine</code> (Rust/WASM)</span></h1>
+  <select id="symbol">
+    <option value="BTCUSDT">BTCUSDT</option>
+  </select>
+  <select id="timeframe">
+    <option value="5m" selected>5m</option>
+    <option value="1h">1h</option>
+    <option value="4h">4h</option>
+    <option value="1m">1m</option>
+  </select>
+  <select id="limit">
+    <option value="200">200 bars</option>
+    <option value="500" selected>500 bars</option>
+    <option value="1000">1000 bars</option>
+  </select>
+  <select id="mode">
+    <option value="candles" selected>Candles</option>
+    <option value="footprint">Volume by price</option>
+  </select>
+  <button id="load">Reload</button>
+  <span class="spacer"></span>
+  <span id="session">not signed in</span>
+  <button id="signinToggle">Sign in</button>
+</header>
+
+<div id="signin" hidden>
+  <input id="email" type="email" placeholder="you@example.com" autocomplete="username" />
+  <input id="password" type="password" placeholder="password (8+ characters)" autocomplete="current-password" />
+  <button id="signinGo" class="primary">Sign in</button>
+  <button id="registerGo">Register</button>
+  <span id="signinMsg"></span>
+</div>
+
+<main>
+  <div id="chartWrap">
+    <canvas id="chart"></canvas>
+    <div id="chartMsg" class="empty">Loading the chart engine…</div>
+  </div>
+
+  <aside>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-pane="thesis" aria-selected="true">Thesis</button>
+      <button role="tab" data-pane="strategy" aria-selected="false">Strategy</button>
+      <button role="tab" data-pane="bots" aria-selected="false">Bots</button>
+    </div>
+
+    <div class="pane" id="pane-thesis">
+      <div class="row">
+        <input id="question" placeholder="find me a long setup using my liquidity-sweep skill" />
+        <button id="ask" class="primary">Ask</button>
+      </div>
+      <div id="thesis"><p class="empty">Ask a question. The thesis's own levels are drawn on the chart.</p></div>
+    </div>
+
+    <div class="pane" id="pane-strategy" hidden>
+      <h2>Document</h2>
+      <textarea id="strategySource" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="validate">Validate</button>
+        <button id="save" class="primary">Save</button>
+      </div>
+      <div id="strategyMsg" class="muted"></div>
+
+      <h2>Backtest</h2>
+      <div class="row">
+        <input id="btFrom" value="2026-09-10" />
+        <input id="btTo" value="2026-09-12" />
+        <button id="backtest">Run</button>
+      </div>
+      <div id="backtestOut"></div>
+    </div>
+
+    <div class="pane" id="pane-bots" hidden>
+      <div class="row">
+        <button id="launch" class="primary">Launch paper bot</button>
+        <button id="refreshBots">Refresh</button>
+      </div>
+      <div id="botsOut"><p class="empty">No bots yet.</p></div>
+    </div>
+  </aside>
+</main>
+
+<div id="chartNote"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

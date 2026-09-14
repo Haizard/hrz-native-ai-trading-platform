@@ -1,0 +1,676 @@
+// The workstation shell.
+//
+// docs/14's decision, recorded 2026-09-14: the chart engine is Rust compiled to
+// wasm32-unknown-unknown and this file is plain JavaScript. No bundler, no
+// framework, no Node in the deployment image.
+//
+// ## The rule this file keeps
+//
+// There is no arithmetic over market data here. Not one average, not one level,
+// not one scale factor. The engine returns positioned rectangles and this file
+// fills them. If something needs calculating it belongs in analytics-core or the
+// chart engine, where it is unit-tested natively -- and docs/14 is explicit that
+// a second implementation of the trading math in JavaScript must never exist.
+//
+// The only numbers computed below are layout: how many pixels a device pixel
+// ratio needs, and where a label goes.
+
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Elements
+// ---------------------------------------------------------------------------
+
+const el = (id) => document.getElementById(id);
+const TOKEN_KEY = "atp.token";
+
+let wasm = null; // the chart engine instance
+let scene = null; // the last scene the engine produced
+let thesis = null; // the last thesis, for the chart overlay
+let socket = null; // the live candle channel
+
+// ---------------------------------------------------------------------------
+// Session
+//
+// The token lives in localStorage, which is the wrong place for a long-lived
+// credential and the right place for a development tool. A production shell
+// would keep it in memory with a refresh flow.
+// ---------------------------------------------------------------------------
+
+const token = () => localStorage.getItem(TOKEN_KEY) || "";
+
+function setToken(value) {
+  if (value) localStorage.setItem(TOKEN_KEY, value);
+  else localStorage.removeItem(TOKEN_KEY);
+  paintSession();
+}
+
+function paintSession() {
+  const value = token();
+  el("session").textContent = value ? "signed in" : "not signed in";
+  el("signin").hidden = Boolean(value);
+  el("signinToggle").textContent = value ? "Sign out" : "Sign in";
+}
+
+async function api(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (token()) headers.authorization = `Bearer ${token()}`;
+  const response = await fetch(path, { ...options, headers });
+  const text = await response.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
+
+  if (!response.ok) {
+    // docs/12's envelope: { error: { code, message, details } }.
+    const error = body && body.error;
+    const message = (error && (error.message || error.code)) ||
+      (typeof error === "string" ? error : null) ||
+      `${response.status} ${response.statusText}`;
+    const thrown = new Error(message);
+    thrown.code = error && error.code;
+    thrown.status = response.status;
+    thrown.details = error && error.details;
+    throw thrown;
+  }
+  return body;
+}
+
+async function signIn(register) {
+  const email = el("email").value.trim();
+  const password = el("password").value;
+  const msg = el("signinMsg");
+  if (!email || !password) { msg.textContent = "email and password, please"; return; }
+  msg.textContent = register ? "Registering…" : "Signing in…";
+  try {
+    const res = await api(register ? "/auth/register" : "/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    setToken(res.token);
+    msg.textContent = `signed in as ${res.user.email}`;
+  } catch (e) {
+    msg.textContent = e.message;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The chart engine
+// ---------------------------------------------------------------------------
+
+const ENGINE_URL = "/chart_engine.wasm";
+
+async function loadEngine() {
+  const response = await fetch(ENGINE_URL);
+  if (!response.ok) {
+    throw new Error(
+      `${ENGINE_URL} is ${response.status}. Run \`cargo run -p xtask -- build-frontend\` to build it.`
+    );
+  }
+  const bytes = await response.arrayBuffer();
+  // No wasm-bindgen: the module exports plain functions, so a plain
+  // instantiation is the whole glue.
+  const { instance } = await WebAssembly.instantiate(bytes, {});
+  return instance.exports;
+}
+
+/// Ask the engine for a scene.
+///
+/// The contract is four calls: allocate, write, build, read back.
+function buildScene(request) {
+  const json = new TextEncoder().encode(JSON.stringify(request));
+  const pointer = wasm.alloc(json.length);
+  new Uint8Array(wasm.memory.buffer, pointer, json.length).set(json);
+
+  const status = wasm.build_scene(pointer, json.length);
+  wasm.dealloc(pointer, json.length);
+
+  if (status !== 0) {
+    const start = wasm.last_error_ptr();
+    const length = wasm.last_error_len();
+    const message = new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, start, length));
+    throw new Error(message || "the chart engine refused the request");
+  }
+
+  const start = wasm.scene_ptr();
+  const length = wasm.scene_len();
+  const bytes = new Uint8Array(wasm.memory.buffer, start, length).slice();
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+//
+// Every coordinate below comes from the scene. The only arithmetic is the
+// device-pixel-ratio scale, which is a display concern rather than a market one.
+// ---------------------------------------------------------------------------
+
+const COLORS = {
+  up: "#26a69a",
+  down: "#ef5350",
+  wick: "#8b949e",
+  profile: "#30363d",
+  value: "#58a6ff",
+  grid: "#21262d",
+  text: "#8b949e",
+  vwap: "#d29922",
+  poc: "#e6edf3",
+  vah: "#8b949e",
+  val: "#8b949e",
+  entry: "#58a6ff",
+  stop: "#ef5350",
+  target: "#26a69a",
+};
+
+function draw() {
+  const canvas = el("chart");
+  const wrap = canvas.parentElement;
+  const ratio = window.devicePixelRatio || 1;
+  const width = wrap.clientWidth;
+  const height = wrap.clientHeight;
+  canvas.width = Math.max(1, Math.floor(width * ratio));
+  canvas.height = Math.max(1, Math.floor(height * ratio));
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  if (!scene) return;
+
+  drawGrid(ctx, scene);
+  if (scene.cells.length) drawCells(ctx, scene);
+  if (scene.profile.length) drawProfile(ctx, scene);
+  if (scene.candles.length) drawCandles(ctx, scene);
+  drawLevels(ctx, scene);
+  drawAxis(ctx, scene);
+  if (thesis) drawThesis(ctx, scene, thesis);
+}
+
+function drawGrid(ctx, scene) {
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  ctx.font = "10px ui-monospace, monospace";
+  ctx.fillStyle = COLORS.text;
+  for (const tick of scene.ticks) {
+    ctx.beginPath();
+    ctx.moveTo(scene.plot.x, tick.y);
+    ctx.lineTo(scene.plot.x + scene.plot.w, tick.y);
+    ctx.stroke();
+    ctx.fillText(tick.price.toFixed(2), scene.plot.x + scene.plot.w + 6, tick.y + 3);
+  }
+}
+
+function drawCandles(ctx, scene) {
+  for (const bar of scene.candles) {
+    const colour = bar.up ? COLORS.up : COLORS.down;
+    ctx.strokeStyle = colour;
+    ctx.fillStyle = colour;
+    // The wick.
+    ctx.beginPath();
+    ctx.moveTo(bar.x + bar.w / 2, bar.wick_top);
+    ctx.lineTo(bar.x + bar.w / 2, bar.wick_bottom);
+    ctx.stroke();
+    // The body. A doji has zero height and would vanish, so it gets one pixel.
+    const height = Math.max(1, bar.body_bottom - bar.body_top);
+    ctx.fillRect(bar.x, bar.body_top, bar.w, height);
+  }
+}
+
+function drawProfile(ctx, scene) {
+  for (const bar of scene.profile) {
+    // Buy share on the left, sell on the right, so the split is visible without
+    // a second chart.
+    ctx.fillStyle = COLORS.profile;
+    ctx.fillRect(bar.x, bar.y, bar.w, bar.h);
+    ctx.fillStyle = bar.in_value_area ? COLORS.value : COLORS.up;
+    ctx.globalAlpha = 0.55;
+    ctx.fillRect(bar.x, bar.y, bar.w * bar.buy_ratio, bar.h);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawCells(ctx, scene) {
+  for (const cell of scene.cells) {
+    const total = cell.buy + cell.sell;
+    // Opacity carries the volume; hue carries the side. Two encodings, because
+    // one alone is unreadable at this row height.
+    ctx.globalAlpha = total > 0 ? 0.18 : 0.05;
+    ctx.fillStyle = cell.delta >= 0 ? COLORS.up : COLORS.down;
+    ctx.fillRect(cell.x, cell.y, cell.w, cell.h);
+    ctx.globalAlpha = 1;
+
+    ctx.font = "10px ui-monospace, monospace";
+    ctx.fillStyle = cell.in_value_area ? COLORS.text : COLORS.text;
+    ctx.fillText(cell.price.toFixed(2), cell.x + 4, cell.y + cell.h - 1);
+    if (total > 0) {
+      ctx.fillStyle = cell.delta >= 0 ? COLORS.up : COLORS.down;
+      ctx.fillText(
+        `${cell.buy.toFixed(1)} × ${cell.sell.toFixed(1)}`,
+        cell.x + 60,
+        cell.y + cell.h - 1
+      );
+    }
+  }
+}
+
+function drawLevels(ctx, scene) {
+  for (const level of scene.levels) {
+    ctx.strokeStyle = COLORS[level.kind] || COLORS.text;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(scene.plot.x, level.y);
+    ctx.lineTo(scene.plot.x + scene.plot.w, level.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = COLORS[level.kind] || COLORS.text;
+    ctx.font = "10px ui-monospace, monospace";
+    ctx.fillText(level.kind.toUpperCase(), scene.plot.x + 4, level.y - 3);
+  }
+}
+
+function drawAxis(ctx, scene) {
+  ctx.fillStyle = COLORS.text;
+  ctx.font = "10px ui-monospace, monospace";
+  const from = new Date(scene.from / 1e6);
+  const to = new Date(scene.to / 1e6);
+  ctx.fillText(from.toISOString().slice(0, 16).replace("T", " "), scene.plot.x, scene.height - 8);
+  const label = to.toISOString().slice(0, 16).replace("T", " ");
+  ctx.fillText(label, scene.plot.x + scene.plot.w - ctx.measureText(label).width, scene.height - 8);
+}
+
+/// Highlight the thesis's own levels.
+///
+/// docs/14: "the ability to highlight the exact chart region(s) referenced in
+/// the AI's explanation (map thesis fields like `entry_price`/timestamps back to
+/// chart coordinates)". So the stop-to-target band is shaded and the three
+/// prices are drawn -- the numbers come from the thesis, the coordinates come
+/// from the engine's own price scale.
+function drawThesis(ctx, scene, thesis) {
+  const span = scene.price_max - scene.price_min;
+  if (!(span > 0)) return;
+  const y = (price) =>
+    scene.plot.y + scene.plot.h - ((price - scene.price_min) / span) * scene.plot.h;
+
+  const stop = y(thesis.stop_price);
+  const target = y(thesis.target_price);
+  const entry = y(thesis.entry_price);
+
+  ctx.globalAlpha = 0.12;
+  ctx.fillStyle = thesis.direction === "long" ? COLORS.target : COLORS.stop;
+  ctx.fillRect(scene.plot.x, Math.min(stop, target), scene.plot.w, Math.abs(target - stop));
+  ctx.globalAlpha = 1;
+
+  for (const [price, colour, label] of [
+    [thesis.stop_price, COLORS.stop, "stop"],
+    [thesis.entry_price, COLORS.entry, "entry"],
+    [thesis.target_price, COLORS.target, "target"],
+  ]) {
+    const yy = y(price);
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(scene.plot.x, yy);
+    ctx.lineTo(scene.plot.x + scene.plot.w, yy);
+    ctx.stroke();
+    ctx.fillStyle = colour;
+    ctx.font = "bold 10px ui-monospace, monospace";
+    const text = `${label} ${price.toFixed(2)}`;
+    ctx.fillText(text, scene.plot.x + scene.plot.w - ctx.measureText(text).width - 4, yy - 3);
+  }
+  ctx.lineWidth = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Candles, and the live channel
+// ---------------------------------------------------------------------------
+
+async function loadCandles() {
+  const symbol = el("symbol").value;
+  const timeframe = el("timeframe").value;
+  const limit = el("limit").value;
+  const response = await api(
+    `/candles?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`
+  );
+  return response.candles || [];
+}
+
+let candles = [];
+
+async function refresh() {
+  const message = el("chartMsg");
+  try {
+    candles = await loadCandles();
+    render();
+    message.textContent = candles.length ? "" : "no candles in this window";
+  } catch (e) {
+    message.textContent = e.message;
+  }
+}
+
+function render() {
+  if (!wasm) return;
+  const wrap = el("chart").parentElement;
+  scene = buildScene({
+    candles,
+    width: wrap.clientWidth,
+    height: wrap.clientHeight,
+    mode: el("mode").value,
+    lines: ["vwap", "poc", "vah", "val"],
+  });
+  el("chartNote").textContent = scene.note || "";
+  draw();
+}
+
+/// Follow the live candle channel.
+///
+/// The token goes in the query string because a browser cannot set a header on
+/// a WebSocket handshake. The channel is public anyway, but passing the token
+/// when we have one keeps the code honest about which channels need it.
+function connectLive() {
+  if (socket) socket.close();
+  const symbol = el("symbol").value;
+  const timeframe = el("timeframe").value;
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const query = token() ? `?token=${encodeURIComponent(token())}` : "";
+
+  socket = new WebSocket(`${scheme}://${location.host}/ws/market/${symbol}/${timeframe}${query}`);
+  socket.onmessage = (event) => {
+    let frame;
+    try {
+      frame = JSON.parse(typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data));
+    } catch { return; }
+
+    if (frame.type === "data") {
+      // Replace the last candle if it is the same bucket, else append. This is
+      // the only market-data decision this file makes, and it is about
+      // identity, not value.
+      const incoming = frame.payload;
+      const last = candles[candles.length - 1];
+      if (last && last.open_time === incoming.open_time) candles[candles.length - 1] = incoming;
+      else candles.push(incoming);
+      if (candles.length > Number(el("limit").value) + 50) candles.shift();
+      render();
+    } else if (frame.type === "lagged") {
+      el("chartNote").textContent =
+        `the live feed dropped ${frame.dropped} candles; reload to resynchronise`;
+    }
+  };
+  socket.onclose = () => { socket = null; };
+}
+
+// ---------------------------------------------------------------------------
+// Thesis
+// ---------------------------------------------------------------------------
+
+const STATUS_CLASS = { pass: "pass", fail: "fail", unknown: "unknown" };
+
+function renderThesis(response) {
+  const t = response.thesis;
+  thesis = t;
+
+  const checks = [...(t.higher_timeframe_checks || []), ...(t.order_flow_checks || [])]
+    .map(
+      (check) => `<li>
+        <span class="status ${STATUS_CLASS[check.status] || "unknown"}">${check.status}</span>
+        <span><strong>${escapeHtml(check.label)}</strong><br />
+        <span class="muted">${escapeHtml(check.detail)}</span></span>
+      </li>`
+    )
+    .join("");
+
+  el("thesis").innerHTML = `
+    <dl class="kv">
+      <dt>direction</dt><dd>${t.direction}</dd>
+      <dt>confidence</dt><dd>${t.confidence_pct.toFixed(0)}%</dd>
+      <dt>entry</dt><dd>${t.entry_price.toFixed(2)}</dd>
+      <dt>stop</dt><dd>${t.stop_price.toFixed(2)}</dd>
+      <dt>target</dt><dd>${t.target_price.toFixed(2)}</dd>
+      <dt>R:R</dt><dd>${t.risk_reward.toFixed(2)}</dd>
+      <dt>skill</dt><dd>${escapeHtml(t.skill_used || "—")}</dd>
+    </dl>
+    <h2>Checks</h2>
+    <ul class="checks">${checks}</ul>
+    <h2>Invalidation</h2>
+    <p class="muted">${escapeHtml(t.invalidation || "—")}</p>
+    <h2>Narrative</h2>
+    <pre>${escapeHtml(t.narrative || "")}</pre>
+  `;
+  // The levels are on the chart now, which is the point of asking.
+  draw();
+}
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+}
+
+async function ask() {
+  const question = el("question").value.trim();
+  if (!question) return;
+  const button = el("ask");
+  button.disabled = true;
+  button.textContent = "Thinking…";
+  el("thesis").innerHTML = `<p class="empty">Asking the agent…</p>`;
+  try {
+    const response = await api("/agent/ask", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbol: el("symbol").value,
+        question,
+        timeframes: [el("timeframe").value],
+      }),
+    });
+    renderThesis(response);
+  } catch (e) {
+    thesis = null;
+    el("thesis").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+    draw();
+  } finally {
+    button.disabled = false;
+    button.textContent = "Ask";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Strategy, backtest, bots
+// ---------------------------------------------------------------------------
+
+let savedStrategyId = null;
+
+async function validateStrategy() {
+  const message = el("strategyMsg");
+  message.textContent = "Validating…";
+  try {
+    const result = await api("/strategies/validate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: el("strategySource").value }),
+    });
+    message.innerHTML = `<span class="pass">valid</span> — ${escapeHtml(result.name)} v${escapeHtml(result.version)}`;
+  } catch (e) {
+    // docs/12 carries the validator's field paths in details.issues; showing
+    // them is the whole reason the envelope has a details field.
+    const issues = (e.details && e.details.issues) || [];
+    message.innerHTML =
+      `<span class="fail">${escapeHtml(e.message)}</span>` +
+      (issues.length
+        ? `<ul class="checks">${issues
+            .map((i) => `<li><span class="status fail">${escapeHtml(i.path)}</span><span>${escapeHtml(i.message)}</span></li>`)
+            .join("")}</ul>`
+        : "");
+  }
+}
+
+async function saveStrategy() {
+  const message = el("strategyMsg");
+  try {
+    const saved = await api("/strategies", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: el("strategySource").value, created_by: "visual_builder" }),
+    });
+    savedStrategyId = saved.id;
+    message.innerHTML = `<span class="pass">saved</span> — ${escapeHtml(saved.id)}`;
+  } catch (e) {
+    message.innerHTML = `<span class="fail">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function runBacktest() {
+  if (!savedStrategyId) {
+    el("backtestOut").innerHTML = `<p class="fail">Save the strategy first.</p>`;
+    return;
+  }
+  el("backtestOut").innerHTML = `<p class="empty">Running…</p>`;
+  try {
+    const result = await api(`/strategies/${savedStrategyId}/backtest`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbol: el("symbol").value,
+        from: el("btFrom").value,
+        to: el("btTo").value,
+      }),
+    });
+    const r = result.report;
+    el("backtestOut").innerHTML = `
+      <dl class="kv">
+        <dt>trades</dt><dd>${r.total_trades}</dd>
+        <dt>win rate</dt><dd>${(r.win_rate * 100).toFixed(1)}%</dd>
+        <dt>average R</dt><dd>${r.average_r.toFixed(3)}</dd>
+        <dt>net</dt><dd>${r.net_return_pct.toFixed(2)}R</dd>
+        <dt>max DD</dt><dd>${r.max_drawdown_pct.toFixed(2)}R</dd>
+      </dl>
+      <p class="muted">${escapeHtml(r.assumptions?.return_units || "")}</p>`;
+  } catch (e) {
+    el("backtestOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function launchBot() {
+  if (!savedStrategyId) {
+    el("botsOut").innerHTML = `<p class="fail">Save the strategy first.</p>`;
+    return;
+  }
+  try {
+    const bot = await api("/bots", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ strategy_id: savedStrategyId }),
+    });
+    el("botsOut").innerHTML = `<p class="pass">started ${escapeHtml(bot.id)}</p>`;
+    refreshBots();
+  } catch (e) {
+    el("botsOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function refreshBots() {
+  try {
+    const bots = await api("/bots");
+    if (!bots.length) {
+      el("botsOut").innerHTML = `<p class="empty">No bots yet.</p>`;
+      return;
+    }
+    el("botsOut").innerHTML = bots
+      .map(
+        (bot) => `<dl class="kv">
+          <dt>id</dt><dd>${escapeHtml(bot.id.slice(0, 8))}</dd>
+          <dt>status</dt><dd>${escapeHtml(bot.status)}</dd>
+          <dt>supervised</dt><dd>${bot.supervised_here}</dd>
+          <dt>trades</dt><dd>${bot.activity?.trades ?? 0}</dd>
+          <dt>decisions</dt><dd>${bot.activity?.decisions ?? 0}</dd>
+          <dt>cumulative R</dt><dd>${(bot.activity?.cumulative_r ?? 0).toFixed(3)}</dd>
+        </dl>
+        <div class="row">
+          <button data-bot="${bot.id}" data-act="pause">Pause</button>
+          <button data-bot="${bot.id}" data-act="resume">Resume</button>
+          <button data-bot="${bot.id}" data-act="delete">Delete</button>
+        </div>`
+      )
+      .join("<hr />");
+  } catch (e) {
+    el("botsOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function botAction(id, act) {
+  try {
+    if (act === "delete") await api(`/bots/${id}`, { method: "DELETE" });
+    else await api(`/bots/${id}/${act}`, { method: "POST" });
+    refreshBots();
+  } catch (e) {
+    el("botsOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+
+function selectPane(name) {
+  for (const button of document.querySelectorAll(".tabs button")) {
+    button.setAttribute("aria-selected", String(button.dataset.pane === name));
+  }
+  for (const pane of document.querySelectorAll(".pane")) {
+    pane.hidden = pane.id !== `pane-${name}`;
+  }
+}
+
+async function main() {
+  paintSession();
+
+  document.querySelectorAll(".tabs button").forEach((button) =>
+    button.addEventListener("click", () => selectPane(button.dataset.pane))
+  );
+
+  el("signinToggle").addEventListener("click", () => {
+    if (token()) { setToken(""); el("signinMsg").textContent = ""; }
+    else { el("signin").hidden = false; el("email").focus(); }
+  });
+  el("signinGo").addEventListener("click", () => signIn(false));
+  el("registerGo").addEventListener("click", () => signIn(true));
+  el("password").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(false); });
+
+  el("load").addEventListener("click", () => { refresh().then(connectLive); });
+  el("mode").addEventListener("change", render);
+  el("timeframe").addEventListener("change", () => { refresh().then(connectLive); });
+  el("symbol").addEventListener("change", () => { refresh().then(connectLive); });
+  el("ask").addEventListener("click", ask);
+  el("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
+
+  el("validate").addEventListener("click", validateStrategy);
+  el("save").addEventListener("click", saveStrategy);
+  el("backtest").addEventListener("click", runBacktest);
+  el("launch").addEventListener("click", launchBot);
+  el("refreshBots").addEventListener("click", refreshBots);
+  el("botsOut").addEventListener("click", (e) => {
+    const button = e.target.closest("button[data-bot]");
+    if (button) botAction(button.dataset.bot, button.dataset.act);
+  });
+
+  window.addEventListener("resize", () => { if (scene) render(); });
+
+  try {
+    wasm = await loadEngine();
+    el("chartMsg").textContent = "";
+  } catch (e) {
+    el("chartMsg").textContent = e.message;
+    return;
+  }
+
+  // A starting document, so the Strategy tab is not an empty box.
+  try {
+    const strategies = await api("/strategies").catch(() => []);
+    if (strategies.length) {
+      savedStrategyId = strategies[0].id;
+      el("strategySource").value = JSON.stringify(strategies[0].document, null, 2);
+    }
+  } catch { /* signed out is fine */ }
+
+  await refresh();
+  connectLive();
+}
+
+main();

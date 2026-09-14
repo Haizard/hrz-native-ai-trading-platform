@@ -31,6 +31,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
@@ -88,8 +89,18 @@ pub struct HealthResponse {
 /// container can point at a mounted volume.
 pub const SKILLS_DIR_ENV: &str = "SKILLS_DIR";
 
-/// Where the MVP page is served from.
+/// Where the workstation is served from.
+///
+/// `docs/14`'s decision put the chart engine in `frontend/app` beside a
+/// vanilla-JS shell, so that directory is the application.
 pub const FRONTEND_DIR_ENV: &str = "FRONTEND_DIR";
+
+/// Where the Phase 5 stopgap page lives.
+///
+/// Kept reachable at `/mvp` rather than deleted: it is a working chart, it is
+/// referenced by `docs/02`, and having two ways to look at the same API is
+/// useful while the workstation is new.
+const MVP_DIR: &str = "frontend/mvp";
 
 /// Build the router.
 ///
@@ -150,34 +161,103 @@ pub fn router(state: AppState) -> Router {
         .route("/ws/bots/{bot_id}", get(ws::bot))
         // Served from the same origin as the API, so the page needs no CORS
         // policy and no second process.
-        .route("/", get(index))
+        //
+        // Three explicit routes rather than a static-file service: the shell is
+        // exactly three files, and naming them means an unknown path is a JSON
+        // 404 from the API rather than an HTML one from a directory listing.
+        .route("/", get(app_index))
+        .route("/app.js", get(app_js))
+        .route("/chart_engine.wasm", get(chart_wasm))
+        .route("/mvp", get(index))
         .with_state(state)
 }
 
-/// Serve the MVP chart at `/`.
+/// Where the workstation's files live.
+fn frontend_dir() -> String {
+    std::env::var(FRONTEND_DIR_ENV).unwrap_or_else(|_| "frontend/app".into())
+}
+
+/// Read one frontend file, or explain why it is missing.
 ///
-/// The page is one self-contained file -- no bundled assets, no build step --
-/// so a handler reading it is enough and avoids pulling in a static-file
-/// service for a single response. A missing file is a 404, not a boot
-/// failure: the container may legitimately run the API without the page.
+/// A missing file is a 404 rather than a boot failure: the container may
+/// legitimately run the API without the page. "Legitimately" is doing work in
+/// that sentence, so the warning says which of the two it is -- a deployed
+/// image that forgot to ship `frontend/` is not the same as an operator who set
+/// [`FRONTEND_DIR_ENV`] somewhere else, and only one of them is a bug.
+fn read_frontend(name: &str) -> Result<Vec<u8>, StatusCode> {
+    let path = std::path::Path::new(&frontend_dir()).join(name);
+    std::fs::read(&path).map_err(|e| {
+        warn!(
+            path = %path.display(),
+            error = %e,
+            env = FRONTEND_DIR_ENV,
+            "frontend file not served (404). If this is a deployed image, it does not contain \
+             frontend/ -- the Dockerfile has to copy it."
+        );
+        StatusCode::NOT_FOUND
+    })
+}
+
+/// The workstation at `/`.
 ///
-/// "Legitimately" is doing work in that sentence, so the warning says which of
-/// the two it is. A deployed image that forgot to ship `frontend/` is not the
-/// same as an operator who set [`FRONTEND_DIR_ENV`] somewhere else, and only
-/// one of them is a bug.
+/// # Errors
+/// 404 when the shell is not present beside the binary.
+pub async fn app_index() -> Result<axum::response::Html<String>, StatusCode> {
+    let bytes = read_frontend("index.html")?;
+    String::from_utf8(bytes)
+        .map(axum::response::Html)
+        .map_err(|e| {
+            warn!("frontend/app/index.html is not valid UTF-8: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+/// The shell's script at `/app.js`.
+///
+/// # Errors
+/// 404 when the shell is not present beside the binary.
+pub async fn app_js() -> Result<axum::response::Response, StatusCode> {
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/javascript; charset=utf-8",
+        )],
+        read_frontend("app.js")?,
+    )
+        .into_response())
+}
+
+/// The chart engine at `/chart_engine.wasm`.
+///
+/// The content type matters: `WebAssembly.instantiateStreaming` refuses a
+/// response that is not `application/wasm`, and falling back to
+/// `instantiate(arrayBuffer)` is a slower path nobody should need.
+///
+/// # Errors
+/// 404 when the engine has not been built. `cargo run -p xtask --
+/// build-frontend` puts it there.
+pub async fn chart_wasm() -> Result<axum::response::Response, StatusCode> {
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/wasm")],
+        read_frontend("chart_engine.wasm")?,
+    )
+        .into_response())
+}
+
+/// The Phase 5 chart, at `/mvp`.
+///
+/// Kept reachable rather than deleted: it is a working chart, `docs/02`
+/// references it, and two ways to look at the same API is useful while the
+/// workstation is new.
+///
+/// # Errors
+/// 404 when the page is not present beside the binary.
 pub async fn index() -> Result<axum::response::Html<String>, StatusCode> {
-    let dir = std::env::var(FRONTEND_DIR_ENV).unwrap_or_else(|_| "frontend/mvp".into());
-    let path = std::path::Path::new(&dir).join("index.html");
+    let path = std::path::Path::new(MVP_DIR).join("index.html");
     match std::fs::read_to_string(&path) {
         Ok(html) => Ok(axum::response::Html(html)),
         Err(e) => {
-            warn!(
-                path = %path.display(),
-                error = %e,
-                env = FRONTEND_DIR_ENV,
-                "MVP page not served (404). If this is a deployed image, it does not contain \
-                 frontend/ -- the Dockerfile has to copy it."
-            );
+            warn!(path = %path.display(), error = %e, "the MVP page is not served (404)");
             Err(StatusCode::NOT_FOUND)
         }
     }

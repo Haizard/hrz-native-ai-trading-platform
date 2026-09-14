@@ -1,0 +1,25 @@
+[package]
+name = "chart-engine"
+description = "The chart's scene builder: candles, volume profile and footprint to positioned rectangles."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+# `cdylib` is the browser artifact; `rlib` exists so the scene builder can be
+# unit-tested on the host, where assertions and a debugger work. The ABI shim is
+# `cfg(target_arch = "wasm32")` and is never compiled for the host -- the same
+# split `sandbox-guest` uses, for the same reason.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The whole point of this crate: the chart draws what analytics-core computes,
+# and reimplements none of it. docs/14 forbids a second implementation of the
+# trading math in TypeScript, and this is how that rule is kept -- there is no
+# TypeScript.
+analytics-core = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }

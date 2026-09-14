@@ -3,6 +3,10 @@ resolver = "2"
 members = [
     "crates/*",
     "tools/*",
+    # The chart engine is a wasm crate, not a service, so it is not under
+    # `crates/`. It is still a workspace member so `cargo test` and `cargo
+    # clippy --workspace` cover it.
+    "frontend/chart-engine",
 ]
 
 [workspace.package]

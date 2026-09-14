@@ -65,6 +65,8 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Build the WASM chart engine and place it beside the shell.
+    BuildFrontend,
     /// Run the live collector until interrupted.
     Collect {
         /// Symbol to collect.
@@ -132,6 +134,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Collect { symbol, no_persist } => {
             collect(&symbol, !no_persist).await?;
+        }
+        Command::BuildFrontend => {
+            build_frontend()?;
         }
     }
 
@@ -241,6 +246,49 @@ async fn collect(symbol: &str, persist: bool) -> anyhow::Result<()> {
     trade_handle.abort();
     book_handle.abort();
 
+    Ok(())
+}
+
+/// Build the chart engine for the browser and put it where the shell expects.
+///
+/// `docs/14`: the chart is a Rust crate compiled to `wasm32-unknown-unknown`,
+/// and the shell loads it from `frontend/app`. This is the step between the two.
+///
+/// Deliberately a `cargo` invocation rather than a build script: the wasm is an
+/// *artifact to ship*, not something every `cargo build` should regenerate. The
+/// gateway serves whatever `.wasm` is checked in beside the shell, so a
+/// deployment that never runs this command still serves a working chart -- just
+/// not a rebuilt one.
+fn build_frontend() -> anyhow::Result<()> {
+    use anyhow::{bail, Context};
+
+    const ARTIFACT: &str = "target/wasm32-unknown-unknown/release/chart_engine.wasm";
+    const DESTINATION: &str = "frontend/app/chart_engine.wasm";
+
+    println!("building chart-engine for wasm32-unknown-unknown");
+    let status = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "chart-engine",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--release",
+        ])
+        .status()
+        .context("could not run cargo; is it on PATH?")?;
+
+    if !status.success() {
+        bail!("the wasm build failed");
+    }
+
+    std::fs::create_dir_all("frontend/app").context("could not create frontend/app")?;
+    std::fs::copy(ARTIFACT, DESTINATION)
+        .with_context(|| format!("could not copy {ARTIFACT} to {DESTINATION}"))?;
+
+    let bytes = std::fs::metadata(DESTINATION).map(|m| m.len()).unwrap_or(0);
+    println!("wrote {DESTINATION} ({bytes} bytes)");
+    println!("the gateway serves it at /chart_engine.wasm");
     Ok(())
 }
 
