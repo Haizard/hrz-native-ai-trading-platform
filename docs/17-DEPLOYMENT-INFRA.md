@@ -14,7 +14,11 @@ environments, with CI/CD from Phase 0 onward.
   gating in `docs/15-RISK-COMPLIANCE.md`.
 
 ## CI/CD (set up in Phase 0, per `02-ROADMAP.md`)
-- On every PR: `fmt`, `clippy`, `test`, and the wasm test target.
+- On every PR: `fmt`, `clippy`, `test`, the wasm test target, the sandbox guest's
+  dependency graph, and the **chart engine** — `xtask build-frontend` builds the wasm
+  that actually ships and `tools/wasm_abi_check.mjs` instantiates those same bytes in
+  Node. That last one is the only check that can see a renamed export, which is not a
+  compile error anywhere; it is a blank canvas in a browser nobody is watching.
 - On merge to main: build release binaries/containers for each service crate, build the
   frontend WASM bundle, run the regression/replay tests from
   `docs/16-TESTING-STRATEGY.md`, then deploy to staging automatically; production

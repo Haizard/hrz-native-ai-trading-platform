@@ -102,6 +102,34 @@ jobs:
             exit 1
           fi
 
+  # The chart engine is a wasm module the shell loads *by name*, so no Rust test
+  # can see whether it still builds, and no browser is watching when it does not.
+  # Two things are checked here that nothing else covers:
+  #
+  #   1. `xtask build-frontend` still produces the artifact that actually ships;
+  #   2. the four exported functions and the JSON contract still match what
+  #      `app.js` calls -- a rename is not a compile error, it is a blank canvas.
+  #
+  # (2) is why this job needs Node: `tools/wasm_abi_check.mjs` instantiates the
+  # same bytes the browser fetches. The native unit tests cover the scene
+  # builder; only this covers the seam between it and the shell.
+  frontend:
+    name: Chart engine (wasm + ABI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the engine the way it ships
+        run: cargo run -p xtask -- build-frontend
+      - name: Exercise the ABI the shell depends on
+        run: node tools/wasm_abi_check.mjs frontend/app/chart_engine.wasm
+
   build:
     name: Build
     runs-on: ubuntu-latest
