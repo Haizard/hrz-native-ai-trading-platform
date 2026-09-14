@@ -44,6 +44,11 @@ pub struct ApiError {
     code: String,
     message: String,
     details: Option<serde_json::Value>,
+    /// Seconds a client should wait, rendered as `Retry-After`.
+    ///
+    /// A header rather than only a field, because it is the one piece of an
+    /// error that generic HTTP clients and retry libraries already understand.
+    retry_after: Option<u64>,
 }
 
 impl ApiError {
@@ -59,6 +64,7 @@ impl ApiError {
             StatusCode::FORBIDDEN => "FORBIDDEN",
             StatusCode::NOT_FOUND => "NOT_FOUND",
             StatusCode::CONFLICT => "CONFLICT",
+            StatusCode::TOO_MANY_REQUESTS => "RATE_LIMITED",
             StatusCode::UNPROCESSABLE_ENTITY => "UNPROCESSABLE_ENTITY",
             StatusCode::NOT_IMPLEMENTED => "NOT_IMPLEMENTED",
             StatusCode::BAD_GATEWAY => "UPSTREAM_FAILED",
@@ -70,6 +76,7 @@ impl ApiError {
             code: code.to_string(),
             message: message.into(),
             details: None,
+            retry_after: None,
         }
     }
 
@@ -81,7 +88,15 @@ impl ApiError {
             code: code.into(),
             message: message.into(),
             details: None,
+            retry_after: None,
         }
+    }
+
+    /// Tell the client how long to wait.
+    #[must_use]
+    pub const fn with_retry_after(mut self, seconds: u64) -> Self {
+        self.retry_after = Some(seconds);
+        self
     }
 
     /// Attach structured detail.
@@ -287,7 +302,15 @@ impl IntoResponse for ApiError {
             error["details"] = details;
         }
 
-        (self.status, Json(json!({ "error": error }))).into_response()
+        let mut response = (self.status, Json(json!({ "error": error }))).into_response();
+        if let Some(seconds) = self.retry_after {
+            if let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string()) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }
 

@@ -23,6 +23,59 @@ trading math in TypeScript — the chart engine, whichever shell hosts it, calls
 same Rust analytics code, compiled to WASM. Make this decision explicitly and document
 it in this file once made; don't let it drift undecided.
 
+## DECISION — 2026-09-14: Rust/WASM chart, vanilla-JS shell
+
+**Chosen: the target architecture, not the exception.** The chart engine is a
+Rust crate (`frontend/chart-engine`) compiled to `wasm32-unknown-unknown` and
+driven from plain JavaScript. There is no Node toolchain, no bundler and no
+framework.
+
+### Why
+
+1. **The deployment is Rust-only, and that is worth keeping.** The image builds
+   two binaries in one stage and copies them into `debian:bookworm-slim`. Adding
+   a React shell means adding a Node build stage, a package manager, a lockfile
+   to audit, and a second dependency tree to keep current — for a UI that is
+   mostly forms. That cost lands on every future deploy, not once.
+2. **The alternative's advantage does not apply yet.** The exception exists for
+   "if agent/team velocity in Rust web frameworks proves significantly slower".
+   It has not been measured, because there is no UI to measure it on. Choosing
+   the heavier stack before the measurement is the wrong order.
+3. **Nothing about the chart gets easier with React.** The parts that matter —
+   scales, price/time transforms, footprint aggregation, volume profile — are
+   arithmetic over `analytics-core`, and `docs/14` already forbids doing them in
+   TypeScript. React would host the canvas; it would not help draw it.
+4. **The wasm target is already installed** and `analytics-core` already
+   compiles for it, because `sandbox-guest` depends on that.
+
+### What this commits us to
+
+- **No JS arithmetic over market data.** The shell fetches `/candles`, hands the
+  JSON to the wasm module, and draws the scene it returns. Any computation the
+  UI wants that is not pure layout belongs in `analytics-core` or the chart
+  engine, where it is unit-tested natively.
+- **The scene is data, not drawing instructions.** The engine returns positioned
+  rectangles, lines and labels; the shell decides nothing about what a candle
+  looks like. That is what keeps the engine testable without a browser.
+- **If a Node build is ever genuinely needed** for panels and forms, the
+  exception above still applies and the chart module is already the right shape
+  to mount into it. This decision is reversible at the shell, which is the
+  cheapest place for it to be reversible.
+
+### How the wasm is produced and served
+
+`frontend/chart-engine` is a `cdylib` + `rlib`: the `cdylib` is the browser
+artifact and the `rlib` exists so the scene builder can be unit-tested on the
+host, where assertions and a debugger work. `xtask build-frontend` compiles it
+and copies the `.wasm` next to the shell, which the gateway serves from
+`frontend/app`.
+
+There is no `wasm-bindgen`. The module exports four functions — `alloc`,
+`dealloc`, `build_scene` and accessors for the result buffer — and the shell
+copies a JSON request in and a JSON scene out. That is a few lines of glue on
+each side instead of a code generator, a CLI tool and a matching version
+requirement between them.
+
 ## Chart engine architecture (either hosting option)
 
 ```

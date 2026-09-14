@@ -36,6 +36,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use analytics_core::types::Candle;
+use serde::Serialize;
+use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -52,6 +54,12 @@ use trading_engine::{BotSession, PaperBot};
 /// that takes a third of a second and one that takes thirty -- and because a
 /// deployment that wants a tighter audit trail should not need a rebuild.
 pub const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How many bot events to buffer for a slow watcher.
+///
+/// A watcher that falls this far behind is told it lagged rather than blocking
+/// the bots, which is the same backpressure rule the market channels use.
+const EVENT_BUFFER: usize = 256;
 
 /// Whether the supervisor opens a market feed of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +91,39 @@ impl FeedMode {
     }
 }
 
+/// Something a running bot did, for a client watching it.
+///
+/// Broadcast rather than polled: `/ws/bots/{id}` has to show a decision as it
+/// happens, and asking the database every second would turn one bot's activity
+/// into a query per second per watcher.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BotEvent {
+    /// The task attached and started consuming.
+    Started {
+        /// The bot.
+        bot_id: Uuid,
+        /// What it trades.
+        symbol: String,
+    },
+    /// One decision candle, including the ones that did nothing.
+    Decision {
+        /// The bot.
+        bot_id: Uuid,
+        /// What it decided.
+        record: trading_engine::DecisionRecord,
+    },
+    /// The task finished, cleanly or otherwise.
+    Stopped {
+        /// The bot.
+        bot_id: Uuid,
+        /// How many trades it completed.
+        trades: usize,
+        /// Why the risk engine stopped it, when it did.
+        halt_reason: Option<String>,
+    },
+}
+
 /// A bot that is running in this process.
 struct RunningBot {
     /// The task feeding it candles.
@@ -109,6 +150,8 @@ struct Inner {
     feeds: Mutex<HashMap<String, JoinHandle<()>>>,
     /// How often a running bot flushes.
     flush_interval: Duration,
+    /// Everything the running bots have done, for `/ws/bots/{id}`.
+    events: broadcast::Sender<BotEvent>,
 }
 
 impl std::fmt::Debug for BotSupervisor {
@@ -140,6 +183,7 @@ impl BotSupervisor {
                 feed,
                 feeds: Mutex::new(HashMap::new()),
                 flush_interval,
+                events: broadcast::channel(EVENT_BUFFER).0,
             }),
         }
     }
@@ -171,6 +215,34 @@ impl BotSupervisor {
             .is_ok_and(|running| running.contains_key(&bot_id))
     }
 
+    /// Subscribe to closed candles for a symbol.
+    ///
+    /// The same bus the supervisor's feed publishes into, so a chart watching
+    /// `/ws/market/{symbol}/{timeframe}` and a bot trading it see the same
+    /// candles -- they cannot disagree about what the market did.
+    #[must_use]
+    pub fn subscribe_candles(
+        &self,
+        symbol: &str,
+    ) -> broadcast::Receiver<analytics_core::types::Candle> {
+        self.inner.bus.bus(symbol).subscribe_candles()
+    }
+
+    /// Ensure a feed exists for a symbol, for a caller that only wants to watch.
+    ///
+    /// A chart opening `/ws/market` should start the feed just as a bot does:
+    /// otherwise the channel is silent until somebody happens to launch a bot,
+    /// and "the chart shows nothing" has two possible causes again.
+    pub fn ensure_feed_for(&self, symbol: &str) {
+        self.ensure_feed(symbol);
+    }
+
+    /// Subscribe to what the running bots are doing.
+    #[must_use]
+    pub fn subscribe_events(&self) -> broadcast::Receiver<BotEvent> {
+        self.inner.events.subscribe()
+    }
+
     /// Publish a closed candle into the bus.
     ///
     /// The seam described in the module docs: the live collector calls this, and
@@ -198,6 +270,7 @@ impl BotSupervisor {
         self.ensure_feed(&symbol);
 
         let flush_interval = self.inner.flush_interval;
+        let events = self.inner.events.clone();
         let mut candles = self.inner.bus.bus(&symbol).subscribe_candles();
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
@@ -221,6 +294,12 @@ impl BotSupervisor {
 
             let mut flush = tokio::time::interval(flush_interval);
             info!(%bot_id, %symbol, "bot started");
+            events
+                .send(BotEvent::Started {
+                    bot_id,
+                    symbol: symbol.clone(),
+                })
+                .ok();
 
             loop {
                 tokio::select! {
@@ -229,7 +308,9 @@ impl BotSupervisor {
                             if task_paused.load(Ordering::Relaxed) {
                                 continue;
                             }
-                            bot.on_candle(&candle);
+                            if let Some(record) = bot.on_candle(&candle) {
+                                events.send(BotEvent::Decision { bot_id, record }).ok();
+                            }
                         }
                         Err(RecvError::Lagged(skipped)) => {
                             // Losing candles means the bot's view of the market
@@ -256,6 +337,13 @@ impl BotSupervisor {
             if let Err(e) = session.finish(&mut bot).await {
                 warn!(%bot_id, "could not finalise the bot: {e}");
             }
+            events
+                .send(BotEvent::Stopped {
+                    bot_id,
+                    trades: bot.trades().len(),
+                    halt_reason: bot.halt_reason().map(str::to_string),
+                })
+                .ok();
             info!(%bot_id, trades = bot.trades().len(), "bot finished");
         });
 

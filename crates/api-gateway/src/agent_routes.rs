@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use ai_agent::{AgentAnswer, AskRequest, StrategyRequest};
 
+use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::market_data::DbMarketData;
@@ -86,11 +87,37 @@ pub struct GenerateStrategyResponse {
     pub repaired_errors: Vec<String>,
 }
 
+/// Spend one of the caller's agent tokens, or refuse.
+///
+/// `docs/12` asks for per-user limits on `/agent/*` specifically, because these
+/// are the endpoints that cost money per call. The limit is checked before the
+/// agent is even looked at, so a refused request does no work.
+fn check_agent_limit(state: &AppState, user: &UserContext) -> Result<(), ApiError> {
+    state
+        .agent_limits
+        .check(user.user_id, crate::auth::now_seconds() as f64)
+        .map_err(|limited| {
+            ApiError::coded(
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                "RATE_LIMITED",
+                format!(
+                    "too many agent requests. This endpoint calls a paid model, so it is limited to {} a minute with a burst of {}. Try again in {} seconds.",
+                    state.agent_limits.limit().per_minute,
+                    state.agent_limits.limit().burst,
+                    limited.retry_after_seconds
+                ),
+            )
+            .with_retry_after(limited.retry_after_seconds)
+        })
+}
+
 /// `POST /agent/ask`
 pub async fn ask(
     State(state): State<AppState>,
+    user: UserContext,
     ApiJson(body): ApiJson<AskBody>,
 ) -> Result<Json<AskResponse>, ApiError> {
+    check_agent_limit(&state, &user)?;
     let agent = state.agent.as_ref().ok_or_else(|| {
         ApiError::unavailable(
             "the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID \
@@ -120,8 +147,10 @@ pub async fn ask(
 /// `POST /agent/generate-strategy`
 pub async fn generate_strategy(
     State(state): State<AppState>,
+    user: UserContext,
     ApiJson(body): ApiJson<GenerateStrategyBody>,
 ) -> Result<Json<GenerateStrategyResponse>, ApiError> {
+    check_agent_limit(&state, &user)?;
     let agent = state.agent.as_ref().ok_or_else(|| {
         ApiError::unavailable(
             "the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID \
@@ -149,7 +178,7 @@ pub async fn generate_strategy(
     }))
 }
 
-fn to_response(answer: AgentAnswer, include_trace: bool) -> AskResponse {
+pub(crate) fn to_response(answer: AgentAnswer, include_trace: bool) -> AskResponse {
     let ladder = answer
         .ladder
         .frames

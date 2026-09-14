@@ -107,7 +107,23 @@
   <button id="load">Load</button>
   <input id="ask" placeholder="find me a long setup using my liquidity-sweep skill" />
   <button id="go" class="primary">Ask</button>
+  <button id="session">Sign in</button>
 </header>
+
+<!--
+  A session bar, because /agent/* now requires a token.
+
+  docs/12 allows unauthenticated access to /auth/* and to public market data
+  reads only -- and /agent/ask calls a paid model, so it is neither. The chart
+  still loads without signing in; only "Ask" needs the token.
+-->
+<div id="signin" hidden>
+  <input id="email" type="email" placeholder="you@example.com" autocomplete="username" />
+  <input id="password" type="password" placeholder="password (8+ characters)" autocomplete="current-password" />
+  <button id="signinGo" class="primary">Sign in</button>
+  <button id="registerGo">Register</button>
+  <span id="signinMsg"></span>
+</div>
 
 <main>
   <div id="chartWrap">
@@ -152,14 +168,74 @@ const fmtPrice = (v) =>
   v == null ? "—" : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtTime = (ms) => new Date(ms).toLocaleString();
 
-function api(path, options) {
-  return fetch(path, options).then(async (r) => {
+// ---------------------------------------------------------------------------
+// Session
+//
+// The token lives in localStorage, which is the wrong place for a long-lived
+// credential and the right place for a stopgap: this page is a development
+// tool, and the real frontend keeps the token in memory with a refresh flow.
+// ---------------------------------------------------------------------------
+
+const TOKEN_KEY = "atp.token";
+
+const token = () => localStorage.getItem(TOKEN_KEY) || "";
+function setToken(value) {
+  if (value) localStorage.setItem(TOKEN_KEY, value);
+  else localStorage.removeItem(TOKEN_KEY);
+  paintSession();
+}
+
+function paintSession() {
+  const signedIn = Boolean(token());
+  el("session").textContent = signedIn ? "Sign out" : "Sign in";
+  el("signin").hidden = signedIn;
+}
+
+function api(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (token()) headers.authorization = `Bearer ${token()}`;
+  return fetch(path, { ...options, headers }).then(async (r) => {
     const text = await r.text();
     let body;
-    try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
-    if (!r.ok) throw new Error(body?.error || `${r.status} ${r.statusText}`);
+    try { body = text ? JSON.parse(text) : null; } catch { body = null; }
+
+    if (!r.ok) {
+      // docs/12's envelope: { error: { code, message, details } }. The previous
+      // shape had `error` as a string, and reading it as one now yields
+      // "[object Object]" -- which is how this page would have failed after the
+      // envelope changed.
+      const error = body && body.error;
+      const message =
+        (error && (error.message || error.code)) ||
+        (typeof error === "string" ? error : null) ||
+        `${r.status} ${r.statusText}`;
+      const thrown = new Error(message);
+      thrown.code = error && error.code;
+      thrown.status = r.status;
+      throw thrown;
+    }
     return body;
   });
+}
+
+async function signIn(register) {
+  const email = el("email").value.trim();
+  const password = el("password").value;
+  const msg = el("signinMsg");
+  if (!email || !password) { msg.textContent = "email and password, please"; return; }
+
+  msg.textContent = register ? "Registering…" : "Signing in…";
+  try {
+    const res = await api(register ? "/auth/register" : "/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    setToken(res.token);
+    msg.textContent = `signed in as ${res.user.email}`;
+  } catch (e) {
+    msg.textContent = e.message;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +473,15 @@ function renderThesis(res) {
 function showError(message) {
   el("thesis").innerHTML = `<div class="error">${escapeHtml(message)}</div>`;
 }
+
+el("session").addEventListener("click", () => {
+  if (token()) { setToken(""); el("signinMsg").textContent = ""; }
+  else { el("signin").hidden = false; el("email").focus(); }
+});
+el("signinGo").addEventListener("click", () => signIn(false));
+el("registerGo").addEventListener("click", () => signIn(true));
+el("password").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(false); });
+paintSession();
 
 async function ask() {
   const question = el("ask").value.trim();

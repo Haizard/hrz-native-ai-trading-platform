@@ -310,6 +310,44 @@ impl FromRequestParts<crate::AppState> for UserContext {
     }
 }
 
+/// Authenticate a token that arrived outside a header.
+///
+/// Only the WebSocket channels use this. A browser cannot set an
+/// `Authorization` header on a handshake -- the WebSocket API has no way to
+/// express one -- so the token arrives as a query parameter instead.
+///
+/// That workaround has a real cost worth stating: query strings end up in
+/// access logs, `Referer` headers and browser history. So this is the only
+/// place a token is accepted from anywhere but a header, and it is deliberately
+/// a separate function rather than a flag on the header path -- a flag is
+/// something a future route can switch on by accident.
+///
+/// # Errors
+/// 503 when auth is unconfigured, 401 for every failure to verify.
+pub fn authenticate_token(
+    state: &crate::AppState,
+    token: Option<&str>,
+) -> Result<UserContext, ApiError> {
+    let Some(auth) = state.auth.as_ref() else {
+        return Err(ApiError::unavailable(
+            "authentication is not configured in this deployment (JWT_SECRET is unset)",
+        ));
+    };
+    let token = token
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| ApiError::unauthorized("a `?token=` query parameter is required"))?;
+
+    let claims = auth.verify(token, now_seconds())?;
+    let user_id = claims
+        .user_id()
+        .ok_or_else(|| ApiError::unauthorized("the token's subject is not a user id"))?;
+    Ok(UserContext {
+        user_id,
+        email: claims.email,
+    })
+}
+
 /// The current time in unix seconds.
 ///
 /// A function rather than a call to `SystemTime` inline so the token tests can

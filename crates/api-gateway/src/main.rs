@@ -12,6 +12,7 @@ use tracing::{error, info, warn};
 
 use ai_agent::{Agent, AgentConfig, SkillLibrary};
 use api_gateway::bots::{BotSupervisor, FeedMode};
+use api_gateway::rate_limit::{RateLimit, RateLimiter};
 use api_gateway::{build_auth, load_skills, router, AppState};
 use db::Database;
 
@@ -53,12 +54,21 @@ async fn main() -> anyhow::Result<()> {
     }
     let bots = Arc::new(BotSupervisor::new(feed));
 
+    let agent_limits = Arc::new(RateLimiter::new(RateLimit::from_env()));
+    let limit = agent_limits.limit();
+    info!(
+        per_minute = limit.per_minute,
+        burst = limit.burst,
+        "/agent rate limit"
+    );
+
     let state = AppState {
         db,
         agent,
         skills: Arc::new(skills),
         auth,
         bots,
+        agent_limits,
     };
 
     let app = router(state);

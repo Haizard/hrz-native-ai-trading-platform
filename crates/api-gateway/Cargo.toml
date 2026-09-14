@@ -27,6 +27,7 @@ strategy-dsl = { workspace = true, features = ["yaml"] }
 async-trait = { workspace = true }
 
 anyhow = { workspace = true }
+futures = { workspace = true }
 chrono = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -43,4 +44,7 @@ dotenvy = { workspace = true }
 # a way to call a `tower` service with a request.
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# The WebSocket tests need a real client on a real socket.
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

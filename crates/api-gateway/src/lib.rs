@@ -50,8 +50,10 @@ pub mod error;
 pub mod extract;
 pub mod market_data;
 pub mod market_routes;
+pub mod rate_limit;
 pub mod skills_routes;
 pub mod strategy_routes;
+pub mod ws;
 
 /// Shared application state handed to every route handler.
 #[derive(Clone)]
@@ -67,6 +69,8 @@ pub struct AppState {
     pub auth: Option<Arc<AuthConfig>>,
     /// Owns the running bots and the market feed they share.
     pub bots: Arc<bots::BotSupervisor>,
+    /// Per-user limits on the endpoints that cost money (`docs/12`).
+    pub agent_limits: Arc<rate_limit::RateLimiter>,
 }
 
 /// Health response body.
@@ -138,6 +142,12 @@ pub fn router(state: AppState) -> Router {
             "/skills/{id}",
             get(skills_routes::get).put(skills_routes::create_version),
         )
+        // WebSocket channels (`docs/12`). Registered alongside the REST
+        // routes because they share the state and the auth story.
+        .route("/ws/market/{symbol}/{timeframe}", get(ws::market))
+        .route("/ws/orderbook/{symbol}", get(ws::orderbook))
+        .route("/ws/agent/{session_id}", get(ws::agent))
+        .route("/ws/bots/{bot_id}", get(ws::bot))
         // Served from the same origin as the API, so the page needs no CORS
         // policy and no second process.
         .route("/", get(index))

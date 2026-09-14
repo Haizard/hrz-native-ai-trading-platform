@@ -19,6 +19,7 @@
 use std::sync::Arc;
 
 use api_gateway::bots::{BotSupervisor, FeedMode};
+use api_gateway::rate_limit::{RateLimit, RateLimiter};
 use api_gateway::{auth::AuthConfig, router, AppState};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -39,6 +40,9 @@ pub struct Harness {
     /// The bot supervisor, so a test can publish candles into the feed and
     /// check what a bot did with them.
     pub supervisor: Arc<api_gateway::bots::BotSupervisor>,
+    /// The agent limiter, so a test can read the limit it is testing against
+    /// rather than hard-coding a number that would drift.
+    pub limits: Arc<RateLimiter>,
 }
 
 impl Harness {
@@ -56,17 +60,20 @@ impl Harness {
             FeedMode::Off,
             std::time::Duration::from_millis(100),
         ));
+        let limits = Arc::new(RateLimiter::new(RateLimit::default()));
         let state = AppState {
             db: Some(Arc::new(database.clone())),
             agent: None,
             skills: Arc::new(ai_agent::SkillLibrary::new()),
             auth: Some(Arc::new(AuthConfig::new(SECRET))),
             bots: Arc::clone(&supervisor),
+            agent_limits: Arc::clone(&limits),
         };
         Some(Self {
             app: router(state),
             database: Arc::new(database),
             supervisor,
+            limits,
         })
     }
 
@@ -81,17 +88,20 @@ impl Harness {
             FeedMode::Off,
             std::time::Duration::from_millis(100),
         ));
+        let limits = Arc::new(RateLimiter::new(RateLimit::default()));
         let state = AppState {
             db: Some(Arc::new(database.clone())),
             agent: None,
             skills: Arc::new(ai_agent::SkillLibrary::new()),
             auth: None,
             bots: Arc::clone(&supervisor),
+            agent_limits: Arc::clone(&limits),
         };
         Some(Self {
             app: router(state),
             database: Arc::new(database),
             supervisor,
+            limits,
         })
     }
 
@@ -124,6 +134,26 @@ impl Harness {
         }
         self.send(builder.body(Body::from(body.to_string())).expect("request"))
             .await
+    }
+
+    /// Serve this router on a real port and return its base URL.
+    ///
+    /// The WebSocket tests need an actual socket: `tower::oneshot` drives a
+    /// request through the router but cannot upgrade a connection, so a
+    /// handshake has to go over TCP.
+    ///
+    /// Binding port 0 lets the OS pick, so parallel test binaries cannot
+    /// collide on a fixed port.
+    pub async fn serve(&self) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a free port");
+        let addr = listener.local_addr().expect("the bound address");
+        let app = self.app.clone();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("127.0.0.1:{}", addr.port())
     }
 
     /// DELETE a path, optionally authenticated.
