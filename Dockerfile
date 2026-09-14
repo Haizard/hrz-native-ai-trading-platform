@@ -49,6 +49,17 @@ COPY --from=builder /app/target/release/xtask        /usr/local/bin/xtask
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# Runtime assets. Both are resolved relative to the working directory:
+#   `/`            serves `frontend/mvp/index.html`
+#   the agent      loads the skill library from `skills/`
+#
+# Neither was copied before, and the failure was quiet rather than loud -- the
+# page 404'd and the agent started with an empty methodology library, which
+# reads as "no matching skill" rather than "the files are not in the image".
+# Anything the gateway reads at runtime has to be listed here.
+COPY --from=builder /app/frontend /app/frontend
+COPY --from=builder /app/skills   /app/skills
+
 # 0.0.0.0 matters: the local default is 127.0.0.1, which would make the
 # container unreachable from outside.
 ENV BIND_ADDR=0.0.0.0:8080 \

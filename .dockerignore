@@ -23,8 +23,16 @@ docs/
 *.md
 !README.md
 
-# Frontend (not built yet; add back when Phase 7 lands)
-frontend/
+# Frontend IS shipped. It was excluded here with the note "not built yet; add
+# back when Phase 7 lands", and that stopped being true when the MVP chart
+# landed in Phase 5: `frontend/mvp/index.html` is served at `/` by the gateway,
+# so excluding it made the deployed page 404 while the local one worked.
+#
+# Nothing is built from it -- it is one self-contained HTML file -- so the only
+# thing the exclusion bought was a broken deploy. Re-exclude a real build
+# output (frontend/app/dist) rather than the source, if Phase 7 grows one.
+frontend/app/dist/
+frontend/app/.turbo/
 
 # sqlx offline cache
 .sqlx/

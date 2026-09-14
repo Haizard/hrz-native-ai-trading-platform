@@ -137,22 +137,64 @@ async fn main() -> anyhow::Result<()> {
 /// so a handler reading it is enough and avoids pulling in a static-file
 /// service for a single response. A missing file is a 404, not a boot
 /// failure: the container may legitimately run the API without the page.
+///
+/// "Legitimately" is doing work in that sentence, so the warning says which of
+/// the two it is. A deployed image that forgot to ship `frontend/` is not the
+/// same as an operator who set [`FRONTEND_DIR_ENV`] somewhere else, and only
+/// one of them is a bug.
 async fn index() -> Result<axum::response::Html<String>, StatusCode> {
     let dir = std::env::var(FRONTEND_DIR_ENV).unwrap_or_else(|_| "frontend/mvp".into());
     let path = std::path::Path::new(&dir).join("index.html");
-    std::fs::read_to_string(&path)
-        .map(axum::response::Html)
-        .map_err(|e| {
-            warn!(path = %path.display(), error = %e, "MVP page not served");
-            StatusCode::NOT_FOUND
-        })
+    match std::fs::read_to_string(&path) {
+        Ok(html) => Ok(axum::response::Html(html)),
+        Err(e) => {
+            warn!(
+                path = %path.display(),
+                error = %e,
+                env = FRONTEND_DIR_ENV,
+                "MVP page not served (404). If this is a deployed image, it does not contain \
+                 frontend/ -- the Dockerfile has to copy it."
+            );
+            Err(StatusCode::NOT_FOUND)
+        }
+    }
 }
 
-/// Load the skill library. A missing directory is an empty library, not a
-/// crash: "no matching skill" is a useful answer, a failed boot is not.
+/// Load the skill library.
+///
+/// Three outcomes, and the log has to tell them apart, because only one of them
+/// is benign:
+///
+/// * the directory is **missing** -- a packaging error, or a bad
+///   [`SKILLS_DIR_ENV`]. The agent will answer confidently with no methodology
+///   behind it, which is precisely the failure [`SkillLibrary::load_dir`] says
+///   it refuses to have;
+/// * the directory is **present but empty** -- also worth saying out loud;
+/// * it **loaded** -- report the count.
+///
+/// A missing directory used to log `skills loaded count=0` at INFO, which is
+/// how a deploy that shipped no skills at all looked like a healthy one. The
+/// gateway still starts, because a running API that answers "no matching skill"
+/// beats a boot loop -- but it does not get to be quiet about it.
 fn load_skills() -> SkillLibrary {
     let dir = std::env::var(SKILLS_DIR_ENV).unwrap_or_else(|_| "skills".into());
+
+    if !std::path::Path::new(&dir).exists() {
+        warn!(
+            dir = %dir,
+            env = SKILLS_DIR_ENV,
+            "skills directory does not exist: starting with an EMPTY library. The agent will \
+             report \"no matching skill\" for every question. A deployed image must contain \
+             skills/ -- the Dockerfile has to copy it."
+        );
+        return SkillLibrary::new();
+    }
+
     match SkillLibrary::load_dir(&dir) {
+        Ok(library) if library.is_empty() => {
+            warn!(dir = %dir, "skills directory holds no skill documents");
+            library
+        }
         Ok(library) => {
             info!(count = library.len(), dir = %dir, "skills loaded");
             library
