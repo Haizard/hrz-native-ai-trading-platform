@@ -28,6 +28,7 @@ use tracing::{info, warn};
 
 use crate::auth::{self, UserContext};
 use crate::error::ApiError;
+use crate::extract::ApiJson;
 use crate::AppState;
 
 /// Shortest password accepted.
@@ -135,7 +136,7 @@ fn auth_config(state: &AppState) -> Result<&std::sync::Arc<auth::AuthConfig>, Ap
 /// 503 if the deployment has no database or no signing secret.
 pub async fn register(
     State(state): State<AppState>,
-    Json(request): Json<RegisterRequest>,
+    ApiJson(request): ApiJson<RegisterRequest>,
 ) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
     let database = database(&state)?;
     let auth = auth_config(&state)?;
@@ -179,7 +180,7 @@ pub async fn register(
 /// 401 for every authentication failure, with one message and one code.
 pub async fn login(
     State(state): State<AppState>,
-    Json(request): Json<LoginRequest>,
+    ApiJson(request): ApiJson<LoginRequest>,
 ) -> Result<Json<SessionResponse>, ApiError> {
     let database = database(&state)?;
     let auth = auth_config(&state)?;

@@ -11,7 +11,7 @@
 //! `Candle` type's own field, and reformatting it here would mean the API and
 //! the engine disagree about what a timestamp is.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +20,7 @@ use analytics_core::Timeframe;
 use db::repositories::{candles_range, load_candles};
 
 use crate::error::ApiError;
+use crate::extract::ApiQuery;
 use crate::AppState;
 
 /// Query parameters for `GET /candles`.
@@ -54,7 +55,7 @@ const MAX_LIMIT: usize = 5000;
 /// `GET /candles`
 pub async fn candles(
     State(state): State<AppState>,
-    Query(query): Query<CandlesQuery>,
+    ApiQuery(query): ApiQuery<CandlesQuery>,
 ) -> Result<Json<CandlesResponse>, ApiError> {
     let timeframe: Timeframe = query.timeframe.parse().map_err(|_| {
         ApiError::new(
@@ -125,4 +126,182 @@ async fn resolve_window(
 /// Milliseconds to nanoseconds, saturating rather than wrapping.
 fn ms_to_ns(ms: i64) -> i64 {
     ms.saturating_mul(1_000_000)
+}
+
+// ---------------------------------------------------------------------------
+// GET /symbols -- what is loaded, and over what window
+// ---------------------------------------------------------------------------
+
+/// One resolution's coverage, as a client sees it.
+#[derive(Debug, Serialize)]
+pub struct TimeframeCoverageResponse {
+    /// The resolution, as stored.
+    pub timeframe: String,
+    /// How many candles are stored.
+    pub candles: i64,
+    /// The oldest candle's open time, unix nanoseconds.
+    pub first: i64,
+    /// The newest candle's open time, unix nanoseconds.
+    pub last: i64,
+    /// How many candles a complete series over that span would hold, when the
+    /// resolution is one this platform knows.
+    pub expected: Option<i64>,
+    /// How many are missing from the span.
+    ///
+    /// This is the number that matters, and the reason the route exists. A
+    /// count alone is reassuring and says nothing: this project has already
+    /// lost real time to a table holding six months of 5m and two days of 1m,
+    /// where a strategy's coarse timeframe silently resampled to twelve candles
+    /// and a six-month backtest reported zero trades.
+    pub missing: Option<i64>,
+}
+
+/// Everything loaded for one symbol.
+#[derive(Debug, Serialize)]
+pub struct SymbolResponse {
+    /// The instrument.
+    pub symbol: String,
+    /// One entry per resolution, ordered by resolution.
+    pub timeframes: Vec<TimeframeCoverageResponse>,
+    /// A warning when one resolution covers much less history than another.
+    ///
+    /// Absent when the spans are comparable. Present, it says which resolution
+    /// is thin and by how much -- because that is the fact that turns into a
+    /// backtest reporting zero trades, and it is invisible from a candle count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage_note: Option<String>,
+}
+
+/// `GET /symbols`
+///
+/// # Errors
+/// 503 without a database.
+pub async fn symbols(State(state): State<AppState>) -> Result<Json<Vec<SymbolResponse>>, ApiError> {
+    let database = state
+        .db
+        .as_ref()
+        .ok_or_else(|| ApiError::unavailable("no database configured"))?;
+
+    let symbols = db::market::list_symbols(database.pool()).await?;
+    Ok(Json(
+        symbols
+            .into_iter()
+            .map(|coverage| SymbolResponse {
+                coverage_note: coverage.coverage_note(),
+                symbol: coverage.symbol,
+                timeframes: coverage
+                    .timeframes
+                    .into_iter()
+                    .map(|tf| TimeframeCoverageResponse {
+                        expected: tf.expected_candles(),
+                        missing: tf.missing_candles(),
+                        timeframe: tf.timeframe,
+                        candles: tf.candles,
+                        first: tf.first,
+                        last: tf.last,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// GET /orderbook -- the newest stored snapshot
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /orderbook`.
+#[derive(Debug, Deserialize)]
+pub struct OrderBookQuery {
+    /// Instrument, e.g. `BTCUSDT`.
+    pub symbol: String,
+}
+
+/// One side of the book.
+#[derive(Debug, Serialize)]
+pub struct LevelResponse {
+    /// Price of this level.
+    pub price: f64,
+    /// Resting quantity.
+    pub quantity: f64,
+}
+
+/// The newest snapshot, as a client sees it.
+#[derive(Debug, Serialize)]
+pub struct OrderBookResponse {
+    /// The instrument.
+    pub symbol: String,
+    /// Snapshot time, unix nanoseconds.
+    pub timestamp: i64,
+    /// Bids, best first.
+    pub bids: Vec<LevelResponse>,
+    /// Asks, best first.
+    pub asks: Vec<LevelResponse>,
+    /// Best ask minus best bid, when the snapshot has both sides.
+    ///
+    /// `null` rather than `0.0` for a one-sided book: zero reads as a perfectly
+    /// tight market, which is the opposite of what a missing side means.
+    pub spread: Option<f64>,
+}
+
+/// `GET /orderbook`
+///
+/// This is the **REST** view: the newest snapshot that was stored. The live
+/// ladder is `/ws/orderbook/{symbol}`, which does not exist yet -- so on a
+/// deployment with no tick collection this answers 404 and says so, rather than
+/// returning an empty book that looks like a market with no liquidity.
+///
+/// # Errors
+/// 404 when the symbol has no stored snapshots, 503 without a database.
+pub async fn orderbook(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<OrderBookQuery>,
+) -> Result<Json<OrderBookResponse>, ApiError> {
+    let database = state
+        .db
+        .as_ref()
+        .ok_or_else(|| ApiError::unavailable("no database configured"))?;
+    let symbol = query.symbol.to_uppercase();
+
+    let Some(snapshot) = db::market::latest_orderbook(database.pool(), &symbol).await? else {
+        // Say which of the two it is. "No data" and "no data *for this symbol*"
+        // need different fixes, and an empty book would hide both.
+        let any = db::market::orderbook_snapshot_count(database.pool(), &symbol).await?;
+        return Err(ApiError::coded(
+            axum::http::StatusCode::NOT_FOUND,
+            "NO_ORDERBOOK_DATA",
+            if any == 0 {
+                format!(
+                    "no order-book snapshots are stored for {symbol}. Depth is collected from \
+                     the trade stream, so a deployment that has not run the collector has none."
+                )
+            } else {
+                format!("no order-book snapshot could be read for {symbol}")
+            },
+        ));
+    };
+
+    let spread = db::market::best_bid_ask(&snapshot).map(|(bid, ask)| ask.price - bid.price);
+
+    Ok(Json(OrderBookResponse {
+        symbol: snapshot.symbol,
+        timestamp: snapshot.timestamp,
+        bids: snapshot
+            .bids
+            .into_iter()
+            .map(|level| LevelResponse {
+                price: level.price,
+                quantity: level.quantity,
+            })
+            .collect(),
+        asks: snapshot
+            .asks
+            .into_iter()
+            .map(|level| LevelResponse {
+                price: level.price,
+                quantity: level.quantity,
+            })
+            .collect(),
+        spread,
+    }))
 }

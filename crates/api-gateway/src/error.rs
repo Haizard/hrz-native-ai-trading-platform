@@ -202,6 +202,31 @@ impl From<AgentError> for ApiError {
     }
 }
 
+/// Axum's own extractor rejections, in this API's envelope.
+///
+/// The status is chosen rather than passed through, because axum's JSON
+/// rejection is a 422 for a type error and a 400 for a syntax error, and both
+/// are right -- see the match below.
+impl From<axum::extract::rejection::QueryRejection> for ApiError {
+    fn from(rejection: axum::extract::rejection::QueryRejection) -> Self {
+        Self::coded(
+            StatusCode::BAD_REQUEST,
+            "QUERY_INVALID",
+            rejection.body_text(),
+        )
+    }
+}
+
+impl From<axum::extract::rejection::JsonRejection> for ApiError {
+    fn from(rejection: axum::extract::rejection::JsonRejection) -> Self {
+        // A body that is not JSON at all is the caller's syntax error (400); a
+        // body that is JSON but the wrong shape is a semantic one (422). Axum
+        // already draws that line, so it is kept rather than flattened.
+        let status = rejection.status();
+        Self::coded(status, "BODY_INVALID", rejection.body_text())
+    }
+}
+
 impl From<db::DbError> for ApiError {
     fn from(err: db::DbError) -> Self {
         match err {

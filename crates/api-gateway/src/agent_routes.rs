@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use ai_agent::{AgentAnswer, AskRequest, StrategyRequest};
 
 use crate::error::ApiError;
+use crate::extract::ApiJson;
 use crate::market_data::DbMarketData;
 use crate::AppState;
 
@@ -88,7 +89,7 @@ pub struct GenerateStrategyResponse {
 /// `POST /agent/ask`
 pub async fn ask(
     State(state): State<AppState>,
-    Json(body): Json<AskBody>,
+    ApiJson(body): ApiJson<AskBody>,
 ) -> Result<Json<AskResponse>, ApiError> {
     let agent = state.agent.as_ref().ok_or_else(|| {
         ApiError::unavailable(
@@ -119,7 +120,7 @@ pub async fn ask(
 /// `POST /agent/generate-strategy`
 pub async fn generate_strategy(
     State(state): State<AppState>,
-    Json(body): Json<GenerateStrategyBody>,
+    ApiJson(body): ApiJson<GenerateStrategyBody>,
 ) -> Result<Json<GenerateStrategyResponse>, ApiError> {
     let agent = state.agent.as_ref().ok_or_else(|| {
         ApiError::unavailable(

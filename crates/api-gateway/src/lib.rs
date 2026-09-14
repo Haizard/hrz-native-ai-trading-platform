@@ -47,6 +47,7 @@ pub mod auth_routes;
 pub mod bot_routes;
 pub mod bots;
 pub mod error;
+pub mod extract;
 pub mod market_data;
 pub mod market_routes;
 pub mod skills_routes;
@@ -98,6 +99,8 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/login", post(auth_routes::login))
         .route("/auth/me", get(auth_routes::me))
         .route("/candles", get(market_routes::candles))
+        .route("/symbols", get(market_routes::symbols))
+        .route("/orderbook", get(market_routes::orderbook))
         .route(
             "/strategies",
             get(strategy_routes::list).post(strategy_routes::create),

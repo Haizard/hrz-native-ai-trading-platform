@@ -39,6 +39,7 @@ use strategy_runtime::{RuntimeConfig, StrategyEngine};
 
 use crate::auth::UserContext;
 use crate::error::ApiError;
+use crate::extract::ApiJson;
 use crate::AppState;
 
 /// Default page size for list endpoints.
@@ -215,7 +216,7 @@ fn validation_summary(validated: &strategy_dsl::ValidatedStrategy) -> Validation
 pub async fn create(
     State(state): State<AppState>,
     user: UserContext,
-    Json(request): Json<CreateStrategyRequest>,
+    ApiJson(request): ApiJson<CreateStrategyRequest>,
 ) -> Result<(StatusCode, Json<StrategyResponse>), ApiError> {
     let database = database(&state)?;
     let validated = validate_source(&request.source)?;
@@ -266,7 +267,7 @@ pub async fn create(
 /// # Errors
 /// 422 with the validator's issues, 400 for a parse failure.
 pub async fn validate(
-    Json(request): Json<ValidateRequest>,
+    ApiJson(request): ApiJson<ValidateRequest>,
 ) -> Result<Json<ValidationResponse>, ApiError> {
     let validated = validate_source(&request.source)?;
     Ok(Json(validation_summary(&validated)))
@@ -341,7 +342,7 @@ pub async fn backtest(
     State(state): State<AppState>,
     user: UserContext,
     Path(id): Path<String>,
-    Json(request): Json<BacktestRequest>,
+    ApiJson(request): ApiJson<BacktestRequest>,
 ) -> Result<(StatusCode, Json<BacktestResponse>), ApiError> {
     let database = database(&state)?;
     let id = parse_id(&id, "strategy")?;

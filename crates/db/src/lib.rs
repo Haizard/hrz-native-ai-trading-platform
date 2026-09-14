@@ -23,6 +23,7 @@ pub mod bots;
 pub mod config;
 pub mod error;
 pub mod loading;
+pub mod market;
 pub mod models;
 pub mod paper;
 pub mod repositories;
@@ -33,6 +34,10 @@ pub use bots::{create_bot, delete_bot, get_bot, list_bots, set_status, BotRow, S
 pub use config::DatabaseConfig;
 pub use error::DbError;
 pub use loading::{coverage, load_timeframe_series, warn_about_short_series, MIN_COVERAGE};
+pub use market::{
+    best_bid_ask, latest_orderbook, list_symbols, orderbook_snapshot_count, SymbolCoverage,
+    TimeframeCoverage,
+};
 pub use models::Database;
 pub use paper::{
     bot_summary, count_audit_events, count_executed_trades, create_owner, find_or_create_strategy,

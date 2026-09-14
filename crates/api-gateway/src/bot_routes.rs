@@ -30,6 +30,7 @@ use trading_engine::{PaperBot, PaperConfig, RiskLimits};
 use crate::auth::UserContext;
 use crate::bots::BotSupervisor;
 use crate::error::ApiError;
+use crate::extract::ApiJson;
 use crate::AppState;
 
 /// Default page size for the list endpoint.
@@ -106,7 +107,7 @@ pub struct ActivityResponse {
 pub async fn create(
     State(state): State<AppState>,
     user: UserContext,
-    Json(request): Json<CreateBotRequest>,
+    ApiJson(request): ApiJson<CreateBotRequest>,
 ) -> Result<(StatusCode, Json<BotResponse>), ApiError> {
     let database = database(&state)?;
 
