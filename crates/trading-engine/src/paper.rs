@@ -38,7 +38,6 @@ use strategy_runtime::{
     Strategy, StrategyEngine, TradeRecord,
 };
 
-use crate::error::ExecutionError;
 use crate::risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict};
 
 /// What the bot needs to know that the document does not say.
@@ -162,6 +161,10 @@ pub struct PaperBot {
     fills: SimulatorConfig,
     pending: Option<Pending>,
     decisions: Vec<DecisionRecord>,
+    alerts: Vec<BotAlert>,
+    /// Whether the switch was already engaged last time we looked, so the
+    /// alert is raised on the transition rather than on every later bar.
+    alerted_halt: bool,
     /// Set when a configured limit had to be clamped, so it can be logged once.
     clamp_note: Option<String>,
 }
@@ -180,6 +183,11 @@ impl PaperBot {
             .copied()
             .unwrap_or(Timeframe::M5);
 
+        let mut alerts = Vec::new();
+        if let Some(detail) = clamp_note.clone() {
+            alerts.push(BotAlert::Clamped { detail });
+        }
+
         Self {
             symbol: config.symbol,
             decision_name,
@@ -192,8 +200,18 @@ impl PaperBot {
             fills: config.fills,
             pending: None,
             decisions: Vec::new(),
+            alerts,
+            alerted_halt: false,
             clamp_note,
         }
+    }
+
+    /// Take the alerts raised since the last call.
+    ///
+    /// Drained rather than kept: an alert is something to deliver once, and a
+    /// bot that runs for weeks should not accumulate them in memory.
+    pub fn take_alerts(&mut self) -> Vec<BotAlert> {
+        std::mem::take(&mut self.alerts)
     }
 
     /// Why the configured risk had to be reduced, if it did.
@@ -255,6 +273,15 @@ impl PaperBot {
         &mut self.risk
     }
 
+    /// How many decisions are waiting to be taken.
+    ///
+    /// A count rather than the records: a runner wants to report "wrote N
+    /// decisions" without stealing them from whoever is about to persist them.
+    #[must_use]
+    pub fn pending_decisions(&self) -> usize {
+        self.decisions.len()
+    }
+
     /// Take the decisions recorded since the last call.
     ///
     /// Draining rather than accumulating: a bot running for weeks would
@@ -302,6 +329,7 @@ impl PaperBot {
         if let Some(reason) = self.halt_reason().map(str::to_string) {
             // docs/11: open positions are handled per a documented policy, not
             // left to chance.
+            let mut positions = "no position was open".to_string();
             if self.risk.limits().on_breach == OnBreach::Close && self.in_position() {
                 self.simulator.close_at_market(
                     ExitTrigger::KillSwitch,
@@ -309,6 +337,16 @@ impl PaperBot {
                     candle.open,
                     vec!["kill-switch".into()],
                 );
+                positions = "the open position was closed at market".into();
+            } else if self.in_position() {
+                positions = "the open position was held, per the configured policy".into();
+            }
+            if !self.alerted_halt {
+                self.alerted_halt = true;
+                self.alerts.push(BotAlert::Killed {
+                    reason: reason.clone(),
+                    positions,
+                });
             }
             return self.record(
                 now,
@@ -475,21 +513,54 @@ impl PaperBot {
     }
 }
 
-/// Errors a long-running bot can surface for a human to read.
+/// Something a human needs to be told about.
 ///
-/// Kept here rather than scattered through the loop so the caller has one
-/// place to look for "something needs attention".
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `docs/11` requires the user to be *notified* on a breach, not merely to have
+/// it written down, so alerts are their own type rather than a log line the
+/// caller has to notice. The bot raises them; whoever owns the process decides
+/// how to deliver them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BotAlert {
-    /// A limit was breached and the switch tripped.
-    Killed(String),
+    /// A limit was breached and the switch tripped. The bot has stopped.
+    Killed {
+        /// Why it tripped.
+        reason: String,
+        /// What happened to any open position.
+        positions: String,
+    },
     /// A configured limit had to be clamped at startup.
-    Clamped(String),
+    Clamped {
+        /// What was clamped and to what.
+        detail: String,
+    },
 }
 
-impl From<ExecutionError> for BotAlert {
-    fn from(error: ExecutionError) -> Self {
-        Self::Killed(error.to_string())
+impl BotAlert {
+    /// How urgent this is, for whatever surface ends up showing it.
+    #[must_use]
+    pub const fn severity(&self) -> &'static str {
+        match self {
+            Self::Killed { .. } => "critical",
+            Self::Clamped { .. } => "warning",
+        }
+    }
+
+    /// A short line fit for a notification list.
+    #[must_use]
+    pub fn title(&self) -> String {
+        match self {
+            Self::Killed { .. } => "Paper bot stopped by the risk engine".into(),
+            Self::Clamped { .. } => "Paper bot risk limit was reduced".into(),
+        }
+    }
+
+    /// The detail, as text.
+    #[must_use]
+    pub fn body(&self) -> &str {
+        match self {
+            Self::Killed { reason, .. } => reason,
+            Self::Clamped { detail } => detail,
+        }
     }
 }
 

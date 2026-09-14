@@ -2967,6 +2967,7 @@ dependencies = [
  "analytics-core",
  "async-trait",
  "db",
+ "dotenvy",
  "sandbox",
  "serde",
  "serde_json",

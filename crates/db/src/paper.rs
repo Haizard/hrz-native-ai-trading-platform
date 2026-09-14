@@ -21,7 +21,7 @@ use sqlx::{PgPool, QueryBuilder, Row};
 use uuid::Uuid;
 
 use crate::error::DbError;
-use crate::repositories::ns_to_dt;
+use crate::repositories::{dt_to_ns, ns_to_dt};
 
 /// Rows per multi-row INSERT, matching `repositories.rs`.
 const INSERT_CHUNK: usize = 500;
@@ -215,6 +215,257 @@ pub async fn find_user_by_email(pool: &PgPool, email: &str) -> Result<Option<Uui
         .fetch_optional(pool)
         .await?;
     Ok(id)
+}
+
+/// Provision an owner for a paper bot.
+///
+/// A bot row references `users`, and there is no signup flow yet (auth is
+/// Phase 7). Rather than let a runner invent a user implicitly, provisioning is
+/// its own explicit call -- `paper-cli` exposes it as `--create-owner` -- so
+/// writing a row to `users` is always a deliberate act.
+///
+/// The password hash is a marker that cannot match any password, because this
+/// account is an owner of record and never a way to log in. When Phase 7 lands
+/// it should either attach a real credential or move bots to a system owner.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn create_owner(pool: &PgPool, email: &str) -> Result<Uuid, DbError> {
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, password_hash) VALUES ($1, $2)          ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email RETURNING id",
+    )
+    .bind(email)
+    .bind("!no-login")
+    .fetch_one(pool)
+    .await?;
+    Ok(id)
+}
+
+/// Delete a bot and everything it wrote.
+///
+/// **Not part of the trading loop.** `audit_log` is append-only by design
+/// (`docs/15`) and nothing in normal operation removes rows from it. This
+/// exists so an integration test can write to a real database and leave it
+/// exactly as it found it, and so an operator can remove a bot that was created
+/// by mistake. It is deliberately named `purge` rather than `delete` to make
+/// that read as the heavy-handed thing it is.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the deletes fail.
+pub async fn purge_bot(pool: &PgPool, bot_id: Uuid) -> Result<(), DbError> {
+    sqlx::query("DELETE FROM trades_executed WHERE bot_id = $1")
+        .bind(bot_id)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM audit_log WHERE payload->>'bot_id' = $1")
+        .bind(bot_id.to_string())
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM bots WHERE id = $1")
+        .bind(bot_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// A bot's state, for an operator looking at it.
+///
+/// Assembled from the tables the trading loop already writes, rather than from
+/// a separate status row that could drift out of step with them. A status
+/// column that disagrees with the trade log is worse than no status at all.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BotSummary {
+    /// The bot.
+    pub id: Uuid,
+    /// `paper` or `live`.
+    pub mode: String,
+    /// `running`, `paused`, `stopped` or `killed`.
+    pub status: String,
+    /// Venue, when it trades a real one.
+    pub venue: Option<String>,
+    /// When the bot row was created, unix nanos.
+    pub created_at: i64,
+    /// Completed trades.
+    pub trades: i64,
+    /// Trades still open.
+    pub open_trades: i64,
+    /// Summed R across completed trades.
+    pub cumulative_r: f64,
+    /// `on_candle` decisions recorded.
+    pub decisions: i64,
+    /// The newest decision's close time, unix nanos.
+    pub last_decision_at: Option<i64>,
+    /// Notifications raised, including any breach.
+    pub notifications: i64,
+}
+
+/// Read a bot's state, or `None` if there is no such bot.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn bot_summary(pool: &PgPool, bot_id: Uuid) -> Result<Option<BotSummary>, DbError> {
+    let row = sqlx::query(
+        "SELECT b.id, b.mode, b.status, b.venue, b.created_at, \
+                (SELECT count(*) FROM trades_executed t WHERE t.bot_id = b.id) AS trades, \
+                (SELECT count(*) FROM trades_executed t \
+                  WHERE t.bot_id = b.id AND t.closed_at IS NULL) AS open_trades, \
+                (SELECT coalesce(sum(t.r_multiple), 0) FROM trades_executed t \
+                  WHERE t.bot_id = b.id) AS cumulative_r, \
+                (SELECT count(*) FROM audit_log a \
+                  WHERE a.payload->>'bot_id' = b.id::text \
+                    AND a.event_type = 'bot.decision') AS decisions, \
+                (SELECT max((a.payload->>'at')::bigint) FROM audit_log a \
+                  WHERE a.payload->>'bot_id' = b.id::text \
+                    AND a.event_type = 'bot.decision') AS last_decision_at, \
+                (SELECT count(*) FROM audit_log a \
+                  WHERE a.payload->>'bot_id' = b.id::text \
+                    AND a.event_type = 'bot.notification') AS notifications \
+         FROM bots b WHERE b.id = $1",
+    )
+    .bind(bot_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(BotSummary {
+        id: row.try_get("id")?,
+        mode: row.try_get("mode")?,
+        status: row.try_get("status")?,
+        venue: row.try_get("venue")?,
+        created_at: dt_to_ns(row.try_get("created_at")?),
+        trades: row.try_get("trades")?,
+        open_trades: row.try_get("open_trades")?,
+        cumulative_r: row.try_get("cumulative_r")?,
+        decisions: row.try_get("decisions")?,
+        last_decision_at: row.try_get("last_decision_at")?,
+        notifications: row.try_get("notifications")?,
+    }))
+}
+
+/// A bot's newest decisions, newest first, as the stored payloads.
+///
+/// Returns the payloads rather than formatted lines: this layer knows what is
+/// stored, not how anyone wants to read it.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn recent_decisions(
+    pool: &PgPool,
+    bot_id: Uuid,
+    limit: i64,
+) -> Result<Vec<Value>, DbError> {
+    let rows = sqlx::query(
+        "SELECT payload FROM audit_log \
+         WHERE payload->>'bot_id' = $1 AND event_type = 'bot.decision' \
+         ORDER BY ts DESC LIMIT $2",
+    )
+    .bind(bot_id.to_string())
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| row.try_get::<Value, _>("payload").map_err(DbError::from))
+        .collect()
+}
+
+/// Delete every test owner whose email starts with `prefix`, and everything
+/// they own.
+///
+/// ## Why this exists
+///
+/// An integration test that asserts and *then* cleans up leaves its rows behind
+/// when an assertion fails, because a panic skips the cleanup. The first run of
+/// `persistence.rs` failed twice, and its fixtures accumulated in a shared
+/// database until `bot.decision` rows from dead runs outnumbered the live
+/// bot's. A test that cannot be re-run cleanly is a test whose failures get
+/// worse the more you run it.
+///
+/// So the tests call this at the *start*, not the end: a stale fixture is
+/// removed before it can be counted. It is scoped to a caller-supplied prefix
+/// so it cannot reach anything a real user owns, and it is documented as a
+/// test tool rather than a feature.
+///
+/// ## Only owners older than `older_than_minutes`
+///
+/// The age filter is load-bearing. Cargo runs a file's tests in parallel, so a
+/// sweep with no age limit deletes the fixtures of tests that are *currently
+/// running* -- which is exactly what happened: the file passed alone and failed
+/// in `cargo test --workspace`. A fixture younger than the window belongs to
+/// someone who has not finished yet.
+///
+/// Returns how many owners were removed.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if a delete fails.
+pub async fn purge_owners_with_prefix(
+    pool: &PgPool,
+    prefix: &str,
+    older_than_minutes: i64,
+) -> Result<u64, DbError> {
+    // Ordered by foreign key: trades and audit rows first, then the rows they
+    // point at.
+    let pattern = format!("{prefix}%");
+    let age = format!("{older_than_minutes} minutes");
+    for statement in [
+        "DELETE FROM trades_executed WHERE bot_id IN (\
+           SELECT b.id FROM bots b JOIN users u ON u.id = b.user_id \
+           WHERE u.email LIKE $1 AND u.created_at < now() - $2::interval)",
+        "DELETE FROM audit_log WHERE user_id IN (\
+           SELECT id FROM users WHERE email LIKE $1 AND created_at < now() - $2::interval)",
+        "DELETE FROM bots WHERE user_id IN (\
+           SELECT id FROM users WHERE email LIKE $1 AND created_at < now() - $2::interval)",
+        "DELETE FROM strategies WHERE user_id IN (\
+           SELECT id FROM users WHERE email LIKE $1 AND created_at < now() - $2::interval)",
+    ] {
+        sqlx::query(statement)
+            .bind(&pattern)
+            .bind(&age)
+            .execute(pool)
+            .await?;
+    }
+    let result =
+        sqlx::query("DELETE FROM users WHERE email LIKE $1 AND created_at < now() - $2::interval")
+            .bind(&pattern)
+            .bind(&age)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected())
+}
+
+/// How many trades a bot recorded.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn count_executed_trades(pool: &PgPool, bot_id: Uuid) -> Result<i64, DbError> {
+    let row = sqlx::query("SELECT count(*) AS n FROM trades_executed WHERE bot_id = $1")
+        .bind(bot_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(row.try_get::<i64, _>("n")?)
+}
+
+/// Remove an owner and everything owned by them.
+///
+/// Same standing as [`purge_bot`]: not part of the trading loop, and the reason
+/// it exists is so an integration test can write to a real database and leave
+/// it exactly as it found it.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the deletes fail.
+pub async fn purge_owner(pool: &PgPool, user_id: Uuid) -> Result<(), DbError> {
+    sqlx::query("DELETE FROM audit_log WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM strategies WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Count the audit events of one type for one user, newest first.

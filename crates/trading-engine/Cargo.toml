@@ -27,3 +27,7 @@ uuid = { workspace = true }
 # feature stays out of the normal graph -- which is what keeps `serde_yaml`
 # off the sandbox guest's path (see the workspace `strategy-dsl` entry).
 strategy-dsl = { workspace = true, features = ["yaml"] }
+# The persistence tests connect to a real database; nothing loads `.env` for
+# them the way a binary's `main()` does.
+dotenvy = { workspace = true }
+uuid = { workspace = true }

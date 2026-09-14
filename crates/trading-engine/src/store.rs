@@ -25,13 +25,33 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::ExecutionError;
-use crate::paper::{DecisionOutcome, DecisionRecord, PaperBot};
+use crate::paper::{BotAlert, DecisionOutcome, DecisionRecord, PaperBot};
 
 /// The audit event type every decision is written under.
 pub const DECISION_EVENT: &str = "bot.decision";
 
 /// The audit event type a risk breach is written under.
 pub const RISK_EVENT: &str = "bot.risk_breach";
+
+/// The audit event type a user-facing notification is written under.
+///
+/// `docs/11` asks for the user to be *notified* on a breach, and `docs/13`
+/// defines no notifications table. Rather than invent one the schema doc does
+/// not describe, notifications ride the append-only event stream the platform
+/// already has: Phase 7's in-app surface reads `bot.notification` rows, and
+/// email/webhook -- which `docs/11` calls later additions -- become another
+/// reader of the same rows rather than another writer.
+pub const NOTIFICATION_EVENT: &str = "bot.notification";
+
+/// The audit event type a bot start is written under.
+///
+/// Worth its own row because its *absence* is the signal: a bot that starts and
+/// never stops crashed, and a trail without these two events cannot tell a
+/// clean run from a silent death.
+pub const STARTED_EVENT: &str = "bot.started";
+
+/// The audit event type a clean stop is written under.
+pub const STOPPED_EVENT: &str = "bot.stopped";
 
 /// A running bot's row in `bots`, plus how much of its history is already
 /// written.
@@ -40,7 +60,8 @@ pub struct BotSession {
     database: Database,
     user_id: Uuid,
     bot_id: Uuid,
-    decisions_written: usize,
+    /// Trades already written. Unlike decisions, `bot.trades()` returns the
+    /// whole history every time, so this offset is real and load-bearing.
     trades_written: usize,
     /// Set once the clamp note has been logged, so it is recorded once.
     clamp_recorded: bool,
@@ -74,11 +95,27 @@ impl BotSession {
 
         let bot_id = db::paper::insert_bot(pool, user_id, strategy_id, mode, venue).await?;
 
+        db::paper::insert_audit_events(
+            pool,
+            &[AuditEvent {
+                user_id: Some(user_id),
+                event_type: STARTED_EVENT.into(),
+                payload: json!({
+                    "bot_id": bot_id,
+                    "strategy": strategy_name,
+                    "version": strategy_version,
+                    "mode": mode,
+                    "venue": venue,
+                }),
+                ts: now_ns(),
+            }],
+        )
+        .await?;
+
         Ok(Self {
             database: database.clone(),
             user_id,
             bot_id,
-            decisions_written: 0,
             trades_written: 0,
             clamp_recorded: false,
         })
@@ -99,44 +136,48 @@ impl BotSession {
     pub async fn flush(&mut self, bot: &mut PaperBot) -> Result<(), ExecutionError> {
         let decisions = bot.take_decisions();
         let trades = bot.trades().to_vec();
+        let alerts = bot.take_alerts();
 
         let mut events: Vec<AuditEvent> = Vec::new();
+        let at = decisions.last().map_or_else(now_ns, |decision| decision.at);
 
-        if !self.clamp_recorded {
-            if let Some(note) = bot.clamp_note() {
+        // Alerts are the user-facing half of a breach: `docs/11` asks for the
+        // user to be told, not merely for a row to exist somewhere.
+        for alert in &alerts {
+            let killed = matches!(alert, BotAlert::Killed { .. });
+            events.push(AuditEvent {
+                user_id: Some(self.user_id),
+                event_type: NOTIFICATION_EVENT.into(),
+                payload: notification_payload(alert, self.bot_id),
+                ts: at,
+            });
+            if killed {
                 events.push(AuditEvent {
                     user_id: Some(self.user_id),
                     event_type: RISK_EVENT.into(),
-                    payload: json!({ "kind": "clamped", "detail": note }),
-                    ts: decisions.first().map_or(0, |d| d.at),
+                    payload: json!({
+                        "bot_id": self.bot_id,
+                        "kind": "halt",
+                        "detail": alert.body(),
+                    }),
+                    ts: at,
                 });
-                self.clamp_recorded = true;
             }
+            self.clamp_recorded = true;
         }
 
-        for decision in &decisions[self.decisions_written.min(decisions.len())..] {
+        // Every decision in `decisions` is new: `take_decisions` drained them.
+        // An offset here would be compared against a per-flush *batch* rather
+        // than a running total, so every batch after the first would be
+        // silently dropped -- which is exactly what happened, and what the
+        // integration test caught: 250 rows for 3,348 candles.
+        for decision in &decisions {
             events.push(AuditEvent {
                 user_id: Some(self.user_id),
                 event_type: DECISION_EVENT.into(),
-                payload: decision_payload(decision),
+                payload: decision_payload(decision, self.bot_id),
                 ts: decision.at,
             });
-        }
-
-        // A halt is a risk event, not just a decision: it needs its own
-        // greppable type so an alert can fire on it.
-        if let Some(reason) = bot.halt_reason() {
-            let already = events
-                .iter()
-                .any(|e| e.event_type == RISK_EVENT && e.payload["kind"] == "halt");
-            if !already {
-                events.push(AuditEvent {
-                    user_id: Some(self.user_id),
-                    event_type: RISK_EVENT.into(),
-                    payload: json!({ "kind": "halt", "detail": reason }),
-                    ts: decisions.last().map_or(0, |d| d.at),
-                });
-            }
         }
 
         let new_trades: Vec<ExecutedTrade> = trades[self.trades_written.min(trades.len())..]
@@ -171,7 +212,6 @@ impl BotSession {
             db::paper::insert_executed_trades(self.database.pool(), &new_trades).await?;
         }
 
-        self.decisions_written = decisions.len();
         self.trades_written = trades.len();
         Ok(())
     }
@@ -185,8 +225,64 @@ impl BotSession {
         self.flush(bot).await?;
         let status = if bot.is_halted() { "killed" } else { "stopped" };
         db::paper::set_bot_status(self.database.pool(), self.bot_id, status).await?;
+
+        db::paper::insert_audit_events(
+            self.database.pool(),
+            &[AuditEvent {
+                user_id: Some(self.user_id),
+                event_type: STOPPED_EVENT.into(),
+                payload: json!({
+                    "bot_id": self.bot_id,
+                    "status": status,
+                    "trades": bot.trades().len(),
+                    "cumulative_r": bot.cumulative_r(),
+                    "halt_reason": bot.halt_reason(),
+                }),
+                ts: now_ns(),
+            }],
+        )
+        .await?;
         Ok(())
     }
+}
+
+/// Now, in unix nanoseconds.
+fn now_ns() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(elapsed) => elapsed.as_nanos() as i64,
+        // A clock set before 1970 is not worth failing a trade over.
+        Err(_) => 0,
+    }
+}
+
+/// The audit payload for a notification.
+///
+/// `severity` and `title` exist so a UI can list these without parsing prose:
+/// a notification that only has a body is one every reader has to interpret.
+#[must_use]
+pub fn notification_payload(alert: &BotAlert, bot_id: Uuid) -> serde_json::Value {
+    let kind = match alert {
+        BotAlert::Killed { .. } => "killed",
+        BotAlert::Clamped { .. } => "clamped",
+    };
+    let mut payload = json!({
+        "bot_id": bot_id,
+        "kind": kind,
+        "severity": alert.severity(),
+        "title": alert.title(),
+        "body": alert.body(),
+    });
+    match alert {
+        BotAlert::Killed { reason, positions } => {
+            payload["reason"] = json!(reason);
+            payload["positions"] = json!(positions);
+        }
+        BotAlert::Clamped { detail } => {
+            payload["detail"] = json!(detail);
+        }
+    }
+    payload
 }
 
 /// The audit payload for one decision.
@@ -195,7 +291,7 @@ impl BotSession {
 /// bot should be able to read a row and know what happened without joining
 /// anything.
 #[must_use]
-pub fn decision_payload(decision: &DecisionRecord) -> serde_json::Value {
+pub fn decision_payload(decision: &DecisionRecord, bot_id: Uuid) -> serde_json::Value {
     let (kind, detail) = match &decision.outcome {
         DecisionOutcome::NoContext => ("no_context", json!({})),
         DecisionOutcome::NoSignal => ("no_signal", json!({})),
@@ -222,6 +318,7 @@ pub fn decision_payload(decision: &DecisionRecord) -> serde_json::Value {
     };
 
     json!({
+        "bot_id": bot_id,
         "at": decision.at,
         "symbol": decision.symbol,
         "decision_timeframe": decision.decision_timeframe,
@@ -254,7 +351,7 @@ mod tests {
     #[test]
     fn a_no_signal_decision_is_written_with_a_kind() {
         // The whole point of the decision log: the quiet bars are recorded too.
-        let payload = decision_payload(&decision(DecisionOutcome::NoSignal));
+        let payload = decision_payload(&decision(DecisionOutcome::NoSignal), Uuid::nil());
         assert_eq!(payload["kind"], "no_signal");
         assert_eq!(payload["symbol"], "BTCUSDT");
         assert_eq!(payload["frames_ready"], 2);
@@ -263,11 +360,14 @@ mod tests {
 
     #[test]
     fn a_denied_entry_records_which_limit_blocked_it() {
-        let payload = decision_payload(&decision(DecisionOutcome::EntryDenied {
-            reasons: vec!["close > liquidity.swept_level".into()],
-            limit: "daily_loss_limit_r".into(),
-            value: "3.10R".into(),
-        }));
+        let payload = decision_payload(
+            &decision(DecisionOutcome::EntryDenied {
+                reasons: vec!["close > liquidity.swept_level".into()],
+                limit: "daily_loss_limit_r".into(),
+                value: "3.10R".into(),
+            }),
+            Uuid::nil(),
+        );
         assert_eq!(payload["kind"], "entry_denied");
         assert_eq!(payload["detail"]["limit"], "daily_loss_limit_r");
         // The setup that was refused is kept, so the log can show that the
@@ -280,9 +380,12 @@ mod tests {
 
     #[test]
     fn a_halting_decision_is_distinguishable_from_an_ordinary_one() {
-        let payload = decision_payload(&decision(DecisionOutcome::Halted {
-            reason: "daily loss limit breached: 3.10R of 3.00R".into(),
-        }));
+        let payload = decision_payload(
+            &decision(DecisionOutcome::Halted {
+                reason: "daily loss limit breached: 3.10R of 3.00R".into(),
+            }),
+            Uuid::nil(),
+        );
         assert_eq!(payload["kind"], "halted");
         assert!(payload["detail"]["reason"]
             .as_str()
@@ -291,8 +394,39 @@ mod tests {
     }
 
     #[test]
+    fn a_kill_notification_carries_severity_and_what_happened_to_the_position() {
+        let alert = BotAlert::Killed {
+            reason: "daily loss limit breached: 3.51R of 3.00R".into(),
+            positions: "the open position was closed at market".into(),
+        };
+        let payload = notification_payload(&alert, Uuid::nil());
+        assert_eq!(payload["kind"], "killed");
+        assert_eq!(payload["severity"], "critical");
+        assert!(payload["title"].as_str().unwrap().contains("risk engine"));
+        assert!(payload["positions"].as_str().unwrap().contains("closed"));
+    }
+
+    #[test]
+    fn a_clamp_notification_is_a_warning_not_a_crisis() {
+        let alert = BotAlert::Clamped {
+            detail: "risk.max_risk_pct was 20% -- clamped to the 5% platform ceiling".into(),
+        };
+        let payload = notification_payload(&alert, Uuid::nil());
+        assert_eq!(payload["kind"], "clamped");
+        assert_eq!(payload["severity"], "warning");
+    }
+
+    #[test]
+    fn every_audit_row_names_the_bot_it_came_from() {
+        // Without this, a trail shared by several bots cannot be attributed,
+        // and `purge_bot` has nothing to match on.
+        let payload = decision_payload(&decision(DecisionOutcome::NoSignal), Uuid::nil());
+        assert!(payload.get("bot_id").is_some());
+    }
+
+    #[test]
     fn a_cold_ladder_is_recorded_as_such_not_as_a_missed_setup() {
-        let payload = decision_payload(&decision(DecisionOutcome::NoContext));
+        let payload = decision_payload(&decision(DecisionOutcome::NoContext), Uuid::nil());
         assert_eq!(payload["kind"], "no_context");
     }
 }

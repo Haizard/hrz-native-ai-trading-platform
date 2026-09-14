@@ -40,6 +40,9 @@ pub mod risk;
 pub mod store;
 
 pub use error::ExecutionError;
-pub use paper::{DecisionOutcome, DecisionRecord, PaperBot, PaperConfig};
+pub use paper::{BotAlert, DecisionOutcome, DecisionRecord, PaperBot, PaperConfig};
 pub use risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict, PLATFORM_MAX_RISK_PCT};
-pub use store::{decision_payload, BotSession, DECISION_EVENT, RISK_EVENT};
+pub use store::{
+    decision_payload, notification_payload, BotSession, DECISION_EVENT, NOTIFICATION_EVENT,
+    RISK_EVENT, STARTED_EVENT, STOPPED_EVENT,
+};

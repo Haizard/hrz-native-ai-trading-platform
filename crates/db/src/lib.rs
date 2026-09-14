@@ -31,8 +31,10 @@ pub use error::DbError;
 pub use loading::{coverage, load_timeframe_series, warn_about_short_series, MIN_COVERAGE};
 pub use models::Database;
 pub use paper::{
-    count_audit_events, find_or_create_strategy, find_user_by_email, insert_audit_events,
-    insert_bot, insert_executed_trades, set_bot_status, AuditEvent, ExecutedTrade,
+    bot_summary, count_audit_events, count_executed_trades, create_owner, find_or_create_strategy,
+    find_user_by_email, insert_audit_events, insert_bot, insert_executed_trades, purge_bot,
+    purge_owner, purge_owners_with_prefix, recent_decisions, set_bot_status, AuditEvent,
+    BotSummary, ExecutedTrade,
 };
 pub use repositories::{dt_to_ns, ns_to_dt};
 

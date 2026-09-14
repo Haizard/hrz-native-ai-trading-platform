@@ -94,6 +94,25 @@ enum Command {
         #[arg(long)]
         report_out: Option<String>,
     },
+    /// Provision the owner a paper bot writes under, and print its id.
+    ///
+    /// A bot row references `users` and there is no signup flow until Phase 7,
+    /// so this is a deliberate act rather than something a run does quietly on
+    /// its own.
+    Owner {
+        /// Email to provision.
+        #[arg(long)]
+        email: String,
+    },
+    /// Show what a bot has done, from the tables it wrote.
+    Status {
+        /// The bot id, as printed when it started.
+        #[arg(long)]
+        bot: String,
+        /// Print the newest decisions as well as the totals.
+        #[arg(long, default_value_t = false)]
+        decisions: bool,
+    },
     /// Run against the live feed until stopped.
     Live {
         /// Path to the YAML/JSON strategy document.
@@ -141,6 +160,8 @@ async fn main() -> Result<()> {
     }
 
     match Cli::parse().command {
+        Command::Owner { email } => owner(&email).await,
+        Command::Status { bot, decisions } => status(&bot, decisions).await,
         Command::Run {
             strategy,
             symbol,
@@ -190,6 +211,92 @@ async fn main() -> Result<()> {
             .await
         }
     }
+}
+
+async fn owner(email: &str) -> Result<()> {
+    let database = Database::from_env()
+        .await
+        .context("could not connect to postgres")?;
+    database.migrate().await?;
+    let id = db::paper::create_owner(database.pool(), email).await?;
+    println!("owner {email} -> {id}");
+    Ok(())
+}
+
+async fn status(bot: &str, show_decisions: bool) -> Result<()> {
+    let bot_id = uuid::Uuid::parse_str(bot).with_context(|| format!("`{bot}` is not a uuid"))?;
+    let database = Database::from_env()
+        .await
+        .context("could not connect to postgres")?;
+
+    let Some(summary) = db::paper::bot_summary(database.pool(), bot_id).await? else {
+        bail!("no bot with id {bot_id}");
+    };
+
+    println!("bot       {}", summary.id);
+    println!("mode      {}   status {}", summary.mode, summary.status);
+    if let Some(venue) = &summary.venue {
+        println!("venue     {venue}");
+    }
+    println!(
+        "created   {}",
+        chrono::DateTime::from_timestamp(
+            summary.created_at / 1_000_000_000,
+            (summary.created_at % 1_000_000_000) as u32,
+        )
+        .map_or_else(|| "unknown".to_string(), |t| t.to_rfc3339())
+    );
+    println!(
+        "trades    {} closed, {} open, cumulative {:.4}R",
+        summary.trades, summary.open_trades, summary.cumulative_r
+    );
+    println!(
+        "decisions {}   last {}",
+        summary.decisions,
+        summary
+            .last_decision_at
+            .and_then(|ns| chrono::DateTime::from_timestamp(
+                ns / 1_000_000_000,
+                (ns % 1_000_000_000) as u32
+            ))
+            .map_or_else(|| "never".to_string(), |t| t.to_rfc3339())
+    );
+    println!("alerts    {}", summary.notifications);
+
+    // A bot that started and never stopped is the signature of a crash, and it
+    // is the one thing a status view has to say out loud.
+    if summary.status == "running" {
+        let stalled = summary
+            .last_decision_at
+            .is_some_and(|ns| now_ns() - ns > 30 * 60 * 1_000_000_000);
+        if stalled {
+            println!(
+                "\nWARNING: status is `running` but the newest decision is over 30 minutes old. \
+                 Either the feed is quiet or the process died without stopping cleanly."
+            );
+        }
+    }
+
+    if show_decisions {
+        println!();
+        for payload in db::paper::recent_decisions(database.pool(), bot_id, 20).await? {
+            println!(
+                "{:>13}  {:>10}  {:<14} {}",
+                payload["at"].as_i64().unwrap_or_default() / 1_000_000_000,
+                payload["price"].as_f64().unwrap_or_default(),
+                payload["kind"].as_str().unwrap_or("?"),
+                payload["detail"],
+            );
+        }
+    }
+    Ok(())
+}
+
+fn now_ns() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as i64)
 }
 
 fn limits(max_risk_pct: f64, daily_loss_limit_r: f64, weekly_loss_limit_r: f64) -> RiskLimits {
@@ -631,13 +738,26 @@ async fn live(
                 }
             },
             _ = flush.tick() => {
+                for alert in bot.take_alerts() {
+                    // docs/11: a breach is meant to reach the user, so it goes
+                    // to the console as well as into the audit trail.
+                    println!(
+                        "ALERT [{}] {}: {}",
+                        alert.severity(),
+                        alert.title(),
+                        alert.body()
+                    );
+                }
+                // Counted before the flush: `take_decisions` drains, so asking
+                // afterwards reports zero for ever.
+                let pending = bot.pending_decisions();
                 if let Some(session) = session.as_mut() {
                     session.flush(&mut bot).await?;
                 }
                 println!(
-                    "trades={} decisions_pending={} cumulative_r={:.4}{}",
+                    "trades={} decisions_written={} cumulative_r={:.4}{}",
                     bot.trades().len(),
-                    bot.take_decisions().len(),
+                    pending,
                     bot.cumulative_r(),
                     bot.halt_reason().map(|r| format!("  HALTED: {r}")).unwrap_or_default(),
                 );

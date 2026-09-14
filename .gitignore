@@ -28,3 +28,8 @@ Thumbs.db
 node_modules/
 frontend/app/dist/
 frontend/app/.turbo/
+
+# A live paper-bot run writes its own console log here. The audit trail that
+# matters is in Postgres; this is just the terminal output, and it is not worth
+# committing by the hour.
+reports/paper-bot-*.log
