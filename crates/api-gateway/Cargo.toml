@@ -10,6 +10,17 @@ license.workspace = true
 db = { workspace = true }
 analytics-core = { workspace = true }
 ai-agent = { workspace = true }
+# Phase 7: the gateway now runs strategies and bots itself, so it depends on the
+# crates that do that work rather than shelling out to the CLIs.
+backtester = { workspace = true }
+trading-engine = { workspace = true }
+strategy-runtime = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+uuid = { workspace = true }
 strategy-dsl = { workspace = true, features = ["yaml"] }
 async-trait = { workspace = true }
 
@@ -25,3 +36,8 @@ tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
 
 [dev-dependencies]
+# Integration tests build the real router and drive it in-process, so they need
+# a way to call a `tower` service with a request.
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

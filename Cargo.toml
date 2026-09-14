@@ -94,6 +94,17 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # --- exchange transport ---
 # rustls rather than native-tls: no OpenSSL dependency to fight on Windows.
+# Password hashing for /auth. Argon2 is the current recommendation for new
+# passwords and is pure Rust, so it needs no system libraries in the image.
+# Deliberately a library rather than anything hand-rolled: a KDF is exactly the
+# kind of thing that looks right and is subtly wrong.
+argon2 = "0.6"
+# JWT framing (HS256) is base64 + JSON over an HMAC; the primitives come from
+# these, and the same crates already sign the Bedrock SigV4 requests.
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
 reqwest           = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # TLS is NOT on by default: without it `connect_async("wss://...")` fails at
 # runtime with "URL error: TLS support not compiled in". rustls + webpki-roots

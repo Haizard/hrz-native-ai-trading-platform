@@ -25,6 +25,7 @@ pub mod loading;
 pub mod models;
 pub mod paper;
 pub mod repositories;
+pub mod users;
 
 pub use config::DatabaseConfig;
 pub use error::DbError;
@@ -37,6 +38,7 @@ pub use paper::{
     BotSummary, ExecutedTrade,
 };
 pub use repositories::{dt_to_ns, ns_to_dt};
+pub use users::{create_user, delete_user, find_by_email, find_by_id, normalize_email, UserRow};
 
 /// Embedded migrations from `crates/db/migrations`.
 ///
