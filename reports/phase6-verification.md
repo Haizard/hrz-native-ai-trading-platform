@@ -10,8 +10,8 @@ commit. Written after the fact from real runs, not from intent.
 
 | Criterion (docs/11) | Status | Evidence |
 |---|---|---|
-| Subscribes to live `MarketState` for the declared symbol/timeframes | **built, not yet left running** | `paper-cli live` connects to the Binance trade feed, builds the declared timeframes and feeds the bot. Nothing has been run for 48h yet. |
-| Feeds each closed candle into the strategy *exactly as the backtester does* | **verified** | `paper-cli run` diffs the bot against a replay of the same candles: **MATCH on every trade** over 864 decision candles of real BTCUSDT 5m data. |
+| Subscribes to live `MarketState` for the declared symbol/timeframes | **verified for 2 minutes** | `paper-cli live` connected to the Binance trade feed, built `[M5, H4]` from it and made a real decision on a closed 5m candle. The 48h observation is the part that has not happened. |
+| Feeds each closed candle into the strategy *exactly as the backtester does* | **verified** | `paper-cli run` diffs the bot against a replay of the same candles: **MATCH on all 219 trades** over 53,172 decision candles of real BTCUSDT data. |
 | Simulated order/position/PnL with a configurable slippage/fee model | **verified** | The fill model is `strategy_runtime::simulator`, the same code the backtester uses. |
 | Persists every trade **and** every `on_candle` decision, including "no signal" | **built, not yet run against the database** | `BotSession` writes `trades_executed` and `audit_log` (`bot.decision`, `bot.risk_breach`). `--persist` is off by default and has not been exercised against production Postgres. |
 | Risk engine always active: per-trade cap clamped to the platform ceiling | **verified** | `a_twenty_percent_strategy_is_clamped_to_the_platform_ceiling`, `a_document_asking_for_more_than_the_ceiling_is_refused_not_traded`, `a_strategy_asking_for_more_than_the_ceiling_is_refused`. |
@@ -19,7 +19,7 @@ commit. Written after the fact from real runs, not from intent.
 | Max concurrent positions | **verified** | `a_second_position_is_refused_at_the_concurrency_limit`. |
 | Manual + automatic kill-switch | **verified** | `a_manual_kill_is_reported_and_holds`, `a_manual_kill_needs_no_market_data_to_work`. |
 | Kill-switch works while the agent/market-data is degraded | **verified by construction** | `RiskEngine` has no I/O, no async and no clock of its own. There is nothing to degrade. |
-| **Tight limit → kill-switch fires** | **verified live** | Below. |
+| **Tight limit → kill-switch fires** | **verified on real data** | Below. |
 | **≥48h continuous run** | **not done** | The runner exists and builds. The observation has not been made. |
 
 ---
@@ -30,49 +30,49 @@ commit. Written after the fact from real runs, not from intent.
 the same period through the backtester would produce"*.
 
 ```
-$ paper-cli run --strategy strategies/paper-harness-1h.yaml --symbol BTCUSDT \
-      --from 2026-09-10 --to 2026-09-12 \
-      --daily-loss-limit-r 1000 --weekly-loss-limit-r 1000
+$ paper-cli run --strategy strategies/liquidity-sweep-btcusdt-5m.yaml       --symbol BTCUSDT --from 2026-03-13 --to 2026-09-13       --daily-loss-limit-r 100000 --weekly-loss-limit-r 100000
 
-loaded entry: 864 candles
-loaded trend: 48 candles
+loaded entry: 53172 candles
+loaded trend: 1110 candles
 
-paper bot:  864 decisions, 20 trades
-backtester: 864 decisions, 21 trades
-context candles delivered: 48
-note: the replay closed a still-open position at the end of the data; the bot
-      leaves it open, as a live bot would
+paper bot:  53172 decisions, 219 trades
+backtester: 53172 decisions, 219 trades
+context candles delivered: 1107
 
 MATCH: the paper bot and the replay agree on every trade.
-bot cumulative R: -6.2689   replay final R: -5.0310
+bot cumulative R: -49.9317   replay final R: -49.9317
 ```
 
-Every one of the 20 trades has the same `entry_time`, `entry_price`, `exit_time`,
-`exit_price` and `r_multiple` on both paths, to 1e-9. The single extra replay
-trade is the `EndOfData` close, which a live bot has no event for — so it is
-named, not counted as a divergence.
+Every one of the 219 trades has the same `entry_time`, `entry_price`,
+`exit_time`, `exit_price` and `r_multiple` on both paths, to 1e-9. Six months of
+real BTCUSDT 5m candles, the reference strategy, and the two paths agree
+exactly -- including the cumulative -49.93R, which is also what the committed
+Phase 3 baseline reports.
 
 Risk limits were widened for this run on purpose: a limit that refuses an entry
-is a *legitimate* reason for the two paths to differ, and widening them means
-the comparison is testing the execution path rather than the limits.
+is a *legitimate* reason for the two paths to differ, so widening them means the
+comparison tests the execution path rather than the limits.
 
-### With the limits in force
+### The same strategy with the limits in force
 
 ```
-$ paper-cli run --strategy strategies/paper-harness-1h.yaml --symbol BTCUSDT \
-      --from 2026-09-10 --to 2026-09-12          # defaults: 3R daily, 8R weekly
+$ paper-cli run --strategy strategies/liquidity-sweep-btcusdt-5m.yaml       --symbol BTCUSDT --from 2026-03-13 --to 2026-09-13
+                                    # defaults: 3R daily, 8R weekly
 
-paper bot:  864 decisions, 7 trades
-backtester: 864 decisions, 21 trades
+paper bot:  53172 decisions, 5 trades
+backtester: 53172 decisions, 219 trades
 
-MISMATCH (3 differences):
-  - trade count differs: the bot closed 7, the replay 21
-kill-switch engaged: daily loss limit breached: 3.19R of 3.00R
+bot cumulative R: 1.0576   replay final R: -49.9317
+kill-switch engaged: daily loss limit breached: 3.51R of 3.00R
 ```
 
-This is the second half of the done criterion: *"verified by deliberately
-configuring a tight limit and confirming the kill-switch fires"*. It fires in a
-running bot, on real data, and the bot stops.
+This is the second half of the done criterion -- *"verified by deliberately
+configuring a tight limit and confirming the kill-switch fires"* -- and it is the
+clearest argument for having a risk engine at all. The unbounded strategy loses
+**49.93R** over six months. With the default 3R daily budget the bot stops after
+five trades, having lost 3.51R in a day, and finishes **+1.06R**.
+
+The limit did not make the strategy better. It stopped it.
 
 ---
 
@@ -108,12 +108,20 @@ parts live below both crates, so they moved into `strategy-runtime`:
 - `simulator` — the fill model, with `TradeRecord` and `FillAssumptions`.
   `backtester` re-exports all of it, so no downstream call site changed.
 
-**This is proven equivalent, not assumed.** `crates/backtester/tests/replay_golden.rs`
-replays a synthetic 5m/1h document and pins every number each trade carries —
-entry time and price, stop, target, exit, size, risk per unit, R, bars held,
-regime, entry reasons — plus the decision count. It was run against the
-pre-refactor implementation and the post-refactor one and produced identical
-values to 1e-9.
+**This is proven equivalent on real data, not just on a fixture.**
+
+1. `crates/backtester/tests/replay_golden.rs` replays a synthetic 5m/1h document
+   and pins every number each trade carries. It was run against the
+   pre-refactor implementation and the post-refactor one and produced identical
+   values to 1e-9.
+2. Re-running the committed Phase 3 backtest -- 53,172 real BTCUSDT 5m candles,
+   the reference strategy -- reproduces
+   `reports/liquidity-sweep-btcusdt-5m-2026h1.json` **exactly**:
+
+   ```
+   summary fields: 18 | differing: NONE
+   trades: 219 219 | field differences: 0
+   ```
 
 ### One rule the ladder had to get right
 
@@ -126,37 +134,43 @@ have needed the same exception to stay in agreement.
 
 ---
 
-## The data problem this surfaced
+## The data gap, and how it was closed
 
-The `candles` table holds **two days of 1m data** and **six months of 5m**:
+At the start of this phase the `candles` table held two days of 1m data, six
+months of 5m, and **no 4h or 1h at all**:
 
 ```
   1m     2880  2026-09-10 00:00 .. 2026-09-11 23:59
   5m    53172  2026-03-13 00:00 .. 2026-09-13 14:55
 ```
 
-There are no 4h candles at all. The reference strategy
-(`strategies/liquidity-sweep-btcusdt-5m.yaml`) declares `trend: 4h`, so the 4h
-series is rebuilt from 1m — twelve candles covering two days of a six-month
-window. The 4h view is then cold for 99% of the run, `market_structure.trend ==
-"bullish"` is false everywhere it matters, and the six-month backtest reports
-**0 trades** where the committed
-`reports/liquidity-sweep-btcusdt-5m-2026h1.json` has **219**.
+The reference strategy declares `trend: 4h`, so that series was rebuilt from 1m
+-- twelve candles covering two days of a six-month window. The 4h view was cold
+for 99% of the run, `market_structure.trend == "bullish"` was false everywhere
+it mattered, and the six-month backtest reported **0 trades**.
 
-That is a change in stored data, not a regression — the equivalence test above
-is what establishes that rather than a hopeful re-run. It also means the
-committed 219-trade report can no longer be reproduced from this database.
+That was a data problem, not a regression, and the two checks above are what
+establish it rather than a hopeful re-run. It is now fixed by backfilling from
+the exchange:
 
-The silent version of it is now loud:
+```
+$ xtask backfill --symbol BTCUSDT --timeframe 4h --from 2026-03-13 --to 2026-09-14
+inserted 1110 candles (upsert)
+$ xtask backfill --symbol BTCUSDT --timeframe 1h --from 2026-03-13 --to 2026-09-14
+inserted 4440 candles (upsert)
 
-- a stored series is only trusted if it spans at least `MIN_COVERAGE` (90%) of
-  the window, otherwise it is resampled;
-- any series — direct *or* resampled — that still falls short logs a warning
-  saying a low trade count means missing data, not a selective strategy.
+  1h     4440  2026-03-13 00:00 .. 2026-09-13 23:00
+  4h     1110  2026-03-13 00:00 .. 2026-09-13 20:00
+```
 
-`strategies/paper-harness-1h.yaml` is the same thesis at a 1h context, which the
-available 1m data covers completely. It exists to make the comparison above
-meaningful today; it is not a claim that 1h is better than 4h for this thesis.
+The silent version of the trap is now loud: a stored series is only trusted if
+it spans at least `MIN_COVERAGE` (90%) of the window, otherwise it is resampled,
+and any series -- direct *or* resampled -- that still falls short logs a warning
+saying a low trade count means missing data, not a selective strategy.
+
+1m still covers only two days, so anything that resamples *from* 1m is still
+limited to that window. That does not matter for these strategies, whose finest
+declared timeframe is 5m, but it would for a 1m document.
 
 ---
 
@@ -176,16 +190,27 @@ New tests this phase: 16 in `trading-engine::risk`, 12 in
 
 ## Not verified
 
-- **The 48h run.** `paper-cli live` builds and connects, but nothing has been
-  left running against the feed. This is the one done criterion that is
-  genuinely unmet, and it is a matter of time rather than missing code.
+- **The 48h run.** `paper-cli live` has been verified end to end -- it connected,
+  built `[M5, H4]` from the live trade feed and decided on a closed candle:
+
+  ```
+  $ paper-cli live --strategy strategies/liquidity-sweep-btcusdt-5m.yaml         --symbol BTCUSDT --minutes 2 --flush-secs 20
+  paper bot live on BTCUSDT ([M5, H4]); 2 minutes
+  trades=0 decisions_pending=1 cumulative_r=0.0000
+  reached the configured run length
+  ```
+
+  What has not happened is leaving it running for 48 hours, which is a
+  scheduling matter rather than missing code:
+
+  ```
+  paper-cli live --strategy strategies/liquidity-sweep-btcusdt-5m.yaml       --symbol BTCUSDT --minutes 2880
+  ```
 - **Persistence against production Postgres.** `BotSession`, `db::paper` and
   the `--persist` flag are written but have never been executed. Nothing has
   been written to the `bots`, `trades_executed` or `audit_log` tables. A run
   needs a real `users` row (`--user-email`); the code deliberately will not
   invent one.
-- **`live` against a real feed.** The collector wiring follows `xtask collect`,
-  but the trade-feed path has not been exercised end to end.
 - **Partial fills.** `docs/11` marks them optional at this stage; they are not
   modelled.
 - **Notifications.** `docs/11` asks for an in-app notification on a breach. The

@@ -1,0 +1,18 @@
+{
+  "bot_cumulative_r": 1.0576177307495565,
+  "bot_in_position": false,
+  "bot_trades": 5,
+  "decisions": 53172,
+  "entries_denied_by_risk": 0,
+  "entries_refused_by_simulator": 0,
+  "halted": "daily loss limit breached: 3.51R of 3.00R",
+  "mismatches": [
+    "trade count differs: the bot closed 5, the replay 219"
+  ],
+  "replay_closed_open_position_at_end": false,
+  "replay_decisions": 53172,
+  "replay_final_r": -49.93165950190503,
+  "replay_trades": 219,
+  "strategy": "Liquidity Sweep + Reclaim (BTCUSDT 5m)",
+  "symbol": "BTCUSDT"
+}
