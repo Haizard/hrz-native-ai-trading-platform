@@ -42,7 +42,9 @@
 
 pub mod scene;
 
-pub use scene::{build, Bar, Cell, Level, Mode, Plot, ProfileBar, Request, Scene, Tick};
+pub use scene::{
+    build, heikin_ashi, Bar, Cell, Level, Mode, Plot, Point, ProfileBar, Request, Scene, Tick,
+};
 
 /// The ABI the shell talks to.
 ///

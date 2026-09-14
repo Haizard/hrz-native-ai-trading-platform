@@ -49,6 +49,7 @@ pub mod bot_routes;
 pub mod bots;
 pub mod error;
 pub mod extract;
+pub mod footprint_routes;
 pub mod market_data;
 pub mod market_routes;
 pub mod rate_limit;
@@ -115,13 +116,17 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/me", get(auth_routes::me))
         .route("/candles", get(market_routes::candles))
         .route("/symbols", get(market_routes::symbols))
+        .route("/footprint", get(footprint_routes::footprint))
         .route("/orderbook", get(market_routes::orderbook))
         .route(
             "/strategies",
             get(strategy_routes::list).post(strategy_routes::create),
         )
-        // Before `/strategies/{id}`, or `validate` would be read as an id.
+        // Both before `/strategies/{id}`, or the literal paths would be read as
+        // an id.
         .route("/strategies/validate", post(strategy_routes::validate))
+        .route("/strategies/reference", get(strategy_routes::reference))
+        .route("/strategies/examples", get(strategy_routes::examples))
         .route("/strategies/{id}", get(strategy_routes::get))
         .route(
             "/strategies/{id}/validate",

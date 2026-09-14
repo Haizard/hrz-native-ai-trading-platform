@@ -57,8 +57,12 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # page 404'd and the agent started with an empty methodology library, which
 # reads as "no matching skill" rather than "the files are not in the image".
 # Anything the gateway reads at runtime has to be listed here.
-COPY --from=builder /app/frontend /app/frontend
-COPY --from=builder /app/skills   /app/skills
+COPY --from=builder /app/frontend   /app/frontend
+COPY --from=builder /app/skills     /app/skills
+# The reference strategy, served at /strategies/reference so the editor has a
+# document to start from. Same rule as the others: read at runtime, so it has
+# to be listed here.
+COPY --from=builder /app/strategies /app/strategies
 
 # 0.0.0.0 matters: the local default is 127.0.0.1, which would make the
 # container unreachable from outside.

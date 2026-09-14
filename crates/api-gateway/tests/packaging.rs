@@ -68,7 +68,7 @@ fn the_dockerignore_does_not_exclude_what_the_gateway_serves() {
     // The exact mistake: `frontend/` was excluded for a year of project time
     // after it had stopped being empty.
     let lines = dockerignore_lines();
-    for path in ["frontend", "skills"] {
+    for path in ["frontend", "skills", "strategies"] {
         let offending: Vec<&str> = lines
             .iter()
             .filter(|line| excludes(line, path))
@@ -94,7 +94,7 @@ fn the_runtime_stage_copies_the_assets_the_gateway_reads() {
         .expect("the Dockerfile must have a debian runtime stage")
         .1;
 
-    for asset in ["frontend", "skills"] {
+    for asset in ["frontend", "skills", "strategies"] {
         assert!(
             runtime.contains(&format!("/app/{asset}")),
             "the runtime stage never copies `{asset}` into /app. The gateway resolves it \

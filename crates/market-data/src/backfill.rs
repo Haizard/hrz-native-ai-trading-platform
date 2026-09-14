@@ -281,6 +281,57 @@ impl BackfillClient {
 ///
 /// # Errors
 /// Returns [`MarketDataError::Normalization`] for a malformed date.
+/// Parse `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` into unix nanoseconds UTC.
+///
+/// The trade backfill is capped at 24 hours, so a date alone is often too coarse
+/// a window: `--from 2026-09-10 --to 2026-09-11` is exactly at the limit and
+/// `--from 2026-09-10 --to 2026-09-10` is empty. Hours let a caller pick the
+/// six they intend to look at.
+///
+/// A bare date is still accepted and means midnight, so the existing `backfill`
+/// callers are unaffected.
+///
+/// # Errors
+/// Returns [`MarketDataError::Normalization`] for anything else.
+pub fn parse_datetime_ns(value: &str) -> Result<i64, MarketDataError> {
+    let (date, time) = match value.split_once(['T', ' ']) {
+        Some((date, time)) => (date, Some(time)),
+        None => (value, None),
+    };
+    let midnight = parse_date_ns(date)?;
+
+    let Some(time) = time else {
+        return Ok(midnight);
+    };
+    let parts: Vec<&str> = time.split(':').collect();
+    if parts.len() < 2 || parts.len() > 3 {
+        return Err(MarketDataError::Normalization(format!(
+            "expected HH:MM or HH:MM:SS after the date, got `{time}`"
+        )));
+    }
+    let hour: i64 = parts[0].parse().map_err(|_| bad_datetime(value))?;
+    let minute: i64 = parts[1].parse().map_err(|_| bad_datetime(value))?;
+    let second: i64 = match parts.get(2) {
+        Some(seconds) => seconds.parse().map_err(|_| bad_datetime(value))?,
+        None => 0,
+    };
+    if !(0..24).contains(&hour) || !(0..60).contains(&minute) || !(0..60).contains(&second) {
+        return Err(bad_datetime(value));
+    }
+
+    Ok(midnight + (hour * 3600 + minute * 60 + second) * 1_000_000_000)
+}
+
+fn bad_datetime(value: &str) -> MarketDataError {
+    MarketDataError::Normalization(format!(
+        "expected YYYY-MM-DD or YYYY-MM-DDTHH:MM, got `{value}`"
+    ))
+}
+
+/// Parse `YYYY-MM-DD` into unix nanoseconds at midnight UTC.
+///
+/// # Errors
+/// Returns [`MarketDataError::Normalization`] for anything that is not a date.
 pub fn parse_date_ns(date: &str) -> Result<i64, MarketDataError> {
     let parts: Vec<&str> = date.split('-').collect();
     if parts.len() != 3 {

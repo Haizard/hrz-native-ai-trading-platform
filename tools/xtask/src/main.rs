@@ -65,6 +65,25 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Backfill raw aggregate trades, for the footprint chart.
+    ///
+    /// `backfill --source trades` builds *candles* from trades and discards the
+    /// trades themselves, which is why `trades` is empty after a normal backfill
+    /// and why the footprint chart has nothing to draw. This persists them.
+    BackfillTrades {
+        /// Symbol, e.g. BTCUSDT.
+        #[arg(long, default_value = "BTCUSDT")]
+        symbol: String,
+        /// Window start, `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`.
+        #[arg(long)]
+        from: String,
+        /// Window end, `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`.
+        #[arg(long)]
+        to: String,
+        /// Fetch and report, but write nothing.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
     /// Build the WASM chart engine and place it beside the shell.
     BuildFrontend,
     /// Run the live collector until interrupted.
@@ -134,6 +153,14 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Collect { symbol, no_persist } => {
             collect(&symbol, !no_persist).await?;
+        }
+        Command::BackfillTrades {
+            symbol,
+            from,
+            to,
+            dry_run,
+        } => {
+            backfill_trades(&symbol, &from, &to, dry_run).await?;
         }
         Command::BuildFrontend => {
             build_frontend()?;
@@ -246,6 +273,60 @@ async fn collect(symbol: &str, persist: bool) -> anyhow::Result<()> {
     trade_handle.abort();
     book_handle.abort();
 
+    Ok(())
+}
+
+/// Persist raw aggregate trades for a window.
+///
+/// ## Why this is separate from `backfill`
+///
+/// `backfill --source trades` fetches aggTrades and *aggregates them into
+/// candles*, then discards the trades. That is the right thing for a chart and
+/// the wrong thing for a footprint, which needs the trades themselves -- so
+/// `trades` stayed empty and `/footprint` had nothing to show.
+///
+/// ## The window is capped, and that is not an oversight
+///
+/// Binance returns ~1000 trades per request, so a day of BTCUSDT is thousands of
+/// round trips. `MAX_TRADE_BACKFILL_HOURS` refuses anything longer rather than
+/// appearing to hang. Backfill the hours you intend to look at.
+async fn backfill_trades(symbol: &str, from: &str, to: &str, dry_run: bool) -> anyhow::Result<()> {
+    let from_ns = market_data::backfill::parse_datetime_ns(from)?;
+    let to_ns = market_data::backfill::parse_datetime_ns(to)?;
+    if to_ns <= from_ns {
+        anyhow::bail!("`--to` ({to}) must be after `--from` ({from})");
+    }
+
+    let hours = (to_ns - from_ns) / 3_600_000_000_000;
+    println!("backfilling {symbol} trades from {from} to {to} ({hours}h)");
+
+    let client = BackfillClient::binance();
+    let trades = client.fetch_agg_trades(symbol, from_ns, to_ns).await?;
+
+    if trades.is_empty() {
+        anyhow::bail!("no trades came back for {symbol} in that window");
+    }
+    let buys = trades.iter().filter(|t| !t.is_buyer_maker).count();
+    println!(
+        "fetched {} trades ({} buy-aggressed, {} sell-aggressed)",
+        trades.len(),
+        buys,
+        trades.len() - buys
+    );
+    if let (Some(first), Some(last)) = (trades.first(), trades.last()) {
+        println!("  range: {} .. {}", first.timestamp, last.timestamp);
+    }
+
+    if dry_run {
+        println!("dry run -- nothing written");
+        return Ok(());
+    }
+
+    let db = Database::from_env().await?;
+    db.migrate().await?;
+    repositories::insert_trades(db.pool(), &trades).await?;
+    println!("inserted {} trades (idempotent upsert)", trades.len());
+    println!("the footprint chart will now have data for this window");
     Ok(())
 }
 

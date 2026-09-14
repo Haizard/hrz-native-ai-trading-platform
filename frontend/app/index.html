@@ -111,9 +111,19 @@
     <option value="500" selected>500 bars</option>
     <option value="1000">1000 bars</option>
   </select>
+  <!--
+    The chart type. The list mirrors `chart_engine::Mode` exactly, and a test in
+    the engine asserts every variant draws something -- a selector option that
+    renders nothing is worse than no option, because the user concludes the
+    chart is broken rather than the setting.
+  -->
   <select id="mode">
-    <option value="candles" selected>Candles</option>
-    <option value="footprint">Volume by price</option>
+    <option value="candles" selected>Candlesticks</option>
+    <option value="heikin_ashi">Heikin-Ashi</option>
+    <option value="bars">OHLC bars</option>
+    <option value="line">Line</option>
+    <option value="area">Area</option>
+    <option value="footprint">Footprint (volume by price)</option>
   </select>
   <button id="load">Reload</button>
   <span class="spacer"></span>
@@ -152,6 +162,14 @@
 
     <div class="pane" id="pane-strategy" hidden>
       <h2>Document</h2>
+      <!--
+        Start from a shipped strategy. Both of the files in strategies/ validate,
+        but only the calibrated one produces trades on this data -- so the editor
+        opens on that one and this picker offers the other.
+      -->
+      <div class="row">
+        <select id="example" title="Load a shipped strategy into the editor"></select>
+      </div>
       <textarea id="strategySource" spellcheck="false"></textarea>
       <div class="row">
         <button id="validate">Validate</button>

@@ -177,12 +177,84 @@ function draw() {
   if (!scene) return;
 
   drawGrid(ctx, scene);
+
+  // The engine says what to draw, so this is a dispatch rather than a decision.
+  // Adding a chart type means adding a case here and a variant in Rust -- not
+  // teaching JavaScript what a Heikin-Ashi candle is.
   if (scene.cells.length) drawCells(ctx, scene);
   if (scene.profile.length) drawProfile(ctx, scene);
-  if (scene.candles.length) drawCandles(ctx, scene);
+  switch (scene.style) {
+    case "heikin_ashi":
+    case "candles":
+      drawCandles(ctx, scene);
+      break;
+    case "bars":
+      drawOhlcBars(ctx, scene);
+      break;
+    case "area":
+      drawArea(ctx, scene);
+      break;
+    case "line":
+      drawLine(ctx, scene);
+      break;
+    default:
+      break;
+  }
+
   drawLevels(ctx, scene);
   drawAxis(ctx, scene);
   if (thesis) drawThesis(ctx, scene, thesis);
+}
+
+/// OHLC bars: a vertical range with an open tick and a close tick.
+function drawOhlcBars(ctx, scene) {
+  const half = scene.candles.length
+    ? Math.max(2, (scene.candles[0].w / 2) * 1.3)
+    : 3;
+  ctx.strokeStyle = COLORS.wick;
+  ctx.lineWidth = 1;
+  for (const bar of scene.candles) {
+    const centre = bar.x + bar.w / 2;
+    ctx.beginPath();
+    ctx.moveTo(centre, bar.wick_top);
+    ctx.lineTo(centre, bar.wick_bottom);
+    // Open to the left, close to the right: the convention that makes a bar
+    // readable without colour.
+    ctx.moveTo(centre - half, bar.open_y);
+    ctx.lineTo(centre, bar.open_y);
+    ctx.moveTo(centre, bar.close_y);
+    ctx.lineTo(centre + half, bar.close_y);
+    ctx.stroke();
+  }
+}
+
+function drawLine(ctx, scene) {
+  strokePath(ctx, scene.line, false);
+}
+
+function drawArea(ctx, scene) {
+  strokePath(ctx, scene.line, true);
+}
+
+function strokePath(ctx, points, fill) {
+  if (points.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
+  ctx.strokeStyle = COLORS.accent;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  if (fill) {
+    ctx.lineTo(points[points.length - 1].x, scene.plot.y + scene.plot.h);
+    ctx.lineTo(points[0].x, scene.plot.y + scene.plot.h);
+    ctx.closePath();
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = COLORS.accent;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.lineWidth = 1;
 }
 
 function drawGrid(ctx, scene) {
@@ -478,6 +550,80 @@ async function ask() {
 
 let savedStrategyId = null;
 
+// The editor's starting document comes from `GET /strategies/reference`, which
+// serves `strategies/liquidity-sweep.yaml` -- the same file `strategy-dsl`'s
+// test suite asserts validates. Deliberately NOT embedded here: a second copy
+// is a second thing to drift, and the editor starting empty is exactly the bug
+// this replaces.
+//
+// The editor used to be seeded only from a *saved* strategy, and a new account
+// has none -- so `GET /strategies` returned `[]`, the textarea stayed empty, and
+// Validate and Save both sent `{source: ""}` and got back
+// `STRATEGY_PARSE_FAILED: missing field 'name'`. The buttons looked broken; the
+// API was behaving correctly and the shell was sending nothing.
+
+/// Load one shipped strategy into the editor.
+async function loadExample(file) {
+  const message = el("strategyMsg");
+  message.textContent = "Loading…";
+  try {
+    const response = await fetch(
+      `/strategies/reference${file ? `?file=${encodeURIComponent(file)}` : ""}`
+    );
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.error?.message || `the example is ${response.status}`);
+    }
+    el("strategySource").value = await response.text();
+    // A loaded example is not saved yet, so the backtest and the bot buttons
+    // would be pointing at the previous document.
+    savedStrategyId = null;
+    message.innerHTML = `<span class="muted">loaded ${escapeHtml(
+      file || "the default"
+    )}. Validate, then Save to make it yours.</span>`;
+  } catch (e) {
+    message.innerHTML = `<span class="fail">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+/// Fill the picker with what the deployment ships.
+async function loadExampleList() {
+  try {
+    const examples = await api("/strategies/examples");
+    el("example").innerHTML = examples
+      .map((e) => `<option value="${escapeHtml(e.file)}">${escapeHtml(e.name)}</option>`)
+      .join("");
+    return examples.length ? examples[0].file : null;
+  } catch {
+    // Older deployments have no listing; the default still resolves.
+    el("example").innerHTML = `<option value="">default example</option>`;
+    return null;
+  }
+}
+
+/// Put something valid in the editor.
+async function seedEditor() {
+  const message = el("strategyMsg");
+
+  // A saved strategy wins: the user's own document is more useful than an
+  // example. Signing out is fine here -- Validate needs no token.
+  try {
+    const strategies = await api("/strategies");
+    if (strategies.length) {
+      savedStrategyId = strategies[0].id;
+      el("strategySource").value = JSON.stringify(strategies[0].document, null, 2);
+      message.innerHTML = `<span class="muted">editing your ${escapeHtml(
+        strategies[0].name
+      )} v${escapeHtml(strategies[0].version)}</span>`;
+      await loadExampleList();
+      return;
+    }
+  } catch { /* not signed in, or none saved */ }
+
+  const first = await loadExampleList();
+  await loadExample(first);
+}
+
 async function validateStrategy() {
   const message = el("strategyMsg");
   message.textContent = "Validating…";
@@ -511,9 +657,16 @@ async function saveStrategy() {
       body: JSON.stringify({ source: el("strategySource").value, created_by: "visual_builder" }),
     });
     savedStrategyId = saved.id;
-    message.innerHTML = `<span class="pass">saved</span> — ${escapeHtml(saved.id)}`;
+    message.innerHTML = `<span class="pass">saved</span> — ${escapeHtml(
+      saved.id
+    )}<br /><span class="muted">now you can run a backtest or launch a paper bot</span>`;
   } catch (e) {
-    message.innerHTML = `<span class="fail">${escapeHtml(e.message)}</span>`;
+    // A 401 here is the ordinary "not signed in yet" case rather than an error
+    // worth showing verbatim, and the fix is one click away.
+    message.innerHTML =
+      e.status === 401
+        ? `<span class="fail">Sign in to save.</span> <span class="muted">Validate works without an account; saving is per-user.</span>`
+        : `<span class="fail">${escapeHtml(e.message)}</span>`;
   }
 }
 
@@ -640,6 +793,7 @@ async function main() {
   el("ask").addEventListener("click", ask);
   el("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
 
+  el("example").addEventListener("change", (e) => loadExample(e.target.value));
   el("validate").addEventListener("click", validateStrategy);
   el("save").addEventListener("click", saveStrategy);
   el("backtest").addEventListener("click", runBacktest);
@@ -660,14 +814,10 @@ async function main() {
     return;
   }
 
-  // A starting document, so the Strategy tab is not an empty box.
-  try {
-    const strategies = await api("/strategies").catch(() => []);
-    if (strategies.length) {
-      savedStrategyId = strategies[0].id;
-      el("strategySource").value = JSON.stringify(strategies[0].document, null, 2);
-    }
-  } catch { /* signed out is fine */ }
+  // The editor is never empty: a saved strategy if there is one, otherwise the
+  // reference document. An empty box makes Validate and Save look broken when
+  // they are only being sent nothing.
+  await seedEditor();
 
   await refresh();
   connectLive();

@@ -29,6 +29,7 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -39,7 +40,7 @@ use strategy_runtime::{RuntimeConfig, StrategyEngine};
 
 use crate::auth::UserContext;
 use crate::error::ApiError;
-use crate::extract::ApiJson;
+use crate::extract::{ApiJson, ApiQuery};
 use crate::AppState;
 
 /// Default page size for list endpoints.
@@ -257,6 +258,125 @@ pub async fn create(
             document: stored,
         }),
     ))
+}
+
+/// Where the shipped strategy documents live.
+const STRATEGY_DIR: &str = "strategies";
+
+/// The document the editor starts with.
+///
+/// The **calibrated** one, not the spec's example. Both validate, but the spec's
+/// example uses `delta > threshold(1500)` and `absorption.detected`, which are
+/// written for a deep book and need tick data -- on this deployment it backtests
+/// to zero trades. A starting document whose backtest finds nothing makes the
+/// whole flow look broken, so the editor opens on the one that produces trades.
+const DEFAULT_EXAMPLE: &str = "liquidity-sweep-btcusdt-5m.yaml";
+
+/// One shipped strategy document.
+#[derive(Debug, Serialize)]
+pub struct ExampleResponse {
+    /// The file name, to pass back to `?file=`.
+    pub file: String,
+    /// The document's own `name`, or the file name when it cannot be read.
+    pub name: String,
+}
+
+/// `GET /strategies/examples`
+///
+/// Lists what is shipped, so the editor can offer a choice instead of one
+/// hardcoded document.
+///
+/// # Errors
+/// 503 when the directory is not present in this deployment.
+pub async fn examples() -> Result<Json<Vec<ExampleResponse>>, ApiError> {
+    let entries = std::fs::read_dir(STRATEGY_DIR).map_err(|e| {
+        tracing::warn!(
+            dir = STRATEGY_DIR,
+            error = %e,
+            "the strategy examples are not served. A deployed image must contain strategies/ \
+             -- the Dockerfile has to copy it."
+        );
+        ApiError::unavailable("this deployment does not ship the example strategies")
+    })?;
+
+    let mut out: Vec<ExampleResponse> = Vec::new();
+    for entry in entries.flatten() {
+        let file = entry.file_name().to_string_lossy().to_string();
+        if !safe_example_name(&file) {
+            continue;
+        }
+        let name = std::fs::read_to_string(entry.path())
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("name:").map(str::to_string))
+            })
+            .map(|name| name.trim().trim_matches('"').to_string())
+            .unwrap_or_else(|| file.clone());
+        out.push(ExampleResponse { file, name });
+    }
+    // The default first, so a picker's first entry is what the editor loaded.
+    out.sort_by(|a, b| {
+        (a.file != DEFAULT_EXAMPLE)
+            .cmp(&(b.file != DEFAULT_EXAMPLE))
+            .then_with(|| a.file.cmp(&b.file))
+    });
+    Ok(Json(out))
+}
+
+/// Whether a name is a plain YAML file in the strategy directory.
+///
+/// A path traversal check, and the only reason this route can take a name at
+/// all. `..`, a separator or an absolute path would let a request read any file
+/// the process can -- so the rule is a positive one: a bare file name, no
+/// separators, ending in `.yaml`.
+fn safe_example_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.ends_with(".yaml")
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..")
+        && name != "."
+}
+
+/// `GET /strategies/reference`
+///
+/// Serves one shipped document. Not duplicated into the shell, because
+/// `strategy-dsl`'s own test suite pulls these files in with `include_str!` and
+/// asserts they validate -- one copy means the editor's starting document and
+/// the document the validator is tested against cannot drift apart.
+///
+/// # Errors
+/// 400 for a name that is not a plain YAML file, 404 when it is not shipped.
+pub async fn reference(
+    ApiQuery(query): ApiQuery<ReferenceQuery>,
+) -> Result<axum::response::Response, ApiError> {
+    let file = query.file.unwrap_or_else(|| DEFAULT_EXAMPLE.to_string());
+    if !safe_example_name(&file) {
+        return Err(ApiError::bad_request(
+            "EXAMPLE_INVALID",
+            "`file` must be a bare `.yaml` file name from GET /strategies/examples",
+        ));
+    }
+
+    let path = std::path::Path::new(STRATEGY_DIR).join(&file);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        tracing::warn!(path = %path.display(), error = %e, "strategy example not served (404)");
+        ApiError::not_found(format!("no example strategy named `{file}`"))
+    })?;
+
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "text/yaml; charset=utf-8")],
+        text,
+    )
+        .into_response())
+}
+
+/// Query for `GET /strategies/reference`.
+#[derive(Debug, Deserialize)]
+pub struct ReferenceQuery {
+    /// Which example. Defaults to [`DEFAULT_EXAMPLE`].
+    pub file: Option<String>,
 }
 
 /// `POST /strategies/validate`

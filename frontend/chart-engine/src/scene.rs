@@ -20,7 +20,9 @@
 //! chart engine calls the same Rust analytics code the backend does, and a
 //! second implementation of the trading math in JavaScript must never exist.
 //! There is no JavaScript implementation, because there is no JavaScript
-//! arithmetic over market data at all.
+//! arithmetic over market data at all -- and that includes the Heikin-Ashi
+//! transform below, which is the kind of thing a chart library normally does in
+//! the client.
 //!
 //! ## What "footprint" means here, honestly
 //!
@@ -49,16 +51,62 @@ const PAD_BOTTOM: f64 = 26.0;
 const BODY_FRACTION: f64 = 0.7;
 /// Widest a volume-profile bar may be.
 const PROFILE_WIDTH: f64 = 74.0;
+/// Rows a volume profile aims for over the visible range.
+const PROFILE_ROWS: f64 = 40.0;
 
 /// What the chart is showing.
+///
+/// Deliberately the shapes a trader actually switches between, not every chart
+/// that exists. Each is a *rendering* of the same candles -- the numbers
+/// underneath do not change -- which is why the choice lives here rather than in
+/// the shell.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     /// Candlesticks.
     #[default]
     Candles,
+    /// Heikin-Ashi: averaged candles that smooth a trend.
+    HeikinAshi,
+    /// OHLC bars: a vertical range with an open tick and a close tick.
+    Bars,
+    /// A line through the closes.
+    Line,
+    /// A line through the closes, filled to the bottom of the plot.
+    Area,
     /// Volume by price, with the buy/sell split.
     Footprint,
+}
+
+impl Mode {
+    /// Every mode, for a client that wants to build a selector.
+    pub const ALL: [Self; 6] = [
+        Self::Candles,
+        Self::HeikinAshi,
+        Self::Bars,
+        Self::Line,
+        Self::Area,
+        Self::Footprint,
+    ];
+
+    /// Whether this mode draws a shape per candle.
+    ///
+    /// Line and area are one path for the whole series; footprint is a grid of
+    /// price levels. The shell must not iterate those as bars, and this is how
+    /// it knows.
+    #[must_use]
+    pub const fn draws_bars(self) -> bool {
+        matches!(self, Self::Candles | Self::HeikinAshi | Self::Bars)
+    }
+
+    /// Whether the volume profile is overlaid.
+    ///
+    /// Not on line or area, where it fights the fill, and not on footprint,
+    /// which *is* a volume-by-price view.
+    #[must_use]
+    pub const fn shows_profile(self) -> bool {
+        matches!(self, Self::Candles | Self::HeikinAshi | Self::Bars)
+    }
 }
 
 /// What the shell asks for.
@@ -105,7 +153,7 @@ impl Default for Request {
     }
 }
 
-/// One candlestick, already positioned.
+/// One candle, already positioned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bar {
     /// Left edge of the body.
@@ -116,12 +164,25 @@ pub struct Bar {
     pub body_top: f64,
     /// Bottom of the body.
     pub body_bottom: f64,
-    /// Top of the wick.
+    /// Top of the range.
     pub wick_top: f64,
-    /// Bottom of the wick.
+    /// Bottom of the range.
     pub wick_bottom: f64,
-    /// Whether the candle closed up.
+    /// Where it opened, for a bar chart's left tick.
+    pub open_y: f64,
+    /// Where it closed, for a bar chart's right tick.
+    pub close_y: f64,
+    /// Whether it closed up.
     pub up: bool,
+}
+
+/// A point on a line or area chart.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Point {
+    /// Canvas x.
+    pub x: f64,
+    /// Canvas y.
+    pub y: f64,
 }
 
 /// One volume-profile bucket, positioned.
@@ -208,6 +269,8 @@ pub struct Scene {
     pub height: f64,
     /// Where the candles live.
     pub plot: Plot,
+    /// Which shape to draw. The engine decides, so the shell does not have to.
+    pub style: Mode,
     /// Lowest price shown.
     pub price_min: f64,
     /// Highest price shown.
@@ -216,11 +279,13 @@ pub struct Scene {
     pub from: i64,
     /// Last candle's close time.
     pub to: i64,
-    /// Candlesticks, in time order.
+    /// Candles, in time order. Empty for line, area and footprint.
     pub candles: Vec<Bar>,
+    /// The close path, for line and area.
+    pub line: Vec<Point>,
     /// Volume-profile bars, cheapest first.
     pub profile: Vec<ProfileBar>,
-    /// Footprint cells, cheapest first. Empty in [`Mode::Candles`].
+    /// Footprint cells, cheapest first. Only in [`Mode::Footprint`].
     pub cells: Vec<Cell>,
     /// Overlay levels.
     pub levels: Vec<Level>,
@@ -251,7 +316,7 @@ fn price_to_y(price: f64, price_min: f64, price_max: f64, plot: &Plot) -> f64 {
 /// `77341.6667`.
 fn choose_bucket(price_min: f64, price_max: f64) -> f64 {
     let span = (price_max - price_min).max(f64::EPSILON);
-    let raw = span / 40.0;
+    let raw = span / PROFILE_ROWS;
     let magnitude = 10f64.powf(raw.log10().floor());
     for step in [1.0, 2.0, 5.0, 10.0] {
         let candidate = magnitude * step;
@@ -281,11 +346,13 @@ pub fn build(request: &Request) -> Scene {
         width,
         height,
         plot,
+        style: request.mode,
         price_min: 0.0,
         price_max: 0.0,
         from: 0,
         to: 0,
         candles: Vec::new(),
+        line: Vec::new(),
         profile: Vec::new(),
         cells: Vec::new(),
         levels: Vec::new(),
@@ -298,11 +365,20 @@ pub fn build(request: &Request) -> Scene {
         return scene;
     }
 
-    // The visible range is the candles' own range, padded a little so a wick
-    // touching the edge is not clipped.
+    // Heikin-Ashi candles are derived from the series, so the range has to be
+    // measured from the *drawn* values: an HA candle can sit outside every real
+    // high or low in the window, and clamping to the raw range would push it off
+    // the plot.
+    let plotted: Vec<Candle> = match request.mode {
+        Mode::HeikinAshi => heikin_ashi(&request.candles),
+        _ => request.candles.clone(),
+    };
+
+    // The visible range is the drawn candles' own range, padded a little so a
+    // wick touching the edge is not clipped.
     let mut price_min = f64::INFINITY;
     let mut price_max = f64::NEG_INFINITY;
-    for candle in &request.candles {
+    for candle in &plotted {
         price_min = price_min.min(candle.low);
         price_max = price_max.max(candle.high);
     }
@@ -314,26 +390,41 @@ pub fn build(request: &Request) -> Scene {
     scene.price_min = price_min - pad;
     scene.price_max = price_max + pad;
 
-    let first = &request.candles[0];
-    let last = &request.candles[request.candles.len() - 1];
+    let first = &plotted[0];
+    let last = &plotted[plotted.len() - 1];
     let width_nanos = first.timeframe.nanos().max(1);
     scene.from = first.open_time;
     scene.to = last.open_time + width_nanos;
 
-    scene.candles = candle_bars(request, &scene.plot, scene.price_min, scene.price_max);
+    let slot = plot.w / plotted.len() as f64;
+    if request.mode.draws_bars() {
+        scene.candles = candle_bars(&plotted, slot, &plot, scene.price_min, scene.price_max);
+    }
+    if matches!(request.mode, Mode::Line | Mode::Area) {
+        scene.line = close_path(&plotted, slot, &plot, scene.price_min, scene.price_max);
+    }
 
     let bucket_size = request
         .bucket_size
         .filter(|size| size.is_finite() && *size > 0.0)
         .unwrap_or_else(|| choose_bucket(price_min, price_max));
-    let profile = calculate_volume_profile_from_candles(&request.candles, bucket_size);
+    let profile = calculate_volume_profile_from_candles(&plotted, bucket_size);
+
+    if request.mode.shows_profile() {
+        scene.profile = profile_bars(&profile, &plot, scene.price_min, scene.price_max);
+    }
 
     match request.mode {
-        Mode::Candles => {
-            scene.profile = profile_bars(&profile, &scene.plot, scene.price_min, scene.price_max);
+        Mode::HeikinAshi => {
+            scene.note = Some(
+                "Heikin-Ashi: each candle is averaged from its predecessor, so its open is not \
+                 the real open and its close is not the real close. The levels and the profile \
+                 are computed from the real series."
+                    .into(),
+            );
         }
         Mode::Footprint => {
-            scene.cells = footprint_cells(&profile, &scene.plot, scene.price_min, scene.price_max);
+            scene.cells = footprint_cells(&profile, &plot, scene.price_min, scene.price_max);
             // Say which footprint this is. A true one needs trades, and there
             // are none -- the agent's own tooling reports the same thing, and
             // the chart should not imply otherwise.
@@ -343,26 +434,68 @@ pub fn build(request: &Request) -> Scene {
                     .into(),
             );
         }
+        Mode::Candles | Mode::Bars | Mode::Line | Mode::Area => {}
     }
 
-    scene.levels = levels(
-        request,
-        &profile,
-        &scene.plot,
-        scene.price_min,
-        scene.price_max,
-    );
-    scene.ticks = ticks(&scene.plot, scene.price_min, scene.price_max);
+    scene.levels = levels(request, &profile, &plot, scene.price_min, scene.price_max);
+    scene.ticks = ticks(&plot, scene.price_min, scene.price_max);
     scene
 }
 
-fn candle_bars(request: &Request, plot: &Plot, price_min: f64, price_max: f64) -> Vec<Bar> {
-    let count = request.candles.len() as f64;
-    let slot = plot.w / count;
+/// Heikin-Ashi, from the real candles.
+///
+/// `docs/14`'s rule: this is arithmetic over market data, so it lives in Rust and
+/// never in the shell. The formulas are the standard ones --
+///
+/// ```text
+/// haClose = (open + high + low + close) / 4
+/// haOpen  = (previous haOpen + previous haClose) / 2      (first: (open + close) / 2)
+/// haHigh  = max(high, haOpen, haClose)
+/// haLow   = min(low,  haOpen, haClose)
+/// ```
+///
+/// The averaged values are carried in the `Candle` fields, so everything
+/// downstream treats them as the series. `symbol`, `timeframe`, `open_time` and
+/// the volumes are untouched, because they describe the bucket rather than the
+/// shape.
+#[must_use]
+pub fn heikin_ashi(candles: &[Candle]) -> Vec<Candle> {
+    let mut out = Vec::with_capacity(candles.len());
+    let mut previous: Option<(f64, f64)> = None;
+
+    for candle in candles {
+        let close = (candle.open + candle.high + candle.low + candle.close) / 4.0;
+        let open = match previous {
+            Some((open, close)) => (open + close) / 2.0,
+            // The first candle has no predecessor, so it opens at its own
+            // midpoint -- the convention every charting package uses.
+            None => (candle.open + candle.close) / 2.0,
+        };
+        let high = candle.high.max(open).max(close);
+        let low = candle.low.min(open).min(close);
+
+        out.push(Candle {
+            open,
+            high,
+            low,
+            close,
+            ..candle.clone()
+        });
+        previous = Some((open, close));
+    }
+    out
+}
+
+fn candle_bars(
+    candles: &[Candle],
+    slot: f64,
+    plot: &Plot,
+    price_min: f64,
+    price_max: f64,
+) -> Vec<Bar> {
     let body = (slot * BODY_FRACTION).max(1.0);
 
-    request
-        .candles
+    candles
         .iter()
         .enumerate()
         .map(|(index, candle)| {
@@ -376,8 +509,28 @@ fn candle_bars(request: &Request, plot: &Plot, price_min: f64, price_max: f64) -
                 body_bottom: open_y.max(close_y),
                 wick_top: price_to_y(candle.high, price_min, price_max, plot),
                 wick_bottom: price_to_y(candle.low, price_min, price_max, plot),
+                open_y,
+                close_y,
                 up: candle.close >= candle.open,
             }
+        })
+        .collect()
+}
+
+/// The close of every candle, as a path.
+fn close_path(
+    candles: &[Candle],
+    slot: f64,
+    plot: &Plot,
+    price_min: f64,
+    price_max: f64,
+) -> Vec<Point> {
+    candles
+        .iter()
+        .enumerate()
+        .map(|(index, candle)| Point {
+            x: plot.x + slot * (index as f64 + 0.5),
+            y: price_to_y(candle.close, price_min, price_max, plot),
         })
         .collect()
 }
@@ -397,6 +550,7 @@ fn profile_bars(
         return Vec::new();
     }
     let right = plot.x + plot.w;
+    let row_height = (plot.h / PROFILE_ROWS).max(1.0);
 
     profile
         .histogram
@@ -404,14 +558,13 @@ fn profile_bars(
         .filter(|node| node.price_level >= price_min && node.price_level <= price_max)
         .map(|node| {
             let y = price_to_y(node.price_level, price_min, price_max, plot);
-            let h = (plot.h / 40.0).max(1.0);
             let w = node.volume / peak * PROFILE_WIDTH;
             let total = node.buy_volume + node.sell_volume;
             ProfileBar {
                 x: right - w,
-                y: y - h / 2.0,
+                y: y - row_height / 2.0,
                 w,
-                h,
+                h: row_height,
                 volume: node.volume,
                 buy_ratio: if total > 0.0 {
                     node.buy_volume / total
@@ -430,7 +583,7 @@ fn footprint_cells(
     price_min: f64,
     price_max: f64,
 ) -> Vec<Cell> {
-    let row_height = (plot.h / 40.0).max(1.0);
+    let row_height = (plot.h / PROFILE_ROWS).max(1.0);
     profile
         .histogram
         .iter()
@@ -544,12 +697,20 @@ mod tests {
         }
     }
 
+    fn mode_request(mode: Mode, count: i64) -> Request {
+        Request {
+            mode,
+            ..request(count)
+        }
+    }
+
+    // --- the basics ---------------------------------------------------------
+
     #[test]
     fn an_empty_request_produces_an_empty_scene_not_a_panic() {
         let scene = build(&Request::default());
         assert!(scene.candles.is_empty());
         assert!(scene.note.is_some(), "and it says why");
-        // The plot is still laid out, so the shell has nothing to special-case.
         assert!(scene.plot.w > 0.0 && scene.plot.h > 0.0);
     }
 
@@ -603,6 +764,15 @@ mod tests {
     }
 
     #[test]
+    fn one_candle_is_a_scene_not_a_division_by_zero() {
+        let scene = build(&request(1));
+        assert_eq!(scene.candles.len(), 1);
+        assert!(scene.candles[0].w.is_finite());
+    }
+
+    // --- the profile --------------------------------------------------------
+
+    #[test]
     fn the_profile_is_inside_the_plot_and_never_wider_than_its_column() {
         let scene = build(&request(200));
         assert!(!scene.profile.is_empty());
@@ -638,74 +808,10 @@ mod tests {
     }
 
     #[test]
-    fn footprint_mode_produces_cells_and_says_which_footprint_it_is() {
-        let scene = build(&Request {
-            mode: Mode::Footprint,
-            ..request(200)
-        });
-        assert!(!scene.cells.is_empty());
-        assert!(scene.profile.is_empty(), "one view at a time");
-        let note = scene.note.expect("a caveat");
-        assert!(note.contains("no tick data"), "{note}");
-    }
-
-    #[test]
-    fn a_footprint_cell_delta_is_buy_minus_sell() {
-        let scene = build(&Request {
-            mode: Mode::Footprint,
-            ..request(200)
-        });
-        for cell in &scene.cells {
-            assert!(
-                (cell.delta - (cell.buy - cell.sell)).abs() < 1e-9,
-                "{cell:?}"
-            );
-        }
-    }
-
-    #[test]
     fn the_value_area_is_marked_on_the_profile() {
         let scene = build(&request(300));
-        // Not every bucket is in the value area, and not none of them.
         assert!(scene.profile.iter().any(|bar| bar.in_value_area));
         assert!(scene.profile.iter().any(|bar| !bar.in_value_area));
-    }
-
-    #[test]
-    fn the_requested_levels_are_drawn_and_only_those() {
-        let scene = build(&Request {
-            lines: vec!["poc".into()],
-            ..request(200)
-        });
-        assert_eq!(scene.levels.len(), 1);
-        assert_eq!(scene.levels[0].kind, "poc");
-
-        let all = build(&request(200));
-        let kinds: Vec<&str> = all.levels.iter().map(|level| level.kind.as_str()).collect();
-        for expected in ["vwap", "poc", "vah", "val"] {
-            assert!(kinds.contains(&expected), "missing {expected}: {kinds:?}");
-        }
-    }
-
-    #[test]
-    fn omitting_the_lines_field_does_not_mean_no_levels() {
-        // The bug the ABI check found: `#[serde(default)]` on a `Vec` fills in
-        // an empty one, so a request that never mentions `lines` drew nothing
-        // while `Request::default()` promised four.
-        let request: Request =
-            serde_json::from_str(r#"{"candles": [], "width": 800, "height": 400}"#)
-                .expect("a minimal request must deserialize");
-        assert_eq!(request.lines, Request::default().lines);
-        assert_eq!(request.lines.len(), 4);
-    }
-
-    #[test]
-    fn an_explicit_empty_lines_list_does_mean_no_levels() {
-        // Asking for none is different from not asking.
-        let request: Request =
-            serde_json::from_str(r#"{"candles": [], "width": 800, "height": 400, "lines": []}"#)
-                .expect("must deserialize");
-        assert!(request.lines.is_empty());
     }
 
     #[test]
@@ -755,6 +861,45 @@ mod tests {
         }
     }
 
+    // --- levels and ticks ---------------------------------------------------
+
+    #[test]
+    fn the_requested_levels_are_drawn_and_only_those() {
+        let scene = build(&Request {
+            lines: vec!["poc".into()],
+            ..request(200)
+        });
+        assert_eq!(scene.levels.len(), 1);
+        assert_eq!(scene.levels[0].kind, "poc");
+
+        let all = build(&request(200));
+        let kinds: Vec<&str> = all.levels.iter().map(|level| level.kind.as_str()).collect();
+        for expected in ["vwap", "poc", "vah", "val"] {
+            assert!(kinds.contains(&expected), "missing {expected}: {kinds:?}");
+        }
+    }
+
+    #[test]
+    fn omitting_the_lines_field_does_not_mean_no_levels() {
+        // The bug the ABI check found: `#[serde(default)]` on a `Vec` fills in
+        // an empty one, so a request that never mentions `lines` drew nothing
+        // while `Request::default()` promised four.
+        let request: Request =
+            serde_json::from_str(r#"{"candles": [], "width": 800, "height": 400}"#)
+                .expect("a minimal request must deserialize");
+        assert_eq!(request.lines, Request::default().lines);
+        assert_eq!(request.lines.len(), 4);
+    }
+
+    #[test]
+    fn an_explicit_empty_lines_list_does_mean_no_levels() {
+        // Asking for none is different from not asking.
+        let request: Request =
+            serde_json::from_str(r#"{"candles": [], "width": 800, "height": 400, "lines": []}"#)
+                .expect("must deserialize");
+        assert!(request.lines.is_empty());
+    }
+
     #[test]
     fn the_ticks_span_the_visible_range() {
         let scene = build(&request(100));
@@ -763,8 +908,173 @@ mod tests {
         let highest = scene.ticks.last().expect("a last tick");
         assert!((lowest.price - scene.price_min).abs() < 1e-6);
         assert!((highest.price - scene.price_max).abs() < 1e-6);
-        // And they descend on the canvas, because price ascends.
         assert!(lowest.y > highest.y);
+    }
+
+    // --- the chart types ----------------------------------------------------
+
+    #[test]
+    fn every_mode_produces_something_to_draw() {
+        // A selector with an option that renders nothing is worse than no
+        // option: the user concludes the chart is broken.
+        for mode in Mode::ALL {
+            let scene = build(&mode_request(mode, 120));
+            assert_eq!(scene.style, mode, "the scene must say what it drew");
+            let drew_something =
+                !scene.candles.is_empty() || !scene.line.is_empty() || !scene.cells.is_empty();
+            assert!(drew_something, "{mode:?} drew nothing");
+        }
+    }
+
+    #[test]
+    fn line_and_area_are_a_path_and_not_bars() {
+        for mode in [Mode::Line, Mode::Area] {
+            let scene = build(&mode_request(mode, 60));
+            assert_eq!(scene.line.len(), 60, "{mode:?}");
+            assert!(scene.candles.is_empty(), "{mode:?} must not also send bars");
+            assert!(
+                scene.profile.is_empty(),
+                "{mode:?} must not overlay the profile"
+            );
+            for point in &scene.line {
+                assert!(point.y.is_finite() && point.x.is_finite(), "{point:?}");
+                assert!(point.x >= scene.plot.x - 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn the_bars_mode_carries_the_open_and_close_ticks() {
+        let scene = build(&mode_request(Mode::Bars, 40));
+        assert_eq!(scene.candles.len(), 40);
+        for bar in &scene.candles {
+            // A bar chart draws a left tick at the open and a right tick at the
+            // close, so both have to survive the trip.
+            assert!(bar.open_y.is_finite() && bar.close_y.is_finite(), "{bar:?}");
+            assert!(bar.open_y >= scene.plot.y - 1.0);
+            assert!(bar.close_y <= scene.plot.y + scene.plot.h + 1.0);
+            assert!(bar.wick_top <= bar.open_y.max(bar.close_y));
+        }
+    }
+
+    #[test]
+    fn the_bar_modes_share_the_same_geometry() {
+        // They are three renderings of one series, so the x positions must not
+        // move when the style changes -- otherwise switching styles makes the
+        // chart appear to scroll sideways.
+        let plain = build(&mode_request(Mode::Candles, 50));
+        let bars = build(&mode_request(Mode::Bars, 50));
+        let ha = build(&mode_request(Mode::HeikinAshi, 50));
+        for i in 0..50 {
+            assert_eq!(plain.candles[i].x, bars.candles[i].x);
+            assert_eq!(plain.candles[i].x, ha.candles[i].x);
+            assert_eq!(plain.candles[i].w, bars.candles[i].w);
+        }
+    }
+
+    #[test]
+    fn heikin_ashi_averages_and_says_so() {
+        let scene = build(&mode_request(Mode::HeikinAshi, 60));
+        assert!(!scene.candles.is_empty());
+        assert_eq!(scene.style, Mode::HeikinAshi);
+        // The caveat matters: an HA close is not a price you can trade at.
+        let note = scene.note.expect("a caveat");
+        assert!(note.contains("averaged"), "{note}");
+    }
+
+    #[test]
+    fn the_first_heikin_ashi_candle_opens_at_its_midpoint() {
+        let real = vec![candle(0, 100.0, 110.0)];
+        let ha = heikin_ashi(&real);
+        assert_eq!(ha.len(), 1);
+        assert!(
+            (ha[0].open - 105.0).abs() < 1e-9,
+            "(100 + 110) / 2, got {}",
+            ha[0].open
+        );
+        // (100 + 111 + 99 + 110) / 4
+        assert!((ha[0].close - 105.0).abs() < 1e-9, "got {}", ha[0].close);
+    }
+
+    #[test]
+    fn heikin_ashi_chains_from_the_previous_average() {
+        // The recurrence is the whole point of the transform, and getting it
+        // wrong still produces a plausible-looking chart.
+        let real = vec![candle(0, 100.0, 110.0), candle(1, 110.0, 120.0)];
+        let ha = heikin_ashi(&real);
+
+        let expected_open = (ha[0].open + ha[0].close) / 2.0;
+        assert!(
+            (ha[1].open - expected_open).abs() < 1e-9,
+            "got {}",
+            ha[1].open
+        );
+
+        // And the range covers the average as well as the real extremes.
+        let expected_close = (110.0 + 121.0 + 109.0 + 120.0) / 4.0;
+        assert!((ha[1].close - expected_close).abs() < 1e-9);
+        assert!(ha[1].high >= ha[1].open.max(ha[1].close));
+        assert!(ha[1].low <= ha[1].open.min(ha[1].close));
+        assert!(ha[1].high >= 121.0, "the real high still has to be inside");
+        assert!(ha[1].low <= 109.0);
+    }
+
+    #[test]
+    fn heikin_ashi_keeps_the_bucket_facts_untouched() {
+        // The symbol, the timeframe and the open time describe the bucket, not
+        // the shape, so the transform must not disturb them.
+        let real = series(10);
+        let ha = heikin_ashi(&real);
+        for (before, after) in real.iter().zip(ha.iter()) {
+            assert_eq!(before.symbol, after.symbol);
+            assert_eq!(before.timeframe, after.timeframe);
+            assert_eq!(before.open_time, after.open_time);
+            assert_eq!(before.volume, after.volume);
+            assert_eq!(before.buy_volume, after.buy_volume);
+        }
+    }
+
+    #[test]
+    fn heikin_ashi_smooths_a_zigzag() {
+        // The reason anyone selects it: an alternating series still averages
+        // into one whose bodies do not swing as far.
+        let zigzag: Vec<Candle> = (0..20)
+            .map(|i| {
+                let base = 100.0 + (i % 2) as f64 * 4.0;
+                candle(i, base, base + if i % 2 == 0 { 3.0 } else { -3.0 })
+            })
+            .collect();
+        let ha = heikin_ashi(&zigzag);
+        let biggest = ha
+            .iter()
+            .skip(1)
+            .map(|c| (c.close - c.open).abs())
+            .fold(0.0f64, f64::max);
+        assert!(
+            biggest < 4.0,
+            "an HA body should not swing as far as the raw one: {biggest}"
+        );
+    }
+
+    #[test]
+    fn footprint_mode_produces_cells_and_says_which_footprint_it_is() {
+        let scene = build(&mode_request(Mode::Footprint, 200));
+        assert!(!scene.cells.is_empty());
+        assert!(scene.profile.is_empty(), "one view at a time");
+        assert!(scene.candles.is_empty());
+        let note = scene.note.expect("a caveat");
+        assert!(note.contains("no tick data"), "{note}");
+    }
+
+    #[test]
+    fn a_footprint_cell_delta_is_buy_minus_sell() {
+        let scene = build(&mode_request(Mode::Footprint, 200));
+        for cell in &scene.cells {
+            assert!(
+                (cell.delta - (cell.buy - cell.sell)).abs() < 1e-9,
+                "{cell:?}"
+            );
+        }
     }
 
     #[test]
@@ -774,13 +1084,6 @@ mod tests {
         let json = serde_json::to_value(&scene).expect("the scene must serialize");
         assert!(json["candles"].is_array());
         assert!(json["plot"]["w"].is_number());
-        assert!(json["mode"].is_null() || true);
-    }
-
-    #[test]
-    fn one_candle_is_a_scene_not_a_division_by_zero() {
-        let scene = build(&request(1));
-        assert_eq!(scene.candles.len(), 1);
-        assert!(scene.candles[0].w.is_finite());
+        assert_eq!(json["style"], "candles");
     }
 }
