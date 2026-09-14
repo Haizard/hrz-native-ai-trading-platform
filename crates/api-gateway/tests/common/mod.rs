@@ -24,7 +24,7 @@ use api_gateway::{auth::AuthConfig, router, AppState};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tower::ServiceExt;
 
 /// The signing secret the tests use. Long enough for `AuthConfig::from_env`'s
@@ -156,6 +156,19 @@ impl Harness {
         format!("127.0.0.1:{}", addr.port())
     }
 
+    /// PUT a JSON body, optionally authenticated.
+    pub async fn put(&self, path: &str, body: Value, token: Option<&str>) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method("PUT")
+            .uri(path)
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        self.send(builder.body(Body::from(body.to_string())).expect("request"))
+            .await
+    }
+
     /// DELETE a path, optionally authenticated.
     pub async fn delete(&self, path: &str, token: Option<&str>) -> (StatusCode, Value) {
         let mut builder = Request::builder().method("DELETE").uri(path);
@@ -258,3 +271,20 @@ risk:
 /// A window the database has 5m candles for.
 pub const WINDOW_FROM: &str = "2026-09-10";
 pub const WINDOW_TO: &str = "2026-09-11";
+
+/// A minimal skill document, as `POST /skills` takes it (JSON, not YAML --
+/// the route deserializes into `Skill` directly).
+///
+/// The name is unique per test via [`unique_skill`] so two tests publishing
+/// "Test skill 1.0" do not collide on `UNIQUE (user_id, name, version)`.
+pub fn unique_skill(version: &str) -> Value {
+    let name = format!("Route test skill {}", uuid::Uuid::new_v4());
+    json!({
+        "name": name,
+        "version": version,
+        "category": "liquidity",
+        "knowledge": "Sweep a recent low, then buy the reclaim.",
+        "rules": ["the sweep must have taken out a swing low"],
+        "preferred_markets": ["BTCUSDT"],
+    })
+}

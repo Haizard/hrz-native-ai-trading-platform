@@ -702,6 +702,85 @@ async function ask() {
 
 let savedStrategyId = null;
 
+// Who wrote the text currently in the box, and whether it has changed since it
+// was last stored.
+//
+// `created_by` is one of `ai_agent` | `visual_builder` | `developer_sdk` and a
+// stored strategy keeps it forever, so the label has to be earned: a document
+// the agent drafted is `ai_agent`, and the moment it is edited by hand here it
+// is `developer_sdk`. It used to be hardcoded to `visual_builder`, which is the
+// one mode this shell does not have -- every strategy was filed as written by a
+// builder that does not exist.
+let sourceOrigin = "developer_sdk";
+let sourceDirty = false;
+
+function markSourceDirty() {
+  sourceDirty = true;
+  sourceOrigin = "developer_sdk";
+}
+
+function setStrategyMode(mode) {
+  for (const button of document.querySelectorAll(".modes button")) {
+    button.setAttribute("aria-selected", String(button.dataset.mode === mode));
+  }
+  el("nlPane").hidden = mode !== "nl";
+}
+
+/// Ask the agent for a document, then show it in the editor.
+async function generateStrategy() {
+  const message = el("nlMsg");
+  const description = el("nlDescription").value.trim();
+  if (!description) {
+    message.innerHTML = `<span class="fail">Describe the setup first.</span>`;
+    return;
+  }
+
+  message.textContent = "Generating…";
+  try {
+    const result = await api("/agent/generate-strategy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        description,
+        market: el("symbol").value,
+        timeframe: el("timeframe").value,
+      }),
+    });
+
+    el("strategySource").value = result.yaml;
+    sourceOrigin = "ai_agent";
+    sourceDirty = true;
+    savedStrategyId = null;
+    paintStrategyActions();
+    // Switch to the document: the point of generating is to read what came
+    // back before anything is stored or run.
+    setStrategyMode("dsl");
+
+    const repairs = result.repaired_errors || [];
+    el("strategyMsg").innerHTML =
+      `<span class="pass">generated</span> — ${escapeHtml(result.document.name)} v${escapeHtml(
+        result.document.version
+      )}<br /><span class="muted">${result.attempts} attempt(s)` +
+      (repairs.length
+        ? `; the validator rejected ${repairs.length} thing(s) and the agent fixed them`
+        : "") +
+      `. Save to make it yours.</span>`;
+    message.textContent = "";
+  } catch (e) {
+    // 401 and 429 are the two ordinary refusals: one is "sign in", the other is
+    // this endpoint's per-user limit, because it calls a paid model.
+    message.innerHTML =
+      e.status === 401
+        ? `<span class="fail">Sign in to generate.</span> <span class="muted">It calls a paid model, so it is per-user and rate limited.</span>`
+        : `<span class="fail">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+/// Enable the buttons that only make sense with a stored strategy.
+function paintStrategyActions() {
+  el("deleteStrategy").disabled = !savedStrategyId;
+}
+
 // The editor's starting document comes from `GET /strategies/reference`, which
 // serves `strategies/liquidity-sweep.yaml` -- the same file `strategy-dsl`'s
 // test suite asserts validates. Deliberately NOT embedded here: a second copy
@@ -730,6 +809,8 @@ async function loadExample(file) {
     // A loaded example is not saved yet, so the backtest and the bot buttons
     // would be pointing at the previous document.
     savedStrategyId = null;
+    sourceDirty = true;
+    paintStrategyActions();
     message.innerHTML = `<span class="muted">loaded ${escapeHtml(
       file || "the default"
     )}. Validate, then Save to make it yours.</span>`;
@@ -764,6 +845,10 @@ async function seedEditor() {
     if (strategies.length) {
       savedStrategyId = strategies[0].id;
       el("strategySource").value = JSON.stringify(strategies[0].document, null, 2);
+      // Straight from storage: saving it again would only produce a duplicate.
+      sourceOrigin = strategies[0].created_by || "developer_sdk";
+      sourceDirty = false;
+      paintStrategyActions();
       message.innerHTML = `<span class="muted">editing your ${escapeHtml(
         strategies[0].name
       )} v${escapeHtml(strategies[0].version)}</span>`;
@@ -802,16 +887,36 @@ async function validateStrategy() {
 
 async function saveStrategy() {
   const message = el("strategyMsg");
+
+  // Editing a stored strategy stores a *new version* rather than overwriting
+  // it, because its backtests point at the document that produced them. So an
+  // unchanged document has nothing to save, and the way to publish a change is
+  // to bump `version:` in the document.
+  if (savedStrategyId && !sourceDirty) {
+    message.innerHTML = `<span class="muted">already saved. Bump the document's <code>version</code> to store a new one.</span>`;
+    return;
+  }
+  if (!sourceDirty && !savedStrategyId) {
+    sourceDirty = true;
+  }
+
+  const editing = Boolean(savedStrategyId);
   try {
-    const saved = await api("/strategies", {
-      method: "POST",
+    const saved = await api(editing ? `/strategies/${savedStrategyId}` : "/strategies", {
+      method: editing ? "PUT" : "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ source: el("strategySource").value, created_by: "visual_builder" }),
+      body: JSON.stringify({ source: el("strategySource").value, created_by: sourceOrigin }),
     });
     savedStrategyId = saved.id;
-    message.innerHTML = `<span class="pass">saved</span> — ${escapeHtml(
-      saved.id
-    )}<br /><span class="muted">now you can run a backtest or launch a paper bot</span>`;
+    sourceDirty = false;
+    paintStrategyActions();
+    message.innerHTML =
+      `<span class="pass">${editing ? "saved as a new version" : "saved"}</span> — ${escapeHtml(
+        saved.name
+      )} v${escapeHtml(saved.version)}` +
+      (saved.supersedes
+        ? `<br /><span class="muted">replaces ${escapeHtml(saved.supersedes)}; its backtests still point at the old document</span>`
+        : `<br /><span class="muted">now you can run a backtest or launch a paper bot</span>`);
   } catch (e) {
     // A 401 here is the ordinary "not signed in yet" case rather than an error
     // worth showing verbatim, and the fix is one click away.
@@ -819,6 +924,24 @@ async function saveStrategy() {
       e.status === 401
         ? `<span class="fail">Sign in to save.</span> <span class="muted">Validate works without an account; saving is per-user.</span>`
         : `<span class="fail">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function deleteStrategy() {
+  if (!savedStrategyId) return;
+  const message = el("strategyMsg");
+  if (!window.confirm("Delete this strategy and its backtests?")) return;
+
+  try {
+    await api(`/strategies/${savedStrategyId}`, { method: "DELETE" });
+    savedStrategyId = null;
+    sourceDirty = true;
+    paintStrategyActions();
+    message.innerHTML = `<span class="muted">deleted. Load an example or describe a new setup.</span>`;
+  } catch (e) {
+    // 409 is the interesting one: a bot is still running this document, and the
+    // server refuses rather than pulling it out from under the bot.
+    message.innerHTML = `<span class="fail">${escapeHtml(e.message)}</span>`;
   }
 }
 
@@ -950,6 +1073,13 @@ async function main() {
   el("example").addEventListener("change", (e) => loadExample(e.target.value));
   el("validate").addEventListener("click", validateStrategy);
   el("save").addEventListener("click", saveStrategy);
+  el("deleteStrategy").addEventListener("click", deleteStrategy);
+  el("generate").addEventListener("click", generateStrategy);
+  // Typing in the document makes it the user's own work, whatever produced it.
+  el("strategySource").addEventListener("input", markSourceDirty);
+  document.querySelectorAll(".modes button").forEach((button) =>
+    button.addEventListener("click", () => setStrategyMode(button.dataset.mode))
+  );
   el("backtest").addEventListener("click", runBacktest);
   el("launch").addEventListener("click", launchBot);
   el("refreshBots").addEventListener("click", refreshBots);

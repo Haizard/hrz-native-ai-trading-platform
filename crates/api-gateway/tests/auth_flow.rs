@@ -221,8 +221,12 @@ async fn the_public_routes_need_no_token() {
     // Health and market data are public; nothing that belongs to a user is.
     let (status, _) = h.get("/healthz", None).await;
     assert_eq!(status, StatusCode::OK);
+
+    // `/skills` used to be on this list, when it only served the library on
+    // disk. It now also lists the caller's own skills, which makes it user
+    // data: an anonymous listing would say who trades what methodology.
     let (status, _) = h.get("/skills", None).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

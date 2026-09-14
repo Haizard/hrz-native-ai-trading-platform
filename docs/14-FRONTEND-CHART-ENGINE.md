@@ -114,6 +114,12 @@ CPU calc   GPU-friendly buffers
   language (delegates to `/agent/generate-strategy`), visual builder (condition blocks
   composed via UI, serialized to the same schema), and raw DSL (YAML/JSON text editor
   with the validator's errors shown inline).
+
+  **Built as of 2026-09-14: natural language and raw DSL.** The visual builder is not
+  built. The two that exist already produce the same document the validator consumes, and
+  the natural-language mode shows what it generated in the raw editor before anything is
+  stored — a strategy is something a bot will execute, so it has to be readable first.
+  The builder is the remaining piece, and it serializes into the same box.
 - **Backtest/bot dashboards**: performance report visualization, trade list, bot
   status/controls (pause/resume/kill).
 

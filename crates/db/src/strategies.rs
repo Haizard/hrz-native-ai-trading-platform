@@ -242,10 +242,31 @@ pub async fn list_backtests(
         .map_err(Into::into)
 }
 
+/// How many bots run this strategy.
+///
+/// `bots.strategy_id` references `strategies (id)`, so deleting a strategy that
+/// still has bots is a foreign-key error. Counted first so the API can refuse
+/// with a reason the caller can act on, instead of a 500 naming a constraint.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn count_bots_for_strategy(pool: &PgPool, id: Uuid) -> Result<i64, DbError> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bots WHERE strategy_id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    Ok(count)
+}
+
 /// Remove a strategy and its backtests.
 ///
-/// Not part of any request path: it exists so an integration test can create
-/// real rows and leave the database as it found it.
+/// Used by `DELETE /strategies/{id}` and by integration tests, which create
+/// real rows and have to leave the database as they found it.
+///
+/// A backtest is deleted with its strategy because a report without the
+/// document that produced it is a set of numbers with no provenance. The
+/// caller owns the ownership check and the bots check -- see
+/// [`count_bots_for_strategy`].
 ///
 /// # Errors
 /// Returns [`DbError::Pool`] if the deletes fail.

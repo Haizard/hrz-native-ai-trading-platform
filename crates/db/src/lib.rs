@@ -27,6 +27,7 @@ pub mod market;
 pub mod models;
 pub mod paper;
 pub mod repositories;
+pub mod skills;
 pub mod strategies;
 pub mod users;
 
@@ -39,17 +40,20 @@ pub use market::{
     TimeframeCoverage,
 };
 pub use models::Database;
-pub use repositories::TradeCoverage;
 pub use paper::{
     bot_summary, count_audit_events, count_executed_trades, create_owner, find_or_create_strategy,
     find_user_by_email, insert_audit_events, insert_bot, insert_executed_trades, purge_bot,
     purge_owner, purge_owners_with_prefix, recent_decisions, set_bot_status, AuditEvent,
     BotSummary, ExecutedTrade,
 };
+pub use repositories::TradeCoverage;
 pub use repositories::{dt_to_ns, ns_to_dt};
+pub use skills::{
+    create_skill, delete_skill, list_skills, skill_version_exists, SkillRow, MAX_SKILLS,
+};
 pub use strategies::{
-    create_backtest, create_strategy, delete_strategy, get_backtest, get_strategy, list_backtests,
-    list_strategies, BacktestRow, StrategyRow,
+    count_bots_for_strategy, create_backtest, create_strategy, delete_strategy, get_backtest,
+    get_strategy, list_backtests, list_strategies, BacktestRow, StrategyRow,
 };
 pub use users::{create_user, delete_user, find_by_email, find_by_id, normalize_email, UserRow};
 

@@ -128,7 +128,12 @@ pub fn router(state: AppState) -> Router {
         .route("/strategies/validate", post(strategy_routes::validate))
         .route("/strategies/reference", get(strategy_routes::reference))
         .route("/strategies/examples", get(strategy_routes::examples))
-        .route("/strategies/{id}", get(strategy_routes::get))
+        .route(
+            "/strategies/{id}",
+            get(strategy_routes::get)
+                .put(strategy_routes::update)
+                .delete(strategy_routes::remove),
+        )
         .route(
             "/strategies/{id}/validate",
             post(strategy_routes::validate_stored),

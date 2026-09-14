@@ -72,6 +72,11 @@
   .tabs { display: flex; border-bottom: 1px solid var(--line); }
   .tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 8px; }
   .tabs button[aria-selected="true"] { color: var(--text); border-bottom: 2px solid var(--accent); }
+  .modes { display: flex; gap: 4px; margin-bottom: 8px; }
+  .modes button { flex: 0 1 auto; padding: 4px 10px; font-size: 11px; color: var(--muted); }
+  .modes button[aria-selected="true"] { color: var(--text); border-color: var(--accent); }
+  #nlPane[hidden] { display: none; }
+  #nlDescription { min-height: 64px; }
   .pane { flex: 1; overflow: auto; padding: 10px 12px; }
   .pane[hidden] { display: none; }
 
@@ -170,6 +175,35 @@
     <div class="pane" id="pane-strategy" hidden>
       <h2>Document</h2>
       <!--
+        Two of docs/14's three editor modes. Natural language asks the agent for
+        a document and lands it in the box below; Raw DSL edits it. The visual
+        builder is the third mode and is not built -- the other two already
+        produce the same StrategyDocument, and this is the pair a user reaches
+        for.
+
+        The generated document is always shown, never applied silently: a
+        strategy is something a bot will execute, so what it says has to be
+        readable before it is saved.
+      -->
+      <div class="modes" role="tablist">
+        <button type="button" role="tab" data-mode="nl" aria-selected="true">Natural language</button>
+        <button type="button" role="tab" data-mode="dsl" aria-selected="false">Raw DSL</button>
+      </div>
+
+      <div id="nlPane">
+        <p class="muted">
+          Describe the setup. The agent drafts a document, validates it against
+          <code>strategy-dsl</code>, and repairs its own errors -- what lands in
+          the editor already validates.
+        </p>
+        <textarea id="nlDescription" spellcheck="false" placeholder="buy the reclaim after a sweep of a recent low, stop below the sweep, target 2R"></textarea>
+        <div class="row">
+          <button id="generate" class="primary">Generate</button>
+          <span id="nlMsg" class="muted"></span>
+        </div>
+      </div>
+
+      <!--
         Start from a shipped strategy. Both of the files in strategies/ validate,
         but only the calibrated one produces trades on this data -- so the editor
         opens on that one and this picker offers the other.
@@ -181,6 +215,7 @@
       <div class="row">
         <button id="validate">Validate</button>
         <button id="save" class="primary">Save</button>
+        <button id="deleteStrategy" disabled>Delete</button>
       </div>
       <div id="strategyMsg" class="muted"></div>
 

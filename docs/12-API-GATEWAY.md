@@ -22,9 +22,13 @@ GET    /skills/{id}
 PUT    /skills/{id}          # creates a new version, never mutates in place
 
 POST   /strategies                       # create from raw DSL or from agent output
+GET    /strategies
 GET    /strategies/{id}
+PUT    /strategies/{id}                  # stores a NEW version, returns a new id
+DELETE /strategies/{id}                  # 409 while any bot still runs it
 POST   /strategies/{id}/validate
 POST   /strategies/{id}/backtest
+GET    /strategies/{id}/backtests
 GET    /backtests/{id}
 
 POST   /bots                             # create paper or live bot from a strategy
@@ -54,6 +58,25 @@ high-frequency market channels; JSON is fine for the lower-frequency agent/bot c
   unauthenticated access to any endpoint beyond `/auth/*` and public market data reads
   (if the product decides to allow anonymous chart viewing — decide explicitly, don't
   default to open).
+
+## Versioning rules behind the write routes
+
+Two resource families are **append-only**, and the routes say so in their status codes:
+
+- **Skills.** `POST /skills` publishes the first version, `PUT /skills/{id}` the next.
+  Neither ever rewrites a row: a past thesis has to stay explainable against the skill
+  version that produced it (`docs/10`). Publishing a version the user already has is
+  `409 SKILL_VERSION_EXISTS`, and `PUT` requires the document's own `id()`
+  (`{name-slug}-v{major}`) to match the path, or `400 SKILL_ID_MISMATCH`.
+  Reads merge two sources: the caller's own rows, then the shipped library under
+  `SKILLS_DIR`. Where both answer the same slug, the caller's copy wins.
+- **Strategies.** `PUT /strategies/{id}` inserts a **new row** and answers `201` with a
+  new `id` plus `supersedes` naming the row it came from, because a stored backtest has
+  to keep pointing at the exact document that produced its numbers (`docs/13`).
+  `DELETE /strategies/{id}` takes the strategy's backtests with it, and answers
+  `409 STRATEGY_IN_USE` while any bot still references it.
+
+`GET /skills` and `GET /strategies` are authenticated: both are user data.
 
 ## Rate limiting & backpressure
 - Per-user rate limits on `/agent/*` endpoints specifically (LLM calls have real cost).

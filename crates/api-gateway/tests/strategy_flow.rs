@@ -434,3 +434,233 @@ async fn an_agent_authored_strategy_records_who_wrote_it() {
         .unwrap();
     user.cleanup(&h.database).await;
 }
+
+/// [`SIMPLE_STRATEGY`] with a bumped version, for the versioning tests.
+fn with_version(source: &str, version: &str) -> String {
+    source.replace("version: \"1\"", &format!("version: \"{version}\""))
+}
+
+#[tokio::test]
+async fn an_edit_stores_a_new_version_and_names_what_it_replaced() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+
+    let (status, body) = h
+        .post(
+            "/strategies",
+            json!({ "source": SIMPLE_STRATEGY }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let first = body["id"].as_str().expect("an id").to_string();
+
+    let (status, body) = h
+        .put(
+            &format!("/strategies/{first}"),
+            json!({ "source": with_version(SIMPLE_STRATEGY, "2") }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let second = body["id"].as_str().expect("an id").to_string();
+
+    // A new row, not an edit: the old document is what the old backtests ran.
+    assert_ne!(first, second, "an edit must not overwrite the row: {body}");
+    assert_eq!(body["version"], "2");
+    assert_eq!(
+        body["supersedes"], first,
+        "the response has to say which row this replaced: {body}"
+    );
+
+    // Both are readable, and the new one is the one a listing leads with.
+    let (status, body) = h
+        .get(&format!("/strategies/{first}"), Some(&user.token))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], "1");
+
+    let (status, listed) = h.get("/strategies", Some(&user.token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = listed.as_array().expect("a list");
+    assert_eq!(listed[0]["id"], second, "newest first: {listed:?}");
+    assert!(listed.iter().any(|s| s["id"] == first));
+
+    for id in [&first, &second] {
+        db::strategies::delete_strategy(h.database.pool(), id.parse().unwrap())
+            .await
+            .unwrap();
+    }
+    user.cleanup(&h.database).await;
+}
+
+#[tokio::test]
+async fn an_edit_inherits_who_wrote_the_previous_version() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+
+    let (status, body) = h
+        .post(
+            "/strategies",
+            json!({ "source": SIMPLE_STRATEGY, "created_by": "ai_agent" }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let first = body["id"].as_str().unwrap().to_string();
+
+    // Editing a document does not change who wrote it.
+    let (status, body) = h
+        .put(
+            &format!("/strategies/{first}"),
+            json!({ "source": with_version(SIMPLE_STRATEGY, "2") }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["created_by"], "ai_agent");
+    let second = body["id"].as_str().unwrap().to_string();
+
+    for id in [&first, &second] {
+        db::strategies::delete_strategy(h.database.pool(), id.parse().unwrap())
+            .await
+            .unwrap();
+    }
+    user.cleanup(&h.database).await;
+}
+
+#[tokio::test]
+async fn a_delete_takes_the_strategy_and_its_backtests() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+
+    let (status, body) = h
+        .post(
+            "/strategies",
+            json!({ "source": SIMPLE_STRATEGY }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let (status, body) = h
+        .post(
+            &format!("/strategies/{id}/backtest"),
+            json!({ "symbol": "BTCUSDT", "from": WINDOW_FROM, "to": WINDOW_TO }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let backtest_id = body["id"].as_str().unwrap().to_string();
+
+    let (status, body) = h
+        .delete(&format!("/strategies/{id}"), Some(&user.token))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let (status, _) = h.get(&format!("/strategies/{id}"), Some(&user.token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A report whose document is gone is a set of numbers with no provenance,
+    // so it goes too rather than being orphaned.
+    let (status, _) = h
+        .get(&format!("/backtests/{backtest_id}"), Some(&user.token))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    user.cleanup(&h.database).await;
+}
+
+#[tokio::test]
+async fn a_strategy_a_bot_is_running_cannot_be_deleted() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+
+    let (status, body) = h
+        .post(
+            "/strategies",
+            json!({ "source": SIMPLE_STRATEGY }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let strategy_id = body["id"].as_str().unwrap().to_string();
+
+    let (status, body) = h
+        .post(
+            "/bots",
+            json!({ "strategy_id": strategy_id }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let bot_id = body["id"].as_str().unwrap().to_string();
+
+    // 409, not a 500 from the foreign key: the caller can act on this one.
+    let (status, body) = h
+        .delete(&format!("/strategies/{strategy_id}"), Some(&user.token))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "STRATEGY_IN_USE");
+
+    // Delete the bot and the strategy becomes deletable.
+    let (status, _) = h
+        .delete(&format!("/bots/{bot_id}"), Some(&user.token))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = h
+        .delete(&format!("/strategies/{strategy_id}"), Some(&user.token))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    user.cleanup(&h.database).await;
+}
+
+#[tokio::test]
+async fn somebody_elses_strategy_is_absent_rather_than_forbidden() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let owner = h.register().await;
+    let other = h.register().await;
+
+    let (status, body) = h
+        .post(
+            "/strategies",
+            json!({ "source": SIMPLE_STRATEGY }),
+            Some(&owner.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // 404, not 403: a 403 would confirm that the id exists.
+    let (status, _) = h
+        .put(
+            &format!("/strategies/{id}"),
+            json!({ "source": with_version(SIMPLE_STRATEGY, "2") }),
+            Some(&other.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = h
+        .delete(&format!("/strategies/{id}"), Some(&other.token))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    db::strategies::delete_strategy(h.database.pool(), id.parse().unwrap())
+        .await
+        .unwrap();
+    owner.cleanup(&h.database).await;
+    other.cleanup(&h.database).await;
+}

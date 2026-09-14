@@ -20,6 +20,9 @@
 //!   is the cheap way to answer "is this still runnable after a schema change".
 //! * `GET /strategies` and `GET /strategies/{id}/backtests` -- a dashboard
 //!   needs to list, and an id alone is not something a user can browse.
+//! * `PUT /strategies/{id}` and `DELETE /strategies/{id}`. `docs/13` versions
+//!   strategies rather than editing them, so the "update" is a new row: the
+//!   old document stays exactly as the backtests under it saw it.
 //!
 //! ## Ownership is a 404, never a 403
 //!
@@ -112,6 +115,14 @@ pub struct StrategyResponse {
     pub created_at: i64,
     /// The document itself.
     pub document: serde_json::Value,
+    /// The row this version replaced, on a `PUT`.
+    ///
+    /// Absent everywhere else. Carried so a caller that just saved an edit can
+    /// see that it now holds a *new* id -- otherwise the natural reading is
+    /// "the document I PUT to was modified", which is the one thing that does
+    /// not happen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
 }
 
 impl From<db::strategies::StrategyRow> for StrategyResponse {
@@ -123,6 +134,7 @@ impl From<db::strategies::StrategyRow> for StrategyResponse {
             created_by: row.created_by,
             created_at: row.created_at,
             document: row.document,
+            supersedes: None,
         }
     }
 }
@@ -256,6 +268,7 @@ pub async fn create(
             created_by,
             created_at: now_ns(),
             document: stored,
+            supersedes: None,
         }),
     ))
 }
@@ -422,6 +435,115 @@ pub async fn get(
         .await?
         .ok_or_else(|| ApiError::not_found("no such strategy"))?;
     Ok(Json(row.into()))
+}
+
+/// `PUT /strategies/{id}` -- store the next version of a strategy.
+///
+/// `docs/13` versions strategies instead of editing them, because a backtest
+/// has to keep pointing at the exact document that produced its numbers. So
+/// this is an insert that returns a **new** id, with `supersedes` naming the
+/// row it came from. The old row is left alone, backtests included.
+///
+/// `created_by` defaults to the previous version's author: an edit does not
+/// change who wrote the thing.
+///
+/// # Errors
+/// 404 when the strategy is not the caller's; 422 when the new document does
+/// not validate; 503 without a database.
+pub async fn update(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path(id): Path<String>,
+    ApiJson(request): ApiJson<CreateStrategyRequest>,
+) -> Result<(StatusCode, Json<StrategyResponse>), ApiError> {
+    let database = database(&state)?;
+    let id = parse_id(&id, "strategy")?;
+    let previous = db::strategies::get_strategy(database.pool(), user.user_id, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("no such strategy"))?;
+
+    let validated = validate_source(&request.source)?;
+    let document = validated.document();
+    let created_by = request.created_by.unwrap_or(previous.created_by);
+    if !matches!(
+        created_by.as_str(),
+        "ai_agent" | "visual_builder" | "developer_sdk"
+    ) {
+        return Err(ApiError::bad_request(
+            "CREATED_BY_INVALID",
+            "`created_by` must be one of `ai_agent`, `visual_builder`, `developer_sdk`",
+        ));
+    }
+
+    let stored = serde_json::to_value(document)
+        .map_err(|e| ApiError::internal(format!("could not serialize the document: {e}")))?;
+    let new_id = db::strategies::create_strategy(
+        database.pool(),
+        user.user_id,
+        &document.name,
+        &document.version,
+        &stored,
+        &created_by,
+    )
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(StrategyResponse {
+            id: new_id.to_string(),
+            name: document.name.clone(),
+            version: document.version.clone(),
+            created_by,
+            created_at: now_ns(),
+            document: stored,
+            supersedes: Some(previous.id.to_string()),
+        }),
+    ))
+}
+
+/// `DELETE /strategies/{id}`
+///
+/// Takes the strategy's backtests with it: a report whose document is gone is
+/// a set of numbers with nothing behind them.
+///
+/// Refused while a bot still runs it. `bots.strategy_id` references this row,
+/// so the delete would fail at the database -- and a 409 naming the bot count
+/// is a different thing from a 500 naming a constraint.
+///
+/// # Errors
+/// 404 when the strategy is not the caller's; 409 while bots reference it; 503
+/// without a database.
+pub async fn remove(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let database = database(&state)?;
+    let id = parse_id(&id, "strategy")?;
+    // The read is the ownership check: a strategy that is not the caller's
+    // reports as absent, never as forbidden.
+    if db::strategies::get_strategy(database.pool(), user.user_id, id)
+        .await?
+        .is_none()
+    {
+        return Err(ApiError::not_found("no such strategy"));
+    }
+
+    let bots = db::strategies::count_bots_for_strategy(database.pool(), id).await?;
+    if bots > 0 {
+        return Err(ApiError::coded(
+            StatusCode::CONFLICT,
+            "STRATEGY_IN_USE",
+            format!(
+                "{bots} bot(s) run this strategy. Delete them first -- deleting a strategy out \
+                 from under a running bot would leave it executing a document that no longer \
+                 exists."
+            ),
+        ));
+    }
+
+    db::strategies::delete_strategy(database.pool(), id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /strategies/{id}/validate`
