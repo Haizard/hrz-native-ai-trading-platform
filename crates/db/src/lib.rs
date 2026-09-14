@@ -19,6 +19,7 @@
 
 #![deny(missing_docs)]
 
+pub mod bots;
 pub mod config;
 pub mod error;
 pub mod loading;
@@ -28,6 +29,7 @@ pub mod repositories;
 pub mod strategies;
 pub mod users;
 
+pub use bots::{create_bot, delete_bot, get_bot, list_bots, set_status, BotRow, STATUSES};
 pub use config::DatabaseConfig;
 pub use error::DbError;
 pub use loading::{coverage, load_timeframe_series, warn_about_short_series, MIN_COVERAGE};

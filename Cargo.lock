@@ -156,6 +156,7 @@ dependencies = [
  "dotenvy",
  "hmac",
  "http-body-util",
+ "market-data",
  "serde",
  "serde_json",
  "sha2",

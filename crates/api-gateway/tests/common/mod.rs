@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 
+use api_gateway::bots::{BotSupervisor, FeedMode};
 use api_gateway::{auth::AuthConfig, router, AppState};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -35,6 +36,9 @@ pub struct Harness {
     pub app: axum::Router,
     /// The database, so a test can clean up after itself.
     pub database: Arc<db::Database>,
+    /// The bot supervisor, so a test can publish candles into the feed and
+    /// check what a bot did with them.
+    pub supervisor: Arc<api_gateway::bots::BotSupervisor>,
 }
 
 impl Harness {
@@ -48,15 +52,21 @@ impl Harness {
         let database = db::Database::from_env().await.ok()?;
         database.migrate().await.ok()?;
 
+        let supervisor = Arc::new(BotSupervisor::with_flush_interval(
+            FeedMode::Off,
+            std::time::Duration::from_millis(100),
+        ));
         let state = AppState {
             db: Some(Arc::new(database.clone())),
             agent: None,
             skills: Arc::new(ai_agent::SkillLibrary::new()),
             auth: Some(Arc::new(AuthConfig::new(SECRET))),
+            bots: Arc::clone(&supervisor),
         };
         Some(Self {
             app: router(state),
             database: Arc::new(database),
+            supervisor,
         })
     }
 
@@ -67,15 +77,21 @@ impl Harness {
             return None;
         }
         let database = db::Database::from_env().await.ok()?;
+        let supervisor = Arc::new(BotSupervisor::with_flush_interval(
+            FeedMode::Off,
+            std::time::Duration::from_millis(100),
+        ));
         let state = AppState {
             db: Some(Arc::new(database.clone())),
             agent: None,
             skills: Arc::new(ai_agent::SkillLibrary::new()),
             auth: None,
+            bots: Arc::clone(&supervisor),
         };
         Some(Self {
             app: router(state),
             database: Arc::new(database),
+            supervisor,
         })
     }
 
@@ -107,6 +123,16 @@ impl Harness {
             builder = builder.header("authorization", format!("Bearer {token}"));
         }
         self.send(builder.body(Body::from(body.to_string())).expect("request"))
+            .await
+    }
+
+    /// DELETE a path, optionally authenticated.
+    pub async fn delete(&self, path: &str, token: Option<&str>) -> (StatusCode, Value) {
+        let mut builder = Request::builder().method("DELETE").uri(path);
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        self.send(builder.body(Body::empty()).expect("request"))
             .await
     }
 

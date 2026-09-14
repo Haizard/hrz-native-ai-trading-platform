@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use ai_agent::{Agent, AgentConfig, SkillLibrary};
+use api_gateway::bots::{BotSupervisor, FeedMode};
 use api_gateway::{build_auth, load_skills, router, AppState};
 use db::Database;
 
@@ -46,11 +47,18 @@ async fn main() -> anyhow::Result<()> {
     let agent = build_agent(&skills);
     let auth = build_auth();
 
+    let feed = FeedMode::from_env();
+    if feed == FeedMode::Off {
+        info!("MARKET_FEED is not `binance`: bots started through the API will receive no candles");
+    }
+    let bots = Arc::new(BotSupervisor::new(feed));
+
     let state = AppState {
         db,
         agent,
         skills: Arc::new(skills),
         auth,
+        bots,
     };
 
     let app = router(state);

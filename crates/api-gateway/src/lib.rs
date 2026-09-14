@@ -44,6 +44,8 @@ use crate::auth::AuthConfig;
 pub mod agent_routes;
 pub mod auth;
 pub mod auth_routes;
+pub mod bot_routes;
+pub mod bots;
 pub mod error;
 pub mod market_data;
 pub mod market_routes;
@@ -62,6 +64,8 @@ pub struct AppState {
     /// Session signing. `None` when `JWT_SECRET` is unset, in which case
     /// `/auth/*` answers 503 rather than pretending to authenticate.
     pub auth: Option<Arc<AuthConfig>>,
+    /// Owns the running bots and the market feed they share.
+    pub bots: Arc<bots::BotSupervisor>,
 }
 
 /// Health response body.
@@ -111,6 +115,13 @@ pub fn router(state: AppState) -> Router {
             get(strategy_routes::list_backtests),
         )
         .route("/backtests/{id}", get(strategy_routes::get_backtest))
+        .route("/bots", get(bot_routes::list).post(bot_routes::create))
+        .route(
+            "/bots/{id}",
+            get(bot_routes::get).delete(bot_routes::delete),
+        )
+        .route("/bots/{id}/pause", post(bot_routes::pause))
+        .route("/bots/{id}/resume", post(bot_routes::resume))
         .route("/agent/ask", post(agent_routes::ask))
         .route(
             "/agent/generate-strategy",

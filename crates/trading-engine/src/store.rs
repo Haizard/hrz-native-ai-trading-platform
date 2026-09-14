@@ -95,18 +95,50 @@ impl BotSession {
 
         let bot_id = db::paper::insert_bot(pool, user_id, strategy_id, mode, venue).await?;
 
+        Self::attach(
+            database,
+            user_id,
+            bot_id,
+            json!({
+                "strategy": strategy_name,
+                "version": strategy_version,
+                "mode": mode,
+                "venue": venue,
+            }),
+        )
+        .await
+    }
+
+    /// Attach to a bot row that already exists.
+    ///
+    /// The API creates the row when a user asks for a bot, and the task that
+    /// runs it attaches afterwards. Creating a second row there would give one
+    /// bot two identities, and its trades would end up split between them.
+    ///
+    /// `context` is merged into the `bot.started` event, so a trail says how the
+    /// run began rather than only that it did.
+    ///
+    /// # Errors
+    /// Returns [`ExecutionError::Storage`] if the start event cannot be written.
+    pub async fn attach(
+        database: &Database,
+        user_id: Uuid,
+        bot_id: Uuid,
+        context: serde_json::Value,
+    ) -> Result<Self, ExecutionError> {
+        let mut payload = json!({ "bot_id": bot_id });
+        if let (Some(target), Some(source)) = (payload.as_object_mut(), context.as_object()) {
+            for (key, value) in source {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+
         db::paper::insert_audit_events(
-            pool,
+            database.pool(),
             &[AuditEvent {
                 user_id: Some(user_id),
                 event_type: STARTED_EVENT.into(),
-                payload: json!({
-                    "bot_id": bot_id,
-                    "strategy": strategy_name,
-                    "version": strategy_version,
-                    "mode": mode,
-                    "venue": venue,
-                }),
+                payload,
                 ts: now_ns(),
             }],
         )
