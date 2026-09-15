@@ -75,6 +75,9 @@
   .modes { display: flex; gap: 4px; margin-bottom: 8px; }
   .modes button { flex: 0 1 auto; padding: 4px 10px; font-size: 11px; color: var(--muted); }
   .modes button[aria-selected="true"] { color: var(--text); border-color: var(--accent); }
+  /* The zones overlay, off by default. Same "pressed means active" treatment as
+     the strategy editor's mode tabs, so one visual language covers both. */
+  #zones[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
   #nlPane[hidden], #builderPane[hidden], #dslPane[hidden] { display: none; }
   #nlDescription { min-height: 64px; }
 
@@ -200,6 +203,15 @@
     <option value="area">Area</option>
     <option value="footprint">Footprint (volume by price)</option>
   </select>
+  <!--
+    Supply/demand zones. A toggle rather than a chart type, because a zone is an
+    overlay on whatever rendering is selected -- the same series read the same
+    way, with the areas the engine detected drawn behind it.
+
+    Off by default: detection is a real cost on a long window, and an overlay
+    nobody asked for is noise on top of the candles.
+  -->
+  <button id="zones" aria-pressed="false" title="Draw the supply and demand zones the engine detects">Zones</button>
   <button id="load">Reload</button>
   <span class="spacer"></span>
   <span id="session">not signed in</span>

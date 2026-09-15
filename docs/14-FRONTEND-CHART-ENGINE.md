@@ -104,6 +104,35 @@ CPU calc   GPU-friendly buffers
 - **Chart**: candlesticks, footprint mode (bid/ask ladder per price level), volume
   profile overlay, VWAP/POC/VAH/VAL lines, delta/CVD sub-panel, drawing tools
   (trendlines, Fibonacci, rectangles — start minimal, expand later).
+
+  **Built as of 2026-09-15: supply/demand zones, the first area the engine can draw.**
+  A "Zones" toggle in the header. When it is on, the request carries `zones: true` and the
+  scene comes back with a `regions` array — price bands with a time extent, drawn behind
+  the candles.
+
+  The interesting part is where the detection runs. It runs **in the wasm engine, on the
+  candles the request already carries** — not in the shell, and not behind a route of its
+  own. That is the arrangement the volume profile and VWAP already use: the engine calls
+  `analytics-core` and reimplements none of it. So the browser never runs a detector,
+  `docs/14`'s no-arithmetic rule holds by construction, and switching the toggle on costs
+  no extra round trip.
+
+  Two things worth keeping:
+
+  - A zone is an **area**, and nothing else in the scene is. Every other detector in this
+    workspace reports a point — `ImbalanceEvent.price_level`, `AbsorptionEvent.price_level`,
+    `LiquidityLevel.price` — and `Scene` drew candles, horizontal `levels`, profile bars and
+    footprint cells. `analytics_core::regions::Region` is the type that was missing, and
+    `SceneRegion` is its positioned form.
+  - The band carries `y_top` **and** `h`, not two y coordinates. `ProfileBar` already had
+    that shape, and it is why the shell's fill is `fillRect(x, y_top, w, h)` with nothing to
+    subtract — the rule about arithmetic is easiest to keep when the geometry has no gaps in
+    it.
+
+  A fresh zone is drawn solid and a mitigated one faded, because a zone price has already
+  traded back through is not a level any more. Rendering the two the same is how a chart
+  teaches someone to buy something that no longer exists.
+
 - **DOM/order book panel**: live bid/ask ladder from `/ws/orderbook/{symbol}`.
 
   **Built as of 2026-09-15: the ladder, and why it is computed in Rust.** The panel is a

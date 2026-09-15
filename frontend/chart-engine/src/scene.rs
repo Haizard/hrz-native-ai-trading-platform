@@ -34,6 +34,8 @@
 //! it is in [`Scene::note`] rather than letting the label imply tick data that
 //! does not exist.
 
+use analytics_core::market_structure::BreakKind;
+use analytics_core::regions::{detect_zones, RegionKind, ZoneConfig};
 use analytics_core::types::{Candle, Timeframe};
 use analytics_core::volume_profile::{calculate_volume_profile_from_candles, VolumeProfile};
 use analytics_core::vwap::calculate_vwap;
@@ -145,6 +147,20 @@ pub struct Request {
     /// ABI check found it.
     #[serde(default = "default_lines")]
     pub lines: Vec<String>,
+    /// Whether to detect and draw supply/demand zones.
+    ///
+    /// Detection runs **here**, on the candles the request already carries,
+    /// rather than in the shell and rather than behind a route of its own. That
+    /// is the same arrangement the volume profile and VWAP already use: this
+    /// crate calls `analytics-core` and reimplements none of it, so the browser
+    /// never runs a detector and `docs/14`'s no-arithmetic-in-the-shell rule
+    /// holds by construction.
+    ///
+    /// A flag rather than a list of concepts because this is the built-in
+    /// detector. Geometry defined by a *strategy document* is a different input
+    /// and will arrive as one.
+    #[serde(default)]
+    pub zones: bool,
 }
 
 /// The levels drawn when a request does not say.
@@ -163,6 +179,7 @@ impl Default for Request {
             footprint: Vec::new(),
             footprint_trades: 0,
             lines: default_lines(),
+            zones: false,
         }
     }
 }
@@ -229,6 +246,59 @@ pub struct Level {
     pub kind: String,
 }
 
+/// A supply/demand zone, positioned.
+///
+/// The only geometry in the scene that is an **area**. Everything else is a
+/// point or a rectangle standing for one price at one time -- a candle, a
+/// horizontal level, a profile bar, a footprint cell. This is a price band over
+/// a span of time, which is the shape a supply/demand zone, a fair value gap, an
+/// order block and a breaker block all share.
+///
+/// It carries the prices as well as the pixels, for the same reason
+/// [`ProfileBar`] carries `volume` and [`Level`] carries `price`: a tooltip has
+/// to be able to say *which* band this is without the shell re-deriving it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneRegion {
+    /// Which side of the market the zone is expected to act from.
+    pub kind: RegionKind,
+    /// Left edge, in canvas x.
+    pub x: f64,
+    /// Width in canvas pixels -- the zone's time extent.
+    pub w: f64,
+    /// Top of the band, in canvas y: the dearer price.
+    pub y_top: f64,
+    /// Height of the band, in canvas pixels.
+    ///
+    /// Carried rather than left as `y_bottom - y_top` so the shell's fill is
+    /// `fillRect(x, y_top, w, h)` with nothing to compute -- the same shape
+    /// [`ProfileBar`] has, and the reason `docs/14` can say the shell performs no
+    /// arithmetic over market data.
+    pub h: f64,
+    /// Cheapest price in the band.
+    pub price_low: f64,
+    /// Dearest price in the band.
+    pub price_high: f64,
+    /// How much of the band price has since traded back through, `0.0..=1.0`.
+    pub mitigated: f64,
+    /// Whether price has not touched it at all.
+    ///
+    /// The distinction the whole concept rests on: a mitigated zone has already
+    /// been consumed, and drawing it like a fresh one is how a chart teaches
+    /// someone to buy a level that no longer exists.
+    pub fresh: bool,
+    /// The swing level the impulse broke, so the drawing can answer "why is
+    /// this zone here".
+    pub broken_level: f64,
+    /// The break that created it: `"bos"` (continuation) or `"choch"`
+    /// (reversal).
+    pub break_kind: String,
+    /// Ready to draw: `"demand (fresh)"`, `"supply (79% mitigated)"`.
+    ///
+    /// Formatted here rather than in the shell because turning `0.79` into
+    /// `79%` is arithmetic, and `docs/14` keeps arithmetic out of JavaScript.
+    pub label: String,
+}
+
 /// A price-axis tick.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tick {
@@ -278,6 +348,12 @@ pub struct Scene {
     pub profile: Vec<ProfileBar>,
     /// Overlay levels.
     pub levels: Vec<Level>,
+    /// Supply/demand zones, when the request asked for them.
+    ///
+    /// Always present and usually empty: a client that did not ask gets `[]`
+    /// rather than a missing key, so the shell's draw loop needs no null check
+    /// and an older shell keeps working against a newer engine.
+    pub regions: Vec<SceneRegion>,
     /// Price-axis ticks.
     pub ticks: Vec<Tick>,
     /// The trade-level footprint grid, when one could be built.
@@ -338,6 +414,7 @@ pub fn build(request: &Request) -> Scene {
         line: Vec::new(),
         profile: Vec::new(),
         levels: Vec::new(),
+        regions: Vec::new(),
         ticks: Vec::new(),
         footprint: None,
         note: None,
@@ -391,7 +468,13 @@ pub fn build(request: &Request) -> Scene {
         .bucket_size
         .filter(|size| size.is_finite() && *size > 0.0)
         .unwrap_or_else(|| choose_bucket(price_min, price_max));
-    let profile = calculate_volume_profile_from_candles(&plotted, bucket_size);
+    // From the **real** series, not `plotted`. A volume profile assigns each
+    // candle's volume to price levels, and a Heikin-Ashi candle's high and low
+    // are averages -- prices nobody traded at. The profile would still look
+    // plausible, which is exactly why it is worth being explicit: the note for
+    // that mode promises the real series, and this is where that promise is
+    // kept. `levels()` reads `request.candles` for the same reason.
+    let profile = calculate_volume_profile_from_candles(&request.candles, bucket_size);
 
     if request.mode.shows_profile() {
         scene.profile = profile_bars(&profile, &plot, scene.price_min, scene.price_max);
@@ -453,6 +536,15 @@ pub fn build(request: &Request) -> Scene {
     }
 
     scene.levels = levels(request, &profile, &plot, scene.price_min, scene.price_max);
+    scene.regions = zone_rects(
+        request,
+        &request.candles,
+        &plot,
+        scene.from,
+        scene.to,
+        scene.price_min,
+        scene.price_max,
+    );
     scene.ticks = ticks(&plot, scene.price_min, scene.price_max);
     scene
 }
@@ -629,6 +721,92 @@ fn levels(
     out
 }
 
+/// Where each zone's band lands on the canvas.
+///
+/// The time mapping is the same one the candles use: a region's edges are
+/// timestamps, and the plot's width is divided by the window's duration exactly
+/// as a candle's slot is. That is what makes a zone line up with the candles
+/// that formed it instead of drifting sideways -- a zone drawn a slot off reads
+/// as a different level entirely.
+///
+/// `candles` is the **real** series, not the drawn one. [`build`] passes
+/// `request.candles` rather than its own `plotted`, deliberately: structure and
+/// zones are facts about prices that traded, so switching the chart to
+/// Heikin-Ashi must not invent zones out of averaged candles.
+fn zone_rects(
+    request: &Request,
+    candles: &[Candle],
+    plot: &Plot,
+    from: i64,
+    to: i64,
+    price_min: f64,
+    price_max: f64,
+) -> Vec<SceneRegion> {
+    if !request.zones {
+        return Vec::new();
+    }
+    let span = (to - from) as f64;
+    if span <= 0.0 {
+        return Vec::new();
+    }
+
+    detect_zones(candles, ZoneConfig::default())
+        .into_iter()
+        // A band with no height is not a zone. Drawing one produces an
+        // invisible rectangle with a label floating on nothing, which reads as a
+        // rendering bug rather than as a flat origin.
+        .filter(|region| {
+            let height = region.height();
+            height.is_finite() && height > 0.0
+        })
+        .filter_map(|region| {
+            // Clamp to the window. Detection runs on these very candles, so
+            // today this never bites; it is here because the next caller -- a
+            // strategy document naming its own concept -- may hand over a region
+            // that starts before the visible window, and a zone drawn off-canvas
+            // to the left is worse than one drawn short.
+            let start = region.from.max(from);
+            let end = region.to.min(to);
+            if end <= start {
+                return None;
+            }
+            let mitigated = region.mitigated.clamp(0.0, 1.0);
+            let y_top = price_to_y(region.price_high, price_min, price_max, plot);
+            let y_bottom = price_to_y(region.price_low, price_min, price_max, plot);
+            Some(SceneRegion {
+                kind: region.kind,
+                x: plot.x + (start - from) as f64 / span * plot.w,
+                w: (end - start) as f64 / span * plot.w,
+                y_top,
+                h: y_bottom - y_top,
+                price_low: region.price_low,
+                price_high: region.price_high,
+                mitigated,
+                fresh: mitigated <= 0.0,
+                broken_level: region.broken_level,
+                break_kind: match region.break_kind {
+                    BreakKind::Bos => "bos",
+                    BreakKind::Choch => "choch",
+                }
+                .to_owned(),
+                label: region_label(region.kind, mitigated),
+            })
+        })
+        .collect()
+}
+
+/// How a zone's label reads.
+///
+/// `mitigated` is taken already clamped, so the only branch here is the one the
+/// concept needs: fresh or partly consumed.
+fn region_label(kind: RegionKind, mitigated: f64) -> String {
+    if mitigated <= 0.0 {
+        format!("{} (fresh)", kind.name())
+    } else {
+        format!("{} ({:.0}% mitigated)", kind.name(), mitigated * 100.0)
+    }
+}
+
 fn ticks(plot: &Plot, price_min: f64, price_max: f64) -> Vec<Tick> {
     const COUNT: usize = 6;
     let step = (price_max - price_min) / COUNT as f64;
@@ -689,6 +867,83 @@ mod tests {
         Request {
             mode,
             ..request(count)
+        }
+    }
+
+    /// A series with a demand zone in it.
+    ///
+    /// The same shape `analytics-core::regions`' own tests use: a decline that
+    /// leaves a confirmed swing high, a three-candle pause, and an impulse that
+    /// closes through that high. Written out by hand rather than fetched so the
+    /// test states the rule it checks instead of inheriting whatever the market
+    /// did -- and so it still means something when the database is empty.
+    fn zoned_series() -> Vec<Candle> {
+        #[rustfmt::skip]
+        let rows: [(f64, f64, f64, f64); 20] = [
+            (100.0, 101.0,  99.0,  99.5),  // a decline, so structure has lows to confirm
+            ( 99.5, 100.0,  96.0,  96.5),
+            ( 96.5,  98.0,  95.0,  97.5),
+            ( 97.5,  98.5,  94.0,  94.5),
+            ( 94.5,  95.5,  92.0,  92.5),
+            ( 92.5,  93.5,  90.0,  93.0),
+            ( 93.0,  96.0,  92.5,  95.5),
+            ( 96.5,  97.0,  95.0,  95.5),  // the swing high the impulse will break
+            ( 96.0,  96.2,  94.6,  94.8),  // the origin: three down-close candles
+            ( 94.8,  95.0,  93.4,  93.6),
+            ( 93.6,  93.9,  92.8,  93.0),  // ... spanning 92.8 up to 96.2
+            ( 93.0,  95.5,  92.9,  95.0),  // the impulse, five up candles
+            ( 95.0,  97.5,  94.8,  97.0),
+            ( 97.0, 100.0,  96.8,  99.5),
+            ( 99.5, 102.0,  99.0, 101.5),
+            (101.5, 104.0, 101.0, 103.5),
+            (103.5, 104.0, 100.0, 100.5),  // a pullback, back into the band
+            (100.5, 101.0,  96.0,  96.5),
+            ( 96.5,  97.0,  93.5,  94.0),
+            ( 94.0,  95.0,  93.8,  94.8),
+        ];
+        rows.iter()
+            .enumerate()
+            .map(|(index, &(open, high, low, close))| Candle {
+                symbol: "BTCUSDT".into(),
+                timeframe: Timeframe::M5,
+                open_time: index as i64 * 300_000_000_000,
+                open,
+                high,
+                low,
+                close,
+                volume: 10.0,
+                buy_volume: 6.0,
+                sell_volume: 4.0,
+            })
+            .collect()
+    }
+
+    /// A series whose Heikin-Ashi range differs from its real range.
+    ///
+    /// Alternating gaps do it: `haOpen` is the mean of the previous *averaged*
+    /// candle, so after a gap it sits outside the current candle's real range
+    /// and drags `haHigh` or `haLow` with it.
+    ///
+    /// Worth knowing why this fixture exists at all: on a smooth trend the two
+    /// ranges coincide -- `haClose` is the mean of the four prices, so it is
+    /// inside `[low, high]`, and `haOpen` stays inside too. The first version of
+    /// the profile test used a smooth trend and therefore passed against *both*
+    /// the correct and the broken code. A guard that cannot fail is not a guard.
+    fn gapped_series(count: i64) -> Vec<Candle> {
+        (0..count)
+            .map(|i| {
+                let base = if i % 2 == 0 { 100.0 } else { 140.0 };
+                candle(i, base, base + 5.0)
+            })
+            .collect()
+    }
+
+    /// The zoned series with zones switched on.
+    fn zoned_request() -> Request {
+        Request {
+            zones: true,
+            candles: zoned_series(),
+            ..Request::default()
         }
     }
 
@@ -897,6 +1152,206 @@ mod tests {
         assert!((lowest.price - scene.price_min).abs() < 1e-6);
         assert!((highest.price - scene.price_max).abs() < 1e-6);
         assert!(lowest.y > highest.y);
+    }
+
+    #[test]
+    fn the_profile_comes_from_the_real_series_not_the_average() {
+        // The Heikin-Ashi caveat promises "the levels and the profile are
+        // computed from the real series". The profile was built from the
+        // averaged one -- which still looks like a profile, which is exactly why
+        // nothing noticed. An explicit bucket takes `choose_bucket` out of the
+        // comparison, so the only variable left is which series was read, and a
+        // gapped series is what makes the two readings differ at all.
+        let request = Request {
+            mode: Mode::HeikinAshi,
+            bucket_size: Some(0.5),
+            candles: gapped_series(120),
+            ..Request::default()
+        };
+        let scene = build(&request);
+
+        let real = calculate_volume_profile_from_candles(&request.candles, 0.5);
+        let expected: Vec<f64> = real.histogram.iter().map(|node| node.volume).collect();
+        let drawn: Vec<f64> = scene.profile.iter().map(|bar| bar.volume).collect();
+        assert!(
+            !expected.is_empty(),
+            "the fixture must produce a profile, or this compares nothing to nothing"
+        );
+        assert_eq!(
+            drawn, expected,
+            "the drawn profile must be the real series' profile"
+        );
+    }
+
+    // --- zones --------------------------------------------------------------
+
+    #[test]
+    fn zones_are_absent_unless_asked_for() {
+        // Off by default, and empty rather than missing when off: the shell's
+        // draw loop should not need a null check.
+        let scene = build(&request(60));
+        assert!(scene.regions.is_empty());
+
+        let json = serde_json::to_value(&scene).expect("serializes");
+        assert_eq!(json["regions"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_zone_is_drawn_as_a_band_over_its_own_time_span() {
+        let scene = build(&zoned_request());
+        let zone = scene
+            .regions
+            .iter()
+            .find(|region| region.kind == RegionKind::Demand)
+            .unwrap_or_else(|| panic!("no demand zone was drawn: {:?}", scene.regions));
+
+        // The band starts at candle 8 -- the first origin candle -- and runs to
+        // the right edge, because a zone that stopped at the break would be a
+        // historical annotation rather than a level still in play.
+        let slot = scene.plot.w / 20.0;
+        let centre = scene.candles[8].x + scene.candles[8].w / 2.0;
+        assert!(
+            zone.x <= centre && zone.x >= centre - slot,
+            "the zone must start inside candle 8's slot: x={} centre={centre} slot={slot}",
+            zone.x
+        );
+        let expected_w = (20.0 - 8.0) / 20.0 * scene.plot.w;
+        assert!(
+            (zone.w - expected_w).abs() < 1e-6,
+            "the width is the time span: {} vs {expected_w}",
+            zone.w
+        );
+        assert!(zone.x + zone.w <= scene.plot.x + scene.plot.w + 1e-6);
+    }
+
+    #[test]
+    fn the_band_carries_the_prices_it_was_detected_from() {
+        // A tooltip has to be able to say which band this is. Carrying only
+        // pixels would force the shell to invert the price mapping, which is
+        // arithmetic and is forbidden in the shell.
+        let scene = build(&zoned_request());
+        let zone = scene
+            .regions
+            .iter()
+            .find(|region| region.kind == RegionKind::Demand)
+            .expect("a demand zone");
+        // The origin candles' lowest low and highest high.
+        assert_eq!(zone.price_low, 92.8);
+        assert_eq!(zone.price_high, 96.2);
+        // And the y coordinates agree with the prices, top being dearer.
+        assert!(zone.h > 0.0, "{zone:?}");
+        assert!(zone.y_top >= scene.plot.y - 1.0);
+        assert!(zone.y_top + zone.h <= scene.plot.y + scene.plot.h + 1.0);
+        // The break that created it, so the drawing can say why it is there.
+        assert_eq!(zone.broken_level, 97.0);
+        assert_eq!(zone.break_kind, "bos");
+    }
+
+    #[test]
+    fn a_zone_says_whether_it_is_still_fresh() {
+        // The distinction the concept rests on: a consumed zone drawn like a
+        // fresh one teaches someone to buy a level that no longer exists.
+        let scene = build(&zoned_request());
+        for zone in &scene.regions {
+            assert!((0.0..=1.0).contains(&zone.mitigated), "{zone:?}");
+            assert_eq!(zone.fresh, zone.mitigated <= 0.0, "{zone:?}");
+            let expected = if zone.fresh {
+                format!("{} (fresh)", zone.kind.name())
+            } else {
+                format!(
+                    "{} ({:.0}% mitigated)",
+                    zone.kind.name(),
+                    zone.mitigated * 100.0
+                )
+            };
+            assert_eq!(zone.label, expected);
+        }
+    }
+
+    #[test]
+    fn no_zone_is_drawn_as_an_invisible_line() {
+        // A zero-height band is a label floating on nothing, which reads as a
+        // rendering bug rather than as a flat origin.
+        for mode in Mode::ALL {
+            let scene = build(&Request {
+                mode,
+                ..zoned_request()
+            });
+            for zone in &scene.regions {
+                assert!(zone.h > 0.0, "{mode:?} drew a flat zone: {zone:?}");
+                assert!(zone.w > 0.0, "{mode:?} drew a zero-width zone: {zone:?}");
+                assert!(zone.price_high > zone.price_low, "{zone:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn zones_do_not_move_when_the_chart_style_changes() {
+        // Zones are facts about prices that traded. Switching the chart to
+        // Heikin-Ashi must not invent zones out of averaged candles -- the
+        // prices, the label and the count have to be identical across every
+        // rendering of the same series.
+        let expected: Vec<(f64, f64, String, String)> = build(&zoned_request())
+            .regions
+            .iter()
+            .map(|zone| {
+                (
+                    zone.price_low,
+                    zone.price_high,
+                    zone.break_kind.clone(),
+                    zone.label.clone(),
+                )
+            })
+            .collect();
+        assert!(!expected.is_empty(), "the fixture must produce zones");
+
+        for mode in Mode::ALL {
+            let scene = build(&Request {
+                mode,
+                ..zoned_request()
+            });
+            let bands: Vec<(f64, f64, String, String)> = scene
+                .regions
+                .iter()
+                .map(|zone| {
+                    (
+                        zone.price_low,
+                        zone.price_high,
+                        zone.break_kind.clone(),
+                        zone.label.clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(bands, expected, "{mode:?} changed the zones");
+        }
+    }
+
+    #[test]
+    fn the_zone_keys_the_shell_reads_are_pinned() {
+        // A rename is not a compile error anywhere -- it is a zone overlay that
+        // silently stops appearing, which looks like "no zones in this window"
+        // rather than like a bug.
+        let scene = build(&zoned_request());
+        let json = serde_json::to_value(&scene).expect("serializes");
+        let zone = &json["regions"][0];
+        for key in [
+            "kind",
+            "x",
+            "w",
+            "y_top",
+            "h",
+            "price_low",
+            "price_high",
+            "mitigated",
+            "fresh",
+            "broken_level",
+            "break_kind",
+            "label",
+        ] {
+            assert!(!zone[key].is_null(), "the shell reads `{key}`: {zone}");
+        }
+        // snake_case on the wire, like everything else in the scene.
+        assert_eq!(zone["kind"], "demand");
     }
 
     // --- the chart types ----------------------------------------------------

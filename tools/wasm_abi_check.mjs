@@ -199,6 +199,142 @@ check(
   fallback.note
 );
 
+// --- supply/demand zones ----------------------------------------------------
+//
+// The first *area* the engine has ever drawn. Everything else in the scene is a
+// point or a rectangle standing for one price at one time, so this is the shape
+// most likely to arrive at the shell half-formed.
+
+/// A series with a demand zone in it.
+///
+/// The same shape the Rust tests use: a decline that leaves a confirmed swing
+/// high, a three-candle pause, and an impulse that closes through it.
+function zonedCandles() {
+  const rows = [
+    [100.0, 101.0, 99.0, 99.5],
+    [99.5, 100.0, 96.0, 96.5],
+    [96.5, 98.0, 95.0, 97.5],
+    [97.5, 98.5, 94.0, 94.5],
+    [94.5, 95.5, 92.0, 92.5],
+    [92.5, 93.5, 90.0, 93.0],
+    [93.0, 96.0, 92.5, 95.5],
+    [96.5, 97.0, 95.0, 95.5],
+    [96.0, 96.2, 94.6, 94.8],
+    [94.8, 95.0, 93.4, 93.6],
+    [93.6, 93.9, 92.8, 93.0],
+    [93.0, 95.5, 92.9, 95.0],
+    [95.0, 97.5, 94.8, 97.0],
+    [97.0, 100.0, 96.8, 99.5],
+    [99.5, 102.0, 99.0, 101.5],
+    [101.5, 104.0, 101.0, 103.5],
+    [103.5, 104.0, 100.0, 100.5],
+    [100.5, 101.0, 96.0, 96.5],
+    [96.5, 97.0, 93.5, 94.0],
+    [94.0, 95.0, 93.8, 94.8],
+  ];
+  return rows.map(([open, high, low, close], i) => ({
+    symbol: "BTCUSDT",
+    timeframe: "5m",
+    open_time: i * 300_000_000_000,
+    open, high, low, close,
+    volume: 10, buy_volume: 6, sell_volume: 4,
+  }));
+}
+
+// Off by default. Detection is a real cost on a long window, and an overlay
+// nobody asked for is noise on top of the candles.
+//
+// The presence check comes first and is not redundant: against a *stale* wasm
+// the key is absent, and `(scene.regions ?? []).length === 0` would then pass
+// while the shell's draw loop threw on `undefined.length`. An empty overlay and
+// a missing one are different facts, so they are asserted separately.
+check(
+  "the scene always carries a `regions` array",
+  Array.isArray(scene.regions),
+  `got ${JSON.stringify(scene.regions)}`
+);
+check(
+  "zones are off unless asked for",
+  Array.isArray(scene.regions) && scene.regions.length === 0,
+  `${scene.regions && scene.regions.length} regions in a request that never mentioned them`
+);
+
+const zoned = build({
+  candles: zonedCandles(),
+  width: 900,
+  height: 420,
+  mode: "candles",
+  zones: true,
+});
+
+check(
+  "a zone comes back",
+  Array.isArray(zoned.regions) && zoned.regions.length > 0,
+  `got ${JSON.stringify(zoned.regions)}`
+);
+
+const zone = (zoned.regions ?? []).find((r) => r.kind === "demand");
+check("and it is a demand zone", Boolean(zone), JSON.stringify(zoned.regions.map((r) => r.kind)));
+
+if (zone) {
+  // Every key the shell reads. A rename is not a compile error anywhere -- it is
+  // an overlay that silently stops appearing, which looks like "no zones in this
+  // window" rather than like a bug.
+  for (const key of [
+    "kind", "x", "w", "y_top", "h", "price_low", "price_high",
+    "mitigated", "fresh", "broken_level", "break_kind", "label",
+  ]) {
+    check(`the zone carries \`${key}\``, zone[key] !== undefined && zone[key] !== null);
+  }
+  check(
+    "the band is an area, not a line",
+    zone.h > 0 && zone.w > 0 && zone.price_high > zone.price_low,
+    `w=${zone.w} h=${zone.h} ${zone.price_low}..${zone.price_high}`
+  );
+  check(
+    "the band is inside the plot",
+    zone.x >= zoned.plot.x - 1 &&
+      zone.x + zone.w <= zoned.plot.x + zoned.plot.w + 1 &&
+      zone.y_top >= zoned.plot.y - 1 &&
+      zone.y_top + zone.h <= zoned.plot.y + zoned.plot.h + 1,
+    `x=${zone.x} w=${zone.w} y=${zone.y_top} h=${zone.h}`
+  );
+  check(
+    "the engine formatted the label",
+    typeof zone.label === "string" && zone.label.startsWith("demand"),
+    zone.label
+  );
+  check(
+    "the band carries the prices it was detected from",
+    zone.price_low === 92.8 && zone.price_high === 96.2,
+    `${zone.price_low}..${zone.price_high}`
+  );
+  check(
+    "it says which break put it there",
+    zone.broken_level === 97.0 && zone.break_kind === "bos",
+    `${zone.break_kind} at ${zone.broken_level}`
+  );
+}
+
+// --- the levels default -----------------------------------------------------
+//
+// `#[serde(default)]` on a `Vec` fills in an *empty* one, so a request that
+// never mentions `lines` would draw nothing while `Request::default()` promised
+// four. This check is where that was found, so it stays.
+
+const noLines = build({ candles: candles(60), width: 900, height: 420 });
+check(
+  "omitting `lines` does not mean no levels",
+  noLines.levels.length === 4,
+  `got ${noLines.levels.length}`
+);
+const emptyLines = build({ candles: candles(60), width: 900, height: 420, lines: [] });
+check(
+  "an explicit empty list does mean no levels",
+  emptyLines.levels.length === 0,
+  `got ${emptyLines.levels.length}`
+);
+
 // --- the failure path -------------------------------------------------------
 //
 // A trap would take the whole page down with no explanation; a non-zero return

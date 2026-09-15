@@ -176,6 +176,8 @@ const COLORS = {
   entry: "#58a6ff",
   stop: "#ef5350",
   target: "#26a69a",
+  demand: "#26a69a",
+  supply: "#ef5350",
 };
 
 function draw() {
@@ -193,6 +195,10 @@ function draw() {
   if (!scene) return;
 
   drawGrid(ctx, scene);
+
+  // Zones go under everything, before the candles: a supply/demand band is a
+  // backdrop the price is read against, not a mark on top of it.
+  drawRegions(ctx, scene);
 
   // The engine says what to draw, so this is a dispatch rather than a decision.
   // Adding a chart type means adding a case here and a variant in Rust -- not
@@ -226,6 +232,42 @@ function draw() {
 ///
 /// Every coordinate and every string comes from the engine. This function picks
 /// colours and calls fillText -- nothing else.
+/// Supply/demand zones -- the chart's only *area* overlay.
+///
+/// Every coordinate, every price and the label itself come from the engine.
+/// This function picks a colour from the zone's kind and fills a rectangle,
+/// which is the same contract `drawProfile` and `drawLevels` follow. Note there
+/// is no subtraction here: the band's height arrives as `h`, so a fill is
+/// `fillRect(x, y_top, w, h)` and nothing is computed from prices.
+///
+/// A fresh zone is drawn solid and a mitigated one faded. That distinction is
+/// the whole reason the concept is worth drawing: a zone price has already
+/// traded back through is not a level any more, and rendering the two the same
+/// is how a chart teaches someone to buy something that no longer exists.
+function drawRegions(ctx, scene) {
+  if (!scene.regions.length) return;
+  ctx.font = "10px ui-monospace, monospace";
+
+  for (const zone of scene.regions) {
+    const colour = COLORS[zone.kind] || COLORS.text;
+    ctx.globalAlpha = zone.fresh ? 0.16 : 0.07;
+    ctx.fillStyle = colour;
+    ctx.fillRect(zone.x, zone.y_top, zone.w, zone.h);
+    ctx.globalAlpha = 1;
+
+    // The outline, so a zone in a quiet stretch of chart is still visible.
+    ctx.strokeStyle = colour;
+    ctx.globalAlpha = zone.fresh ? 0.7 : 0.35;
+    ctx.setLineDash([3, 3]);
+    ctx.strokeRect(zone.x + 0.5, zone.y_top + 0.5, zone.w - 1, zone.h - 1);
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = colour;
+    ctx.fillText(zone.label, zone.x + 4, zone.y_top + 11);
+  }
+}
+
 function drawFootprintGrid(ctx, scene) {
   const grid = scene.footprint;
   const font = Math.max(6, Math.min(11, grid.font_px));
@@ -540,6 +582,14 @@ async function refresh() {
   }
 }
 
+/// Whether the zones overlay is switched on.
+///
+/// The button's `aria-pressed` is the state, rather than a second variable that
+/// can drift out of step with what the button says.
+function zonesOn() {
+  return el("zones").getAttribute("aria-pressed") === "true";
+}
+
 function render() {
   if (!wasm) return;
   const wrap = el("chart").parentElement;
@@ -549,6 +599,10 @@ function render() {
     height: wrap.clientHeight,
     mode: el("mode").value,
     lines: ["vwap", "poc", "vah", "val"],
+    // Whether to detect and draw the supply/demand zones. The engine does the
+    // detecting, on the candles this request already carries, so switching this
+    // on costs no extra round trip.
+    zones: zonesOn(),
     footprint: footprint ? footprint.candles : [],
     footprint_trades: footprint ? footprint.trades : 0,
   });
@@ -2015,6 +2069,14 @@ async function main() {
   el("password").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(false); });
 
   el("load").addEventListener("click", () => { refresh().then(connectLive); connectBook(); });
+  // A redraw, not a refetch: the zones are detected from the candles the engine
+  // already has, so there is nothing new to ask the backend for.
+  el("zones").addEventListener("click", (e) => {
+    const button = e.currentTarget;
+    const on = button.getAttribute("aria-pressed") !== "true";
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    render();
+  });
   // Changing the chart type can change the *window* (a footprint uses the
   // span that has trades), so it refetches rather than just redrawing.
   el("mode").addEventListener("change", () => { refresh(); });
