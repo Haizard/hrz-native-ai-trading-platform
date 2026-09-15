@@ -14,7 +14,9 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{Harness, INVALID_STRATEGY, SIMPLE_STRATEGY, WINDOW_FROM, WINDOW_TO};
+use common::{
+    Harness, ATR_STOP_STRATEGY, INVALID_STRATEGY, SIMPLE_STRATEGY, WINDOW_FROM, WINDOW_TO,
+};
 use serde_json::json;
 
 #[tokio::test]
@@ -663,4 +665,176 @@ async fn somebody_elses_strategy_is_absent_rather_than_forbidden() {
         .unwrap();
     owner.cleanup(&h.database).await;
     other.cleanup(&h.database).await;
+}
+
+// ---------------------------------------------------------------------------
+// The schema endpoint, and the document echo the visual builder loads from.
+// ---------------------------------------------------------------------------
+
+/// `GET /strategies/schema` is what keeps the visual builder honest, so what it
+/// returns has to be the vocabulary `strategy-dsl` actually accepts -- not a
+/// list someone wrote twice.
+#[tokio::test]
+async fn the_schema_names_every_field_function_and_stop_rule() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    let (status, body) = h.get("/strategies/schema", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // No token: it describes the schema, not anyone's data.
+    let fields = body["fields"].as_array().expect("fields").clone();
+    let funcs = body["funcs"].as_array().expect("funcs").clone();
+
+    // Every field the parser accepts, and nothing it does not.
+    assert!(
+        fields.iter().any(|f| f["name"] == "liquidity.swept_level"),
+        "the builder could not offer the reclaim condition: {fields:?}"
+    );
+    assert!(
+        fields.iter().any(|f| f["name"] == "market_structure.trend"),
+        "{fields:?}"
+    );
+    // The type is what lets the builder offer `==` for a string field and `>`
+    // for a number, so it has to be there and be one of the three.
+    for field in &fields {
+        assert!(
+            ["number", "string", "bool"].contains(&field["type"].as_str().unwrap_or("")),
+            "{field}"
+        );
+    }
+    assert_eq!(
+        fields
+            .iter()
+            .filter(|f| f["name"] == "market_structure.trend")
+            .count(),
+        1,
+        "a field listed twice would appear twice in the dropdown"
+    );
+
+    assert!(
+        funcs.iter().any(|f| f["name"] == "crosses_above"),
+        "{funcs:?}"
+    );
+    assert!(
+        funcs
+            .iter()
+            .any(|f| f["name"] == "new_high" && f["arity"] == json!([0, 1])),
+        "new_high() takes an optional lookback: {funcs:?}"
+    );
+
+    // A stop rule with parameters must say which, or the builder cannot ask
+    // for them.
+    let atr = body["stops"]
+        .as_array()
+        .expect("stops")
+        .iter()
+        .find(|s| s["kind"] == "atr")
+        .expect("the atr stop");
+    assert_eq!(atr["params"], json!(["multiple", "period"]));
+    // `atr` carries no side, which is why `entry.direction` is required for it.
+    assert!(atr["implies_direction"].is_null(), "{atr}");
+    let sweep = body["stops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["kind"] == "below_sweep_low")
+        .expect("the sweep stop");
+    assert_eq!(sweep["implies_direction"], "long");
+    assert_eq!(sweep["params"], json!([]));
+
+    assert!(body["timeframes"]
+        .as_array()
+        .expect("timeframes")
+        .contains(&json!("4h")));
+    assert!(body["take_profit_types"]
+        .as_array()
+        .expect("take profit types")
+        .contains(&json!("risk_multiple")));
+    assert!(body["document_kinds"]
+        .as_array()
+        .expect("kinds")
+        .contains(&json!("indicator")));
+    assert!(body["operators"]
+        .as_array()
+        .expect("operators")
+        .contains(&json!(">=")));
+}
+
+/// The builder populates itself from `document`, so the echo has to be the
+/// document the parser produced -- every condition, with the timeframe it
+/// reads. A partial echo would silently drop a condition when the user opened
+/// the form.
+#[tokio::test]
+async fn validation_echoes_the_document_the_parser_understood() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+
+    let (status, body) = h
+        .post(
+            "/strategies/validate",
+            json!({ "source": SIMPLE_STRATEGY }),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let document = &body["document"];
+    assert_eq!(document["name"], "Route test strategy");
+    assert_eq!(document["market"], "BTCUSDT");
+    assert_eq!(document["timeframes"]["entry"], "5m");
+    // The echo is JSON, but a document is written as YAML, and the two must
+    // name the same things: snake_case here, snake_case there.
+    assert_eq!(document["risk"]["max_risk_pct"], 1.0);
+    assert!(!document["invalidation"]
+        .as_array()
+        .expect("a list")
+        .is_empty());
+    assert_eq!(document["invalidation"][0]["timeframe"], "entry");
+
+    // A stop rule with parameters comes back as a mapping, not a string, and a
+    // bare one comes back as a string -- both shapes the builder has to read.
+    let (status, body) = h
+        .post(
+            "/strategies/validate",
+            json!({ "source": ATR_STOP_STRATEGY }),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["document"]["risk"]["stop"]["kind"], "atr");
+    assert_eq!(body["document"]["risk"]["stop"]["multiple"], 1.5);
+
+    user.cleanup(&h.database).await;
+}
+
+/// The whole point of the echo: text -> `document` -> text is stable, so
+/// opening a document in the builder and applying it untouched changes nothing.
+#[tokio::test]
+async fn revalidating_an_echoed_document_agrees_with_itself() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+
+    let (_, first) = h
+        .post(
+            "/strategies/validate",
+            json!({ "source": SIMPLE_STRATEGY }),
+            None,
+        )
+        .await;
+    // The stored form is JSON, which the parser also accepts. Round-tripping
+    // through it is what the builder does every time it opens a document.
+    let as_json = serde_json::to_string(&first["document"]).unwrap();
+    let (status, second) = h
+        .post("/strategies/validate", json!({ "source": as_json }), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["document"], first["document"]);
+
+    user.cleanup(&h.database).await;
 }

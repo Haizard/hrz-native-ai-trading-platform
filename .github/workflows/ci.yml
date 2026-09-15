@@ -102,19 +102,28 @@ jobs:
             exit 1
           fi
 
-  # The chart engine is a wasm module the shell loads *by name*, so no Rust test
-  # can see whether it still builds, and no browser is watching when it does not.
-  # Two things are checked here that nothing else covers:
+  # The shell is vanilla JavaScript that no Rust test compiles and no bundler
+  # lints, so a break in it is invisible until someone opens a browser. Three
+  # things are checked here that nothing else covers:
   #
   #   1. `xtask build-frontend` still produces the artifact that actually ships;
   #   2. the four exported functions and the JSON contract still match what
-  #      `app.js` calls -- a rename is not a compile error, it is a blank canvas.
+  #      `app.js` calls -- a rename is not a compile error, it is a blank canvas;
+  #   3. the YAML the visual builder emits still parses, and still means what
+  #      the builder thought it meant.
   #
-  # (2) is why this job needs Node: `tools/wasm_abi_check.mjs` instantiates the
-  # same bytes the browser fetches. The native unit tests cover the scene
-  # builder; only this covers the seam between it and the shell.
+  # (2) and (3) are why this job needs Node: `wasm_abi_check.mjs` instantiates
+  # the same bytes the browser fetches, and `check_builder.mjs` drives the same
+  # module the shell loads. Neither is a substitute for the other -- the ABI
+  # check covers the engine, the builder check covers the document.
+  #
+  # (3) is the subtle one. The builder emits YAML by hand in JavaScript, which
+  # is exactly the kind of thing that looks right and parses wrong. So the check
+  # writes its documents to disk and `strategy-cli validate` runs the *real*
+  # parser over them: if the emitter drifts from the schema, it fails here
+  # rather than in a user's strategy.
   frontend:
-    name: Chart engine (wasm + ABI)
+    name: Shell (chart engine + builder)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -129,6 +138,15 @@ jobs:
         run: cargo run -p xtask -- build-frontend
       - name: Exercise the ABI the shell depends on
         run: node tools/wasm_abi_check.mjs frontend/app/chart_engine.wasm
+      - name: Check the visual builder's documents
+        run: node tools/check_builder.mjs
+      - name: Validate what the builder emitted with the real parser
+        run: |
+          for f in target/builder-check/*.yaml; do
+            echo "::group::$f"
+            cargo run -p strategy-cli -- validate --strategy "$f"
+            echo "::endgroup::"
+          done
 
   build:
     name: Build

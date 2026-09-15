@@ -26,6 +26,10 @@ GET    /strategies
 GET    /strategies/{id}
 PUT    /strategies/{id}                  # stores a NEW version, returns a new id
 DELETE /strategies/{id}                  # 409 while any bot still runs it
+POST   /strategies/validate              # validate text without storing it
+GET    /strategies/reference             # the DSL reference shown in the editor
+GET    /strategies/examples              # the documents the editor offers to load
+GET    /strategies/schema                # the DSL vocabulary, for the visual builder
 POST   /strategies/{id}/validate
 POST   /strategies/{id}/backtest
 GET    /strategies/{id}/backtests
@@ -40,6 +44,28 @@ DELETE /bots/{id}
 POST   /agent/ask                        # natural-language request -> TradeThesis
 POST   /agent/generate-strategy          # natural-language -> StrategyDocument
 ```
+
+### `GET /strategies/schema` — the DSL vocabulary, not a second copy of it
+
+Unauthenticated, because it describes the language rather than anyone's data. It returns
+the fields, functions, comparison operators, stop rules, take-profit kinds, document kinds
+and timeframes that `strategy-dsl` accepts, and it is generated *from* `strategy-dsl`
+(`ALL_FIELDS`, `ALL_FUNCS`, `CompareOp::ALL`, `ALL_STOP_KINDS`, `Timeframe::all`) rather
+than hand-listed here.
+
+That is the whole point: the visual builder (`docs/14`) has to offer the same vocabulary
+the validator enforces, and the only way to guarantee that is for one side to be derived
+from the other. A new stop rule in Rust shows up in the dropdown with no JS change, and
+`every_stop_rule_is_described_exactly_once` fails if a rule is added without its
+parameter list.
+
+### `POST /strategies/validate` echoes the document it parsed
+
+The response carries the parsed `document` alongside `valid`/`errors`, so a client can
+import a document without parsing YAML itself. The builder opens a strategy this way:
+there is exactly one parser in this system, and it is the one `strategy-cli` and the
+backtester use. Re-validating an echoed document must agree with the first verdict
+(`revalidating_an_echoed_document_agrees_with_itself`).
 
 ## WebSocket channels
 ```
@@ -58,6 +84,11 @@ high-frequency market channels; JSON is fine for the lower-frequency agent/bot c
   unauthenticated access to any endpoint beyond `/auth/*` and public market data reads
   (if the product decides to allow anonymous chart viewing — decide explicitly, don't
   default to open).
+- Two deliberate, explicit exceptions, both of which return no user data: the shell
+  itself (`/`, `/app.js`, `/builder.js`, `/chart_engine.wasm`) and
+  `GET /strategies/schema`, which describes the DSL rather than anyone's strategies. A
+  logged-out visitor can read the vocabulary and load the page; every document, backtest
+  and bot behind it still requires a session.
 
 ## Versioning rules behind the write routes
 

@@ -75,8 +75,25 @@
   .modes { display: flex; gap: 4px; margin-bottom: 8px; }
   .modes button { flex: 0 1 auto; padding: 4px 10px; font-size: 11px; color: var(--muted); }
   .modes button[aria-selected="true"] { color: var(--text); border-color: var(--accent); }
-  #nlPane[hidden] { display: none; }
+  #nlPane[hidden], #builderPane[hidden], #dslPane[hidden] { display: none; }
   #nlDescription { min-height: 64px; }
+
+  /* The visual builder: a stack of cards, one per block of the document. */
+  .bcard { border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 8px; background: var(--panel-2); }
+  .bcard > h3 {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 0 0 6px; font-weight: 600;
+  }
+  .brow { display: flex; gap: 4px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
+  .brow > select, .brow > input { flex: 1 1 60px; min-width: 0; }
+  .brow > input[type="checkbox"] { flex: 0 0 auto; }
+  .brow > label { flex: 0 0 auto; display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: 11px; }
+  .bcond { border-left: 2px solid var(--line); padding: 4px 0 4px 6px; margin: 4px 0; }
+  .bcond.raw { border-left-color: var(--warn); }
+  .bempty { color: var(--muted); font-style: italic; font-size: 11px; margin: 0 0 4px; }
+  .bcard select, .bcard input { font-size: 11px; padding: 3px 5px; }
+  .bcard .brow:last-child { margin-bottom: 0; }
+  .btiny { padding: 2px 6px; font-size: 10px; }
   .pane { flex: 1; overflow: auto; padding: 10px 12px; }
   .pane[hidden] { display: none; }
 
@@ -175,18 +192,21 @@
     <div class="pane" id="pane-strategy" hidden>
       <h2>Document</h2>
       <!--
-        Two of docs/14's three editor modes. Natural language asks the agent for
-        a document and lands it in the box below; Raw DSL edits it. The visual
-        builder is the third mode and is not built -- the other two already
-        produce the same StrategyDocument, and this is the pair a user reaches
-        for.
+        All three of docs/14's editor modes, sharing one document. Natural
+        language asks the agent for one; the visual builder composes one from
+        dropdowns; Raw DSL edits the text. The last two write into the same
+        textarea, and the builder reads it back through
+        `POST /strategies/validate` rather than parsing YAML here -- a strategy
+        is something a bot will execute, so there is one opinion about what a
+        document means and it is in Rust.
 
-        The generated document is always shown, never applied silently: a
-        strategy is something a bot will execute, so what it says has to be
-        readable before it is saved.
+        Nothing is applied silently: whatever a mode produces lands in the raw
+        editor first, because what a document says has to be readable before it
+        is saved.
       -->
       <div class="modes" role="tablist">
         <button type="button" role="tab" data-mode="nl" aria-selected="true">Natural language</button>
+        <button type="button" role="tab" data-mode="builder" aria-selected="false">Builder</button>
         <button type="button" role="tab" data-mode="dsl" aria-selected="false">Raw DSL</button>
       </div>
 
@@ -204,14 +224,31 @@
       </div>
 
       <!--
-        Start from a shipped strategy. Both of the files in strategies/ validate,
-        but only the calibrated one produces trades on this data -- so the editor
-        opens on that one and this picker offers the other.
+        Filled by `app.js` from the form; nothing is hardcoded here because the
+        vocabulary comes from `GET /strategies/schema`.
       -->
-      <div class="row">
-        <select id="example" title="Load a shipped strategy into the editor"></select>
+      <div id="builderPane" hidden>
+        <p class="muted">
+          Every dropdown is generated from <code>strategy-dsl</code>, so the
+          builder cannot offer a condition the validator would reject. Changes
+          are written to the Raw DSL tab as you make them.
+        </p>
+        <div id="builderForm"></div>
+        <div id="builderMsg" class="muted"></div>
       </div>
-      <textarea id="strategySource" spellcheck="false"></textarea>
+
+      <div id="dslPane" hidden>
+        <!--
+          Start from a shipped strategy. Both of the files in strategies/
+          validate, but only the calibrated one produces trades on this data --
+          so the editor opens on that one and this picker offers the other.
+        -->
+        <div class="row">
+          <select id="example" title="Load a shipped strategy into the editor"></select>
+        </div>
+        <textarea id="strategySource" spellcheck="false"></textarea>
+      </div>
+
       <div class="row">
         <button id="validate">Validate</button>
         <button id="save" class="primary">Save</button>
@@ -241,6 +278,7 @@
 <div id="footprintStats" hidden></div>
 <div id="chartNote"></div>
 
+<script src="builder.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

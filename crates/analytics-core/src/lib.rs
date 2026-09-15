@@ -81,8 +81,8 @@ pub use resample::{resample, resample_all};
 pub use state::{build_market_state, MarketState, MarketStateConfig};
 pub use types::{Candle, FootprintCell, OrderBookLevel, OrderBookSnapshot, Side, Timeframe, Trade};
 pub use volume_profile::{
-    round_bucket,
-    calculate_volume_profile, calculate_volume_profile_from_candles, VolumeNode, VolumeProfile,
+    calculate_volume_profile, calculate_volume_profile_from_candles, round_bucket, VolumeNode,
+    VolumeProfile,
 };
 pub use vwap::{calculate_anchored_vwap, calculate_vwap, calculate_vwap_from_trades, Vwap};
 

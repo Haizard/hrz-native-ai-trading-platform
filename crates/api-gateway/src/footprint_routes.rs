@@ -322,7 +322,10 @@ pub async fn footprint(
         .filter(|size| size.is_finite() && *size > 0.0)
         .unwrap_or_else(|| {
             let low = candles.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
-            let high = candles.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
+            let high = candles
+                .iter()
+                .map(|c| c.high)
+                .fold(f64::NEG_INFINITY, f64::max);
             analytics_core::volume_profile::round_bucket(high - low, TARGET_ROWS)
         });
 

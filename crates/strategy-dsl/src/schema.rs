@@ -49,14 +49,24 @@ pub enum DocumentKind {
     Bot,
 }
 
-impl fmt::Display for DocumentKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
+impl DocumentKind {
+    /// Every variant, for the builder's vocabulary and exhaustive tests.
+    pub const ALL: &'static [Self] = &[Self::Indicator, Self::Strategy, Self::Bot];
+
+    /// Canonical name, as written in a document.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
             Self::Indicator => "indicator",
             Self::Strategy => "strategy",
             Self::Bot => "bot",
-        };
-        f.write_str(s)
+        }
+    }
+}
+
+impl fmt::Display for DocumentKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -70,12 +80,23 @@ pub enum Direction {
     Short,
 }
 
+impl Direction {
+    /// Both directions, for the builder's vocabulary.
+    pub const ALL: &'static [Self] = &[Self::Long, Self::Short];
+
+    /// Canonical name, as written in a document.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Long => "long",
+            Self::Short => "short",
+        }
+    }
+}
+
 impl fmt::Display for Direction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Long => f.write_str("long"),
-            Self::Short => f.write_str("short"),
-        }
+        f.write_str(self.name())
     }
 }
 
@@ -344,6 +365,70 @@ impl<'de> Deserialize<'de> for StopSpec {
     }
 }
 
+/// What one stop rule is called and what it needs.
+///
+/// `expr::ALL_FIELDS` exists so a validation message can name every field;
+/// this exists so a *client* can offer every stop rule. The visual builder
+/// needs the same vocabulary the parser accepts, and a hand-maintained copy of
+/// it in JavaScript is a copy that drifts -- the builder would offer a rule the
+/// validator then rejects, or silently omit a new one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct StopKind {
+    /// Canonical name, as written in a document.
+    pub kind: &'static str,
+    /// Parameters this rule takes, in order. Empty for the bare-string forms.
+    pub params: &'static [&'static str],
+    /// The trade direction this rule implies, when it implies one.
+    ///
+    /// `None` for `atr` and `fixed`: those carry no side, which is exactly why
+    /// `entry.direction` is required when the stop is one of them.
+    pub implies_direction: Option<Direction>,
+}
+
+/// Every stop rule, for the builder's vocabulary and exhaustive tests.
+pub const ALL_STOP_KINDS: &[StopKind] = &[
+    StopKind {
+        kind: "below_sweep_low",
+        params: &[],
+        implies_direction: Some(Direction::Long),
+    },
+    StopKind {
+        kind: "above_sweep_high",
+        params: &[],
+        implies_direction: Some(Direction::Short),
+    },
+    StopKind {
+        kind: "below_swing_low",
+        params: &[],
+        implies_direction: Some(Direction::Long),
+    },
+    StopKind {
+        kind: "above_swing_high",
+        params: &[],
+        implies_direction: Some(Direction::Short),
+    },
+    StopKind {
+        kind: "below_recent_low",
+        params: &["bars"],
+        implies_direction: Some(Direction::Long),
+    },
+    StopKind {
+        kind: "above_recent_high",
+        params: &["bars"],
+        implies_direction: Some(Direction::Short),
+    },
+    StopKind {
+        kind: "atr",
+        params: &["multiple", "period"],
+        implies_direction: None,
+    },
+    StopKind {
+        kind: "fixed",
+        params: &["price"],
+        implies_direction: None,
+    },
+];
+
 /// How the take profit is calculated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -354,6 +439,21 @@ pub enum TakeProfitKind {
     AtrMultiple,
     /// An absolute price.
     FixedPrice,
+}
+
+impl TakeProfitKind {
+    /// Every variant, for the builder's vocabulary and exhaustive tests.
+    pub const ALL: &'static [Self] = &[Self::RiskMultiple, Self::AtrMultiple, Self::FixedPrice];
+
+    /// Canonical name, as written in a document.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::RiskMultiple => "risk_multiple",
+            Self::AtrMultiple => "atr_multiple",
+            Self::FixedPrice => "fixed_price",
+        }
+    }
 }
 
 /// Take-profit definition.
@@ -630,6 +730,99 @@ mod tests {
                 .unwrap_err()
                 .to_string();
         assert!(err.contains("foo"), "{err}");
+    }
+
+    /// The builder's stop vocabulary is a *description* of `StopSpec`, so the
+    /// risk is that the two drift apart: a rule the parser accepts but the
+    /// builder never offers, or one it offers that then fails to parse. This
+    /// pins every variant against what actually serializes, which is the only
+    /// form a client ever sees.
+    #[test]
+    fn every_stop_rule_is_described_exactly_once() {
+        let specs = [
+            StopSpec::BelowSweepLow,
+            StopSpec::AboveSweepHigh,
+            StopSpec::BelowSwingLow,
+            StopSpec::AboveSwingHigh,
+            StopSpec::BelowRecentLow { bars: 20 },
+            StopSpec::AboveRecentHigh { bars: 20 },
+            StopSpec::Atr {
+                multiple: 1.5,
+                period: 14,
+            },
+            StopSpec::Fixed { price: 42_000.0 },
+        ];
+
+        assert_eq!(
+            specs.len(),
+            ALL_STOP_KINDS.len(),
+            "a stop rule was added without describing it, or described twice"
+        );
+
+        for spec in specs {
+            let name = spec.kind_name();
+            let described: Vec<_> = ALL_STOP_KINDS.iter().filter(|k| k.kind == name).collect();
+            assert_eq!(
+                described.len(),
+                1,
+                "`{name}` is described {0} times",
+                described.len()
+            );
+            let kind = described[0];
+
+            // The side: `atr` and `fixed` carry none, which is why they need an
+            // explicit `entry.direction`.
+            assert_eq!(
+                kind.implies_direction.is_some(),
+                spec.implies_direction(),
+                "`{name}` disagrees with StopSpec::implies_direction"
+            );
+            if spec.implies_direction() {
+                assert_eq!(kind.implies_direction, Some(spec.direction()));
+            }
+
+            // The parameters: read them off the serialized form rather than
+            // restating them, so a new parameter cannot be added silently.
+            let value = serde_json::to_value(spec).unwrap();
+            let mut actual: Vec<&str> = match &value {
+                serde_json::Value::Object(map) => map
+                    .keys()
+                    .filter(|k| k.as_str() != "kind")
+                    .map(String::as_str)
+                    .collect(),
+                // The four bare-string rules carry no parameters at all.
+                serde_json::Value::String(_) => Vec::new(),
+                other => panic!("`{name}` serialized as {other:?}"),
+            };
+            actual.sort_unstable();
+            let mut expected = kind.params.to_vec();
+            expected.sort_unstable();
+            assert_eq!(
+                actual, expected,
+                "`{name}` takes different parameters than described"
+            );
+        }
+    }
+
+    /// `ALL` *is* the list, so it cannot miss a variant -- what it can do is
+    /// contain a duplicate, which would make the builder offer the same option
+    /// twice. This also pins the wire spelling, which is what a client reads.
+    #[test]
+    fn the_listed_kinds_are_distinct_and_keep_their_wire_spelling() {
+        let rendered: Vec<String> = DocumentKind::ALL
+            .iter()
+            .map(|k| serde_json::to_string(k).unwrap())
+            .collect();
+        assert_eq!(rendered, ["\"indicator\"", "\"strategy\"", "\"bot\""]);
+
+        let rendered: Vec<String> = TakeProfitKind::ALL
+            .iter()
+            .map(|k| serde_json::to_string(k).unwrap())
+            .collect();
+        assert_eq!(
+            rendered,
+            ["\"risk_multiple\"", "\"atr_multiple\"", "\"fixed_price\""]
+        );
     }
 
     #[test]

@@ -128,6 +128,7 @@ pub fn router(state: AppState) -> Router {
         .route("/strategies/validate", post(strategy_routes::validate))
         .route("/strategies/reference", get(strategy_routes::reference))
         .route("/strategies/examples", get(strategy_routes::examples))
+        .route("/strategies/schema", get(strategy_routes::schema))
         .route(
             "/strategies/{id}",
             get(strategy_routes::get)
@@ -173,11 +174,14 @@ pub fn router(state: AppState) -> Router {
         // Served from the same origin as the API, so the page needs no CORS
         // policy and no second process.
         //
-        // Three explicit routes rather than a static-file service: the shell is
-        // exactly three files, and naming them means an unknown path is a JSON
-        // 404 from the API rather than an HTML one from a directory listing.
+        // Explicit routes rather than a static-file service: the shell is a
+        // handful of named files (`tests/packaging.rs` checks that every one the
+        // page asks for is here), and naming them means an unknown path is a
+        // JSON 404 from the API rather than an HTML one from a directory
+        // listing.
         .route("/", get(app_index))
         .route("/app.js", get(app_js))
+        .route("/builder.js", get(builder_js))
         .route("/chart_engine.wasm", get(chart_wasm))
         .route("/mvp", get(index))
         .with_state(state)
@@ -234,6 +238,25 @@ pub async fn app_js() -> Result<axum::response::Response, StatusCode> {
             "text/javascript; charset=utf-8",
         )],
         read_frontend("app.js")?,
+    )
+        .into_response())
+}
+
+/// The visual builder's model at `/builder.js`.
+///
+/// A separate file from `app.js` because it is a pure module -- no DOM, no
+/// network -- and `tools/check_builder.mjs` loads the same bytes in Node to
+/// check the documents it produces against the real validator.
+///
+/// # Errors
+/// 404 when the shell is not present beside the binary.
+pub async fn builder_js() -> Result<axum::response::Response, StatusCode> {
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/javascript; charset=utf-8",
+        )],
+        read_frontend("builder.js")?,
     )
         .into_response())
 }

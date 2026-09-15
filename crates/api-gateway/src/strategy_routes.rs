@@ -183,6 +183,14 @@ pub struct ValidationResponse {
     pub version: String,
     /// The declared timeframes.
     pub timeframes: std::collections::BTreeMap<String, String>,
+    /// The parsed document, as the server understood it.
+    ///
+    /// Present so the visual builder can populate itself from text without
+    /// growing a second YAML parser on the client -- and, more to the point, a
+    /// second opinion about what the schema means. The builder sends the raw
+    /// text here, reads this back, and the two can never disagree because there
+    /// is only one parser.
+    pub document: serde_json::Value,
 }
 
 fn database(state: &AppState) -> Result<&std::sync::Arc<db::Database>, ApiError> {
@@ -207,9 +215,13 @@ fn validate_source(source: &str) -> Result<strategy_dsl::ValidatedStrategy, ApiE
     strategy_dsl::parse_and_validate(source).map_err(ApiError::from)
 }
 
-fn validation_summary(validated: &strategy_dsl::ValidatedStrategy) -> ValidationResponse {
+fn validation_summary(
+    validated: &strategy_dsl::ValidatedStrategy,
+) -> Result<ValidationResponse, ApiError> {
     let document = validated.document();
-    ValidationResponse {
+    let as_json = serde_json::to_value(document)
+        .map_err(|e| ApiError::internal(format!("could not serialize the document: {e}")))?;
+    Ok(ValidationResponse {
         valid: true,
         name: document.name.clone(),
         version: document.version.clone(),
@@ -218,7 +230,8 @@ fn validation_summary(validated: &strategy_dsl::ValidatedStrategy) -> Validation
             .iter()
             .map(|(name, tf)| (name.clone(), tf.to_string()))
             .collect(),
-    }
+        document: as_json,
+    })
 }
 
 /// `POST /strategies`
@@ -403,7 +416,7 @@ pub async fn validate(
     ApiJson(request): ApiJson<ValidateRequest>,
 ) -> Result<Json<ValidationResponse>, ApiError> {
     let validated = validate_source(&request.source)?;
-    Ok(Json(validation_summary(&validated)))
+    Ok(Json(validation_summary(&validated)?))
 }
 
 /// `GET /strategies`
@@ -568,7 +581,7 @@ pub async fn validate_stored(
     let source = serde_json::to_string(&row.document)
         .map_err(|e| ApiError::internal(format!("the stored document is not readable: {e}")))?;
     let validated = validate_source(&source)?;
-    Ok(Json(validation_summary(&validated)))
+    Ok(Json(validation_summary(&validated)?))
 }
 
 /// `POST /strategies/{id}/backtest`
@@ -694,6 +707,102 @@ pub async fn get_backtest(
         .await?
         .ok_or_else(|| ApiError::not_found("no such backtest"))?;
     Ok(Json(row.into()))
+}
+
+/// One field a condition may read.
+#[derive(Debug, Serialize)]
+pub struct SchemaField {
+    /// Canonical name, as written in a condition.
+    pub name: &'static str,
+    /// What it evaluates to: `number`, `string` or `bool`.
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    /// Whether it reads the open position rather than the market.
+    ///
+    /// Position fields are absent while flat, and a comparison against an
+    /// absent value is false -- so a client knows not to offer `stop_price` on
+    /// an entry condition and expect it to mean anything.
+    pub position_scoped: bool,
+}
+
+/// One helper function a condition may call.
+#[derive(Debug, Serialize)]
+pub struct SchemaFunc {
+    /// Name as written in a condition.
+    pub name: &'static str,
+    /// Inclusive argument count.
+    pub arity: [usize; 2],
+    /// What the call evaluates to.
+    #[serde(rename = "returns")]
+    pub return_type: &'static str,
+    /// The type each argument must have, ignoring optional trailing ones.
+    pub param_types: Vec<&'static str>,
+}
+
+/// The vocabulary a document may use.
+///
+/// The visual builder is a set of dropdowns over this list. Serving it rather
+/// than letting the client keep its own copy is the whole point: a new field in
+/// `expr::Field` shows up in the builder without anyone remembering to add it a
+/// second time, and the builder cannot offer a condition the validator then
+/// rejects.
+#[derive(Debug, Serialize)]
+pub struct SchemaResponse {
+    /// Every field a condition may read.
+    pub fields: Vec<SchemaField>,
+    /// Every helper function a condition may call.
+    pub funcs: Vec<SchemaFunc>,
+    /// Every comparison operator.
+    pub operators: Vec<&'static str>,
+    /// Every stop rule, with the parameters each takes.
+    pub stops: Vec<strategy_dsl::schema::StopKind>,
+    /// Every take-profit calculation.
+    pub take_profit_types: Vec<&'static str>,
+    /// Every value `kind` accepts.
+    pub document_kinds: Vec<&'static str>,
+    /// Every value a declared timeframe accepts.
+    pub timeframes: Vec<&'static str>,
+    /// Every value `entry.direction` accepts.
+    pub directions: Vec<&'static str>,
+}
+
+/// `GET /strategies/schema`
+///
+/// The condition vocabulary and the enumerated values a document accepts.
+/// Unauthenticated: it is a description of the schema, derived entirely from
+/// `strategy-dsl`, and it names nothing about any user.
+pub async fn schema() -> Json<SchemaResponse> {
+    use strategy_dsl::expr::{CompareOp, ALL_FIELDS, ALL_FUNCS};
+    use strategy_dsl::schema::{Direction, DocumentKind, TakeProfitKind, ALL_STOP_KINDS};
+
+    Json(SchemaResponse {
+        fields: ALL_FIELDS
+            .iter()
+            .map(|f| SchemaField {
+                name: f.name(),
+                kind: f.type_of().name(),
+                position_scoped: f.is_position_scoped(),
+            })
+            .collect(),
+        funcs: ALL_FUNCS
+            .iter()
+            .map(|f| SchemaFunc {
+                name: f.name(),
+                arity: [f.arity().0, f.arity().1],
+                return_type: f.return_type().name(),
+                param_types: f.param_types().iter().map(|t| t.name()).collect(),
+            })
+            .collect(),
+        operators: CompareOp::ALL.iter().map(|op| op.symbol()).collect(),
+        stops: ALL_STOP_KINDS.to_vec(),
+        take_profit_types: TakeProfitKind::ALL.iter().map(|k| k.name()).collect(),
+        document_kinds: DocumentKind::ALL.iter().map(|k| k.as_str()).collect(),
+        timeframes: analytics_core::Timeframe::all()
+            .iter()
+            .map(|t| t.as_str())
+            .collect(),
+        directions: Direction::ALL.iter().map(|d| d.name()).collect(),
+    })
 }
 
 /// `GET /strategies/{id}/backtests`

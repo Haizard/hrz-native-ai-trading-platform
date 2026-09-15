@@ -714,9 +714,11 @@ let savedStrategyId = null;
 let sourceOrigin = "developer_sdk";
 let sourceDirty = false;
 
-function markSourceDirty() {
+/// The text changed, so it is the user's own work now -- unless the change
+/// came from one of the other two modes, which name themselves.
+function markSourceDirty(origin) {
   sourceDirty = true;
-  sourceOrigin = "developer_sdk";
+  sourceOrigin = origin || "developer_sdk";
 }
 
 function setStrategyMode(mode) {
@@ -724,6 +726,8 @@ function setStrategyMode(mode) {
     button.setAttribute("aria-selected", String(button.dataset.mode === mode));
   }
   el("nlPane").hidden = mode !== "nl";
+  el("builderPane").hidden = mode !== "builder";
+  el("dslPane").hidden = mode !== "dsl";
 }
 
 /// Ask the agent for a document, then show it in the editor.
@@ -779,6 +783,438 @@ async function generateStrategy() {
 /// Enable the buttons that only make sense with a stored strategy.
 function paintStrategyActions() {
   el("deleteStrategy").disabled = !savedStrategyId;
+}
+
+// ---------------------------------------------------------------------------
+// The visual builder -- docs/14's third editor mode
+// ---------------------------------------------------------------------------
+//
+// The form is a view over the same textarea the other two modes use. Nothing
+// here parses YAML or decides what a document means:
+//
+//   * the vocabulary comes from `GET /strategies/schema`, generated from
+//     `strategy-dsl`, so the builder cannot offer a condition the validator
+//     would reject;
+//   * loading a document into the form goes through `POST /strategies/validate`,
+//     which echoes the document as the real parser understood it.
+//
+// What is left in JavaScript is assembly: dropdowns into a document, which is
+// no more arithmetic than a form filling in a template.
+
+let builderSchema = null; // the vocabulary, fetched once
+let builderForm = null; // the form as last rendered
+let builderText = null; // the document text the form was built from
+
+async function loadBuilderSchema() {
+  try {
+    builderSchema = await api("/strategies/schema");
+    return true;
+  } catch (e) {
+    el("strategyMsg").innerHTML = `<span class="fail">${escapeHtml(e.message)}</span>`;
+    return false;
+  }
+}
+
+/// Get the form ready to be shown, importing the current text if it changed.
+///
+/// Returns false and explains why when there is nothing to import: the
+/// document in the box does not parse, so there is no form to show.
+async function prepareBuilder() {
+  if (!builderSchema && !(await loadBuilderSchema())) return false;
+
+  const box = el("strategySource");
+  if (builderForm && box.value === builderText) return true;
+
+  try {
+    const result = await api("/strategies/validate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: box.value }),
+    });
+    builderForm = StrategyBuilder.formFromDocument(result.document, builderSchema);
+    builderText = box.value;
+    return true;
+  } catch (e) {
+    if (builderForm) {
+      // A form the user can see beats a mode they cannot leave: keep the one
+      // from the last document that did parse and say so. Otherwise a
+      // half-built document would trap them in the raw editor.
+      el("strategyMsg").innerHTML =
+        `<span class="unknown">the document no longer validates, so the builder is showing the version it last read</span>`;
+      builderText = box.value;
+      return true;
+    }
+    el("strategyMsg").innerHTML =
+      `<span class="fail">${escapeHtml(e.message)}</span>` +
+      issueList((e.details && e.details.issues) || []);
+    return false;
+  }
+}
+
+async function selectStrategyMode(mode) {
+  if (mode === "builder" && !(await prepareBuilder())) return;
+  setStrategyMode(mode);
+  if (mode === "builder") renderBuilderForm();
+}
+
+// -- rendering --------------------------------------------------------------
+
+function options(values, selected) {
+  return values
+    .map(
+      (v) =>
+        `<option value="${escapeHtml(v)}"${
+          String(v) === String(selected) ? " selected" : ""
+        }>${escapeHtml(v)}</option>`
+    )
+    .join("");
+}
+
+const brow = (body) => `<div class="brow">${body}</div>`;
+const card = (title, body) => `<div class="bcard"><h3>${escapeHtml(title)}</h3>${body}</div>`;
+
+function fieldOptions(selected) {
+  return options(builderSchema.fields.map((f) => f.name), selected);
+}
+
+function documentCard() {
+  const f = builderForm;
+  return card("Document", [
+    brow(`<input data-f="name" value="${escapeHtml(f.name)}" placeholder="name" />`),
+    brow(
+      `<input data-f="version" value="${escapeHtml(f.version)}" placeholder="version" style="flex:0 1 64px" />` +
+        `<select data-f="kind" title="what this document is for">${options(
+          builderSchema.document_kinds,
+          f.kind
+        )}</select>`
+    ),
+    brow(`<input data-f="market" value="${escapeHtml(f.market)}" placeholder="market" />`),
+    brow(
+      `<input data-f="description" value="${escapeHtml(f.description)}" placeholder="description" />`
+    ),
+    brow(`<input data-f="skillRef" value="${escapeHtml(f.skillRef)}" placeholder="skill ref" />`),
+  ].join(""));
+}
+
+function timeframesCard() {
+  const rows = builderForm.timeframes
+    .map(
+      (t, i) =>
+        brow(
+          `<input data-t="${i}" data-p="name" value="${escapeHtml(t.name)}" placeholder="name" />` +
+            `<select data-t="${i}" data-p="tf">${options(builderSchema.timeframes, t.tf)}</select>` +
+            `<button class="btiny" data-act="del-timeframe" data-t="${i}" title="remove">−</button>`
+        )
+    )
+    .join("");
+  return card(
+    "Timeframes",
+    rows + brow(`<button class="btiny" data-act="add-timeframe">+ timeframe</button>`)
+  );
+}
+
+function riskCard() {
+  const risk = builderForm.risk;
+  const params = StrategyBuilder.stopParams(builderSchema, risk.stop.kind)
+    .map(
+      (name) =>
+        `<input data-risk="param" data-sp="${escapeHtml(name)}" value="${escapeHtml(
+          risk.stop.params[name] || ""
+        )}" placeholder="${escapeHtml(name)}" />`
+    )
+    .join("");
+  return card("Risk", [
+    brow(
+      `<label>risk %</label><input data-risk="maxRiskPct" value="${escapeHtml(
+        risk.maxRiskPct
+      )}" />`
+    ),
+    brow(
+      `<label>stop</label><select data-risk="stopKind">${options(
+        builderSchema.stops.map((s) => s.kind),
+        risk.stop.kind
+      )}</select>${params}`
+    ),
+    brow(
+      `<label><input type="checkbox" data-risk="hasTakeProfit"${
+        risk.hasTakeProfit ? " checked" : ""
+      } /> target</label>` +
+        (risk.hasTakeProfit
+          ? `<select data-risk="tpType">${options(
+              builderSchema.take_profit_types,
+              risk.takeProfit.type
+            )}</select><input data-risk="tpValue" value="${escapeHtml(
+              risk.takeProfit.value
+            )}" />`
+          : "")
+    ),
+    brow(
+      `<label>direction</label><select data-f="direction" title="blank means: whatever the stop rule implies">` +
+        `<option value="">from the stop</option>${options(
+          builderSchema.directions,
+          builderForm.direction
+        )}</select>`
+    ),
+  ].join(""));
+}
+
+/// The controls for one operand: what kind it is, then its value.
+function operandControls(at, part, operand) {
+  const kindSelect = `<select ${at} data-p="${part}-kind">${options(
+    ["number", "field", "string", "bool"],
+    operand.kind
+  )}</select>`;
+  let value;
+  switch (operand.kind) {
+    case "field":
+      value = `<select ${at} data-p="${part}-value">${fieldOptions(operand.value)}</select>`;
+      break;
+    case "bool":
+      value = `<select ${at} data-p="${part}-value">${options(
+        ["true", "false"],
+        operand.value ? "true" : "false"
+      )}</select>`;
+      break;
+    default:
+      value = `<input ${at} data-p="${part}-value" value="${escapeHtml(operand.value)}" />`;
+  }
+  return kindSelect + value;
+}
+
+function clauseHtml(group, row, clause, index) {
+  const at = `data-g="${group}" data-r="${row}" data-c="${index}"`;
+  const head =
+    `<label><input type="checkbox" ${at} data-p="not"${
+      clause.not ? " checked" : ""
+    } /> not</label>` +
+    `<select ${at} data-p="form" title="what kind of condition this is">${options(
+      ["compare", "call", "raw"],
+      clause.form
+    )}</select>`;
+
+  let body;
+  if (clause.form === "raw") {
+    body = `<input ${at} data-p="text" value="${escapeHtml(clause.text)}" />`;
+  } else if (clause.form === "call") {
+    body =
+      `<select ${at} data-p="func">${options(
+        builderSchema.funcs.map((f) => f.name),
+        clause.func
+      )}</select>` +
+      (clause.args || [])
+        .map((arg, i) => operandControls(at, `arg${i}`, arg))
+        .join("");
+  } else {
+    body =
+      `<select ${at} data-p="left-value">${fieldOptions(clause.left.value)}</select>` +
+      `<select ${at} data-p="op">` +
+      `<option value="">is true</option>${options(builderSchema.operators, clause.op)}</select>` +
+      (clause.op ? operandControls(at, "right", clause.right) : "") +
+      (clause.op && clause.right.kind === "number"
+        ? `<label title="mark the number as tunable"><input type="checkbox" ${at} data-p="tunable"${
+            clause.tunable ? " checked" : ""
+          } /> tunable</label>`
+        : "");
+  }
+
+  return brow(
+    head +
+      body +
+      `<button class="btiny" data-act="del-clause" ${at} title="remove">−</button>`
+  );
+}
+
+function rowHtml(group, row, index) {
+  const frames = builderForm.timeframes.filter((t) => t.name.trim()).map((t) => t.name);
+  const at = `data-g="${group}" data-r="${index}"`;
+  return (
+    `<div class="bcond${row.clauses.some((c) => c.form === "raw") ? " raw" : ""}">` +
+    brow(
+      `<select ${at} data-p="timeframe" title="which declared timeframe this reads">${options(
+        frames,
+        row.timeframe
+      )}</select>` +
+        (row.clauses.length > 1
+          ? `<select ${at} data-p="joiner">${options(["and", "or"], row.joiner)}</select>`
+          : "") +
+        `<input ${at} data-p="label" value="${escapeHtml(row.label)}" placeholder="label" />` +
+        `<button class="btiny" data-act="del-row" ${at} title="remove">−</button>`
+    ) +
+    row.clauses.map((c, i) => clauseHtml(group, index, c, i)).join("") +
+    brow(`<button class="btiny" data-act="add-clause" ${at}>+ clause</button>`) +
+    `</div>`
+  );
+}
+
+function groupCard(key) {
+  const meta = StrategyBuilder.GROUPS[key];
+  const rows = builderForm.groups[key];
+  const body = rows.length
+    ? rows.map((r, i) => rowHtml(key, r, i)).join("")
+    : `<p class="bempty">no conditions</p>`;
+  return card(
+    meta.label,
+    body + brow(`<button class="btiny" data-act="add-row" data-g="${key}">+ condition</button>`)
+  );
+}
+
+function renderBuilderForm() {
+  const keys = builderForm.kind === "indicator" ? [] : StrategyBuilder.GROUP_KEYS;
+  el("builderForm").innerHTML =
+    documentCard() +
+    timeframesCard() +
+    (builderForm.kind === "indicator" ? "" : riskCard()) +
+    keys.map(groupCard).join("");
+  renderBuilderNote();
+}
+
+/// What the form is missing, and what it could not model.
+///
+/// Separate from [`renderBuilderForm`] because this runs on every keystroke and
+/// rebuilding the controls would throw away whatever the user was typing.
+function renderBuilderNote() {
+  // Say what is wrong before the round trip, and be honest about the
+  // conditions held as text because the builder cannot model them.
+  const issues = StrategyBuilder.formIssues(builderForm, builderSchema);
+  const raw = StrategyBuilder.rawRowCount(builderForm);
+  let note = "";
+  if (issues.length) {
+    note += `<span class="fail">${issues
+      .slice(0, 3)
+      .map((i) => escapeHtml(i))
+      .join("<br />")}</span>`;
+  }
+  if (raw) {
+    note +=
+      (note ? "<br />" : "") +
+      `<span class="unknown">${raw} condition(s) are kept as text -- the builder cannot model them, so they are left exactly as written</span>`;
+  }
+  el("builderMsg").innerHTML = note;
+}
+
+/// Write the form back into the textarea, which is the one source of truth.
+function applyBuilderToSource() {
+  try {
+    const yaml = StrategyBuilder.toYaml(
+      StrategyBuilder.documentFromForm(builderForm, builderSchema)
+    );
+    el("strategySource").value = yaml;
+    builderText = yaml;
+    markSourceDirty("visual_builder");
+    renderBuilderNote();
+  } catch (e) {
+    el("builderMsg").innerHTML = `<span class="fail">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+// -- editing ----------------------------------------------------------------
+
+// A change to one of these changes which controls exist, so the form has to be
+// rebuilt; a change to anything else only rewrites the document.
+const STRUCTURAL = new Set([
+  "form",
+  "right-kind",
+  "arg0-kind",
+  "arg1-kind",
+  "func",
+  "stopKind",
+  "hasTakeProfit",
+  "kind",
+]);
+
+function onBuilderInput(event) {
+  const target = event.target;
+  const part = target.dataset.p;
+  if (!part) return;
+  const value = target.type === "checkbox" ? target.checked : target.value;
+  const kind = target.type === "checkbox" ? value : String(value);
+
+  const d = target.dataset;
+  if (d.f !== undefined) {
+    builderForm[d.f] = kind;
+  } else if (d.t !== undefined) {
+    builderForm.timeframes[Number(d.t)][part] = kind;
+  } else if (d.c !== undefined) {
+    const clause =
+      builderForm.groups[d.g][Number(d.r)].clauses[Number(d.c)];
+    if (part === "text") clause.text = kind;
+    else if (part === "not") clause.not = value;
+    else if (part === "tunable") clause.tunable = value;
+    else if (part === "form") {
+      const next = StrategyBuilder.newClause();
+      next.form = kind;
+      if (kind === "compare") Object.assign(next, { left: clause.left || next.left });
+      Object.assign(clause, next);
+    } else if (part === "left-value") {
+      clause.left = { kind: "field", value: kind };
+    } else if (part === "op") {
+      clause.op = kind;
+    } else if (part === "right-kind") {
+      clause.right = { kind, value: kind === "field" ? "close" : kind === "bool" ? false : "" };
+    } else if (part === "right-value") {
+      clause.right.value = kind === "bool" ? kind === "true" : kind;
+    } else if (part.startsWith("arg")) {
+      const arg = clause.args[Number(/^arg(\d+)/.exec(part)[1])];
+      if (part.endsWith("-kind")) arg.kind = kind;
+      else arg.value = kind === "bool" ? kind === "true" : kind;
+    } else if (part === "func") {
+      clause.func = kind;
+      const arity = (builderSchema.funcs.filter((f) => f.name === kind)[0] || {}).arity || [0, 0];
+      clause.args = [];
+      for (let i = 0; i < arity[0]; i += 1) {
+        clause.args.push({ kind: "number", value: "0" });
+      }
+    }
+  } else if (d.r !== undefined) {
+    builderForm.groups[d.g][Number(d.r)][part] = kind;
+  } else if (d.risk !== undefined) {
+    const risk = builderForm.risk;
+    if (d.risk === "param") risk.stop.params[d.sp] = kind;
+    else if (d.risk === "hasTakeProfit") risk.hasTakeProfit = value;
+    else if (d.risk === "tpType") risk.takeProfit.type = kind;
+    else if (d.risk === "tpValue") risk.takeProfit.value = kind;
+    else if (d.risk === "stopKind") risk.stop = { kind, params: {} };
+    else risk[d.risk] = kind;
+  }
+
+  if (STRUCTURAL.has(part) || STRUCTURAL.has(d.risk)) renderBuilderForm();
+  applyBuilderToSource();
+}
+
+function onBuilderClick(event) {
+  const button = event.target.closest("button[data-act]");
+  if (!button) return;
+  const d = button.dataset;
+
+  switch (d.act) {
+    case "add-timeframe":
+      builderForm.timeframes.push({ name: "", tf: builderSchema.timeframes[0] });
+      break;
+    case "del-timeframe":
+      builderForm.timeframes.splice(Number(d.t), 1);
+      break;
+    case "add-row":
+      builderForm.groups[d.g].push(
+        StrategyBuilder.newRow(builderForm.timeframes[0] && builderForm.timeframes[0].name)
+      );
+      break;
+    case "del-row":
+      builderForm.groups[d.g].splice(Number(d.r), 1);
+      break;
+    case "add-clause":
+      builderForm.groups[d.g][Number(d.r)].clauses.push(StrategyBuilder.newClause());
+      break;
+    case "del-clause": {
+      const clauses = builderForm.groups[d.g][Number(d.r)].clauses;
+      clauses.splice(Number(d.c), 1);
+      if (!clauses.length) builderForm.groups[d.g].splice(Number(d.r), 1);
+      break;
+    }
+    default:
+      return;
+  }
+
+  applyBuilderToSource();
 }
 
 // The editor's starting document comes from `GET /strategies/reference`, which
@@ -861,6 +1297,23 @@ async function seedEditor() {
   await loadExample(first);
 }
 
+/// The validator's field-level issues, as list items.
+///
+/// docs/12 carries these in `details.issues` with a path per issue; showing
+/// them is the whole reason the envelope has a details field.
+function issueList(issues) {
+  return issues.length
+    ? `<ul class="checks">${issues
+        .map(
+          (i) =>
+            `<li><span class="status fail">${escapeHtml(i.path)}</span><span>${escapeHtml(
+              i.message
+            )}</span></li>`
+        )
+        .join("")}</ul>`
+    : "";
+}
+
 async function validateStrategy() {
   const message = el("strategyMsg");
   message.textContent = "Validating…";
@@ -872,16 +1325,9 @@ async function validateStrategy() {
     });
     message.innerHTML = `<span class="pass">valid</span> — ${escapeHtml(result.name)} v${escapeHtml(result.version)}`;
   } catch (e) {
-    // docs/12 carries the validator's field paths in details.issues; showing
-    // them is the whole reason the envelope has a details field.
-    const issues = (e.details && e.details.issues) || [];
     message.innerHTML =
       `<span class="fail">${escapeHtml(e.message)}</span>` +
-      (issues.length
-        ? `<ul class="checks">${issues
-            .map((i) => `<li><span class="status fail">${escapeHtml(i.path)}</span><span>${escapeHtml(i.message)}</span></li>`)
-            .join("")}</ul>`
-        : "");
+      issueList((e.details && e.details.issues) || []);
   }
 }
 
@@ -1076,10 +1522,12 @@ async function main() {
   el("deleteStrategy").addEventListener("click", deleteStrategy);
   el("generate").addEventListener("click", generateStrategy);
   // Typing in the document makes it the user's own work, whatever produced it.
-  el("strategySource").addEventListener("input", markSourceDirty);
+  el("strategySource").addEventListener("input", () => markSourceDirty());
   document.querySelectorAll(".modes button").forEach((button) =>
-    button.addEventListener("click", () => setStrategyMode(button.dataset.mode))
+    button.addEventListener("click", () => selectStrategyMode(button.dataset.mode))
   );
+  el("builderForm").addEventListener("input", onBuilderInput);
+  el("builderForm").addEventListener("click", onBuilderClick);
   el("backtest").addEventListener("click", runBacktest);
   el("launch").addEventListener("click", launchBot);
   el("refreshBots").addEventListener("click", refreshBots);

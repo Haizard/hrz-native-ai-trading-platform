@@ -256,6 +256,34 @@ invalidation:
 "#;
 
 /// A document that parses but does not validate: `entry` is missing.
+/// The same shape with a parameterised stop, a string condition and a function
+/// call, so a test can check how the schema's two stop encodings come back.
+pub const ATR_STOP_STRATEGY: &str = r#"
+name: "ATR route test"
+version: "1"
+kind: strategy
+market: BTCUSDT
+timeframes:
+  trend: 4h
+  entry: 5m
+entry:
+  direction: long
+  any_of:
+    - timeframe: entry
+      condition: market_structure.trend == "bullish"
+    - timeframe: entry
+      condition: close_below(stop_price)
+risk:
+  max_risk_pct: 0.5
+  stop: {kind: atr, multiple: 1.5, period: 14}
+  take_profit:
+    type: "risk_multiple"
+    value: 2.0
+invalidation:
+  - timeframe: entry
+    condition: close < val
+"#;
+
 pub const INVALID_STRATEGY: &str = r#"
 name: "Broken"
 version: "1"

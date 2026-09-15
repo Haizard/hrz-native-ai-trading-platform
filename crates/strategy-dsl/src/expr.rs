@@ -447,6 +447,9 @@ pub enum CompareOp {
 }
 
 impl CompareOp {
+    /// Every operator, for validation messages and exhaustive tests.
+    pub const ALL: &'static [Self] = &[Self::Eq, Self::Ne, Self::Gt, Self::Ge, Self::Lt, Self::Le];
+
     /// The operator as written.
     #[must_use]
     pub const fn symbol(self) -> &'static str {

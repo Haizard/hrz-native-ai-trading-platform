@@ -115,11 +115,36 @@ CPU calc   GPU-friendly buffers
   composed via UI, serialized to the same schema), and raw DSL (YAML/JSON text editor
   with the validator's errors shown inline).
 
-  **Built as of 2026-09-14: natural language and raw DSL.** The visual builder is not
-  built. The two that exist already produce the same document the validator consumes, and
-  the natural-language mode shows what it generated in the raw editor before anything is
-  stored — a strategy is something a bot will execute, so it has to be readable first.
-  The builder is the remaining piece, and it serializes into the same box.
+  **Built as of 2026-09-14: all three modes.** Every mode writes into the same text box,
+  so the document a user saves is always the one they can read — a strategy is something
+  a bot will execute. Applying the builder rewrites the box and marks the source
+  `created_by: visual_builder`, the same way natural language marks it `agent`.
+
+  The builder is deliberately a *thin* view over the document, and two rules keep it
+  from becoming a second opinion about what a strategy means:
+
+  - **It owns no vocabulary.** Dropdowns are filled from `GET /strategies/schema`, which
+    is generated from `strategy-dsl` itself (`ALL_FIELDS`, `ALL_FUNCS`, `ALL_STOP_KINDS`,
+    `TakeProfitKind::ALL`, `Timeframe::all`). A new field or stop rule in Rust appears in
+    the builder with no JS change, and the builder cannot offer a condition the validator
+    would reject.
+  - **It does not parse YAML.** Opening an existing document goes through
+    `POST /strategies/validate`, which now echoes the parsed `document`. There is one
+    parser in this system and it is in Rust; the client never decides what a file says.
+
+  What JS *does* parse is a single condition, enough to turn it into controls. That
+  parser is a strict subset of `expr.rs`'s grammar, and anything outside the subset — a
+  nested call such as `above(delta, threshold(5))` — becomes raw text rather than a
+  dropdown that cannot show it. The pane says so out loud ("N condition(s) kept as
+  text"), so degradation is visible instead of silent.
+
+  The acceptance property is idempotence: emit → parse → emit must be byte-identical, or
+  a user who opens a strategy in the builder and applies it without touching anything has
+  rewritten it. `tools/check_builder.mjs` asserts that, writes its documents to
+  `target/builder-check/`, and CI runs `strategy-cli validate` — the real parser — over
+  each one. A hand-written YAML emitter in JavaScript is exactly the kind of thing that
+  looks right and parses wrong.
+
 - **Backtest/bot dashboards**: performance report visualization, trade list, bot
   status/controls (pause/resume/kill).
 

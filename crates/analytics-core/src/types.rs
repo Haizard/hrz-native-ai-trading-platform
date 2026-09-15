@@ -96,17 +96,28 @@ impl PartialOrd for Timeframe {
     }
 }
 
-impl fmt::Display for Timeframe {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
+impl Timeframe {
+    /// Canonical name, as written in a document or a query string.
+    ///
+    /// The `&'static str` form of [`Timeframe`]: `Display` cannot hand one out,
+    /// and a caller building a list of the accepted values wants the strings
+    /// rather than a formatter.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
             Self::M1 => "1m",
             Self::M5 => "5m",
             Self::M15 => "15m",
             Self::H1 => "1h",
             Self::H4 => "4h",
             Self::D1 => "1d",
-        };
-        f.write_str(s)
+        }
+    }
+}
+
+impl fmt::Display for Timeframe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
