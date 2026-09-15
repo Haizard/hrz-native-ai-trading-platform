@@ -54,6 +54,7 @@ pub mod imbalance;
 pub mod indicators;
 pub mod liquidity;
 pub mod market_structure;
+pub mod regions;
 pub mod resample;
 pub mod state;
 pub mod types;
@@ -77,6 +78,7 @@ pub use market_structure::{
     detect_market_structure, BreakKind, MarketStructure, StructureBreak, StructureConfig,
     SwingKind, SwingPoint, Trend,
 };
+pub use regions::{detect_zones, Region, RegionKind, ZoneConfig};
 pub use resample::{resample, resample_all};
 pub use state::{build_market_state, MarketState, MarketStateConfig};
 pub use types::{Candle, FootprintCell, OrderBookLevel, OrderBookSnapshot, Side, Timeframe, Trade};
