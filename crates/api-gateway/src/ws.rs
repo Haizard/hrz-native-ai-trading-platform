@@ -3,7 +3,7 @@
 //! | Channel | Source | Auth |
 //! |---|---|---|
 //! | `/ws/market/{symbol}/{timeframe}` | the supervisor's market bus | none -- market data is public |
-//! | `/ws/orderbook/{symbol}` | none exists | refused, with the reason |
+//! | `/ws/orderbook/{symbol}` | the supervisor's market bus (depth is maintained in `market-data`) | none -- market data is public |
 //! | `/ws/agent/{session_id}` | the Phase 5 agent | token in the query string |
 //! | `/ws/bots/{bot_id}` | the supervisor's event broadcast | token in the query string |
 //!
@@ -37,17 +37,19 @@
 //! framing is what the spec asks for; the payload is the next step, and it is
 //! taken when there is a measurement rather than a guess.
 
+use std::time::Duration;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use analytics_core::types::Candle;
+use analytics_core::types::{Candle, OrderBookSnapshot};
 
 use crate::auth::UserContext;
 use crate::bots::BotEvent;
@@ -60,6 +62,14 @@ pub struct WsAuth {
     /// The session token, because a handshake cannot carry a header.
     pub token: Option<String>,
 }
+
+/// How long a DOM waits for its first book before the channel explains itself.
+///
+/// Long enough to cover the collector's own publish interval (one second by
+/// default) plus the REST snapshot that bootstraps the book; short enough that
+/// a panel which will never have depth finds out while it still looks like a
+/// connection problem rather than an empty market.
+const DEPTH_GRACE: Duration = Duration::from_secs(5);
 
 /// A frame every channel may send, so a client can tell a notice from data.
 #[derive(Debug, Serialize)]
@@ -170,22 +180,127 @@ async fn market_loop(
 
 /// `/ws/orderbook/{symbol}`
 ///
-/// Refused, because there is nothing to send. `docs/12` lists the channel and
-/// the honest answer is a 503 that names what is missing -- an open socket that
-/// never sends looks like a broken client, and an empty book looks like a
-/// market with no liquidity.
-pub async fn orderbook(Path(symbol): Path<String>) -> Response {
+/// The book is maintained in `market-data` (REST snapshot, then bridged diffs)
+/// and published into the bus by the collector; this is the read end. The
+/// socket opens immediately, because a DOM that waited for the first book
+/// before completing its handshake would hang on every reconnect.
+///
+/// What it will *not* do is stream nothing forever. An empty ladder is
+/// indistinguishable from a market with no liquidity, so if no book arrives
+/// within [`DEPTH_GRACE`] the channel says why and closes.
+pub async fn orderbook(
+    State(state): State<AppState>,
+    Path(symbol): Path<String>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
     let symbol = symbol.to_uppercase();
-    ApiError::coded(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "NO_DEPTH_FEED",
-        format!(
-            "no live order book for {symbol}: depth is built from the trade stream, and this \
-             deployment is not running a collector. The stored snapshot is at \
-             GET /orderbook?symbol={symbol}."
-        ),
-    )
-    .into_response()
+    // A DOM should start the feed, not wait for a bot to happen to -- and the
+    // feed subscribes depth alongside trades on the same connection.
+    state.bots.ensure_feed_for(&symbol);
+    let books = state.bots.subscribe_orderbook(&symbol);
+
+    let channel = format!("/ws/orderbook/{symbol}");
+    upgrade.on_upgrade(move |socket| orderbook_loop(socket, books, channel, symbol))
+}
+
+async fn orderbook_loop(
+    socket: WebSocket,
+    mut books: broadcast::Receiver<OrderBookSnapshot>,
+    channel: String,
+    symbol: String,
+) {
+    let (mut sink, mut stream) = socket.split();
+    info!(%channel, "order book socket opened");
+
+    let hello = Frame::Subscribed {
+        channel: &channel,
+        detail: serde_json::json!({ "symbol": symbol }),
+    };
+    if send_text(&mut sink, &hello).await.is_err() {
+        return;
+    }
+
+    let Some(first) = first_book(&mut books).await else {
+        let notice = Frame::Notice {
+            message: format!(
+                "no order book for {symbol} arrived within {}s. The feed subscribes depth \
+                 alongside trades, so this means either no market feed is configured \
+                 (MARKET_FEED) or the book has not finished syncing. The last stored \
+                 snapshot is at GET /orderbook?symbol={symbol}.",
+                DEPTH_GRACE.as_secs()
+            ),
+        };
+        let _ = send_text(&mut sink, &notice).await;
+        let _ = sink.close().await;
+        return;
+    };
+    if send_book(&mut sink, &first).await.is_err() {
+        return;
+    }
+    debug!(%symbol, "order book live");
+
+    loop {
+        tokio::select! {
+            received = books.recv() => match received {
+                Ok(snapshot) => {
+                    if send_book(&mut sink, &snapshot).await.is_err() {
+                        break;
+                    }
+                }
+                Err(RecvError::Lagged(dropped)) => {
+                    // A DOM redraws whole levels, so a dropped snapshot costs a
+                    // frame of smoothness and nothing else -- but it must still
+                    // be said, or a stalled ladder looks like a quiet market.
+                    let frame = Frame::Lagged { dropped };
+                    if send_binary(&mut sink, &frame).await.is_err() {
+                        break;
+                    }
+                }
+                Err(RecvError::Closed) => break,
+            },
+            incoming = stream.next() => match incoming {
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(_)) => {}
+                Some(Err(e)) => {
+                    debug!(%channel, "order book socket error: {e}");
+                    break;
+                }
+            },
+        }
+    }
+    debug!(%channel, "order book socket closed");
+}
+
+/// The first book, or `None` if the grace period expired.
+///
+/// Lags are skipped rather than reported: a consumer that was already behind
+/// before it started reading should get the *newest* book, not an apology for
+/// books it never saw.
+async fn first_book(
+    books: &mut broadcast::Receiver<OrderBookSnapshot>,
+) -> Option<OrderBookSnapshot> {
+    let deadline = tokio::time::Instant::now() + DEPTH_GRACE;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(remaining, books.recv()).await {
+            Ok(Ok(snapshot)) => return Some(snapshot),
+            Ok(Err(RecvError::Lagged(_))) => continue,
+            Ok(Err(RecvError::Closed)) | Err(_) => return None,
+        }
+    }
+}
+
+async fn send_book<S>(sink: &mut S, snapshot: &OrderBookSnapshot) -> Result<(), ()>
+where
+    S: SinkExt<Message> + Unpin,
+{
+    let frame = Frame::Data {
+        payload: serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null),
+    };
+    send_binary(sink, &frame).await
 }
 
 /// `/ws/agent/{session_id}`

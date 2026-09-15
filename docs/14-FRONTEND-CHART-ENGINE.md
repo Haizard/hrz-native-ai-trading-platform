@@ -105,6 +105,17 @@ CPU calc   GPU-friendly buffers
   profile overlay, VWAP/POC/VAH/VAL lines, delta/CVD sub-panel, drawing tools
   (trendlines, Fibonacci, rectangles — start minimal, expand later).
 - **DOM/order book panel**: live bid/ask ladder from `/ws/orderbook/{symbol}`.
+
+  **Built as of 2026-09-15: the feed, not the panel.** The channel is live — snapshots
+  are maintained in `market-data` and arrive on the socket (see `docs/12`) — but nothing
+  draws them yet. That half is a real view: a ladder with per-level size, and the
+  cumulative-depth bars that make size readable at a glance.
+
+  Those bars are the reason it is not a one-liner. "No arithmetic over market data in
+  JavaScript" is the rule this whole frontend is built on, and a depth bar is a running
+  total scaled against the largest one. So the snapshot has to arrive with what the panel
+  needs to draw it, or the ladder ships without the bars. Decide that when the panel is
+  built; do not quietly do the sums in `app.js`.
 - **AI chat panel**: natural-language input, streaming responses via
   `/ws/agent/{session_id}`, action buttons (Analyze / Create Strategy / Backtest /
   Create Bot) matching the source research's UI sketch, and the ability to highlight the

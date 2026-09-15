@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use analytics_core::types::Candle;
+use analytics_core::types::{Candle, OrderBookSnapshot};
 use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
@@ -254,6 +254,27 @@ impl BotSupervisor {
             .publish_candle(candle.clone());
     }
 
+    /// Subscribe to live order books for `symbol`.
+    ///
+    /// The book is maintained in `market-data`: a REST snapshot, then diff
+    /// events bridged onto it, published only once the sequence is contiguous.
+    /// This is just the read end.
+    #[must_use]
+    pub fn subscribe_orderbook(&self, symbol: &str) -> broadcast::Receiver<OrderBookSnapshot> {
+        self.inner.bus.bus(symbol).subscribe_orderbook()
+    }
+
+    /// Publish an order-book snapshot into the bus.
+    ///
+    /// The same seam as [`feed_candle`], for the same reason: the collector
+    /// publishes through the bus, and a test publishes through this.
+    pub fn feed_orderbook(&self, snapshot: &OrderBookSnapshot) {
+        self.inner
+            .bus
+            .bus(&snapshot.symbol)
+            .publish_orderbook(snapshot.clone());
+    }
+
     /// Start running a bot.
     ///
     /// Returns immediately: the bot runs in its own task. Starting a bot that is
@@ -468,6 +489,18 @@ async fn run_binance_feed(
         .subscribe_trades(symbol)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Depth rides the *same* connection: the collector uses Binance's combined
+    // `/stream` endpoint, which is the whole reason one socket can carry both.
+    // Subscribing it here means the DOM has a book whenever anything at all is
+    // watching this symbol, rather than only once a bot happens to run.
+    //
+    // A failure here is not fatal. Candles are what bots trade on; a DOM
+    // without depth is a degraded panel, not a dead chart. The depth channel
+    // tells the client when there is no book rather than showing an empty one.
+    if let Err(e) = collector.subscribe_order_book(symbol).await {
+        warn!(symbol, "the depth feed did not start: {e}");
+    }
 
     // The timeframes the feed builds are the ones the bots declared, but the
     // feed starts before it knows them; `standard` builds the common set and a

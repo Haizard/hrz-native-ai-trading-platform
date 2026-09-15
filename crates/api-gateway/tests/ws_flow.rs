@@ -10,15 +10,15 @@
 //!
 //! ## The seam is the same one the collector uses
 //!
-//! Candles are published with `BotSupervisor::feed_candle`, which is exactly
-//! what the live Binance feed calls. So the market channel is exercised on the
-//! real path, with no socket to an exchange.
+//! Candles are published with `BotSupervisor::feed_candle` and books with
+//! `feed_orderbook` -- exactly what the live Binance feed calls. So both market
+//! channels are exercised on the real path, with no socket to an exchange.
 
 mod common;
 
 use std::time::Duration;
 
-use analytics_core::types::{Candle, Timeframe};
+use analytics_core::types::{Candle, OrderBookLevel, OrderBookSnapshot, Timeframe};
 use common::Harness;
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
@@ -36,7 +36,12 @@ where
 {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while tokio::time::Instant::now() < deadline {
-        let next = tokio::time::timeout(Duration::from_secs(5), socket.next()).await;
+        // Wait out the *whole* remaining budget, not a fixed slice of it: a
+        // channel that speaks after a grace period (the order book does, at
+        // five seconds) must not be missed because this read happened to end
+        // first.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let next = tokio::time::timeout(remaining, socket.next()).await;
         let Ok(Some(Ok(message))) = next else {
             return None;
         };
@@ -145,21 +150,70 @@ async fn a_market_socket_closes_cleanly() {
     assert!(closed.is_ok(), "the socket should close, not hang");
 }
 
+fn book(timestamp: i64) -> OrderBookSnapshot {
+    OrderBookSnapshot {
+        symbol: "BTCUSDT".into(),
+        timestamp,
+        bids: vec![OrderBookLevel {
+            price: 100.0,
+            quantity: 2.0,
+        }],
+        asks: vec![OrderBookLevel {
+            price: 101.0,
+            quantity: 3.0,
+        }],
+    }
+}
+
 #[tokio::test]
-async fn the_orderbook_channel_refuses_with_the_reason() {
+async fn the_orderbook_channel_says_what_it_is_watching_then_forwards_the_book() {
     let Some(h) = Harness::new().await else {
         return;
     };
     let base = h.serve().await;
+    let mut socket = connect(&base, "/ws/orderbook/BTCUSDT").await;
 
-    // Not an upgrade, so the handler answers with a normal HTTP response.
-    let error = tokio_tungstenite::connect_async(format!("ws://{base}/ws/orderbook/BTCUSDT"))
+    let hello = read_until(&mut socket, |v| v["type"] == "subscribed")
         .await
-        .expect_err("the handshake must be refused");
-    let rendered = error.to_string();
+        .expect("a subscribed frame on connect");
+    assert_eq!(hello["channel"], "/ws/orderbook/BTCUSDT");
+    assert_eq!(hello["detail"]["symbol"], "BTCUSDT");
+
+    // The same call the live collector makes.
+    h.supervisor.feed_orderbook(&book(1_000_000));
+
+    let data = read_until(&mut socket, |v| v["type"] == "data")
+        .await
+        .expect("the book must arrive");
+    assert_eq!(data["payload"]["symbol"], "BTCUSDT");
+    assert_eq!(data["payload"]["bids"][0]["price"], 100.0);
+    assert_eq!(data["payload"]["asks"][0]["quantity"], 3.0);
+}
+
+#[tokio::test]
+async fn an_orderbook_channel_with_no_book_says_so_rather_than_streaming_nothing() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let base = h.serve().await;
+    let mut socket = connect(&base, "/ws/orderbook/BTCUSDT").await;
+    read_until(&mut socket, |v| v["type"] == "subscribed").await;
+
+    // No market feed is configured in the harness, so no book will ever
+    // arrive. An empty ladder is indistinguishable from a market with no
+    // liquidity, so the channel has to say which of the two it is -- and a
+    // socket that simply never sends looks like a broken client.
+    let notice = read_until(&mut socket, |v| v["type"] == "notice")
+        .await
+        .expect("the channel must explain itself");
+    let message = notice["message"].as_str().unwrap_or_default();
     assert!(
-        rendered.contains("503") || rendered.contains("Service Unavailable"),
-        "expected a 503, got: {rendered}"
+        message.contains("BTCUSDT"),
+        "it must name the symbol: {message}"
+    );
+    assert!(
+        message.contains("MARKET_FEED"),
+        "it must name the likely cause: {message}"
     );
 }
 

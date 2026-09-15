@@ -70,12 +70,31 @@ backtester use. Re-validating an echoed document must agree with the first verdi
 ## WebSocket channels
 ```
 /ws/market/{symbol}/{timeframe}   -> live candle + MarketState updates
-/ws/orderbook/{symbol}            -> live order book deltas
+/ws/orderbook/{symbol}            -> live order book snapshots (not diffs -- see below)
 /ws/agent/{session_id}            -> streaming AI chat/thesis responses
 /ws/bots/{bot_id}                 -> live bot status/trade events
 ```
 Use binary framing (e.g. a compact serialization like MessagePack or protobuf) for
 high-frequency market channels; JSON is fine for the lower-frequency agent/bot channels.
+
+### The order book is maintained in `market-data`, not rebuilt here
+
+`/ws/orderbook/{symbol}` streams whole snapshots, not diffs. Venues do not ship a full
+book on every message: they ship periodic diffs and expect the client to keep the book.
+So the collector fetches a REST snapshot, subscribes to the diff stream *first* so
+nothing is missed, bridges the two, and publishes a snapshot roughly once a second —
+and only once the sequence is contiguous, because a half-applied book is worse than no
+book. The channel therefore never sends a diff and never sends a book it cannot vouch
+for.
+
+It also never streams nothing. If no book arrives within five seconds of the socket
+opening, the channel sends a `notice` naming the symbol and the likely cause and closes.
+An empty ladder is indistinguishable from a market with no liquidity, and a socket that
+never sends looks like a broken client; both are worse than an honest failure.
+
+Depth rides the same connection as trades — the combined stream endpoint is there so one
+socket can carry both — so a DOM has a book whenever anything at all is watching the
+symbol.
 
 ## Auth
 - JWT-based session auth for Phase 1 simplicity; keep the auth middleware isolated so it
