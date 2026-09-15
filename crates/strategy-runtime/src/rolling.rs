@@ -378,6 +378,39 @@ mod tests {
     }
 
     #[test]
+    fn a_views_history_ends_at_the_candle_it_decides_on() {
+        // The guarantee every no-look-ahead claim in the stack rests on, and the
+        // one the concept layer reads its bands through: a pattern is detected
+        // over `view.history`, so if that window ever held a candle newer than
+        // the decision candle, `concepts.<name>.fresh` would answer from the
+        // future -- a band would read as already mitigated on the very bar it
+        // formed, and the setup it describes could never fire.
+        //
+        // Not a property of the evaluator. It is a property of whoever fills the
+        // view, which is this, and nothing tested it before the concept layer
+        // started depending on it.
+        let mut frame = RollingTimeframe::new("entry", Timeframe::M5);
+        let config = RollingConfig::default();
+
+        for index in 0..5i64 {
+            assert!(frame.push(candle_at("BTCUSDT", Timeframe::M5, index), &config));
+            let view = frame.view().expect("ready");
+            assert_eq!(
+                view.history.last().map(|candle| candle.open_time),
+                Some(view.candle.open_time),
+                "the window must end where the decision candle is"
+            );
+            assert!(
+                view.history
+                    .iter()
+                    .all(|candle| candle.open_time <= view.candle.open_time),
+                "and nothing inside it may be newer: {:#?}",
+                view.history
+            );
+        }
+    }
+
+    #[test]
     fn a_ladder_is_not_ready_until_every_declared_frame_has_a_candle() {
         let mut timeframes = BTreeMap::new();
         timeframes.insert("entry".to_string(), Timeframe::M5);

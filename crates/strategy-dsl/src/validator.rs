@@ -21,6 +21,12 @@
 //!   indicator has no trade logic, a strategy must have all three.
 //! * Every condition names a declared timeframe, parses, and is boolean-valued.
 //! * Every field and function is in the vocabulary from [`crate::expr`].
+//! * Every declared concept is well-formed by `analytics_core::concepts`' own
+//!   rules -- the same ones the chart applies -- and no two share a name.
+//! * Every concept a condition reads is declared. The concept *vocabulary* is
+//!   closed even though the concepts are not: five properties, and a name that
+//!   resolves to nothing is an error rather than a condition that is always
+//!   false.
 //! * `max_risk_pct` is positive and under a hard ceiling that a document cannot
 //!   raise, no matter what it asks for.
 //! * Stop and take-profit parameters are sane.
@@ -50,6 +56,13 @@ pub struct Limits {
     pub max_expression_len: usize,
     /// Largest allowed number of declared timeframes.
     pub max_timeframes: usize,
+    /// Largest allowed number of concepts a document may declare.
+    ///
+    /// Concepts are measured against the whole candle series on every bar, so
+    /// unlike timeframes this is a **cost** bound as much as a sanity one. A
+    /// document that declares a hundred of them is not more expressive, it is
+    /// just slow, and the agent has no way to know that unless the limit says so.
+    pub max_concepts: usize,
 }
 
 impl Default for Limits {
@@ -59,6 +72,7 @@ impl Default for Limits {
             max_conditions: 64,
             max_expression_len: 512,
             max_timeframes: 8,
+            max_concepts: 16,
         }
     }
 }
@@ -113,6 +127,7 @@ pub fn validate_with(document: &StrategyDocument, limits: &Limits) -> Result<(),
 
     check_identity(document, &mut issues);
     check_timeframes(document, limits, &mut issues);
+    check_concepts(document, limits, &mut issues);
     check_blocks_for_kind(document, &mut issues);
     check_conditions(document, limits, &mut issues);
     check_risk(document, limits, &mut issues);
@@ -178,6 +193,41 @@ fn check_timeframes(document: &StrategyDocument, limits: &Limits, issues: &mut I
                 format!("timeframes.{name}"),
                 "timeframe names must not contain whitespace",
             );
+        }
+    }
+}
+
+/// Declared concepts, checked as declarations.
+///
+/// Whether a *condition* may reference a concept depends on what the document
+/// declares, so that half lives in [`check_conditions`] where the parsed
+/// expression is already in hand. This half is about the block itself.
+fn check_concepts(document: &StrategyDocument, limits: &Limits, issues: &mut Issues) {
+    if document.concepts.len() > limits.max_concepts {
+        issues.push(
+            "concepts",
+            format!(
+                "declares {} concepts, the limit is {}",
+                document.concepts.len(),
+                limits.max_concepts
+            ),
+        );
+    }
+
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for concept in &document.concepts {
+        let path = format!("concepts.{}", concept.name);
+        // A duplicate name is not a style problem: conditions resolve a concept
+        // by name, so two declarations would make every reference ambiguous and
+        // the resolution would silently depend on declaration order.
+        if !seen.insert(concept.name.as_str()) {
+            issues.push(&path, "a concept with this name is already declared");
+        }
+        // The same rules the chart applies. `analytics_core::concepts` is the
+        // one place that decides what a well-formed concept is, and a document
+        // that the chart would refuse must not validate here.
+        if let Err(e) = analytics_core::concepts::validate(concept) {
+            issues.push(&path, e.to_string());
         }
     }
 }
@@ -275,8 +325,46 @@ fn check_conditions(document: &StrategyDocument, limits: &Limits, issues: &mut I
 
         match Expr::parse_checked(&conditional.condition) {
             Err(e) => issues.push(&condition_path, e.to_string()),
-            Ok(expr) => check_threshold_literals(&expr, &condition_path, issues),
+            Ok(expr) => {
+                check_threshold_literals(&expr, &condition_path, issues);
+                check_concept_refs(document, &expr, &condition_path, issues);
+            }
         }
+    }
+}
+
+/// Every concept a condition reads must be declared by the document.
+///
+/// The same shape as the timeframe check, and for the same reason: a name that
+/// resolves to nothing would otherwise run silently as a condition that is
+/// always false, and a strategy that never fires looks like a market that never
+/// set up rather than like a typo.
+///
+/// The declared names go into the message because the usual cause is a near
+/// miss -- `bullish_fvg` against a document that declared `bullish_fvg_5m` --
+/// and whoever corrects it (a model, usually) corrects from the list.
+fn check_concept_refs(document: &StrategyDocument, expr: &Expr, path: &str, issues: &mut Issues) {
+    let mut reported: BTreeSet<&str> = BTreeSet::new();
+    for name in concept_refs(expr) {
+        // One issue per concept, not per read: a condition that reads `fresh`
+        // and `top` of the same undeclared concept has one problem, and saying
+        // it twice reads as two.
+        if !reported.insert(name) || document.concept(name).is_some() {
+            continue;
+        }
+        let declared: Vec<&str> = document.concepts.iter().map(|c| c.name.as_str()).collect();
+        let message = if declared.is_empty() {
+            format!(
+                "reads `concepts.{name}` but the document declares no concepts; add a \
+                 `concepts:` block defining `{name}`, or use a built-in field"
+            )
+        } else {
+            format!(
+                "reads undeclared concept `{name}`; declared: {}",
+                declared.join(", ")
+            )
+        };
+        issues.push(path, message);
     }
 }
 
@@ -303,7 +391,11 @@ fn check_threshold_literals(expr: &Expr, path: &str, issues: &mut Issues) {
 }
 
 /// Visit every node in an expression tree.
-fn walk(expr: &Expr, visit: &mut impl FnMut(&Expr)) {
+///
+/// The visitor receives a borrow tied to the tree's own lifetime rather than a
+/// fresh one, so a caller may keep what it finds -- [`concept_refs`] does
+/// exactly that, and a higher-ranked `&Expr` would not allow it.
+fn walk<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) {
     visit(expr);
     match expr {
         Expr::Call { args, .. } => {
@@ -320,8 +412,24 @@ fn walk(expr: &Expr, visit: &mut impl FnMut(&Expr)) {
             walk(lhs, visit);
             walk(rhs, visit);
         }
-        Expr::Literal(_) | Expr::Field(_) => {}
+        // Leaves. A concept reference is one: its name is data, not a subtree.
+        Expr::Literal(_) | Expr::Field(_) | Expr::Concept { .. } => {}
     }
+}
+
+/// Every concept an expression reads, in the order it reads them.
+///
+/// Duplicates are kept. A condition reading two properties of one concept names
+/// it twice, and the caller reports per condition rather than per name, so
+/// deduplicating here would only hide which condition is at fault.
+fn concept_refs(expr: &Expr) -> Vec<&str> {
+    let mut out = Vec::new();
+    walk(expr, &mut |node| {
+        if let Expr::Concept { name, .. } = node {
+            out.push(name.as_str());
+        }
+    });
+    out
 }
 
 fn check_risk(document: &StrategyDocument, limits: &Limits, issues: &mut Issues) {
@@ -439,6 +547,237 @@ mod tests {
 
     fn paths(yaml: &str) -> Vec<String> {
         issues(yaml).into_iter().map(|i| i.path).collect()
+    }
+
+    // --- concepts a document declares ----------------------------------------
+
+    /// The concepts block, kept separate so a test can remove exactly it.
+    const GAP_CONCEPT: &str = r#"concepts:
+  - name: bullish_gap
+    label: bullish gap
+    side: buy
+    window: 3
+    lower: {high: 0}
+    upper: {low: 2}
+    require:
+      - {left: {high: 0}, op: below, right: {low: 2}}
+"#;
+
+    /// A document that declares one concept and reads it in two conditions.
+    ///
+    /// Self-contained rather than assembled from [`SAMPLE`]: these tests are
+    /// about the concepts block, and a fixture built by surgery on the spec's
+    /// example would fail for the sample's reasons rather than theirs.
+    ///
+    /// `stop: below_sweep_low` with `direction: long` is the consistent pair
+    /// from `docs/06`; the point of the fixture is the concepts, not the risk
+    /// block, so it uses the pairing already known to be valid.
+    const GAP_DOCUMENT: &str = r#"name: "Gap Reclaim"
+version: "1.0"
+kind: strategy
+market: "BTCUSDT"
+timeframes:
+  entry: "5m"
+concepts:
+  - name: bullish_gap
+    label: bullish gap
+    side: buy
+    window: 3
+    lower: {high: 0}
+    upper: {low: 2}
+    require:
+      - {left: {high: 0}, op: below, right: {low: 2}}
+entry:
+  all_of:
+    - timeframe: entry
+      condition: concepts.bullish_gap.fresh
+    - timeframe: entry
+      condition: close > concepts.bullish_gap.top
+  direction: long
+risk:
+  max_risk_pct: 1.0
+  stop: "below_sweep_low"
+  take_profit:
+    type: "risk_multiple"
+    value: 2.0
+invalidation:
+  - timeframe: entry
+    condition: "close_below(stop_price)"
+"#;
+
+    #[test]
+    fn a_document_that_declares_and_reads_a_concept_validates() {
+        validate_str(GAP_DOCUMENT).expect("a declared, well-formed concept must validate");
+    }
+
+    #[test]
+    fn the_concept_reaches_the_parsed_document() {
+        // Validation passing is not enough: the document has to actually carry
+        // the concept, or every downstream consumer sees an empty list and the
+        // conditions resolve against nothing.
+        let doc = from_yaml(GAP_DOCUMENT).expect("parses");
+        let concept = doc.concept("bullish_gap").expect("the concept is declared");
+        assert_eq!(concept.window, 3);
+        assert_eq!(doc.concept("no_such_concept"), None);
+    }
+
+    #[test]
+    fn reading_an_undeclared_concept_is_rejected() {
+        let yaml = GAP_DOCUMENT.replace("concepts.bullish_gap.fresh", "concepts.typo_gap.fresh");
+        let found = issues(&yaml);
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert!(
+            found[0].message.contains("undeclared concept `typo_gap`"),
+            "{}",
+            found[0].message
+        );
+        // The message lists what *is* declared, because the usual cause is a
+        // near miss and whoever corrects it corrects from the list.
+        assert!(
+            found[0].message.contains("bullish_gap"),
+            "{}",
+            found[0].message
+        );
+    }
+
+    #[test]
+    fn reading_a_concept_from_a_document_with_none_says_so() {
+        let yaml = GAP_DOCUMENT.replace(GAP_CONCEPT, "");
+        let found = issues(&yaml);
+        assert!(!found.is_empty());
+        assert!(
+            found[0].message.contains("declares no concepts"),
+            "the message should point at the missing block, not just the name: {}",
+            found[0].message
+        );
+    }
+
+    #[test]
+    fn one_issue_per_undeclared_concept_not_per_read() {
+        // A condition reading `fresh` and `mitigated` of one undeclared concept
+        // has one problem. Reporting it twice reads as two, and an agent
+        // correcting from the list would go looking for a second mistake.
+        let yaml = GAP_DOCUMENT.replace(
+            "concepts.bullish_gap.fresh",
+            "concepts.typo_gap.fresh and concepts.typo_gap.mitigated < 0.5",
+        );
+        let found = issues(&yaml);
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert!(
+            found[0].message.contains("typo_gap"),
+            "{}",
+            found[0].message
+        );
+    }
+
+    #[test]
+    fn a_malformed_concept_is_rejected_with_the_analytics_reason() {
+        // The chart applies `analytics_core::concepts::validate` and so does the
+        // validator. A document the chart would refuse to draw must not be
+        // accepted as a strategy -- one definition of well-formed, in one place.
+        let yaml = GAP_DOCUMENT.replace("window: 3", "window: 99");
+        let found = issues(&yaml);
+        assert!(
+            found
+                .iter()
+                .any(|i| i.path == "concepts.bullish_gap" && i.message.contains("window")),
+            "{found:#?}"
+        );
+    }
+
+    #[test]
+    fn a_concept_name_that_could_never_be_referenced_is_rejected() {
+        // Names are identifiers because they become fields a condition reads and
+        // a key the shell colours by. `BullishGap` works as a label and breaks
+        // as a field, and the validator says so rather than accepting it and
+        // leaving the condition unparseable later.
+        let yaml = GAP_DOCUMENT.replace("name: bullish_gap", "name: BullishGap");
+        let found = issues(&yaml);
+        assert!(
+            found
+                .iter()
+                .any(|i| i.path == "concepts.BullishGap" && i.message.contains("lowercase")),
+            "{found:#?}"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_concept_name_is_rejected() {
+        // Conditions resolve a concept by name, so two declarations make every
+        // reference ambiguous and the answer would depend on declaration order.
+        //
+        // A second *list item*, not a second `concepts:` block: the latter is a
+        // duplicate YAML key and serde_yaml rejects it before the validator ever
+        // sees it, which would test the parser rather than this rule.
+        let duplicate_item: &str = concat!(
+            "  - name: bullish_gap\n",
+            "    side: buy\n",
+            "    window: 3\n",
+            "    lower: {high: 0}\n",
+            "    upper: {low: 2}\n",
+        );
+        let duplicated =
+            GAP_CONCEPT.replace("concepts:\n", &format!("concepts:\n{duplicate_item}"));
+        let yaml = GAP_DOCUMENT.replace(GAP_CONCEPT, &duplicated);
+        let found = issues(&yaml);
+        assert!(
+            found.iter().any(|i| i.message.contains("already declared")),
+            "{found:#?}"
+        );
+    }
+
+    #[test]
+    fn too_many_concepts_is_rejected() {
+        let doc = from_yaml(GAP_DOCUMENT).expect("parses");
+        let limits = Limits {
+            max_concepts: 0,
+            ..Limits::default()
+        };
+        let Err(DslError::Validation { issues }) = validate_with(&doc, &limits) else {
+            panic!("a document over the concept limit must not validate");
+        };
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.path == "concepts" && i.message.contains("limit")),
+            "{issues:#?}"
+        );
+    }
+
+    #[test]
+    fn a_document_with_no_concepts_still_validates() {
+        // The block is optional, and the spec's own example does not have one.
+        // Adding concepts must not have made every existing document invalid.
+        validate_str(SAMPLE)
+            .expect("the spec's example declares no concepts and must still validate");
+    }
+
+    #[test]
+    fn the_yaml_a_person_writes_and_the_json_a_model_emits_agree() {
+        // A document is authored in both formats -- a person writes YAML for
+        // `strategy-cli`, the agent emits JSON -- so the two have to mean the
+        // same thing, and a concept has to survive the trip between them.
+        //
+        // This is the test the hand-written `Selector` serde exists for. With the
+        // derived impls the YAML `lower: {high: 0}` does not parse at all (a
+        // newtype variant is a *tagged* `!high 0` in YAML), and a document that
+        // did parse would come back spelled differently from how it went in.
+        let from_yaml_doc = from_yaml(GAP_DOCUMENT).expect("the YAML a person writes parses");
+        let json = serde_json::to_string(&from_yaml_doc).expect("serializes");
+        assert!(
+            json.contains(r#""lower":{"high":0}"#),
+            "the selector must keep its written spelling: {json}"
+        );
+
+        let from_json_doc: StrategyDocument =
+            serde_json::from_str(&json).expect("the JSON a model emits parses");
+        assert_eq!(from_yaml_doc, from_json_doc, "the two encodings must agree");
+
+        // And YAML out is YAML in: a document read and written back unchanged
+        // must not have been rewritten.
+        let yaml_again = serde_yaml::to_string(&from_json_doc).expect("serializes to YAML");
+        let reread = from_yaml(&yaml_again).expect("what we wrote parses");
+        assert_eq!(reread, from_yaml_doc, "emit -> parse must be lossless");
     }
 
     #[test]

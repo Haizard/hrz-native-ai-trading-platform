@@ -42,9 +42,10 @@
 
 use std::collections::BTreeSet;
 
+use analytics_core::concepts::{detect, Concept};
 use analytics_core::indicators::atr;
 use serde::{Deserialize, Serialize};
-use strategy_dsl::expr::{CompareOp, Expr, Func, Value};
+use strategy_dsl::expr::{CompareOp, ConceptPart, Expr, Func, Value};
 use strategy_dsl::schema::{
     Conditional, DocumentKind, RiskBlock, StopSpec, TakeProfit, TakeProfitKind,
 };
@@ -178,6 +179,18 @@ pub struct StrategyEngine {
     invalidation: Vec<Compiled>,
     exit_all: Vec<Compiled>,
     exit_any: Vec<Compiled>,
+    /// The concepts the document declared, in declaration order.
+    ///
+    /// Held here rather than in the [`MarketContext`] because they are the
+    /// document's own *definitions*, not per-bar market data. They cannot
+    /// change between two bars of one run, and a context that carried them
+    /// could disagree with the engine reading it -- the same reason
+    /// `decision_timeframe` is taken from the engine and not from the header
+    /// when the sandbox guest builds a context.
+    ///
+    /// The bands a concept *finds* are market data, and are re-derived from the
+    /// view's own history each time a condition reads one.
+    concepts: Vec<Concept>,
     config: RuntimeConfig,
     skips: Vec<SkipRecord>,
     candles_seen: u64,
@@ -235,6 +248,13 @@ impl StrategyEngine {
             None => (Vec::new(), Vec::new()),
         };
 
+        // Taken before `document` is moved into the engine below. The concepts
+        // are already known to be well-formed: `ValidatedStrategy` is the only
+        // way in, and it refuses a bad window, an unknown selector, or a
+        // duplicate name. Re-checking here would be a second rule that could
+        // disagree with the first.
+        let concepts = document.concepts.clone();
+
         Ok(Self {
             invalidation: Compiled::compile(&document.invalidation, "invalidation")?,
             declared: document.timeframes.keys().cloned().collect(),
@@ -246,6 +266,7 @@ impl StrategyEngine {
             entry_any,
             exit_all,
             exit_any,
+            concepts,
             config,
             skips: Vec::new(),
             candles_seen: 0,
@@ -350,7 +371,9 @@ impl StrategyEngine {
         }
         match ctx.view(&condition.timeframe) {
             None => Ok(false),
-            Some(view) => Ok(eval(&condition.expr, ctx, view, &self.config)?.truthy()),
+            Some(view) => {
+                Ok(eval(&condition.expr, ctx, view, &self.config, &self.concepts)?.truthy())
+            }
         }
     }
 
@@ -644,11 +667,16 @@ fn lookback(args: &[Expr], default: usize) -> usize {
 }
 
 /// Evaluate a condition tree against one timeframe view.
+///
+/// `concepts` is the document's own concept list, threaded down from the engine
+/// rather than read off `ctx`: a concept is a definition the document carries,
+/// not something the market produced.
 fn eval<'a>(
     expr: &'a Expr,
     ctx: &'a MarketContext,
     view: &'a TimeframeView,
     config: &RuntimeConfig,
+    concepts: &'a [Concept],
 ) -> Result<FieldValue<'a>, RuntimeError> {
     match expr {
         Expr::Literal(Value::Bool(value)) => Ok(FieldValue::Bool(*value)),
@@ -657,26 +685,92 @@ fn eval<'a>(
 
         Expr::Field(field) => Ok(ctx.read(&view.name, *field)),
 
-        Expr::Not(inner) => Ok(FieldValue::Bool(!eval(inner, ctx, view, config)?.truthy())),
+        Expr::Concept { name, part } => Ok(eval_concept(view, concepts, name, *part)),
+
+        Expr::Not(inner) => Ok(FieldValue::Bool(
+            !eval(inner, ctx, view, config, concepts)?.truthy(),
+        )),
 
         Expr::And(a, b) => {
-            let left = eval(a, ctx, view, config)?.truthy();
-            let right = eval(b, ctx, view, config)?.truthy();
+            let left = eval(a, ctx, view, config, concepts)?.truthy();
+            let right = eval(b, ctx, view, config, concepts)?.truthy();
             Ok(FieldValue::Bool(left && right))
         }
         Expr::Or(a, b) => {
-            let left = eval(a, ctx, view, config)?.truthy();
-            let right = eval(b, ctx, view, config)?.truthy();
+            let left = eval(a, ctx, view, config, concepts)?.truthy();
+            let right = eval(b, ctx, view, config, concepts)?.truthy();
             Ok(FieldValue::Bool(left || right))
         }
 
         Expr::Compare { op, lhs, rhs } => {
-            let left = eval(lhs, ctx, view, config)?;
-            let right = eval(rhs, ctx, view, config)?;
+            let left = eval(lhs, ctx, view, config, concepts)?;
+            let right = eval(rhs, ctx, view, config, concepts)?;
             Ok(compare(*op, left, right))
         }
 
-        Expr::Call { func, args } => eval_call(*func, args, ctx, view, config),
+        Expr::Call { func, args } => eval_call(*func, args, ctx, view, config, concepts),
+    }
+}
+
+/// Read one property of a concept the document declared, as of `view`.
+///
+/// ## Why this is causal by construction
+///
+/// The band is re-derived from `view.history`, which ends at the decision
+/// candle. `detect` measures mitigation over the candles *after* a band forms,
+/// so handing it a window that stops at "now" is what keeps the answer honest:
+/// the newest candle in the slice is the newest candle the strategy may see.
+/// There is no path here to a later bar -- the same structural guarantee
+/// `docs/07` relies on everywhere else.
+///
+/// ## The newest band, and nothing else
+///
+/// Every part describes the **most recently formed** band, which `detect`
+/// returns last. A concept is a pattern rather than a detector with a notion of
+/// "the" gap, so several bands can match one impulse and one has to be picked.
+/// The newest is deterministic and is what a trader reading left to right is
+/// looking at. "The newest one is fresh" is not the same claim as "some band
+/// somewhere is fresh", and it never claims more than it can see.
+///
+/// ## Absent, not zero
+///
+/// When the concept has found nothing, a boolean part is `false` and a numeric
+/// part is [`FieldValue::Absent`]. That is deliberate: `close_below` a concept's
+/// bottom on a chart with no such band must be *false*, not true against a
+/// fabricated `0.0`. It is the same choice [`MarketContext::read`] makes for a
+/// missing view or an unbuilt VWAP.
+fn eval_concept(
+    view: &TimeframeView,
+    concepts: &[Concept],
+    name: &str,
+    part: ConceptPart,
+) -> FieldValue<'static> {
+    let Some(concept) = concepts.iter().find(|concept| concept.name == name) else {
+        // Unreachable for a validated document: the validator refuses a
+        // condition that reads a concept the document does not declare. Absent
+        // is still the right answer if it is ever reached -- it makes the
+        // condition not fire instead of inventing a level.
+        return FieldValue::Absent;
+    };
+
+    // `detect` returns bands oldest first, so the last is the newest. Written
+    // as `last()` rather than a search: the order is part of `detect`'s
+    // documented contract, and re-deriving it here would be a second copy of
+    // that rule to keep in step.
+    let bands = detect(&view.history, concept);
+    let Some(newest) = bands.last() else {
+        return match part {
+            ConceptPart::Exists | ConceptPart::Fresh => FieldValue::Bool(false),
+            ConceptPart::Mitigated | ConceptPart::Top | ConceptPart::Bottom => FieldValue::Absent,
+        };
+    };
+
+    match part {
+        ConceptPart::Exists => FieldValue::Bool(true),
+        ConceptPart::Fresh => FieldValue::Bool(newest.is_fresh()),
+        ConceptPart::Mitigated => FieldValue::Num(newest.mitigated),
+        ConceptPart::Top => FieldValue::Num(newest.price_high),
+        ConceptPart::Bottom => FieldValue::Num(newest.price_low),
     }
 }
 
@@ -721,19 +815,20 @@ fn eval_call<'a>(
     ctx: &'a MarketContext,
     view: &'a TimeframeView,
     config: &RuntimeConfig,
+    concepts: &'a [Concept],
 ) -> Result<FieldValue<'a>, RuntimeError> {
     match func {
         // `threshold` marks a tunable number; it evaluates to its argument.
         Func::Threshold => match args.first() {
-            Some(arg) => eval(arg, ctx, view, config),
+            Some(arg) => eval(arg, ctx, view, config, concepts),
             None => Ok(FieldValue::Absent),
         },
 
         Func::Above | Func::Below => {
-            let Some(a) = num_arg(args, 0, ctx, view, config)? else {
+            let Some(a) = num_arg(args, 0, ctx, view, config, concepts)? else {
                 return Ok(FieldValue::Bool(false));
             };
-            let Some(b) = num_arg(args, 1, ctx, view, config)? else {
+            let Some(b) = num_arg(args, 1, ctx, view, config, concepts)? else {
                 return Ok(FieldValue::Bool(false));
             };
             Ok(FieldValue::Bool(if func == Func::Above {
@@ -744,20 +839,20 @@ fn eval_call<'a>(
         }
 
         Func::CrossesAbove => {
-            let Some(a) = num_arg(args, 0, ctx, view, config)? else {
+            let Some(a) = num_arg(args, 0, ctx, view, config, concepts)? else {
                 return Ok(FieldValue::Bool(false));
             };
-            let Some(b) = num_arg(args, 1, ctx, view, config)? else {
+            let Some(b) = num_arg(args, 1, ctx, view, config, concepts)? else {
                 return Ok(FieldValue::Bool(false));
             };
             // Without a previous bar there is no cross, only a state.
             let Some(previous) = view.prev() else {
                 return Ok(FieldValue::Bool(false));
             };
-            let Some(prev_a) = num_arg(args, 0, ctx, previous, config)? else {
+            let Some(prev_a) = num_arg(args, 0, ctx, previous, config, concepts)? else {
                 return Ok(FieldValue::Bool(false));
             };
-            let Some(prev_b) = num_arg(args, 1, ctx, previous, config)? else {
+            let Some(prev_b) = num_arg(args, 1, ctx, previous, config, concepts)? else {
                 return Ok(FieldValue::Bool(false));
             };
             Ok(FieldValue::Bool(a > b && prev_a <= prev_b))
@@ -787,7 +882,7 @@ fn eval_call<'a>(
         }
 
         Func::CloseBelow | Func::CloseAbove => {
-            let Some(x) = num_arg(args, 0, ctx, view, config)? else {
+            let Some(x) = num_arg(args, 0, ctx, view, config, concepts)? else {
                 return Ok(FieldValue::Bool(false));
             };
             let close = view.candle.close;
@@ -807,9 +902,10 @@ fn num_arg<'a>(
     ctx: &'a MarketContext,
     view: &'a TimeframeView,
     config: &RuntimeConfig,
+    concepts: &'a [Concept],
 ) -> Result<Option<f64>, RuntimeError> {
     match args.get(index) {
-        Some(arg) => Ok(eval(arg, ctx, view, config)?.number_or_absent()),
+        Some(arg) => Ok(eval(arg, ctx, view, config, concepts)?.number_or_absent()),
         None => Ok(None),
     }
 }
@@ -1164,7 +1260,7 @@ timeframes:
         // expression itself, which we evaluate directly.
         let view = ctx.decision().unwrap();
         let expr = Expr::parse("close_below(stop_price)").unwrap();
-        let value = eval(&expr, &ctx, view, &RuntimeConfig::default()).unwrap();
+        let value = eval(&expr, &ctx, view, &RuntimeConfig::default(), &[]).unwrap();
         assert!(
             !value.truthy(),
             "an absent stop must not fire an invalidation"
@@ -1180,11 +1276,11 @@ timeframes:
         let config = RuntimeConfig::default();
         // Either it evaluates against the previous bar or it is false; what it
         // must never do is panic or read the future.
-        let _ = eval(&expr, &ctx, view, &config).unwrap();
+        let _ = eval(&expr, &ctx, view, &config, &[]).unwrap();
 
         let single = ctx_from(vec![candle(0, 10.0, 10.0, 10.0, 1.0, 1.0)], None);
         let view = single.decision().unwrap();
-        assert!(!eval(&expr, &single, view, &config).unwrap().truthy());
+        assert!(!eval(&expr, &single, view, &config, &[]).unwrap().truthy());
     }
 
     #[test]
@@ -1194,7 +1290,7 @@ timeframes:
         let config = RuntimeConfig::default();
         // Only five bars retained, so a 20-bar low cannot be established.
         let expr = Expr::parse("new_low(20)").unwrap();
-        assert!(!eval(&expr, &ctx, view, &config).unwrap().truthy());
+        assert!(!eval(&expr, &ctx, view, &config, &[]).unwrap().truthy());
     }
 
     #[test]
@@ -1202,7 +1298,7 @@ timeframes:
         let ctx = ctx_from(series(), None);
         let view = ctx.decision().unwrap();
         let expr = Expr::parse("threshold(1500)").unwrap();
-        let value = eval(&expr, &ctx, view, &RuntimeConfig::default()).unwrap();
+        let value = eval(&expr, &ctx, view, &RuntimeConfig::default(), &[]).unwrap();
         assert_eq!(value.as_num(), Some(1500.0));
     }
 
@@ -1313,5 +1409,270 @@ invalidation:
         assert_eq!(engine.candles_seen(), 1);
         assert_eq!(engine.entries_emitted(), 1);
         assert_eq!(engine.exits_emitted(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Concepts: a measurement the client defined, read from a condition.
+    // -----------------------------------------------------------------------
+
+    /// A document whose only entry condition is a concept it declared itself.
+    ///
+    /// The gap is the textbook one: three candles, the first candle's high left
+    /// behind below the third candle's low. Nothing here is a built-in the
+    /// platform already had -- `gap` exists only because this document says so.
+    const GAP_DOCUMENT: &str = r#"
+name: "gap retest"
+version: "1"
+kind: strategy
+market: "BTCUSDT"
+timeframes:
+  entry: "5m"
+concepts:
+  - name: gap
+    label: fvg
+    side: buy
+    window: 3
+    lower: {high: 0}
+    upper: {low: 2}
+    require:
+      - left: {high: 0}
+        op: below
+        right: {low: 2}
+entry:
+  direction: long
+  all_of:
+    - timeframe: entry
+      condition: "concepts.gap.fresh"
+      label: fresh-gap
+risk:
+  max_risk_pct: 1.0
+  stop: {kind: fixed, price: 110.0}
+  take_profit:
+    type: "risk_multiple"
+    value: 2.0
+invalidation:
+  - timeframe: entry
+    condition: "close_below(stop_price)"
+    label: lost-stop
+"#;
+
+    /// Two gaps: `[100, 106]` left by bars 0-2, then `[104, 112]` left by bars
+    /// 6-8. The newest is untouched -- no candle after bar 8 exists, so nothing
+    /// has traded back into it.
+    ///
+    /// The second gap is deliberately the *newer* one: a test that only ever had
+    /// one band could not tell "the newest" from "the only one".
+    fn two_gap_series() -> Vec<Candle> {
+        vec![
+            candle(0, 100.0, 99.0, 99.5, 1000.0, 1000.0),
+            candle(300, 110.0, 99.5, 109.0, 1000.0, 1000.0),
+            // Gap one opens here: bar 0's high (100) is left below this low (106).
+            candle(600, 112.0, 106.0, 111.0, 1000.0, 1000.0),
+            candle(900, 113.0, 107.0, 112.0, 1000.0, 1000.0),
+            candle(1200, 113.0, 108.0, 112.5, 1000.0, 1000.0),
+            candle(1500, 112.0, 106.5, 107.0, 1000.0, 1000.0),
+            candle(1800, 104.0, 103.0, 103.5, 1000.0, 1000.0),
+            candle(2100, 118.0, 109.0, 117.0, 1000.0, 1000.0),
+            // Gap two opens here: bar 6's high (104) is left below this low (112).
+            candle(2400, 120.0, 112.0, 119.0, 1000.0, 1000.0),
+        ]
+    }
+
+    /// One gap, left by bars 0-2, and a later candle that trades back into it.
+    ///
+    /// Truncated at bar 3 the gap is fresh; truncated at bar 5 it is still
+    /// fresh; carried to bar 6 it is half consumed. Same pattern, same bands --
+    /// only the candles the strategy can see differ.
+    fn one_gap_series() -> Vec<Candle> {
+        vec![
+            candle(0, 100.0, 99.0, 99.5, 1000.0, 1000.0),
+            candle(300, 110.0, 99.5, 109.0, 1000.0, 1000.0),
+            candle(600, 112.0, 106.0, 111.0, 1000.0, 1000.0),
+            candle(900, 113.0, 107.0, 112.0, 1000.0, 1000.0),
+            candle(1200, 114.0, 108.0, 113.0, 1000.0, 1000.0),
+            candle(1500, 115.0, 109.0, 114.0, 1000.0, 1000.0),
+            // The pullback that eats half the gap: 106 - 103 over a height of 6.
+            candle(1800, 116.0, 103.0, 104.0, 1000.0, 1000.0),
+        ]
+    }
+
+    /// A series with no such pattern anywhere in it.
+    fn no_gap_series() -> Vec<Candle> {
+        (0..6)
+            .map(|i| {
+                let base = 100.0 + f64::from(i);
+                candle(
+                    i64::from(i) * 300,
+                    base + 1.0,
+                    base - 1.0,
+                    base,
+                    1000.0,
+                    1000.0,
+                )
+            })
+            .collect()
+    }
+
+    /// Read one part of the document's own concept, through the real evaluator.
+    ///
+    /// Goes through `eval` rather than calling `eval_concept` directly, so the
+    /// parse of `concepts.gap.top` is covered as well as the read. The answer is
+    /// rebuilt rather than passed through because the parsed expression is local
+    /// to this function and `FieldValue` borrows its source; a concept part is a
+    /// boolean or a number, so nothing here was borrowed in the first place.
+    fn concept_value(
+        engine: &StrategyEngine,
+        ctx: &MarketContext,
+        part: &str,
+    ) -> FieldValue<'static> {
+        let expr = Expr::parse(&format!("concepts.gap.{part}")).expect("the reference parses");
+        let value = eval(
+            &expr,
+            ctx,
+            ctx.decision().expect("a decision view"),
+            engine.config(),
+            &engine.concepts,
+        )
+        .expect("a concept read does not fail");
+
+        match value {
+            FieldValue::Bool(value) => FieldValue::Bool(value),
+            FieldValue::Num(value) => FieldValue::Num(value),
+            // Unreachable: no `ConceptPart` evaluates to a string.
+            FieldValue::Str(_) | FieldValue::Absent => FieldValue::Absent,
+        }
+    }
+
+    #[test]
+    fn a_concept_the_document_declared_is_read_by_a_condition() {
+        let mut engine = engine(GAP_DOCUMENT);
+        let ctx = ctx_from(two_gap_series(), None);
+        let signal = engine
+            .on_candle(&ctx)
+            .expect("the fresh gap must fire an entry");
+        let enter = signal.as_enter().expect("an entry");
+        assert_eq!(enter.direction, Direction::Long);
+        assert_eq!(enter.reasons, vec!["fresh-gap".to_string()]);
+    }
+
+    #[test]
+    fn a_concept_reads_the_newest_band_not_the_first_one() {
+        // Two bands exist; the condition is about the newer of the two. Reading
+        // the first would give 100/106 and a mitigated 0.5 -- a different answer
+        // from the same document and the same chart.
+        let engine = engine(GAP_DOCUMENT);
+        let ctx = ctx_from(two_gap_series(), None);
+        assert!(concept_value(&engine, &ctx, "exists").truthy());
+        assert!(concept_value(&engine, &ctx, "fresh").truthy());
+        assert_eq!(concept_value(&engine, &ctx, "top").as_num(), Some(112.0));
+        assert_eq!(concept_value(&engine, &ctx, "bottom").as_num(), Some(104.0));
+        assert_eq!(
+            concept_value(&engine, &ctx, "mitigated").as_num(),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn a_concept_that_found_nothing_is_absent_and_not_zero() {
+        // The whole reason `FieldValue` has an `Absent`: `close_below` a gap's
+        // bottom on a chart with no gap must be false, not true against a
+        // fabricated 0.0.
+        let engine = engine(GAP_DOCUMENT);
+        let ctx = ctx_from(no_gap_series(), None);
+        assert!(!concept_value(&engine, &ctx, "exists").truthy());
+        assert!(
+            !concept_value(&engine, &ctx, "fresh").truthy(),
+            "no band is not a fresh band"
+        );
+        for part in ["top", "bottom", "mitigated"] {
+            assert!(
+                concept_value(&engine, &ctx, part).is_absent(),
+                "`{part}` must be absent, not zero"
+            );
+        }
+
+        // And through a real condition: an absent level makes the comparison
+        // false rather than firing on zero.
+        let expr = Expr::parse("close_below(concepts.gap.bottom)").unwrap();
+        let value = eval(
+            &expr,
+            &ctx,
+            ctx.decision().unwrap(),
+            engine.config(),
+            &engine.concepts,
+        )
+        .unwrap();
+        assert!(!value.truthy());
+    }
+
+    #[test]
+    fn a_concept_does_not_react_to_a_candle_the_strategy_cannot_see() {
+        // The causality guard. The gap is left by bars 0-2 and bar 6 trades half
+        // way back into it. Asked at bar 3 -- with a view that stops there -- the
+        // gap must be fresh. If the evaluator were handed the whole series
+        // instead of the view's own history, bar 3 would already read as
+        // mitigated, and the strategy would trade a level it could not have known
+        // was about to be consumed. That is the look-ahead `docs/07` forbids.
+        let engine = engine(GAP_DOCUMENT);
+        let series = one_gap_series();
+
+        let at_three = ctx_from(series[..4].to_vec(), None);
+        assert!(concept_value(&engine, &at_three, "fresh").truthy());
+        assert_eq!(
+            concept_value(&engine, &at_three, "mitigated").as_num(),
+            Some(0.0)
+        );
+
+        // Still fresh one bar before the pullback, so the test is about the
+        // future candle rather than about truncation in general.
+        let at_five = ctx_from(series[..6].to_vec(), None);
+        assert!(concept_value(&engine, &at_five, "fresh").truthy());
+
+        let at_six = ctx_from(series, None);
+        assert!(
+            !concept_value(&engine, &at_six, "fresh").truthy(),
+            "bar 6 traded into the gap, so from bar 6 it is no longer fresh"
+        );
+        assert_eq!(
+            concept_value(&engine, &at_six, "mitigated").as_num(),
+            Some(0.5)
+        );
+    }
+
+    #[test]
+    fn a_concept_reference_the_document_never_declared_is_absent_not_a_panic() {
+        // Unreachable through a validated document -- the validator refuses a
+        // read of an undeclared concept -- so this is the backstop. It runs
+        // inside wasm, where a panic is a trap and a dead instance, and `Absent`
+        // is the same answer `MarketContext::read` gives for a missing view.
+        let ctx = ctx_from(two_gap_series(), None);
+        let view = ctx.decision().unwrap();
+        for part in ConceptPart::ALL {
+            assert!(
+                eval_concept(view, &[], "nobody_declared_this", part).is_absent(),
+                "`{part}` on an undeclared concept must be absent"
+            );
+        }
+    }
+
+    #[test]
+    fn a_document_with_a_broken_concept_never_reaches_the_engine() {
+        // The runtime trusts `ValidatedStrategy`, so a concept the validator
+        // would refuse has to be refused *there*. If this ever stops failing,
+        // the engine is being handed documents nobody checked.
+        let yaml = GAP_DOCUMENT.replace("window: 3", "window: 99");
+        let err = strategy_dsl::parse_and_validate(&yaml).unwrap_err();
+        assert!(
+            matches!(err, strategy_dsl::DslError::Validation { .. }),
+            "{err:?}"
+        );
+
+        // And a condition reading a concept the document does not have.
+        let yaml = GAP_DOCUMENT.replace("concepts.gap.fresh", "concepts.absorption.fresh");
+        let err = strategy_dsl::parse_and_validate(&yaml).unwrap_err();
+        assert!(
+            matches!(err, strategy_dsl::DslError::Validation { .. }),
+            "{err:?}"
+        );
     }
 }

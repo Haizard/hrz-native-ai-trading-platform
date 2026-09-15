@@ -25,6 +25,17 @@ timeframes:
   setup: "1h"
   entry: "5m"
 
+concepts:                    # optional — measurements this document defines itself
+  - name: gap                # see "Concepts: measurements the client defines"
+    side: buy
+    window: 3
+    lower: {high: 0}
+    upper: {low: 2}
+    require:
+      - left: {high: 0}
+        op: below
+        right: {low: 2}
+
 entry:
   all_of:
     - timeframe: trend
@@ -35,6 +46,8 @@ entry:
       condition: liquidity.swept == "sell_side"
     - timeframe: entry
       condition: delta > threshold(1500)
+    - timeframe: entry
+      condition: "concepts.gap.fresh"
 
 risk:
   max_risk_pct: 1.0
@@ -60,6 +73,79 @@ Conditions are small boolean expressions over named fields exposed by `analytics
 explicit rather than a general-purpose expression language — every operator supported
 must be enumerable and individually testable by the validator.
 
+## Concepts: measurements the client defines
+
+The condition vocabulary is closed. This is what keeps it closed **and** still lets a client
+trade an idea the platform has never heard of.
+
+A **concept** is a measurement written as data: a window of candles, two selectors giving the
+band its edges, and the requirements that make the pattern the pattern.
+
+```yaml
+concepts:
+  - name: gap                  # an identifier — a condition references it by this name
+    label: fvg                 # how it reads on the chart; defaults to the name, opened out
+    side: buy                  # which side is expected to react from the band
+    window: 3                  # how many candles the pattern spans
+    lower: {high: 0}           # the band's cheaper edge: the first candle's high
+    upper: {low: 2}            # its dearer edge: the third candle's low
+    require:                   # what makes it this pattern rather than a coincidence
+      - left: {high: 0}
+        op: below
+        right: {low: 2}
+    min_band_ratio: 0.2        # optional: the band must be this share of the window's range
+```
+
+A selector is `open | high | low | close | mid | volume` of a candle **inside the window**,
+counted from the oldest (`0`), written as a one-key mapping: `{high: 0}`. `op` is
+`below | above | below_or_equal | above_or_equal`. `window` is 2..=8.
+
+A condition reads one of five properties of a concept the document declares:
+
+| reference | type | what it says |
+|---|---|---|
+| `concepts.<name>.exists` | bool | the concept found a band |
+| `concepts.<name>.fresh` | bool | the newest band has not been traded back into |
+| `concepts.<name>.mitigated` | number | how much of it has been, `0.0..=1.0` |
+| `concepts.<name>.top` | number | the newest band's dearer edge |
+| `concepts.<name>.bottom` | number | the newest band's cheaper edge |
+
+```yaml
+entry:
+  all_of:
+    - timeframe: entry
+      condition: "concepts.gap.fresh"
+    - timeframe: entry
+      condition: "close > concepts.gap.top"
+```
+
+Four rules, all enforced rather than documented-and-hoped:
+
+- **A reference must name a concept the document declares.** `concepts.foo.fresh` with no
+  `foo` in the block is a validation error, not a `false` — the same rule that applies to a
+  condition naming an undeclared timeframe.
+- **The parts describe the newest band.** A pattern is not a detector with a notion of "the"
+  band: one impulse can leave several, so one has to be picked and the newest is the one a
+  trader reading left to right is looking at. "The newest one is fresh" is not the same claim
+  as "some band is fresh", and the grammar cannot make the second one yet.
+- **A concept that found nothing is absent, not zero.** A boolean part is `false`; a numeric
+  part is absent, so `close_below(concepts.gap.bottom)` on a chart with no gap is false
+  rather than true against a fabricated `0.0`.
+- **A band is measured only from candles up to the decision bar.** The runtime re-derives the
+  band from the view's own history, which ends at the strategy's "now", so a band cannot
+  report itself already mitigated on the bar it formed.
+
+The operators did not grow. "Keep the grammar small and explicit" is a rule about the
+**grammar**, not about the set of measurements, and this is where that line is drawn: a new
+*operator* is a change to the DSL and needs a spec change, while a new *measurement* is a
+document.
+
+Every concept is data. Nothing a client writes is ever compiled — the sandbox's rule is that
+we compile the interpreter and pass the document in, and a concept does not bend it.
+
+The concepts a document declares are also what a chart draws: the same document sent to
+`chart-engine` renders each one as a band (see `docs/14-FRONTEND-CHART-ENGINE.md`).
+
 ## Schema & validation (`strategy-dsl` crate)
 - `schema.rs`: serde structs mirroring the document shape above, with strict
   `deny_unknown_fields` so malformed or hallucinated fields fail fast.
@@ -67,6 +153,9 @@ must be enumerable and individually testable by the validator.
 - `validator.rs`: semantic checks beyond schema shape:
   - referenced timeframes must be declared in `timeframes`.
   - referenced fields/functions must exist in the known condition vocabulary.
+  - referenced concepts must be declared in `concepts`, and each declared concept must pass
+    `analytics_core::concepts::validate` (an identifier name, a window in range, selectors
+    that exist and fit the window, one side per comparison).
   - risk block must have a positive `max_risk_pct` under a configured hard ceiling
     (e.g. never above 5%, regardless of what was requested).
   - `invalidation` must reference at least one concrete condition.

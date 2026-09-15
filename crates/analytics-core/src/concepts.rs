@@ -52,7 +52,8 @@
 //! can and never panics, because the chart engine calls it inside wasm where a
 //! panic is a trap and a dead canvas.
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::AnalyticsError;
 use crate::regions::{mitigation, Region, RegionOrigin};
@@ -77,8 +78,20 @@ pub const MAX_NAME: usize = 48;
 ///
 /// The index counts from the **oldest** candle of the window, so a pattern reads
 /// left to right and the last index is the candle that triggers it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// ## Why the serde impls are hand-written
+///
+/// A selector is written `{high: 0}` -- one key, one index -- in both formats a
+/// document is authored in: the agent emits JSON, a person writes YAML for
+/// `strategy-cli`, and both would write it that way. The derived form does not
+/// agree. A newtype variant serializes as `{"high": 0}` in JSON but as a *tagged*
+/// `!high 0` in YAML, so a hand-written `lower: {high: 0}` fails to parse and a
+/// document that did parse would come back spelled differently from how it went
+/// in -- which breaks the round-trip the builder depends on.
+///
+/// The impls below fix both directions: `{high: 0}` in, `{high: 0}` out, in
+/// either format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Selector {
     /// The candle's open.
     Open(usize),
@@ -95,6 +108,36 @@ pub enum Selector {
 }
 
 impl Selector {
+    /// Every selector name, for a validation message that can offer them all.
+    pub const NAMES: [&'static str; 6] = ["open", "high", "low", "close", "mid", "volume"];
+
+    /// The written name, without the index.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Open(_) => "open",
+            Self::High(_) => "high",
+            Self::Low(_) => "low",
+            Self::Close(_) => "close",
+            Self::Mid(_) => "mid",
+            Self::Volume(_) => "volume",
+        }
+    }
+
+    /// Build one from its written name and index.
+    #[must_use]
+    pub fn from_name(name: &str, index: usize) -> Option<Self> {
+        Some(match name {
+            "open" => Self::Open(index),
+            "high" => Self::High(index),
+            "low" => Self::Low(index),
+            "close" => Self::Close(index),
+            "mid" => Self::Mid(index),
+            "volume" => Self::Volume(index),
+            _ => return None,
+        })
+    }
+
     /// Which candle of the window this reads, oldest first.
     #[must_use]
     pub const fn index(self) -> usize {
@@ -142,15 +185,63 @@ impl Selector {
 
 impl std::fmt::Display for Selector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            Self::Open(_) => "open",
-            Self::High(_) => "high",
-            Self::Low(_) => "low",
-            Self::Close(_) => "close",
-            Self::Mid(_) => "mid",
-            Self::Volume(_) => "volume",
+        write!(f, "{}({})", self.name(), self.index())
+    }
+}
+
+impl Serialize for Selector {
+    /// One key, one index: `{high: 0}`.
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry(self.name(), &self.index())?;
+        map.end()
+    }
+}
+
+/// Reads the one-key form, and refuses anything else with a message that names
+/// the keys that exist.
+struct SelectorVisitor;
+
+impl<'de> Visitor<'de> for SelectorVisitor {
+    type Value = Selector;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a single-key mapping such as `{{high: 0}}`, with a key from: {}",
+            Selector::NAMES.join(", ")
+        )
+    }
+
+    fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Selector, M::Error> {
+        let Some(name) = map.next_key::<String>()? else {
+            return Err(de::Error::custom(format!(
+                "a selector needs a key, e.g. `{{high: 0}}`; keys are: {}",
+                Selector::NAMES.join(", ")
+            )));
         };
-        write!(f, "{name}({})", self.index())
+        let index: usize = map.next_value()?;
+        // Two keys is not a longer selector, it is an ambiguity -- `{high: 0,
+        // low: 1}` has no meaning and silently taking the first would be worse
+        // than refusing it.
+        if map.next_key::<de::IgnoredAny>()?.is_some() {
+            return Err(de::Error::custom(format!(
+                "a selector takes exactly one key, got `{name}` and another"
+            )));
+        }
+        Selector::from_name(&name, index).ok_or_else(|| {
+            de::Error::custom(format!(
+                "unknown selector `{name}`; keys are: {}",
+                Selector::NAMES.join(", ")
+            ))
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Selector {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(SelectorVisitor)
     }
 }
 
@@ -241,6 +332,61 @@ impl Requirement {
     }
 }
 
+/// `Side`, as a **document** writes it: `buy` / `sell`.
+///
+/// [`Side`] itself travels as `"Buy"`, which is right where it is a value inside
+/// a typed message -- an order, a trade, a footprint bucket. A concept is
+/// different: a client writes it into a strategy document, where every other
+/// word is lowercase (`direction: long`, `timeframe: entry`, `op: below`), and a
+/// lone `side: Buy` in the middle of that is a wart a client gets wrong once and
+/// then blames the platform for.
+///
+/// So the document vocabulary is `buy` / `sell`, and this is the bridge -- the
+/// same role [`Side::name`] plays for the chart scene, and [`BreakKind::name`]
+/// for a region's origin.
+///
+/// It is strict, and deliberately so: `Buy` is refused with a message naming
+/// both spellings, the same way an unknown field is refused. Quietly accepting
+/// two spellings would mean two ways to write one document, and a validator that
+/// cannot enumerate what it accepts is the thing `docs/06` exists to prevent.
+///
+/// [`BreakKind::name`]: crate::market_structure::BreakKind::name
+mod side_wire {
+    use serde::de::{self, Visitor};
+    use serde::{Deserializer, Serializer};
+
+    use crate::types::Side;
+
+    pub fn serialize<S: Serializer>(side: &Side, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(side.name())
+    }
+
+    struct SideVisitor;
+
+    impl Visitor<'_> for SideVisitor {
+        type Value = Side;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("`buy` or `sell`")
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<Side, E> {
+            Side::ALL
+                .into_iter()
+                .find(|side| side.name() == value)
+                .ok_or_else(|| {
+                    de::Error::custom(format!(
+                        "unknown side `{value}`; a concept is `buy` or `sell`"
+                    ))
+                })
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Side, D::Error> {
+        deserializer.deserialize_str(SideVisitor)
+    }
+}
+
 /// A measurement a client defined.
 ///
 /// See the module docs for the shape and for what it deliberately cannot say.
@@ -253,6 +399,7 @@ pub struct Concept {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Which side is expected to react from a band this finds.
+    #[serde(with = "side_wire")]
     pub side: Side,
     /// How many candles the pattern spans.
     pub window: usize,
@@ -923,11 +1070,99 @@ mod tests {
     }
 
     #[test]
+    fn a_selector_is_one_key_and_one_index() {
+        // The form both a model and a person write, and the form the serde impls
+        // have to keep in both directions -- the derived one emits `!high 0` in
+        // YAML, which a hand-written `lower: {high: 0}` does not parse as and a
+        // round-trip would silently rewrite.
+        for selector in [
+            Selector::Open(0),
+            Selector::High(1),
+            Selector::Low(2),
+            Selector::Close(3),
+            Selector::Mid(4),
+            Selector::Volume(5),
+        ] {
+            let value = serde_json::to_value(selector).expect("serializes");
+            assert_eq!(
+                value,
+                serde_json::json!({ selector.name(): selector.index() }),
+                "{selector} must travel as its own name"
+            );
+            let back: Selector = serde_json::from_value(value).expect("round-trips");
+            assert_eq!(back, selector);
+            // And the written form is what a person would write.
+            assert_eq!(
+                selector.to_string(),
+                format!("{}({})", selector.name(), selector.index())
+            );
+        }
+        // `from_name` and `name` have to agree, or a selector could be written
+        // in a form the parser cannot read back.
+        for name in Selector::NAMES {
+            let selector = Selector::from_name(name, 1).expect("every advertised name is valid");
+            assert_eq!(selector.name(), name);
+        }
+    }
+
+    #[test]
+    fn a_selector_refuses_a_shape_it_cannot_mean() {
+        // Two keys is not a longer selector, it is an ambiguity. Silently taking
+        // the first would give a document a meaning its author did not write.
+        let err = serde_json::from_str::<Selector>(r#"{"high":0,"low":1}"#).unwrap_err();
+        assert!(err.to_string().contains("exactly one key"), "{err}");
+
+        let err = serde_json::from_str::<Selector>(r#"{}"#).unwrap_err();
+        assert!(err.to_string().contains("needs a key"), "{err}");
+
+        // And the message names the keys that do exist, because the usual cause
+        // is a near miss.
+        let err = serde_json::from_str::<Selector>(r#"{"clos":0}"#).unwrap_err();
+        assert!(err.to_string().contains("unknown selector `clos`"), "{err}");
+        for name in Selector::NAMES {
+            assert!(
+                err.to_string().contains(name),
+                "`{name}` should be offered: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_concept_writes_its_side_the_way_a_document_does() {
+        // The document's vocabulary is lowercase throughout -- `direction: long`,
+        // `timeframe: entry`, `op: below` -- and `side` has to match it. `Side`
+        // itself travels as `"Buy"`, which is right inside a typed message and
+        // wrong in a document a client types, so the two spellings are split on
+        // purpose and this is the test that keeps the split where it belongs.
+        let value = serde_json::to_value(bullish_gap()).expect("serializes");
+        assert_eq!(value["side"], "buy", "a document writes `buy`, not `Buy`");
+
+        let back: Concept = serde_json::from_value(value).expect("round-trips");
+        assert_eq!(back, bullish_gap());
+    }
+
+    #[test]
+    fn the_shared_spelling_of_a_side_is_refused_in_a_document() {
+        // `Buy` is the wire form of `Side` everywhere else in the workspace, so
+        // it is the mistake a caller will actually make. It must fail loudly and
+        // name both spellings rather than be quietly accepted: two spellings for
+        // one word is two ways to write the same document.
+        let err = serde_json::from_str::<Side>(r#""Buy""#).expect("the shared type still takes it");
+        assert_eq!(err, Side::Buy, "the split is in `Concept`, not in `Side`");
+
+        let mut value = serde_json::to_value(bullish_gap()).expect("serializes");
+        value["side"] = serde_json::json!("Buy");
+        let err = serde_json::from_value::<Concept>(value).unwrap_err();
+        assert!(err.to_string().contains("`buy` or `sell`"), "{err}");
+        assert!(err.to_string().contains("unknown side `Buy`"), "{err}");
+    }
+
+    #[test]
     fn a_concept_may_omit_the_optional_fields() {
         // A model writing a document should not have to emit empty arrays and
         // nulls to be understood.
         let minimal: Concept = serde_json::from_str(
-            r#"{"name":"gap","side":"Buy","window":3,
+            r#"{"name":"gap","side":"buy","window":3,
                 "lower":{"high":0},"upper":{"low":2}}"#,
         )
         .expect("the optional fields are optional");

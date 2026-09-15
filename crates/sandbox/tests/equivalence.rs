@@ -263,6 +263,49 @@ const DOCUMENTS: &[(&str, &str)] = &[
             ]
         }"#,
     ),
+    (
+        // The measurement here exists only because the document says so. Nothing
+        // in `analytics-core` knows what a fair value gap is; the engine
+        // re-derives one per bar from the candles the view already carries. If
+        // the guest and the native path disagree about it, they disagree about a
+        // *client's own definition*, which is the case the sandbox exists to make
+        // safe.
+        "a concept the client defined, read from a condition",
+        r#"{
+            "name": "Gap retest",
+            "version": "1",
+            "kind": "strategy",
+            "market": "BTCUSDT",
+            "timeframes": {"context": "1h", "entry": "5m"},
+            "concepts": [
+                {
+                    "name": "gap",
+                    "label": "fvg",
+                    "side": "buy",
+                    "window": 3,
+                    "lower": {"high": 0},
+                    "upper": {"low": 2},
+                    "require": [
+                        {"left": {"high": 0}, "op": "below", "right": {"low": 2}}
+                    ]
+                }
+            ],
+            "entry": {
+                "direction": "long",
+                "all_of": [
+                    {"timeframe": "context", "condition": "close > threshold(0)"},
+                    {"timeframe": "entry", "condition": "concepts.gap.exists"},
+                    {"timeframe": "entry", "condition": "close > concepts.gap.bottom"}
+                ]
+            },
+            "risk": {
+                "max_risk_pct": 1.0,
+                "stop": {"kind": "atr", "multiple": 1.5, "period": 14},
+                "take_profit": {"type": "risk_multiple", "value": 1.5}
+            },
+            "invalidation": [{"timeframe": "entry", "condition": "close_below(stop_price)"}]
+        }"#,
+    ),
 ];
 
 #[test]

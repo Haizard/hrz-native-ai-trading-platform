@@ -476,6 +476,86 @@ impl fmt::Display for CompareOp {
     }
 }
 
+/// A property of a concept the document declared.
+///
+/// This is the **whole** surface a condition can read off a concept: five names,
+/// enumerable and individually testable, exactly as `docs/06` requires of every
+/// operator. It is deliberately not "any field of any region" -- the vocabulary
+/// stays closed even though the concepts themselves do not, which is what lets
+/// the validator be exhaustive about it.
+///
+/// ## Which band these describe
+///
+/// The concept's **newest** one -- the most recently formed. A concept is a
+/// pattern, not a detector with a notion of "the" gap: any three candles that
+/// separate is a fair value gap, so one impulse can leave several bands and
+/// "the band" has to be pinned down. The newest is deterministic, cheap, and
+/// what a trader reading left to right is looking at.
+///
+/// This is a real limitation and not a hidden one: a setup that wants "any
+/// fresh band anywhere" cannot yet say so. It says "the newest one is fresh",
+/// which on a chart is the same thing most of the time and is never a lie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConceptPart {
+    /// Whether the concept found any band at all.
+    Exists,
+    /// Whether the newest band is untouched -- price has not traded back into
+    /// it. The distinction the whole concept rests on: a mitigated band has
+    /// already been consumed, and trading one is trading a level that is gone.
+    Fresh,
+    /// How much of the newest band price has traded back through, `0.0..=1.0`.
+    /// `0.0` is fresh, `1.0` means price has been through the whole band.
+    Mitigated,
+    /// The newest band's dearer edge. Absent when the concept found nothing.
+    Top,
+    /// The newest band's cheaper edge. Absent when the concept found nothing.
+    Bottom,
+}
+
+impl ConceptPart {
+    /// Every part, for validation messages and exhaustive tests.
+    pub const ALL: [Self; 5] = [
+        Self::Exists,
+        Self::Fresh,
+        Self::Mitigated,
+        Self::Top,
+        Self::Bottom,
+    ];
+
+    /// Canonical name, as written in a condition.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Exists => "exists",
+            Self::Fresh => "fresh",
+            Self::Mitigated => "mitigated",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+
+    /// The type this part evaluates to.
+    #[must_use]
+    pub const fn type_of(self) -> Type {
+        match self {
+            Self::Exists | Self::Fresh => Type::Bool,
+            Self::Mitigated | Self::Top | Self::Bottom => Type::Num,
+        }
+    }
+
+    /// Look a part up by its canonical name.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|p| p.name() == name)
+    }
+}
+
+impl fmt::Display for ConceptPart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// A parsed condition expression.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -483,6 +563,22 @@ pub enum Expr {
     Literal(Value),
     /// A field read.
     Field(Field),
+    /// A read of a property of a concept the document declared.
+    ///
+    /// Its own node rather than a [`Field`] variant, because the name is
+    /// whatever the document called it. A `String` inside `Field` would cost
+    /// `Copy`, would stop [`ALL_FIELDS`] being a plain slice of a closed set,
+    /// and would force the name to be resolved at parse time -- before the
+    /// document that declares the concept has even been read. As a node, `Field`
+    /// stays closed and the *validator* checks the name against the document's
+    /// `concepts` block, which is the same shape as "a condition's timeframe
+    /// must be declared".
+    Concept {
+        /// The concept's name, as declared in the document.
+        name: String,
+        /// Which property of it to read.
+        part: ConceptPart,
+    },
     /// A function call.
     Call {
         /// Which function.
@@ -548,6 +644,7 @@ impl Expr {
         match self {
             Self::Literal(v) => Ok(v.type_of()),
             Self::Field(f) => Ok(f.type_of()),
+            Self::Concept { part, .. } => Ok(part.type_of()),
             Self::Call { func, args } => {
                 let (min, max) = func.arity();
                 if args.len() < min || args.len() > max {
@@ -673,11 +770,52 @@ impl Expr {
     }
 }
 
+/// Split the `concepts.<name>.<part>` tail into the two halves the AST wants.
+///
+/// `rsplit_once` rather than `split_once` because the *part* is the last
+/// segment, and it is the only one that could be confused with the name. In
+/// practice the distinction does not arise: `analytics_core::concepts::validate`
+/// allows only lowercase letters, digits and underscores in a name, so a name
+/// containing a dot could never have been declared. Splitting on the last dot
+/// means the error for `concepts.gap.top.extra` names `extra` as the bad
+/// property instead of blaming the concept.
+fn parse_concept_ref(rest: &str, whole: &str, start: usize) -> Result<Expr, ExprError> {
+    let Some((name, part)) = rest.rsplit_once('.') else {
+        return Err(ExprError::new(
+            format!(
+                "`{whole}` names a concept but reads nothing from it; write `{whole}.{}`",
+                ConceptPart::Fresh
+            ),
+            start,
+        ));
+    };
+    if name.is_empty() {
+        return Err(ExprError::new(format!("`{whole}` names no concept"), start));
+    }
+    let Some(part) = ConceptPart::parse(part) else {
+        let known: Vec<&str> = ConceptPart::ALL.iter().map(|p| p.name()).collect();
+        return Err(ExprError::new(
+            format!(
+                "unknown concept property `{part}` in `{whole}`; expected one of {}",
+                known.join(", ")
+            ),
+            start,
+        ));
+    };
+    Ok(Expr::Concept {
+        name: name.to_owned(),
+        part,
+    })
+}
+
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Literal(v) => write!(f, "{v}"),
             Self::Field(field) => write!(f, "{field}"),
+            // Round-trips through the parser, so a condition read back out of the
+            // AST is the condition that went in.
+            Self::Concept { name, part } => write!(f, "concepts.{name}.{part}"),
             Self::Call { func, args } => {
                 write!(f, "{func}(")?;
                 for (i, arg) in args.iter().enumerate() {
@@ -1003,6 +1141,13 @@ impl Parser<'_> {
                     };
                     return Ok(Expr::Call { func, args });
                 }
+                // `concepts.<name>.<part>` is checked before the field lookup,
+                // so a typo in a concept property is reported as a bad property
+                // rather than as "unknown field `concepts.gap.frsh`" -- the
+                // message a model gets back is what it corrects from.
+                if let Some(rest) = name.strip_prefix("concepts.") {
+                    return parse_concept_ref(rest, &name, start);
+                }
                 let Some(field) = Field::parse(&name) else {
                     return Err(ExprError::new(format!("unknown field `{name}`"), start));
                 };
@@ -1233,6 +1378,114 @@ mod tests {
         }
     }
 
+    // --- concepts a document declared ---------------------------------------
+
+    #[test]
+    fn a_concept_reference_parses_into_its_own_node() {
+        // The point of the node: the *name* is whatever the document called it,
+        // so it cannot live in the closed `Field` enum. What stays closed is the
+        // part -- five names, all of them known here.
+        assert_eq!(
+            parse("concepts.bullish_gap.fresh"),
+            Expr::Concept {
+                name: "bullish_gap".into(),
+                part: ConceptPart::Fresh,
+            }
+        );
+        assert_eq!(
+            parse("close > concepts.gap.top"),
+            Expr::Compare {
+                op: CompareOp::Gt,
+                lhs: Box::new(Expr::Field(Field::Close)),
+                rhs: Box::new(Expr::Concept {
+                    name: "gap".into(),
+                    part: ConceptPart::Top,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn every_concept_part_has_a_stable_name_and_type() {
+        for part in ConceptPart::ALL {
+            assert_eq!(
+                ConceptPart::parse(part.name()),
+                Some(part),
+                "{}",
+                part.name()
+            );
+            assert!(
+                matches!(part.type_of(), Type::Bool | Type::Num),
+                "{} is neither a predicate nor a number",
+                part.name()
+            );
+        }
+        // A part whose type a condition could not use would be a part that
+        // exists only in this enum.
+        assert_eq!(ConceptPart::Fresh.type_of(), Type::Bool);
+        assert_eq!(ConceptPart::Exists.type_of(), Type::Bool);
+        assert_eq!(ConceptPart::Top.type_of(), Type::Num);
+    }
+
+    #[test]
+    fn a_concept_name_is_not_validated_by_the_parser() {
+        // Deliberately: whether `no_such_concept` was declared is a fact about
+        // the *document*, which the parser has never seen. Parsing must accept
+        // it so the validator can report it against the condition that names it,
+        // the same way an undeclared timeframe is handled.
+        let expr = parse("concepts.no_such_concept.fresh");
+        assert_eq!(expr.type_of(), Ok(Type::Bool));
+    }
+
+    #[test]
+    fn a_concept_reference_without_a_property_says_what_to_write() {
+        let err = Expr::parse("concepts.bullish_gap").unwrap_err();
+        assert!(err.message.contains("names a concept"), "{err}");
+        assert!(
+            err.message.contains("fresh"),
+            "it should name a valid part: {err}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_concept_property_lists_the_known_ones() {
+        // The message is what a model corrects from, so it has to be actionable
+        // rather than merely accurate.
+        let err = Expr::parse("concepts.bullish_gap.frsh").unwrap_err();
+        assert!(
+            err.message.contains("unknown concept property `frsh`"),
+            "{err}"
+        );
+        for part in ConceptPart::ALL {
+            assert!(
+                err.message.contains(part.name()),
+                "`{}` should be offered as a valid property: {err}",
+                part.name()
+            );
+        }
+    }
+
+    #[test]
+    fn a_dotted_concept_property_blames_the_property_not_the_concept() {
+        // Splitting on the *last* dot is what makes this read correctly. Split on
+        // the first and the message would blame a concept called `gap.top`.
+        let err = Expr::parse("concepts.gap.top.extra").unwrap_err();
+        assert!(err.message.contains("`extra`"), "{err}");
+    }
+
+    #[test]
+    fn a_concept_property_is_not_mistaken_for_a_field() {
+        // `concepts` is not in `ALL_FIELDS`, so without the branch in the parser
+        // this would be "unknown field `concepts.bullish_gap.fresh`" -- accurate
+        // and useless.
+        let err = Expr::parse("concepts").unwrap_err();
+        assert!(err.message.contains("unknown field"), "{err}");
+        // `concepts.` names a concept that is empty *and* reads nothing from it;
+        // the second is the more useful thing to say.
+        let err = Expr::parse("concepts.").unwrap_err();
+        assert!(err.message.contains("reads nothing from it"), "{err}");
+    }
+
     #[test]
     fn display_round_trips_through_the_parser() {
         let sources = [
@@ -1241,6 +1494,8 @@ mod tests {
             "absorption.detected and imbalance.stacked",
             "liquidity.swept == \"sell_side\" or new_low()",
             "close_below(vwap)",
+            "concepts.bullish_gap.fresh",
+            "close > concepts.bullish_gap.top",
         ];
         for src in sources {
             let expr = parse(src);

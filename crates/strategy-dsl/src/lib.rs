@@ -84,7 +84,9 @@ pub use schema::{
     RiskBlock, StopSpec, StrategyDocument, TakeProfit, TakeProfitKind,
 };
 
-pub use expr::{CompareOp, Expr, ExprError, Field, Func, Type, Value, ALL_FIELDS, ALL_FUNCS};
+pub use expr::{
+    CompareOp, ConceptPart, Expr, ExprError, Field, Func, Type, Value, ALL_FIELDS, ALL_FUNCS,
+};
 
 #[cfg(feature = "yaml")]
 pub use parser::from_yaml;
@@ -102,7 +104,7 @@ pub use validator::{
 /// from `strategy-runtime`, `backtester` and `api-gateway`.
 pub mod prelude {
     pub use crate::error::{DslError, ValidationIssue};
-    pub use crate::expr::{Expr, Field, Func, Type, Value};
+    pub use crate::expr::{ConceptPart, Expr, Field, Func, Type, Value};
     pub use crate::parser::{parse, parse_and_validate, parse_and_validate_with};
     pub use crate::schema::{Conditional, Direction, DocumentKind, StopSpec, StrategyDocument};
     pub use crate::validator::{

@@ -163,7 +163,7 @@ function conceptDocument() {
   return {
     name: "bullish_gap",
     label: "bullish gap",
-    side: "Buy",
+    side: "buy",
     window: 3,
     lower: { high: 0 },
     upper: { low: 2 },

@@ -33,6 +33,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use analytics_core::concepts::Concept;
 use analytics_core::Timeframe;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -552,6 +553,24 @@ pub struct StrategyDocument {
     /// stop or target.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invalidation: Vec<Conditional>,
+    /// Measurements this document defines for itself.
+    ///
+    /// This is where a client's idea becomes a thing a strategy can reason
+    /// about. A concept is a pattern -- a window of candles and a band, with the
+    /// price relations that have to hold -- and conditions reference one by name
+    /// (`concepts.bullish_gap.fresh`). Nothing in the platform has to know what
+    /// a fair value gap is for a document to trade one.
+    ///
+    /// It lives **in the document** rather than in a registry because `docs/06`
+    /// asks for one representation that runs unchanged as an indicator, a
+    /// backtest, a paper bot and a live bot. A registry would make the document
+    /// depend on state outside itself, and the sandbox would have to be handed
+    /// that state separately -- which is the arrangement this avoids.
+    ///
+    /// Order is significant only in that a document may not declare the same
+    /// name twice; conditions resolve by name, not by position.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concepts: Vec<Concept>,
     /// Optional additional exit conditions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<ExitBlock>,
@@ -590,6 +609,17 @@ impl StrategyDocument {
         }
 
         out
+    }
+
+    /// A declared concept by name.
+    ///
+    /// Linear, and deliberately so: a document declares at most
+    /// `Limits::max_concepts` of them, the list is read once per condition at
+    /// compile time, and an index built here would be a second copy of the
+    /// declaration list to keep in step with it.
+    #[must_use]
+    pub fn concept(&self, name: &str) -> Option<&Concept> {
+        self.concepts.iter().find(|c| c.name == name)
     }
 
     /// The timeframe the strategy makes decisions on: the **finest** declared
