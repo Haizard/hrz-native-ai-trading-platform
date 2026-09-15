@@ -188,6 +188,18 @@ async fn the_orderbook_channel_says_what_it_is_watching_then_forwards_the_book()
     assert_eq!(data["payload"]["symbol"], "BTCUSDT");
     assert_eq!(data["payload"]["bids"][0]["price"], 100.0);
     assert_eq!(data["payload"]["asks"][0]["quantity"], 3.0);
+
+    // A ladder, not a bare snapshot: the panel gets each level's running
+    // total and a bar width, so it never sums market data itself.
+    assert_eq!(data["payload"]["bids"][0]["cumulative"], 2.0);
+    assert_eq!(data["payload"]["asks"][0]["cumulative"], 3.0);
+    // Asks hold more, so the ask side is the deepest and the bid bar is
+    // shorter -- scaled against one denominator, not one per side.
+    assert_eq!(data["payload"]["asks"][0]["bar_pct"], 100.0);
+    assert!(
+        data["payload"]["bids"][0]["bar_pct"].as_f64().unwrap() < 100.0,
+        "a thinner side must not draw a full bar: {data}"
+    );
 }
 
 #[tokio::test]

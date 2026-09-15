@@ -97,6 +97,16 @@
   .pane { flex: 1; overflow: auto; padding: 10px 12px; }
   .pane[hidden] { display: none; }
 
+  /* The DOM. The bar is drawn behind the numbers rather than beside them, so
+     a row stays readable no matter how deep the other side is. */
+  .ladder { font-family: var(--mono); font-size: 11px; }
+  .ladder-head { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; margin: 8px 0 2px; }
+  .ladder-row { position: relative; display: flex; justify-content: space-between; gap: 8px; padding: 1px 4px; }
+  .ladder-row > span { position: relative; }
+  .ladder-bar { position: absolute; inset: 0 auto 0 0; opacity: .16; }
+  .ladder-row.bid .ladder-bar { background: var(--up); }
+  .ladder-row.ask .ladder-bar { background: var(--down); }
+
   .row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
   .row > input { flex: 1; }
   h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
@@ -179,6 +189,7 @@
       <button role="tab" data-pane="thesis" aria-selected="true">Thesis</button>
       <button role="tab" data-pane="strategy" aria-selected="false">Strategy</button>
       <button role="tab" data-pane="bots" aria-selected="false">Bots</button>
+      <button role="tab" data-pane="book" aria-selected="false">Book</button>
     </div>
 
     <div class="pane" id="pane-thesis">
@@ -271,6 +282,16 @@
         <button id="refreshBots">Refresh</button>
       </div>
       <div id="botsOut"><p class="empty">No bots yet.</p></div>
+    </div>
+
+    <!--
+      The DOM. Rows arrive already totalled: the ladder carries each level's
+      cumulative size and a bar width, both computed in Rust, because summing
+      market data in JavaScript is the one thing this shell does not do.
+    -->
+    <div class="pane" id="pane-book" hidden>
+      <div id="bookMsg" class="muted">Connecting…</div>
+      <div id="bookLadder"></div>
     </div>
   </aside>
 </main>

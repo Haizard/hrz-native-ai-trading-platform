@@ -293,12 +293,19 @@ async fn first_book(
     }
 }
 
+/// Send one book.
+///
+/// What goes out is a `dom::Ladder`, not the raw snapshot: the panel needs each
+/// level's cumulative size and a bar width, and both are arithmetic over market
+/// data, which `docs/14` keeps in Rust. The ladder is a superset of the
+/// snapshot, so a client that only wanted prices is unaffected.
 async fn send_book<S>(sink: &mut S, snapshot: &OrderBookSnapshot) -> Result<(), ()>
 where
     S: SinkExt<Message> + Unpin,
 {
     let frame = Frame::Data {
-        payload: serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null),
+        payload: serde_json::to_value(crate::dom::ladder(snapshot))
+            .unwrap_or(serde_json::Value::Null),
     };
     send_binary(sink, &frame).await
 }

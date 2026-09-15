@@ -28,6 +28,7 @@ let wasm = null; // the chart engine instance
 let scene = null; // the last scene the engine produced
 let thesis = null; // the last thesis, for the chart overlay
 let socket = null; // the live candle channel
+let bookSocket = null; // the order-book channel
 
 // ---------------------------------------------------------------------------
 // Session
@@ -619,6 +620,80 @@ function connectLive() {
     }
   };
   socket.onclose = () => { socket = null; };
+}
+
+/// Follow the order-book channel.
+///
+/// This panel derives nothing. The ladder arrives with each level's cumulative
+/// size and a bar width already worked out, both in Rust, because summing
+/// depth here would be a second implementation of a number -- and then two
+/// parts of this shell could disagree about the same book. Formatting is all
+/// that is left to do, and that is all this does.
+function connectBook() {
+  if (bookSocket) bookSocket.close();
+  const symbol = el("symbol").value;
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${scheme}://${location.host}/ws/orderbook/${symbol}`);
+  bookSocket = ws;
+
+  ws.onmessage = (event) => {
+    let frame;
+    try {
+      frame = JSON.parse(
+        typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data)
+      );
+    } catch { return; }
+
+    if (frame.type === "data") renderBook(frame.payload);
+    // The channel says why when there is no book, and a DOM that showed an
+    // empty ladder instead would look like a market with no liquidity.
+    else if (frame.type === "notice") el("bookMsg").textContent = frame.message;
+    else if (frame.type === "lagged") {
+      el("bookMsg").textContent = `the book dropped ${frame.dropped} update(s)`;
+    }
+  };
+  ws.onclose = () => {
+    // Only the socket we are still meant to be using may speak for the panel.
+    if (bookSocket !== ws) return;
+    bookSocket = null;
+    el("bookMsg").textContent = "The book disconnected.";
+  };
+}
+
+function bookRows(levels, side) {
+  return levels
+    .map(
+      (row) => `<div class="ladder-row ${side}">
+        <span class="ladder-bar" style="width:${row.bar_pct}%"></span>
+        <span>${row.price.toFixed(2)}</span>
+        <span>${row.quantity.toFixed(4)}</span>
+        <span>${row.cumulative.toFixed(4)}</span>
+      </div>`
+    )
+    .join("");
+}
+
+function renderBook(ladder) {
+  if (!ladder.bids.length && !ladder.asks.length) {
+    el("bookLadder").innerHTML = "";
+    el("bookMsg").textContent = "The book is empty.";
+    return;
+  }
+
+  el("bookMsg").textContent =
+    ladder.spread === null || ladder.spread === undefined
+      ? "no spread: one side of the book is empty"
+      : `spread ${ladder.spread.toFixed(2)}`;
+
+  // Asks run worst-to-best downwards so the best ask sits against the spread,
+  // the way the two sides meet in the middle of a ladder.
+  const asks = [...ladder.asks].reverse();
+  el("bookLadder").innerHTML = `<div class="ladder">
+    <div class="ladder-head">Ask · size · cumulative</div>
+    ${bookRows(asks, "ask")}
+    <div class="ladder-head">Bid · size · cumulative</div>
+    ${bookRows(ladder.bids, "bid")}
+  </div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1507,12 +1582,13 @@ async function main() {
   el("registerGo").addEventListener("click", () => signIn(true));
   el("password").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(false); });
 
-  el("load").addEventListener("click", () => { refresh().then(connectLive); });
+  el("load").addEventListener("click", () => { refresh().then(connectLive); connectBook(); });
   // Changing the chart type can change the *window* (a footprint uses the
   // span that has trades), so it refetches rather than just redrawing.
   el("mode").addEventListener("change", () => { refresh(); });
   el("timeframe").addEventListener("change", () => { refresh().then(connectLive); });
-  el("symbol").addEventListener("change", () => { refresh().then(connectLive); });
+  // The book is per symbol, so it follows the same change.
+  el("symbol").addEventListener("change", () => { refresh().then(connectLive); connectBook(); });
   el("ask").addEventListener("click", ask);
   el("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
 
@@ -1553,6 +1629,10 @@ async function main() {
 
   await refresh();
   connectLive();
+  // The DOM opens its own socket rather than riding the chart's: the two have
+  // different reconnection stories, and the book has to be able to say "no
+  // depth feed" without the chart looking broken.
+  connectBook();
 }
 
 main();

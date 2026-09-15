@@ -47,6 +47,7 @@ pub mod auth;
 pub mod auth_routes;
 pub mod bot_routes;
 pub mod bots;
+pub mod dom;
 pub mod error;
 pub mod extract;
 pub mod footprint_routes;

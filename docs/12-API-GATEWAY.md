@@ -70,7 +70,7 @@ backtester use. Re-validating an echoed document must agree with the first verdi
 ## WebSocket channels
 ```
 /ws/market/{symbol}/{timeframe}   -> live candle + MarketState updates
-/ws/orderbook/{symbol}            -> live order book snapshots (not diffs -- see below)
+/ws/orderbook/{symbol}            -> live order book ladders (not diffs -- see below)
 /ws/agent/{session_id}            -> streaming AI chat/thesis responses
 /ws/bots/{bot_id}                 -> live bot status/trade events
 ```
@@ -79,7 +79,10 @@ high-frequency market channels; JSON is fine for the lower-frequency agent/bot c
 
 ### The order book is maintained in `market-data`, not rebuilt here
 
-`/ws/orderbook/{symbol}` streams whole snapshots, not diffs. Venues do not ship a full
+`/ws/orderbook/{symbol}` streams **ladders**: an `OrderBookSnapshot` with each level's
+cumulative size and a bar width added, so a depth-of-market panel never sums market data
+itself. It is a superset of the snapshot, not a second shape — see `docs/14`. It never
+sends diffs, either. Venues do not ship a full
 book on every message: they ship periodic diffs and expect the client to keep the book.
 So the collector fetches a REST snapshot, subscribes to the diff stream *first* so
 nothing is missed, bridges the two, and publishes a snapshot roughly once a second —

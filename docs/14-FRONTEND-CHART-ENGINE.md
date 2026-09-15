@@ -106,16 +106,29 @@ CPU calc   GPU-friendly buffers
   (trendlines, Fibonacci, rectangles — start minimal, expand later).
 - **DOM/order book panel**: live bid/ask ladder from `/ws/orderbook/{symbol}`.
 
-  **Built as of 2026-09-15: the feed, not the panel.** The channel is live — snapshots
-  are maintained in `market-data` and arrive on the socket (see `docs/12`) — but nothing
-  draws them yet. That half is a real view: a ladder with per-level size, and the
-  cumulative-depth bars that make size readable at a glance.
+  **Built as of 2026-09-15: the ladder, and why it is computed in Rust.** The panel is a
+  "Book" tab in the aside: asks descending into the spread, then bids, each row showing
+  price, size, cumulative size, and a depth bar.
 
-  Those bars are the reason it is not a one-liner. "No arithmetic over market data in
-  JavaScript" is the rule this whole frontend is built on, and a depth bar is a running
-  total scaled against the largest one. So the snapshot has to arrive with what the panel
-  needs to draw it, or the ladder ships without the bars. Decide that when the panel is
-  built; do not quietly do the sums in `app.js`.
+  The bars are the interesting part, because "no arithmetic over market data in
+  JavaScript" is the rule this frontend is built on, and a depth bar is a running total
+  scaled against the deepest row on the book. So the channel does not send a bare
+  snapshot: it sends a **`dom::Ladder`**, built in `crates/api-gateway/src/dom.rs`, which
+  carries each level's `cumulative` and a `bar_pct` already worked out. The shell sets a
+  width from `bar_pct` and formats numbers; it derives nothing.
+
+  Two details worth keeping:
+
+  - `bar_pct` is scaled against the deepest row on **either** side, not per side. Scaled
+    per side, a book with 0.01 resting against 100 draws two full bars, and the ladder
+    stops being a comparison — which is the only thing it is for.
+  - The ladder is a **superset** of `OrderBookSnapshot`: same `symbol`, `timestamp`,
+    `bids`, `asks`, with fields added per level. `OrderBookLevel` is what the database
+    persists, so it was never going to grow a presentational field.
+
+  When the channel has no book it says so (a `notice` naming the symbol and the likely
+  cause), and the panel shows that message rather than an empty ladder — an empty ladder
+  is indistinguishable from a market with no liquidity.
 - **AI chat panel**: natural-language input, streaming responses via
   `/ws/agent/{session_id}`, action buttons (Analyze / Create Strategy / Backtest /
   Create Bot) matching the source research's UI sketch, and the ability to highlight the
