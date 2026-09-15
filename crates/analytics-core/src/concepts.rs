@@ -392,10 +392,18 @@ mod side_wire {
 /// See the module docs for the shape and for what it deliberately cannot say.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Concept {
-    /// The name. Also the colour key, so it is an identifier rather than prose.
+    /// The name, as a condition references it: `concepts.<name>.<part>`.
+    ///
+    /// An identifier rather than prose, because it has to survive a round trip
+    /// through the condition parser and back.
     pub name: String,
-    /// How it should read on a chart. Defaults to the name with underscores
-    /// opened out.
+    /// How it reads on a chart. Defaults to the name with underscores opened
+    /// out.
+    ///
+    /// This, not [`Concept::name`], is what a band is *called*: [`detect`] names
+    /// its regions after it, and a name is the colour key the shell looks up. So
+    /// a short key-like label (`fvg`, `ob`) is the useful choice, and prose with
+    /// spaces in it will simply miss every key and fall back to the side colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Which side is expected to react from a band this finds.

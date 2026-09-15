@@ -84,7 +84,7 @@ band its edges, and the requirements that make the pattern the pattern.
 ```yaml
 concepts:
   - name: gap                  # an identifier — a condition references it by this name
-    label: fvg                 # how it reads on the chart; defaults to the name, opened out
+    label: fvg                 # what the band is called on the chart; defaults to the name
     side: buy                  # which side is expected to react from the band
     window: 3                  # how many candles the pattern spans
     lower: {high: 0}           # the band's cheaper edge: the first candle's high
@@ -99,6 +99,11 @@ concepts:
 A selector is `open | high | low | close | mid | volume` of a candle **inside the window**,
 counted from the oldest (`0`), written as a one-key mapping: `{high: 0}`. `op` is
 `below | above | below_or_equal | above_or_equal`. `window` is 2..=8.
+
+`name` and `label` do different jobs. `name` is what a condition writes; `label` is what the
+band is called on the chart, and it is the colour key the shell looks up — so a short
+key-like label (`fvg`, `ob`) is the useful choice, and prose with spaces in it will miss
+every key and fall back to the side colour.
 
 A condition reads one of five properties of a concept the document declares:
 
