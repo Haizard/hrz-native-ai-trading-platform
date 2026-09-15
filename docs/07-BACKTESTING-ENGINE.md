@@ -32,6 +32,7 @@ pub struct BacktestReport {
     pub max_drawdown_pct: f64,
     pub sharpe_ratio: f64,
     pub average_r: f64,
+    pub equity_curve: Vec<f64>,
     pub best_timeframe: Option<String>,
     pub worst_regime: Option<String>,
 }
@@ -82,6 +83,22 @@ position size is not recomputed from a growing or shrinking balance, so a run of
 cannot inflate the size of the next trade and flatter the equity curve. `net_return_pct`
 is derived from summed R, and `FillAssumptions.return_units` says so in the report output
 itself — the numbers are never separated from the assumptions that produced them.
+
+### The equity curve is kept, and it is in R
+`equity_curve` is the cumulative R after each trade, in trade order, starting from flat —
+one point per trade, and empty when nothing traded. Because results do not compound it is
+a random walk in R, not an account balance, and the field is named after what it is rather
+than after what a dashboard might like it to be.
+
+It is stored rather than recomputed on read for the reason the whole report is stored: a
+backtest is an observation made at a moment, and the candles underneath it change. The
+series is also what max drawdown is measured over — both walk `cumulative_r`, because two
+walks of the same trades is two chances to disagree.
+
+`#[serde(default)]` on the field is load-bearing, not defensive. `backtests.report` is
+JSONB, so every run stored before the field existed is a document without it, and without
+the attribute reading one back would fail outright
+(`a_report_stored_before_the_curve_existed_still_loads`).
 
 ### The ambiguous bar resolves against the trade
 When a single candle's range touches both the stop and the target, the simulator assumes

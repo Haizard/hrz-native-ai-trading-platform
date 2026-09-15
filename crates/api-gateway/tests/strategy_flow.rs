@@ -262,12 +262,33 @@ async fn a_backtest_runs_against_real_candles_and_is_stored() {
             || report["total_trades"] == 0
     );
 
+    // The curve is scaled for drawing, and it is there exactly when there was
+    // something to draw: a run with trades has points, an empty one has `null`
+    // rather than a box with nothing in it.
+    let trades = report["total_trades"].as_u64().unwrap_or(0);
+    assert_eq!(
+        body["equity_plot"].is_null(),
+        trades == 0,
+        "a run with {trades} trades must{} carry a curve: {body}",
+        if trades == 0 { " not" } else { "" }
+    );
+    if trades > 0 {
+        let points = body["equity_plot"]["points"]
+            .as_array()
+            .expect("a curve has points");
+        // One per trade, plus the flat start the run began from.
+        assert_eq!(points.len() as u64, trades + 1, "{body}");
+    }
+
     // And it can be read back by id.
     let (status, fetched) = h
         .get(&format!("/backtests/{backtest_id}"), Some(&user.token))
         .await;
     assert_eq!(status, StatusCode::OK, "{fetched}");
     assert_eq!(fetched["report"]["total_trades"], report["total_trades"]);
+    // Read back through the database, the curve must be the same curve the
+    // write returned -- two paths build it, and they must not drift.
+    assert_eq!(fetched["equity_plot"], body["equity_plot"]);
 
     let (status, listed) = h
         .get(

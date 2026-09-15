@@ -96,6 +96,21 @@ pub struct BacktestReport {
     pub sharpe_ratio: f64,
     /// Mean R per trade.
     pub average_r: f64,
+    /// Cumulative R after each trade, in trade order, starting from flat.
+    ///
+    /// **This is the equity curve.** It is in R, not currency: results are R
+    /// multiples and are never compounded (`docs/03`), so the curve is a random
+    /// walk in R rather than an account balance.
+    ///
+    /// The backtester already walks this series to find max drawdown and used
+    /// to throw it away -- and a dashboard cannot draw a curve from a single
+    /// number.
+    ///
+    /// `serde(default)` is not defensive. `backtests.report` is JSONB, so every
+    /// run stored before this field existed is a document without it, and
+    /// without this attribute reading one back would fail outright.
+    #[serde(default)]
+    pub equity_curve: Vec<f64>,
     /// The timeframe the run executed on.
     pub best_timeframe: Option<String>,
     /// The regime with the worst mean R, when at least two regimes appeared.
@@ -173,12 +188,12 @@ pub fn compute_metrics(trades: &[TradeRecord], window_nanos: i64) -> Metrics {
     let net: f64 = trades.iter().map(|t| t.r_multiple).sum();
     let average = net / total as f64;
 
-    // Peak-to-trough of the cumulative R curve, starting from flat.
+    // Peak-to-trough of the cumulative R curve, starting from flat. The curve
+    // itself is built by `cumulative_r`, which `build_report` also uses -- one
+    // implementation, so the drawdown and the plotted line can never disagree.
     let mut peak = 0.0_f64;
-    let mut cumulative = 0.0_f64;
     let mut max_drawdown = 0.0_f64;
-    for trade in trades {
-        cumulative += trade.r_multiple;
+    for cumulative in cumulative_r(trades) {
         peak = peak.max(cumulative);
         max_drawdown = max_drawdown.max(peak - cumulative);
     }
@@ -196,8 +211,24 @@ pub fn compute_metrics(trades: &[TradeRecord], window_nanos: i64) -> Metrics {
     }
 }
 
-/// Per-trade Sharpe, annualized by how often the strategy actually traded.
+/// Cumulative R after each trade, in trade order, starting from flat.
 ///
+/// One point per trade, so the series is as long as the trade list and empty
+/// when nothing traded. This is the equity curve a dashboard draws, and it is
+/// also what max drawdown is measured over -- both go through here, because two
+/// walks of the same trades is two chances to disagree.
+#[must_use]
+pub fn cumulative_r(trades: &[TradeRecord]) -> Vec<f64> {
+    let mut curve = Vec::with_capacity(trades.len());
+    let mut running = 0.0;
+    for trade in trades {
+        running += trade.r_multiple;
+        curve.push(running);
+    }
+    curve
+}
+
+/// Per-trade Sharpe, annualized by how often the strategy actually traded.
 /// Sample standard deviation, `n - 1`. A single trade has no dispersion to
 /// measure, and a zero-variance run has no meaningful ratio, so both report
 /// zero rather than an infinity.
@@ -273,6 +304,8 @@ pub fn build_report(
     let metrics = compute_metrics(&trades, to.saturating_sub(from));
     let skipped_signals_count = u32::try_from(skipped_signals.len()).unwrap_or(u32::MAX);
     let worst = worst_regime(&trades);
+    // Before `trades` moves into the report.
+    let equity_curve = cumulative_r(&trades);
 
     BacktestReport {
         strategy: document.name.clone(),
@@ -288,6 +321,7 @@ pub fn build_report(
         max_drawdown_pct: metrics.max_drawdown_pct,
         sharpe_ratio: metrics.sharpe_ratio,
         average_r: metrics.average_r,
+        equity_curve,
         best_timeframe: Some(decision_timeframe.to_string()),
         worst_regime: worst,
         trades,
@@ -402,6 +436,56 @@ invalidation:
         ];
         let metrics = compute_metrics(&trades, 90 * DAY);
         assert!((metrics.max_drawdown_pct - 3.0).abs() < 1e-9, "{metrics:?}");
+    }
+
+    #[test]
+    fn the_equity_curve_is_the_running_total_after_each_trade() {
+        // +1, +3, +2, 0, +2 -- the same curve the drawdown test uses, so the
+        // two cannot drift apart.
+        let trades = vec![
+            trade(1.0, "bullish", ExitTrigger::Target),
+            trade(2.0, "bullish", ExitTrigger::Target),
+            trade(-1.0, "bearish", ExitTrigger::Stop),
+            trade(-2.0, "bearish", ExitTrigger::Stop),
+            trade(2.0, "bullish", ExitTrigger::Target),
+        ];
+        assert_eq!(cumulative_r(&trades), vec![1.0, 3.0, 2.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn the_equity_curve_ends_on_the_net_return() {
+        // The last point of the curve and `net_return_pct` are the same number
+        // computed two ways; if they ever disagree the chart lies.
+        let trades = vec![
+            trade(1.5, "bullish", ExitTrigger::Target),
+            trade(-0.5, "bearish", ExitTrigger::Stop),
+            trade(2.25, "bullish", ExitTrigger::Target),
+        ];
+        let curve = cumulative_r(&trades);
+        let metrics = compute_metrics(&trades, 30 * DAY);
+        assert!(
+            (curve.last().copied().unwrap_or(0.0) - metrics.net_return_pct).abs() < 1e-9,
+            "{curve:?} vs net {}",
+            metrics.net_return_pct
+        );
+    }
+
+    #[test]
+    fn a_report_stored_before_the_curve_existed_still_loads() {
+        // `backtests.report` is JSONB, so this is a real document a deployment
+        // may already hold. Without `serde(default)` it would not parse.
+        let stored = serde_json::json!({
+            "strategy": "old", "version": "1.0", "symbol": "BTCUSDT",
+            "from": 0, "to": 1, "decision_timeframe": "5m",
+            "trades": [], "total_trades": 0, "win_rate": 0.0,
+            "profit_factor": 0.0, "net_return_pct": 0.0, "max_drawdown_pct": 0.0,
+            "sharpe_ratio": 0.0, "average_r": 0.0, "best_timeframe": null,
+            "worst_regime": null, "skipped_signals": [], "skipped_signals_count": 0,
+            "assumptions": serde_json::to_value(FillAssumptions::default()).unwrap(),
+        });
+        let report: BacktestReport =
+            serde_json::from_value(stored).expect("a report without equity_curve must still parse");
+        assert!(report.equity_curve.is_empty());
     }
 
     #[test]

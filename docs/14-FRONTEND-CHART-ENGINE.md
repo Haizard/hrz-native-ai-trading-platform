@@ -172,6 +172,32 @@ CPU calc   GPU-friendly buffers
 - **Backtest/bot dashboards**: performance report visualization, trade list, bot
   status/controls (pause/resume/kill).
 
+  **Built as of 2026-09-15: the run list and the equity curve.** The Strategy tab's
+  backtest section lists the strategy's stored runs (newest first, in a select) and draws
+  the selected one: the metrics, then the curve. A run is *read back* through
+  `GET /backtests/{id}` rather than re-run, and the panel that draws a fresh run is the
+  same panel that draws an old one — so the two can never disagree. Running a backtest
+  refreshes the list and selects the new run.
+
+  The curve follows the same rule as the ladder, and for the same reason. Fitting a series
+  into a box is arithmetic — a min, a max, and a division per point — so
+  `crates/api-gateway/src/plot.rs` does it and `equity_plot` on the response carries the
+  points as percentages of the box, each with its own value, plus `zero_y` for where flat
+  sits. The shell writes a `polyline` and formats labels. It derives nothing.
+
+  Two properties worth keeping:
+
+  - The run **started flat**, so the plotted series starts at zero rather than at wherever
+    the first trade left it. A curve that begins at the top-left corner makes a run whose
+    first trade won look like it began in profit.
+  - `zero_y` is placed in Rust. Above it the run is up, below it it is down, and finding
+    that line is arithmetic like everything else — so the shell is told where to draw it,
+    and told nothing when zero falls outside the box.
+
+  A run with no curve says which of the two reasons it is: no trades in the window, or a
+  run stored before the curve was kept. The report's own `total_trades` is what tells them
+  apart.
+
 ## Real-time data handling
 - Subscribe to `/ws/market/{symbol}/{timeframe}` for the active chart; resubscribe on
   symbol/timeframe change; unsubscribe on unmount to avoid leaking server-side fan-out

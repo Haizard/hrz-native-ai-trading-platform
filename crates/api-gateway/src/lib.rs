@@ -53,6 +53,7 @@ pub mod extract;
 pub mod footprint_routes;
 pub mod market_data;
 pub mod market_routes;
+pub mod plot;
 pub mod rate_limit;
 pub mod skills_routes;
 pub mod strategy_routes;

@@ -44,6 +44,7 @@ use strategy_runtime::{RuntimeConfig, StrategyEngine};
 use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::{ApiJson, ApiQuery};
+use crate::plot::Plot;
 use crate::AppState;
 
 /// Default page size for list endpoints.
@@ -156,10 +157,24 @@ pub struct BacktestResponse {
     pub created_at: i64,
     /// The performance report.
     pub report: serde_json::Value,
+    /// The equity curve, already scaled for drawing.
+    ///
+    /// `null` when there is nothing to draw, which covers two cases the panel
+    /// can tell apart using `report.total_trades`: the run took no trades, or
+    /// it was stored before the curve was kept. See [`equity_plot`].
+    ///
+    /// It is a sibling of `report` rather than a field inside it because the
+    /// report is the backtester's document, stored verbatim and handed back
+    /// untouched; the scaling is the gateway's presentational addition to it,
+    /// and mixing the two would mean the stored report is no longer exactly
+    /// what the backtester produced.
+    pub equity_plot: Option<Plot>,
 }
 
 impl From<db::strategies::BacktestRow> for BacktestResponse {
     fn from(row: db::strategies::BacktestRow) -> Self {
+        // Borrowed before the row is moved apart below.
+        let equity_plot = equity_plot(&row.report);
         Self {
             id: row.id.to_string(),
             strategy_id: row.strategy_id.to_string(),
@@ -168,8 +183,41 @@ impl From<db::strategies::BacktestRow> for BacktestResponse {
             to: row.date_to,
             created_at: row.created_at,
             report: row.report,
+            equity_plot,
         }
     }
+}
+
+/// Scale a stored run's equity curve so the panel has nothing left to compute.
+///
+/// The curve is read out of the report rather than recomputed from the trades,
+/// for the same reason the report is stored at all: a backtest is an
+/// observation made at a moment (`docs/13`), and the candles underneath it may
+/// since have been corrected.
+///
+/// The run also *started* flat, so the series is drawn from zero rather than
+/// from wherever the first trade left it -- otherwise a run whose first trade
+/// won looks like it began in profit.
+fn equity_plot(report: &serde_json::Value) -> Option<Plot> {
+    // Only the curve is read, so a report of any size costs one walk of its
+    // JSON and no allocation of its trades. `serde(default)` because this is
+    // the same field as `BacktestReport::equity_curve`, and every run stored
+    // before it existed is a document without it.
+    #[derive(Deserialize)]
+    struct Curve {
+        #[serde(default)]
+        equity_curve: Vec<f64>,
+    }
+
+    let curve = Curve::deserialize(report).ok()?.equity_curve;
+    if curve.is_empty() {
+        return None;
+    }
+
+    let mut values = Vec::with_capacity(curve.len() + 1);
+    values.push(0.0);
+    values.extend_from_slice(&curve);
+    crate::plot::series(&values)
 }
 
 /// What a validation attempt found.
@@ -687,6 +735,7 @@ pub async fn backtest(
             from: from_ns,
             to: to_ns - 1,
             created_at: now_ns(),
+            equity_plot: equity_plot(&report_json),
             report: report_json,
         }),
     ))
@@ -919,5 +968,51 @@ mod tests {
             validate_source("name: x\nversion: '1'\nkind: strategy\n").expect_err("must fail");
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
         assert_eq!(err.code(), "STRATEGY_PARSE_FAILED");
+    }
+
+    /// A stored report as `db` hands it back: raw JSONB.
+    fn stored(extra: serde_json::Value) -> serde_json::Value {
+        let mut report = serde_json::json!({
+            "strategy": "Route test strategy", "symbol": "BTCUSDT",
+            "total_trades": 3, "net_return_pct": 2.0,
+        });
+        if let Some(extra) = extra.as_object() {
+            for (key, value) in extra {
+                report[key] = value.clone();
+            }
+        }
+        report
+    }
+
+    #[test]
+    fn a_stored_run_with_a_curve_comes_back_as_points_the_panel_can_draw() {
+        let plot = equity_plot(&stored(serde_json::json!({
+            "equity_curve": [1.0, 3.0, 2.0],
+        })))
+        .expect("a run with trades has a curve");
+
+        // The run started flat, so the curve does too: one point per trade plus
+        // the origin, and the origin is the one carrying zero.
+        assert_eq!(plot.points.len(), 4);
+        assert_eq!(plot.points[0].value, 0.0);
+        assert_eq!(plot.points[0].x, 0.0);
+        assert_eq!(plot.points.last().expect("a last point").value, 2.0);
+        assert_eq!(plot.max, 3.0);
+        assert_eq!(plot.min, 0.0);
+    }
+
+    #[test]
+    fn a_run_stored_before_the_curve_existed_has_nothing_to_draw() {
+        // This is a real document a deployment already holds: `report` is
+        // JSONB, and the field was added after runs were stored. It must not
+        // fail -- the panel just has no curve for that run.
+        assert!(equity_plot(&stored(serde_json::json!({}))).is_none());
+    }
+
+    #[test]
+    fn a_run_that_never_traded_has_nothing_to_draw() {
+        // An empty curve is stored, not a missing one, and an empty plot would
+        // be a panel drawing nothing at a size it cannot compute.
+        assert!(equity_plot(&stored(serde_json::json!({ "equity_curve": [] }))).is_none());
     }
 }

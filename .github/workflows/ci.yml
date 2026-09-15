@@ -122,6 +122,11 @@ jobs:
   # writes its documents to disk and `strategy-cli validate` runs the *real*
   # parser over them: if the emitter drifts from the schema, it fails here
   # rather than in a user's strategy.
+  #
+  # Between those two sits `app.js`, which neither covers: it is the file that
+  # calls the ABI and loads the builder, and a syntax error in it is a page that
+  # loads and does nothing. `node --check` is not a test, but it is the cheapest
+  # guard against the one failure mode that produces no error anywhere.
   frontend:
     name: Shell (chart engine + builder)
     runs-on: ubuntu-latest
@@ -138,6 +143,13 @@ jobs:
         run: cargo run -p xtask -- build-frontend
       - name: Exercise the ABI the shell depends on
         run: node tools/wasm_abi_check.mjs frontend/app/chart_engine.wasm
+      - name: Check the shell scripts parse
+        # `app.js` is the one file nothing else covers: the ABI check covers the
+        # engine, the builder check covers the document, and a syntax error in
+        # the shell is a page that loads and does nothing.
+        run: |
+          node --check frontend/app/app.js
+          node --check frontend/app/builder.js
       - name: Check the visual builder's documents
         run: node tools/check_builder.mjs
       - name: Validate what the builder emitted with the real parser

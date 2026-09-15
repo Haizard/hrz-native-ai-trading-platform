@@ -1438,6 +1438,9 @@ async function saveStrategy() {
       (saved.supersedes
         ? `<br /><span class="muted">replaces ${escapeHtml(saved.supersedes)}; its backtests still point at the old document</span>`
         : `<br /><span class="muted">now you can run a backtest or launch a paper bot</span>`);
+    // A new version is a new id, so the runs under the old one are no longer
+    // this strategy's. The list has to follow.
+    await refreshBacktestRuns();
   } catch (e) {
     // A 401 here is the ordinary "not signed in yet" case rather than an error
     // worth showing verbatim, and the fix is one click away.
@@ -1459,10 +1462,130 @@ async function deleteStrategy() {
     sourceDirty = true;
     paintStrategyActions();
     message.innerHTML = `<span class="muted">deleted. Load an example or describe a new setup.</span>`;
+    // The runs went with it, so the list and the curve go too.
+    await refreshBacktestRuns();
   } catch (e) {
     // 409 is the interesting one: a bot is still running this document, and the
     // server refuses rather than pulling it out from under the bot.
     message.innerHTML = `<span class="fail">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+/// Draw an equity curve.
+///
+/// Every number below is already a percentage of the box: `plot.rs` did the
+/// scaling, because `docs/14` keeps arithmetic over a run's numbers in Rust.
+/// What is left here is turning points into a string, which is formatting and
+/// is exactly what a shell is for. `toFixed` is the only transformation.
+function curveSvg(plot) {
+  const points = plot.points
+    .map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`)
+    .join(" ");
+
+  // The water line: above it the run is up, below it the run is down. Rust
+  // places it, and leaves it out when zero falls outside the box.
+  const zero =
+    plot.zero_y === null || plot.zero_y === undefined
+      ? ""
+      : `<line x1="0" y1="${plot.zero_y.toFixed(2)}" x2="100" y2="${plot.zero_y.toFixed(
+          2
+        )}" />`;
+
+  return `
+    <svg class="curve" viewBox="0 0 100 100" preserveAspectRatio="none" role="img"
+         aria-label="equity curve, ${plot.min.toFixed(2)} to ${plot.max.toFixed(2)} R">
+      ${zero}
+      <polyline points="${points}" />
+    </svg>
+    <div class="curve-axis">
+      <span>${plot.max.toFixed(2)}R</span><span>${plot.min.toFixed(2)}R</span>
+    </div>`;
+}
+
+/// Draw one stored run.
+///
+/// A run is read back rather than re-run: it is an observation made at a
+/// moment (`docs/13`), and the candles underneath it change.
+function renderBacktest(run) {
+  const r = run.report || {};
+  const window = `${new Date(run.from / 1e6).toLocaleDateString()} → ${new Date(
+    run.to / 1e6
+  ).toLocaleDateString()}`;
+
+  // Two different reasons for a missing curve, and the trade count is what
+  // tells them apart -- the report says how many trades it took either way.
+  const note = run.equity_plot
+    ? ""
+    : `<p class="muted">${
+        r.total_trades
+          ? "This run was stored before the equity curve was kept, so there is nothing to draw."
+          : "No trades in this window, so there is no curve."
+      }</p>`;
+
+  el("backtestOut").innerHTML = `
+    <div class="run-head">${escapeHtml(run.symbol)} · ${escapeHtml(window)}</div>
+    <dl class="kv">
+      <dt>trades</dt><dd>${r.total_trades ?? 0}</dd>
+      <dt>win rate</dt><dd>${((r.win_rate ?? 0) * 100).toFixed(1)}%</dd>
+      <dt>average R</dt><dd>${(r.average_r ?? 0).toFixed(3)}</dd>
+      <dt>net</dt><dd>${(r.net_return_pct ?? 0).toFixed(2)}R</dd>
+      <dt>max DD</dt><dd>${(r.max_drawdown_pct ?? 0).toFixed(2)}R</dd>
+    </dl>
+    ${run.equity_plot ? curveSvg(run.equity_plot) : ""}
+    ${note}
+    <p class="muted">${escapeHtml(r.assumptions?.return_units || "")}</p>`;
+}
+
+/// List this strategy's runs, newest first, and draw one of them.
+///
+/// `selectId` is the run to land on; without it the current selection is kept,
+/// falling back to the newest.
+async function refreshBacktestRuns(selectId) {
+  const select = el("backtestRuns");
+  if (!savedStrategyId) {
+    select.innerHTML = `<option value="">No runs yet</option>`;
+    el("backtestOut").innerHTML = "";
+    return;
+  }
+
+  let runs;
+  try {
+    runs = await api(`/strategies/${savedStrategyId}/backtests`);
+  } catch (e) {
+    select.innerHTML = `<option value="">Runs unavailable</option>`;
+    el("backtestOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  if (!runs.length) {
+    select.innerHTML = `<option value="">No runs yet</option>`;
+    el("backtestOut").innerHTML = "";
+    return;
+  }
+
+  select.innerHTML = runs
+    .map((run) => {
+      const when = new Date(run.created_at / 1e6).toLocaleString();
+      const r = run.report || {};
+      return `<option value="${escapeHtml(run.id)}">${escapeHtml(when)} · ${
+        r.total_trades ?? 0
+      } trades · ${(r.net_return_pct ?? 0).toFixed(2)}R</option>`;
+    })
+    .join("");
+
+  // A selection that is no longer in the list -- a deleted run, a different
+  // strategy -- falls back to the newest rather than leaving nothing drawn.
+  const wanted = selectId || select.value;
+  select.value = runs.some((run) => run.id === wanted) ? wanted : runs[0].id;
+  await showBacktest(select.value);
+}
+
+async function showBacktest(id) {
+  if (!id) return;
+  try {
+    renderBacktest(await api(`/backtests/${id}`));
+  } catch (e) {
+    el("backtestOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
   }
 }
 
@@ -1473,7 +1596,7 @@ async function runBacktest() {
   }
   el("backtestOut").innerHTML = `<p class="empty">Running…</p>`;
   try {
-    const result = await api(`/strategies/${savedStrategyId}/backtest`, {
+    const created = await api(`/strategies/${savedStrategyId}/backtest`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1482,16 +1605,10 @@ async function runBacktest() {
         to: el("btTo").value,
       }),
     });
-    const r = result.report;
-    el("backtestOut").innerHTML = `
-      <dl class="kv">
-        <dt>trades</dt><dd>${r.total_trades}</dd>
-        <dt>win rate</dt><dd>${(r.win_rate * 100).toFixed(1)}%</dd>
-        <dt>average R</dt><dd>${r.average_r.toFixed(3)}</dd>
-        <dt>net</dt><dd>${r.net_return_pct.toFixed(2)}R</dd>
-        <dt>max DD</dt><dd>${r.max_drawdown_pct.toFixed(2)}R</dd>
-      </dl>
-      <p class="muted">${escapeHtml(r.assumptions?.return_units || "")}</p>`;
+    // The list is what runs exist, so the new one is drawn by re-reading it
+    // rather than from this response. One render path, so a run drawn here and
+    // the same run drawn later cannot differ.
+    await refreshBacktestRuns(created.id);
   } catch (e) {
     el("backtestOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
   }
@@ -1605,6 +1722,7 @@ async function main() {
   el("builderForm").addEventListener("input", onBuilderInput);
   el("builderForm").addEventListener("click", onBuilderClick);
   el("backtest").addEventListener("click", runBacktest);
+  el("backtestRuns").addEventListener("change", (e) => showBacktest(e.target.value));
   el("launch").addEventListener("click", launchBot);
   el("refreshBots").addEventListener("click", refreshBots);
   el("botsOut").addEventListener("click", (e) => {
@@ -1626,6 +1744,9 @@ async function main() {
   // reference document. An empty box makes Validate and Save look broken when
   // they are only being sent nothing.
   await seedEditor();
+  // The editor may have opened on a saved strategy, which has runs. They are
+  // read on load so the panel is never blank when there is something to show.
+  await refreshBacktestRuns();
 
   await refresh();
   connectLive();

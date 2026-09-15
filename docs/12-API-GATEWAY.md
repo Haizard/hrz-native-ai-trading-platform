@@ -67,6 +67,22 @@ there is exactly one parser in this system, and it is the one `strategy-cli` and
 backtester use. Re-validating an echoed document must agree with the first verdict
 (`revalidating_an_echoed_document_agrees_with_itself`).
 
+### A backtest response carries its curve already scaled
+
+`BacktestResponse` adds `equity_plot` beside the stored `report`: the run's cumulative-R
+curve fitted to a `0..100` box, with each point's own value, and `zero_y` marking where
+flat sits. It is `null` when there is nothing to draw — no trades, or a run stored before
+the curve was kept.
+
+It sits *beside* `report` rather than inside it because `report` is the backtester's
+document, stored verbatim and handed back untouched; the scaling is the gateway's
+presentational addition, and folding it in would mean the stored report is no longer
+exactly what the backtester produced.
+
+It exists because `docs/14` forbids arithmetic over market data in the shell. Normalising
+a series is arithmetic, and so is finding where zero falls in it — see
+`crates/api-gateway/src/plot.rs`, which is where that lives.
+
 ## WebSocket channels
 ```
 /ws/market/{symbol}/{timeframe}   -> live candle + MarketState updates
