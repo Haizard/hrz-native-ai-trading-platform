@@ -82,6 +82,12 @@ enum Frame<'a> {
     },
     /// Data.
     Data { payload: serde_json::Value },
+    /// A step the agent took on its way to an answer.
+    ///
+    /// Its own type rather than `data` because it is not an answer: a client
+    /// that treated it as one would draw a thesis out of the agent's shopping
+    /// list. Only `/ws/agent` sends it, and only while a question is in flight.
+    Progress { payload: serde_json::Value },
     /// The client fell behind and frames were dropped.
     ///
     /// Explicit rather than silent: a chart that missed candles looks like a
@@ -312,9 +318,11 @@ where
 
 /// `/ws/agent/{session_id}`
 ///
-/// One question per inbound frame, one thesis per outbound frame. Not token
-/// streaming: that needs a streaming model call, which is a change to the
-/// provider rather than to this handler.
+/// One question per inbound frame, progress frames while it runs, then one
+/// thesis. Not token streaming, and deliberately: the answer is a
+/// `submit_thesis` **tool call** rather than prose, so there are no answer
+/// tokens to stream. What the socket streams instead is the work -- see
+/// [`ai_agent::Progress`].
 pub async fn agent(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
@@ -375,11 +383,14 @@ async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, sessi
         }
 
         let reply = match serde_json::from_str::<AgentWsRequest>(&text) {
-            Ok(request) => run_agent(&state, request).await,
-            Err(e) => Frame::Notice {
+            Ok(request) => run_agent(&state, request, &mut sink).await,
+            Err(e) => Some(Frame::Notice {
                 message: format!("expected {{\"symbol\": \"…\", \"question\": \"…\"}}: {e}"),
-            },
+            }),
         };
+        // `None` means the socket died while the run was reporting progress,
+        // and there is nothing left to write to.
+        let Some(reply) = reply else { break };
         if send_text(&mut sink, &reply).await.is_err() {
             break;
         }
@@ -387,34 +398,103 @@ async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, sessi
     debug!(%session_id, "agent socket closed");
 }
 
+/// The same fields `POST /agent/ask` accepts, minus `include_trace`: a socket
+/// is for watching, not for pulling a full audit payload.
 #[derive(Debug, Deserialize)]
 struct AgentWsRequest {
     symbol: String,
     question: String,
     skill_id: Option<String>,
+    timeframes: Option<Vec<String>>,
 }
 
-async fn run_agent(state: &AppState, request: AgentWsRequest) -> Frame<'static> {
+/// Hands the agent's steps to a channel, so they can be written to the socket
+/// while the run is still going.
+///
+/// A channel rather than writing to the socket directly because
+/// [`ai_agent::ProgressSink::report`] is synchronous and the socket needs an
+/// await. The run reports into this; the loop below drains it.
+struct ProgressToChannel(tokio::sync::mpsc::UnboundedSender<ai_agent::Progress>);
+
+impl ai_agent::ProgressSink for ProgressToChannel {
+    fn report(&self, progress: ai_agent::Progress) {
+        // A closed receiver means the client went away mid-run. The run itself
+        // is not worth aborting over a missing audience -- it may still be
+        // writing a thesis to the database -- so the step is dropped.
+        let _ = self.0.send(progress);
+    }
+}
+
+/// Run one question, writing progress frames as they happen.
+///
+/// Returns the frame to send when the run finishes, or `None` if the socket
+/// died while progress was being written -- in which case the caller has
+/// nothing left to send to.
+///
+/// The two are interleaved rather than sequenced because the alternative is a
+/// minute of silence followed by everything at once, which is what the socket
+/// used to do.
+async fn run_agent<S>(
+    state: &AppState,
+    request: AgentWsRequest,
+    sink: &mut S,
+) -> Option<Frame<'static>>
+where
+    S: SinkExt<Message> + Unpin,
+{
     let Some(agent) = state.agent.as_ref() else {
-        return Frame::Notice {
+        return Some(Frame::Notice {
             message: "the agent is not configured".into(),
-        };
+        });
     };
     let Some(db) = state.db.as_ref() else {
-        return Frame::Notice {
+        return Some(Frame::Notice {
             message: "no database configured; the agent has no market data to read".into(),
-        };
+        });
     };
 
     let mut ask = ai_agent::AskRequest::new(&request.symbol, &request.question);
     if let Some(skill) = request.skill_id {
         ask = ask.with_skill(skill);
     }
+    if let Some(timeframes) = request.timeframes {
+        ask = ask.with_timeframes(timeframes);
+    }
 
-    match agent
-        .ask(&ask, &crate::market_data::DbMarketData::new(db.clone()))
-        .await
-    {
+    let data = crate::market_data::DbMarketData::new(db.clone());
+    let (tx, mut steps) = tokio::sync::mpsc::unbounded_channel();
+    // Bound rather than inlined: the run borrows this for its whole life.
+    let progress = ProgressToChannel(tx);
+    let running = agent.ask_with_progress(&ask, &data, &progress);
+    tokio::pin!(running);
+
+    let answer = loop {
+        tokio::select! {
+            Some(step) = steps.recv() => {
+                let frame = Frame::Progress {
+                    payload: serde_json::to_value(&step).unwrap_or(serde_json::Value::Null),
+                };
+                if send_text(sink, &frame).await.is_err() {
+                    return None;
+                }
+            }
+            result = &mut running => break result,
+        }
+    };
+
+    // A step reported on the final turn can still be queued: the run finished
+    // before the loop got to it. Draining first keeps the panel's last line in
+    // order rather than losing it to that race.
+    while let Ok(step) = steps.try_recv() {
+        let frame = Frame::Progress {
+            payload: serde_json::to_value(&step).unwrap_or(serde_json::Value::Null),
+        };
+        if send_text(sink, &frame).await.is_err() {
+            return None;
+        }
+    }
+
+    Some(match answer {
         // The same shape `POST /agent/ask` returns, so a client written against
         // one works against the other and the two cannot drift.
         Ok(answer) => Frame::Data {
@@ -424,7 +504,7 @@ async fn run_agent(state: &AppState, request: AgentWsRequest) -> Frame<'static> 
         Err(e) => Frame::Notice {
             message: e.to_string(),
         },
-    }
+    })
 }
 
 /// `/ws/bots/{bot_id}`
@@ -571,5 +651,34 @@ mod tests {
         let rendered: serde_json::Value = serde_json::from_str(&json_frame(&frame)).unwrap();
         assert_eq!(rendered["type"], "data");
         assert_eq!(rendered["payload"]["close"], 1.0);
+    }
+
+    #[test]
+    fn progress_is_its_own_frame_type_and_not_data() {
+        // A client that mistook a progress step for an answer would try to draw
+        // a thesis out of the agent's shopping list, so the two must not share
+        // a tag.
+        let frame = Frame::Progress {
+            payload: serde_json::to_value(ai_agent::Progress::Tool {
+                name: "analyze_timeframe".into(),
+            })
+            .unwrap(),
+        };
+        let rendered: serde_json::Value = serde_json::from_str(&json_frame(&frame)).unwrap();
+        assert_eq!(rendered["type"], "progress");
+        assert_eq!(rendered["payload"]["stage"], "tool");
+        assert_eq!(rendered["payload"]["name"], "analyze_timeframe");
+    }
+
+    #[test]
+    fn the_agent_request_accepts_the_same_ladder_override_as_the_post_route() {
+        // The socket and `POST /agent/ask` are two doors to one call, so a
+        // client written against one must work against the other.
+        let request: AgentWsRequest = serde_json::from_str(
+            r#"{"symbol":"BTCUSDT","question":"long setup?","timeframes":["4h","5m"]}"#,
+        )
+        .expect("the post body's fields must parse here too");
+        assert_eq!(request.timeframes, Some(vec!["4h".into(), "5m".into()]));
+        assert_eq!(request.skill_id, None);
     }
 }

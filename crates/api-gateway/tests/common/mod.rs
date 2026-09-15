@@ -45,9 +45,31 @@ pub struct Harness {
     pub limits: Arc<RateLimiter>,
 }
 
+/// Install a log subscriber, once per process.
+///
+/// The gateway warns about the things that are wrong but not fatal -- a bot task
+/// that had to be aborted, a flush that failed -- and without this those warnings
+/// go nowhere. A failing async test then reports a count that is one too low and
+/// no reason, which is how a stop that timed out looked like a stop that was
+/// never recorded.
+///
+/// `try_init` fails when a subscriber is already installed, which is the common
+/// case with several tests in one process, so the result is ignored on purpose.
+/// The default is `warn`: a passing run stays quiet.
+fn init_logging() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_test_writer()
+        .try_init();
+}
+
 impl Harness {
     /// The app under test, or `None` when there is no database to test against.
     pub async fn new() -> Option<Self> {
+        init_logging();
         let _ = dotenvy::dotenv();
         if std::env::var("DATABASE_URL").is_err() {
             eprintln!("DATABASE_URL is not set; skipping");
@@ -79,6 +101,7 @@ impl Harness {
 
     /// The same app, but with no signing secret configured.
     pub async fn without_auth() -> Option<Self> {
+        init_logging();
         let _ = dotenvy::dotenv();
         if std::env::var("DATABASE_URL").is_err() {
             return None;

@@ -87,11 +87,55 @@ a series is arithmetic, and so is finding where zero falls in it — see
 ```
 /ws/market/{symbol}/{timeframe}   -> live candle + MarketState updates
 /ws/orderbook/{symbol}            -> live order book ladders (not diffs -- see below)
-/ws/agent/{session_id}            -> streaming AI chat/thesis responses
-/ws/bots/{bot_id}                 -> live bot status/trade events
+/ws/agent/{session_id}            -> progress frames, then a thesis (not tokens -- see below)
+/ws/bots/{bot_id}                 -> live bot status/trade events, filtered per bot
 ```
 Use binary framing (e.g. a compact serialization like MessagePack or protobuf) for
 high-frequency market channels; JSON is fine for the lower-frequency agent/bot channels.
+
+### The agent channel streams the work, not the answer
+
+`/ws/agent/{session_id}` takes the same body as `POST /agent/ask` (`symbol`, `question`,
+`skill_id`, `timeframes`) and answers with the same payload, so a client written against
+one works against the other. What it adds is what happens in between.
+
+A question takes about a minute: the ladder is read from the database, then the model is
+called once per turn and each turn may call tools that read more. Between the question
+and the answer the channel now sends `progress` frames — `reading_market`, `thinking`
+(with the turn number and whether the run has moved on to answering), `tool`,
+`tool_done` (with whether it worked), and `correcting` when a thesis was rejected for
+citing a level no tool reported. They are their own frame type rather than `data`,
+because a client that mistook one for an answer would draw a thesis out of the agent's
+shopping list.
+
+This is progress rather than token streaming, deliberately. The answer is a
+`submit_thesis` **tool call**, not prose — the answering phase announces that one tool
+and refuses every other, and the nudge it sends says "Do not answer in prose". There is
+no answer text to stream, and a token stream would carry narration this design
+discards. See `ai_agent::Progress`.
+
+### The bot channel is one socket per bot
+
+`/ws/bots/{bot_id}` filters server-side, so a watcher receives only its own bot's events:
+`started`, one `decision` per decision candle (including the ones that did nothing), and
+`stopped` with the trade count and any halt reason. Broadcasting rather than polling is
+the point — asking the database every second would turn one bot's activity into a query
+per second per watcher.
+
+### A stop means the task is gone, and the wait is sized for the database
+
+`stop` (behind `DELETE /bots/{id}` and the shutdown path) sets a flag, **wakes** the task
+rather than waiting for it to notice on its next flush tick, and only returns once the
+task has finished — or aborts it after `STOP_GRACE`. It is not enough to signal and
+return: the task's last act is to flush and write `bot.stopped`, and that event is the
+only thing that tells a clean stop from a crash.
+
+The bound is `STOP_GRACE` (30s) and deliberately **not** `flush_interval + 1s`, which was
+the old value and which the tests set to 1100ms against a stop measured at ~1200ms. The
+flush interval bounds how soon the task *notices*; it says nothing about how long the
+write it is already inside takes, and one statement against the managed database measures
+around a second. The 100ms margin meant a clean stop was periodically aborted and reported
+as a crash.
 
 ### The order book is maintained in `market-data`, not rebuilt here
 

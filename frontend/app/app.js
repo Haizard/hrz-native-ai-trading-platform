@@ -29,6 +29,21 @@ let scene = null; // the last scene the engine produced
 let thesis = null; // the last thesis, for the chart overlay
 let socket = null; // the live candle channel
 let bookSocket = null; // the order-book channel
+let botSocket = null; // the channel for the one bot being watched
+let watchedBot = null; // its id, or null when watching none
+let bots = []; // the last bot list read from the API
+let botLog = []; // frames from `botSocket`, oldest first
+
+let agentSocket = null; // the agent channel, opened on first ask
+let agentReady = null; // resolves when it is open
+let agentSession = null; // this tab's session id, minted once
+let turns = []; // the conversation: question, steps, answer
+let asking = false; // a question is in flight
+
+/// How many live bot events to keep. A 1m bot decides once a minute, so this
+/// is about an hour of history -- enough to see a pattern, bounded enough that
+/// a forgotten tab does not grow forever.
+const BOT_LOG_LIMIT = 60;
 
 // ---------------------------------------------------------------------------
 // Session
@@ -702,10 +717,38 @@ function renderBook(ladder) {
 
 const STATUS_CLASS = { pass: "pass", fail: "fail", unknown: "unknown" };
 
-function renderThesis(response) {
-  const t = response.thesis;
-  thesis = t;
+/// A step the agent reported, as a line of English.
+///
+/// The stages come from `ai_agent::Progress`. A stage this file does not know
+/// falls back to its own name rather than vanishing -- a new step should show
+/// up as something odd, not as nothing.
+const STAGE_TEXT = {
+  reading_market: (p) => `reading ${p.timeframes} timeframe(s) for ${p.symbol}`,
+  thinking: (p) =>
+    p.answering
+      ? `writing the thesis (turn ${p.turn} of ${p.total})`
+      : `analysing (turn ${p.turn} of ${p.total})`,
+  tool: (p) => `calling ${p.name}`,
+  tool_done: (p) => `${p.name} ${p.ok ? "returned" : "failed"}`,
+  correcting: (p) => `rejected, asking for a correction: ${p.reason}`,
+};
 
+function progressText(step) {
+  const render = STAGE_TEXT[step.stage];
+  return render ? render(step) : step.stage;
+}
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+}
+
+/// The thesis card.
+///
+/// A string rather than a write to the DOM, because the transcript holds one
+/// per turn and needs to compose them.
+function thesisHtml(t) {
   const checks = [...(t.higher_timeframe_checks || []), ...(t.order_flow_checks || [])]
     .map(
       (check) => `<li>
@@ -716,7 +759,7 @@ function renderThesis(response) {
     )
     .join("");
 
-  el("thesis").innerHTML = `
+  return `
     <dl class="kv">
       <dt>direction</dt><dd>${t.direction}</dd>
       <dt>confidence</dt><dd>${t.confidence_pct.toFixed(0)}%</dd>
@@ -731,43 +774,157 @@ function renderThesis(response) {
     <h2>Invalidation</h2>
     <p class="muted">${escapeHtml(t.invalidation || "—")}</p>
     <h2>Narrative</h2>
-    <pre>${escapeHtml(t.narrative || "")}</pre>
-  `;
-  // The levels are on the chart now, which is the point of asking.
-  draw();
+    <pre>${escapeHtml(t.narrative || "")}</pre>`;
 }
 
-function escapeHtml(value) {
-  return String(value == null ? "" : value).replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
-  );
+/// The conversation, drawn from `turns`.
+///
+/// The panel used to replace its whole contents on every question, so the
+/// answer you were reading disappeared the moment you asked the next one. A
+/// transcript keeps them, which is what a chat panel is for -- and it is the
+/// only place the agent's steps are ever recorded, since nothing stores them.
+function renderTranscript() {
+  if (!turns.length) {
+    el("thesis").innerHTML = `<p class="empty">Ask a question. The thesis's own levels are drawn on the chart.</p>`;
+    return;
+  }
+
+  const running = turns.length - 1;
+  el("thesis").innerHTML = turns
+    .map((turn, index) => {
+      const steps = turn.steps.map((step) => `<li>${escapeHtml(progressText(step))}</li>`).join("");
+      // The run in flight shows its steps as they arrive; a finished one folds
+      // them away, because the answer is what a reader came back for.
+      const stepsHtml = !steps
+        ? ""
+        : index === running && !turn.answer && !turn.error
+          ? `<ul class="steps">${steps}</ul>`
+          : `<details class="steps-wrap"><summary>${turn.steps.length} step(s)</summary>
+               <ul class="steps">${steps}</ul></details>`;
+
+      const body = turn.answer
+        ? thesisHtml(turn.answer.thesis)
+        : turn.error
+          ? `<p class="fail">${escapeHtml(turn.error)}</p>`
+          : `<p class="empty">Working…</p>`;
+
+      return `<div class="turn">
+        <p class="q">${escapeHtml(turn.question)}</p>
+        ${stepsHtml}
+        ${body}
+      </div>`;
+    })
+    .join("");
+}
+
+/// The agent socket, opened on first use.
+///
+/// Lazily rather than at load: an anonymous visitor cannot open it (the
+/// channel is authenticated), and a failed socket at page load would be a red
+/// message about a feature they have not tried yet.
+function ensureAgentSocket() {
+  if (agentReady) return agentReady;
+  if (!token()) return Promise.reject(new Error("Sign in to ask the agent."));
+  // The channel only echoes the session id back, so any unique string will do.
+  // It exists so a server log can tell two tabs apart.
+  if (!agentSession) agentSession = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  agentReady = new Promise((resolve, reject) => {
+    const ws = new WebSocket(
+      `${scheme}://${location.host}/ws/agent/${agentSession}?token=${encodeURIComponent(token())}`
+    );
+    agentSocket = ws;
+    ws.onopen = () => resolve(ws);
+    ws.onerror = () => reject(new Error("could not reach the agent channel"));
+    ws.onmessage = onAgentFrame;
+    ws.onclose = () => {
+      // Only the socket we are still meant to be using may speak for the panel.
+      if (agentSocket !== ws) return;
+      agentSocket = null;
+      agentReady = null;
+      // A socket that dies mid-run leaves the question unanswered, and the Ask
+      // button must not stay disabled waiting for a reply that cannot arrive.
+      if (!asking) return;
+      const turn = turns[turns.length - 1];
+      if (turn && !turn.answer && !turn.error) {
+        turn.error = "the agent channel closed before it answered";
+      }
+      asking = false;
+      paintAsk();
+      renderTranscript();
+    };
+  });
+  return agentReady;
+}
+
+function onAgentFrame(event) {
+  let frame;
+  try {
+    frame = JSON.parse(
+      typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data)
+    );
+  } catch {
+    return;
+  }
+
+  const turn = turns[turns.length - 1];
+  if (!turn) return;
+
+  if (frame.type === "progress") {
+    turn.steps.push(frame.payload);
+    renderTranscript();
+  } else if (frame.type === "data") {
+    turn.answer = frame.payload;
+    // The levels go on the chart, which is the point of asking.
+    thesis = frame.payload.thesis;
+    asking = false;
+    paintAsk();
+    renderTranscript();
+    draw();
+  } else if (frame.type === "notice") {
+    // A notice is a refusal or a failure -- a rate limit, a bad request, a
+    // model error -- and it ends this question.
+    turn.error = frame.message;
+    thesis = null;
+    asking = false;
+    paintAsk();
+    renderTranscript();
+    draw();
+  }
+}
+
+function paintAsk() {
+  const button = el("ask");
+  button.disabled = asking;
+  button.textContent = asking ? "Working…" : "Ask";
 }
 
 async function ask() {
   const question = el("question").value.trim();
-  if (!question) return;
-  const button = el("ask");
-  button.disabled = true;
-  button.textContent = "Thinking…";
-  el("thesis").innerHTML = `<p class="empty">Asking the agent…</p>`;
+  if (!question || asking) return;
+
+  const turn = { question, steps: [], answer: null, error: null };
+  turns.push(turn);
+  asking = true;
+  el("question").value = "";
+  paintAsk();
+  renderTranscript();
+
   try {
-    const response = await api("/agent/ask", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
+    const ws = await ensureAgentSocket();
+    ws.send(
+      JSON.stringify({
         symbol: el("symbol").value,
         question,
         timeframes: [el("timeframe").value],
-      }),
-    });
-    renderThesis(response);
+      })
+    );
   } catch (e) {
-    thesis = null;
-    el("thesis").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
-    draw();
-  } finally {
-    button.disabled = false;
-    button.textContent = "Ask";
+    turn.error = e.message;
+    asking = false;
+    paintAsk();
+    renderTranscript();
   }
 }
 
@@ -1625,23 +1782,140 @@ async function launchBot() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ strategy_id: savedStrategyId }),
     });
-    el("botsOut").innerHTML = `<p class="pass">started ${escapeHtml(bot.id)}</p>`;
-    refreshBots();
+    // Launching is the one moment the user certainly wants to watch, so the
+    // log opens on the new bot rather than making them find it and click.
+    await refreshBots();
+    watchBot(bot.id);
   } catch (e) {
     el("botsOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
   }
 }
 
-async function refreshBots() {
-  try {
-    const bots = await api("/bots");
-    if (!bots.length) {
-      el("botsOut").innerHTML = `<p class="empty">No bots yet.</p>`;
+/// One decision's outcome, as a line of English.
+///
+/// `DecisionOutcome` has no serde tag, so a unit variant arrives as a bare
+/// string and a struct variant as a single-key object. Both shapes are handled
+/// here rather than by changing the engine's wire format for the panel's sake.
+const UNIT_OUTCOMES = {
+  NoContext: "not enough context yet",
+  NoSignal: "no signal",
+};
+
+function outcomeText(outcome) {
+  if (typeof outcome === "string") return UNIT_OUTCOMES[outcome] || outcome;
+  const [kind, body] = Object.entries(outcome || {})[0] || ["unknown", {}];
+  switch (kind) {
+    case "EntryQueued":
+      return `entry queued (${(body.reasons || []).length} condition(s))`;
+    case "EntryFilled":
+      return "entry filled";
+    case "EntryDenied":
+      return `entry denied by ${body.limit} (${body.value})`;
+    case "EntryRefused":
+      return `entry refused: ${body.reason}`;
+    case "ExitFilled":
+      return `exit filled (${body.trigger})`;
+    case "Closed":
+      return `closed ${body.r_multiple >= 0 ? "+" : ""}${body.r_multiple.toFixed(2)}R (${body.trigger})`;
+    case "Halted":
+      return `halted: ${body.reason}`;
+    default:
+      return kind;
+  }
+}
+
+/// One socket frame, as a line of English.
+function botEventText(frame) {
+  const payload = frame.payload || {};
+  if (frame.kind === "started") return `watching ${payload.symbol}`;
+  if (frame.kind === "stopped") {
+    const trades = `${payload.trades ?? 0} trade(s)`;
+    return payload.halt_reason
+      ? `stopped after ${trades} — ${payload.halt_reason}`
+      : `stopped after ${trades}`;
+  }
+  if (frame.kind === "decision") {
+    const record = payload.record || {};
+    const at = record.at ? new Date(record.at / 1e6).toLocaleTimeString() : "";
+    return `${at} · ${record.price ?? "?"} · ${outcomeText(record.outcome)}`;
+  }
+  return frame.kind || "event";
+}
+
+/// Follow one bot's activity.
+///
+/// The channel is one socket per bot and filters server-side, so a watcher
+/// receives only its own bot's events. Nothing here polls: a decision appears
+/// when the bot makes it, which is the whole reason the supervisor broadcasts
+/// instead of letting clients ask.
+function watchBot(id) {
+  if (botSocket) botSocket.close();
+  botLog = [];
+  watchedBot = id;
+
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const query = token() ? `?token=${encodeURIComponent(token())}` : "";
+  const ws = new WebSocket(`${scheme}://${location.host}/ws/bots/${id}${query}`);
+  botSocket = ws;
+
+  ws.onmessage = (event) => {
+    let frame;
+    try {
+      frame = JSON.parse(
+        typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data)
+      );
+    } catch {
       return;
     }
-    el("botsOut").innerHTML = bots
-      .map(
-        (bot) => `<dl class="kv">
+
+    if (frame.type === "data") {
+      // The log is newest-first on screen, so it is capped from the far end:
+      // an afternoon of 1m decisions would otherwise grow without bound.
+      botLog.push(frame.payload);
+      if (botLog.length > BOT_LOG_LIMIT) botLog.shift();
+      renderBots();
+    } else if (frame.type === "notice") {
+      botLog.push({ kind: "notice", message: frame.message });
+      renderBots();
+    } else if (frame.type === "lagged") {
+      botLog.push({ kind: "lagged", dropped: frame.dropped });
+      renderBots();
+    }
+  };
+  ws.onclose = () => {
+    // Only the socket we are still meant to be using may speak for the panel.
+    if (botSocket !== ws) return;
+    botSocket = null;
+    renderBots();
+  };
+
+  renderBots();
+}
+
+function unwatchBot() {
+  if (botSocket) botSocket.close();
+  botSocket = null;
+  watchedBot = null;
+  botLog = [];
+  renderBots();
+}
+
+/// The bot panel, drawn from state.
+///
+/// Everything it shows -- the list and the live log -- comes from `bots`,
+/// `botLog` and `watchedBot`, so a socket frame and a refresh land in the same
+/// renderer and cannot disagree about what a bot is doing.
+function renderBots() {
+  if (!bots.length) {
+    el("botsOut").innerHTML = `<p class="empty">No bots yet.</p>`;
+    return;
+  }
+
+  el("botsOut").innerHTML = bots
+    .map((bot) => {
+      const watching = bot.id === watchedBot;
+      const log = watching ? botLogHtml() : "";
+      return `<dl class="kv">
           <dt>id</dt><dd>${escapeHtml(bot.id.slice(0, 8))}</dd>
           <dt>status</dt><dd>${escapeHtml(bot.status)}</dd>
           <dt>supervised</dt><dd>${bot.supervised_here}</dd>
@@ -1650,22 +1924,63 @@ async function refreshBots() {
           <dt>cumulative R</dt><dd>${(bot.activity?.cumulative_r ?? 0).toFixed(3)}</dd>
         </dl>
         <div class="row">
+          <button data-bot="${bot.id}" data-act="${watching ? "unwatch" : "watch"}">${
+            watching ? "Stop watching" : "Watch"
+          }</button>
           <button data-bot="${bot.id}" data-act="pause">Pause</button>
           <button data-bot="${bot.id}" data-act="resume">Resume</button>
           <button data-bot="${bot.id}" data-act="delete">Delete</button>
-        </div>`
-      )
-      .join("<hr />");
+        </div>
+        ${log}`;
+    })
+    .join("<hr />");
+}
+
+/// The live log for the watched bot, newest first.
+function botLogHtml() {
+  if (!botLog.length) {
+    return `<p class="muted">Watching. A decision appears here as the bot makes it — on the
+      decision timeframe, so the first one can be minutes away.</p>`;
+  }
+  const rows = botLog
+    .slice()
+    .reverse()
+    .map((entry) => {
+      if (entry.kind === "notice") return `<li class="fail">${escapeHtml(entry.message)}</li>`;
+      if (entry.kind === "lagged") {
+        return `<li class="fail">dropped ${entry.dropped} event(s)</li>`;
+      }
+      return `<li>${escapeHtml(botEventText(entry))}</li>`;
+    })
+    .join("");
+  return `<ul class="botlog">${rows}</ul>`;
+}
+
+async function refreshBots() {
+  try {
+    bots = await api("/bots");
+    // A bot that has gone is not one to keep a socket open for.
+    if (watchedBot && !bots.some((bot) => bot.id === watchedBot)) unwatchBot();
+    else renderBots();
   } catch (e) {
     el("botsOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
   }
 }
 
 async function botAction(id, act) {
+  if (act === "watch") {
+    watchBot(id);
+    return;
+  }
+  if (act === "unwatch") {
+    unwatchBot();
+    return;
+  }
   try {
     if (act === "delete") await api(`/bots/${id}`, { method: "DELETE" });
     else await api(`/bots/${id}/${act}`, { method: "POST" });
-    refreshBots();
+    // The status a button changes is the list's, so the list is re-read.
+    await refreshBots();
   } catch (e) {
     el("botsOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
   }

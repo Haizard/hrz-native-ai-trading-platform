@@ -37,6 +37,7 @@ use crate::llm_client::{
     LlmClient, LlmRequest, Message, ToolCall, ToolChoice, ToolResult, ToolSpec, Usage,
 };
 use crate::multi_timeframe::{analyze_ladder, LadderView, TimeframeLadder};
+use crate::progress::{NoProgress, Progress, ProgressSink};
 use crate::skills::{Skill, SkillLibrary, SkillQuery};
 use crate::thesis::{
     parse_thesis, submit_thesis_spec, PriceRange, ToolTrace, TradeThesis, SUBMIT_THESIS,
@@ -245,6 +246,24 @@ impl Agent {
         request: &AskRequest,
         data: &dyn crate::tools::MarketDataSource,
     ) -> Result<AgentAnswer, AgentError> {
+        self.ask_with_progress(request, data, &NoProgress).await
+    }
+
+    /// [`Self::ask`], reporting each step to `progress` as it happens.
+    ///
+    /// The steps are not decoration. This call takes about a minute, most of it
+    /// waiting on the model, and a socket that says nothing for a minute is
+    /// indistinguishable from one that has died. See [`crate::progress`] for
+    /// why the reporting is progress rather than streamed tokens.
+    ///
+    /// # Errors
+    /// As [`Self::ask`].
+    pub async fn ask_with_progress(
+        &self,
+        request: &AskRequest,
+        data: &dyn crate::tools::MarketDataSource,
+        progress: &dyn ProgressSink,
+    ) -> Result<AgentAnswer, AgentError> {
         let skill = self.select_skill(request)?;
 
         let ladder = match &request.timeframes {
@@ -263,6 +282,10 @@ impl Agent {
         }
 
         let lookback = request.lookback.unwrap_or(self.config.lookback);
+        progress.report(Progress::ReadingMarket {
+            symbol: request.symbol.clone(),
+            timeframes: ladder.len(),
+        });
         let view = analyze_ladder(
             data,
             &request.symbol,
@@ -326,6 +349,11 @@ impl Agent {
                 (tools.clone(), None)
             };
 
+            progress.report(Progress::Thinking {
+                turn: turn + 1,
+                total,
+                answering,
+            });
             let response = self
                 .llm
                 .complete(LlmRequest {
@@ -396,7 +424,15 @@ impl Agent {
                     });
                     continue;
                 }
-                results.push(self.run_tool(call, &ctx, &mut range, &mut trace).await);
+                progress.report(Progress::Tool {
+                    name: call.name.clone(),
+                });
+                let result = self.run_tool(call, &ctx, &mut range, &mut trace).await;
+                progress.report(Progress::ToolDone {
+                    name: call.name.clone(),
+                    ok: !result.is_error,
+                });
+                results.push(result);
             }
 
             if let Some(call) = submitted {
@@ -415,6 +451,9 @@ impl Agent {
                 if let Err(err @ AgentError::Ungrounded(_)) = thesis.finalize(&range) {
                     if !last {
                         tracing::warn!(target: "ai_agent", %err, "thesis rejected, asking for a correction");
+                        progress.report(Progress::Correcting {
+                            reason: err.to_string(),
+                        });
                         messages.push(Message::tool_results(vec![ToolResult {
                             tool_use_id: call.id.clone(),
                             content: json!({
@@ -994,6 +1033,115 @@ mod tests {
         assert!(!answer.trace.is_empty());
         assert!(answer.trace.iter().all(|t| t.tool == "analyze_timeframe"));
         assert!(!answer.thesis.narrative.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_run_reports_the_steps_it_took() {
+        // The panel has nothing to draw without these, and a run that reported
+        // nothing is indistinguishable from one that has hung -- which is the
+        // difference between waiting and reloading.
+        let source = Fixture::new();
+        let agent = agent(vec![thesis_call(100_100.0, 100_000.0, 100_400.0)]);
+        let progress = crate::progress::Collected::default();
+
+        agent
+            .ask_with_progress(
+                &AskRequest::new("BTCUSDT", "find me a long setup"),
+                &source,
+                &progress,
+            )
+            .await
+            .unwrap();
+
+        let steps = progress.steps();
+        // The ladder is read first, before the model is asked anything.
+        assert!(
+            matches!(
+                steps.first(),
+                Some(Progress::ReadingMarket { timeframes, .. }) if *timeframes > 0
+            ),
+            "{steps:?}"
+        );
+        // Then the model is called, and the call is announced. The fixture
+        // answers on its first turn, so that turn is an analysis turn.
+        assert_eq!(
+            steps.get(1),
+            Some(&Progress::Thinking {
+                turn: 1,
+                total: DEFAULT_MAX_TURNS + ANSWER_TURNS,
+                answering: false,
+            }),
+            "{steps:?}"
+        );
+        // It answered without asking for a tool, because the ladder came from
+        // the orchestrator -- so there is nothing else to report.
+        assert!(
+            !steps
+                .iter()
+                .any(|s| matches!(s, Progress::Tool { .. } | Progress::ToolDone { .. })),
+            "{steps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_is_reported_with_how_it_went() {
+        let source = Fixture::new();
+        let agent = agent(vec![
+            named_call("get_vwap"),
+            thesis_call(100_100.0, 100_000.0, 100_400.0),
+        ]);
+        let progress = crate::progress::Collected::default();
+
+        agent
+            .ask_with_progress(
+                &AskRequest::new("BTCUSDT", "find me a long setup"),
+                &source,
+                &progress,
+            )
+            .await
+            .unwrap();
+
+        let steps = progress.steps();
+        let called = steps
+            .iter()
+            .position(|s| matches!(s, Progress::Tool { name } if name == "get_vwap"));
+        let done = steps
+            .iter()
+            .position(|s| matches!(s, Progress::ToolDone { name, ok: true } if name == "get_vwap"));
+        assert!(called.is_some() && done.is_some(), "{steps:?}");
+        // Announced before it ran, and answered after -- the order is what lets
+        // a panel show a tool as in-flight rather than only as finished.
+        assert!(called < done, "{steps:?}");
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_failed_is_reported_as_having_failed() {
+        let source = Fixture::new();
+        // A tool the registry does not have. A failure the model can read is
+        // information rather than an abort, so the run continues -- but the
+        // panel must not show a step that quietly succeeded.
+        let agent = agent(vec![
+            named_call("no_such_tool"),
+            thesis_call(100_100.0, 100_000.0, 100_400.0),
+        ]);
+        let progress = crate::progress::Collected::default();
+
+        agent
+            .ask_with_progress(
+                &AskRequest::new("BTCUSDT", "find me a long setup"),
+                &source,
+                &progress,
+            )
+            .await
+            .unwrap();
+
+        let steps = progress.steps();
+        assert!(
+            steps.iter().any(
+                |s| matches!(s, Progress::ToolDone { name, ok: false } if name == "no_such_tool")
+            ),
+            "{steps:?}"
+        );
     }
 
     #[tokio::test]

@@ -134,6 +134,72 @@ CPU calc   GPU-friendly buffers
   Create Bot) matching the source research's UI sketch, and the ability to highlight the
   exact chart region(s) referenced in the AI's explanation (map thesis fields like
   `entry_price`/timestamps back to chart coordinates).
+
+  **Built as of 2026-09-15: a transcript, with the agent's work shown while it runs.** The
+  panel keeps every question and its answer instead of replacing its contents on each
+  ask — the answer you were reading used to disappear the moment you asked the next one.
+  It talks to `/ws/agent/{session_id}` rather than `POST /agent/ask`, so the socket can
+  report what the run is doing.
+
+  That distinction is the whole design. A question takes about a minute, and a panel that
+  says nothing for a minute is indistinguishable from one that has hung. So the socket
+  sends `progress` frames — which timeframe is being read, which turn of the loop is
+  running, which tool was called and whether it worked — and the panel shows them as they
+  arrive under the question.
+
+  It is not token streaming, and that is a finding rather than a shortcut: the agent's
+  answer is a `submit_thesis` **tool call**, and the answering phase refuses every other
+  tool and tells the model not to answer in prose. There are no answer tokens to stream.
+  Streaming narration instead would be streaming text this design discards.
+
+  A finished turn folds its steps into a `<details>` summary; the turn in flight shows
+  them live. Nothing stores them — the transcript is the only record the agent's steps
+  ever have.
+
+- **Backtest/bot dashboards**: performance report visualization, trade list, bot
+  status/controls (pause/resume/kill).
+
+  **Built as of 2026-09-15: the run list and the equity curve.** The Strategy tab's
+  backtest section lists the strategy's stored runs (newest first, in a select) and draws
+  the selected one: the metrics, then the curve. A run is *read back* through
+  `GET /backtests/{id}` rather than re-run, and the panel that draws a fresh run is the
+  same panel that draws an old one — so the two can never disagree. Running a backtest
+  refreshes the list and selects the new run.
+
+  The curve follows the same rule as the ladder, and for the same reason. Fitting a series
+  into a box is arithmetic — a min, a max, and a division per point — so
+  `crates/api-gateway/src/plot.rs` does it and `equity_plot` on the response carries the
+  points as percentages of the box, each with its own value, plus `zero_y` for where flat
+  sits. The shell writes a `polyline` and formats labels. It derives nothing.
+
+  Two properties worth keeping:
+
+  - The run **started flat**, so the plotted series starts at zero rather than at wherever
+    the first trade left it. A curve that begins at the top-left corner makes a run whose
+    first trade won look like it began in profit.
+  - `zero_y` is placed in Rust. Above it the run is up, below it it is down, and finding
+    that line is arithmetic like everything else — so the shell is told where to draw it,
+    and told nothing when zero falls outside the box.
+
+  A run with no curve says which of the two reasons it is: no trades in the window, or a
+  run stored before the curve was kept. The report's own `total_trades` is what tells them
+  apart.
+
+  **Built as of 2026-09-15: the bot panel is live.** Each bot has a **Watch** button that
+  opens `/ws/bots/{bot_id}` and streams that bot's activity into a log — decisions as the
+  bot makes them, with the outcome in English, newest first. Launching a bot watches it
+  automatically, because that is the one moment a user certainly wants to look.
+
+  The socket is one per bot and filters server-side, so watching one bot does not subscribe
+  you to every other. The panel does not poll: the summary still comes from `GET /bots`
+  (a button changes a status, so the list is re-read), but a decision appears when the bot
+  makes it.
+
+  Both the list and the log are drawn by one renderer from `bots`, `botLog` and
+  `watchedBot`, so a socket frame and a refresh land in the same place and cannot disagree
+  about what a bot is doing. The log is capped at 60 events — about an hour of a 1m bot —
+  so a forgotten tab does not grow forever.
+
 - **Strategy editor**: three modes sharing one underlying `StrategyDocument` — natural
   language (delegates to `/agent/generate-strategy`), visual builder (condition blocks
   composed via UI, serialized to the same schema), and raw DSL (YAML/JSON text editor
@@ -168,35 +234,6 @@ CPU calc   GPU-friendly buffers
   `target/builder-check/`, and CI runs `strategy-cli validate` — the real parser — over
   each one. A hand-written YAML emitter in JavaScript is exactly the kind of thing that
   looks right and parses wrong.
-
-- **Backtest/bot dashboards**: performance report visualization, trade list, bot
-  status/controls (pause/resume/kill).
-
-  **Built as of 2026-09-15: the run list and the equity curve.** The Strategy tab's
-  backtest section lists the strategy's stored runs (newest first, in a select) and draws
-  the selected one: the metrics, then the curve. A run is *read back* through
-  `GET /backtests/{id}` rather than re-run, and the panel that draws a fresh run is the
-  same panel that draws an old one — so the two can never disagree. Running a backtest
-  refreshes the list and selects the new run.
-
-  The curve follows the same rule as the ladder, and for the same reason. Fitting a series
-  into a box is arithmetic — a min, a max, and a division per point — so
-  `crates/api-gateway/src/plot.rs` does it and `equity_plot` on the response carries the
-  points as percentages of the box, each with its own value, plus `zero_y` for where flat
-  sits. The shell writes a `polyline` and formats labels. It derives nothing.
-
-  Two properties worth keeping:
-
-  - The run **started flat**, so the plotted series starts at zero rather than at wherever
-    the first trade left it. A curve that begins at the top-left corner makes a run whose
-    first trade won look like it began in profit.
-  - `zero_y` is placed in Rust. Above it the run is up, below it it is down, and finding
-    that line is arithmetic like everything else — so the shell is told where to draw it,
-    and told nothing when zero falls outside the box.
-
-  A run with no curve says which of the two reasons it is: no trades in the window, or a
-  run stored before the curve was kept. The report's own `total_trades` is what tells them
-  apart.
 
 ## Real-time data handling
 - Subscribe to `/ws/market/{symbol}/{timeframe}` for the active chart; resubscribe on

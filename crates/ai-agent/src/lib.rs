@@ -31,6 +31,7 @@ pub mod agent;
 pub mod error;
 pub mod llm_client;
 pub mod multi_timeframe;
+pub mod progress;
 pub mod providers;
 pub mod sigv4;
 pub mod skills;
@@ -48,6 +49,7 @@ pub use llm_client::{
     ToolChoice, ToolResult, ToolSpec, Usage,
 };
 pub use multi_timeframe::{LadderView, TimeframeLadder};
+pub use progress::{NoProgress, Progress, ProgressSink};
 pub use providers::bedrock::{BedrockClient, BedrockConfig};
 pub use skills::{Skill, SkillLibrary, SkillQuery};
 pub use strategy_dsl::StrategyDocument;

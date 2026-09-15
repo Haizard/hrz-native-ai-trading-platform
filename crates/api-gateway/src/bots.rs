@@ -39,8 +39,9 @@ use analytics_core::types::{Candle, OrderBookSnapshot};
 use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use trading_engine::{BotSession, PaperBot};
@@ -130,9 +131,36 @@ struct RunningBot {
     handle: JoinHandle<()>,
     /// Set to stop it; the task checks this between candles.
     stop: Arc<AtomicBool>,
+    /// Wakes the task when `stop` is set.
+    ///
+    /// The flag alone is not enough: it is only read after the task's `select!`
+    /// returns, and the task's own wakeups are the flush tick and incoming
+    /// candles -- thirty seconds and one closed candle, respectively. A stop
+    /// should not have to wait for either.
+    wake: Arc<Notify>,
     /// Set while paused. The task keeps reading and discards.
     paused: Arc<AtomicBool>,
 }
+
+/// How long a graceful stop may take before the task is aborted.
+///
+/// Deliberately not derived from `flush_interval`, which bounds how soon the
+/// task *notices* the flag and nothing else. The work a stop has to wait for is
+/// the flush already in flight plus [`BotSession::finish`] -- a flush, a status
+/// update and the `bot.stopped` event, three statements against the managed
+/// database, where one statement measures around a second.
+///
+/// Measured, not guessed: a stop that finalises cleanly takes ~1200ms against
+/// the managed database. The old bound was `flush_interval + 1s`, which the
+/// tests set to 1100ms -- a margin of 100ms, so a clean stop was aborted
+/// whenever the machine was busy. An aborted task never writes `bot.stopped`,
+/// and that event is the only thing that tells a clean stop from a crash. So
+/// the flake was not a slow test: it was the one assertion that distinguishes
+/// the two failure modes reporting a crash for a stop that worked.
+///
+/// Thirty seconds is a valve against a genuinely wedged task, not a budget for
+/// a slow one.
+const STOP_GRACE: Duration = Duration::from_secs(30);
 
 /// Owns every running bot and the feed they share.
 #[derive(Clone)]
@@ -186,12 +214,6 @@ impl BotSupervisor {
                 events: broadcast::channel(EVENT_BUFFER).0,
             }),
         }
-    }
-
-    /// How often a running bot flushes.
-    #[must_use]
-    pub fn flush_interval(&self) -> Duration {
-        self.inner.flush_interval
     }
 
     /// How the feed is configured, for the startup log.
@@ -295,7 +317,9 @@ impl BotSupervisor {
         let mut candles = self.inner.bus.bus(&symbol).subscribe_candles();
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
-        let (task_stop, task_paused) = (Arc::clone(&stop), Arc::clone(&paused));
+        let wake = Arc::new(Notify::new());
+        let (task_stop, task_paused, task_wake) =
+            (Arc::clone(&stop), Arc::clone(&paused), Arc::clone(&wake));
 
         let handle = tokio::spawn(async move {
             let mut session = match BotSession::attach(
@@ -326,11 +350,15 @@ impl BotSupervisor {
                 tokio::select! {
                     received = candles.recv() => match received {
                         Ok(candle) => {
-                            if task_paused.load(Ordering::Relaxed) {
-                                continue;
-                            }
-                            if let Some(record) = bot.on_candle(&candle) {
-                                events.send(BotEvent::Decision { bot_id, record }).ok();
+                            // Skipped rather than `continue`d: the stop check
+                            // below is the only thing that ends this loop, and a
+                            // paused bot on a busy symbol takes this branch every
+                            // time -- so `continue` here would let it ignore a
+                            // stop for as long as candles keep arriving.
+                            if !task_paused.load(Ordering::Relaxed) {
+                                if let Some(record) = bot.on_candle(&candle) {
+                                    events.send(BotEvent::Decision { bot_id, record }).ok();
+                                }
                             }
                         }
                         Err(RecvError::Lagged(skipped)) => {
@@ -344,7 +372,14 @@ impl BotSupervisor {
                         if let Err(e) = session.flush(&mut bot).await {
                             warn!(%bot_id, "could not flush the audit trail: {e}");
                         }
-                    }
+                    },
+                    // Falls through to the check below rather than breaking
+                    // here, so the atomic flag stays the single source of truth.
+                    // The notification only decides *when* the flag is read; a
+                    // notification that arrives while the task is inside a flush
+                    // is still honoured, because the permit is held until the
+                    // next `notified()`.
+                    _ = task_wake.notified() => {}
                 }
 
                 if task_stop.load(Ordering::Relaxed) || bot.is_halted() {
@@ -374,6 +409,7 @@ impl BotSupervisor {
                 RunningBot {
                     handle,
                     stop,
+                    wake,
                     paused,
                 },
             );
@@ -409,6 +445,14 @@ impl BotSupervisor {
     /// Waits rather than aborting: the task's last act is to flush and write
     /// `bot.stopped`, and killing it mid-flight is how a bot ends up looking
     /// like it crashed.
+    ///
+    /// Returning `true` means the task is **gone**, not merely signalled. The
+    /// wait is bounded, and if the bound is reached the task is aborted -- it
+    /// was removed from `running` on the way in, so a task that outlived this
+    /// call could never be waited for again, and would go on writing audit rows
+    /// for a bot the caller believed it had finished with. That is exactly how
+    /// a `DELETE /bots/{id}` ends up leaving an `audit_log` row behind and
+    /// failing the account's own cleanup.
     pub async fn stop(&self, bot_id: Uuid) -> bool {
         let Some(bot) = self
             .inner
@@ -420,26 +464,46 @@ impl BotSupervisor {
             return false;
         };
         bot.stop.store(true, Ordering::Relaxed);
-        // The task wakes on its next candle or flush; the flush interval bounds
-        // how long this waits.
-        let _ = tokio::time::timeout(
-            self.inner.flush_interval + Duration::from_secs(1),
-            bot.handle,
-        )
-        .await;
+        // Woken rather than left to be noticed. Without this the task finds out
+        // on its next flush tick -- which is thirty seconds in production, and
+        // that is how long `DELETE /bots/{id}` would then take.
+        bot.wake.notify_one();
+
+        let started = tokio::time::Instant::now();
+        let mut handle = bot.handle;
+        if tokio::time::timeout(STOP_GRACE, &mut handle).await.is_err() {
+            // Not a slow stop -- [`STOP_GRACE`] is sized for one. A task still
+            // alive after it is wedged, and aborting is the lesser evil: the
+            // alternative is a task nobody can reach, still writing audit rows
+            // for a bot the caller believes it has finished with.
+            warn!(
+                %bot_id,
+                elapsed_ms = started.elapsed().as_millis(),
+                "bot task did not stop within its grace; aborting it"
+            );
+            handle.abort();
+        } else {
+            // Worth a line: the difference between 40ms and 4s here is the
+            // difference between a local database and the managed one, and that
+            // is not otherwise visible from a request.
+            debug!(%bot_id, elapsed_ms = started.elapsed().as_millis(), "bot stopped");
+        }
         true
     }
 
     /// Stop every bot, for a graceful shutdown.
+    ///
+    /// Concurrently, because the stops are independent and the shutdown budget
+    /// is shared. Run one after another, N bots that each take a few seconds to
+    /// finalise would add up past the platform's kill timeout -- and being
+    /// killed mid-flush is the failure a graceful shutdown exists to avoid.
     pub async fn stop_all(&self) {
         let ids: Vec<Uuid> = self
             .inner
             .running
             .lock()
             .map_or_else(|_| Vec::new(), |running| running.keys().copied().collect());
-        for id in ids {
-            self.stop(id).await;
-        }
+        futures::future::join_all(ids.into_iter().map(|id| self.stop(id))).await;
     }
 
     /// Start a collector for a symbol if the feed is enabled and it has none.
