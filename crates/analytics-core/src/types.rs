@@ -146,6 +146,34 @@ pub enum Side {
     Sell,
 }
 
+impl Side {
+    /// Every variant, for exhaustive tests.
+    pub const ALL: [Self; 2] = [Self::Buy, Self::Sell];
+
+    /// Canonical name, as it appears on the wire.
+    ///
+    /// `Side` itself derives `Serialize` without a rename, so it travels as
+    /// `"Buy"`. That is fine for an order or a trade, where it is a value in a
+    /// typed message, and wrong for a chart scene, where everything else is
+    /// `snake_case` and the shell switches on the string. This is the bridge.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Buy => "buy",
+            Self::Sell => "sell",
+        }
+    }
+
+    /// The side that would act against this one.
+    #[must_use]
+    pub const fn opposite(self) -> Self {
+        match self {
+            Self::Buy => Self::Sell,
+            Self::Sell => Self::Buy,
+        }
+    }
+}
+
 /// An OHLCV candle with a buy/sell volume split.
 ///
 /// `buy_volume`/`sell_volume` are required (not optional) because delta and CVD

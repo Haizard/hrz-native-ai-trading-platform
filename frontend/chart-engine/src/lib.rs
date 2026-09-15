@@ -45,8 +45,8 @@ pub mod scene;
 
 pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
 pub use scene::{
-    build, heikin_ashi, Bar, Level, Mode, Plot, Point, ProfileBar, Request, Scene, SceneRegion,
-    Tick,
+    build, heikin_ashi, Bar, Level, Mode, Plot, Point, ProfileBar, Request, Scene, SceneOrigin,
+    SceneRegion, Tick,
 };
 
 /// The ABI the shell talks to.

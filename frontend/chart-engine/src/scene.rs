@@ -34,8 +34,8 @@
 //! it is in [`Scene::note`] rather than letting the label imply tick data that
 //! does not exist.
 
-use analytics_core::market_structure::BreakKind;
-use analytics_core::regions::{detect_zones, RegionKind, ZoneConfig};
+use analytics_core::concepts::{detect as detect_concept, validate as validate_concept, Concept};
+use analytics_core::regions::{detect_zones, Region, RegionOrigin, ZoneConfig};
 use analytics_core::types::{Candle, Timeframe};
 use analytics_core::volume_profile::{calculate_volume_profile_from_candles, VolumeProfile};
 use analytics_core::vwap::calculate_vwap;
@@ -157,10 +157,28 @@ pub struct Request {
     /// holds by construction.
     ///
     /// A flag rather than a list of concepts because this is the built-in
-    /// detector. Geometry defined by a *strategy document* is a different input
-    /// and will arrive as one.
+    /// detector. Geometry defined by a *strategy document* arrives through
+    /// [`Request::concepts`].
     #[serde(default)]
     pub zones: bool,
+    /// Concept documents to compute and draw.
+    ///
+    /// This is where the chart learns about a measurement it was never taught. A
+    /// concept is a pattern -- a window of candles and a band, defined by
+    /// whoever wanted it -- and the built-in [`Request::zones`] detector is the
+    /// same idea without the document: it is not privileged, it is simply the one
+    /// that ships.
+    ///
+    /// `#[serde(default)]` filling in an empty `Vec` is *correct* here, unlike
+    /// `lines` above: there is no standard set of concepts, so a request that
+    /// does not name one gets none. The two fields look alike and mean opposite
+    /// things, which is why both say so.
+    ///
+    /// A concept that fails validation is **not drawn** and its message is
+    /// reported in [`Scene::note`], because half a pattern is worse than none and
+    /// a silent refusal is worse than both.
+    #[serde(default)]
+    pub concepts: Vec<Concept>,
 }
 
 /// The levels drawn when a request does not say.
@@ -180,6 +198,7 @@ impl Default for Request {
             footprint_trades: 0,
             lines: default_lines(),
             zones: false,
+            concepts: Vec::new(),
         }
     }
 }
@@ -246,24 +265,90 @@ pub struct Level {
     pub kind: String,
 }
 
-/// A supply/demand zone, positioned.
+/// What put a region on the chart, in the scene's own vocabulary.
+///
+/// A mirror of `analytics_core::regions::RegionOrigin` rather than that type
+/// itself, for the same reason [`Side::name`] exists: `Region`'s wire is a typed
+/// analytics message, where a `BreakKind` travels as `"Bos"`, and the scene's
+/// wire is `snake_case` throughout because the shell switches on the strings.
+/// Carrying the analytics type here would put a `"Bos"` beside a `"buy"` in the
+/// same object.
+///
+/// [`Side::name`]: analytics_core::types::Side::name
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "source")]
+pub enum SceneOrigin {
+    /// The impulse that broke structure, so this band is the move's origin.
+    StructureBreak {
+        /// `bos` (continuation) or `choch` (reversal).
+        kind: String,
+        /// The swing level the impulse closed through.
+        level: f64,
+    },
+    /// A candle pattern a concept document defined.
+    ///
+    /// Carries nothing else, exactly as the analytics type does: the pattern is
+    /// in the document, and a second copy here would be a second thing to keep
+    /// in step.
+    Pattern,
+}
+
+impl From<RegionOrigin> for SceneOrigin {
+    fn from(origin: RegionOrigin) -> Self {
+        match origin {
+            RegionOrigin::StructureBreak { kind, level } => Self::StructureBreak {
+                kind: kind.name().to_owned(),
+                level,
+            },
+            RegionOrigin::Pattern => Self::Pattern,
+        }
+    }
+}
+
+impl SceneOrigin {
+    /// The broken swing level, when there was one.
+    ///
+    /// A pattern has none, and says so by returning `None` rather than by
+    /// carrying a zero -- a tooltip that reads "level 0.00" off a band that
+    /// never had one is worse than one that reads nothing.
+    #[must_use]
+    pub fn broken_level(&self) -> Option<f64> {
+        match self {
+            Self::StructureBreak { level, .. } => Some(*level),
+            Self::Pattern => None,
+        }
+    }
+}
+
+/// A supply/demand zone, a fair value gap, or any band a client defined,
+/// positioned.
 ///
 /// The only geometry in the scene that is an **area**. Everything else is a
 /// point or a rectangle standing for one price at one time -- a candle, a
 /// horizontal level, a profile bar, a footprint cell. This is a price band over
-/// a span of time, which is the shape a supply/demand zone, a fair value gap, an
-/// order block and a breaker block all share.
+/// a span of time, which is the shape every one of those concepts shares, and
+/// the reason a new concept needs no new drawing code.
 ///
 /// It carries the prices as well as the pixels, for the same reason
 /// [`ProfileBar`] carries `volume` and [`Level`] carries `price`: a tooltip has
 /// to be able to say *which* band this is without the shell re-deriving it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneRegion {
-    /// Which side of the market the zone is expected to act from.
-    pub kind: RegionKind,
+    /// What to call it: `demand`, `supply`, or whatever a client named their
+    /// concept. Also the shell's colour key.
+    ///
+    /// A `String` rather than the built-in `RegionKind`, because the whole point
+    /// is that the vocabulary is not closed. A client's concept has no place in
+    /// an enum we ship.
+    pub name: String,
+    /// Which side is expected to react from this band: `"buy"` or `"sell"`.
+    ///
+    /// The shell's fallback: a concept it has no colour for is still coloured by
+    /// direction, so an unfamiliar band reads correctly instead of grey.
+    pub side: String,
     /// Left edge, in canvas x.
     pub x: f64,
-    /// Width in canvas pixels -- the zone's time extent.
+    /// Width in canvas pixels -- the band's time extent.
     pub w: f64,
     /// Top of the band, in canvas y: the dearer price.
     pub y_top: f64,
@@ -282,17 +367,13 @@ pub struct SceneRegion {
     pub mitigated: f64,
     /// Whether price has not touched it at all.
     ///
-    /// The distinction the whole concept rests on: a mitigated zone has already
+    /// The distinction the whole concept rests on: a mitigated band has already
     /// been consumed, and drawing it like a fresh one is how a chart teaches
     /// someone to buy a level that no longer exists.
     pub fresh: bool,
-    /// The swing level the impulse broke, so the drawing can answer "why is
-    /// this zone here".
-    pub broken_level: f64,
-    /// The break that created it: `"bos"` (continuation) or `"choch"`
-    /// (reversal).
-    pub break_kind: String,
-    /// Ready to draw: `"demand (fresh)"`, `"supply (79% mitigated)"`.
+    /// What put it there -- a structure break, or a pattern someone defined.
+    pub origin: SceneOrigin,
+    /// Ready to draw: `"demand (fresh)"`, `"bullish gap (79% mitigated)"`.
     ///
     /// Formatted here rather than in the shell because turning `0.79` into
     /// `79%` is arithmetic, and `docs/14` keeps arithmetic out of JavaScript.
@@ -535,17 +616,46 @@ pub fn build(request: &Request) -> Scene {
         Mode::Candles | Mode::Bars | Mode::Line | Mode::Area => {}
     }
 
+    // Concept documents are checked before anything is drawn. A document that
+    // fails is **not drawn** -- half a pattern is worse than none -- and its
+    // message goes into the note, because a silent refusal teaches the client
+    // nothing about the document they wrote.
+    let mut concepts = Vec::new();
+    let mut refused = Vec::new();
+    for concept in &request.concepts {
+        match validate_concept(concept) {
+            Ok(()) => concepts.push(concept.clone()),
+            Err(error) => refused.push(format!("`{}`: {error}", concept.name)),
+        }
+    }
+
     scene.levels = levels(request, &profile, &plot, scene.price_min, scene.price_max);
-    scene.regions = zone_rects(
-        request,
+    scene.regions = region_rects(
+        request.zones,
+        &concepts,
         &request.candles,
-        &plot,
-        scene.from,
-        scene.to,
-        scene.price_min,
-        scene.price_max,
+        &Mapping {
+            plot,
+            from: scene.from,
+            to: scene.to,
+            price_min: scene.price_min,
+            price_max: scene.price_max,
+        },
     );
     scene.ticks = ticks(&plot, scene.price_min, scene.price_max);
+
+    if !refused.is_empty() {
+        let message = format!(
+            "{} concept document(s) were refused and are not drawn: {}",
+            refused.len(),
+            refused.join("; ")
+        );
+        scene.note = Some(match scene.note.take() {
+            Some(existing) => format!("{existing} {message}"),
+            None => message,
+        });
+    }
+
     scene
 }
 
@@ -721,38 +831,76 @@ fn levels(
     out
 }
 
-/// Where each zone's band lands on the canvas.
+/// Where each region's band lands on the canvas.
 ///
 /// The time mapping is the same one the candles use: a region's edges are
 /// timestamps, and the plot's width is divided by the window's duration exactly
-/// as a candle's slot is. That is what makes a zone line up with the candles
-/// that formed it instead of drifting sideways -- a zone drawn a slot off reads
+/// as a candle's slot is. That is what makes a band line up with the candles
+/// that formed it instead of drifting sideways -- a band drawn a slot off reads
 /// as a different level entirely.
 ///
 /// `candles` is the **real** series, not the drawn one. [`build`] passes
 /// `request.candles` rather than its own `plotted`, deliberately: structure and
-/// zones are facts about prices that traded, so switching the chart to
-/// Heikin-Ashi must not invent zones out of averaged candles.
-fn zone_rects(
-    request: &Request,
-    candles: &[Candle],
-    plot: &Plot,
+/// patterns are facts about prices that traded, so switching the chart to
+/// Heikin-Ashi must not invent bands out of averaged candles. That holds for
+/// both producers below, because they are handed the same series here.
+/// Where a price and a time land on the canvas.
+///
+/// One struct rather than four loose numbers because they are one thing: the
+/// mapping from `(timestamp, price)` to `(x, y)`. Handing them over whole is
+/// also what keeps a caller from pairing the wrong `from` with the wrong `to` --
+/// four same-shaped parameters in a row is a mistake the compiler cannot see,
+/// and a band drawn against the wrong window is drawn silently wrong.
+#[derive(Debug, Clone, Copy)]
+struct Mapping {
+    /// The plot rectangle.
+    plot: Plot,
+    /// Left edge of the visible window, in unix nanoseconds.
     from: i64,
+    /// Right edge.
     to: i64,
+    /// The bottom of the price range.
     price_min: f64,
+    /// The top.
     price_max: f64,
-) -> Vec<SceneRegion> {
-    if !request.zones {
-        return Vec::new();
+}
+
+impl Mapping {
+    /// A price's canvas y.
+    fn y(&self, price: f64) -> f64 {
+        price_to_y(price, self.price_min, self.price_max, &self.plot)
     }
-    let span = (to - from) as f64;
+}
+
+fn region_rects(
+    zones: bool,
+    concepts: &[Concept],
+    candles: &[Candle],
+    map: &Mapping,
+) -> Vec<SceneRegion> {
+    let span = (map.to - map.from) as f64;
     if span <= 0.0 {
         return Vec::new();
     }
 
-    detect_zones(candles, ZoneConfig::default())
+    // Two producers, one geometry. The built-in detector is **not privileged**:
+    // it is a producer of bands that happen to be called `demand` and `supply`,
+    // and a document a client wrote is another. Neither knows this function
+    // exists, which is why a concept needs no new drawing code.
+    //
+    // The order is the draw order: built-ins first, then client concepts, so a
+    // band someone defined by hand is not hidden under the one that ships.
+    let mut regions: Vec<Region> = Vec::new();
+    if zones {
+        regions.extend(detect_zones(candles, ZoneConfig::default()));
+    }
+    for concept in concepts {
+        regions.extend(detect_concept(candles, concept));
+    }
+
+    regions
         .into_iter()
-        // A band with no height is not a zone. Drawing one produces an
+        // A band with no height is not a region. Drawing one produces an
         // invisible rectangle with a label floating on nothing, which reads as a
         // rendering bug rather than as a flat origin.
         .filter(|region| {
@@ -763,47 +911,50 @@ fn zone_rects(
             // Clamp to the window. Detection runs on these very candles, so
             // today this never bites; it is here because the next caller -- a
             // strategy document naming its own concept -- may hand over a region
-            // that starts before the visible window, and a zone drawn off-canvas
+            // that starts before the visible window, and a band drawn off-canvas
             // to the left is worse than one drawn short.
-            let start = region.from.max(from);
-            let end = region.to.min(to);
+            let start = region.from.max(map.from);
+            let end = region.to.min(map.to);
             if end <= start {
                 return None;
             }
             let mitigated = region.mitigated.clamp(0.0, 1.0);
-            let y_top = price_to_y(region.price_high, price_min, price_max, plot);
-            let y_bottom = price_to_y(region.price_low, price_min, price_max, plot);
+            let y_top = map.y(region.price_high);
+            let y_bottom = map.y(region.price_low);
             Some(SceneRegion {
-                kind: region.kind,
-                x: plot.x + (start - from) as f64 / span * plot.w,
-                w: (end - start) as f64 / span * plot.w,
+                label: region_label(&region.name, mitigated),
+                name: region.name,
+                side: region.side.name().to_owned(),
+                x: map.plot.x + (start - map.from) as f64 / span * map.plot.w,
+                w: (end - start) as f64 / span * map.plot.w,
                 y_top,
                 h: y_bottom - y_top,
                 price_low: region.price_low,
                 price_high: region.price_high,
                 mitigated,
                 fresh: mitigated <= 0.0,
-                broken_level: region.broken_level,
-                break_kind: match region.break_kind {
-                    BreakKind::Bos => "bos",
-                    BreakKind::Choch => "choch",
-                }
-                .to_owned(),
-                label: region_label(region.kind, mitigated),
+                origin: region.origin.into(),
             })
         })
         .collect()
 }
 
-/// How a zone's label reads.
+/// How a region's label reads.
+///
+/// `name` is the region's own, already display-ready -- `demand`, `supply`, or
+/// whatever a client called their concept. It is a `&str` and not a
+/// [`RegionKind`] because there is no closed set of names to match on: a
+/// concept document supplies one, and this function must not need to know it.
 ///
 /// `mitigated` is taken already clamped, so the only branch here is the one the
 /// concept needs: fresh or partly consumed.
-fn region_label(kind: RegionKind, mitigated: f64) -> String {
+///
+/// [`RegionKind`]: analytics_core::regions::RegionKind
+fn region_label(name: &str, mitigated: f64) -> String {
     if mitigated <= 0.0 {
-        format!("{} (fresh)", kind.name())
+        format!("{name} (fresh)")
     } else {
-        format!("{} ({:.0}% mitigated)", kind.name(), mitigated * 100.0)
+        format!("{name} ({:.0}% mitigated)", mitigated * 100.0)
     }
 }
 
@@ -831,6 +982,8 @@ pub fn series_timeframe(candles: &[Candle]) -> Option<Timeframe> {
 mod tests {
     use super::*;
     use crate::footprint;
+    use analytics_core::concepts::{Compare, Requirement, Selector};
+    use analytics_core::types::Side;
 
     fn candle(index: i64, open: f64, close: f64) -> Candle {
         Candle {
@@ -944,6 +1097,76 @@ mod tests {
             zones: true,
             candles: zoned_series(),
             ..Request::default()
+        }
+    }
+
+    /// A series with exactly one three-candle gap in it.
+    ///
+    /// Candles 4, 5 and 6 are the pattern: candle 4's high is 100.5, candle 6's
+    /// low is 103.0, and nothing between them trades there. Every other window
+    /// of three is checked against the rule in [`gap_concept`] and fails --
+    /// which matters, because "any three-candle separation" fires again on every
+    /// window that keeps separating, and a fixture that matches twice would not
+    /// tell the two cases apart.
+    ///
+    /// The candles after the gap stay above it, so the band is still **fresh**.
+    fn gap_series() -> Vec<Candle> {
+        #[rustfmt::skip]
+        let rows: [(f64, f64, f64, f64); 12] = [
+            (100.0, 100.6,  99.2,  99.8),
+            ( 99.8, 100.4,  99.0,  99.6),
+            ( 99.6, 100.8,  99.1, 100.2),
+            (100.2, 101.0,  99.9, 100.4),
+            (100.4, 100.5,  99.5, 100.0),  // 4: the left candle -- high 100.5
+            (100.0, 106.0, 100.6, 105.5),  // 5: the displacement
+            (105.5, 105.6, 103.0, 104.0),  // 6: the right candle -- low 103.0
+            (104.0, 105.5, 103.5, 105.0),
+            (105.0, 106.0, 104.0, 105.5),
+            (105.5, 106.2, 104.8, 106.0),
+            (106.0, 106.5, 105.0, 105.8),
+            (105.8, 106.4, 104.9, 105.2),
+        ];
+        rows.iter()
+            .enumerate()
+            .map(|(index, &(open, high, low, close))| Candle {
+                symbol: "BTCUSDT".into(),
+                timeframe: Timeframe::M5,
+                open_time: index as i64 * 300_000_000_000,
+                open,
+                high,
+                low,
+                close,
+                volume: 10.0,
+                buy_volume: 6.0,
+                sell_volume: 4.0,
+            })
+            .collect()
+    }
+
+    /// A fair value gap, written as a document and nothing else.
+    ///
+    /// This is the whole point of the feature, so it is worth being explicit
+    /// about what is *not* here: no detector, no enum variant, no field, no
+    /// entry in any list. Nothing in this workspace knows what a fair value gap
+    /// is. Three numbers -- a window, a band and one requirement -- are the
+    /// entire definition, and the same shape with different numbers is an order
+    /// block, a breaker block or a concept nobody has named yet.
+    fn gap_concept() -> Concept {
+        Concept {
+            name: "bullish_gap".into(),
+            label: Some("bullish gap".into()),
+            side: Side::Buy,
+            window: 3,
+            // The band is the gap itself: from the high price left behind to
+            // the low price returned to.
+            lower: Selector::High(0),
+            upper: Selector::Low(2),
+            require: vec![Requirement {
+                left: Selector::High(0),
+                op: Compare::Below,
+                right: Selector::Low(2),
+            }],
+            min_band_ratio: None,
         }
     }
 
@@ -1202,7 +1425,7 @@ mod tests {
         let zone = scene
             .regions
             .iter()
-            .find(|region| region.kind == RegionKind::Demand)
+            .find(|region| region.name == "demand")
             .unwrap_or_else(|| panic!("no demand zone was drawn: {:?}", scene.regions));
 
         // The band starts at candle 8 -- the first origin candle -- and runs to
@@ -1233,7 +1456,7 @@ mod tests {
         let zone = scene
             .regions
             .iter()
-            .find(|region| region.kind == RegionKind::Demand)
+            .find(|region| region.name == "demand")
             .expect("a demand zone");
         // The origin candles' lowest low and highest high.
         assert_eq!(zone.price_low, 92.8);
@@ -1243,8 +1466,18 @@ mod tests {
         assert!(zone.y_top >= scene.plot.y - 1.0);
         assert!(zone.y_top + zone.h <= scene.plot.y + scene.plot.h + 1.0);
         // The break that created it, so the drawing can say why it is there.
-        assert_eq!(zone.broken_level, 97.0);
-        assert_eq!(zone.break_kind, "bos");
+        // This is `origin` rather than two bare fields now, because a
+        // client-defined pattern has no broken level and carrying one anyway
+        // would be a lie that reads as data.
+        assert_eq!(
+            zone.origin,
+            SceneOrigin::StructureBreak {
+                kind: "bos".into(),
+                level: 97.0,
+            }
+        );
+        assert_eq!(zone.origin.broken_level(), Some(97.0));
+        assert_eq!(zone.side, "buy");
     }
 
     #[test]
@@ -1256,13 +1489,9 @@ mod tests {
             assert!((0.0..=1.0).contains(&zone.mitigated), "{zone:?}");
             assert_eq!(zone.fresh, zone.mitigated <= 0.0, "{zone:?}");
             let expected = if zone.fresh {
-                format!("{} (fresh)", zone.kind.name())
+                format!("{} (fresh)", zone.name)
             } else {
-                format!(
-                    "{} ({:.0}% mitigated)",
-                    zone.kind.name(),
-                    zone.mitigated * 100.0
-                )
+                format!("{} ({:.0}% mitigated)", zone.name, zone.mitigated * 100.0)
             };
             assert_eq!(zone.label, expected);
         }
@@ -1291,14 +1520,14 @@ mod tests {
         // Heikin-Ashi must not invent zones out of averaged candles -- the
         // prices, the label and the count have to be identical across every
         // rendering of the same series.
-        let expected: Vec<(f64, f64, String, String)> = build(&zoned_request())
+        let expected: Vec<(f64, f64, SceneOrigin, String)> = build(&zoned_request())
             .regions
             .iter()
             .map(|zone| {
                 (
                     zone.price_low,
                     zone.price_high,
-                    zone.break_kind.clone(),
+                    zone.origin.clone(),
                     zone.label.clone(),
                 )
             })
@@ -1310,14 +1539,14 @@ mod tests {
                 mode,
                 ..zoned_request()
             });
-            let bands: Vec<(f64, f64, String, String)> = scene
+            let bands: Vec<(f64, f64, SceneOrigin, String)> = scene
                 .regions
                 .iter()
                 .map(|zone| {
                     (
                         zone.price_low,
                         zone.price_high,
-                        zone.break_kind.clone(),
+                        zone.origin.clone(),
                         zone.label.clone(),
                     )
                 })
@@ -1335,7 +1564,8 @@ mod tests {
         let json = serde_json::to_value(&scene).expect("serializes");
         let zone = &json["regions"][0];
         for key in [
-            "kind",
+            "name",
+            "side",
             "x",
             "w",
             "y_top",
@@ -1344,14 +1574,164 @@ mod tests {
             "price_high",
             "mitigated",
             "fresh",
-            "broken_level",
-            "break_kind",
+            "origin",
             "label",
         ] {
             assert!(!zone[key].is_null(), "the shell reads `{key}`: {zone}");
         }
-        // snake_case on the wire, like everything else in the scene.
-        assert_eq!(zone["kind"], "demand");
+        // `name` is the colour key and `side` the fallback colour, so both have
+        // to be on the wire and both have to be snake_case: a concept's name is
+        // whatever a client called it, and `side` is `"buy"`/`"sell"` rather
+        // than the enum's own `"Buy"`.
+        assert_eq!(zone["name"], "demand");
+        assert_eq!(zone["side"], "buy");
+    }
+
+    // --- concepts a client wrote --------------------------------------------
+
+    #[test]
+    fn a_concept_a_client_wrote_is_drawn_without_a_detector() {
+        // The feature, end to end, with nothing pre-built in the path: the
+        // request carries a document, the document is measured against the
+        // candles, and the result is a rectangle the shell can fill.
+        let scene = build(&Request {
+            concepts: vec![gap_concept()],
+            candles: gap_series(),
+            ..Request::default()
+        });
+
+        let band = scene
+            .regions
+            .iter()
+            .find(|region| region.name == "bullish gap")
+            .unwrap_or_else(|| panic!("the concept was not drawn: {:?}", scene.regions));
+
+        // Exactly the band the document asked for: the left candle's high to
+        // the right candle's low. Copied, not derived -- nothing here is a
+        // subtraction, so exact equality is the honest assertion.
+        assert_eq!(band.price_low, 100.5);
+        assert_eq!(band.price_high, 103.0);
+        assert_eq!(band.side, "buy");
+        // A pattern, not a structure break: a client's band has no broken level,
+        // and the origin says so rather than inventing one.
+        assert_eq!(band.origin, SceneOrigin::Pattern);
+        assert_eq!(band.origin.broken_level(), None);
+        // Nothing after the gap traded back into it.
+        assert!(band.fresh, "{band:?}");
+        assert_eq!(band.label, "bullish gap (fresh)");
+
+        // Geometry, not a promise: a real rectangle inside the plot.
+        assert!(band.w > 0.0 && band.h > 0.0, "{band:?}");
+        assert!(band.x >= scene.plot.x - 1.0);
+        assert!(band.x + band.w <= scene.plot.x + scene.plot.w + 1.0);
+        assert!(band.y_top >= scene.plot.y - 1.0);
+        assert!(band.y_top + band.h <= scene.plot.y + scene.plot.h + 1.0);
+
+        // It starts inside candle 4's slot -- the first candle of the pattern --
+        // and runs to the right edge, which is the reason the time span is
+        // mapped the way it is. A band drawn a slot off reads as a different
+        // level entirely.
+        let slot = scene.plot.w / 12.0;
+        let centre = scene.candles[4].x + scene.candles[4].w / 2.0;
+        assert!(
+            band.x <= centre && band.x >= centre - slot,
+            "the band must start inside candle 4's slot: x={} centre={centre} slot={slot}",
+            band.x
+        );
+        let expected_w = (12.0 - 4.0) / 12.0 * scene.plot.w;
+        assert!(
+            (band.w - expected_w).abs() < 1e-6,
+            "the width is the time span: {} vs {expected_w}",
+            band.w
+        );
+
+        // And nothing was refused, so there is nothing to report.
+        assert!(scene.note.is_none(), "{:?}", scene.note);
+    }
+
+    #[test]
+    fn a_refused_concept_is_not_drawn_and_the_note_says_why() {
+        // Half a pattern is worse than none, and a silent refusal teaches
+        // whoever wrote the document nothing. So: the band is absent *and* the
+        // reason is on the scene, naming the document.
+        //
+        // The ratio is the interesting refusal, because detection alone would
+        // happily draw it -- every band is at least -50% of its window's range,
+        // so the band being absent is the validation pass doing its job rather
+        // than the detector failing to match. A guard only ever seen pass is not
+        // a guard, and the same goes for a refusal that would have happened
+        // anyway.
+        let mut concept = gap_concept();
+        concept.min_band_ratio = Some(-0.5);
+
+        let scene = build(&Request {
+            concepts: vec![concept],
+            candles: gap_series(),
+            ..Request::default()
+        });
+
+        assert!(scene.regions.is_empty(), "{:?}", scene.regions);
+        let note = scene.note.expect("a refusal must be reported");
+        assert!(note.contains("bullish_gap"), "{note}");
+        assert!(note.contains("refused"), "{note}");
+        assert!(note.contains("-0.5"), "{note}");
+    }
+
+    #[test]
+    fn a_concept_and_a_built_in_zone_can_share_the_chart() {
+        // The built-in detector is not privileged and the client's document is
+        // not a special case: two producers of one shape. A chart showing both
+        // must not have one overwrite the other -- and the client's band draws
+        // last, so a hand-written concept is not hidden under the one that
+        // ships.
+        //
+        // The zoned series is used rather than the gap series because the point
+        // is the *coexistence*: this fixture has to produce a built-in zone, and
+        // the gap concept happens to fire on it too (candle 5's high sits below
+        // candle 7's low).
+        let scene = build(&Request {
+            zones: true,
+            concepts: vec![gap_concept()],
+            candles: zoned_series(),
+            ..Request::default()
+        });
+
+        let zones: Vec<&SceneRegion> = scene
+            .regions
+            .iter()
+            .filter(|region| region.name == "demand" || region.name == "supply")
+            .collect();
+        let gaps: Vec<&SceneRegion> = scene
+            .regions
+            .iter()
+            .filter(|region| region.name == "bullish gap")
+            .collect();
+        assert!(
+            !zones.is_empty(),
+            "the fixture must produce a built-in zone too: {:?}",
+            scene.regions
+        );
+        assert!(
+            !gaps.is_empty(),
+            "the fixture must produce the concept's band too: {:?}",
+            scene.regions
+        );
+
+        let last_zone = scene
+            .regions
+            .iter()
+            .rposition(|region| region.name == "demand" || region.name == "supply")
+            .expect("a built-in zone");
+        let first_gap = scene
+            .regions
+            .iter()
+            .position(|region| region.name == "bullish gap")
+            .expect("the concept's band");
+        assert!(
+            first_gap > last_zone,
+            "concepts draw after the built-ins: {:?}",
+            scene.regions
+        );
     }
 
     // --- the chart types ----------------------------------------------------

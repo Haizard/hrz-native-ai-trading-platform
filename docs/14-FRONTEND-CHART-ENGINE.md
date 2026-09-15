@@ -105,7 +105,7 @@ CPU calc   GPU-friendly buffers
   profile overlay, VWAP/POC/VAH/VAL lines, delta/CVD sub-panel, drawing tools
   (trendlines, Fibonacci, rectangles — start minimal, expand later).
 
-  **Built as of 2026-09-15: supply/demand zones, the first area the engine can draw.**
+  **Built as of 2026-09-15: supply/demand zones, and then any band a client can define.**
   A "Zones" toggle in the header. When it is on, the request carries `zones: true` and the
   scene comes back with a `regions` array — price bands with a time extent, drawn behind
   the candles.
@@ -132,6 +132,51 @@ CPU calc   GPU-friendly buffers
   A fresh zone is drawn solid and a mitigated one faded, because a zone price has already
   traded back through is not a level any more. Rendering the two the same is how a chart
   teaches someone to buy something that no longer exists.
+
+  ### The concept layer: a client's document, not a new detector
+
+  The toggle above draws one measurement. The thing it generalises to is **a document the
+  client writes**, carried in the same request as `concepts: Vec<Concept>` and measured by
+  the same engine:
+
+  ```json
+  {"name": "bullish_gap", "label": "bullish gap", "side": "Buy", "window": 3,
+   "lower": {"high": 0}, "upper": {"low": 2},
+   "require": [{"left": {"high": 0}, "op": "below", "right": {"low": 2}}]}
+  ```
+
+  That is a fair value gap, completely defined. Nothing in this workspace knows what a fair
+  value gap is: there is no detector, no enum variant, no field, no entry in a list. The
+  same shape with different numbers is an order block, a breaker block, or a concept nobody
+  has named yet.
+
+  This is what keeps `docs/06` intact. Its rule — *"keep the condition grammar small and
+  explicit rather than a general-purpose expression language; every operator supported must
+  be enumerable and individually testable"* — constrains the **grammar**, not the set of
+  *measurements*. So the operators stay closed (`below`, `above`, `below_or_equal`,
+  `above_or_equal`) and the **vocabulary becomes definable**: a client names a concept,
+  defines it from primitives, and it becomes a band the closed grammar can be asked about.
+  You cannot enumerate "any concept"; you can make concepts *definable*. The document is
+  data, never code — `crates/sandbox` compiles the interpreter and passes the document in,
+  and that decision is what makes this safe to accept from a user at all.
+
+  Four details worth keeping:
+
+  - **The built-in detector is not privileged.** `region_rects` takes bands from both
+    producers and does the same thing with them. `demand` and `supply` are simply the bands
+    that ship; a client's band is not a special case, which is why a new concept needs no
+    new drawing code.
+  - **The name is the colour key and `side` is the fallback.** A concept the shell has never
+    heard of still reads as a direction rather than as grey.
+  - **A refused document is not drawn, and the note says why.** Half a pattern is worse than
+    none, and a silent refusal teaches whoever wrote the document nothing. The refusal is
+    reported with the document's name and the reason.
+  - **The scene has its own vocabulary.** `SceneOrigin` mirrors `RegionOrigin` rather than
+    carrying it, because `Region`'s wire is a typed analytics message where `BreakKind`
+    travels as `"Bos"`, and the scene's wire is `snake_case` throughout because the shell
+    switches on the strings. Carrying the analytics type would put a `"Bos"` beside a
+    `"buy"` in the same object. `Side::name` and `BreakKind::name` are the same bridge, for
+    the same reason.
 
 - **DOM/order book panel**: live bid/ask ladder from `/ws/orderbook/{symbol}`.
 

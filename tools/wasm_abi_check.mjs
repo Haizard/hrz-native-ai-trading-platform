@@ -199,7 +199,7 @@ check(
   fallback.note
 );
 
-// --- supply/demand zones ----------------------------------------------------
+// --- regions: supply/demand zones -------------------------------------------
 //
 // The first *area* the engine has ever drawn. Everything else in the scene is a
 // point or a rectangle standing for one price at one time, so this is the shape
@@ -232,6 +232,32 @@ function zonedCandles() {
     [96.5, 97.0, 93.5, 94.0],
     [94.0, 95.0, 93.8, 94.8],
   ];
+  return candlesFromRows(rows);
+}
+
+/// A series with exactly one three-candle gap in it -- candles 4, 5 and 6.
+///
+/// Every other window of three fails the rule, and the candles after the gap
+/// stay above it, so the band is still fresh.
+function gapCandles() {
+  const rows = [
+    [100.0, 100.6, 99.2, 99.8],
+    [99.8, 100.4, 99.0, 99.6],
+    [99.6, 100.8, 99.1, 100.2],
+    [100.2, 101.0, 99.9, 100.4],
+    [100.4, 100.5, 99.5, 100.0],
+    [100.0, 106.0, 100.6, 105.5],
+    [105.5, 105.6, 103.0, 104.0],
+    [104.0, 105.5, 103.5, 105.0],
+    [105.0, 106.0, 104.0, 105.5],
+    [105.5, 106.2, 104.8, 106.0],
+    [106.0, 106.5, 105.0, 105.8],
+    [105.8, 106.4, 104.9, 105.2],
+  ];
+  return candlesFromRows(rows);
+}
+
+function candlesFromRows(rows) {
   return rows.map(([open, high, low, close], i) => ({
     symbol: "BTCUSDT",
     timeframe: "5m",
@@ -273,19 +299,28 @@ check(
   `got ${JSON.stringify(zoned.regions)}`
 );
 
-const zone = (zoned.regions ?? []).find((r) => r.kind === "demand");
-check("and it is a demand zone", Boolean(zone), JSON.stringify(zoned.regions.map((r) => r.kind)));
+const zone = (zoned.regions ?? []).find((r) => r.name === "demand");
+check("and it is a demand zone", Boolean(zone), JSON.stringify(zoned.regions.map((r) => r.name)));
 
 if (zone) {
   // Every key the shell reads. A rename is not a compile error anywhere -- it is
   // an overlay that silently stops appearing, which looks like "no zones in this
   // window" rather than like a bug.
   for (const key of [
-    "kind", "x", "w", "y_top", "h", "price_low", "price_high",
-    "mitigated", "fresh", "broken_level", "break_kind", "label",
+    "name", "side", "x", "w", "y_top", "h", "price_low", "price_high",
+    "mitigated", "fresh", "origin", "label",
   ]) {
-    check(`the zone carries \`${key}\``, zone[key] !== undefined && zone[key] !== null);
+    check(`the region carries \`${key}\``, zone[key] !== undefined && zone[key] !== null);
   }
+  // `name` is the colour key and `side` the fallback, so both are checked for
+  // the *value* and not just for presence: a `Side` that leaked its own
+  // `"Buy"` onto the wire would still be a non-null string.
+  check(
+    "the name is snake_case on the wire",
+    zone.name === "demand",
+    zone.name
+  );
+  check("the side is snake_case on the wire", zone.side === "buy", zone.side);
   check(
     "the band is an area, not a line",
     zone.h > 0 && zone.w > 0 && zone.price_high > zone.price_low,
@@ -311,10 +346,104 @@ if (zone) {
   );
   check(
     "it says which break put it there",
-    zone.broken_level === 97.0 && zone.break_kind === "bos",
-    `${zone.break_kind} at ${zone.broken_level}`
+    zone.origin &&
+      zone.origin.source === "structure_break" &&
+      zone.origin.kind === "bos" &&
+      zone.origin.level === 97.0,
+    JSON.stringify(zone.origin)
   );
 }
+
+// --- regions: a concept the client wrote ------------------------------------
+//
+// The feature this whole layer exists for. Nothing in this workspace knows what
+// a fair value gap is -- there is no detector for it, no enum variant, no field.
+// This document is the entire definition, and it travels in the request as
+// data: `crates/sandbox` never compiles untrusted code, and a concept document
+// is how a client adds a word to the vocabulary without adding code.
+
+/// A fair value gap: three candles, the first candle's high left behind below
+/// the third candle's low.
+function gapConcept() {
+  return {
+    name: "bullish_gap",
+    label: "bullish gap",
+    side: "Buy",
+    window: 3,
+    lower: { high: 0 },
+    upper: { low: 2 },
+    require: [{ left: { high: 0 }, op: "below", right: { low: 2 } }],
+  };
+}
+
+const conceived = build({
+  candles: gapCandles(),
+  width: 900,
+  height: 420,
+  mode: "candles",
+  concepts: [gapConcept()],
+});
+
+const gap = (conceived.regions ?? []).find((r) => r.name === "bullish gap");
+check(
+  "a concept the client wrote comes back as a band",
+  Boolean(gap),
+  `got ${JSON.stringify(conceived.regions)}`
+);
+
+if (gap) {
+  check(
+    "the band is exactly what the document asked for",
+    gap.price_low === 100.5 && gap.price_high === 103.0,
+    `${gap.price_low}..${gap.price_high}`
+  );
+  check("the client's side survives the trip", gap.side === "buy", gap.side);
+  check(
+    "a client's band says it came from a pattern, not a break",
+    gap.origin && gap.origin.source === "pattern",
+    JSON.stringify(gap.origin)
+  );
+  check(
+    "the label is the client's, formatted by the engine",
+    gap.label === "bullish gap (fresh)",
+    gap.label
+  );
+  check(
+    "and it is a real rectangle inside the plot",
+    gap.w > 0 &&
+      gap.h > 0 &&
+      gap.x >= conceived.plot.x - 1 &&
+      gap.x + gap.w <= conceived.plot.x + conceived.plot.w + 1,
+    `x=${gap.x} w=${gap.w} h=${gap.h}`
+  );
+  check("nothing was refused", !conceived.note, conceived.note ?? "(no note)");
+}
+
+// A document that cannot mean anything is refused *and* says why. The ratio is
+// the interesting refusal: detection alone would happily draw it -- every band
+// is at least -50% of its window's range -- so the band being absent is the
+// validator doing its job rather than the detector failing to match.
+const refused = build({
+  candles: gapCandles(),
+  width: 900,
+  height: 420,
+  mode: "candles",
+  concepts: [{ ...gapConcept(), min_band_ratio: -0.5 }],
+});
+
+check(
+  "a refused concept is not drawn",
+  Array.isArray(refused.regions) && refused.regions.length === 0,
+  JSON.stringify(refused.regions)
+);
+check(
+  "and the refusal names the document and the reason",
+  typeof refused.note === "string" &&
+    refused.note.includes("bullish_gap") &&
+    refused.note.includes("refused") &&
+    refused.note.includes("-0.5"),
+  refused.note ?? "(no note)"
+);
 
 // --- the levels default -----------------------------------------------------
 //

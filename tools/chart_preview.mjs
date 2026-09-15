@@ -148,25 +148,55 @@ function series() {
   }));
 }
 
+/// A fair value gap, written as a document and nothing else.
+///
+/// Nothing in this workspace knows what a fair value gap is: there is no
+/// detector for it, no enum variant, no field, no entry in any list. Three
+/// numbers -- a window, a band and one requirement -- are the entire definition.
+/// This is the shape a client is meant to arrive with.
+///
+/// `min_band_ratio` is the one size knob, and it is set here because the rule
+/// itself is *any* three-candle separation: a five-candle impulse separates on
+/// every window it spans, so without it this series answers with a stack of
+/// overlapping slivers instead of the gaps a trader would mark.
+function conceptDocument() {
+  return {
+    name: "bullish_gap",
+    label: "bullish gap",
+    side: "Buy",
+    window: 3,
+    lower: { high: 0 },
+    upper: { low: 2 },
+    require: [{ left: { high: 0 }, op: "below", right: { low: 2 } }],
+    min_band_ratio: 0.2,
+  };
+}
+
 const scene = build({
   candles: series(),
   width: 1180,
   height: 520,
   mode: "candles",
+  // Both producers in one request: the bands the engine ships with, and a band
+  // nobody taught it. They come back through the same `regions` array, because
+  // the built-in detector is not privileged.
   zones: true,
+  concepts: [conceptDocument()],
 });
 
-const zones = scene.regions ?? [];
+const regions = scene.regions ?? [];
 console.log(
-  `${scene.candles.length} candles, ${zones.length} zone(s): ` +
-    zones.map((z) => `${z.label} ${z.price_low}..${z.price_high}`).join(", ")
+  `${scene.candles.length} candles, ${regions.length} region(s):\n` +
+    regions
+      .map((r) => `  ${r.name} (${r.side}) ${r.price_low}..${r.price_high} — ${r.label}`)
+      .join("\n")
 );
 
 const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>chart-engine preview — supply/demand zones</title>
+<title>chart-engine preview — regions, built-in and client-defined</title>
 <style>
   :root {
     --bg: #0d1117; --panel: #161b22; --line: #2a313c;
@@ -192,18 +222,40 @@ const html = `<!doctype html>
 <h1>The engine's own output, drawn</h1>
 <p class="lede">
   The scene below is not hand-drawn and not simulated: it is the JSON
-  <code>chart_engine.wasm</code> returned for a request with <code>zones: true</code>,
-  rendered with the same rules the shell uses. Zones sit behind the candles because a
-  supply/demand band is a backdrop the price is read against, not a mark on top of it.
+  <code>chart_engine.wasm</code> returned for a request with <code>zones: true</code>
+  and one <code>concepts</code> document, rendered with the same rules the shell uses.
+  Regions sit behind the candles because a band is a backdrop the price is read
+  against, not a mark on top of it.
+</p>
+<p class="lede">
+  Both kinds of band are here, and they are the same kind of thing. The
+  <code>demand</code> bands come from the detector the engine ships with. The
+  <code>bullish gap</code> bands come from three numbers in the request — a window, a
+  band and one requirement — and <strong>nothing in this workspace knows what a fair
+  value gap is</strong>. No detector, no enum variant, no field, no entry in a list. The
+  request carries the definition as data and the engine measures it, which is the
+  whole point: a client adds a word to the vocabulary without adding code.
 </p>
 <div class="wrap"><canvas id="c"></canvas></div>
 <ul id="legend"></ul>
 <p class="note">
-  A fresh zone is drawn solid; a mitigated one is faded, because a zone price has already
-  traded back through is not a level any more. The band arrives with its height as
-  <code>h</code> rather than as two edges to subtract — the same shape
+  A fresh region is drawn solid; a mitigated one is faded, because a band price has
+  already traded back through is not a level any more. The band arrives with its height
+  as <code>h</code> rather than as two edges to subtract — the same shape
   <code>ProfileBar</code> already had, so the shell's fill is
   <code>fillRect(x, y_top, w, h)</code>.
+  <br /><br />
+  Colour comes from the region's <code>name</code>, so a concept is coloured by its own
+  name the moment there is an entry for it — and before then it falls back to
+  <code>side</code>, which every region carries. That fallback is why a band the shell
+  has never heard of still reads as a direction rather than as a grey rectangle.
+  <br /><br />
+  There are six gap bands and only two displacements, and that is the rule being honest
+  rather than a bug: <em>any</em> three candles that separate is a match, so one
+  five-candle impulse matches on every window it spans and the bands stack. A concept is
+  a pattern, not a detector with a notion of "the" gap — which is what the one size knob,
+  <code>min_band_ratio</code>, is for. Raise it and the overlapping slivers go; raise it
+  far enough and the honest answer is nothing.
 </p>
 <script>
 const scene = ${JSON.stringify(scene)};
@@ -211,7 +263,12 @@ const scene = ${JSON.stringify(scene)};
 const COLORS = {
   up: "#26a69a", down: "#ef5350", wick: "#8b949e", grid: "#21262d",
   text: "#8b949e", vwap: "#d29922", poc: "#e6edf3", vah: "#8b949e", val: "#8b949e",
+  // The bands the engine ships with, keyed by the region's name...
   demand: "#26a69a", supply: "#ef5350",
+  // ...and the fallback, keyed by its side. Every region carries one, so a
+  // concept with no entry here still reads as a direction instead of grey.
+  buy: "#26a69a", sell: "#ef5350",
+  "bullish gap": "#58a6ff",
 };
 
 const canvas = document.getElementById("c");
@@ -233,24 +290,24 @@ for (const tick of scene.ticks) {
   ctx.stroke();
 }
 
-// Zones first: behind everything.
-for (const zone of scene.regions) {
-  const colour = COLORS[zone.kind] || COLORS.text;
-  ctx.globalAlpha = zone.fresh ? 0.16 : 0.07;
+// Regions first: behind everything.
+for (const region of scene.regions) {
+  const colour = COLORS[region.name] || COLORS[region.side] || COLORS.text;
+  ctx.globalAlpha = region.fresh ? 0.16 : 0.07;
   ctx.fillStyle = colour;
-  ctx.fillRect(zone.x, zone.y_top, zone.w, zone.h);
+  ctx.fillRect(region.x, region.y_top, region.w, region.h);
   ctx.globalAlpha = 1;
 
   ctx.strokeStyle = colour;
-  ctx.globalAlpha = zone.fresh ? 0.7 : 0.35;
+  ctx.globalAlpha = region.fresh ? 0.7 : 0.35;
   ctx.setLineDash([3, 3]);
-  ctx.strokeRect(zone.x + 0.5, zone.y_top + 0.5, zone.w - 1, zone.h - 1);
+  ctx.strokeRect(region.x + 0.5, region.y_top + 0.5, region.w - 1, region.h - 1);
   ctx.setLineDash([]);
   ctx.globalAlpha = 1;
 
   ctx.fillStyle = colour;
   ctx.font = "10px " + getComputedStyle(document.documentElement).getPropertyValue("--mono");
-  ctx.fillText(zone.label, zone.x + 4, zone.y_top + 11);
+  ctx.fillText(region.label, region.x + 4, region.y_top + 11);
 }
 
 for (const bar of scene.candles) {
@@ -287,12 +344,16 @@ for (const tick of scene.ticks) {
 // --- the legend, straight from the scene ------------------------------------
 
 const legend = document.getElementById("legend");
-for (const zone of scene.regions) {
+for (const region of scene.regions) {
   const li = document.createElement("li");
+  const origin =
+    region.origin.source === "structure_break"
+      ? region.origin.kind + " at " + region.origin.level.toFixed(1)
+      : "pattern";
   li.textContent =
-    zone.kind + " · " + zone.price_low.toFixed(1) + "–" + zone.price_high.toFixed(1) +
-    " · " + (zone.fresh ? "fresh" : Math.round(zone.mitigated * 100) + "% mitigated") +
-    " · " + zone.break_kind + " at " + zone.broken_level.toFixed(1);
+    region.name + " · " + region.price_low.toFixed(1) + "–" + region.price_high.toFixed(1) +
+    " · " + (region.fresh ? "fresh" : Math.round(region.mitigated * 100) + "% mitigated") +
+    " · " + origin;
   legend.appendChild(li);
 }
 </script>

@@ -46,6 +46,7 @@
 #![deny(missing_docs)]
 
 pub mod absorption;
+pub mod concepts;
 pub mod cvd;
 pub mod delta;
 pub mod error;
@@ -62,6 +63,10 @@ pub mod volume_profile;
 pub mod vwap;
 
 pub use absorption::{detect_absorption, AbsorptionConfig, AbsorptionEvent};
+pub use concepts::{
+    detect as detect_concept, validate as validate_concept, Compare, Concept, Requirement,
+    Selector, SelectorKind, MAX_WINDOW, MIN_WINDOW,
+};
 pub use cvd::{calculate_cvd, detect_cvd_divergence, Cvd, CvdDivergence};
 pub use delta::{calculate_delta, calculate_delta_from_trades, calculate_deltas, DeltaReading};
 pub use error::AnalyticsError;

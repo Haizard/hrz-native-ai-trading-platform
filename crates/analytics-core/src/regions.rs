@@ -79,24 +79,77 @@ impl RegionKind {
     }
 }
 
+/// What put a region on the chart.
+///
+/// Kept because "why is this band here" is the first question anyone asks of a
+/// drawing, and a label that cannot answer it is decoration.
+///
+/// An enum rather than a `break_kind` plus a `broken_level` because not every
+/// band comes from a break. A client-defined pattern has no broken level, and
+/// carrying those as bare fields would have made every such band invent one --
+/// a lie that reads as data until someone queries it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "source")]
+pub enum RegionOrigin {
+    /// The impulse that broke structure, so this band is the move's origin.
+    StructureBreak {
+        /// BOS (continuation) or CHoCH (reversal).
+        kind: BreakKind,
+        /// The swing level the impulse closed through.
+        level: f64,
+    },
+    /// A candle pattern a concept document defined.
+    ///
+    /// Deliberately carries nothing else: the pattern is in the document, and
+    /// duplicating it here would give two copies of one definition to keep in
+    /// step.
+    Pattern,
+}
+
+impl RegionOrigin {
+    /// The broken swing level, when there was one.
+    #[must_use]
+    pub const fn broken_level(self) -> Option<f64> {
+        match self {
+            Self::StructureBreak { level, .. } => Some(level),
+            Self::Pattern => None,
+        }
+    }
+}
+
 /// A price band over a span of time -- the one shape the rest of the stack lacks.
 ///
 /// Timestamps are unix nanoseconds, as everywhere else in this workspace; a
 /// chart converts at its own boundary.
+///
+/// ## Why the identity is a name and a side
+///
+/// There is no `kind` field. A band knows which side is expected to react from
+/// it and what to call itself, and that is the whole of what the rest of the
+/// system needs: the side decides how it fills, and the name is the colour key
+/// and the label.
+///
+/// That is what lets a **client-defined** concept be an ordinary region rather
+/// than a special case. The built-in supply/demand detector is not privileged;
+/// it is one producer of bands that happen to be called `demand` and `supply`,
+/// and a document a client writes is another.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Region {
-    /// What this region represents.
-    pub kind: RegionKind,
+    /// Which side is expected to react from this band.
+    pub side: Side,
+    /// What to call it -- the colour key and the label.
+    ///
+    /// Display-ready: `demand`, `supply`, or whatever a client named their
+    /// concept. Nothing downstream rewrites it.
+    pub name: String,
     /// Bottom of the band.
     pub price_low: f64,
     /// Top of the band.
     pub price_high: f64,
-    /// When the region formed -- the first origin candle's open time.
+    /// When the region formed -- the first candle of the pattern.
     pub formed_at: i64,
-    /// The left edge to draw from. Equal to `formed_at` for a zone, but kept
-    /// separate because a region's *origin* and its *extent* are different
-    /// questions (a fair value gap, for instance, extends from the middle of a
-    /// three-candle pattern).
+    /// The left edge to draw from. Equal to `formed_at` today, but kept separate
+    /// because a band's *origin* and its *extent* are different questions.
     pub from: i64,
     /// The right edge to draw to.
     pub to: i64,
@@ -106,13 +159,8 @@ pub struct Region {
     /// `1.0` means price has been through the whole band, so there is nothing
     /// left to react to.
     pub mitigated: f64,
-    /// The break of structure this region is the origin of.
-    ///
-    /// Kept because "why is this zone here" is the first question anyone asks of
-    /// a drawing, and a label that cannot answer it is decoration.
-    pub break_kind: BreakKind,
-    /// The swing level the impulse broke.
-    pub broken_level: f64,
+    /// What put it there.
+    pub origin: RegionOrigin,
 }
 
 impl Region {
@@ -236,11 +284,12 @@ fn zone_for(
         Side::Buy => RegionKind::Demand,
         Side::Sell => RegionKind::Supply,
     };
+    let side = kind.side();
 
     // Step 1: the impulse. Walk back over the candles moving with the break.
-    let with_break = |c: &Candle| match kind {
-        RegionKind::Demand => c.close > c.open,
-        RegionKind::Supply => c.close < c.open,
+    let with_break = |c: &Candle| match side {
+        Side::Buy => c.close > c.open,
+        Side::Sell => c.close < c.open,
     };
     let mut impulse_start = break_index;
     while impulse_start > 0 && with_break(&candles[impulse_start - 1]) {
@@ -248,9 +297,9 @@ fn zone_for(
     }
 
     // Step 2: the origin. The opposite-coloured candles immediately before it.
-    let against = |c: &Candle| match kind {
-        RegionKind::Demand => c.close < c.open,
-        RegionKind::Supply => c.close > c.open,
+    let against = |c: &Candle| match side {
+        Side::Buy => c.close < c.open,
+        Side::Sell => c.close > c.open,
     };
     let origin_end = impulse_start.checked_sub(1)?;
     if !against(&candles[origin_end]) {
@@ -293,27 +342,38 @@ fn zone_for(
     }
 
     Some(Region {
-        kind,
+        side,
+        name: kind.name().to_owned(),
         price_low,
         price_high,
         formed_at: origin[0].open_time,
         from: origin[0].open_time,
         to,
-        mitigated: mitigation(candles, break_index, kind, price_low, price_high),
-        break_kind,
-        broken_level,
+        mitigated: mitigation(candles, break_index, side, price_low, price_high),
+        origin: RegionOrigin::StructureBreak {
+            kind: break_kind,
+            level: broken_level,
+        },
     })
 }
 
-/// How much of the band price has traded back through since the break.
+/// How much of the band price has traded back through since the band formed.
 ///
 /// Measured as the deepest adverse excursion into the band, as a share of the
-/// band. A zone price has never returned to is `0.0`; one price has been all the
+/// band. A band price has never returned to is `0.0`; one price has been all the
 /// way through is `1.0`.
-fn mitigation(
+///
+/// The window is `candles[after_index + 1..]`, where `after_index` is the last
+/// candle that is *part of* the pattern -- the breaking candle for a zone, the
+/// last candle of the window for a client-defined pattern.
+///
+/// Takes a [`Side`] rather than a region kind, so this one rule serves every
+/// producer. A concept a client defines means the same thing by "mitigated" as
+/// the built-in detector does, and two copies of that rule would drift.
+pub(crate) fn mitigation(
     candles: &[Candle],
-    break_index: usize,
-    kind: RegionKind,
+    after_index: usize,
+    side: Side,
     price_low: f64,
     price_high: f64,
 ) -> f64 {
@@ -321,20 +381,25 @@ fn mitigation(
     if height.is_nan() || height <= 0.0 {
         return 1.0;
     }
-    let after = &candles[break_index + 1..];
+    let after = &candles[after_index + 1..];
     if after.is_empty() {
         return 0.0;
     }
-    let deepest = match kind {
-        RegionKind::Demand => after.iter().map(|c| c.low).fold(f64::INFINITY, f64::min),
-        RegionKind::Supply => after
-            .iter()
-            .map(|c| c.high)
-            .fold(f64::NEG_INFINITY, f64::max),
-    };
-    let travelled = match kind {
-        RegionKind::Demand => price_high - deepest,
-        RegionKind::Supply => deepest - price_low,
+    // Which way price has to come from to reach the band: a buy-side band sits
+    // below the market once price has moved up, so it is filled from the top
+    // down.
+    let travelled = match side {
+        Side::Buy => {
+            let deepest = after.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+            price_high - deepest
+        }
+        Side::Sell => {
+            let deepest = after
+                .iter()
+                .map(|c| c.high)
+                .fold(f64::NEG_INFINITY, f64::max);
+            deepest - price_low
+        }
     };
     (travelled / height).clamp(0.0, 1.0)
 }
@@ -411,10 +476,7 @@ mod tests {
     #[test]
     fn a_bullish_break_leaves_a_demand_zone_at_its_origin() {
         let zones = detect_zones(&series(), ZoneConfig::default());
-        let demand: Vec<&Region> = zones
-            .iter()
-            .filter(|z| z.kind == RegionKind::Demand)
-            .collect();
+        let demand: Vec<&Region> = zones.iter().filter(|z| z.name == "demand").collect();
         assert!(!demand.is_empty(), "no demand zone found: {zones:#?}");
 
         let zone = demand[0];
@@ -432,13 +494,21 @@ mod tests {
         let zones = detect_zones(&series(), ZoneConfig::default());
         let zone = zones
             .iter()
-            .find(|z| z.kind == RegionKind::Demand)
+            .find(|z| z.name == "demand")
             .expect("a demand zone");
         // The most recent confirmed swing high the impulse actually closed
         // through -- candle 7's high of 97.0. Not the older 98.0 at index 2,
         // which the break never tested.
-        assert_eq!(zone.broken_level, 97.0, "{zone:#?}");
-        assert_eq!(zone.break_kind, BreakKind::Bos, "{zone:#?}");
+        assert_eq!(
+            zone.origin,
+            RegionOrigin::StructureBreak {
+                kind: BreakKind::Bos,
+                level: 97.0,
+            },
+            "{zone:#?}"
+        );
+        assert_eq!(zone.origin.broken_level(), Some(97.0), "{zone:#?}");
+        assert_eq!(zone.side, Side::Buy, "a demand zone is bought from");
     }
 
     #[test]
@@ -465,8 +535,8 @@ mod tests {
             },
         );
 
-        let capped_zone = capped.iter().find(|z| z.kind == RegionKind::Demand);
-        let uncapped_zone = uncapped.iter().find(|z| z.kind == RegionKind::Demand);
+        let capped_zone = capped.iter().find(|z| z.name == "demand");
+        let uncapped_zone = uncapped.iter().find(|z| z.name == "demand");
         let (Some(capped_zone), Some(uncapped_zone)) = (capped_zone, uncapped_zone) else {
             panic!("both configs should find a demand zone: {capped:#?} {uncapped:#?}");
         };
@@ -514,7 +584,7 @@ mod tests {
         let zones = detect_zones(&series(), ZoneConfig::default());
         let zone = zones
             .iter()
-            .find(|z| z.kind == RegionKind::Demand)
+            .find(|z| z.name == "demand")
             .expect("a demand zone");
 
         // The pullback reached 93.5, and the band is 92.8..96.2 (height 3.4).
@@ -537,7 +607,7 @@ mod tests {
         let zones = detect_zones(&early, ZoneConfig::default());
         let zone = zones
             .iter()
-            .find(|z| z.kind == RegionKind::Demand)
+            .find(|z| z.name == "demand")
             .expect("a demand zone");
         assert_eq!(zone.mitigated, 0.0, "{zone:#?}");
         assert!(zone.is_fresh(), "{zone:#?}");
@@ -573,7 +643,10 @@ mod tests {
     }
 
     #[test]
-    fn the_kind_names_are_the_ones_a_client_reads() {
+    fn the_built_in_names_are_the_ones_a_client_reads() {
+        // The built-in zone vocabulary. There is no longer a `kind` on a region
+        // -- a band carries a name and a side -- so this is where the built-in
+        // pair is stated.
         let rendered: Vec<String> = RegionKind::ALL
             .iter()
             .map(|k| serde_json::to_string(k).unwrap())
@@ -590,17 +663,33 @@ mod tests {
         let zones = detect_zones(&series(), ZoneConfig::default());
         let value = serde_json::to_value(&zones[0]).unwrap();
         for key in [
-            "kind",
+            "side",
+            "name",
             "price_low",
             "price_high",
             "formed_at",
             "from",
             "to",
             "mitigated",
-            "break_kind",
-            "broken_level",
+            "origin",
         ] {
             assert!(value.get(key).is_some(), "`{key}` is missing from {value}");
         }
+        assert_eq!(value["side"], "Buy", "the side travels as it always has");
+        assert_eq!(value["name"], "demand");
+        // And the origin says what it is, rather than leaving a reader to
+        // interpret a bare `level` field that only some regions have.
+        assert_eq!(value["origin"]["source"], "structure_break", "{value}");
+        assert_eq!(value["origin"]["kind"], "Bos", "{value}");
+    }
+
+    #[test]
+    fn a_pattern_origin_carries_no_level() {
+        // The reason the two fields became one enum. Serialised, a
+        // client-defined band's origin has no `level` key at all -- so a client
+        // cannot read one that was never there.
+        let value = serde_json::to_value(RegionOrigin::Pattern).unwrap();
+        assert_eq!(value["source"], "pattern", "{value}");
+        assert!(value.get("level").is_none(), "{value}");
     }
 }

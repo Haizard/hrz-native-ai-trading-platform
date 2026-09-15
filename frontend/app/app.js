@@ -176,8 +176,16 @@ const COLORS = {
   entry: "#58a6ff",
   stop: "#ef5350",
   target: "#26a69a",
+  // The two bands the engine ships with. A concept a client defined has no
+  // entry here -- it cannot, we have never heard of it -- which is what the
+  // side fallback below is for.
   demand: "#26a69a",
   supply: "#ef5350",
+  // Keyed by the region's `side`, the direction expected to react from the
+  // band. Every region carries one, so an unfamiliar band reads as a direction
+  // instead of as grey.
+  buy: "#26a69a",
+  sell: "#ef5350",
 };
 
 function draw() {
@@ -232,39 +240,45 @@ function draw() {
 ///
 /// Every coordinate and every string comes from the engine. This function picks
 /// colours and calls fillText -- nothing else.
-/// Supply/demand zones -- the chart's only *area* overlay.
+/// Regions -- the chart's only *area* overlay.
 ///
 /// Every coordinate, every price and the label itself come from the engine.
-/// This function picks a colour from the zone's kind and fills a rectangle,
-/// which is the same contract `drawProfile` and `drawLevels` follow. Note there
-/// is no subtraction here: the band's height arrives as `h`, so a fill is
+/// This function picks a colour and fills a rectangle, which is the same
+/// contract `drawProfile` and `drawLevels` follow. Note there is no subtraction
+/// here: the band's height arrives as `h`, so a fill is
 /// `fillRect(x, y_top, w, h)` and nothing is computed from prices.
 ///
-/// A fresh zone is drawn solid and a mitigated one faded. That distinction is
-/// the whole reason the concept is worth drawing: a zone price has already
+/// The colour key is the region's `name`, so a concept the client defined is
+/// coloured by its own name the moment there is an entry for it -- and before
+/// then it falls back to `side`, which every region carries. That fallback is
+/// the whole reason a band the shell has never heard of still reads as a
+/// direction rather than as a grey rectangle.
+///
+/// A fresh region is drawn solid and a mitigated one faded. That distinction is
+/// the whole reason the concept is worth drawing: a band price has already
 /// traded back through is not a level any more, and rendering the two the same
 /// is how a chart teaches someone to buy something that no longer exists.
 function drawRegions(ctx, scene) {
   if (!scene.regions.length) return;
   ctx.font = "10px ui-monospace, monospace";
 
-  for (const zone of scene.regions) {
-    const colour = COLORS[zone.kind] || COLORS.text;
-    ctx.globalAlpha = zone.fresh ? 0.16 : 0.07;
+  for (const region of scene.regions) {
+    const colour = COLORS[region.name] || COLORS[region.side] || COLORS.text;
+    ctx.globalAlpha = region.fresh ? 0.16 : 0.07;
     ctx.fillStyle = colour;
-    ctx.fillRect(zone.x, zone.y_top, zone.w, zone.h);
+    ctx.fillRect(region.x, region.y_top, region.w, region.h);
     ctx.globalAlpha = 1;
 
-    // The outline, so a zone in a quiet stretch of chart is still visible.
+    // The outline, so a band in a quiet stretch of chart is still visible.
     ctx.strokeStyle = colour;
-    ctx.globalAlpha = zone.fresh ? 0.7 : 0.35;
+    ctx.globalAlpha = region.fresh ? 0.7 : 0.35;
     ctx.setLineDash([3, 3]);
-    ctx.strokeRect(zone.x + 0.5, zone.y_top + 0.5, zone.w - 1, zone.h - 1);
+    ctx.strokeRect(region.x + 0.5, region.y_top + 0.5, region.w - 1, region.h - 1);
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
 
     ctx.fillStyle = colour;
-    ctx.fillText(zone.label, zone.x + 4, zone.y_top + 11);
+    ctx.fillText(region.label, region.x + 4, region.y_top + 11);
   }
 }
 

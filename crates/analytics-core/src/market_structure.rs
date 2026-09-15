@@ -71,6 +71,27 @@ pub enum BreakKind {
     Choch,
 }
 
+impl BreakKind {
+    /// Every variant, for a client's vocabulary and exhaustive tests.
+    pub const ALL: [Self; 2] = [Self::Bos, Self::Choch];
+
+    /// Canonical name, as a chart spells it.
+    ///
+    /// `BreakKind` derives `Serialize` without a rename, so it travels as
+    /// `"Bos"`. That is fine inside a typed analytics message and wrong on a
+    /// chart, where everything else is `snake_case` and the shell switches on
+    /// the string. Same bridge, for the same reason, as [`Side::name`].
+    ///
+    /// [`Side::name`]: crate::types::Side::name
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Bos => "bos",
+            Self::Choch => "choch",
+        }
+    }
+}
+
 /// A close through a confirmed swing level.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct StructureBreak {
