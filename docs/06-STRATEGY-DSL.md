@@ -151,6 +151,14 @@ we compile the interpreter and pass the document in, and a concept does not bend
 The concepts a document declares are also what a chart draws: the same document sent to
 `chart-engine` renders each one as a band (see `docs/14-FRONTEND-CHART-ENGINE.md`).
 
+Both things that *write* documents are taught this language from the same source it is
+enforced from. The agent's strategy prompt renders the parts, selectors and comparisons
+out of `ConceptPart::ALL`, `Selector::NAMES` and `Compare::ALL`, and so does
+`GET /strategies/schema` for the visual builder (`docs/12`). Neither keeps its own copy,
+so neither can offer a concept the validator rejects — and the prompt's own worked example
+is run through the real validator by a test, because an example that does not validate is
+worse than no example: the model copies it and then has nothing to correct *toward*.
+
 ## Schema & validation (`strategy-dsl` crate)
 - `schema.rs`: serde structs mirroring the document shape above, with strict
   `deny_unknown_fields` so malformed or hallucinated fields fail fast.

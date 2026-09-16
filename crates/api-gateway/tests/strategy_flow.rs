@@ -783,6 +783,86 @@ async fn the_schema_names_every_field_function_and_stop_rule() {
         .contains(&json!(">=")));
 }
 
+/// The concept language is the one part of the schema that describes a *shape*
+/// rather than a list, and it is the part a builder cannot hard-code: the client
+/// invents the concepts, so the most the schema can serve is what a definition
+/// may be made of.
+///
+/// Nothing here is checked by hand. Every list is compared against the enum that
+/// enforces it, which is what makes "the builder cannot offer a condition the
+/// validator then rejects" a fact rather than an intention.
+#[tokio::test]
+async fn the_schema_serves_the_concept_language() {
+    use strategy_dsl::expr::ConceptPart;
+
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let (status, body) = h.get("/strategies/schema", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let concepts = &body["concepts"];
+
+    // Every part a condition may read, with its type and what it reads. A part
+    // missing here is a part the builder cannot offer -- and that failure is
+    // silent, because documents keep validating, they just never use it.
+    let parts = concepts["parts"].as_array().expect("parts");
+    assert_eq!(
+        parts.len(),
+        ConceptPart::ALL.len(),
+        "the schema offers a different number of parts than the parser accepts: {parts:?}"
+    );
+    for part in ConceptPart::ALL {
+        let found = parts
+            .iter()
+            .find(|p| p["name"] == part.name())
+            .unwrap_or_else(|| panic!("`{}` is missing from the schema", part.name()));
+        assert_eq!(found["type"], part.type_of().name(), "{found}");
+        assert_eq!(found["reads"], part.description(), "{found}");
+    }
+
+    assert_eq!(
+        concepts["selectors"],
+        json!(analytics_core::concepts::Selector::NAMES)
+    );
+    assert_eq!(
+        concepts["ops"],
+        json!(analytics_core::concepts::Compare::ALL
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>())
+    );
+    assert_eq!(
+        concepts["window"],
+        json!([
+            analytics_core::concepts::MIN_WINDOW,
+            analytics_core::concepts::MAX_WINDOW
+        ])
+    );
+    assert_eq!(
+        concepts["max_concepts"],
+        json!(strategy_dsl::validator::Limits::default().max_concepts)
+    );
+    assert_eq!(
+        concepts["sides"],
+        json!(analytics_core::Side::ALL
+            .iter()
+            .map(|s| s.name())
+            .collect::<Vec<_>>())
+    );
+
+    // And the spelling matters. `Side` travels as `"Buy"` everywhere else in
+    // this workspace; a document that wrote that would be refused, so a builder
+    // that offered it would be offering a document the validator rejects.
+    assert!(
+        !concepts["sides"]
+            .as_array()
+            .expect("sides")
+            .contains(&json!("Buy")),
+        "`sides` must be the document spelling: {concepts:?}"
+    );
+}
+
 /// The builder populates itself from `document`, so the echo has to be the
 /// document the parser produced -- every condition, with the timeframe it
 /// reads. A partial echo would silently drop a condition when the user opened

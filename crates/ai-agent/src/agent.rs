@@ -31,6 +31,7 @@ use std::sync::Arc;
 
 use analytics_core::MarketStateConfig;
 use serde_json::json;
+use strategy_dsl::expr::ConceptPart;
 
 use crate::error::AgentError;
 use crate::llm_client::{
@@ -776,6 +777,52 @@ invalidation:
     condition: "close_below(vwap)"
 "#;
 
+/// The worked example the prompt shows for a client-defined measurement.
+///
+/// A complete document rather than a fragment, and a template for the same
+/// reason [`STRATEGY_SHAPE_TEMPLATE`] is: a test formats it and runs it through
+/// the real validator. An example that does not validate is worse than none,
+/// because the model copies it and then has to guess its way out of errors the
+/// prompt produced.
+///
+/// A fair value gap is the example because it is the one a trader is most
+/// likely to ask for by name and the one the built-in vocabulary is least able
+/// to express: three candles, the first candle's high left behind below the
+/// third candle's low. Nothing in `analytics-core` knows what a gap is.
+const CONCEPT_EXAMPLE: &str = r#"name: "..."
+version: "1.0"
+kind: strategy
+market: "{market}"
+timeframes:
+  entry: "{entry_timeframe}"
+concepts:
+  - name: gap
+    label: fvg
+    side: buy
+    window: 3
+    lower: {high: 0}
+    upper: {low: 2}
+    require:
+      - {left: {high: 0}, op: below, right: {low: 2}}
+    min_band_ratio: 0.2
+entry:
+  direction: long
+  all_of:
+    - timeframe: entry
+      condition: "concepts.gap.fresh"
+    - timeframe: entry
+      condition: "close > concepts.gap.top"
+risk:
+  max_risk_pct: 1.0
+  stop: {kind: below_recent_low, bars: 20}
+  take_profit:
+    type: "risk_multiple"
+    value: 2.0
+invalidation:
+  - timeframe: entry
+    condition: "close_below(vwap)"
+"#;
+
 fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Skill>) -> String {
     let fields = strategy_dsl::ALL_FIELDS
         .iter()
@@ -785,6 +832,13 @@ fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Sk
     let funcs = strategy_dsl::ALL_FUNCS
         .iter()
         .map(|f| f.name())
+        .collect::<Vec<_>>()
+        .join(", ");
+    // The concept language, likewise rendered from the enums that enforce it.
+    let selectors = analytics_core::concepts::Selector::NAMES.join(", ");
+    let ops = analytics_core::concepts::Compare::ALL
+        .iter()
+        .map(|op| op.name())
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -813,7 +867,12 @@ fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Sk
          common validation failure.\n\n",
     );
 
-    out.push_str("## Vocabulary — nothing outside these is accepted\n");
+    // Scoped to *conditions* on purpose. The heading used to read "nothing
+    // outside these is accepted", full stop -- which, once concepts existed,
+    // read as "you may not define a fair value gap". The list really does
+    // bound what a condition may *name*; the escape hatch is declaring a
+    // measurement, not inventing an operator, and the section below says so.
+    out.push_str("## Vocabulary — nothing outside these is accepted in a condition\n");
     out.push_str(&format!("condition fields: {fields}\n"));
     out.push_str(&format!("condition functions: {funcs}\n"));
     out.push_str("`risk.stop` is exactly one of:\n");
@@ -831,6 +890,56 @@ fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Sk
         strategy_dsl::MAX_RISK_PCT_CEILING
     ));
 
+    out.push_str("## Concepts — when the idea is not in that list\n");
+    out.push_str(
+        "Users describe patterns the vocabulary above cannot express: a fair value \
+         gap, an order block, a breaker block. Do not approximate one with `delta` \
+         and hope. Declare it. A `concepts:` block defines a measurement as data -- \
+         a window of candles, two selectors giving the band its edges, and the \
+         relations that make it that pattern:\n\n",
+    );
+    out.push_str("```yaml\n");
+    out.push_str(
+        &CONCEPT_EXAMPLE
+            .replace("{market}", market)
+            .replace("{entry_timeframe}", entry_timeframe),
+    );
+    out.push_str("```\n\n");
+    out.push_str(&format!(
+        "A selector is a candle value inside the window, counted from the oldest (0), \
+         written as a one-key mapping: `{{high: 0}}`. Selectors: {selectors}.\n"
+    ));
+    out.push_str(&format!("`op` is one of: {ops}.\n"));
+    out.push_str(&format!(
+        "`window` is {}..={}: how many candles the pattern spans.\n",
+        analytics_core::concepts::MIN_WINDOW,
+        analytics_core::concepts::MAX_WINDOW
+    ));
+    out.push_str(
+        "`side` is `buy` or `sell` -- lowercase, unlike the rest of the wire. \
+         `min_band_ratio` is optional: the band must be at least that share of the \
+         window's own range, which is how a loose pattern is stopped from matching \
+         every window.\n",
+    );
+    out.push_str(&format!(
+        "At most {} concepts per document.\n\n",
+        strategy_dsl::validator::Limits::default().max_concepts
+    ));
+    out.push_str("Then read it from a condition, as `concepts.<name>.<part>`:\n");
+    for part in ConceptPart::ALL {
+        out.push_str(&format!(
+            "  concepts.<name>.{:<9} -> {:<6} {}\n",
+            part.name(),
+            part.type_of().name(),
+            part.description()
+        ));
+    }
+    out.push_str(
+        "\nThe parts describe the **newest** band the concept finds. A concept that \
+         found nothing is `false` for a boolean part and absent for a number, and a \
+         comparison against an absent value is false -- never true against zero.\n\n",
+    );
+
     out.push_str("## Rules that most often fail validation\n");
     out.push_str(
         "- every `timeframe:` in a condition must be declared under `timeframes`;\n\
@@ -838,7 +947,12 @@ fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Sk
          - `invalidation` must not be empty;\n\
          - `risk.stop` is one of the stops above, not a bare price; the `atr` \
            and `fixed` kinds require an explicit `entry.direction`, because \
-           unlike the level-based stops they carry no side of their own.\n",
+           unlike the level-based stops they carry no side of their own;\n\
+         - a condition may only read a concept the *same* document declares, so a \
+           `concepts:` block and the conditions using it go in together;\n\
+         - every selector index in a concept must be inside its own `window`;\n\
+         - the two selectors of a `require` entry must read the same kind of thing \
+           -- price against price, volume against volume.\n",
     );
 
     if let Some(skill) = skill {
@@ -1509,6 +1623,97 @@ invalidation: []
         assert!(
             prompt.contains("5.0") || prompt.contains("5"),
             "risk ceiling"
+        );
+    }
+
+    #[test]
+    fn the_concept_example_the_prompt_shows_actually_validates() {
+        // The same argument as `the_shape_the_prompt_shows_actually_validates`,
+        // and it matters more here. The concept block is the one part of the
+        // language a model has no prior for -- it has never seen this DSL -- so
+        // it copies the example character for character. If the example is
+        // wrong the model cannot recover, because it has nothing to correct
+        // *toward*.
+        let doc = CONCEPT_EXAMPLE
+            .replace("{market}", "BTCUSDT")
+            .replace("{entry_timeframe}", "5m");
+        let validated = strategy_dsl::parse_and_validate(&doc).unwrap_or_else(|err| {
+            panic!("the prompt's own concept example no longer validates:\n{doc}\n{err}")
+        });
+
+        // And non-vacuously: a document with no `concepts:` block would sail
+        // through the check above while teaching the model nothing. The example
+        // has to actually declare the concept its conditions read.
+        assert_eq!(
+            validated.document().concepts.len(),
+            1,
+            "the example must declare a concept, or validating it proves nothing"
+        );
+        assert_eq!(validated.document().concepts[0].name, "gap");
+        assert!(
+            doc.contains("concepts.gap."),
+            "the example must read the concept it declares:\n{doc}"
+        );
+    }
+
+    #[test]
+    fn the_prompt_describes_the_whole_concept_language() {
+        // Rendered from the enums, so this is really a check that nothing was
+        // left out of the rendering. A part the model is never told about is a
+        // part it will never write, and that failure is silent: documents keep
+        // validating, they just never use the language.
+        let prompt = strategy_system_prompt("BTCUSDT", "5m", None);
+
+        for part in ConceptPart::ALL {
+            assert!(
+                prompt.contains(part.name()),
+                "prompt is missing concept part `{}`",
+                part.name()
+            );
+            assert!(
+                prompt.contains(part.description()),
+                "prompt does not say what `{}` reads",
+                part.name()
+            );
+        }
+
+        // Exact lists rather than word-by-word containment: `close` and `below`
+        // appear all over this prompt for other reasons, so `contains("close")`
+        // would pass on a prompt that never mentioned selectors at all.
+        let selectors = analytics_core::concepts::Selector::NAMES.join(", ");
+        assert!(
+            prompt.contains(&selectors),
+            "prompt does not list the concept selectors: {selectors}"
+        );
+        let ops = analytics_core::concepts::Compare::ALL
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(
+            prompt.contains(&ops),
+            "prompt does not list the comparison ops: {ops}"
+        );
+        assert!(
+            prompt.contains(&format!(
+                "{}..={}",
+                analytics_core::concepts::MIN_WINDOW,
+                analytics_core::concepts::MAX_WINDOW
+            )),
+            "prompt does not give the window bounds"
+        );
+
+        // Both halves of the language, not just one. Listing the parts without
+        // showing how to declare a concept would leave the model able to read a
+        // measurement it has no way to create -- and listing the block without
+        // the reference syntax leaves it with a definition it never uses.
+        assert!(
+            prompt.contains("concepts:"),
+            "the prompt never shows a concepts block"
+        );
+        assert!(
+            prompt.contains("concepts.<name>."),
+            "the prompt never shows how a condition reads a concept"
         );
     }
 

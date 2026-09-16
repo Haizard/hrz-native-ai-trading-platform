@@ -59,6 +59,15 @@ from the other. A new stop rule in Rust shows up in the dropdown with no JS chan
 `every_stop_rule_is_described_exactly_once` fails if a rule is added without its
 parameter list.
 
+`concepts` is the one member that describes a **shape** rather than a list, because the
+client invents the concepts: the most it can serve is what a definition may be made of —
+`parts` (each with its `type` and a one-line `reads`), `selectors`, `ops`, `window`,
+`max_concepts` and `sides`. It is derived from `analytics_core::concepts` and
+`strategy_dsl::expr::ConceptPart` for the same reason. `sides` is deliberately `buy` /
+`sell` and not the `Buy` / `Sell` that `analytics_core::Side` serializes as everywhere
+else: a document that wrote `Buy` is refused by the validator, so a builder offering it
+would be offering a document that cannot be saved.
+
 ### `POST /strategies/validate` echoes the document it parsed
 
 The response carries the parsed `document` alongside `valid`/`errors`, so a client can

@@ -788,6 +788,46 @@ pub struct SchemaFunc {
     pub param_types: Vec<&'static str>,
 }
 
+/// One property a condition may read off a concept the document declared.
+#[derive(Debug, Serialize)]
+pub struct SchemaConceptPart {
+    /// Name as written in a condition: `concepts.<concept>.<part>`.
+    pub name: &'static str,
+    /// What it evaluates to: `number` or `bool`.
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    /// What it reads, in one line, for a builder tooltip.
+    pub reads: &'static str,
+}
+
+/// The concept language: what a document may define, and what it may read back.
+///
+/// Every other part of this response enumerates a closed vocabulary. This one
+/// does not, and cannot: a concept is a measurement the *client* defines, so
+/// what is served here is the shape of a definition -- the selectors a band edge
+/// may be measured from, the comparisons a requirement may use, the bounds on
+/// the window -- rather than a list of concepts.
+///
+/// It is derived from `analytics_core::concepts` and `strategy_dsl::expr` for
+/// the same reason the rest is derived rather than hand-listed: a selector added
+/// in Rust has to appear in the builder with no JS change, and the builder must
+/// not be able to offer a concept the validator then rejects.
+#[derive(Debug, Serialize)]
+pub struct SchemaConcepts {
+    /// Every property a condition may read off a concept.
+    pub parts: Vec<SchemaConceptPart>,
+    /// Every candle value a band edge may be measured from.
+    pub selectors: Vec<&'static str>,
+    /// Every comparison a `require` entry may use.
+    pub ops: Vec<&'static str>,
+    /// Inclusive bounds on `window`: how many candles a pattern spans.
+    pub window: [usize; 2],
+    /// Largest number of concepts one document may declare.
+    pub max_concepts: usize,
+    /// Every value a concept's `side` accepts.
+    pub sides: Vec<&'static str>,
+}
+
 /// The vocabulary a document may use.
 ///
 /// The visual builder is a set of dropdowns over this list. Serving it rather
@@ -813,6 +853,8 @@ pub struct SchemaResponse {
     pub timeframes: Vec<&'static str>,
     /// Every value `entry.direction` accepts.
     pub directions: Vec<&'static str>,
+    /// The concept language, for the builder's concept editor.
+    pub concepts: SchemaConcepts,
 }
 
 /// `GET /strategies/schema`
@@ -851,6 +893,27 @@ pub async fn schema() -> Json<SchemaResponse> {
             .map(|t| t.as_str())
             .collect(),
         directions: Direction::ALL.iter().map(|d| d.name()).collect(),
+        concepts: SchemaConcepts {
+            parts: strategy_dsl::expr::ConceptPart::ALL
+                .iter()
+                .map(|p| SchemaConceptPart {
+                    name: p.name(),
+                    kind: p.type_of().name(),
+                    reads: p.description(),
+                })
+                .collect(),
+            selectors: analytics_core::concepts::Selector::NAMES.to_vec(),
+            ops: analytics_core::concepts::Compare::ALL
+                .iter()
+                .map(|op| op.name())
+                .collect(),
+            window: [
+                analytics_core::concepts::MIN_WINDOW,
+                analytics_core::concepts::MAX_WINDOW,
+            ],
+            max_concepts: strategy_dsl::validator::Limits::default().max_concepts,
+            sides: analytics_core::Side::ALL.iter().map(|s| s.name()).collect(),
+        },
     })
 }
 

@@ -543,6 +543,26 @@ impl ConceptPart {
         }
     }
 
+    /// One line saying what this part reads.
+    ///
+    /// Lives here rather than in either consumer -- the agent's prompt and the
+    /// gateway's schema -- because those two must not be able to disagree about
+    /// what `fresh` means. Neither is authoritative; this is. It is also what
+    /// makes "every part is described exactly once" a testable claim instead of
+    /// a hopeful one.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Exists => "the concept found a band at all",
+            Self::Fresh => "the newest band has not been traded back into",
+            Self::Mitigated => {
+                "how much of the newest band price has traded back through, 0.0..=1.0"
+            }
+            Self::Top => "the newest band's dearer edge",
+            Self::Bottom => "the newest band's cheaper edge",
+        }
+    }
+
     /// Look a part up by its canonical name.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
