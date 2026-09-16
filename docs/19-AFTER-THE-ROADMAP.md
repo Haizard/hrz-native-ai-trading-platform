@@ -21,7 +21,7 @@ It carries three things, in priority order:
 Phases 0–7 are built and verified: workspace and CI, Binance collection and backfill,
 `analytics-core` (native + wasm32), the Strategy DSL/runtime/backtester, the WASM
 sandbox, the AI agent with 13 tools, the paper-trading bot, and the Rust/WASM chart
-with all three editor modes. Last commit reviewed: `d4dccfd`.
+with all three editor modes. Last commit reviewed: `d787695`.
 
 **Phase 8 is built** — both halves, with one exit criterion left open on purpose (see
 below). What exists now:
@@ -107,16 +107,29 @@ repository currently claims.
 | # | Item | Where | The lie | Done when |
 |---|---|---|---|---|
 | 1 | **The paper bot is not sandboxed** | `crates/trading-engine/Cargo.toml` declares `sandbox`; no `sandbox::` call site exists in `crates/trading-engine/src/` or `tools/paper-cli/src/`. `docs/08:236` admits it; `crates/trading-engine/src/lib.rs:5` and `:22` claim the opposite | The doc comment says the strategy runs through "the same `strategy-runtime`/sandbox path the backtester uses". It runs through `strategy-runtime` natively | Principle #6 (AI-authored logic never executes unsandboxed) holds on the paper path: an agent-authored document run by a bot executes inside the sandbox, with an equivalence test proving it matches native |
-| 2 | ~~**README status is stale**~~ | closed 2026-09-16 | "Phases 0–4 complete — `ai-agent` and `trading-engine` are still stubs" | — |
 | 3 | **No retention or downsampling** | `docs/13:138` requires it; `crates/db/migrations/0001_init.sql:189-190` has it as commented-out Timescale suggestions. Nothing in `crates/` or `tools/` mentions retention | `docs/13`'s own done criteria claim "a documented retention/downsampling job exists and is tested" | A tested job downsamples `trades`/`orderbook_snapshots` past a configured age, verified against a synthetic dataset |
 | 4 | **BOS/CHoCH are computed then thrown away** | `crates/analytics-core/src/market_structure.rs:128` computes `breaks: Vec<StructureBreak>` with `BreakKind::{Bos, Choch}`; `state.rs:320-325` builds `MarketState` from only `trend`, `swing_highs`, `swing_lows` | `MarketState` is the object every downstream consumer reads, and it cannot say "structure broke against the trend" — the single most useful structural fact | `MarketState` carries the recent breaks (or a deliberately chosen subset), and a strategy condition can read one |
 | 5 | **`strategy-cli` reads the source series twice** | `tools/strategy-cli/src/main.rs` | — | The series is loaded once when source resolution is also declared |
 | 6 | **The Docker image has never been built** | `docs/17:36-59`; guarded only by `crates/api-gateway/tests/packaging.rs` | The Dockerfile looks production-ready. It has never produced a container | A real Linux build starts and answers `/healthz`; the static checks still pass |
 | 7 | **The shell cannot create a concept** | `frontend/app/app.js` colours and draws concepts but has no input for one | The concept layer reads as finished | A user can define a concept in the UI without writing YAML |
-| 8 | ~~**The kill switch and the venue opt-in have no UI**~~ | closed 2026-09-16 | `POST /bots/{id}/kill` and `POST /venues/{venue}/revoke` existed with no control for either | — |
 | 9 | **A live bot sizes against a fixed equity** | `crates/api-gateway/src/bot_routes.rs`, `ASSUMED_EQUITY` | Position size is fixed-fractional, so this number *is* the risk per trade — and it is invented | The account's real balance is read from a signed endpoint and used, or the assumption is made explicit in the create request |
 | 10 | **Divergence between backtest, paper and live is not measured** | `docs/18` names the alert; nothing computes it | **Fixed in the honest direction 2026-09-16:** `Rule::Divergence` and `observability::metrics::DIVERGENCE_R` were **removed**. They could never fire, and an inert rule reads as coverage — `docs/20` had a runbook for an alert that did not exist in practice | A job compares a bot's realised R against its backtest over the same window and feeds a metric; the rule comes back with the writer, and `there_is_no_rule_for_something_nothing_measures` is updated in the same commit |
 | 11 | **No tracing export** | `observability::logging` installs a `tracing_subscriber`; nothing exports spans anywhere | `docs/18` asks for distributed tracing. Request ids are generated and put in a span, and the span goes to stdout | An OTLP exporter, or a written decision that stdout + request ids is the whole tracing story |
+
+**Closed, and deleted from the table above** — the rule is to remove a row and note
+the commit rather than strike it through. Numbers are not renumbered, because other
+docs cite "row 10" and "row 1" by number; 2 and 8 are simply gone.
+
+- **Row 2, the stale README status block** — closed in `d787695`. It claimed
+  "Phases 0–4 complete — `ai-agent` and `trading-engine` are still stubs", which was
+  three phases out of date. A doc that *understates* the build is the kind of thing
+  the next agent reads and acts on.
+- **Row 8, the kill switch and the venue opt-in having no UI** — closed in `d787695`.
+  `POST /bots/{id}/kill` and `POST /venues/{venue}/revoke` existed with no control
+  for either. The bots pane now has a Kill switch button per bot and a live-trading
+  panel listing each venue, with `opted_in` and `credentials_configured` shown
+  **separately** because they fail identically from outside and only one is fixable
+  from a browser.
 
 **Also open, and a decision rather than a task:** whether the concept layer
 (`analytics-core/src/concepts.rs`, `regions.rs`) becomes its own roadmap phase. It was
