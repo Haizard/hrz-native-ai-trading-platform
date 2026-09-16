@@ -126,23 +126,7 @@ impl BotSession {
         bot_id: Uuid,
         context: serde_json::Value,
     ) -> Result<Self, ExecutionError> {
-        let mut payload = json!({ "bot_id": bot_id });
-        if let (Some(target), Some(source)) = (payload.as_object_mut(), context.as_object()) {
-            for (key, value) in source {
-                target.insert(key.clone(), value.clone());
-            }
-        }
-
-        db::paper::insert_audit_events(
-            database.pool(),
-            &[AuditEvent {
-                user_id: Some(user_id),
-                event_type: STARTED_EVENT.into(),
-                payload,
-                ts: now_ns(),
-            }],
-        )
-        .await?;
+        write_started(database, user_id, bot_id, context).await?;
 
         Ok(Self {
             database: database.clone(),
@@ -276,6 +260,41 @@ impl BotSession {
         .await?;
         Ok(())
     }
+}
+
+/// Write the `bot.started` event.
+///
+/// Free function rather than a method because both session types write it, and
+/// the payload shape is the thing that must not drift: a reader looking for
+/// how a run began should not have to know whether it was paper or live to
+/// find the row.
+///
+/// # Errors
+/// Returns [`ExecutionError::Storage`] if the event cannot be written.
+pub(crate) async fn write_started(
+    database: &Database,
+    user_id: Uuid,
+    bot_id: Uuid,
+    context: serde_json::Value,
+) -> Result<(), ExecutionError> {
+    let mut payload = json!({ "bot_id": bot_id });
+    if let (Some(target), Some(source)) = (payload.as_object_mut(), context.as_object()) {
+        for (key, value) in source {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+
+    db::paper::insert_audit_events(
+        database.pool(),
+        &[AuditEvent {
+            user_id: Some(user_id),
+            event_type: STARTED_EVENT.into(),
+            payload,
+            ts: now_ns(),
+        }],
+    )
+    .await?;
+    Ok(())
 }
 
 /// Now, in unix nanoseconds.

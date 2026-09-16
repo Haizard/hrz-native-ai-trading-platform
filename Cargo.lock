@@ -158,6 +158,8 @@ dependencies = [
  "hmac",
  "http-body-util",
  "market-data",
+ "observability",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
@@ -1535,6 +1537,7 @@ dependencies = [
  "chrono",
  "db",
  "futures",
+ "observability",
  "reqwest",
  "serde",
  "serde_json",
@@ -1674,6 +1677,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "observability"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3085,11 +3097,16 @@ version = "0.1.0"
 dependencies = [
  "analytics-core",
  "async-trait",
+ "axum",
  "db",
  "dotenvy",
+ "hmac",
+ "observability",
+ "reqwest",
  "sandbox",
  "serde",
  "serde_json",
+ "sha2",
  "strategy-dsl",
  "strategy-runtime",
  "thiserror",

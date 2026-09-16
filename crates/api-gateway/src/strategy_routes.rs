@@ -44,6 +44,7 @@ use strategy_runtime::{RuntimeConfig, StrategyEngine};
 use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::{ApiJson, ApiQuery};
+use crate::now_ns;
 use crate::plot::Plot;
 use crate::AppState;
 
@@ -649,6 +650,18 @@ pub async fn backtest(
 ) -> Result<(StatusCode, Json<BacktestResponse>), ApiError> {
     let database = database(&state)?;
     let id = parse_id(&id, "strategy")?;
+
+    // Counted from here, so the number is "backtests this platform accepted"
+    // rather than "backtests a browser asked for". A 404 on somebody else's
+    // strategy is not a backtest, and counting it would make the queue look
+    // busy during a probing attack.
+    let started = std::time::Instant::now();
+    state.metrics.count(
+        observability::metrics::BACKTEST_QUEUED,
+        "Backtests accepted",
+        &observability::metrics::Labels::none(),
+    );
+
     let row = db::strategies::get_strategy(database.pool(), user.user_id, id)
         .await?
         .ok_or_else(|| ApiError::not_found("no such strategy"))?;
@@ -725,6 +738,23 @@ pub async fn backtest(
         &report_json,
     )
     .await?;
+
+    // Observed after the report is stored, not after `run_backtest` returns.
+    // The replay is not the whole cost: loading six months of five-minute
+    // candles and writing the report are both database work, and a duration
+    // that stopped at the replay would report a fast backtest that took ten
+    // seconds of wall clock to answer.
+    state.metrics.observe(
+        observability::metrics::BACKTEST_DURATION,
+        "Backtest duration in seconds",
+        &observability::metrics::Labels::none(),
+        started.elapsed().as_secs_f64(),
+    );
+    state.metrics.count(
+        observability::metrics::BACKTEST_COMPLETED,
+        "Backtests that produced a report",
+        &observability::metrics::Labels::none(),
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -959,13 +989,6 @@ fn parse_date_ns(date: &str) -> Result<i64, ApiError> {
         ApiError::bad_request("DATE_INVALID", format!("`{date}` has no midnight"))
     })?;
     Ok(midnight.and_utc().timestamp() * 1_000_000_000)
-}
-
-fn now_ns() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as i64)
 }
 
 #[cfg(test)]

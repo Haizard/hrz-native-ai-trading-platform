@@ -104,6 +104,18 @@ ai-trading-platform/
 - `api-gateway` depends on everything above; nothing depends on `api-gateway`.
 - `frontend/chart-engine` depends on `analytics-core` compiled to WASM — the same crate,
   not a reimplementation.
+- `observability` is a **second leaf**, and the only crate besides `analytics-core` that
+  anything may depend on freely. It holds the metric names, the alert rules and the
+  logging setup, and depends on nothing internal. It exists because `docs/03` forbids
+  `api-gateway` from depending on `trading-engine`: without it the metric names would be
+  string literals in five crates and a rename would silently stop a series existing.
+  `market-data` depends on it for metrics only, which cannot introduce a cycle and cannot
+  pull `trading-engine` into the collector's process.
+
+  Because it is a leaf, the test for a new edge is: *does this make any cycle possible, or
+  drag a heavy crate somewhere it does not belong?* A metrics edge from a leaf never does.
+  The edge that would be wrong is `observability` depending on something — it must stay
+  a leaf or it stops being safe to depend on.
 
 ## Naming & style conventions for agents to follow
 

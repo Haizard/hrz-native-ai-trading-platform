@@ -34,12 +34,29 @@
 
 #![deny(missing_docs)]
 
+pub mod binance;
+pub mod credentials;
 pub mod error;
+pub mod execution;
+pub mod gate;
+pub mod live;
+pub mod live_store;
 pub mod paper;
 pub mod risk;
 pub mod store;
 
+pub use binance::BinanceRest;
+pub use credentials::ExchangeCredentials;
 pub use error::ExecutionError;
+pub use execution::{
+    client_order_id, ExchangeAdapter, Mismatch, MismatchKind, OrderAck, OrderGateway, OrderRequest,
+    OrderSide, OrderStatus, OrderStatusReport, OrderType, Reconciliation,
+};
+pub use gate::{GateRequirements, GateVerdict, LiveGate, TrackRecord};
+pub use live::{LiveBot, LiveConfig, LiveOutcome, LivePosition, LiveRecord, LiveTrade};
+pub use live_store::{
+    live_decision_payload, LiveSession, LIVE_DECISION_EVENT, LIVE_ORDER_EVENT, RECONCILE_EVENT,
+};
 pub use paper::{BotAlert, DecisionOutcome, DecisionRecord, PaperBot, PaperConfig};
 pub use risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict, PLATFORM_MAX_RISK_PCT};
 pub use store::{

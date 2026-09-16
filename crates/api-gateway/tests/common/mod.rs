@@ -24,6 +24,7 @@ use api_gateway::{auth::AuthConfig, router, AppState};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use observability::metrics::Registry;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -43,7 +44,33 @@ pub struct Harness {
     /// The agent limiter, so a test can read the limit it is testing against
     /// rather than hard-coding a number that would drift.
     pub limits: Arc<RateLimiter>,
+    /// Held for the harness's whole life, so one test at a time owns the pool.
+    ///
+    /// Never read. It exists to be dropped, which is what releases the turn.
+    _turn: tokio::sync::MutexGuard<'static, ()>,
 }
+
+/// The right to touch the database, one test at a time, per test process.
+///
+/// ## Why this exists
+///
+/// Every `Harness` opens a connection pool against the **same** managed
+/// Postgres, and that database costs roughly a second per statement. A test
+/// binary runs its tests on threads by default, so `cargo test --workspace`
+/// ran six `load_flow` tests — and eleven `bot_flow` tests — concurrently
+/// against ten connections between them.
+///
+/// The failure that produces is not "slow", it is "wrong": a `DELETE` waits out
+/// the ten-second acquire timeout and returns 500, the bot row is never
+/// removed, and the test then fails later on a foreign-key violation from
+/// deleting the strategy — reporting the consequence and pointing at the wrong
+/// line. That is exactly how `stopping_one_bot_leaves_the_feed_working_for_the_others`
+/// failed, and it passed every time it was run on its own.
+///
+/// Serialising at the harness makes that impossible rather than unlikely. These
+/// tests were never actually parallel — they were racing, and paying for the
+/// contention in retries and confusion.
+static DB_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Install a log subscriber, once per process.
 ///
@@ -75,6 +102,9 @@ impl Harness {
             eprintln!("DATABASE_URL is not set; skipping");
             return None;
         }
+        // Taken before the first database call and held until the harness is
+        // dropped. See `DB_TURN`.
+        let turn = DB_TURN.lock().await;
         let database = db::Database::from_env().await.ok()?;
         database.migrate().await.ok()?;
 
@@ -90,12 +120,15 @@ impl Harness {
             auth: Some(Arc::new(AuthConfig::new(SECRET))),
             bots: Arc::clone(&supervisor),
             agent_limits: Arc::clone(&limits),
+            metrics: Arc::new(Registry::new()),
+            alert_queue: None,
         };
         Some(Self {
             app: router(state),
             database: Arc::new(database),
             supervisor,
             limits,
+            _turn: turn,
         })
     }
 
@@ -106,6 +139,7 @@ impl Harness {
         if std::env::var("DATABASE_URL").is_err() {
             return None;
         }
+        let turn = DB_TURN.lock().await;
         let database = db::Database::from_env().await.ok()?;
         let supervisor = Arc::new(BotSupervisor::with_flush_interval(
             FeedMode::Off,
@@ -119,12 +153,15 @@ impl Harness {
             auth: None,
             bots: Arc::clone(&supervisor),
             agent_limits: Arc::clone(&limits),
+            metrics: Arc::new(Registry::new()),
+            alert_queue: None,
         };
         Some(Self {
             app: router(state),
             database: Arc::new(database),
             supervisor,
             limits,
+            _turn: turn,
         })
     }
 
@@ -157,6 +194,59 @@ impl Harness {
         }
         self.send(builder.body(Body::from(body.to_string())).expect("request"))
             .await
+    }
+
+    /// POST a resource and return its `id`, asserting that it was created.
+    ///
+    /// ## Why this is a helper and not `body["id"].as_str().unwrap()`
+    ///
+    /// Most of these tests create something and then read `body["id"]`. When
+    /// the status is discarded, *any* failed create -- including one with
+    /// nothing to do with the thing under test -- arrives as
+    /// `called \`Option::unwrap()\` on a \`None\` value` at the extraction,
+    /// which names neither the route nor the reason. The reader then goes
+    /// looking for a bug in the code that was never reached.
+    ///
+    /// That is not hypothetical. The managed Postgres occasionally exceeds its
+    /// ten-second acquire timeout while a full `--workspace` run holds the
+    /// pool; the create answers `500 DATABASE_ERROR`; and the test failed with
+    /// an `unwrap` on `None` pointing at the wrong line. Asserting the status
+    /// here is what makes a slow database say "slow database".
+    ///
+    /// Same rule `load_flow`'s cleanup deletes are held to: a test asserts its
+    /// own setup.
+    ///
+    /// The status is asserted exactly rather than as "any 2xx": the create
+    /// routes promise `201 Created`, and `is_success()` would let a route that
+    /// started answering `200` pass every test in this suite.
+    pub async fn created(&self, path: &str, body: Value, token: Option<&str>) -> String {
+        let (status, body) = self.post(path, body, token).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "POST {path} should have created something, got {status}: {body}"
+        );
+        body["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("POST {path} returned no id: {body}"))
+            .to_string()
+    }
+
+    /// GET a path, asserting the request succeeded, and return the body.
+    ///
+    /// Same reasoning as [`Harness::created`]: a discarded status turns a
+    /// failed read into a null body, and every assertion written against that
+    /// null body then fails for a reason that is not the one being tested --
+    /// `listed.as_array()` returning `None` reads as "the route returned the
+    /// wrong shape", not "the database was unreachable".
+    pub async fn ok(&self, path: &str, token: Option<&str>) -> Value {
+        let (status, body) = self.get(path, token).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "GET {path} should have succeeded, got {status}: {body}"
+        );
+        body
     }
 
     /// Serve this router on a real port and return its base URL.
@@ -210,6 +300,33 @@ impl Harness {
         }
         self.send(builder.body(Body::empty()).expect("request"))
             .await
+    }
+
+    /// GET a path and return the body as text.
+    ///
+    /// `/metrics` answers in Prometheus text exposition format, and `get`
+    /// parses JSON -- so a scrape read through `get` arrives as `Value::Null`
+    /// and every assertion on it passes vacuously. This is the accessor for the
+    /// one route that is not JSON.
+    pub async fn get_text(&self, path: &str, token: Option<&str>) -> (StatusCode, String) {
+        let mut builder = Request::builder().method("GET").uri(path);
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        let response = self
+            .app
+            .clone()
+            .oneshot(builder.body(Body::empty()).expect("request"))
+            .await
+            .expect("the router must answer");
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("the body must be readable")
+            .to_bytes();
+        (status, String::from_utf8_lossy(&bytes).to_string())
     }
 
     async fn send(&self, request: Request<Body>) -> (StatusCode, Value) {

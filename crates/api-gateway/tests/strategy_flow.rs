@@ -132,7 +132,7 @@ async fn validate_checks_text_without_storing_it() {
     assert_eq!(body["timeframes"]["entry"], "5m");
 
     // Nothing was stored, so the list is still empty for this account.
-    let (_, listed) = h.get("/strategies", Some(&user.token)).await;
+    let listed = h.ok("/strategies", Some(&user.token)).await;
     assert!(listed.as_array().expect("a list").is_empty());
 
     user.cleanup(&h.database).await;
@@ -144,14 +144,13 @@ async fn a_stored_strategy_can_be_revalidated() {
         return;
     };
     let user = h.register().await;
-    let (_, created) = h
-        .post(
+    let id = h
+        .created(
             "/strategies",
             json!({ "source": SIMPLE_STRATEGY }),
             Some(&user.token),
         )
         .await;
-    let id = created["id"].as_str().unwrap().to_string();
 
     let (status, body) = h
         .post(
@@ -177,14 +176,13 @@ async fn another_users_strategy_is_absent_not_forbidden() {
     let owner = h.register().await;
     let stranger = h.register().await;
 
-    let (_, created) = h
-        .post(
+    let id = h
+        .created(
             "/strategies",
             json!({ "source": SIMPLE_STRATEGY }),
             Some(&owner.token),
         )
         .await;
-    let id = created["id"].as_str().unwrap().to_string();
 
     // 404, not 403: a 403 would confirm the id exists, which is a fact a caller
     // has no business learning by guessing.
@@ -224,14 +222,13 @@ async fn a_backtest_runs_against_real_candles_and_is_stored() {
         return;
     };
     let user = h.register().await;
-    let (_, created) = h
-        .post(
+    let strategy_id = h
+        .created(
             "/strategies",
             json!({ "source": SIMPLE_STRATEGY }),
             Some(&user.token),
         )
         .await;
-    let strategy_id = created["id"].as_str().unwrap().to_string();
 
     let (status, body) = h
         .post(
@@ -311,14 +308,13 @@ async fn a_backtest_over_an_empty_window_is_refused_not_empty() {
         return;
     };
     let user = h.register().await;
-    let (_, created) = h
-        .post(
+    let strategy_id = h
+        .created(
             "/strategies",
             json!({ "source": SIMPLE_STRATEGY }),
             Some(&user.token),
         )
         .await;
-    let strategy_id = created["id"].as_str().unwrap().to_string();
 
     // A window with no candles at all. Returning a report of zero trades would
     // be a valid-looking answer to a question the data cannot answer.
@@ -346,14 +342,13 @@ async fn a_bad_window_is_a_400_before_any_work_happens() {
         return;
     };
     let user = h.register().await;
-    let (_, created) = h
-        .post(
+    let strategy_id = h
+        .created(
             "/strategies",
             json!({ "source": SIMPLE_STRATEGY }),
             Some(&user.token),
         )
         .await;
-    let strategy_id = created["id"].as_str().unwrap().to_string();
 
     let (status, body) = h
         .post(
@@ -921,13 +916,14 @@ async fn revalidating_an_echoed_document_agrees_with_itself() {
     };
     let user = h.register().await;
 
-    let (_, first) = h
+    let (status, first) = h
         .post(
             "/strategies/validate",
             json!({ "source": SIMPLE_STRATEGY }),
             None,
         )
         .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
     // The stored form is JSON, which the parser also accepts. Round-tripping
     // through it is what the builder does every time it opens a document.
     let as_json = serde_json::to_string(&first["document"]).unwrap();

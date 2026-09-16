@@ -9,6 +9,11 @@ license.workspace = true
 [dependencies]
 analytics-core = { workspace = true }
 db = { workspace = true }
+# Metrics only. `observability` is a leaf with no internal dependencies, so this
+# edge cannot introduce a cycle and cannot pull `trading-engine` into the
+# collector's process -- which matters, because the collector runs in the same
+# process as nothing else and must not grow an execution engine by accident.
+observability = { workspace = true }
 
 async-trait = { workspace = true }
 thiserror = { workspace = true }

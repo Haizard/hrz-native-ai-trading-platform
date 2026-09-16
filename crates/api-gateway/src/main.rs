@@ -15,6 +15,8 @@ use api_gateway::bots::{BotSupervisor, FeedMode};
 use api_gateway::rate_limit::{RateLimit, RateLimiter};
 use api_gateway::{build_auth, load_skills, router, AppState};
 use db::Database;
+use observability::metrics::Registry;
+use observability::QueueSink;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,12 +26,9 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("loaded .env");
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // `LOG_FORMAT=json` for machine-readable logs in deployment; the default is
+    // the human-readable line format so local runs stay readable.
+    observability::init_logging("api-gateway");
 
     let db = match Database::from_env().await {
         Ok(db) => {
@@ -62,6 +61,17 @@ async fn main() -> anyhow::Result<()> {
         "/agent rate limit"
     );
 
+    // Alerts are raised by a background rule evaluation, not by the code paths
+    // that trip them -- a kill-switch must report itself even if the code that
+    // tripped it is about to panic.
+    let alert_queue = std::env::var("ALERT_WEBHOOK_URL").ok().map(|url| {
+        info!(%url, "alerts will be forwarded to a webhook");
+        Arc::new(QueueSink::new())
+    });
+    if alert_queue.is_none() {
+        info!("ALERT_WEBHOOK_URL is not set; alerts go to the log and the audit trail only");
+    }
+
     let state = AppState {
         db,
         agent,
@@ -69,7 +79,14 @@ async fn main() -> anyhow::Result<()> {
         auth,
         bots,
         agent_limits,
+        metrics: Registry::global_handle(),
+        alert_queue: alert_queue.clone(),
     };
+
+    api_gateway::metrics::spawn_alert_task(state.clone());
+    if let (Some(queue), Ok(url)) = (alert_queue, std::env::var("ALERT_WEBHOOK_URL")) {
+        api_gateway::metrics::spawn_webhook_task(url, queue);
+    }
 
     let app = router(state);
 

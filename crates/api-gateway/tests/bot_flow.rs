@@ -253,14 +253,13 @@ async fn a_paused_bot_stops_deciding_and_resuming_restarts_it() {
     };
     let user = h.register().await;
     let strategy_id = strategy(&h, &user.token).await;
-    let (_, created) = h
-        .post(
+    let bot_id = h
+        .created(
             "/bots",
             json!({ "strategy_id": strategy_id }),
             Some(&user.token),
         )
         .await;
-    let bot_id = created["id"].as_str().unwrap().to_string();
     let bot = bot_id.parse::<uuid::Uuid>().expect("a uuid");
 
     // Three batches, and the third has to be candles the bot has *not* seen.
@@ -368,14 +367,13 @@ async fn pausing_a_bot_that_is_not_supervised_here_is_a_conflict() {
     };
     let user = h.register().await;
     let strategy_id = strategy(&h, &user.token).await;
-    let (_, created) = h
-        .post(
+    let bot_id = h
+        .created(
             "/bots",
             json!({ "strategy_id": strategy_id }),
             Some(&user.token),
         )
         .await;
-    let bot_id = created["id"].as_str().unwrap().to_string();
     let bot = bot_id.parse::<uuid::Uuid>().expect("a uuid");
 
     // Stop the task without touching the row, which is what a process restart
@@ -401,16 +399,16 @@ async fn pausing_a_bot_that_is_not_supervised_here_is_a_conflict() {
 }
 
 #[tokio::test]
-async fn live_mode_is_refused_with_the_phase_that_would_enable_it() {
+async fn live_mode_without_a_venue_is_a_422() {
     let Some(h) = Harness::new().await else {
         return;
     };
     let user = h.register().await;
     let strategy_id = strategy(&h, &user.token).await;
 
-    // docs/11 gates live trading behind a paper track record, per-venue opt-in
-    // and an exchange adapter. Quietly running a paper bot would be the worst
-    // of both.
+    // The opt-in is per venue, so there is no default to fall back to. A live
+    // bot with no venue is not a request that can be completed with an
+    // assumption.
     let (status, body) = h
         .post(
             "/bots",
@@ -418,12 +416,79 @@ async fn live_mode_is_refused_with_the_phase_that_would_enable_it() {
             Some(&user.token),
         )
         .await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
-    assert_eq!(body["error"]["code"], "LIVE_TRADING_NOT_ENABLED");
-    assert!(body["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Phase 8"));
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "VENUE_REQUIRED");
+
+    db::strategies::delete_strategy(h.database.pool(), strategy_id.parse().unwrap())
+        .await
+        .unwrap();
+    user.cleanup(&h.database).await;
+}
+
+#[tokio::test]
+async fn live_mode_without_an_opt_in_is_refused_with_every_reason() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+    let strategy_id = strategy(&h, &user.token).await;
+
+    // docs/11 and docs/15 gate live trading behind a paper track record, a
+    // per-venue opt-in and configured risk limits. None of the three holds
+    // here, and the refusal must name all of them: an operator should not need
+    // one round trip per requirement.
+    let (status, body) = h
+        .post(
+            "/bots",
+            json!({ "strategy_id": strategy_id, "mode": "live", "venue": "binance" }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "LIVE_GATE_REFUSED");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("opted in"),
+        "the opt-in is missing: {message}"
+    );
+    assert!(
+        message.contains("paper trades"),
+        "the track record is missing: {message}"
+    );
+    assert!(
+        !message.contains("does not exist yet"),
+        "the adapter exists now, so the refusal must not still claim otherwise: {message}"
+    );
+
+    db::strategies::delete_strategy(h.database.pool(), strategy_id.parse().unwrap())
+        .await
+        .unwrap();
+    user.cleanup(&h.database).await;
+}
+
+#[tokio::test]
+async fn an_unknown_mode_is_a_422_rather_than_a_silent_paper_bot() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+    let strategy_id = strategy(&h, &user.token).await;
+
+    // Silently running a paper bot for someone who asked for a live one is the
+    // worst answer available: they believe they have a position and they do not.
+    let (status, body) = h
+        .post(
+            "/bots",
+            json!({ "strategy_id": strategy_id, "mode": "paperr" }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "MODE_UNKNOWN");
+
+    // And nothing was started.
+    let listed = h.ok("/bots", Some(&user.token)).await;
+    assert_eq!(listed.as_array().map(Vec::len), Some(0), "{listed}");
 
     db::strategies::delete_strategy(h.database.pool(), strategy_id.parse().unwrap())
         .await
@@ -464,19 +529,19 @@ async fn another_users_bot_is_absent_not_forbidden() {
     let owner = h.register().await;
     let stranger = h.register().await;
     let strategy_id = strategy(&h, &owner.token).await;
-    let (_, created) = h
-        .post(
+    let bot_id = h
+        .created(
             "/bots",
             json!({ "strategy_id": strategy_id }),
             Some(&owner.token),
         )
         .await;
-    let bot_id = created["id"].as_str().unwrap().to_string();
 
     for (method, path) in [
         ("GET", format!("/bots/{bot_id}")),
         ("POST", format!("/bots/{bot_id}/pause")),
         ("POST", format!("/bots/{bot_id}/resume")),
+        ("POST", format!("/bots/{bot_id}/kill")),
     ] {
         let (status, body) = if method == "GET" {
             h.get(&path, Some(&stranger.token)).await

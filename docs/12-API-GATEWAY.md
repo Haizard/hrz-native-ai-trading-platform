@@ -36,14 +36,58 @@ GET    /strategies/{id}/backtests
 GET    /backtests/{id}
 
 POST   /bots                             # create paper or live bot from a strategy
+GET    /bots
 GET    /bots/{id}
 POST   /bots/{id}/pause
 POST   /bots/{id}/resume
+POST   /bots/{id}/kill                   # the manual kill-switch: liquidates, then stops
 DELETE /bots/{id}
+
+GET    /venues                           # which venues exist, are opted in, have credentials
+POST   /venues/{venue}/opt-in            # required before any live bot may trade there
+POST   /venues/{venue}/revoke            # stops the live bots already running there
+
+GET    /metrics                          # Prometheus text exposition, no auth
 
 POST   /agent/ask                        # natural-language request -> TradeThesis
 POST   /agent/generate-strategy          # natural-language -> StrategyDocument
 ```
+
+### `POST /bots` refuses `live` with every unmet condition at once
+
+`docs/11` and `docs/15` gate live trading behind three things: a paper track record, a
+per-venue opt-in, and configured risk limits. All three are checked at request time and
+the refusal names **all** of them — an operator should not need one round trip per
+requirement. Codes, in the order the request can fail:
+
+| Code | Status | When |
+|---|---|---|
+| `MODE_UNKNOWN` | 422 | `mode` is neither `paper` nor `live`. Deliberately not a silent fallback: running a paper bot for someone who asked for a live one leaves them believing they hold a position they do not |
+| `VENUE_REQUIRED` | 422 | `mode: live` with no `venue`. The opt-in is per venue, so there is no default |
+| `LIVE_GATE_REFUSED` | 403 | Any of the three conditions unmet; `message` lists them |
+| `EXCHANGE_CREDENTIALS_MISSING` | 503 | The gate passed but the process holds no keys. 503 rather than 403: nothing about the *request* is wrong |
+
+`POST /bots/{id}/kill` is deliberately not `pause`. Pausing stops the bot asking;
+killing stops it asking **and** liquidates, because a position left open with nothing
+watching its stop is the loss the switch exists to prevent. The response is a `200`
+with the bot already in `killed` — the liquidation itself happens in the bot's task,
+because a route cannot block on a network round trip to a venue.
+
+**All four of these routes are reachable from the shell**, in the bots pane: a
+**Kill switch** button per bot, and a live-trading panel that lists each venue with
+`opted_in` and `credentials_configured` shown separately. The shell is served from the
+same origin as the API (see the routes above), so this needs no second process and no
+CORS policy. `GET /venues` carries the gate's own thresholds, so the panel states the
+requirements the API enforces rather than a hardcoded copy that would drift.
+
+### `/metrics` is unauthenticated, and that is a decision
+
+It is scraped by something that does not hold a user token. What it exposes is
+operational counters and latency histograms with **templated** route labels
+(`/bots/{id}`, never the id), so it names the shape of the traffic and not whose. If a
+deployment ever puts it on a public interface, that is the thing to reconsider — the
+scrape carries no user data today, and `docs/20-RUNBOOKS.md` says so where an operator
+will look.
 
 ### `GET /strategies/schema` — the DSL vocabulary, not a second copy of it
 

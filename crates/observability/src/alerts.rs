@@ -1,0 +1,653 @@
+//! Alert rules evaluated against the registry (`docs/18`).
+//!
+//! ## Fire on transition, not on every tick
+//!
+//! An alert that re-fires every 30 seconds is noise, and noise is why alerting
+//! gets muted. Each rule fires once when it enters breach and once more when it
+//! clears, and stays quiet in between -- so a page means "this changed".
+//!
+//! ## The rules are an enum, not closures
+//!
+//! A rule has to be nameable to be deduplicated, loggable and tested. A boxed
+//! closure can be executed but not inspected, and the first thing an on-call
+//! engineer needs is the rule's name.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::metrics::{
+    Registry, HTTP_REQUESTS, KILL_SWITCH, MD_FEED_AGE, RECONCILE_MISMATCHES, RISK_BREACHES,
+};
+
+/// How urgent an alert is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Something cleared. Recorded, not paged.
+    Info,
+    /// Degraded, not stopped.
+    Warning,
+    /// Real money, or the system is not doing its job. Page.
+    Critical,
+}
+
+impl Severity {
+    /// The wire word, for logs and payloads that are read by scripts.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+/// One alert: what fired, how bad, and what it saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alert {
+    /// The rule's stable name, e.g. `stale_market_data`.
+    pub name: String,
+    /// Urgency.
+    pub severity: Severity,
+    /// What the metrics said, as text an engineer can read without a dashboard.
+    pub detail: String,
+    /// When it fired, unix milliseconds.
+    pub at_ms: i64,
+}
+
+/// Where alerts go.
+pub trait AlertSink: Send + Sync {
+    /// Deliver one alert. Must not block: this runs on whatever task evaluated
+    /// the rules, and a slow sink must not delay a trading decision.
+    fn send(&self, alert: &Alert);
+}
+
+/// Write every alert to the structured log.
+///
+/// Always installed, because an alert nobody receives is not an alert, and the
+/// log is the one sink that cannot fail to be configured.
+pub struct LogSink;
+
+impl AlertSink for LogSink {
+    fn send(&self, alert: &Alert) {
+        tracing::error!(
+            alert = %alert.name,
+            severity = alert.severity.as_str(),
+            detail = %alert.detail,
+            "alert"
+        );
+    }
+}
+
+/// Keep alerts in memory, for tests and for the gateway to serve.
+#[derive(Debug, Default)]
+pub struct CollectingSink {
+    alerts: Mutex<Vec<Alert>>,
+}
+
+impl CollectingSink {
+    /// An empty sink.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Everything received so far.
+    #[must_use]
+    pub fn alerts(&self) -> Vec<Alert> {
+        self.alerts.lock().map_or_else(
+            |poisoned| poisoned.into_inner().clone(),
+            |guard| guard.clone(),
+        )
+    }
+}
+
+impl AlertSink for CollectingSink {
+    fn send(&self, alert: &Alert) {
+        if let Ok(mut guard) = self.alerts.lock() {
+            guard.push(alert.clone());
+        }
+    }
+}
+
+/// A queue a delivery task drains.
+///
+/// The split matters: rule evaluation is synchronous and must not do network
+/// I/O, so a webhook becomes "put it in the queue" here and "POST it" in the
+/// gateway's task. A sink that did its own HTTP would let a hanging webhook
+/// slow the trading loop.
+#[derive(Debug, Default)]
+pub struct QueueSink {
+    queue: Mutex<VecDeque<Alert>>,
+}
+
+impl QueueSink {
+    /// An empty queue.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Take everything queued, oldest first.
+    #[must_use]
+    pub fn drain(&self) -> Vec<Alert> {
+        self.queue.lock().map_or_else(
+            |poisoned| poisoned.into_inner().drain(..).collect(),
+            |mut guard| guard.drain(..).collect(),
+        )
+    }
+}
+
+impl AlertSink for QueueSink {
+    fn send(&self, alert: &Alert) {
+        if let Ok(mut guard) = self.queue.lock() {
+            guard.push_back(alert.clone());
+        }
+    }
+}
+
+/// A rule the alerter evaluates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Rule {
+    /// Market data is older than this many seconds.
+    StaleFeed {
+        /// Threshold.
+        max_age_secs: f64,
+    },
+    /// 5xx responses as a fraction of requests to one route, once the route has
+    /// served enough requests for the ratio to mean anything.
+    ErrorRate {
+        /// Minimum requests before the rule is allowed to fire.
+        min_requests: u64,
+        /// Maximum tolerated fraction of 5xx.
+        max_ratio: f64,
+    },
+    /// The kill-switch tripped.
+    KillSwitch,
+    /// A risk limit was breached.
+    RiskBreach,
+    /// Our view of orders disagrees with the exchange's.
+    ReconcileMismatch,
+}
+
+impl Rule {
+    /// The stable name used for dedupe, logs and dashboards.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::StaleFeed { .. } => "stale_market_data",
+            Self::ErrorRate { .. } => "http_error_rate",
+            Self::KillSwitch => "kill_switch_engaged",
+            Self::RiskBreach => "risk_limit_breached",
+            Self::ReconcileMismatch => "reconcile_mismatch",
+        }
+    }
+
+    /// Whether this rule is about *events* rather than *levels*.
+    ///
+    /// A level rule (feed age, error rate) has a state that persists, so it is
+    /// announced once on entering breach and once on leaving it. An event rule
+    /// has no level to leave: a kill-switch activation is news every time it
+    /// happens, and "none since the last tick" is the healthy case rather than
+    /// a resolution. Treating the two alike would mean either a re-page every
+    /// 30 seconds for a still-stale feed, or silence for the second bot that
+    /// breached a limit this hour -- and both are wrong in the same way an
+    /// on-call engineer would notice.
+    #[must_use]
+    pub const fn is_event(&self) -> bool {
+        matches!(
+            self,
+            Self::KillSwitch | Self::RiskBreach | Self::ReconcileMismatch
+        )
+    }
+
+    /// How bad a firing of this rule is.
+    #[must_use]
+    pub const fn severity(&self) -> Severity {
+        match self {
+            Self::StaleFeed { .. } | Self::ErrorRate { .. } => Severity::Warning,
+            Self::KillSwitch | Self::RiskBreach | Self::ReconcileMismatch => Severity::Critical,
+        }
+    }
+}
+
+/// The rules `docs/18` asks for, with the thresholds it implies.
+///
+/// ## The rule that is deliberately absent
+///
+/// `docs/18` also names backtest-to-live divergence. There is no rule for it
+/// here, because nothing in the platform measures it yet -- `docs/19` carries
+/// it as debt, and the shape it needs is a job that compares a bot's realised R
+/// against its backtest over the same window, not a threshold over a metric
+/// that no one writes.
+///
+/// The first version of this list *did* include `Rule::Divergence`, over a
+/// `DIVERGENCE_R` gauge with no writer. It could never fire, and that is worse
+/// than not having it: an operator reading the alert list, or a runbook in
+/// `docs/20`, would conclude that divergence was monitored. A missing rule is a
+/// visible gap; an inert one is a false assurance.
+#[must_use]
+pub fn default_rules() -> Vec<Rule> {
+    vec![
+        Rule::StaleFeed {
+            max_age_secs: 120.0,
+        },
+        Rule::ErrorRate {
+            min_requests: 50,
+            max_ratio: 0.05,
+        },
+        Rule::KillSwitch,
+        Rule::RiskBreach,
+        Rule::ReconcileMismatch,
+    ]
+}
+
+/// Evaluates rules against a registry and dedupes what it sends.
+pub struct Alerter {
+    rules: Vec<Rule>,
+    sinks: Vec<Arc<dyn AlertSink>>,
+    /// Rules currently in breach, so a rule is announced once per transition.
+    active: HashSet<String>,
+    /// Last seen value per counter rule, so "it went up" is detectable without
+    /// the caller having to remember anything.
+    last: HashMap<String, u64>,
+}
+
+impl std::fmt::Debug for Alerter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Alerter")
+            .field("rules", &self.rules)
+            .field("sinks", &self.sinks.len())
+            .field("active", &self.active)
+            .field("last", &self.last)
+            .finish()
+    }
+}
+
+impl Alerter {
+    /// Build an alerter with a log sink always attached.
+    #[must_use]
+    pub fn new(rules: Vec<Rule>) -> Self {
+        Self::with_sinks(rules, vec![Arc::new(LogSink)])
+    }
+
+    /// Build an alerter with explicit sinks.
+    #[must_use]
+    pub fn with_sinks(rules: Vec<Rule>, sinks: Vec<Arc<dyn AlertSink>>) -> Self {
+        Self {
+            rules,
+            sinks,
+            active: HashSet::new(),
+            last: HashMap::new(),
+        }
+    }
+
+    /// The rules in force.
+    #[must_use]
+    pub fn rules(&self) -> &[Rule] {
+        &self.rules
+    }
+
+    /// Evaluate every rule once and deliver whatever changed.
+    ///
+    /// Returns the alerts raised, so a caller can persist them to the audit
+    /// trail without having to install a sink that knows about the database.
+    #[must_use]
+    pub fn evaluate(&mut self, registry: &Registry) -> Vec<Alert> {
+        let samples = registry.snapshot();
+        let mut raised = Vec::new();
+
+        for rule in self.rules.clone() {
+            let breach = Self::breach(&rule, &samples, &mut self.last);
+            let name = rule.name().to_string();
+
+            if rule.is_event() {
+                // Every activation is its own alert; there is no "cleared".
+                if let Some(detail) = breach {
+                    raised.push(Alert {
+                        name,
+                        severity: rule.severity(),
+                        detail,
+                        at_ms: now_ms(),
+                    });
+                }
+                continue;
+            }
+
+            let is_active = self.active.contains(&name);
+            match (breach, is_active) {
+                (Some(detail), false) => {
+                    self.active.insert(name.clone());
+                    raised.push(Alert {
+                        name,
+                        severity: rule.severity(),
+                        detail,
+                        at_ms: now_ms(),
+                    });
+                }
+                (None, true) => {
+                    self.active.remove(&name);
+                    raised.push(Alert {
+                        name,
+                        severity: Severity::Info,
+                        detail: "resolved".into(),
+                        at_ms: now_ms(),
+                    });
+                }
+                // Firing while firing, and quiet while quiet, are both silence.
+                (Some(_), true) | (None, false) => {}
+            }
+        }
+
+        for alert in &raised {
+            for sink in &self.sinks {
+                sink.send(alert);
+            }
+        }
+        raised
+    }
+
+    /// Whether a rule is currently in breach.
+    #[must_use]
+    pub fn is_active(&self, rule: &str) -> bool {
+        self.active.contains(rule)
+    }
+
+    /// Evaluate one rule against the current samples.
+    fn breach(
+        rule: &Rule,
+        samples: &[crate::metrics::Sample],
+        last: &mut HashMap<String, u64>,
+    ) -> Option<String> {
+        match *rule {
+            Rule::StaleFeed { max_age_secs } => {
+                let mut worst: Option<(f64, String)> = None;
+                for sample in samples.iter().filter(|s| s.name == MD_FEED_AGE) {
+                    if sample.value > max_age_secs
+                        && worst
+                            .as_ref()
+                            .is_none_or(|(value, _)| sample.value > *value)
+                    {
+                        worst = Some((sample.value, sample.labels.render()));
+                    }
+                }
+                worst.map(|(value, labels)| {
+                    format!("newest candle is {value:.0}s old (limit {max_age_secs:.0}s) {labels}")
+                })
+            }
+            Rule::ErrorRate {
+                min_requests,
+                max_ratio,
+            } => {
+                // Grouped by route: a single bad route is a bug, not an outage,
+                // and the distinction is invisible if the ratio is global.
+                let mut totals: HashMap<String, (u64, u64)> = HashMap::new();
+                for sample in samples.iter().filter(|s| s.name == HTTP_REQUESTS) {
+                    let route = label_of(sample, "route");
+                    let status = label_of(sample, "status");
+                    let entry = totals.entry(route).or_insert((0, 0));
+                    entry.0 += sample.value as u64;
+                    if status.starts_with('5') {
+                        entry.1 += sample.value as u64;
+                    }
+                }
+                let mut breaches: Vec<(String, f64, u64)> = totals
+                    .into_iter()
+                    .filter(|(_, (total, _))| *total >= min_requests)
+                    .map(|(route, (total, errors))| (route, errors as f64 / total as f64, total))
+                    .filter(|(_, ratio, _)| *ratio > max_ratio)
+                    .collect();
+                breaches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                breaches.into_iter().next().map(|(route, ratio, total)| {
+                    format!("{route}: {:.1}% of {total} requests are 5xx", ratio * 100.0)
+                })
+            }
+            Rule::KillSwitch => counter_rose(rule, KILL_SWITCH, samples, last).map(|delta| {
+                format!("the kill-switch engaged ({delta} activation(s)); no new entries")
+            }),
+            Rule::RiskBreach => counter_rose(rule, RISK_BREACHES, samples, last)
+                .map(|delta| format!("{delta} risk-limit breach(es) recorded")),
+            Rule::ReconcileMismatch => counter_rose(rule, RECONCILE_MISMATCHES, samples, last)
+                .map(|delta| format!("{delta} order(s) disagree with the exchange")),
+        }
+    }
+}
+
+/// How much a counter moved since the last evaluation.
+fn counter_rose(
+    rule: &Rule,
+    name: &str,
+    samples: &[crate::metrics::Sample],
+    last: &mut HashMap<String, u64>,
+) -> Option<u64> {
+    let total: u64 = samples
+        .iter()
+        .filter(|s| s.name == name)
+        .map(|s| s.value as u64)
+        .sum();
+    let key = rule.name().to_string();
+    let previous = last.insert(key, total).unwrap_or(0);
+    (total > previous).then_some(total - previous)
+}
+
+/// Read one label out of a sample, defaulting to an empty string.
+fn label_of(sample: &crate::metrics::Sample, key: &str) -> String {
+    sample
+        .labels
+        .render()
+        .trim_start_matches('{')
+        .trim_end_matches('}')
+        .split(',')
+        .find_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            let name = parts.next()?.trim();
+            let value = parts.next()?.trim().trim_matches('"');
+            (name == key).then(|| value.to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// Now, in unix milliseconds.
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metrics::Labels;
+
+    fn alerter(rules: Vec<Rule>) -> (Alerter, Arc<CollectingSink>) {
+        let sink = Arc::new(CollectingSink::new());
+        let alerter = Alerter::with_sinks(rules, vec![Arc::new(LogSink), sink.clone()]);
+        (alerter, sink)
+    }
+
+    #[test]
+    fn a_stale_feed_fires_once_and_not_again_on_the_next_tick() {
+        let registry = Registry::new();
+        let (mut alerter, sink) = alerter(vec![Rule::StaleFeed { max_age_secs: 60.0 }]);
+        registry.set_gauge(MD_FEED_AGE, "age", &Labels::none(), 500.0);
+
+        let first = alerter.evaluate(&registry);
+        assert_eq!(first.len(), 1, "the first breach must be announced");
+        assert_eq!(first[0].severity, Severity::Warning);
+
+        let second = alerter.evaluate(&registry);
+        assert!(
+            second.is_empty(),
+            "an unchanged breach must stay quiet, or alerting becomes noise"
+        );
+        assert_eq!(sink.alerts().len(), 1);
+    }
+
+    #[test]
+    fn a_cleared_rule_says_so() {
+        let registry = Registry::new();
+        let (mut alerter, sink) = alerter(vec![Rule::StaleFeed { max_age_secs: 60.0 }]);
+        registry.set_gauge(MD_FEED_AGE, "age", &Labels::none(), 500.0);
+        let _ = alerter.evaluate(&registry);
+
+        registry.set_gauge(MD_FEED_AGE, "age", &Labels::none(), 1.0);
+        let cleared = alerter.evaluate(&registry);
+
+        assert_eq!(cleared.len(), 1);
+        assert_eq!(cleared[0].severity, Severity::Info);
+        assert_eq!(cleared[0].detail, "resolved");
+        assert!(!alerter.is_active("stale_market_data"));
+        assert_eq!(sink.alerts().len(), 2);
+    }
+
+    #[test]
+    fn a_feed_within_the_threshold_is_never_announced() {
+        let registry = Registry::new();
+        let (mut alerter, _) = alerter(vec![Rule::StaleFeed { max_age_secs: 60.0 }]);
+        registry.set_gauge(MD_FEED_AGE, "age", &Labels::none(), 10.0);
+        assert!(alerter.evaluate(&registry).is_empty());
+    }
+
+    #[test]
+    fn the_error_rate_rule_needs_enough_requests_before_it_may_speak() {
+        let registry = Registry::new();
+        let (mut alerter, _) = alerter(vec![Rule::ErrorRate {
+            min_requests: 100,
+            max_ratio: 0.05,
+        }]);
+        let ok = Labels::new(&[("route", "/candles"), ("status", "2xx")]);
+        let bad = Labels::new(&[("route", "/candles"), ("status", "5xx")]);
+        registry.inc_counter(HTTP_REQUESTS, "reqs", &ok, 40);
+        registry.inc_counter(HTTP_REQUESTS, "reqs", &bad, 10);
+
+        assert!(
+            alerter.evaluate(&registry).is_empty(),
+            "50 requests is below the minimum, so 20% is not yet evidence"
+        );
+
+        registry.inc_counter(HTTP_REQUESTS, "reqs", &ok, 60);
+        let raised = alerter.evaluate(&registry);
+        assert_eq!(raised.len(), 1);
+        assert!(
+            raised[0].detail.contains("/candles"),
+            "{}",
+            raised[0].detail
+        );
+    }
+
+    #[test]
+    fn a_healthy_route_does_not_fire_the_error_rate_rule() {
+        let registry = Registry::new();
+        let (mut alerter, _) = alerter(vec![Rule::ErrorRate {
+            min_requests: 10,
+            max_ratio: 0.05,
+        }]);
+        registry.inc_counter(
+            HTTP_REQUESTS,
+            "reqs",
+            &Labels::new(&[("route", "/candles"), ("status", "2xx")]),
+            100,
+        );
+        registry.inc_counter(
+            HTTP_REQUESTS,
+            "reqs",
+            &Labels::new(&[("route", "/candles"), ("status", "5xx")]),
+            2,
+        );
+        assert!(alerter.evaluate(&registry).is_empty());
+    }
+
+    #[test]
+    fn a_kill_switch_activation_is_critical_and_fires_on_the_rise() {
+        let registry = Registry::new();
+        let (mut alerter, _) = alerter(vec![Rule::KillSwitch]);
+        registry.count(KILL_SWITCH, "ks", &Labels::none());
+
+        let raised = alerter.evaluate(&registry);
+        assert_eq!(raised.len(), 1);
+        assert_eq!(raised[0].severity, Severity::Critical);
+        assert!(raised[0].detail.contains("kill-switch"));
+
+        // Silence while nothing new happens -- and notably *not* a "resolved"
+        // alert, because an event rule has no level to come back from.
+        assert!(alerter.evaluate(&registry).is_empty());
+
+        // A second activation -- another bot, or a restart -- is its own page.
+        registry.count(KILL_SWITCH, "ks", &Labels::none());
+        let second = alerter.evaluate(&registry);
+        assert_eq!(second.len(), 1, "every activation is news");
+        assert_eq!(second[0].severity, Severity::Critical);
+        assert!(second[0].detail.contains('1'), "{}", second[0].detail);
+    }
+
+    #[test]
+    fn an_event_rule_never_reports_itself_resolved() {
+        // The distinction this pins: a kill-switch that stops firing is not a
+        // kill-switch that cleared. Reporting "resolved" would tell an operator
+        // trading resumed when it simply did not trip again.
+        let registry = Registry::new();
+        let (mut alerter, sink) = alerter(vec![Rule::RiskBreach]);
+        registry.count(RISK_BREACHES, "b", &Labels::none());
+        let _ = alerter.evaluate(&registry);
+        let _ = alerter.evaluate(&registry);
+
+        assert!(sink.alerts().iter().all(|a| a.detail != "resolved"));
+    }
+
+    #[test]
+    fn a_risk_breach_and_a_reconcile_mismatch_are_reported() {
+        let registry = Registry::new();
+        let (mut alerter, _) = alerter(vec![Rule::RiskBreach, Rule::ReconcileMismatch]);
+        registry.count(RISK_BREACHES, "b", &Labels::none());
+        registry.count(RECONCILE_MISMATCHES, "m", &Labels::none());
+
+        let raised = alerter.evaluate(&registry);
+        assert_eq!(raised.len(), 2);
+        assert!(raised.iter().all(|a| a.severity == Severity::Critical));
+    }
+
+    #[test]
+    fn the_default_rules_are_the_five_that_can_actually_fire() {
+        let names: Vec<&str> = default_rules().iter().map(|rule| rule.name()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "stale_market_data",
+                "http_error_rate",
+                "kill_switch_engaged",
+                "risk_limit_breached",
+                "reconcile_mismatch",
+            ]
+        );
+    }
+
+    #[test]
+    fn there_is_no_rule_for_something_nothing_measures() {
+        // `docs/18` names backtest-to-live divergence and `docs/19` carries it as
+        // debt. The rule was removed rather than left in place over an unwritten
+        // metric, because a rule that cannot fire reads as coverage: an operator
+        // checking the alert list would conclude divergence was watched. This
+        // test fails if somebody re-adds the name without adding the writer.
+        let names: Vec<&str> = default_rules().iter().map(|rule| rule.name()).collect();
+        assert!(
+            !names.contains(&"backtest_live_divergence"),
+            "divergence has no writer; see docs/19 row 10: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_queued_alert_can_be_drained_by_a_delivery_task() {
+        let queue = Arc::new(QueueSink::new());
+        let mut alerter = Alerter::with_sinks(vec![Rule::KillSwitch], vec![queue.clone()]);
+        let registry = Registry::new();
+        registry.count(KILL_SWITCH, "ks", &Labels::none());
+
+        // Discarded deliberately: this test is about the queue, not about what
+        // the rule returned, and the returned list is asserted on elsewhere.
+        let _ = alerter.evaluate(&registry);
+        let drained = queue.drain();
+        assert_eq!(drained.len(), 1);
+        assert!(queue.drain().is_empty(), "a drain empties the queue");
+    }
+}

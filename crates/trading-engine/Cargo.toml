@@ -12,6 +12,13 @@ strategy-runtime = { workspace = true }
 strategy-dsl = { workspace = true }
 sandbox = { workspace = true }
 db = { workspace = true }
+# Phase 8: the live path records what it does, and signs requests to the venue.
+observability = { workspace = true }
+reqwest = { workspace = true }
+# HMAC-SHA256 over the query string is how Binance signs a request; the same
+# primitives already sign the Bedrock SigV4 requests.
+hmac = { workspace = true }
+sha2 = { workspace = true }
 
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -22,6 +29,10 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# Phase 8: the Binance adapter is tested against a mock exchange standing up the
+# three endpoints it uses, so the request it builds is asserted on directly
+# rather than trusted.
+axum = { workspace = true }
 # The fixtures are YAML, because that is what a strategy author writes. The bot
 # takes an already-validated document and never parses one itself, so the
 # feature stays out of the normal graph -- which is what keeps `serde_yaml`

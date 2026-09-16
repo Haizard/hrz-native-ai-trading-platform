@@ -39,6 +39,8 @@ use tracing::warn;
 
 use ai_agent::{Agent, SkillLibrary};
 use db::Database;
+use observability::metrics::Registry;
+use observability::QueueSink;
 
 use crate::auth::AuthConfig;
 
@@ -53,10 +55,12 @@ pub mod extract;
 pub mod footprint_routes;
 pub mod market_data;
 pub mod market_routes;
+pub mod metrics;
 pub mod plot;
 pub mod rate_limit;
 pub mod skills_routes;
 pub mod strategy_routes;
+pub mod venue_routes;
 pub mod ws;
 
 /// Shared application state handed to every route handler.
@@ -75,6 +79,36 @@ pub struct AppState {
     pub bots: Arc<bots::BotSupervisor>,
     /// Per-user limits on the endpoints that cost money (`docs/12`).
     pub agent_limits: Arc<rate_limit::RateLimiter>,
+    /// The metric registry every handler records into, served at `/metrics`.
+    ///
+    /// Held in the state rather than reached for through a global so a test can
+    /// assert on its own numbers instead of whatever the last test left behind.
+    pub metrics: Arc<Registry>,
+    /// Where raised alerts are queued for delivery to an external webhook, if
+    /// one is configured. `None` means the log and the audit trail only.
+    pub alert_queue: Option<Arc<QueueSink>>,
+}
+
+/// The audit event type an alert is written under.
+///
+/// Its own type rather than a flavour of `bot.notification`: an alert is raised
+/// by the platform about the platform, and an engineer filtering the trail for
+/// "what did the system say about itself" should not have to read bot rows.
+pub const ALERT_EVENT: &str = "platform.alert";
+
+/// Now, in unix nanoseconds — the platform's one clock.
+///
+/// Nanoseconds because that is what the schema stores (`docs/13`), and one
+/// helper because there were three byte-identical private copies of this in
+/// `bots`, `bot_routes` and `strategy_routes`. Three copies of a clock is three
+/// chances for one of them to be edited into milliseconds, and the failure that
+/// causes is a timestamp two thousand years out rather than a compile error.
+#[must_use]
+pub(crate) fn now_ns() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos() as i64)
 }
 
 /// Health response body.
@@ -110,9 +144,16 @@ const MVP_DIR: &str = "frontend/mvp";
 /// A function rather than an inline chain in `main` so tests can construct the
 /// exact router that ships, instead of a copy of it that drifts.
 pub fn router(state: AppState) -> Router {
+    // Cloned before the state is moved into the router: the middleware has to
+    // be built with its own copy, and layers are applied before `with_state`.
+    let registry = Arc::clone(&state.metrics);
+
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        // Prometheus scrapes this. Public, like the health endpoints: it names
+        // no user and no strategy, only counts.
+        .route("/metrics", get(metrics::scrape))
         .route("/auth/register", post(auth_routes::register))
         .route("/auth/login", post(auth_routes::login))
         .route("/auth/me", get(auth_routes::me))
@@ -154,6 +195,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/bots/{id}/pause", post(bot_routes::pause))
         .route("/bots/{id}/resume", post(bot_routes::resume))
+        .route("/bots/{id}/kill", post(bot_routes::kill))
+        .route("/venues", get(venue_routes::list))
+        .route("/venues/{venue}/opt-in", post(venue_routes::opt_in))
+        .route("/venues/{venue}/revoke", post(venue_routes::revoke))
         .route("/agent/ask", post(agent_routes::ask))
         .route(
             "/agent/generate-strategy",
@@ -186,6 +231,10 @@ pub fn router(state: AppState) -> Router {
         .route("/builder.js", get(builder_js))
         .route("/chart_engine.wasm", get(chart_wasm))
         .route("/mvp", get(index))
+        .layer(axum::middleware::from_fn_with_state(
+            registry,
+            metrics::track,
+        ))
         .with_state(state)
 }
 

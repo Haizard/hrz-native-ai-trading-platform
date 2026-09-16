@@ -33,6 +33,7 @@ let botSocket = null; // the channel for the one bot being watched
 let watchedBot = null; // its id, or null when watching none
 let bots = []; // the last bot list read from the API
 let botLog = []; // frames from `botSocket`, oldest first
+let venues = []; // the last venue list, so opt-in state has one source
 
 let agentSocket = null; // the agent channel, opened on first ask
 let agentReady = null; // resolves when it is open
@@ -1983,9 +1984,16 @@ function renderBots() {
     .map((bot) => {
       const watching = bot.id === watchedBot;
       const log = watching ? botLogHtml() : "";
+      // "Killed" is a `status`, not a flag of its own -- so the button reads the
+      // same field the table above it shows and the two cannot disagree about
+      // whether the switch is thrown.
+      const killed = bot.status === "killed";
       return `<dl class="kv">
           <dt>id</dt><dd>${escapeHtml(bot.id.slice(0, 8))}</dd>
           <dt>status</dt><dd>${escapeHtml(bot.status)}</dd>
+          <dt>mode</dt><dd>${escapeHtml(bot.mode)}${
+            bot.venue ? ` on ${escapeHtml(bot.venue)}` : ""
+          }</dd>
           <dt>supervised</dt><dd>${bot.supervised_here}</dd>
           <dt>trades</dt><dd>${bot.activity?.trades ?? 0}</dd>
           <dt>decisions</dt><dd>${bot.activity?.decisions ?? 0}</dd>
@@ -1998,6 +2006,11 @@ function renderBots() {
           <button data-bot="${bot.id}" data-act="pause">Pause</button>
           <button data-bot="${bot.id}" data-act="resume">Resume</button>
           <button data-bot="${bot.id}" data-act="delete">Delete</button>
+          <button data-bot="${bot.id}" data-act="kill" class="danger"
+                  ${killed ? "disabled" : ""}
+                  title="No new entries, and an open position is closed at market">${
+                    killed ? "Killed" : "Kill switch"
+                  }</button>
         </div>
         ${log}`;
     })
@@ -2035,6 +2048,101 @@ async function refreshBots() {
   }
 }
 
+/// The live-trading panel, drawn from state.
+///
+/// Two facts per venue, and they are shown separately on purpose.
+/// `credentials_configured` and `opted_in` fail identically from a user's point
+/// of view -- "I turned it on and it still refuses" -- and the fix is different:
+/// one is this checkbox, the other is an environment variable on the API
+/// process that no button here can change. Collapsing them into one indicator
+/// would leave the second case looking like a broken switch.
+function renderVenues() {
+  if (!venues.length) {
+    el("venuesOut").innerHTML = `<p class="empty">No venues configured.</p>`;
+    return;
+  }
+
+  el("venuesOut").innerHTML = venues
+    .map((v) => {
+      const req = v.requirements || {};
+      // The gate's own thresholds, read from the API rather than hardcoded:
+      // a UI that states "20 trades" while the gate says 30 is worse than one
+      // that says nothing.
+      const rules = [];
+      if (req.min_paper_trades) rules.push(`${req.min_paper_trades} closed paper trades`);
+      if (req.min_paper_hours) rules.push(`${req.min_paper_hours}h of paper trading`);
+      if (req.max_paper_loss_r !== undefined) {
+        rules.push(`no worse than ${req.max_paper_loss_r}R`);
+      }
+
+      const credentials = v.credentials_configured
+        ? `<span class="ok">credentials present</span>`
+        : `<span class="fail">no credentials on this deployment — set them on the API process; this button cannot</span>`;
+
+      return `<dl class="kv">
+          <dt>venue</dt><dd>${escapeHtml(v.venue)}</dd>
+          <dt>live trading</dt><dd>${
+            v.opted_in ? `<span class="ok">opted in</span>` : "off"
+          }</dd>
+          <dt>credentials</dt><dd>${credentials}</dd>
+        </dl>
+        <p class="muted">A strategy may go live here once it has ${escapeHtml(
+          rules.join(", ") || "a paper track record"
+        )}.</p>
+        <div class="row">
+          <button data-venue="${escapeHtml(v.venue)}" data-act="${
+            v.opted_in ? "revoke" : "opt-in"
+          }" class="${v.opted_in ? "danger" : "primary"}"
+                  title="${
+                    v.opted_in
+                      ? "Liquidates and stops every bot trading here"
+                      : "Allows strategies that pass the gate to trade real money here"
+                  }">${v.opted_in ? "Revoke" : "Opt in"}</button>
+        </div>`;
+    })
+    .join("<hr />");
+}
+
+async function refreshVenues() {
+  try {
+    venues = await api("/venues");
+    renderVenues();
+  } catch (e) {
+    el("venuesOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+/// Opt a venue in, or revoke it.
+///
+/// Revoking reports what it stopped. That number is the whole reason the
+/// response carries it: "revoked" on its own does not tell an operator whether
+/// a bot was mid-position when they pressed it, and that is the thing they need
+/// to know next.
+async function venueAction(venue, act) {
+  try {
+    const result = await api(`/venues/${encodeURIComponent(venue)}/${act}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      // The reason is optional and recorded verbatim in the audit trail. Sent
+      // empty from here: `docs/15` wants the opt-in attributable, and a
+      // checkbox that demanded a paragraph would be worked around.
+      body: JSON.stringify({}),
+    });
+    const stopped = result?.bots_killed?.length ?? 0;
+    if (stopped) {
+      el("venuesOut").insertAdjacentHTML(
+        "afterbegin",
+        `<p class="fail">${escapeHtml(venue)}: threw the kill switch on ${stopped} bot(s).</p>`
+      );
+    }
+    await refreshVenues();
+    // A revoke stops bots, so the list above this panel is now stale.
+    if (stopped) await refreshBots();
+  } catch (e) {
+    el("venuesOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+  }
+}
+
 async function botAction(id, act) {
   if (act === "watch") {
     watchBot(id);
@@ -2065,6 +2173,10 @@ function selectPane(name) {
   for (const pane of document.querySelectorAll(".pane")) {
     pane.hidden = pane.id !== `pane-${name}`;
   }
+  // The live-trading panel is read when it is opened rather than at startup:
+  // opt-in state is changed from elsewhere (the API, another tab) and a value
+  // cached at page load would show a venue as revoked after it was re-enabled.
+  if (name === "bots") refreshVenues();
 }
 
 async function main() {
@@ -2115,10 +2227,19 @@ async function main() {
   el("backtest").addEventListener("click", runBacktest);
   el("backtestRuns").addEventListener("change", (e) => showBacktest(e.target.value));
   el("launch").addEventListener("click", launchBot);
-  el("refreshBots").addEventListener("click", refreshBots);
+  el("refreshBots").addEventListener("click", () => {
+    refreshBots();
+    refreshVenues();
+  });
   el("botsOut").addEventListener("click", (e) => {
     const button = e.target.closest("button[data-bot]");
     if (button) botAction(button.dataset.bot, button.dataset.act);
+  });
+  // Delegated, like the bot row: the panel is re-rendered on every refresh, so
+  // a listener bound to the buttons themselves would be thrown away with them.
+  el("venuesOut").addEventListener("click", (e) => {
+    const button = e.target.closest("button[data-venue]");
+    if (button) venueAction(button.dataset.venue, button.dataset.act);
   });
 
   window.addEventListener("resize", () => { if (scene) render(); });

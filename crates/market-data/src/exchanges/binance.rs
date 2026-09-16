@@ -85,6 +85,14 @@ pub struct BinanceCollector {
     cmd_tx: Option<mpsc::UnboundedSender<CollectorCommand>>,
     streams: Vec<String>,
     handle: Option<JoinHandle<()>>,
+    /// The task copying health into the metric registry.
+    ///
+    /// Held so it can be stopped with the collector. Left running, it would go
+    /// on publishing a dead collector's last state -- including
+    /// `market_data_connected = 1` if that was the state when the collector was
+    /// dropped -- and a gauge that says a collector is up after it has been
+    /// destroyed is worse than no gauge.
+    health_task: Option<JoinHandle<()>>,
 }
 
 impl BinanceCollector {
@@ -99,6 +107,7 @@ impl BinanceCollector {
             cmd_tx: None,
             streams: Vec::new(),
             handle: None,
+            health_task: None,
         }
     }
 
@@ -185,6 +194,19 @@ impl ExchangeCollector for BinanceCollector {
 
         let handle = tokio::spawn(async move { run(config, buses, health, cmd_rx).await });
 
+        // Publish this collector's counters into the process registry.
+        //
+        // Spawned here rather than inside `run` so it survives a reconnect: the
+        // reconnect loop tears the socket down and builds it again, and a
+        // publisher that died with the socket would go quiet at exactly the
+        // moment `market_data_connected` matters most. It is kept on the struct
+        // so `Drop` stops it with everything else.
+        self.health_task = Some(crate::health::spawn_health_publisher(
+            self.health.clone(),
+            observability::metrics::Registry::global_handle(),
+            self.name(),
+        ));
+
         self.cmd_tx = Some(cmd_tx);
         self.handle = Some(handle);
         Ok(())
@@ -244,6 +266,9 @@ impl Drop for BinanceCollector {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
             handle.abort();
+        }
+        if let Some(task) = self.health_task.take() {
+            task.abort();
         }
     }
 }
@@ -414,6 +439,21 @@ fn handle_trade(
     let bus = buses.bus(&symbol);
     bus.publish_trade(trade);
     for candle in closed {
+        // How late this candle is relative to its own close.
+        //
+        // The one number that separates "the venue is slow" from "we are slow":
+        // a candle closing at 12:05:00 that reaches the bus at 12:05:02 is a
+        // two-second delay in a strategy that thinks it is trading the close.
+        // Negative is clamped rather than reported, because a candle whose
+        // close is in the future means a clock disagreement, not a fast feed.
+        let closed_at = candle.open_time + candle.timeframe.nanos();
+        let latency = (now_ns().saturating_sub(closed_at)) as f64 / 1_000_000_000.0;
+        observability::metrics::Registry::global().observe(
+            observability::metrics::MD_CLOSE_LATENCY,
+            "Seconds from a candle's close to it reaching the bus",
+            &observability::metrics::Labels::new(&[("symbol", symbol.as_str())]),
+            latency.max(0.0),
+        );
         bus.publish_candle(candle);
     }
 }

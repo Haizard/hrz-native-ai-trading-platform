@@ -313,10 +313,10 @@ pub async fn bot_summary(pool: &PgPool, bot_id: Uuid) -> Result<Option<BotSummar
                   WHERE t.bot_id = b.id) AS cumulative_r, \
                 (SELECT count(*) FROM audit_log a \
                   WHERE a.payload->>'bot_id' = b.id::text \
-                    AND a.event_type = 'bot.decision') AS decisions, \
+                    AND a.event_type IN ('bot.decision', 'bot.live_decision')) AS decisions, \
                 (SELECT max((a.payload->>'at')::bigint) FROM audit_log a \
                   WHERE a.payload->>'bot_id' = b.id::text \
-                    AND a.event_type = 'bot.decision') AS last_decision_at, \
+                    AND a.event_type IN ('bot.decision', 'bot.live_decision')) AS last_decision_at, \
                 (SELECT count(*) FROM audit_log a \
                   WHERE a.payload->>'bot_id' = b.id::text \
                     AND a.event_type = 'bot.notification') AS notifications \
@@ -340,6 +340,89 @@ pub async fn bot_summary(pool: &PgPool, bot_id: Uuid) -> Result<Option<BotSummar
         last_decision_at: row.try_get("last_decision_at")?,
         notifications: row.try_get("notifications")?,
     }))
+}
+
+/// A strategy's paper track record, aggregated across every paper bot that ran
+/// it.
+///
+/// The gate in `trading_engine::LiveGate` asks for "how much has this strategy
+/// proven in simulation", and that question is about the *strategy*, not about
+/// one bot: a user who ran four paper bots over the same document has done
+/// four times the proving, and a per-bot count would let a fresh bot reset the
+/// clock.
+///
+/// Only `mode = 'paper'` rows count. A live trade is not evidence that a
+/// strategy was ready to go live.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StrategyPaperRecord {
+    /// Closed paper trades across every bot running this strategy.
+    pub closed_trades: i64,
+    /// Summed R across those trades.
+    pub cumulative_r: f64,
+    /// When the first paper bot for this strategy was created, unix nanos.
+    pub first_at: Option<i64>,
+    /// When the newest paper trade closed, unix nanos.
+    pub last_at: Option<i64>,
+}
+
+impl StrategyPaperRecord {
+    /// How long the strategy has been in simulation, in hours.
+    ///
+    /// Measured from the first paper bot's creation to the newest paper trade's
+    /// close, and falling back to `now` when nothing has closed yet -- a bot
+    /// that has been running for two days and found no setups has still been
+    /// *watched* for two days, which is what the requirement is about.
+    ///
+    /// Never negative: a clock adjustment between the two rows would otherwise
+    /// produce a negative duration, and a negative duration silently satisfies
+    /// "at least 48 hours".
+    #[must_use]
+    pub fn hours(&self, now_ns: i64) -> f64 {
+        let Some(first) = self.first_at else {
+            return 0.0;
+        };
+        let last = self.last_at.unwrap_or(now_ns);
+        let nanos = last.saturating_sub(first).max(0);
+        nanos as f64 / 3_600_000_000_000.0
+    }
+}
+
+/// Read a strategy's paper track record for one user.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn strategy_paper_record(
+    pool: &PgPool,
+    user_id: Uuid,
+    strategy_id: Uuid,
+) -> Result<StrategyPaperRecord, DbError> {
+    let row = sqlx::query(
+        "SELECT \
+            (SELECT count(*) FROM trades_executed t JOIN bots b ON b.id = t.bot_id \
+              WHERE b.user_id = $1 AND b.strategy_id = $2 AND b.mode = 'paper' \
+                AND t.closed_at IS NOT NULL) AS closed_trades, \
+            (SELECT coalesce(sum(t.r_multiple), 0) FROM trades_executed t \
+              JOIN bots b ON b.id = t.bot_id \
+              WHERE b.user_id = $1 AND b.strategy_id = $2 AND b.mode = 'paper') AS cumulative_r, \
+            (SELECT min(b.created_at) FROM bots b \
+              WHERE b.user_id = $1 AND b.strategy_id = $2 AND b.mode = 'paper') AS first_at, \
+            (SELECT max(t.closed_at) FROM trades_executed t JOIN bots b ON b.id = t.bot_id \
+              WHERE b.user_id = $1 AND b.strategy_id = $2 AND b.mode = 'paper') AS last_at",
+    )
+    .bind(user_id)
+    .bind(strategy_id)
+    .fetch_one(pool)
+    .await?;
+
+    let first_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("first_at")?;
+    let last_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("last_at")?;
+
+    Ok(StrategyPaperRecord {
+        closed_trades: row.try_get("closed_trades")?,
+        cumulative_r: row.try_get("cumulative_r")?,
+        first_at: first_at.map(dt_to_ns),
+        last_at: last_at.map(dt_to_ns),
+    })
 }
 
 /// A bot's newest decisions, newest first, as the stored payloads.
@@ -450,10 +533,34 @@ pub async fn count_executed_trades(pool: &PgPool, bot_id: Uuid) -> Result<i64, D
 /// it exists is so an integration test can write to a real database and leave
 /// it exactly as it found it.
 ///
+/// The order is forced by the foreign keys, and it is not the order you would
+/// guess: `bots` references both `users` and `strategies` with no `ON DELETE
+/// CASCADE`, so deleting the strategies first fails whenever a bot exists. The
+/// version that did exactly that had never been run with a bot present, which
+/// is why the live-trading tests are the ones that found it.
+///
 /// # Errors
 /// Returns [`DbError::Pool`] if the deletes fail.
 pub async fn purge_owner(pool: &PgPool, user_id: Uuid) -> Result<(), DbError> {
+    // `live_orders` cascades from `bots`, so deleting the bots clears it.
+    sqlx::query(
+        "DELETE FROM trades_executed WHERE bot_id IN (SELECT id FROM bots WHERE user_id = $1)",
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    sqlx::query("DELETE FROM bots WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
     sqlx::query("DELETE FROM audit_log WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    // Phase 8: the venue opt-in history references the user and does not
+    // cascade either. Without this, "delete my account" fails for exactly the
+    // users who have traded live.
+    sqlx::query("DELETE FROM venue_opt_ins WHERE user_id = $1")
         .bind(user_id)
         .execute(pool)
         .await?;

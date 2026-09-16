@@ -136,10 +136,33 @@ pub async fn ask(
         request = request.with_timeframes(frames.clone());
     }
 
+    let started = std::time::Instant::now();
+    state.metrics.count(
+        observability::metrics::AGENT_REQUESTS,
+        "Agent runs started",
+        &observability::metrics::Labels::none(),
+    );
+
     let answer: AgentAnswer = agent
         .ask(&request, &DbMarketData::new(db.clone()))
         .await
         .map_err(ApiError::from)?;
+
+    // Counted here rather than at the top so a refused or failed run does not
+    // contribute a latency. An average that includes the fast failures is an
+    // average that goes *down* when the provider starts rejecting, which is the
+    // one moment the number is being read.
+    state.metrics.observe(
+        observability::metrics::AGENT_LATENCY,
+        "Agent run duration in seconds",
+        &observability::metrics::Labels::none(),
+        started.elapsed().as_secs_f64(),
+    );
+    state.metrics.count(
+        observability::metrics::AGENT_THESES,
+        "Theses the agent produced",
+        &observability::metrics::Labels::none(),
+    );
 
     Ok(Json(to_response(answer, body.include_trace)))
 }

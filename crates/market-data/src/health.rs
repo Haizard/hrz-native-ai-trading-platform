@@ -6,8 +6,10 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use analytics_core::Trade;
+use observability::metrics::{Labels, Registry, MD_CONNECTED, MD_GAPS, MD_MESSAGES, MD_RECONNECTS};
 
 /// Lock-free counters describing one collector's live state.
 #[derive(Debug, Default)]
@@ -17,6 +19,22 @@ pub struct CollectorHealth {
     messages: AtomicU64,
     reconnects: AtomicU64,
     gaps: AtomicU64,
+    /// What was published last time, so a total can be turned into a delta.
+    ///
+    /// A `Registry` counter accumulates; this struct holds absolutes since
+    /// process start. Publishing the absolute value into a counter would make
+    /// the counter jump to the total on every scrape and `rate()` would see
+    /// spikes that never happened -- the deltas are what makes these numbers
+    /// mean the same thing as every other counter in the platform.
+    published: Mutex<Published>,
+}
+
+/// The last absolute totals handed to a registry.
+#[derive(Debug, Default, Clone, Copy)]
+struct Published {
+    messages: u64,
+    reconnects: u64,
+    gaps: u64,
 }
 
 impl CollectorHealth {
@@ -92,6 +110,90 @@ impl CollectorHealth {
             streams,
         }
     }
+
+    /// Publish this collector's state into a metric registry.
+    ///
+    /// Called on a ticker rather than per message. Per message would put a
+    /// registry lock on the hot path of a stream that carries every trade on
+    /// the venue, to update numbers nobody reads more than once every fifteen
+    /// seconds; a ticker costs one lock a second and loses nothing, because a
+    /// counter that is one second behind is still a counter.
+    ///
+    /// The three totals are published as *deltas* since the last call. See
+    /// [`Published`].
+    pub fn publish(&self, registry: &Registry, venue: &str) {
+        let labels = Labels::new(&[("venue", venue)]);
+
+        registry.set_gauge(
+            MD_CONNECTED,
+            "Whether the exchange socket is connected",
+            &labels,
+            if self.is_connected() { 1.0 } else { 0.0 },
+        );
+
+        let Ok(mut published) = self.published.lock() else {
+            return;
+        };
+        let now = Published {
+            messages: self.messages(),
+            reconnects: self.reconnects(),
+            gaps: self.gaps(),
+        };
+
+        // `saturating_sub` rather than `-`: the atomics are only ever added to,
+        // but a counter that went backwards would otherwise underflow into a
+        // number near u64::MAX and be reported as an enormous burst.
+        //
+        // Called even when the delta is zero, so the counter is *defined* and
+        // appears in the exposition from the first tick. A counter that only
+        // materialises once it has moved cannot be graphed as flat, and a
+        // dashboard showing nothing is indistinguishable from a collector that
+        // never started.
+        for (delta, name, help) in [
+            (
+                now.messages.saturating_sub(published.messages),
+                MD_MESSAGES,
+                "Exchange messages received",
+            ),
+            (
+                now.reconnects.saturating_sub(published.reconnects),
+                MD_RECONNECTS,
+                "Exchange socket reconnects",
+            ),
+            (
+                now.gaps.saturating_sub(published.gaps),
+                MD_GAPS,
+                "Trade-id gaps detected",
+            ),
+        ] {
+            registry.inc_counter(name, help, &labels, delta);
+        }
+
+        *published = now;
+    }
+}
+
+/// How often a collector's counters are copied into the registry.
+pub const HEALTH_PUBLISH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Publish a collector's counters into a registry, forever.
+///
+/// Returns the task handle so a caller can stop it; the collector itself has no
+/// interest in stopping it, because a task that publishes "the socket is down"
+/// is most useful exactly when the socket is down.
+#[must_use]
+pub fn spawn_health_publisher(
+    health: Arc<CollectorHealth>,
+    registry: Arc<Registry>,
+    venue: &'static str,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(HEALTH_PUBLISH_INTERVAL);
+        loop {
+            ticker.tick().await;
+            health.publish(&registry, venue);
+        }
+    })
 }
 
 /// A point-in-time health report.
@@ -238,5 +340,65 @@ mod tests {
         assert_eq!(status.reconnects, 1);
         assert_eq!(status.gaps, 1);
         assert_eq!(status.streams, vec!["btcusdt@trade".to_string()]);
+    }
+
+    #[test]
+    fn publishing_sends_deltas_rather_than_running_totals() {
+        // The bug this is here to catch: `CollectorHealth` holds absolutes since
+        // process start, and a `Registry` counter accumulates. Publishing
+        // `self.messages()` on every tick would make the counter climb by the
+        // whole total each time -- 2, 4, 6, 8 -- so `rate()` would show a burst
+        // that never happened and the feed would look busier the longer it ran.
+        use observability::metrics::{Labels, Registry, MD_CONNECTED, MD_GAPS, MD_MESSAGES};
+        let registry = Registry::new();
+        let labels = Labels::new(&[("venue", "binance")]);
+        let health = CollectorHealth::new();
+
+        health.set_connected(true);
+        health.record_message(1_000);
+        health.record_message(2_000);
+        health.record_gap();
+        health.publish(&registry, "binance");
+
+        assert_eq!(registry.gauge(MD_CONNECTED, &labels), Some(1.0));
+        assert_eq!(registry.counter(MD_MESSAGES, &labels), 2);
+        assert_eq!(registry.counter(MD_GAPS, &labels), 1);
+
+        // Nothing new happened, so nothing moves.
+        health.publish(&registry, "binance");
+        assert_eq!(
+            registry.counter(MD_MESSAGES, &labels),
+            2,
+            "a second publish with no new messages must add nothing"
+        );
+
+        // One more message moves it by exactly one.
+        health.record_message(3_000);
+        health.publish(&registry, "binance");
+        assert_eq!(registry.counter(MD_MESSAGES, &labels), 3);
+
+        // A disconnect is a level, so it goes back to zero rather than counting.
+        health.set_connected(false);
+        health.publish(&registry, "binance");
+        assert_eq!(registry.gauge(MD_CONNECTED, &labels), Some(0.0));
+    }
+
+    #[test]
+    fn a_collector_that_never_connected_publishes_a_disconnected_gauge() {
+        // The gauge has to exist at zero from the first tick. An absent metric
+        // and a metric reading zero are the same thing to a graph but not to an
+        // alert: "the collector never started" would otherwise be silent.
+        use observability::metrics::{Labels, Registry, MD_CONNECTED, MD_MESSAGES};
+        let registry = Registry::new();
+        let labels = Labels::new(&[("venue", "binance")]);
+        CollectorHealth::new().publish(&registry, "binance");
+
+        assert_eq!(registry.gauge(MD_CONNECTED, &labels), Some(0.0));
+        assert_eq!(registry.counter(MD_MESSAGES, &labels), 0);
+        assert!(
+            registry.render().contains("market_data_messages_total"),
+            "the counter must be defined from the first tick, so a flat line is \
+             visible rather than missing"
+        );
     }
 }

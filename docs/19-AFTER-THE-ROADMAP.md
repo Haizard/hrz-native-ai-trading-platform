@@ -1,0 +1,191 @@
+# 19 — After the roadmap: hardening, known debt, and accuracy
+
+## Purpose
+
+`02-ROADMAP.md` ends at Phase 8. It is a *build* plan, and it was never written to
+answer the question that comes the day after: **what do we do once everything is
+built?** This document is the answer to that question, and it exists because the
+roadmap's silence on it was costing real decisions.
+
+It carries three things, in priority order:
+
+1. **Phase 8, split by risk** — because the phase bundles work that carries no money
+   risk with work that carries all of it, and they should not share a go/no-go.
+2. **Known debt inside phases already marked done** — every item here is something a
+   doc or a comment claims is true and the code does not deliver.
+3. **The accuracy loop** — the largest and least-defined category, and the only one
+   that decides whether the platform is worth using.
+
+## Status at the time of writing (2026-09-16)
+
+Phases 0–7 are built and verified: workspace and CI, Binance collection and backfill,
+`analytics-core` (native + wasm32), the Strategy DSL/runtime/backtester, the WASM
+sandbox, the AI agent with 13 tools, the paper-trading bot, and the Rust/WASM chart
+with all three editor modes. Last commit reviewed: `d4dccfd`.
+
+**Phase 8 is built** — both halves, with one exit criterion left open on purpose (see
+below). What exists now:
+
+| Piece | Where |
+|---|---|
+| Metrics, alerts, structured logs | `crates/observability/` (new leaf crate) |
+| Prometheus scrape, request middleware, alert task, feed-age sampling | `crates/api-gateway/src/metrics.rs`, `GET /metrics` |
+| Collector-side metrics (`MD_*`) | `crates/market-data/src/health.rs`, published on a ticker by `BinanceCollector::connect` |
+| Exchange adapter + idempotency + reconciliation | `crates/trading-engine/src/{execution,binance,credentials}.rs` |
+| The live bot | `crates/trading-engine/src/live.rs` |
+| Live persistence (`live_orders`, opt-in history) | `crates/db/migrations/0002_live_trading.sql`, `crates/db/src/live.rs` |
+| The gate and the kill switch | `crates/trading-engine/src/gate.rs`, `POST /bots/{id}/kill` |
+| Venue opt-in / revoke over HTTP | `crates/api-gateway/src/venue_routes.rs` |
+| Runbooks | `docs/20-RUNBOOKS.md` |
+| Load and chaos tests | `crates/api-gateway/tests/load_flow.rs`, `crates/trading-engine/tests/live_flow.rs` |
+
+**Three observability bugs were found by auditing what the code actually writes**, all
+of the same shape — a metric or a rule that existed on paper and could not work:
+
+1. `main` injected `Arc::new(Registry::new())` into `AppState` while `trading-engine`
+   wrote to `Registry::global()`. `/metrics` served a registry the trading code never
+   touched, and the alert task evaluated that same empty one, so
+   `kill_switch_engaged`, `risk_limit_breached` and `reconcile_mismatch` could not be
+   raised by any event. Fixed by `Registry::global_handle()`.
+2. `MD_FEED_AGE` had no writer, so `stale_market_data` could never fire. The gateway now
+   samples it per symbol immediately before evaluating the rules, via
+   `metrics::publish_feed_ages`.
+3. `MD_*`, `AGENT_*`, `BACKTEST_*` and `WS_*` were declared and unwritten. All four
+   groups now have writers (the table in `docs/18` maps each to its call site).
+
+And one rule was **removed** rather than left inert — see debt row 10.
+
+**The one exit criterion still open:** a funded account placing and reconciling a real
+order. That needs live keys, and the platform will not ask for them — the live path is
+proved end to end against a venue double that dedups by client id exactly as Binance
+does (`live_flow.rs`), and the funded test is a checkbox for the operator. This is a
+deliberate stop, not an omission.
+
+## Part 1 — Phase 8, split by risk
+
+### 8A — No money at risk. Built.
+
+| Item | Source | State |
+|---|---|---|
+| Metrics per service, structured JSON logs, alerting | `docs/18` | Built. `observability` crate + `/metrics`; JSON logs via `LOG_FORMAT=json` |
+| Load/chaos tests | `docs/16` §8 | Built. Fan-out conservation, lagged-reader backpressure, a dead feed resolving rather than hanging, a stop that leaves the feed serving |
+| Incident runbooks | `docs/17`, `docs/15` | Built. `docs/20-RUNBOOKS.md`, one section per alert name the code can raise |
+| A manual kill-switch reachable from the UI | `docs/15` | Built. `POST /bots/{id}/kill` liquidates and stops; the bots pane has a **Kill switch** button per bot. `GET /venues` + opt-in/revoke are surfaced in the same pane, so "can money move right now, and what stops it" is one panel |
+
+**Exit criterion, restated honestly:** "an induced incident produces the expected alert
+inside a defined time budget, diagnosed from a dashboard alone" needs a *dashboard*.
+The scrape, the alert rules and the runbooks exist; Grafana does not, because that is a
+deployment artifact rather than a crate, and `docs/17`'s deploy story is still unproven
+(row 6 below).
+
+### 8B — Real money. Built, and gated.
+
+| Item | Source | State |
+|---|---|---|
+| `ExchangeAdapter` (`place_order` / `cancel_order` / `reconcile`) | `docs/11` | Built. `crates/trading-engine/src/execution.rs`; Binance spot REST in `binance.rs`, HMAC-SHA256 over the query string |
+| Client-generated idempotent order ids; reconciliation that distrusts memory | `docs/11` | Built. `client_order_id` is deterministic and ≤36 chars by construction; `OrderGateway` adopts-or-retries-once-or-stops; `live_orders` makes the database a second line of defence |
+| Credentials never logged, scoped to trading | `docs/15` | **Partly.** Never stored, never logged (redacting `Debug`, a test that greps the debug line for the secret), read from the environment. *Encrypted at rest* is not implemented because nothing is at rest — see the note below |
+| Per-venue opt-in after a minimum paper track record | `docs/15` | Built. `LiveGate` collects every unmet condition at once; `venue_opt_ins` is append-only so a revoke does not erase why it was ever enabled |
+
+**On "credentials encrypted at rest":** the row is unsatisfiable as written, because the
+platform stores no credentials. They live in the API process's environment. The honest
+version of the requirement is "the platform must not become a place secrets are kept
+without a purpose-built store", and a per-user settings page would need exactly that —
+so it is deliberately not offered. `docs/15` carries the corrected wording.
+
+**Still open in 8B:** the funded-account test above, and `ASSUMED_EQUITY` in
+`bot_routes.rs` — a live bot sizes against a fixed 10,000 because reading a real balance
+needs a signed account endpoint the adapter does not implement. A bot that silently
+sizes against an invented number is worse than one that says what it assumed, so it says
+so; closing it needs `GET /api/v3/account` and a decision about which asset to size in.
+
+## Part 2 — Known debt inside phases marked "done"
+
+Each row is verified against the tree on 2026-09-16. The "lie" column is what the
+repository currently claims.
+
+| # | Item | Where | The lie | Done when |
+|---|---|---|---|---|
+| 1 | **The paper bot is not sandboxed** | `crates/trading-engine/Cargo.toml` declares `sandbox`; no `sandbox::` call site exists in `crates/trading-engine/src/` or `tools/paper-cli/src/`. `docs/08:236` admits it; `crates/trading-engine/src/lib.rs:5` and `:22` claim the opposite | The doc comment says the strategy runs through "the same `strategy-runtime`/sandbox path the backtester uses". It runs through `strategy-runtime` natively | Principle #6 (AI-authored logic never executes unsandboxed) holds on the paper path: an agent-authored document run by a bot executes inside the sandbox, with an equivalence test proving it matches native |
+| 2 | ~~**README status is stale**~~ | closed 2026-09-16 | "Phases 0–4 complete — `ai-agent` and `trading-engine` are still stubs" | — |
+| 3 | **No retention or downsampling** | `docs/13:138` requires it; `crates/db/migrations/0001_init.sql:189-190` has it as commented-out Timescale suggestions. Nothing in `crates/` or `tools/` mentions retention | `docs/13`'s own done criteria claim "a documented retention/downsampling job exists and is tested" | A tested job downsamples `trades`/`orderbook_snapshots` past a configured age, verified against a synthetic dataset |
+| 4 | **BOS/CHoCH are computed then thrown away** | `crates/analytics-core/src/market_structure.rs:128` computes `breaks: Vec<StructureBreak>` with `BreakKind::{Bos, Choch}`; `state.rs:320-325` builds `MarketState` from only `trend`, `swing_highs`, `swing_lows` | `MarketState` is the object every downstream consumer reads, and it cannot say "structure broke against the trend" — the single most useful structural fact | `MarketState` carries the recent breaks (or a deliberately chosen subset), and a strategy condition can read one |
+| 5 | **`strategy-cli` reads the source series twice** | `tools/strategy-cli/src/main.rs` | — | The series is loaded once when source resolution is also declared |
+| 6 | **The Docker image has never been built** | `docs/17:36-59`; guarded only by `crates/api-gateway/tests/packaging.rs` | The Dockerfile looks production-ready. It has never produced a container | A real Linux build starts and answers `/healthz`; the static checks still pass |
+| 7 | **The shell cannot create a concept** | `frontend/app/app.js` colours and draws concepts but has no input for one | The concept layer reads as finished | A user can define a concept in the UI without writing YAML |
+| 8 | ~~**The kill switch and the venue opt-in have no UI**~~ | closed 2026-09-16 | `POST /bots/{id}/kill` and `POST /venues/{venue}/revoke` existed with no control for either | — |
+| 9 | **A live bot sizes against a fixed equity** | `crates/api-gateway/src/bot_routes.rs`, `ASSUMED_EQUITY` | Position size is fixed-fractional, so this number *is* the risk per trade — and it is invented | The account's real balance is read from a signed endpoint and used, or the assumption is made explicit in the create request |
+| 10 | **Divergence between backtest, paper and live is not measured** | `docs/18` names the alert; nothing computes it | **Fixed in the honest direction 2026-09-16:** `Rule::Divergence` and `observability::metrics::DIVERGENCE_R` were **removed**. They could never fire, and an inert rule reads as coverage — `docs/20` had a runbook for an alert that did not exist in practice | A job compares a bot's realised R against its backtest over the same window and feeds a metric; the rule comes back with the writer, and `there_is_no_rule_for_something_nothing_measures` is updated in the same commit |
+| 11 | **No tracing export** | `observability::logging` installs a `tracing_subscriber`; nothing exports spans anywhere | `docs/18` asks for distributed tracing. Request ids are generated and put in a span, and the span goes to stdout | An OTLP exporter, or a written decision that stdout + request ids is the whole tracing story |
+
+**Also open, and a decision rather than a task:** whether the concept layer
+(`analytics-core/src/concepts.rs`, `regions.rs`) becomes its own roadmap phase. It was
+built after Phase 7 and is not in `02-ROADMAP.md`. `02-ROADMAP.md` has not been edited.
+
+## Part 3 — Accuracy: the loop no phase covers
+
+This is the part the roadmap never asks about. **Nothing in Phases 0–8 asks whether the
+trading is any good.** A platform can satisfy every exit criterion in `02-ROADMAP.md`
+and still lose money, and this one currently would: the reference strategy's own
+backtest is **219 trades, 26.9% win rate, profit factor 0.73**. The pipeline is
+correct. The strategy is unprofitable. Those are different problems and only one of
+them is a bug.
+
+Marked **[P]** = proposed, not yet investigated. **[V]** = verified today.
+
+- **Execution realism [P]** — slippage, partial fills, and fees exist as models, but
+  nothing has checked them against a real fill. A backtest that assumes mid-price fills
+  on a market order is optimistic by construction.
+- **Measurement fidelity [P]** — footprint and delta are only useful if they match what
+  a trader sees on a reference terminal. Nobody has diffed our footprint columns
+  against an ATAS/Exocharts screenshot of the same window.
+- **Backtest ↔ paper ↔ live divergence [V as a gap]** — `docs/18` names this as an
+  alert we should have. It is not implemented, and as of 2026-09-16 there is no longer
+  even a rule pretending to be it (see debt row 10), so today a bot can silently
+  disagree with its own backtest and nothing surfaces it.
+- **Cost per agent request [P]** — `docs/18` lists token usage. The Bedrock adapter
+  does not surface it, so `AGENT_*` covers latency, tool calls, theses and errors and
+  stops short of cost. Not a bug; a number nobody currently has.
+- **Base rates [P]** — `backtest_similar_setups` exists as a tool, but "historical win
+  rate for similar setups" is only meaningful once "similar" is defined and the sample
+  is large enough to mean something.
+- **Parameter sensitivity [P]** — a strategy whose edge disappears when the threshold
+  moves 10% has no edge. There is no sweep tooling.
+- **Look-ahead and causality [V as covered]** — this *is* guarded:
+  `a_views_history_ends_at_the_candle_it_decides_on` and the equivalence suite. Do not
+  re-litigate it; keep the guards green.
+
+## Part 4 — How to work this document
+
+- One slice at a time. A slice is a row from Part 2 or an item from Part 1/3.
+- Every slice gets a test that **fails before the fix and passes after** — the house
+  rule from every phase so far, and the reason the debt above is visible at all.
+- Close a row by deleting it and noting the commit, not by striking it through.
+- Anything that changes an external contract (API route, DSL field, tool signature)
+  must be reflected in the owning doc in the same change, per `docs/16`.
+- **Part 3 never closes.** It is a loop, not a milestone. Add to it whenever the
+  platform is shown to be wrong about the market.
+
+## Done criteria
+
+Each line carries its own status, because "this document exists" is not "the criterion
+is met" — and that distinction is the whole reason this document exists.
+
+- **Phase 8A is live: metrics, tracing, alerts, runbooks, and a chaos test that fires
+  them.** *Mostly.* Metrics, alerts, runbooks and the chaos tests are live, and all 24
+  metric constants have a writer (audited 2026-09-16 — the audit that found the three
+  bugs above). Tracing installs a subscriber and puts a request id in a span, but nothing
+  exports spans anywhere: row 11. There is no dashboard, and row 6 is why — a dashboard
+  is a deployment artifact and the deployment has never been exercised.
+- **Every Part 2 row is either closed or explicitly accepted as won't-fix, with the
+  reason recorded here.** *Not yet.* Rows 2 and 8 are closed. Rows 1, 3, 4, 5, 6, 7, 9,
+  10 and 11 are open and recorded, and none has been formally accepted as won't-fix —
+  they are a backlog, not a decision.
+- **Phase 8B has not started without a recorded go/no-go from Haitham.** *Recorded.* The
+  go was Haitham's instruction: "start implementing phase 8 and do not stop until all
+  phase is completely done." 8B is built and gated; the funded-account test is the one
+  criterion deliberately left to him.
+- **Part 3 has at least one completed accuracy investigation with a written
+  conclusion.** *Not started.* Part 3 describes a loop nobody has entered. The reference
+  strategy still backtests at 26.9% win rate / PF 0.73, and that is still the largest
+  open question about this platform.

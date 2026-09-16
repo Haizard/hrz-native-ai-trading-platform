@@ -42,6 +42,36 @@ something consistent across the whole project.
    exchange disconnect/reconnect handling; simulated exchange API failures during live
    order placement.
 
+## Tests that fail for the right reason
+
+The suite is the verification gate for every phase, so a test that fails for a reason
+other than the one it names is worse than a missing test: it costs a debugging session,
+and it can hide a real regression behind a plausible-looking failure. These are rules
+this project has had to re-derive, each from a failure that pointed at the wrong line.
+
+- **A test asserts its own setup and teardown.** `load_flow`'s cleanup ignored each
+  `DELETE`'s status, so a delete that timed out surfaced *later* as a foreign-key
+  violation. `bot_flow` discarded the status of its own create, so a database stall
+  arrived as `called \`Option::unwrap()\` on a \`None\` value` at the extraction, naming
+  neither the route nor the cause. `Harness::created` and `Harness::ok` exist so the
+  failure names the route and prints the body.
+- **Never read the clock before the thing you are timing.** Capturing `now` before
+  `feed_candle` — which stamps arrival a few hundred nanoseconds later — made an age
+  assertion read `599.9999982` instead of `600` and fail intermittently.
+- **Never size a fixture at exactly a boundary constant.** The lagged-reader test used a
+  literal `4096`, which *is* `DEFAULT_CAPACITY`, so nothing ever lagged and the test
+  asserted the opposite of its claim. Size off the constant.
+- **Every guard is shown to fail against the bug it names.** Reintroduce the bug
+  temporarily, watch the guard fail, revert. A guard nobody has seen fail is a guard
+  nobody knows works — this is how the delta-publishing and non-finite-value guards were
+  confirmed.
+- **Database-backed tests run one at a time per test process.** The managed Postgres
+  costs roughly a second per statement over a ten-connection pool, so concurrency
+  produces acquire timeouts that read as defects rather than as contention. See the
+  `DB_TURN` mutex in `crates/api-gateway/tests/common/mod.rs`.
+- **Do not assert a timing that depends on scheduling.** Assert the ordering the code
+  guarantees, or the value a deterministic input produces — never "this finished first".
+
 ## CI gates (apply from Phase 0 onward)
 - `cargo fmt --check`
 - `cargo clippy --workspace -- -D warnings`

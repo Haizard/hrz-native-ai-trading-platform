@@ -51,6 +51,7 @@ before generalizing.
 | 16 | `docs/16-TESTING-STRATEGY.md` | Unit/integration/property/replay testing approach |
 | 17 | `docs/17-DEPLOYMENT-INFRA.md` | Environments, CI/CD, observability infra |
 | 18 | `docs/18-OBSERVABILITY.md` | Metrics, logging, tracing, alerting |
+| 19 | `docs/19-AFTER-THE-ROADMAP.md` | Phase 8 split by risk, known debt, and the accuracy loop |
 
 ## Non-negotiables (see `00-VISION-AND-PRINCIPLES.md` for full detail)
 
@@ -76,9 +77,16 @@ criteria in the roadmap are met and committed.
 
 # Running the stack locally
 
-Status: **Phases 0–4 complete** — workspace, market data, analytics, the strategy
-DSL/runtime/backtester, and the WASM sandbox. `ai-agent` and `trading-engine` are still
-stubs; see `02-ROADMAP.md` for what lands when.
+Status: **Phases 0–8 built.** Market data, `analytics-core`, the strategy
+DSL/runtime/backtester, the WASM sandbox, the AI agent with 13 tools, the paper and live
+trading bots, the REST/WebSocket gateway, and the Phase 8 hardening layer — metrics,
+alerts, runbooks, and the exchange execution path.
+
+One exit criterion is deliberately open: **a funded account placing and reconciling a
+real order.** That needs live keys, and the platform will not ask for them. Everything
+up to that point is proved against a venue double that dedups by client id exactly as
+Binance does. See `docs/19-AFTER-THE-ROADMAP.md`, which also lists the debt that is
+still open and the accuracy loop no phase covers.
 
 ## 1. Prerequisites
 
@@ -244,12 +252,24 @@ In short:
 | `backtester` | 3 | Deterministic replay + reporting | **Phase 3 done** |
 | `sandbox` | 4 | WASM isolation for AI-generated strategies | **Phase 4 done** |
 | `sandbox-guest` | 4 | The interpreter compiled to WASM; embedded by `sandbox`'s build script | **Phase 4 done** |
-| `ai-agent` | 5 | LLM orchestration, tools, skills, thesis | stub |
-| `trading-engine` | 6/8 | Paper + live execution, risk | stub |
-| `api-gateway` | 7 | Axum REST + WebSocket | health endpoints only |
-| `db` | 1+ | sqlx models + migrations | pool + market-data repos done |
+| `ai-agent` | 5 | LLM orchestration, tools, skills, thesis | **Phase 5 done** |
+| `observability` | 8 | Metrics registry, alert rules, structured logs | **Phase 8 done** |
+| `trading-engine` | 6/8 | Paper + live execution, risk, the exchange adapter | **Phase 6/8 done** |
+| `api-gateway` | 7 | Axum REST + WebSocket | **Phase 7 done** |
+| `db` | 1+ | sqlx models + migrations | done through `0002` |
 
-Helper binaries: `tools/xtask` (`cargo xtask <cmd>`), `tools/strategy-cli`.
+`observability` is a leaf crate for a reason worth knowing: `docs/03` forbids
+`api-gateway` from depending on `trading-engine`, so without it the same metric names
+and alert rules would exist in five copies and drift.
+
+**There is exactly one metric registry per process, and it is `Registry::global_handle()`.**
+A binary that serves `/metrics` must inject that handle, not `Arc::new(Registry::new())`.
+This is not a style preference: the libraries (`trading-engine`, `market-data`) write to
+the global, so a service that builds its own serves a registry those crates never touch —
+and the alert task evaluates that same empty one, which silently disables every alert that
+reads a counter. Tests inject their own registry so they can assert on their own numbers.
+
+Helper binaries: `tools/xtask` (`cargo xtask <cmd>`), `tools/strategy-cli`, `tools/paper-cli`.
 
 xtask commands: `migrate`, `db-status`, `backfill`, `collect`.
 

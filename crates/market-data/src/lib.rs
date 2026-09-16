@@ -42,5 +42,8 @@ pub use error::MarketDataError;
 pub use exchanges::binance::{BinanceCollector, BinanceConfig};
 pub use exchanges::wire;
 pub use exchanges::ExchangeCollector;
-pub use health::{CollectorHealth, HealthStatus, TradeGapDetector};
+pub use health::{
+    spawn_health_publisher, CollectorHealth, HealthStatus, TradeGapDetector,
+    HEALTH_PUBLISH_INTERVAL,
+};
 pub use orderbook::{DepthDiff, DiffOutcome, OrderBook, OrderBookSynchronizer};

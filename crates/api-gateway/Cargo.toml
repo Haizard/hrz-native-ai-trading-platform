@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 db = { workspace = true }
+observability = { workspace = true }
 analytics-core = { workspace = true }
 ai-agent = { workspace = true }
 # Phase 7: the gateway now runs strategies and bots itself, so it depends on the
@@ -38,6 +39,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
+# Phase 8: delivering alerts to an external webhook. Everything else in the
+# alert path is in-process; this is the one hop that leaves the service.
+reqwest = { workspace = true }
 
 [dev-dependencies]
 # Integration tests build the real router and drive it in-process, so they need

@@ -37,12 +37,17 @@
 //! framing is what the spec asks for; the payload is the next step, and it is
 //! taken when there is a measurement rather than a guess.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
+use observability::metrics::{
+    Labels, Registry, AGENT_LATENCY, AGENT_PROVIDER_ERRORS, AGENT_REQUESTS, AGENT_THESES,
+    AGENT_TOOL_CALLS, WS_CONNECTIONS, WS_DROPS,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
@@ -55,6 +60,67 @@ use crate::auth::UserContext;
 use crate::bots::BotEvent;
 use crate::error::ApiError;
 use crate::AppState;
+
+/// How long a connection has been open, and how much it missed.
+///
+/// ## Why this is a guard and not two calls
+///
+/// Each loop below has five ways to exit -- a failed hello, a dead socket, a
+/// `Lagged`, a `Closed`, a close frame -- and one of them is a `return` rather
+/// than a `break`. An increment at the top and a decrement before each exit is
+/// five places to forget, and forgetting one leaks a connection count upward
+/// for the life of the process: the gauge says 40 sockets are open when the
+/// process is holding three, and the one alarm that would have caught the real
+/// leak is now permanently firing. `Drop` cannot be forgotten, including on the
+/// early `return`s.
+///
+/// The label is the channel *kind*, not the symbol or the session id. A gauge
+/// per symbol would multiply the series by every market the platform touches,
+/// and "connections are growing" is a question about the channel, not about
+/// BTCUSDT.
+struct Connection {
+    metrics: Arc<Registry>,
+    channel: &'static str,
+}
+
+impl Connection {
+    /// Count a connection in.
+    fn open(metrics: Arc<Registry>, channel: &'static str) -> Self {
+        metrics.add_gauge(
+            WS_CONNECTIONS,
+            "WebSocket connections currently open",
+            &Labels::new(&[("channel", channel)]),
+            1.0,
+        );
+        Self { metrics, channel }
+    }
+
+    /// Record that this connection was handed a stream with holes in it.
+    ///
+    /// Counted as a *drop* rather than as lag: the socket still works, but the
+    /// client was told `lagged` and a chart drew a gap. A number that climbs is
+    /// the signal that a consumer cannot keep up, which is a different incident
+    /// from a connection that died.
+    fn missed(&self, dropped: u64) {
+        self.metrics.add_gauge(
+            WS_DROPS,
+            "Messages a WebSocket client was too slow to receive",
+            &Labels::new(&[("channel", self.channel)]),
+            dropped as f64,
+        );
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.metrics.add_gauge(
+            WS_CONNECTIONS,
+            "WebSocket connections currently open",
+            &Labels::new(&[("channel", self.channel)]),
+            -1.0,
+        );
+    }
+}
 
 /// Query parameters a WebSocket handshake may carry.
 #[derive(Debug, Deserialize)]
@@ -122,7 +188,9 @@ pub async fn market(
     let candles = state.bots.subscribe_candles(&symbol);
 
     let channel = format!("/ws/market/{symbol}/{timeframe}");
-    upgrade.on_upgrade(move |socket| market_loop(socket, candles, channel, symbol, timeframe))
+    let metrics = Arc::clone(&state.metrics);
+    upgrade
+        .on_upgrade(move |socket| market_loop(socket, candles, channel, symbol, timeframe, metrics))
 }
 
 async fn market_loop(
@@ -131,8 +199,10 @@ async fn market_loop(
     channel: String,
     symbol: String,
     timeframe: String,
+    metrics: Arc<Registry>,
 ) {
     let (mut sink, mut stream) = socket.split();
+    let connection = Connection::open(metrics, "market");
     info!(%channel, "market socket opened");
 
     let hello = Frame::Subscribed {
@@ -162,6 +232,7 @@ async fn market_loop(
                 Err(RecvError::Lagged(dropped)) => {
                     // Tell the client rather than letting the chart draw a gap
                     // that looks like a quiet market.
+                    connection.missed(dropped);
                     let frame = Frame::Lagged { dropped };
                     if send_binary(&mut sink, &frame).await.is_err() {
                         break;
@@ -206,7 +277,8 @@ pub async fn orderbook(
     let books = state.bots.subscribe_orderbook(&symbol);
 
     let channel = format!("/ws/orderbook/{symbol}");
-    upgrade.on_upgrade(move |socket| orderbook_loop(socket, books, channel, symbol))
+    let metrics = Arc::clone(&state.metrics);
+    upgrade.on_upgrade(move |socket| orderbook_loop(socket, books, channel, symbol, metrics))
 }
 
 async fn orderbook_loop(
@@ -214,8 +286,10 @@ async fn orderbook_loop(
     mut books: broadcast::Receiver<OrderBookSnapshot>,
     channel: String,
     symbol: String,
+    metrics: Arc<Registry>,
 ) {
     let (mut sink, mut stream) = socket.split();
+    let connection = Connection::open(metrics, "orderbook");
     info!(%channel, "order book socket opened");
 
     let hello = Frame::Subscribed {
@@ -257,6 +331,7 @@ async fn orderbook_loop(
                     // A DOM redraws whole levels, so a dropped snapshot costs a
                     // frame of smoothness and nothing else -- but it must still
                     // be said, or a stalled ladder looks like a quiet market.
+                    connection.missed(dropped);
                     let frame = Frame::Lagged { dropped };
                     if send_binary(&mut sink, &frame).await.is_err() {
                         break;
@@ -344,6 +419,14 @@ pub async fn agent(
 
 async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, session_id: String) {
     let (mut sink, mut stream) = socket.split();
+    // Bound only for its `Drop`. The agent channel has no `broadcast` receiver,
+    // so there is nothing to count as a drop -- but the connection itself still
+    // has to be counted, because an agent socket is the longest-lived one on the
+    // platform (a user leaves the panel open) and a leak there is the one that
+    // actually shows up in a connection graph. Underscored because the binding
+    // is never read; it is still dropped at the end of the scope, which is the
+    // whole point.
+    let _connection = Connection::open(Arc::clone(&state.metrics), "agent");
     info!(%session_id, user = %user.user_id, "agent socket opened");
 
     let hello = Frame::Subscribed {
@@ -383,7 +466,7 @@ async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, sessi
         }
 
         let reply = match serde_json::from_str::<AgentWsRequest>(&text) {
-            Ok(request) => run_agent(&state, request, &mut sink).await,
+            Ok(request) => run_agent(&state, request, &mut sink, &state.metrics).await,
             Err(e) => Some(Frame::Notice {
                 message: format!("expected {{\"symbol\": \"…\", \"question\": \"…\"}}: {e}"),
             }),
@@ -438,6 +521,7 @@ async fn run_agent<S>(
     state: &AppState,
     request: AgentWsRequest,
     sink: &mut S,
+    metrics: &Arc<Registry>,
 ) -> Option<Frame<'static>>
 where
     S: SinkExt<Message> + Unpin,
@@ -452,6 +536,13 @@ where
             message: "no database configured; the agent has no market data to read".into(),
         });
     };
+
+    // Timed from here, so the number covers the whole paid run: the market
+    // reads, every model turn, and every tool. A latency measured around the
+    // provider call alone would miss the four database round trips that
+    // `ReadingMarket` exists to make visible.
+    let started = std::time::Instant::now();
+    metrics.count(AGENT_REQUESTS, "Agent runs started", &Labels::none());
 
     let mut ask = ai_agent::AskRequest::new(&request.symbol, &request.question);
     if let Some(skill) = request.skill_id {
@@ -471,6 +562,7 @@ where
     let answer = loop {
         tokio::select! {
             Some(step) = steps.recv() => {
+                count_step(metrics, &step);
                 let frame = Frame::Progress {
                     payload: serde_json::to_value(&step).unwrap_or(serde_json::Value::Null),
                 };
@@ -486,6 +578,7 @@ where
     // before the loop got to it. Draining first keeps the panel's last line in
     // order rather than losing it to that race.
     while let Ok(step) = steps.try_recv() {
+        count_step(metrics, &step);
         let frame = Frame::Progress {
             payload: serde_json::to_value(&step).unwrap_or(serde_json::Value::Null),
         };
@@ -494,17 +587,64 @@ where
         }
     }
 
+    metrics.observe(
+        AGENT_LATENCY,
+        "Agent run duration in seconds",
+        &Labels::none(),
+        started.elapsed().as_secs_f64(),
+    );
+
     Some(match answer {
         // The same shape `POST /agent/ask` returns, so a client written against
         // one works against the other and the two cannot drift.
-        Ok(answer) => Frame::Data {
-            payload: serde_json::to_value(crate::agent_routes::to_response(answer, false))
-                .unwrap_or_else(|_| serde_json::json!({ "error": "the thesis did not serialize" })),
-        },
-        Err(e) => Frame::Notice {
-            message: e.to_string(),
-        },
+        Ok(answer) => {
+            metrics.count(AGENT_THESES, "Theses the agent produced", &Labels::none());
+            Frame::Data {
+                payload: serde_json::to_value(crate::agent_routes::to_response(answer, false))
+                    .unwrap_or_else(
+                        |_| serde_json::json!({ "error": "the thesis did not serialize" }),
+                    ),
+            }
+        }
+        Err(e) => {
+            // Message first, because the conversion below consumes the error.
+            // The label reuses `ApiError`'s mapping rather than matching the
+            // variants again here: a second match is a second place to forget a
+            // new variant, and the two would drift into different names for the
+            // same failure.
+            let message = e.to_string();
+            let kind = crate::error::ApiError::from(e).code().to_string();
+            metrics.count(
+                AGENT_PROVIDER_ERRORS,
+                "Agent runs that ended in an error",
+                &Labels::new(&[("kind", &kind)]),
+            );
+            Frame::Notice { message }
+        }
     })
+}
+
+/// Count what a single progress step says happened.
+///
+/// Only `Tool` is counted, not `ToolDone`: a tool that was called and a tool
+/// that returned are the same event for "how much is the model reaching for the
+/// market", and counting both would double every number. `ToolDone` carries
+/// `ok`, which is a *failure* signal -- and that one is worth having, so it is
+/// counted separately rather than folded in.
+fn count_step(metrics: &Registry, step: &ai_agent::Progress) {
+    match step {
+        ai_agent::Progress::Tool { name } => metrics.count(
+            AGENT_TOOL_CALLS,
+            "Tools the agent called",
+            &Labels::new(&[("tool", name)]),
+        ),
+        ai_agent::Progress::ToolDone { name, ok: false } => metrics.count(
+            AGENT_PROVIDER_ERRORS,
+            "Agent runs that ended in an error",
+            &Labels::new(&[("kind", "tool_failed"), ("tool", name)]),
+        ),
+        _ => {}
+    }
 }
 
 /// `/ws/bots/{bot_id}`
@@ -533,15 +673,18 @@ pub async fn bot(
     }
 
     let events = state.bots.subscribe_events();
-    upgrade.on_upgrade(move |socket| bot_loop(socket, events, bot_id))
+    let metrics = Arc::clone(&state.metrics);
+    upgrade.on_upgrade(move |socket| bot_loop(socket, events, bot_id, metrics))
 }
 
 async fn bot_loop(
     socket: WebSocket,
     mut events: tokio::sync::broadcast::Receiver<BotEvent>,
     bot_id: Uuid,
+    metrics: Arc<Registry>,
 ) {
     let (mut sink, mut stream) = socket.split();
+    let connection = Connection::open(metrics, "bots");
     debug!(%bot_id, "bot socket opened");
 
     let hello = Frame::Subscribed {
@@ -559,12 +702,7 @@ async fn bot_loop(
                     // One socket per bot, so it only gets its own events. The
                     // alternative -- a socket per user with a filter -- would
                     // fan out every bot's activity to every watcher.
-                    let mine = match &event {
-                        BotEvent::Started { bot_id: id, .. }
-                        | BotEvent::Decision { bot_id: id, .. }
-                        | BotEvent::Stopped { bot_id: id, .. } => *id == bot_id,
-                    };
-                    if !mine {
+                    if event.bot_id() != bot_id {
                         continue;
                     }
                     let frame = Frame::Data {
@@ -575,6 +713,7 @@ async fn bot_loop(
                     }
                 }
                 Err(RecvError::Lagged(dropped)) => {
+                    connection.missed(dropped);
                     let frame = Frame::Lagged { dropped };
                     if send_text(&mut sink, &frame).await.is_err() {
                         break;

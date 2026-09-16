@@ -22,6 +22,7 @@
 pub mod bots;
 pub mod config;
 pub mod error;
+pub mod live;
 pub mod loading;
 pub mod market;
 pub mod models;
@@ -34,6 +35,10 @@ pub mod users;
 pub use bots::{create_bot, delete_bot, get_bot, list_bots, set_status, BotRow, STATUSES};
 pub use config::DatabaseConfig;
 pub use error::DbError;
+pub use live::{
+    list_live_orders, open_live_orders, opted_in_venues, record_live_order, record_venue_opt_in,
+    update_live_order, LiveOrderRow, TERMINAL_STATUSES,
+};
 pub use loading::{coverage, load_timeframe_series, warn_about_short_series, MIN_COVERAGE};
 pub use market::{
     best_bid_ask, latest_orderbook, list_symbols, orderbook_snapshot_count, SymbolCoverage,
@@ -43,8 +48,8 @@ pub use models::Database;
 pub use paper::{
     bot_summary, count_audit_events, count_executed_trades, create_owner, find_or_create_strategy,
     find_user_by_email, insert_audit_events, insert_bot, insert_executed_trades, purge_bot,
-    purge_owner, purge_owners_with_prefix, recent_decisions, set_bot_status, AuditEvent,
-    BotSummary, ExecutedTrade,
+    purge_owner, purge_owners_with_prefix, recent_decisions, set_bot_status, strategy_paper_record,
+    AuditEvent, BotSummary, ExecutedTrade, StrategyPaperRecord,
 };
 pub use repositories::TradeCoverage;
 pub use repositories::{dt_to_ns, ns_to_dt};
