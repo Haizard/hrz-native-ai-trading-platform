@@ -1057,10 +1057,7 @@ async fn run_binance_feed(
 /// not exist and a rule that cannot fire. [`BotSupervisor::feed_candle`] cannot
 /// be used for this -- it publishes as well as stamps, and the collector has
 /// already published.
-async fn watch_feed_candles(
-    mut candles: broadcast::Receiver<Candle>,
-    supervisor: BotSupervisor,
-) {
+async fn watch_feed_candles(mut candles: broadcast::Receiver<Candle>, supervisor: BotSupervisor) {
     loop {
         match candles.recv().await {
             Ok(candle) => supervisor.note_candle(&candle),

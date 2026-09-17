@@ -234,8 +234,9 @@ MUTATIONS = [
     (
         "the notice is written to the strip but not held",
         APP,
-        "        feedNotice = frame.message;\n        el(\"chartNote\").textContent = feedNotice;",
-        '        el("chartNote").textContent = frame.message;',
+        '        feedNotice = frame.message;\n        live.state = "nofeed";\n'
+        '        el("chartNote").textContent = feedNotice;',
+        '        live.state = "nofeed";\n        el("chartNote").textContent = frame.message;',
         ["and it survives the render a pan would have triggered"],
     ),
     (
@@ -247,11 +248,72 @@ MUTATIONS = [
         ["a footprint draws its ladder as `bid x ask` pairs"],
     ),
     (
-        "the footprint asks for the largest column count the engine cannot draw",
+        "the shell goes back to a fixed cell width instead of asking the engine",
         APP,
-        "    const MIN_COLUMN_PX = 64;",
-        "    const MIN_COLUMN_PX = 54;",
-        ["a footprint draws its ladder as `bid x ask` pairs"],
+        "    const cellPx = footCellPx || SEED_CELL_PX;",
+        "    const cellPx = SEED_CELL_PX;",
+        ["and the shell asks for the most candles that cell width allows"],
+    ),
+    (
+        "the engine's cell width is never learned",
+        APP,
+        "      footCellPx = Math.ceil(scene.footprint.min_cell_px);",
+        "      footCellPx = 0;",
+        ["and the shell asks for the most candles that cell width allows"],
+    ),
+    # --- the live badge, which has to be able to say the feed is dead -----------
+    #
+    # The report behind these: "I am not sure [the data is real time] and I cannot
+    # prove it". A badge that cannot go out is the defect rather than the feature,
+    # so every one of these makes it lie in a different way.
+    (
+        "the badge never learns that a frame arrived",
+        APP,
+        "        live.at = Date.now();",
+        "        live.at = 0;",
+        ["a bar on the channel makes the badge say live, with the age as the evidence"],
+    ),
+    (
+        "the badge's age never grows",
+        APP,
+        "    const age = live.at ? Date.now() - live.at : Infinity;",
+        "    const age = 0;",
+        ["and a channel that has gone quiet stops claiming to be live"],
+    ),
+    (
+        "the badge is only refreshed when something else redraws",
+        APP,
+        "  liveTimer = setInterval(refreshLiveBadge, 1000);",
+        "  liveTimer = 0;",
+        ["and a channel that has gone quiet stops claiming to be live"],
+    ),
+    (
+        "a refused channel is not remembered as refused",
+        APP,
+        '        live.state = "nofeed";',
+        '        live.state = "offline";',
+        ["a channel the server refused to feed says so, rather than saying offline"],
+    ),
+    (
+        "the badge claims live before any bar has arrived",
+        APP,
+        "    if (!live.at) {",
+        "    if (false) {",
+        ["and an open channel with no bar yet does not claim to be live"],
+    ),
+    (
+        "a closed channel keeps the last reading it had",
+        APP,
+        '      if (live.state !== "nofeed") live.state = "offline";',
+        "      live.state = live.state;",
+        ["and a channel that closes says offline"],
+    ),
+    (
+        "a live feed over a frozen ladder still claims the chart is live",
+        APP,
+        "    if (lag > barMs * 2) {",
+        "    if (false) {",
+        ["a live feed over a frozen ladder says which of the two is stale"],
     ),
 ]
 
@@ -295,8 +357,40 @@ def run_harness():
     return proc.returncode, failed, out
 
 
+def preflight():
+    """Refuse to run against a baseline that is not the baseline.
+
+    A run killed with SIGKILL cannot restore the file -- `atexit` and the signal
+    handler never run -- so the next run reads the *mutated* text as its baseline
+    and then measures every other mutation against a shell that is already broken.
+
+    That is not hypothetical. It happened on 2026-09-17: a killed sweep left
+    `if (panes.length < 2) return;` deleted from `closePane` and `hidden = false`
+    in `refreshCloseButtons`, and the next sweep spent five minutes reporting on
+    the wrong file -- two of its mutations were "SKIP, 0 matches" and the pane
+    checks were red against a defect nobody had introduced on purpose.
+
+    The detector is free, because an applied mutation always removes its own
+    anchor: if any `find` is not present exactly once, something is left over.
+    """
+    stale = []
+    for desc, path, find, _repl, _must in MUTATIONS:
+        if path.read_text(encoding="utf-8").count(find) != 1:
+            stale.append((desc, path))
+    if not stale:
+        return True
+    print("REFUSING TO RUN: the working copy is not the one these mutations were")
+    print("written against. A killed run leaves a mutation applied; restore it")
+    print("first (the pre-run copies are in target/guard_backup/).")
+    for desc, path in stale:
+        print(f"  no unique anchor for: {desc}  [{path.name}]")
+    return False
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else None
+    if not preflight():
+        return 2
     bad = 0
     try:
         for desc, path, find, repl, must_fail in MUTATIONS:

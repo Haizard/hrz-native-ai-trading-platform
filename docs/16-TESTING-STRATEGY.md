@@ -85,6 +85,14 @@ this project has had to re-derive, each from a failure that pointed at the wrong
   (`98.34`, `101.31`) matched the pattern, so the check would have passed with every
   ladder cell blank. It now asserts the contract that actually matters (`grid.show_text`)
   rather than a string that happens to look like one.
+  **And it caught one of mine, written the same afternoon as this paragraph.** The check for
+  "the numbers in this window need a narrower cell than the constant this replaced" was
+  written as "the engine's figure differs from the constant" — and passed against a
+  `min_cell_px` that was `undefined`, because `NaN !== 12` is true. The wasm was stale, so
+  the field did not exist, and a check about a *number* was satisfied by the absence of one.
+  It now asserts `Number.isFinite(learned)` first and prints the raw value when it fails.
+  **If a check compares two things, assert that both are the kind of thing that can be
+  compared** — a missing field is not a different value, it is a different question.
 - **A fixture tidier than production hides production's defects.** The stub for
   `/footprint` first answered with a *tidied* candle list — OHLC only. The real shell maps
   that same array down to OHLC for the price axis **and** hands it back as the request's
@@ -95,6 +103,29 @@ this project has had to re-derive, each from a failure that pointed at the wrong
   and the harness failed against a defect that did not exist. **A stub that ignores the
   request is testing a different program.** Both were fixed by making the fixture match
   the route: full ladders, and a column count derived from `to - from`.
+  **The same trap, third instance, in the timestamps.** The footprint fixture built its
+  bars as `open_time: i * 300_000_000_000`, which is tidy, deterministic and starts at the
+  epoch. The moment a check compared stored data against the live feed it read *thirteen
+  thousand hours behind* — a number so far outside any plausible threshold that the
+  assertion would have passed against almost anything. The fixture now ends at a real
+  recent millisecond, so the lag under test is a plausible one and the check can fail for
+  the reason it names. **Fixtures should be shaped like production even where the shape is
+  inconvenient**, and a number that is *absurd* rather than merely wrong is the most
+  dangerous kind, because every comparison against it succeeds.
+- **A claim about time is checked by moving the clock, not by waiting for it.** The live
+  badge's whole value is that it stops saying `live` when frames stop arriving — a threshold
+  of `bar * 1.5 + 30s`, which is eleven minutes of real time on a 5m chart. Sleeping for it
+  is not an option and shortening it would test a different threshold. `tools/shell_check.mjs`
+  therefore replaces `window.Date.now` with `realPageNow() + pageClock.offset` *before*
+  injecting the page: the page's clock is fake, the harness's is not, so `waitFor`'s
+  deadlines still time out on a real hang. Only ever fake the clock of the thing under test.
+  The first version of this check scrolled the wheel first to force a redraw, which would
+  have passed for the wrong reason — it would have been testing `render`, not the badge's own
+  timer — so it now advances the offset and waits for the timer with **no gesture at all**.
+  That is also what makes the matching mutation meaningful: `liveTimer = 0` breaks the check,
+  which is how the one-second interval was shown to be load-bearing rather than incidental.
+  **A badge refreshed only as a side effect of redrawing can never report the case it exists
+  for**, because that case is *nothing is arriving and therefore nothing redraws*.
 - **A test that calls the only writer of a metric proves nothing about production.** The
   `MD_FEED_AGE` metric had a passing test — which called `feed_candle` directly. Nothing in
   the *live* path ever called it, so `/metrics` served no `market_data_feed_age_seconds`

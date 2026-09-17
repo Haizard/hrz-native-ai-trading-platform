@@ -150,6 +150,14 @@ const canvasOf = (index = 0) => paneNodes()[index].querySelector(".chart");
 const PANE = 0;
 const paneNode = (index = PANE) => paneNodes()[index];
 const note = (index = PANE) => paneNode(index).querySelector(".chartNote").textContent;
+/// One pane's live-feed badge, and the state it is claiming.
+///
+/// The state is a `data-` attribute rather than only words, because the words
+/// carry a live age and a check that matched them with a regex would pass on a
+/// badge that had stopped updating. `dataset.state` is the claim; the text is the
+/// evidence for it, and both are asserted.
+const badge = (index = PANE) => paneNode(index).querySelector(".feedStatus");
+const badgeState = (index = PANE) => badge(index).dataset.state;
 const lastScene = () => engine.scenes[engine.scenes.length - 1];
 const lastRequest = () => engine.requests[engine.requests.length - 1];
 /// Which instrument a scene request is for.
@@ -419,6 +427,16 @@ function candlesFor(count, symbol = "BTCUSDT", timeframe = "5m") {
 /// other unit would hand it an empty window.
 const BAR_MS = { "1m": 60_000, "5m": 300_000, "1h": 3_600_000, "4h": 14_400_000 };
 
+/// When the fixture's data ends, in milliseconds.
+///
+/// A real timestamp rather than a small number near zero. The footprint fixture
+/// used to start at the epoch, which was tidy and wrong in a way that mattered as
+/// soon as anything compared stored data against the live feed: the badge's whole
+/// job is that comparison, and against an epoch-relative ladder every reading
+/// would have been "thirteen thousand hours behind" -- a fixture that could not
+/// tell a working chart from a broken one.
+const FIXTURE_NOW_MS = 1_789_679_400_000;
+
 /// A window of trade-level ladders, in the shape `/footprint` returns.
 ///
 /// Twenty levels on a half-point step, which is what a real window looks like
@@ -427,7 +445,7 @@ const BAR_MS = { "1m": 60_000, "5m": 300_000, "1h": 3_600_000, "4h": 14_400_000 
 /// sizes for, so the engine has to bring its font down to what the cell can hold.
 /// A tidier fixture -- three levels, four columns -- would have made the ladder
 /// legible for free and hidden the whole question.
-function footprintColumns(count) {
+function footprintColumns(count, bar = BAR_MS["5m"]) {
   return Array.from({ length: count }, (_, i) => {
     const base = 100 + i * 0.5;
     const cells = Array.from({ length: 12 }, (_, k) => {
@@ -449,7 +467,9 @@ function footprintColumns(count) {
       cells[0]
     );
     return {
-      open_time: i * 300_000_000_000,
+      // The newest ladder ends one bar before the fixture's clock, which is what
+      // a stored series looks like next to a feed that has just closed a bar.
+      open_time: (FIXTURE_NOW_MS - (count - i) * bar) * 1e6,
       open: base,
       high: base + 6,
       low: base - 1,
@@ -514,8 +534,8 @@ window.fetch = async (path, options = {}) => {
     // `from` in the future and the request would come out empty.
     return json(200, {
       symbol: (queryOf(url).get("symbol") ?? "BTCUSDT").toUpperCase(),
-      from: 0,
-      to: 40 * BAR_MS["5m"],
+      from: FIXTURE_NOW_MS - 400 * BAR_MS["5m"],
+      to: FIXTURE_NOW_MS,
     });
   }
 
@@ -541,7 +561,7 @@ window.fetch = async (path, options = {}) => {
       // the axis *and* hands the same array back as the request's `footprint`
       // field. A fixture that returned a tidied candle list here produced
       // "missing field `delta`" from the engine.
-      candles: footprintColumns(count),
+      candles: footprintColumns(count, bar),
     });
   }
 
@@ -710,6 +730,20 @@ const waitFor = async (predicate, label, timeoutMs = 5000) => {
   );
   process.exit(1);
 };
+
+// --- the clock the page reads ------------------------------------------------
+//
+// The live badge's whole claim is about *age*, and the age it goes quiet at is a
+// bar and a half -- 120 seconds on a 1m chart. Waiting that out is not a test, it
+// is a delay, so the checks move the page's clock rather than sleeping through it.
+//
+// Only the page's. This replaces `window.Date.now`, so the deadlines in `waitFor`
+// above keep using the real clock -- which matters, because a check that moved
+// time forward and also moved the timeout would prove nothing about either.
+
+const realPageNow = window.Date.now.bind(window.Date);
+const pageClock = { offset: 0 };
+window.Date.now = () => realPageNow() + pageClock.offset;
 
 const script = document.createElement("script");
 script.textContent = shell;
@@ -1318,6 +1352,114 @@ if (market) {
   );
 }
 
+// --- the live badge -----------------------------------------------------------
+//
+// "I am not sure [the data is real time] and I cannot prove it." That is the
+// requirement exactly: a badge that says LIVE is a claim, and the page gave the
+// user no way to check one. This one carries the age of the last frame that
+// arrived, so it is a reading -- it counts up while nothing comes and resets when
+// a bar closes.
+//
+// The check that matters is the *third* one. A badge that only ever says live is
+// the defect rather than the feature, so the feed goes quiet and the badge has to
+// stop claiming otherwise.
+
+console.log("\nthe live badge");
+
+// The section above closed its channel after the server said why. That reading
+// has to survive the close: "offline" beside a reason already given would be a
+// second answer to a question the server answered once.
+check(
+  "a channel the server refused to feed says so, rather than saying offline",
+  badgeState() === "nofeed",
+  `${badgeState()}: ${badge().textContent}`
+);
+
+// A fresh channel. `Reload` reopens it, which is also what a user does after
+// watching the badge go quiet.
+paneNode().querySelector(".load").click();
+await settle();
+await settle();
+await settle();
+
+const liveSocket = openSocketsFor("/ws/market/").slice(-1)[0];
+check(
+  "reloading opens a new market channel to read",
+  Boolean(liveSocket) && !liveSocket.closed,
+  openSocketsFor("/ws/market/")
+    .map((s) => s.url.replace(/^.*\/ws/, "/ws"))
+    .join(", ") || "(none)"
+);
+
+if (liveSocket) {
+  check(
+    "and an open channel with no bar yet does not claim to be live",
+    badgeState() === "idle",
+    `${badgeState()}: ${badge().textContent}`
+  );
+
+  // A bar, in the shape the server sends. `open_time` is nanoseconds, as
+  // everywhere else on the wire, and it is the fixture's own clock so a badge
+  // that compares stored data against the feed has something true to compare.
+  const frame = (minutes) => ({
+    type: "data",
+    payload: {
+      symbol: "BTCUSDT",
+      timeframe: "5m",
+      open_time: (FIXTURE_NOW_MS + minutes * BAR_MS["5m"]) * 1e6,
+      open: 76_500,
+      high: 76_520,
+      low: 76_490,
+      close: 76_510,
+      volume: 12.5,
+      buy_volume: 7,
+      sell_volume: 5.5,
+    },
+  });
+
+  deliver(liveSocket, frame(0));
+  await settle();
+  check(
+    "a bar on the channel makes the badge say live, with the age as the evidence",
+    badgeState() === "live" &&
+      /live · BTCUSDT 5m · \d\d:\d\d · \d+s ago/.test(badge().textContent),
+    `${badgeState()}: ${badge().textContent}`
+  );
+
+  // The half that makes it a measurement rather than a label. Frames stop, the
+  // page's clock moves past the threshold, and the badge has to stop saying live
+  // -- with no gesture and no redraw, because the case that matters is the page
+  // sitting still. That is why the badge owns a clock instead of being refreshed
+  // by `render`, and why this waits on the clock rather than dispatching anything.
+  pageClock.offset += BAR_MS["5m"] * 2 + 60_000;
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  check(
+    "and a channel that has gone quiet stops claiming to be live",
+    badgeState() === "stale",
+    `${badgeState()}: ${badge().textContent}`
+  );
+
+  // And a bar arriving again resets it, which is what makes the age worth
+  // reading: the number the user watches is the one that starts again.
+  deliver(liveSocket, frame(1));
+  await settle();
+  check(
+    "and a bar arriving again resets the reading",
+    badgeState() === "live" && badge().textContent.includes("0s ago"),
+    `${badgeState()}: ${badge().textContent}`
+  );
+
+  // A channel that closes with nothing else to say is offline, and the badge says
+  // that rather than freezing on the last reading it had.
+  liveSocket.close();
+  await settle();
+  check(
+    "and a channel that closes says offline",
+    badgeState() === "offline",
+    `${badgeState()}: ${badge().textContent}`
+  );
+}
+
 // --- the footprint ladder -----------------------------------------------------
 //
 // The chart the user reported as "not well designed and presented". The cause
@@ -1360,6 +1502,105 @@ check(
   paneNode().querySelector(".footprintStats").textContent.includes("1,234"),
   paneNode().querySelector(".footprintStats").textContent.slice(0, 60)
 );
+
+// --- how many candles fit -----------------------------------------------------
+//
+// The report: "you should limit their width according to number size on that
+// cell, because now their widths are large, which makes a small number of candles
+// appear on the chart". The cell width was a constant in the shell -- 54, then 64
+// -- matched by hand against the engine's font floor and glyph ratio, so how many
+// candles were on screen was decided by a guess rather than by the numbers.
+//
+// The engine now reports `min_cell_px`, which is that same arithmetic read
+// backwards, and the shell sizes its window from it. Both halves are checked: the
+// shell asks for the engine's figure, and the figure is narrower than the constant
+// it replaced -- otherwise this would pass while nothing had changed.
+
+console.log("\nhow many candles fit");
+
+/// Every footprint window the shell has asked for.
+const footprintCalls = () => backend.calls.filter((c) => c.url.startsWith("/footprint?"));
+/// How many columns one request asked for.
+///
+/// Derived from the window, because that is how the shell expresses it: it picks a
+/// column count and then asks for that many bars.
+const columnsOf = (call) => {
+  const query = queryOf(call.url);
+  const bar = BAR_MS[query.get("timeframe")] ?? BAR_MS["5m"];
+  return Math.round((Number(query.get("to")) - Number(query.get("from"))) / bar);
+};
+
+const learned = Math.ceil(lastScene().footprint.min_cell_px);
+const plotW = lastScene().plot.w;
+const fitsIn = (cell) => Math.max(8, Math.min(60, Math.floor(plotW / cell)));
+const want = fitsIn(learned);
+const seeded = fitsIn(64);
+
+check(
+  "the numbers in this window need a narrower cell than the constant this replaced",
+  Number.isFinite(learned) && want !== seeded,
+  // `Number.isFinite` rather than a bare comparison, because `NaN !== 12` is true:
+  // a check written as "the two differ" passes on a missing field, which is the
+  // shape of every defect this file exists to catch.
+  Number.isFinite(learned)
+    ? `the engine wants ${learned}px a cell: ${want} columns, against ${seeded} for the old 64px`
+    : `the engine reported no usable min_cell_px (${lastScene().footprint.min_cell_px})`
+);
+
+// A reload, so the shell has to size a window from what the engine told it rather
+// than from the seed it starts with. The seed is the first load's guess and the
+// whole point is that it does not stay a guess.
+paneNode().querySelector(".load").click();
+await settle();
+await settle();
+await settle();
+await settle();
+
+check(
+  "and the shell asks for the most candles that cell width allows",
+  columnsOf(footprintCalls().slice(-1)[0]) === want,
+  `${columnsOf(footprintCalls().slice(-1)[0])} columns for a ${plotW}px plot and a ${learned}px cell (want ${want})`
+);
+
+// --- and the half of "live" the badge has to be able to deny -------------------
+//
+// The reading above is about the *channel*, and a footprint is not drawn from the
+// channel: the ladder comes from `/footprint`, which is built from stored trades.
+// So the feed can be perfectly healthy while the ladder is hours old, and a badge
+// that said "live" there would be the green light that cannot go out -- the defect
+// this project keeps finding, and the exact report that produced this badge. So
+// the badge has to be able to say which of the two is stale.
+
+const ladderSocket = openSocketsFor("/ws/market/").slice(-1)[0];
+if (ladderSocket) {
+  const newestLadder = lastScene().footprint.columns.reduce(
+    (best, column) => Math.max(best, Number(column.open_time)),
+    0
+  );
+  // A bar thirteen hours after the stored data, which is what the deployment
+  // looked like: a live feed, and a ladder frozen at the last backfill.
+  deliver(ladderSocket, {
+    type: "data",
+    payload: {
+      symbol: "BTCUSDT",
+      timeframe: "5m",
+      open_time: newestLadder + 13 * 3_600_000 * 1e6,
+      open: 76_500,
+      high: 76_520,
+      low: 76_490,
+      close: 76_510,
+      volume: 12.5,
+      buy_volume: 7,
+      sell_volume: 5.5,
+    },
+  });
+  await settle();
+  check(
+    "a live feed over a frozen ladder says which of the two is stale",
+    badgeState() === "behind" && badge().textContent.includes("13h"),
+    `${badgeState()}: ${badge().textContent}`
+  );
+}
 
 // Back to candles, because the sections below are about the candle chart and a
 // pane left in footprint mode would be testing a different one.

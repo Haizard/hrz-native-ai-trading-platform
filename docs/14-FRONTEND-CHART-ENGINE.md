@@ -154,8 +154,10 @@ CPU calc   GPU-friendly buffers
   |---|---|
   | `legible_rows(plot_height)` | the row cap, derived from the plot rather than a constant |
   | `font_for_width(cell_width, pair_chars)` | the font the *widest* `bid x ask` needs |
+  | `cell_for_font(font_px, pair_chars)` | the cell width that font needs — the same relation, read backwards |
   | `Grid::font_px` | the smaller of the two, clamped to a floor |
   | `Grid::show_text` | whether the shell should draw numbers at all |
+  | `Grid::min_cell_px` | the narrowest a cell can be and still show *this window's* widest pair |
 
   **The cap and the font are two ends of one decision.** Capping at a constant `MAX_ROWS = 80`
   and *then* clamping the font meant the font fell under legibility and the text silently
@@ -166,10 +168,51 @@ CPU calc   GPU-friendly buffers
 
   **A font that fits the row but not the cell is not legible either.** `1.40 x 2.85` is eleven
   characters; at 8.6px that is 59px of a 54px column. Both dimensions have to fit, so both are
-  decided in the engine and the shell only reads `grid.show_text`. `MIN_COLUMN_PX` in the shell
-  went 54 → 64 at the same time, because `width` is the *element's* `clientWidth` while the plot
-  is narrower by the price axis — a 54px element column is a 53px cell, one hundredth of a pixel
-  under the point where no numbers draw.
+  decided in the engine and the shell only reads `grid.show_text`.
+
+  **And the constant that replaced it was the same defect one level up** (closed 2026-09-17, the
+  day after it was written down). `MIN_COLUMN_PX` went 54 → 64 to keep the font above the floor —
+  correct, and chosen by hand arithmetic against the engine's `MIN_FONT_PX = 7.0` and a 0.62 glyph
+  ratio, **in another language, with nothing failing when the two drifted apart**. The number the
+  shell needs is the one the engine just computed, so the engine now computes it: `cell_for_font`
+  is `font_for_width` read backwards, and `Grid::min_cell_px` is it at `MIN_FONT_PX` for the widest
+  pair in the window. The shell holds no width constant at all — it asks.
+
+  **It also decides how many candles are on screen, which is why it was worth doing properly.**
+  The shell has to choose a **column count** before any layout exists, and the column count is what
+  sets how many candles fit. Sizing it from a constant that is safely *under* the engine's real
+  requirement is a permanently narrower window than the chart can actually draw — 12 columns where
+  14 fit. So the count is derived, not chosen:
+
+  ```
+  columns = clamp(floor(plot.w / (footCellPx || SEED_CELL_PX)), 8, 60)
+  ```
+
+  and `footCellPx` is learned from the last scene the engine produced. That is a fixed point — the
+  count decides the window, the window decides the numbers, the numbers decide the count — and it
+  is reached in **one** step, because the first load is seeded and every load after it is sized by
+  what the last one actually needed. Two details are load-bearing and both were wrong first:
+
+  - **`plot.w`, not the element's width.** The first version used
+    `el("chart").parentElement.clientWidth`, which is the *element*; the plot is narrower by the
+    price axis. A 54px element column was a 53px cell — one hundredth of a pixel under the point
+    where no numbers draw. Before the first scene there is nothing to ask, so the estimate
+    subtracts the axis the way `drawAxis` lays it out, which is an estimate of the right rectangle
+    rather than of the one that contains it.
+  - **`min_cell_px` follows the numbers, not the symbol.** It is computed from the widest pair *in
+    that window*, so a symbol whose volumes print `1.21 K` gets wider cells than one printing
+    `0.44` — which is the property the request was actually asking for.
+
+  `tools/shell_check.mjs` measures the outcome rather than the arithmetic: it reads
+  `min_cell_px` out of the last scene, computes what `floor(plot.w / min_cell_px)` says fits, and
+  asserts that (a) it differs from the seed — i.e. the engine really does want a narrower cell
+  than the constant it replaced — and (b) the next load *asks for that many*. Both are run against
+  their own bug in `tools/guard_check.py`: fixing the cell width back to the seed, and never
+  learning it, each break the check that names them. The engine-side guard is shown to fail by
+  substituting `cell_for_font(6.0, …)` for `cell_for_font(MIN_FONT_PX, …)`, which reports
+  *"23 columns is what `floor(1080 / 46.92)` says fits, and it came out at 6.00535509371414px"*.
+  `tools/footprint_preview.mjs` derives its own column count the same way, so the preview shows
+  what the shell draws rather than what it drew before.
 
   **The value area is per column.** It used to be `grid.rows.some(|row| row.in_value_area)`, so
   one candle's value area striped every other candle's ladder at prices those candles never
@@ -935,6 +978,71 @@ That is why "I am seeing the same candles on each timeframe" survived the feed b
 footprint mode the ladder is not a live view of anything, it is a rendering of a database that
 stopped updating. It is tracked as `docs/19` row 21, and it is the same defect row 12 closed for
 the *CLI* collector — `xtask collect` pumps its candle stream into `candles`; the gateway does not.
+
+### The live badge: evidence, not a claim
+
+Added 2026-09-17, from "about the real time binance data I am not sure and I can't prove it —
+maybe you add a message on the dashboard saying that the live data is working". The request is
+for a **proof**, and the trap is obvious once stated: a green light that cannot go out is exactly
+the thing this user would check, and it would have been green through the seven-hour silence that
+started all of this. So the badge is built to be able to deny its own headline.
+
+**It reports the age of the last frame that arrived, not the socket's `readyState`.** A socket can
+be open and silent — that is precisely the failure being reported, and it is invisible to
+connection state. The page keeps `live.at` (when a frame last arrived) and `live.bar` (the
+`open_time` it carried), and the badge is a function of those plus the clock:
+
+| state | when | reads |
+|---|---|---|
+| `idle` | no channel has been opened | `no channel yet` |
+| `connecting` | a channel is opening | `connecting…` |
+| `nofeed` | the server sent a `Notice` and closed | `no feed` |
+| `offline` | the socket closed for any other reason | `offline` |
+| `idle` (open, no bar) | connected, nothing delivered yet | `waiting for a bar` |
+| `stale` | quiet for more than `bar * 1.5 + 30s` | `quiet 11m` |
+| `behind` | frames arriving, drawn ladder older than 2 bars | `feed live · ladder 13h behind` |
+| `live` | a frame within the threshold | `live · BTCUSDT 5m · 21:10 · 0s ago` |
+
+**The `behind` state is the honest half, and it exists because of row 21.** In footprint mode the
+chart is not drawn from the channel at all — the ladder comes from `/footprint`, which reads
+stored trades — so the feed can be perfectly healthy while what is on screen is hours old. A badge
+that only knew about the socket would read `live` in that case, which is a green light over a
+frozen chart: the same defect, wearing the fix as a disguise. `ladderLagMs()` compares the newest
+`open_time` in the drawn ladder against the newest bar the channel delivered, and when the two
+disagree by more than two bars the badge names **which** of the two is stale rather than reporting
+one number for both. Until the persistence gap is closed this is the correct reading, and it is
+the reading that makes the badge worth trusting.
+
+**Three details, each of which was wrong in a version that looked right:**
+
+- **The age must tick on its own timer, not as a side effect of `render`.** `liveTimer` is a
+  one-second interval. A badge refreshed by the render loop can never report the case it exists
+  for, because the case is *nothing is arriving and therefore nothing is redrawing*.
+  `guard_check.py` patches `liveTimer = 0` and requires the staleness check to fail, which is how
+  the timer was shown to be load-bearing rather than incidental.
+- **A refused channel is not an offline one.** `onclose` sets `offline`, and it used to overwrite
+  the `nofeed` the notice had just set — so the one case where the server *explains itself* was
+  the one case that lost the explanation. The close handler now leaves `nofeed` alone.
+- **`idle` covered three different facts** (`no channel yet`, `connecting…`, `waiting for a bar`).
+  An open channel with nothing on it read as "no channel yet", which is the wrong answer to the
+  user's question and the more reassuring one. Split.
+
+**The page's clock can be moved without moving the harness's.** Reaching `stale` means waiting
+`bar * 1.5 + 30s` — 11 minutes of real time for a 5m chart — so `tools/shell_check.mjs` replaces
+`window.Date.now` with `realPageNow() + pageClock.offset` before injecting the page. Only the
+page's clock is fake; `waitFor`'s deadlines keep the real one, so a hung check still times out.
+The check then advances `pageClock.offset` past the threshold and **waits 1200 ms for the timer**
+— with no gesture and no redraw, because that is the claim. An earlier version of this check
+forced a render first, which would have passed for the wrong reason: it would have been testing
+`render`, not the timer.
+
+**And the fixture had to be moved out of the epoch.** `footprintColumns` built its timestamps as
+`i * 300_000_000_000`, which is tidy and made the `behind` comparison read *thirteen thousand
+hours behind* — a number so absurd that the check would have passed against almost any threshold.
+The fixture now ends at a real recent millisecond (`FIXTURE_NOW_MS`), so the assertion is against
+a plausible lag and the check can fail for the right reason. **A fixture tidier than production
+hides production's defects**, which is the second time this project has paid for that lesson in
+`/symbols` fixtures alone.
 
 ## Done criteria
 - A user can load a symbol, switch to footprint mode, see live-updating footprint cells

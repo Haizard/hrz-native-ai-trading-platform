@@ -68,11 +68,6 @@ const rnd = () => {
 // truncation path rather than the ladder.
 const BUCKET = 40;
 const BASE = 76_500;
-// Overridable, because the two questions this page answers need different
-// windows: "does a real one look right" wants the 18 columns a real chart has,
-// and "what is a single cell doing" wants six, so the cells are big enough to
-// read the numbers in a screenshot.
-const COLUMNS = Number(process.env.FP_COLUMNS) || 18;
 const OPEN_MS = 1_788_998_400_000;
 
 // The price wanders about ten buckets either side of the base, so the union of
@@ -141,34 +136,63 @@ function column(index) {
   };
 }
 
-const columns = Array.from({ length: COLUMNS }, (_, index) => column(index));
+/// A window of `count` ladders, with the candles the price axis needs.
+///
+/// The candles are not drawn in this mode; the engine uses them for the price
+/// axis, which is the same axis every ladder is placed against.
+function windowOf(count) {
+  const columns = Array.from({ length: count }, (_, index) => column(index));
+  const candles = columns.map((c) => ({
+    symbol: "BTCUSDT",
+    timeframe: "5m",
+    open_time: c.open_time,
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+    buy_volume: c.ask_volume,
+    sell_volume: c.bid_volume,
+  }));
+  return { columns, candles };
+}
 
-// The candles are not drawn in this mode; the engine uses them for the price
-// axis, which is the same axis every ladder is placed against.
-const candles = columns.map((c) => ({
-  symbol: "BTCUSDT",
-  timeframe: "5m",
-  open_time: c.open_time,
-  open: c.open,
-  high: c.high,
-  low: c.low,
-  close: c.close,
-  volume: c.volume,
-  buy_volume: c.ask_volume,
-  sell_volume: c.bid_volume,
-}));
+const WIDTH = 1180;
+const HEIGHT = 560;
+const request = (count) => {
+  const { columns, candles } = windowOf(count);
+  return {
+    candles,
+    width: WIDTH,
+    height: HEIGHT,
+    mode: "footprint",
+    footprint: columns,
+    footprint_trades: 143_960,
+    lines: ["poc", "vah", "val"],
+  };
+};
 
-const scene = build({
-  candles,
-  width: 1180,
-  height: 560,
-  mode: "footprint",
-  footprint: columns,
-  footprint_trades: 143_960,
-  lines: ["poc", "vah", "val"],
-});
+// The column count, derived the way the shell derives it: ask for a seed, read
+// back the cell width the engine's own numbers need, and ask again. The count
+// decides the window and the window decides the numbers, so one pass is a guess
+// and the second is the fixed point.
+//
+// `FP_COLUMNS` overrides it, because the two questions this page answers want
+// different densities: "does a real window look right" wants what the engine
+// says fits, and "what is one cell doing" wants six, so the numbers are big
+// enough to read in a screenshot.
+const ASKED = Number(process.env.FP_COLUMNS) || 0;
 
-const grid = scene.footprint;
+let scene = build(request(ASKED || 20));
+let grid = scene.footprint;
+if (!ASKED && grid && grid.min_cell_px > 0) {
+  const fits = Math.max(8, Math.min(60, Math.floor(scene.plot.w / Math.ceil(grid.min_cell_px))));
+  if (fits !== grid.columns.length) {
+    scene = build(request(fits));
+    grid = scene.footprint;
+  }
+}
+
 console.log(
   `${scene.candles.length} candles -> ${grid ? grid.columns.length : 0} columns, ` +
     `${grid ? grid.rows.length : 0} rows, font ${grid ? grid.font_px.toFixed(2) : "-"}px, ` +

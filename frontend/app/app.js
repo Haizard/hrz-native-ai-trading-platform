@@ -181,7 +181,7 @@ function buildScene(request) {
 const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartHint", "chartNote",
   "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "fit",
-  "load", "close", "deleteDrawing", "clearDrawings",
+  "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
 ]);
 
 /// A timeframe's length in minutes, for ordering the options.
@@ -816,6 +816,41 @@ function createChartPane(root, hooks = {}) {
   // chart is frozen and nothing anywhere says why" that this exists to end.
   let feedNotice = "";
 
+  /// How wide a ladder cell has to be for the numbers that are in it, in pixels.
+  ///
+  /// Learned from the engine, not chosen here. This was `MIN_COLUMN_PX` -- 54,
+  /// then 64 -- matched by hand against the engine's font floor and glyph ratio,
+  /// in another language, with nothing failing when the two drifted apart. That
+  /// is the same defect as the font itself, one level up: a constant in the shell
+  /// and a constant in the engine that have to agree.
+  ///
+  /// `Grid::min_cell_px` is that arithmetic read backwards, and it is the widest
+  /// pair **in the window**, so it follows the instrument -- a symbol whose
+  /// volumes print as `1.21 K` gets wider cells than one printing `0.44`. The
+  /// column count is what decides how many candles are on screen, so this is the
+  /// number that decides that, and it was being decided by a guess.
+  ///
+  /// Zero until the engine has answered once.
+  let footCellPx = 0;
+
+  /// The cell width the first load assumes, before the engine has answered.
+  ///
+  /// Deliberately generous, because the failure it risks is the expensive one:
+  /// too few columns costs some width, and too many is what makes the engine
+  /// stop drawing numbers at all. One load is enough to correct it.
+  const SEED_CELL_PX = 64;
+
+  /// What the live channel is doing, so the page can *say* it rather than imply it.
+  ///
+  /// `at` is when the last frame arrived, not when the socket opened. A socket
+  /// that is open and silent is the exact failure this exists to expose, and a
+  /// badge driven by the connection state would stay green straight through it.
+  const live = { state: "idle", at: 0, bar: 0 };
+
+  /// The clock the badge counts with. Its own timer rather than a side effect of
+  /// `render`, because the reading that matters is the one where nothing redraws.
+  let liveTimer = 0;
+
   async function refresh() {
     const message = el("chartMsg");
     footprint = null;
@@ -922,6 +957,14 @@ function createChartPane(root, hooks = {}) {
 
     scene = buildScene(request);
     viewport = scene.viewport;
+    // The engine's own answer to "how wide must a cell be for the numbers that
+    // are in this window", kept for the next window the user asks for. The count
+    // decides the window, the window decides the numbers, and the numbers decide
+    // the count -- so sizing the next load from what this one actually needed
+    // reaches the fixed point in one step instead of being guessed at every time.
+    if (scene.footprint && scene.footprint.min_cell_px > 0) {
+      footCellPx = Math.ceil(scene.footprint.min_cell_px);
+    }
     el("chartNote").textContent = feedNotice || scene.note || "";
     renderFootprintStats(scene.footprint);
     // The toolbar is about the *selection*, and the selection changes from the
@@ -929,6 +972,11 @@ function createChartPane(root, hooks = {}) {
     // Updating it here means there is one place that decides and no path that
     // forgets, which is the same arrangement `aria-pressed` already uses.
     refreshDrawingButtons();
+    // The badge's *state* changes here; its age ticks on its own timer, because
+    // an age that only updated when something else redrew would be frozen at
+    // whatever it read the last time the chart moved -- which is the one reading
+    // it must never give.
+    refreshLiveBadge();
     draw();
   }
 
@@ -1652,27 +1700,40 @@ function createChartPane(root, hooks = {}) {
   /// So the chart asks where the trades are and uses that window. Selecting the
   /// chart type is then enough.
   ///
-  /// ## Why the column count comes from the viewport
+  /// ## Why the column count comes from the engine
   ///
-  /// A ladder cell has to fit `1.40 x 2.85` -- eleven characters. Below about
-  /// 64px per column the two numbers collide and the ladder stops being readable,
-  /// which is what the first version of this looked like: 40 columns of smeared
-  /// text. The column count is therefore a layout decision, which is the shell's
-  /// to make, and the engine is told how many candles to expect.
+  /// A ladder cell has to fit the widest `bid x ask` in the window -- eleven
+  /// characters for `1.40 x 2.85`, more for a symbol whose volumes carry a `K`.
+  /// The column count is a layout decision, so the shell makes it -- but *how
+  /// wide a cell has to be* is not a layout decision the shell can make, because
+  /// it is the engine's own font floor read backwards.
   ///
-  /// 64 rather than the 54 this started at, and the difference is the price axis:
-  /// `width` is the whole element and the plot is narrower, so a 54px *element*
-  /// column is a 53px *cell* -- which the engine sizes a 6.98px font for, one
-  /// hundredth of a pixel under the point where it draws no numbers at all. The
-  /// engine decides that now, but a shell that asks for the largest column count
-  /// the engine can draw is asking for the failure.
+  /// This used to be a constant here, `MIN_COLUMN_PX`, and it went 54 then 64 by
+  /// hand. Both were guesses at a number the engine already knows: 54 came out at
+  /// a 6.98px font in a real window -- one hundredth of a pixel under the point
+  /// where the engine stops drawing numbers -- and 64 was the fudge for it. The
+  /// engine now reports `Grid::min_cell_px`, which is the same arithmetic the
+  /// layout uses to size its font, so `plot / min_cell_px` is the *most* columns
+  /// that stay legible rather than a count kept safely under the real figure.
+  ///
+  /// It also fixes the width the count is divided by. `width` was the element,
+  /// and the plot is narrower than the element by the price axis -- which is what
+  /// made the 54px column a 53px cell. The last scene knows the plot exactly.
   async function loadFootprint() {
     const symbol = el("symbol").value;
     const timeframe = el("timeframe").value;
-    const width = el("chart").parentElement.clientWidth || 900;
 
-    const MIN_COLUMN_PX = 64;
-    const columns = Math.max(8, Math.min(40, Math.floor(width / MIN_COLUMN_PX)));
+    const elementW = el("chart").parentElement.clientWidth || 900;
+    // Before the first scene there is nothing to ask, so subtract the axis the
+    // way `drawAxis` lays it out -- an estimate, but an estimate of the *right*
+    // rectangle rather than of the element that contains it.
+    const plotW = scene?.plot?.w || Math.max(200, elementW - 62);
+
+    // How many candles fit is `plot / cell`, and the engine says how wide a cell
+    // its own numbers need. The 60 cap is a sanity bound rather than a layout
+    // rule: past it the ladders are a texture, whatever the arithmetic says.
+    const cellPx = footCellPx || SEED_CELL_PX;
+    const columns = Math.max(8, Math.min(60, Math.floor(plotW / cellPx)));
 
     const coverage = await api(`/footprint/coverage?symbol=${symbol}`);
     const bar = BAR_MS[timeframe] || 300_000;
@@ -1684,6 +1745,147 @@ function createChartPane(root, hooks = {}) {
     // the row count is readable whatever the instrument costs.
     return await api(
       `/footprint?symbol=${symbol}&timeframe=${timeframe}&from=${from}&to=${to}`
+    );
+  }
+
+  /// A bar's opening time as `HH:MM`, in the zone the chart is already labelled in.
+  ///
+  /// A unit conversion at a boundary rather than market arithmetic -- the same
+  /// trade `docs/14` allows for a timestamp. Everything else about this bar came
+  /// from the engine or the server.
+  function formatBar(ns) {
+    if (!ns) return "--:--";
+    const at = new Date(Math.floor(Number(ns) / 1e6));
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(at.getUTCHours())}:${pad(at.getUTCMinutes())}`;
+  }
+
+  /// How far the drawn ladder is behind the live feed, in milliseconds.
+  ///
+  /// Zero when there is nothing to compare, or when the chart is not drawn from
+  /// stored trades at all. This exists because the badge's main reading is about
+  /// the *channel*, and in footprint mode the chart is not drawn from the channel:
+  /// the ladder comes from `/footprint`, which is built from stored trades. So a
+  /// page can honestly report a live feed while the thing on screen has not moved
+  /// since the last backfill -- which is precisely the report that produced this
+  /// badge, and the reason a badge that only knew about the socket would have been
+  /// green through all of it.
+  function ladderLagMs() {
+    if (!footprint || !live.bar || !footprint.candles || !footprint.candles.length) return 0;
+    const newest = footprint.candles.reduce(
+      (best, candle) => Math.max(best, Number(candle.open_time)),
+      0
+    );
+    if (!newest) return 0;
+    // Both are nanoseconds, so the difference is taken before the conversion --
+    // a nanosecond timestamp is past the point where a double counts integers,
+    // and subtracting the two first keeps the interval exact.
+    return Math.max(0, (Number(live.bar) - newest) / 1e6);
+  }
+
+  /// A lag in the unit that makes it readable: minutes while it is minutes, hours
+  /// once it is not.
+  function lagText(ms) {
+    if (ms >= 3_600_000) return `${Math.round(ms / 3_600_000)}h`;
+    return `${Math.max(1, Math.round(ms / 60_000))}m`;
+  }
+
+  /// Say what the live channel is doing, and make the claim checkable.
+  ///
+  /// The badge carries the **age of the last frame that arrived**, not the state
+  /// of the socket, because those are different facts and only one of them is
+  /// what the user is asking about. A socket can be open and silent -- which is
+  /// precisely the report this exists to answer, seven hours of the same candles
+  /// with nothing on the page saying whether the channel was working -- so a
+  /// badge driven by `readyState` would have sat there green through all of it.
+  ///
+  /// The age is also why it is a measurement rather than a label: it counts up
+  /// while nothing arrives, and the count resets when a bar closes. If the feed
+  /// stops, the number climbing past the threshold *is* the evidence.
+  ///
+  /// Silence is normal for most of a bar, so the threshold is a bar and a half
+  /// plus a margin rather than a few seconds -- a closed-candle feed has nothing
+  /// to say between closes, and a badge that flickered amber every bar would
+  /// teach the user to ignore it.
+  function refreshLiveBadge() {
+    const badge = el("feedStatus");
+    if (!badge) return;
+
+    const bar = BAR_MS[el("timeframe").value] || 300_000;
+    const quietFor = bar * 1.5 + 30_000;
+    const age = live.at ? Date.now() - live.at : Infinity;
+    const seconds = Math.round(age / 1000);
+
+    const set = (state, text, title) => {
+      badge.dataset.state = state;
+      badge.textContent = text;
+      if (title) badge.title = title;
+    };
+
+    if (live.state === "idle") {
+      set("idle", "no channel yet", "This chart has not opened a market channel.");
+      return;
+    }
+    if (live.state === "connecting") {
+      set("idle", "connecting…", "Opening the market channel.");
+      return;
+    }
+    if (live.state === "nofeed") {
+      set(
+        "nofeed",
+        "no feed",
+        "The server has no market feed configured, so this channel will never carry a candle. See the note under the chart."
+      );
+      return;
+    }
+    if (live.state === "offline") {
+      set(
+        "offline",
+        "offline",
+        "The market channel closed. Reload to reopen it."
+      );
+      return;
+    }
+    // Open, and no bar yet. A closed-candle feed says nothing until a bar closes,
+    // so this is the honest reading for up to a whole bar after connecting --
+    // "live" here would be a claim about data that has not arrived.
+    if (!live.at) {
+      set(
+        "idle",
+        "waiting for a bar",
+        "The channel is open. This feed publishes closed bars, so the first one arrives at the end of the current bar."
+      );
+      return;
+    }
+    if (age > quietFor) {
+      set(
+        "stale",
+        `quiet ${Math.round(seconds / 60)}m`,
+        `No candle has arrived for ${seconds}s. The channel is open, so this is either a quiet market or a feed that has stopped.`
+      );
+      return;
+    }
+    // Live on the wire, and the chart still not moving. This is the reading that
+    // makes the badge trustworthy rather than reassuring: in footprint mode the
+    // ladder is built from stored trades, and nothing persists the live feed yet,
+    // so the channel can be perfectly healthy while the ladder is hours old.
+    // Saying "live" there would be the one thing this badge must never do.
+    const barMs = BAR_MS[el("timeframe").value] || 300_000;
+    const lag = ladderLagMs();
+    if (lag > barMs * 2) {
+      set(
+        "behind",
+        `feed live · ladder ${lagText(lag)} behind`,
+        `Candles are arriving on the market channel, but this chart is drawn from stored trades and the newest stored one is ${lagText(lag)} old. The feed is live; the stored series is not.`
+      );
+      return;
+    }
+    // The age is the point: it is what makes "live" a reading rather than a
+    // promise, and it is what the user can watch reset when a bar closes.
+    set(
+      "live",
+      `live · ${el("symbol").value} ${el("timeframe").value} · ${formatBar(live.bar)} · ${seconds}s ago`,
+      "Candles are arriving on the market channel. The age resets each time a bar closes."
     );
   }
 
@@ -1699,7 +1901,19 @@ function createChartPane(root, hooks = {}) {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     const query = token() ? `?token=${encodeURIComponent(token())}` : "";
 
+    // A reconnect is a new channel, so the old reading is not evidence about the
+    // new one. Reset before opening rather than after: the gap between the two
+    // would otherwise show the previous socket's age against the new socket.
+    live.state = "connecting";
+    live.at = 0;
+    live.bar = 0;
+    refreshLiveBadge();
+
     socket = new WebSocket(`${scheme}://${location.host}/ws/market/${symbol}/${timeframe}${query}`);
+    socket.onopen = () => {
+      live.state = "open";
+      refreshLiveBadge();
+    };
     socket.onmessage = (event) => {
       let frame;
       try {
@@ -1715,6 +1929,10 @@ function createChartPane(root, hooks = {}) {
         if (last && last.open_time === incoming.open_time) candles[candles.length - 1] = incoming;
         else candles.push(incoming);
         if (candles.length > Number(el("limit").value) + 50) candles.shift();
+        // Stamped on arrival rather than on the bar's own time: a replayed bar
+        // arrives now, and "is the feed alive" is a question about arrivals.
+        live.at = Date.now();
+        live.bar = incoming.open_time;
         render();
       } else if (frame.type === "notice") {
         // The server's explanation outranks the engine's note. "The feed is not
@@ -1723,13 +1941,22 @@ function createChartPane(root, hooks = {}) {
         // straight after this, and `onclose` deliberately leaves the message
         // alone -- a socket that closed is not a reason to forget why.
         feedNotice = frame.message;
+        live.state = "nofeed";
         el("chartNote").textContent = feedNotice;
+        refreshLiveBadge();
       } else if (frame.type === "lagged") {
         el("chartNote").textContent =
           `the live feed dropped ${frame.dropped} candles; reload to resynchronise`;
       }
     };
-    socket.onclose = () => { socket = null; };
+    socket.onclose = () => {
+      socket = null;
+      // `nofeed` outranks `offline`: the channel closing is not news when the
+      // server has already said why, and "offline" beside "no feed is
+      // configured" would be two answers to one question.
+      if (live.state !== "nofeed") live.state = "offline";
+      refreshLiveBadge();
+    };
   }
   // ---------------------------------------------------------------------------
   // This pane's own listeners
@@ -1940,18 +2167,32 @@ function createChartPane(root, hooks = {}) {
     deleteSelected,
 
     /// Take this pane off the page. Its own listeners go with its elements; the
-    /// two things that outlive them are the channel and a frame waiting for one.
+    /// three things that outlive them are the channel, a frame waiting for one,
+    /// and the clock the live badge counts with.
     destroy() {
       if (socket) socket.close();
       if (gestureFrame) {
         cancelAnimationFrame(gestureFrame);
         gestureFrame = 0;
       }
+      // A pane that is gone must not keep a timer running: the badge would be
+      // written into a detached element forever, and a closed pane's channel
+      // would go on being described by a chart that no longer exists.
+      if (liveTimer) {
+        clearInterval(liveTimer);
+        liveTimer = 0;
+      }
       socket = null;
     },
   };
 
   wire();
+  // The age has to tick on its own, and this is why it is a timer rather than a
+  // side effect of `render`: the badge's whole job is to report how long it has
+  // been since the last frame, and the case that matters is the one where nothing
+  // is redrawing because nothing is arriving.
+  liveTimer = setInterval(refreshLiveBadge, 1000);
+  refreshLiveBadge();
   return paneApi;
 }
 

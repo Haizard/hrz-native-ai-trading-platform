@@ -226,6 +226,17 @@ pub struct Grid {
     /// plot height, and a caller working it out a second time is a second answer
     /// waiting to disagree.
     pub note: Option<Note>,
+    /// The narrowest a cell can be and still show this window's widest pair.
+    ///
+    /// For a caller that has to choose a **column count** before any layout
+    /// exists — the shell does, and the column count is what decides how many
+    /// candles are on screen. `floor(plot_width / min_cell_px)` is the most
+    /// columns that stay legible, which is strictly more than a constant chosen
+    /// to be safely under it.
+    ///
+    /// Reported rather than recomputed, because a second copy of this
+    /// arithmetic in the shell is the defect this field replaces.
+    pub min_cell_px: f64,
 }
 
 /// Rows beyond this and the axis is a smear at any height.
@@ -297,6 +308,25 @@ pub fn font_for_width(cell_width: f64, pair_chars: usize) -> f64 {
         return f64::INFINITY;
     }
     (cell_width - 2.0 * CELL_MARGIN_PX) / glyphs
+}
+
+/// The cell width [`font_for_width`] needs to land exactly on `font_px`.
+///
+/// The inverse of the function above, and it exists because the question is
+/// asked in both directions. The layout asks "given this cell, how big a font
+/// fits?"; the shell has to ask the other way round, because it must choose a
+/// **column count** before any layout exists — and the column count is what
+/// decides how many candles are on screen.
+///
+/// The shell used to hold a hand-computed constant for this (`MIN_COLUMN_PX`,
+/// 54 and then 64) matched against [`MIN_FONT_PX`] and [`GLYPH_PER_FONT`] by
+/// arithmetic done in a different language. That is the same two-places defect
+/// as the font itself: two constants that have to agree, in two files, with
+/// nothing failing when they stop agreeing. Keeping the inverse beside the
+/// function it inverts is what makes one of them unnecessary.
+#[must_use]
+pub fn cell_for_font(font_px: f64, pair_chars: usize) -> f64 {
+    pair_chars as f64 * GLYPH_PER_FONT * font_px + 2.0 * CELL_MARGIN_PX
 }
 
 /// Format a volume the way a ladder reads: two significant decimals, then a
@@ -393,6 +423,13 @@ pub fn layout(
     let font_px = (row_height * FONT_PER_ROW)
         .min(font_for_width(slot, pair_chars))
         .clamp(FLOOR_FONT_PX, 11.0);
+
+    // What the caller needs to choose a column count for *this* window's numbers
+    // rather than for a guess about them. `slot` is already `plot.w / columns`,
+    // so this is the same arithmetic read backwards -- and it is what lets the
+    // shell ask for the most columns that stay legible instead of a constant that
+    // has to be kept under the real figure by hand.
+    let min_cell_px = cell_for_font(MIN_FONT_PX, pair_chars);
 
     let rows: Vec<Row> = prices
         .iter()
@@ -501,6 +538,7 @@ pub fn layout(
         },
         font_px,
         show_text: font_px >= MIN_FONT_PX,
+        min_cell_px,
         note: truncated.then(|| Note {
             message: format!(
                 "{levels} price levels in this window, showing the middle {cap}. Ask for fewer \
@@ -760,8 +798,14 @@ mod tests {
 
     #[test]
     fn a_shallow_window_is_not_truncated() {
-        let grid = layout(&[column(0, vec![cell(100.0, 1.0, 1.0)])], plot(), None, 20.0, 1)
-            .expect("a grid");
+        let grid = layout(
+            &[column(0, vec![cell(100.0, 1.0, 1.0)])],
+            plot(),
+            None,
+            20.0,
+            1,
+        )
+        .expect("a grid");
         assert!(grid.note.is_none());
     }
 
@@ -773,7 +817,12 @@ mod tests {
         // threshold. Every cell was drawn and not one number was, which is what
         // "the footprint is not well presented" turned out to mean.
         let cells: Vec<ColumnCell> = (0..45).map(|i| cell(100.0 + i as f64, 1.0, 1.0)).collect();
-        let plot = Plot { x: 0.0, y: 0.0, w: 600.0, h: 500.0 };
+        let plot = Plot {
+            x: 0.0,
+            y: 0.0,
+            w: 600.0,
+            h: 500.0,
+        };
         let grid = layout(&[column(0, cells)], plot, None, 20.0, 1).expect("a grid");
         assert_eq!(grid.rows.len(), 45, "45 rows fit a 500px plot");
         assert!(
@@ -789,10 +838,16 @@ mod tests {
         // and `1.40 x 2.85` at 8.6px is 59px of a 54px column -- so the font has
         // to come down to what the cell can hold, not just what the row can.
         let cells: Vec<ColumnCell> = (0..45).map(|i| cell(100.0 + i as f64, 1.4, 2.85)).collect();
-        // Twenty columns across a 1080px plot is the 54px column the shell sizes
-        // for (`MIN_COLUMN_PX` in `loadFootprint`).
+        // Twenty columns across a 1080px plot is a 54px cell -- the width this
+        // window's numbers need, and the width the shell now derives from
+        // `Grid::min_cell_px` rather than holding as a constant.
         let columns: Vec<Column> = (0..20).map(|i| column(i as i64, cells.clone())).collect();
-        let plot = Plot { x: 0.0, y: 0.0, w: 1080.0, h: 500.0 };
+        let plot = Plot {
+            x: 0.0,
+            y: 0.0,
+            w: 1080.0,
+            h: 500.0,
+        };
         let grid = layout(&columns, plot, None, 20.0, 1).expect("a grid");
 
         assert_eq!(grid.rows.len(), 45);
@@ -817,7 +872,12 @@ mod tests {
         // is a heat map, and `show_text` is how it is said.
         let cells: Vec<ColumnCell> = (0..10).map(|i| cell(100.0 + i as f64, 1.4, 2.85)).collect();
         let columns: Vec<Column> = (0..40).map(|i| column(i as i64, cells.clone())).collect();
-        let plot = Plot { x: 0.0, y: 0.0, w: 1080.0, h: 500.0 };
+        let plot = Plot {
+            x: 0.0,
+            y: 0.0,
+            w: 1080.0,
+            h: 500.0,
+        };
         let grid = layout(&columns, plot, None, 20.0, 1).expect("a grid");
         assert!(!grid.show_text, "{}px in a 27px cell", grid.font_px);
     }
@@ -827,12 +887,88 @@ mod tests {
         // The one case `show_text` is for. It is true for every real plot -- the
         // cap above sees to that -- and a field that could never be false would be
         // a field that says nothing, so this pins the case where it is not.
-        let plot = Plot { x: 0.0, y: 0.0, w: 600.0, h: 8.0 };
-        let grid = layout(&[column(0, vec![cell(100.0, 1.0, 1.0)])], plot, None, 20.0, 1)
-            .expect("a grid");
-        assert_eq!(grid.rows.len(), 1, "one row, because zero rows is not a grid");
-        assert!(grid.font_px < MIN_FONT_PX, "{}px in an 8px plot", grid.font_px);
+        let plot = Plot {
+            x: 0.0,
+            y: 0.0,
+            w: 600.0,
+            h: 8.0,
+        };
+        let grid = layout(
+            &[column(0, vec![cell(100.0, 1.0, 1.0)])],
+            plot,
+            None,
+            20.0,
+            1,
+        )
+        .expect("a grid");
+        assert_eq!(
+            grid.rows.len(),
+            1,
+            "one row, because zero rows is not a grid"
+        );
+        assert!(
+            grid.font_px < MIN_FONT_PX,
+            "{}px in an 8px plot",
+            grid.font_px
+        );
         assert!(!grid.show_text, "an 8px plot cannot hold a 7px number");
+    }
+
+    #[test]
+    fn the_cell_width_reported_is_the_inverse_of_the_font_it_produces() {
+        // The two directions have to be the same arithmetic, or a shell that asks
+        // one of them gets an answer that contradicts the other. This is the
+        // property, not a table of numbers.
+        for chars in [7, 11, 15] {
+            for font in [5.0, 7.0, 9.5] {
+                let cell = cell_for_font(font, chars);
+                let back = font_for_width(cell, chars);
+                assert!(
+                    (back - font).abs() < 1e-9,
+                    "{chars} characters at {font}px needs a {cell}px cell, which reports {back}px"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_shell_can_size_a_window_from_the_cell_width_the_engine_reports() {
+        // The field exists so the shell can choose a column count *before* a layout
+        // does. So the claim is that `floor(plot_width / min_cell_px)` is exactly
+        // the largest legible column count: that many columns keep their numbers,
+        // and one more loses them. A `min_cell_px` that were merely approximately
+        // right would pass the arithmetic above and fail this.
+        let cells: Vec<ColumnCell> = (0..10).map(|i| cell(100.0 + i as f64, 1.4, 2.85)).collect();
+        let plot = Plot {
+            x: 0.0,
+            y: 0.0,
+            w: 1080.0,
+            h: 500.0,
+        };
+        let seed = layout(&[column(0, cells.clone())], plot, None, 20.0, 1).expect("a grid");
+
+        let fits = (plot.w / seed.min_cell_px).floor() as usize;
+        assert!(fits > 1, "a 1080px plot holds more than one ladder cell");
+
+        let at = |n: usize| {
+            let columns: Vec<Column> = (0..n).map(|i| column(i as i64, cells.clone())).collect();
+            layout(&columns, plot, None, 20.0, 1).expect("a grid")
+        };
+
+        let roomy = at(fits);
+        assert!(
+            roomy.show_text,
+            "{} columns is what floor(1080 / {}) says fits, and it came out at {}px",
+            fits, seed.min_cell_px, roomy.font_px
+        );
+
+        let tight = at(fits + 1);
+        assert!(
+            !tight.show_text,
+            "{} columns is one past what the engine reported room for, and it still drew {}px",
+            fits + 1,
+            tight.font_px
+        );
     }
 
     #[test]
@@ -843,10 +979,15 @@ mod tests {
         assert!(json["rows"].is_array());
         assert!(json["columns"][0]["cells"][0]["bid_text"].is_string());
         assert_eq!(json["stats"]["trades"], 7);
-        // The two fields the shell reads to decide whether to draw a number at
-        // all. A rename here is not a compile error anywhere -- it is a blank
-        // ladder -- which is the whole reason this test exists.
+        // The three fields the shell reads to decide whether to draw a number at
+        // all, and how many columns to ask for next time. A rename here is not a
+        // compile error anywhere -- it is a blank ladder, or a ladder that stops
+        // adapting -- which is the whole reason this test exists.
         assert!(json["font_px"].is_number());
         assert!(json["show_text"].is_boolean());
+        assert!(
+            json["min_cell_px"].is_number(),
+            "the shell sizes its window from this"
+        );
     }
 }

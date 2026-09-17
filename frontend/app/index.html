@@ -250,6 +250,25 @@
   .footprintStats b { color: var(--muted); font-weight: 400; margin-right: 4px; }
 
   /*
+    The live-feed badge. Colour is the whole of the signal, so each state gets
+    one and the states are the four things that can actually be true: candles
+    arriving, the channel open but silent, the channel closed, and no feed
+    configured on the server at all. `stale` and `nofeed` share a colour because
+    from the user's side they are the same situation -- the chart is not moving --
+    and the words say which one it is.
+  */
+  .feedStatus {
+    font-family: var(--mono); font-size: 11px; padding: 3px 8px;
+    border: 1px solid var(--line); border-radius: 4px;
+    color: var(--muted); white-space: nowrap;
+  }
+  .feedStatus[data-state="live"] { color: #26a69a; border-color: #26a69a; }
+  .feedStatus[data-state="stale"],
+  .feedStatus[data-state="behind"],
+  .feedStatus[data-state="nofeed"] { color: #d29922; border-color: #d29922; }
+  .feedStatus[data-state="offline"] { color: #ef5350; border-color: #ef5350; }
+
+  /*
     Responsive layout.
 
     The page is a fixed-height column -- a header, a chart that takes what is
@@ -361,6 +380,16 @@
         -->
         <select class="symbol" title="Which instrument this chart shows"></select>
         <select class="timeframe" title="Which timeframe this chart shows"></select>
+        <!--
+          Whether live candles are actually arriving, with the evidence for it.
+
+          A badge that only says "LIVE" is a claim, and the report behind this one
+          was seven hours of the same candles with nothing anywhere saying whether
+          the channel was working or dead. So it carries the age of the last frame
+          that arrived: the number resets when a bar closes, and if frames stop it
+          climbs until the badge stops saying live. A green light that cannot go
+          out is worse than no light, because it is the thing you would check.
+        -->
         <select class="limit" title="How many bars to load">
           <option value="200">200 bars</option>
           <option value="500" selected>500 bars</option>
@@ -399,6 +428,19 @@
         -->
         <button class="fit" title="Show the whole series again (all the bars, and a price axis fitted to them)">Fit</button>
         <button class="load">Reload</button>
+        <!--
+          Whether live candles are arriving, and the evidence for the answer: the
+          age of the last frame that arrived. The number resets when a bar closes,
+          and if frames stop it climbs until the badge stops saying live.
+
+          A green light that cannot go out is worse than no light, because it is
+          the thing you would check -- and this one can also say `behind`, which
+          is the honest reading in footprint mode: the ladder there is drawn from
+          stored trades, so the channel can be healthy while the chart is hours
+          old. Last in the row on purpose: the controls read left to right as one
+          sentence, and a status is not part of it.
+        -->
+        <span class="feedStatus" data-state="idle" title="Whether live candles are arriving, and how long ago the last one did">no channel yet</span>
         <!--
           Shown only when there is more than one pane. Closing the last chart is
           refused rather than leaving an empty page with no way back, and the honest
