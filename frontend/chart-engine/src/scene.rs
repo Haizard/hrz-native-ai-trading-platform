@@ -41,6 +41,10 @@ use analytics_core::volume_profile::{calculate_volume_profile_from_candles, Volu
 use analytics_core::vwap::calculate_vwap;
 use serde::{Deserialize, Serialize};
 
+use crate::drawing::{
+    Anchor, Drawing, DrawingKind, DrawingPart, Fraction, SceneDrawing, FIB_LEVELS,
+};
+
 /// Layout constants, in CSS pixels of the scene's own coordinate space.
 ///
 /// The shell scales the canvas for device pixel ratio; the scene is always in
@@ -195,6 +199,23 @@ pub struct Request {
     /// would have prevented, and a hostile factor cannot invert the axis.
     #[serde(default)]
     pub gesture: Option<crate::viewport::Gesture>,
+    /// The shapes the user has drawn on this symbol.
+    ///
+    /// Sent every frame rather than fetched by the engine, because the engine is
+    /// wasm with no I/O and the shell already holds them -- it read them from
+    /// `/drawings` on the symbol change.
+    ///
+    /// An anchor may be a [`crate::drawing::Anchor::Fraction`] here, which is how
+    /// placing and dragging work: the shell sends a pointer position and reads
+    /// back a time and a price. The scene always reports
+    /// [`crate::drawing::Anchor::Absolute`].
+    ///
+    /// A drawing that cannot be resolved is **not drawn** and the reason goes
+    /// into [`Scene::note`] with its id, the same arrangement a refused concept
+    /// document gets -- and for the same reason: half a shape is worse than
+    /// none, and a silent refusal teaches whoever drew it nothing.
+    #[serde(default)]
+    pub drawings: Vec<Drawing>,
 }
 
 /// The levels drawn when a request does not say.
@@ -217,6 +238,7 @@ impl Default for Request {
             concepts: Vec::new(),
             viewport: crate::viewport::Viewport::default(),
             gesture: None,
+            drawings: Vec::new(),
         }
     }
 }
@@ -481,6 +503,13 @@ pub struct Scene {
     /// `None` for every other mode, and for [`Mode::Footprint`] without trades
     /// -- in which case [`Scene::cells`] carries the candle-derived fallback.
     pub footprint: Option<crate::footprint::Grid>,
+    /// The shapes the user drew, positioned.
+    ///
+    /// Last in the struct because it is drawn last: a drawing is the user's own
+    /// annotation, and one that the volume profile or a zone could cover would
+    /// be an annotation they cannot see. Always present and usually empty, like
+    /// [`Scene::regions`], so the shell's draw loop needs no null check.
+    pub drawings: Vec<SceneDrawing>,
     /// A caveat about what is being shown, when there is one.
     pub note: Option<String>,
 }
@@ -562,6 +591,7 @@ pub fn build(request: &Request) -> Scene {
         regions: Vec::new(),
         ticks: Vec::new(),
         footprint: None,
+        drawings: Vec::new(),
         note: None,
     };
 
@@ -754,35 +784,67 @@ pub fn build(request: &Request) -> Scene {
     // The zones keep the **whole** series, unlike the profile and the levels: a
     // zone that formed before the window is still a zone, and clipping it to the
     // window would erase exactly the bands a trader scrolled back to look at.
-    // The `Mapping` carries the window, so a zone outside it lands off-plot and
-    // the canvas clips it, which is the correct rendering of "not in view".
-    scene.regions = region_rects(
-        request.zones,
-        &concepts,
-        &request.candles,
-        &Mapping {
-            plot,
-            from: scene.from,
-            to: scene.to,
-            price_min: scene.price_min,
-            price_max: scene.price_max,
-        },
-    );
+    // The frame carries the window, so a zone outside it lands off-plot and the
+    // canvas clips it, which is the correct rendering of "not in view".
+    //
+    // The frame is built once and shared with the drawings below, because they
+    // need the same mapping and -- for a fraction anchor -- its inverse. Two
+    // frames would be two chances for one of them to be built from the wrong
+    // window, and the drawing would then sit a slot away from its own candle.
+    let frame = Frame {
+        plot,
+        from: scene.from,
+        to: scene.to,
+        price_min: scene.price_min,
+        price_max: scene.price_max,
+    };
+    scene.regions = region_rects(request.zones, &concepts, &request.candles, &frame);
     scene.ticks = ticks(&plot, scene.price_min, scene.price_max);
 
+    // Drawings last, and positioned last, because they are the user's own
+    // annotation: one that a zone or the profile could cover is one they cannot
+    // see. They are also the only geometry here that keeps the **whole** series
+    // and the whole price range -- a trendline drawn last week is still a
+    // trendline when the window has moved past it, so the anchors are mapped
+    // absolutely and the canvas clips, exactly as a zone's band is.
+    let (drawings, unplaceable) = drawing_parts(&request.drawings, &frame);
+    scene.drawings = drawings;
+
     if !refused.is_empty() {
-        let message = format!(
-            "{} concept document(s) were refused and are not drawn: {}",
-            refused.len(),
-            refused.join("; ")
+        add_note(
+            &mut scene.note,
+            format!(
+                "{} concept document(s) were refused and are not drawn: {}",
+                refused.len(),
+                refused.join("; ")
+            ),
         );
-        scene.note = Some(match scene.note.take() {
-            Some(existing) => format!("{existing} {message}"),
-            None => message,
-        });
+    }
+    if !unplaceable.is_empty() {
+        add_note(
+            &mut scene.note,
+            format!(
+                "{} drawing(s) could not be placed and are not drawn: {}",
+                unplaceable.len(),
+                unplaceable.join("; ")
+            ),
+        );
     }
 
     scene
+}
+
+/// Append a sentence to the scene's note, keeping whatever was already there.
+///
+/// A note is the only channel a refusal has, and there are three producers now:
+/// a mode's own caveat, a refused concept and an unplaceable drawing. Overwriting
+/// would leave the loudest one and drop the rest, which is how a chart ends up
+/// explaining one of its two problems.
+fn add_note(note: &mut Option<String>, message: String) {
+    *note = Some(match note.take() {
+        Some(existing) => format!("{existing} {message}"),
+        None => message,
+    });
 }
 
 /// Heikin-Ashi, from the real candles.
@@ -965,15 +1027,42 @@ fn levels(
     out
 }
 
-/// Where a price and a time land on the canvas.
+/// Where a price and a time land on the canvas, and the way back.
 ///
 /// One struct rather than four loose numbers because they are one thing: the
 /// mapping from `(timestamp, price)` to `(x, y)`. Handing them over whole is
 /// also what keeps a caller from pairing the wrong `from` with the wrong `to` --
 /// four same-shaped parameters in a row is a mistake the compiler cannot see,
 /// and a band drawn against the wrong window is drawn silently wrong.
+///
+/// ## Why the inverse is here too
+///
+/// A drawing's anchors arrive as positions on the plot while they are being
+/// placed, so something has to turn a position back into a time and a price.
+/// That something is this struct, and it is the only place it happens -- which
+/// is the point. The alternative is the shell inverting the mapping, and then
+/// there are two implementations of "which price is at the top of the plot", and
+/// the chart and its own axis disagree the moment either one is edited.
+///
+/// ## Why two x methods and not one
+///
+/// [`Frame::x_at_nanos`] and [`Frame::x_at_ms`] differ only in their unit, which
+/// is exactly the shape of mistake this repository keeps finding: both compile,
+/// both look right, and a nanosecond timestamp passed to the millisecond one
+/// puts the drawing in 1970. The units are in the names because nothing else can
+/// tell them apart.
+///
+/// ## Every method here assumes a usable frame, and nothing here checks
+///
+/// A `Frame` is only ever built in [`build`], immediately after the window has
+/// produced candles and a usable price range -- both of which `build` has already
+/// established and refuses to continue without. So there is no degenerate frame
+/// to guard against, and a `span <= 0.0` branch here would be one nothing can
+/// reach: the kind of guard this repository keeps deciding is worse than none,
+/// because it reads as coverage. The precondition is written down instead of
+/// defended.
 #[derive(Debug, Clone, Copy)]
-struct Mapping {
+struct Frame {
     /// The plot rectangle.
     plot: Plot,
     /// Left edge of the visible window, in unix nanoseconds.
@@ -986,10 +1075,71 @@ struct Mapping {
     price_max: f64,
 }
 
-impl Mapping {
+impl Frame {
     /// A price's canvas y.
-    fn y(&self, price: f64) -> f64 {
+    fn y_at(&self, price: f64) -> f64 {
         price_to_y(price, self.price_min, self.price_max, &self.plot)
+    }
+
+    /// A timestamp's canvas x, in **nanoseconds** -- what a candle or a region
+    /// carries.
+    fn x_at_nanos(&self, time_ns: i64) -> f64 {
+        let span = (self.to - self.from) as f64;
+        self.plot.x + (time_ns - self.from) as f64 / span * self.plot.w
+    }
+
+    /// A timestamp's canvas x, in **milliseconds** -- what a drawing carries.
+    fn x_at_ms(&self, time_ms: f64) -> f64 {
+        let span = self.right_ms() - self.left_ms();
+        self.plot.x + (time_ms - self.left_ms()) / span * self.plot.w
+    }
+
+    /// The millisecond timestamp at a fraction across the plot.
+    fn ms_at(&self, fraction: f64) -> f64 {
+        self.left_ms() + fraction * (self.right_ms() - self.left_ms())
+    }
+
+    /// The price at a fraction down the plot.
+    fn price_at(&self, fraction: f64) -> f64 {
+        // y grows downward, price grows upward.
+        self.price_max - fraction * (self.price_max - self.price_min)
+    }
+
+    /// The fraction across the plot at a millisecond timestamp.
+    ///
+    /// The inverse of [`Frame::ms_at`], and here for the same reason that one
+    /// is: a body drag is a screen-space delta, and the shell cannot add one to
+    /// a timestamp without inverting this mapping. Reporting the fraction is
+    /// what lets the shell stay in the unit it already works in -- the same
+    /// division `pan` does -- while the price scale stays in Rust.
+    fn fraction_at_ms(&self, time_ms: f64) -> f64 {
+        (time_ms - self.left_ms()) / (self.right_ms() - self.left_ms())
+    }
+
+    /// The fraction down the plot at a price. The inverse of
+    /// [`Frame::price_at`], with the same reversal of direction.
+    fn fraction_at_price(&self, price: f64) -> f64 {
+        (self.price_max - price) / (self.price_max - self.price_min)
+    }
+
+    /// The window's left edge in milliseconds.
+    ///
+    /// Integer division rather than `as f64 / 1e6`: the second one converts to a
+    /// `f64` first, and a present-day nanosecond timestamp is past 2^53, so the
+    /// division would be done on a number that had already lost its low bits.
+    /// This is exact.
+    ///
+    /// Named for the edge rather than `from_ms`/`to_ms`, which is what it was
+    /// first: clippy reads those as the `from_*` and `to_*` conversion
+    /// conventions and objects, and the names it suggests are no clearer. The
+    /// fields are `from` and `to`; these are the same two edges in another unit.
+    fn left_ms(&self) -> f64 {
+        (self.from / 1_000_000) as f64
+    }
+
+    /// The window's right edge in milliseconds.
+    fn right_ms(&self) -> f64 {
+        (self.to / 1_000_000) as f64
     }
 }
 
@@ -1017,7 +1167,7 @@ fn region_rects(
     zones: bool,
     concepts: &[Concept],
     candles: &[Candle],
-    map: &Mapping,
+    map: &Frame,
 ) -> Vec<SceneRegion> {
     let span = (map.to - map.from) as f64;
     if span <= 0.0 {
@@ -1060,14 +1210,14 @@ fn region_rects(
                 return None;
             }
             let mitigated = region.mitigated.clamp(0.0, 1.0);
-            let y_top = map.y(region.price_high);
-            let y_bottom = map.y(region.price_low);
+            let y_top = map.y_at(region.price_high);
+            let y_bottom = map.y_at(region.price_low);
             Some(SceneRegion {
                 label: region_label(&region.name, mitigated),
                 name: region.name,
                 side: region.side.name().to_owned(),
-                x: map.plot.x + (start - map.from) as f64 / span * map.plot.w,
-                w: (end - start) as f64 / span * map.plot.w,
+                x: map.x_at_nanos(start),
+                w: map.x_at_nanos(end) - map.x_at_nanos(start),
                 y_top,
                 h: y_bottom - y_top,
                 price_low: region.price_low,
@@ -1097,6 +1247,222 @@ fn region_label(name: &str, mitigated: f64) -> String {
     } else {
         format!("{name} ({:.0}% mitigated)", mitigated * 100.0)
     }
+}
+
+/// Where each drawing's shapes land on the canvas, and what could not be placed.
+///
+/// The anchors are resolved first and the shapes built from them, which is the
+/// order the two units demand: a fraction anchor cannot be positioned until it
+/// has become a time and a price, and every shape needs both.
+///
+/// A refusal is not an error. It is one drawing missing from a chart that still
+/// has everything else, plus a sentence in the note saying which one and why --
+/// the arrangement a refused concept document already gets, and for the same
+/// reason: half a shape is worse than none, and a silent refusal teaches whoever
+/// drew it nothing.
+fn drawing_parts(drawings: &[Drawing], frame: &Frame) -> (Vec<SceneDrawing>, Vec<String>) {
+    let mut placed = Vec::with_capacity(drawings.len());
+    let mut refused = Vec::new();
+
+    for drawing in drawings {
+        match place(drawing, frame) {
+            Ok(scene_drawing) => placed.push(scene_drawing),
+            Err(reason) => refused.push(format!("`{}`: {reason}", drawing.id)),
+        }
+    }
+    (placed, refused)
+}
+
+/// Resolve one drawing's anchors and build its shapes.
+fn place(drawing: &Drawing, frame: &Frame) -> Result<SceneDrawing, String> {
+    drawing.validate_anchors()?;
+    // The id is required *here* rather than in `validate_anchors`, because this
+    // is the only caller that needs one: it is how a refusal names the drawing
+    // and how the shell finds the one it grabbed. Storage mints its own, so a
+    // route validating a request body has none to give.
+    if drawing.id.trim().is_empty() {
+        return Err("it has no id, so nothing can refer to it".into());
+    }
+
+    let a1 = resolve(drawing.a1, frame);
+    let a2 = drawing.a2.map(|anchor| resolve(anchor, frame));
+
+    // A click with no drag, on a tool that needs two points. Both anchors are the
+    // same point, so the shape has no extent: nothing visible is drawn, and yet
+    // it is stored -- so the next reload draws the same nothing, and the user who
+    // clicked is left believing the tool does not work.
+    //
+    // Exact equality is the right test rather than a tolerance. It is not a
+    // *small* drawing being rejected: it is precisely "the pointer did not move
+    // between down and up", because both anchors are the same fraction of the
+    // same plot. A one-pixel drag is a different pair of numbers and is drawn.
+    //
+    // The whole anchor is compared, not one coordinate, because a vertical
+    // trendline and a flat rectangle are both real things to draw.
+    if drawing.kind.needs_second_anchor() && a2 == Some(a1) {
+        return Err("it has two anchors at the same point, so it has no extent".into());
+    }
+
+    let parts = shapes(drawing.kind, drawing.selected, a1, a2, frame);
+    Ok(SceneDrawing {
+        id: drawing.id.clone(),
+        kind: drawing.kind,
+        label: drawing.label.clone(),
+        selected: drawing.selected,
+        a1: Anchor::Absolute {
+            time: a1.0,
+            price: a1.1,
+        },
+        a2: a2.map(|(time, price)| Anchor::Absolute { time, price }),
+        // The fractions are derived from the resolved numbers rather than passed
+        // down from the request, so an anchor that arrived absolute and one that
+        // arrived as a fraction report the same thing. That is what makes the
+        // round trip in
+        // `placing_with_a_fraction_and_saving_the_answer_does_not_move_the_drawing`
+        // hold for both, and it is why there is one `resolve` and not two.
+        a1_fraction: Fraction {
+            x: frame.fraction_at_ms(a1.0),
+            y: frame.fraction_at_price(a1.1),
+        },
+        a2_fraction: a2.map(|(time, price)| Fraction {
+            x: frame.fraction_at_ms(time),
+            y: frame.fraction_at_price(price),
+        }),
+        parts,
+    })
+}
+
+/// Turn one anchor into an absolute millisecond time and a price.
+///
+/// The inverse direction of the frame, and the only place it happens. Both a
+/// placement and a drag come through here, which is what stops a dragged anchor
+/// from landing somewhere a stored one could not -- the two go through one
+/// function rather than two that agree today.
+///
+/// Infallible. The only thing that can be wrong with an anchor is its
+/// *usability*, which [`Drawing::validate`] has already refused, and the frame is
+/// usable by construction.
+fn resolve(anchor: Anchor, frame: &Frame) -> (f64, f64) {
+    match anchor {
+        Anchor::Absolute { time, price } => (time, price),
+        Anchor::Fraction { x, y } => (frame.ms_at(x), frame.price_at(y)),
+    }
+}
+
+/// The shapes one drawing is made of.
+///
+/// `a1` and `a2` are already resolved to `(milliseconds, price)`, so there is no
+/// unit left to get wrong here -- which is why this takes the numbers rather
+/// than the [`Anchor`]s.
+fn shapes(
+    kind: DrawingKind,
+    selected: bool,
+    a1: (f64, f64),
+    a2: Option<(f64, f64)>,
+    frame: &Frame,
+) -> Vec<DrawingPart> {
+    let (t1, p1) = a1;
+    let x1 = frame.x_at_ms(t1);
+    let y1 = frame.y_at(p1);
+    let mut parts = Vec::new();
+
+    match kind {
+        DrawingKind::Trendline => {
+            if let Some((t2, p2)) = a2 {
+                parts.push(DrawingPart::Segment {
+                    x1,
+                    y1,
+                    x2: frame.x_at_ms(t2),
+                    y2: frame.y_at(p2),
+                    dashed: false,
+                });
+            }
+        }
+        DrawingKind::Hline => {
+            // Across the whole plot, because a horizontal level is a price
+            // rather than a segment, and one that stopped at the right edge of
+            // wherever the user happened to click would be a line to nowhere.
+            parts.push(DrawingPart::Segment {
+                x1: frame.plot.x,
+                y1,
+                x2: frame.plot.x + frame.plot.w,
+                y2: y1,
+                dashed: false,
+            });
+            parts.push(DrawingPart::Text {
+                x: frame.plot.x + 4.0,
+                y: y1 - 4.0,
+                text: format!("{p1:.2}"),
+            });
+        }
+        DrawingKind::Rect => {
+            if let Some((t2, p2)) = a2 {
+                let x2 = frame.x_at_ms(t2);
+                let y2 = frame.y_at(p2);
+                parts.push(DrawingPart::Rect {
+                    x: x1.min(x2),
+                    y: y1.min(y2),
+                    w: (x2 - x1).abs(),
+                    h: (y2 - y1).abs(),
+                    filled: true,
+                });
+            }
+        }
+        DrawingKind::Fib => {
+            if let Some((t2, p2)) = a2 {
+                // Between the two anchors, not across the plot: the levels are a
+                // measurement of that range, and drawing them wider than the
+                // range they measure implies a claim the user did not make.
+                let x2 = frame.x_at_ms(t2);
+                let left = x1.min(x2);
+                let right = x1.max(x2);
+                for (ratio, label) in FIB_LEVELS {
+                    let price = p1 + (p2 - p1) * ratio;
+                    let y = frame.y_at(price);
+                    parts.push(DrawingPart::Segment {
+                        x1: left,
+                        y1: y,
+                        x2: right,
+                        y2: y,
+                        dashed: false,
+                    });
+                    // The percentage *and* the price, formatted here: turning
+                    // 0.618 into "61.8" is arithmetic, and `docs/14` keeps
+                    // arithmetic out of JavaScript.
+                    parts.push(DrawingPart::Text {
+                        x: left + 4.0,
+                        y: y - 3.0,
+                        text: format!("{label}%  {price:.2}"),
+                    });
+                }
+            }
+        }
+    }
+
+    // Handles only when selected, and only at anchors this kind actually uses.
+    // The second half matters: an `hline` that carried a second anchor -- which
+    // is permitted and stored -- would otherwise offer a grab point for an
+    // anchor the drawing does not read, and the shell cannot tell the
+    // difference. This is what makes "the shell cannot offer a grab point the
+    // engine would not honour" true rather than aspirational.
+    if selected {
+        parts.push(DrawingPart::Handle {
+            x: x1,
+            y: y1,
+            anchor: 0,
+        });
+        if kind.needs_second_anchor() {
+            if let Some((t2, p2)) = a2 {
+                parts.push(DrawingPart::Handle {
+                    x: frame.x_at_ms(t2),
+                    y: frame.y_at(p2),
+                    anchor: 1,
+                });
+            }
+        }
+    }
+
+    parts
 }
 
 fn ticks(plot: &Plot, price_min: f64, price_max: f64) -> Vec<Tick> {
@@ -2416,5 +2782,722 @@ mod tests {
             viewport = scene.viewport;
             candles.push(candle(200 + added, 200.0, 200.5));
         }
+    }
+
+    // --- drawings -----------------------------------------------------------
+
+    fn absolute(time: f64, price: f64) -> Anchor {
+        Anchor::Absolute { time, price }
+    }
+
+    fn fraction(x: f64, y: f64) -> Anchor {
+        Anchor::Fraction { x, y }
+    }
+
+    fn trendline(a1: Anchor, a2: Anchor) -> Drawing {
+        Drawing {
+            id: "t1".into(),
+            kind: DrawingKind::Trendline,
+            a1,
+            a2: Some(a2),
+            label: None,
+            selected: false,
+        }
+    }
+
+    /// A request with 100 bars and these drawings on it.
+    fn drawn(drawings: Vec<Drawing>) -> Request {
+        Request {
+            drawings,
+            ..request(100)
+        }
+    }
+
+    /// The first segment's four coordinates.
+    fn first_segment(drawing: &SceneDrawing) -> (f64, f64, f64, f64) {
+        drawing
+            .parts
+            .iter()
+            .find_map(|part| match part {
+                DrawingPart::Segment { x1, y1, x2, y2, .. } => Some((*x1, *y1, *x2, *y2)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no segment in {drawing:?}"))
+    }
+
+    fn handle_anchors(drawing: &SceneDrawing) -> Vec<u8> {
+        drawing
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                DrawingPart::Handle { anchor, .. } => Some(*anchor),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn placing_with_a_fraction_and_saving_the_answer_does_not_move_the_drawing() {
+        // The property that makes the two units safe, and the reason a drag needs
+        // no gesture of its own. The shell places with fractions and stores what
+        // the scene reported; a reload has to put it back exactly where it was,
+        // or a drawing drifts a little further every time it is dragged -- which
+        // reads as the chart being slightly wrong about the user's own analysis.
+        let placed = build(&drawn(vec![trendline(
+            fraction(0.31, 0.62),
+            fraction(0.74, 0.20),
+        )]));
+        let first = &placed.drawings[0];
+
+        let reloaded = build(&drawn(vec![trendline(
+            first.a1,
+            first.a2.expect("a trendline has two anchors"),
+        )]));
+        let second = &reloaded.drawings[0];
+
+        assert_eq!(first.a1, second.a1);
+        assert_eq!(first.a2, second.a2);
+        assert_eq!(first.parts, second.parts, "the pixels moved");
+    }
+
+    #[test]
+    fn a_fraction_anchor_lands_where_the_pointer_was() {
+        // x = 0.5 across a window of 100 five-minute bars starting at the epoch
+        // is 15,000,000 ms, and y = 0.5 is the middle of the price axis. Both
+        // are checked because a fraction is two coordinates and getting one
+        // right hides the other.
+        let scene = build(&drawn(vec![trendline(
+            fraction(0.5, 0.5),
+            fraction(0.25, 0.25),
+        )]));
+        let placed = &scene.drawings[0];
+        let (time, price) = placed.a1.absolute().expect("resolved to absolute");
+
+        assert!(
+            (time - 15_000_000.0).abs() < 1.0,
+            "half way across a 0..30,000,000 ms window, got {time}"
+        );
+        let (x1, y1, _, _) = first_segment(placed);
+        assert!(
+            (x1 - (scene.plot.x + scene.plot.w / 2.0)).abs() < 1e-6,
+            "and half way across the plot: {x1}"
+        );
+        assert!(
+            (y1 - (scene.plot.y + scene.plot.h / 2.0)).abs() < 1e-6,
+            "and half way down it: {y1}"
+        );
+        // The price it resolved to is the one that lands there: the round trip
+        // in one line, and the thing the shell is trusting the engine with.
+        assert!(
+            (price_to_y(price, scene.price_min, scene.price_max, &scene.plot) - y1).abs() < 1e-6
+        );
+    }
+
+    #[test]
+    fn a_stored_drawing_reports_the_same_anchors_whatever_the_window() {
+        // What is *stored* must not depend on how the user is looking at it. The
+        // pixels move with the window -- that is what makes a drawing track its
+        // own candles -- but the anchor the shell reads back, which is what it
+        // saves, has to be the number the user drew. A scene that reported a
+        // window-relative anchor would rewrite every drawing on every pan.
+        let one = absolute(6_000_000.0, 110.0);
+        let two = absolute(12_000_000.0, 130.0);
+        let whole = build(&drawn(vec![trendline(one, two)]));
+        let zoomed = build(&Request {
+            viewport: crate::viewport::Viewport {
+                from: 10,
+                count: Some(20),
+                price: None,
+            },
+            ..drawn(vec![trendline(one, two)])
+        });
+
+        assert_eq!(whole.drawings[0].a1, zoomed.drawings[0].a1);
+        assert_eq!(whole.drawings[0].a2, zoomed.drawings[0].a2);
+        // And the pixels did move, or this compares nothing to nothing.
+        assert_ne!(
+            whole.drawings[0].parts, zoomed.drawings[0].parts,
+            "the fixture must put the two windows in different places"
+        );
+    }
+
+    #[test]
+    fn a_drawing_whose_anchors_are_off_the_window_is_still_drawn() {
+        // The zones rule, for the same reason: a trendline drawn last week is
+        // still a trendline when the window has moved past it, and clipping it
+        // away would erase exactly what the user scrolled back to look at. The
+        // mapping is absolute and the canvas clips.
+        let one = absolute(0.0, 100.0);
+        let two = absolute(3_000_000.0, 120.0);
+        let scene = build(&Request {
+            viewport: crate::viewport::Viewport {
+                from: 60,
+                count: Some(20),
+                price: None,
+            },
+            ..drawn(vec![trendline(one, two)])
+        });
+
+        let placed = &scene.drawings[0];
+        assert_eq!(placed.a1, one, "the anchors are unchanged");
+        let (x1, _, x2, _) = first_segment(placed);
+        assert!(
+            x2 < scene.plot.x,
+            "both anchors are left of the window, so the segment is off-plot \
+             and the canvas discards it: {x1}..{x2}"
+        );
+    }
+
+    #[test]
+    fn a_horizontal_line_spans_the_plot_at_its_own_price() {
+        let scene = build(&drawn(vec![Drawing {
+            id: "h1".into(),
+            kind: DrawingKind::Hline,
+            a1: absolute(6_000_000.0, 110.0),
+            a2: None,
+            label: None,
+            selected: false,
+        }]));
+        let (x1, y1, x2, y2) = first_segment(&scene.drawings[0]);
+
+        assert!(
+            (x1 - scene.plot.x).abs() < 1e-9,
+            "it starts at the plot's left edge"
+        );
+        assert!(
+            (x2 - (scene.plot.x + scene.plot.w)).abs() < 1e-9,
+            "and reaches its right edge, whatever x the user clicked"
+        );
+        assert!((y1 - y2).abs() < 1e-9, "and it is horizontal");
+        let expected = price_to_y(110.0, scene.price_min, scene.price_max, &scene.plot);
+        assert!(
+            (y1 - expected).abs() < 1e-6,
+            "at the anchor's price: {y1} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn a_fibonacci_draws_the_retracement_levels_between_its_anchors() {
+        let scene = build(&drawn(vec![Drawing {
+            id: "f1".into(),
+            kind: DrawingKind::Fib,
+            a1: absolute(3_000_000.0, 100.0),
+            a2: Some(absolute(15_000_000.0, 150.0)),
+            label: None,
+            selected: false,
+        }]));
+        let placed = &scene.drawings[0];
+        let levels: Vec<f64> = placed
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                DrawingPart::Segment { y1, .. } => Some(*y1),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(levels.len(), FIB_LEVELS.len());
+
+        let y_of = |price: f64| price_to_y(price, scene.price_min, scene.price_max, &scene.plot);
+        // Level 0 is the first anchor and level 1 is the second. Swapping those
+        // two still draws a plausible Fibonacci, which is exactly why it is
+        // asserted rather than eyeballed.
+        assert!((levels[0] - y_of(100.0)).abs() < 1e-6, "{levels:?}");
+        assert!((levels[FIB_LEVELS.len() - 1] - y_of(150.0)).abs() < 1e-6);
+        // 61.8 is 61.8% of the way from the first anchor's price to the second's.
+        assert!((levels[4] - y_of(100.0 + 50.0 * 0.618)).abs() < 1e-6);
+
+        // They span the two anchors, not the plot: a measurement drawn wider
+        // than the range it measures claims something the user did not.
+        let (x1, _, x2, _) = first_segment(placed);
+        assert!(x1 > scene.plot.x + 1.0, "starts at the first anchor: {x1}");
+        assert!(
+            x2 < scene.plot.x + scene.plot.w - 1.0,
+            "ends at the second: {x2}"
+        );
+
+        // The labels carry the percentage *and* the price, formatted in Rust,
+        // because turning 0.618 into "61.8" is arithmetic.
+        let texts: Vec<&str> = placed
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                DrawingPart::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), FIB_LEVELS.len());
+        assert!(texts[4].contains("61.8%"), "{texts:?}");
+        assert!(texts[4].contains("130.90"), "{texts:?}");
+    }
+
+    #[test]
+    fn handles_belong_to_the_selected_drawing_and_to_no_other() {
+        // Every drawing's anchors at once is visual noise, and it invites a drag
+        // nobody can aim. The engine decides which handles exist, which is also
+        // what stops the shell from offering a grab point the engine would not
+        // honour.
+        let mut chosen = trendline(fraction(0.2, 0.2), fraction(0.6, 0.6));
+        chosen.selected = true;
+        let mut other = trendline(fraction(0.3, 0.3), fraction(0.8, 0.8));
+        other.id = "t2".into();
+
+        let scene = build(&drawn(vec![chosen, other]));
+        assert_eq!(
+            handle_anchors(&scene.drawings[0]),
+            vec![0, 1],
+            "the selected one gets one handle per anchor"
+        );
+        assert!(
+            handle_anchors(&scene.drawings[1]).is_empty(),
+            "and nothing else gets any"
+        );
+    }
+
+    #[test]
+    fn a_horizontal_line_offers_one_handle_even_with_a_second_anchor() {
+        // A second anchor on an `hline` is permitted and stored, and the drawing
+        // does not read it. Offering a handle for it would give the user a grab
+        // point that moves nothing -- and the shell cannot tell the difference,
+        // because a handle is a handle.
+        let scene = build(&drawn(vec![Drawing {
+            id: "h1".into(),
+            kind: DrawingKind::Hline,
+            a1: fraction(0.5, 0.4),
+            a2: Some(fraction(0.9, 0.9)),
+            label: None,
+            selected: true,
+        }]));
+        assert_eq!(handle_anchors(&scene.drawings[0]), vec![0]);
+    }
+
+    #[test]
+    fn a_drawing_the_engine_cannot_place_is_not_drawn_and_the_note_names_it() {
+        // Two refusals that would each otherwise be a shape silently absent with
+        // nothing anywhere saying why: a trendline with one anchor, and an anchor
+        // that is not a number.
+        let mut one_anchor = trendline(absolute(0.0, 100.0), absolute(1.0, 100.0));
+        one_anchor.id = "one-anchor".into();
+        one_anchor.a2 = None;
+
+        let mut not_a_number = trendline(absolute(0.0, 100.0), absolute(1.0, 100.0));
+        not_a_number.id = "not-a-number".into();
+        not_a_number.a2 = Some(absolute(f64::NAN, 100.0));
+
+        // And one that is drawable, so the test also says the refusal is
+        // per-drawing rather than per-request: one bad shape must not take the
+        // rest of the chart with it.
+        let good = trendline(absolute(3_000_000.0, 110.0), absolute(9_000_000.0, 120.0));
+
+        let scene = build(&drawn(vec![one_anchor, not_a_number, good]));
+        assert_eq!(scene.drawings.len(), 1, "{:?}", scene.drawings);
+        assert_eq!(scene.drawings[0].id, "t1");
+
+        let note = scene.note.expect("a refusal must be reported");
+        assert!(note.contains("one-anchor"), "{note}");
+        assert!(note.contains("not-a-number"), "{note}");
+        assert!(note.contains("2 drawing(s)"), "{note}");
+    }
+
+    #[test]
+    fn a_refusal_does_not_overwrite_the_note_that_was_already_there() {
+        // Three producers write to the note: a mode's own caveat, a refused
+        // concept document and an unplaceable drawing. Overwriting leaves the
+        // loudest one and drops the rest, which is how a chart ends up explaining
+        // one of its two problems -- and the one it drops is the one the user can
+        // act on.
+        let mut refused = trendline(absolute(0.0, 100.0), absolute(1.0, 100.0));
+        refused.a2 = None;
+
+        let scene = build(&Request {
+            mode: Mode::HeikinAshi,
+            drawings: vec![refused],
+            ..request(100)
+        });
+        let note = scene.note.expect("both notes must be there");
+        assert!(note.contains("averaged"), "the mode's caveat: {note}");
+        assert!(note.contains("could not be placed"), "the refusal: {note}");
+    }
+
+    #[test]
+    fn a_flat_market_draws_no_drawing_rather_than_inventing_a_price_axis() {
+        // A flat market is a real state: every candle at one price. There is no
+        // price at the top of that chart, so an anchor cannot be positioned -- and
+        // the honest answer is a note, not a drawing of a move that did not
+        // happen.
+        //
+        // The high and low are forced as well as the open and close, because the
+        // shared `candle` helper gives every candle a one-point wick: a fixture
+        // built from it is not flat at all, and the first version of this test
+        // proved exactly that by failing.
+        let flat: Vec<Candle> = (0..50)
+            .map(|i| Candle {
+                high: 100.0,
+                low: 100.0,
+                ..candle(i, 100.0, 100.0)
+            })
+            .collect();
+        let scene = build(&Request {
+            candles: flat,
+            drawings: vec![trendline(
+                absolute(0.0, 100.0),
+                absolute(1_000_000.0, 100.0),
+            )],
+            ..Request::default()
+        });
+        assert!(scene.drawings.is_empty());
+        let note = scene.note.expect("a note");
+        assert!(note.contains("usable prices"), "{note}");
+    }
+
+    #[test]
+    fn the_shell_reads_these_drawing_keys() {
+        // A rename here is not a compile error anywhere. It is a drawing that
+        // stops appearing, or -- worse -- one whose handle the shell cannot find,
+        // so it can be drawn and never moved.
+        let scene = build(&drawn(vec![Drawing {
+            id: "d1".into(),
+            kind: DrawingKind::Trendline,
+            a1: absolute(3_000_000.0, 110.0),
+            a2: Some(absolute(12_000_000.0, 130.0)),
+            label: Some("the one I keep watching".into()),
+            selected: true,
+        }]));
+        let json = serde_json::to_value(&scene).expect("serializes");
+        let drawing = &json["drawings"][0];
+
+        for key in [
+            "id",
+            "kind",
+            "label",
+            "selected",
+            "a1",
+            "a2",
+            "a1_fraction",
+            "a2_fraction",
+            "parts",
+        ] {
+            assert!(
+                !drawing[key].is_null(),
+                "the shell reads `{key}`: {drawing}"
+            );
+        }
+        assert_eq!(drawing["id"], "d1");
+        assert_eq!(drawing["kind"], "trendline");
+        assert_eq!(drawing["selected"], true);
+
+        // The anchors are the API's own body, so the shell posts these two fields
+        // straight back. Both have to be absolute by the time they get here: a
+        // fraction on the wire to storage would be a drawing whose position
+        // depends on the window it happened to be saved from.
+        for anchor in ["a1", "a2"] {
+            assert_eq!(drawing[anchor]["unit"], "absolute", "{anchor}");
+            assert!(drawing[anchor]["time"].is_number(), "{anchor}");
+            assert!(drawing[anchor]["price"].is_number(), "{anchor}");
+        }
+
+        // And the fractions are a plain `{x, y}`, not an `Anchor`. They are only
+        // ever fractions, so a `unit` tag here would be a field the shell has to
+        // read and can never find to be anything but `"fraction"` -- which is a
+        // branch that cannot be taken, dressed up as an interface.
+        for key in ["a1_fraction", "a2_fraction"] {
+            assert!(drawing[key]["x"].is_number(), "{key}");
+            assert!(drawing[key]["y"].is_number(), "{key}");
+            assert!(drawing[key]["unit"].is_null(), "{key} is not an Anchor");
+        }
+
+        // And the parts carry their shape tag, which is what the shell switches
+        // on to decide whether to stroke, fill, label or place a handle.
+        let shapes: Vec<&str> = drawing["parts"]
+            .as_array()
+            .expect("parts is an array")
+            .iter()
+            .map(|part| part["shape"].as_str().expect("a shape tag"))
+            .collect();
+        assert!(shapes.contains(&"segment"), "{shapes:?}");
+        assert!(shapes.contains(&"handle"), "{shapes:?}");
+    }
+
+    #[test]
+    fn a_drawing_with_no_id_is_refused_by_name() {
+        // The scene needs the id for two things -- naming a refusal, and telling
+        // the shell which drawing it grabbed -- so an empty one makes both
+        // impossible. Storage mints its own, so this is the scene's rule rather
+        // than the request body's, and the distinction is asserted on both sides.
+        let mut unnamed = trendline(fraction(0.2, 0.2), fraction(0.6, 0.6));
+        unnamed.id = "   ".into();
+
+        let scene = build(&drawn(vec![unnamed]));
+        assert!(scene.drawings.is_empty());
+        let note = scene.note.expect("a refusal must be reported");
+        assert!(note.contains("no id"), "{note}");
+    }
+
+    #[test]
+    fn a_drawing_survives_the_request_wire() {
+        // The shell sends this object, so it has to deserialize from the same
+        // JSON the scene serializes -- the two ends of one contract.
+        let request: Request = serde_json::from_str(
+            r#"{"candles": [], "width": 800, "height": 400,
+                "drawings": [{"id": "d1", "kind": "hline",
+                              "a1": {"unit": "fraction", "x": 0.4, "y": 0.6}}]}"#,
+        )
+        .expect("a minimal request with a drawing must deserialize");
+        assert_eq!(request.drawings.len(), 1);
+        assert_eq!(request.drawings[0].kind, DrawingKind::Hline);
+        assert_eq!(request.drawings[0].a2, None);
+        assert!(!request.drawings[0].selected);
+
+        // And no drawings at all is not an error: the field is optional, which is
+        // what keeps an older shell working against a newer engine.
+        let bare: Request = serde_json::from_str(r#"{"candles": [], "width": 800, "height": 400}"#)
+            .expect("must deserialize");
+        assert!(bare.drawings.is_empty());
+    }
+
+    // --- moving a whole drawing ---------------------------------------------
+    //
+    // The shell's body drag: read the fractions the engine reported, add a
+    // screen-space delta to *both* anchors, and send them back. The shell does
+    // the addition -- two fractions, the same class of arithmetic as the
+    // division in `plotFraction` -- and the engine does the conversion, so the
+    // price scale never leaves Rust.
+
+    /// A reported fraction moved by a fraction of the plot, as an anchor.
+    fn moved(anchor: Fraction, dx: f64, dy: f64) -> Anchor {
+        Anchor::Fraction {
+            x: anchor.x + dx,
+            y: anchor.y + dy,
+        }
+    }
+
+    /// The first rectangle's four numbers.
+    fn first_rect(drawing: &SceneDrawing) -> (f64, f64, f64, f64) {
+        drawing
+            .parts
+            .iter()
+            .find_map(|part| match part {
+                DrawingPart::Rect { x, y, w, h, .. } => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no rect in {drawing:?}"))
+    }
+
+    fn rect(a1: Anchor, a2: Anchor) -> Drawing {
+        Drawing {
+            id: "r1".into(),
+            kind: DrawingKind::Rect,
+            a1,
+            a2: Some(a2),
+            label: None,
+            selected: false,
+        }
+    }
+
+    #[test]
+    fn a_body_drag_moves_both_ends_of_a_line_by_the_same_pixels() {
+        // The property, and the bug it replaces: dragging the *body* of a
+        // drawing used to send one anchor to the pointer and leave the other
+        // where it was, which turns a translation into a stretch. A trendline
+        // dragged by its middle has to keep its slope and its length.
+        let before = build(&drawn(vec![trendline(
+            fraction(0.2, 0.7),
+            fraction(0.6, 0.3),
+        )]));
+        let start = before.drawings[0].clone();
+        let (dx, dy) = (0.1, -0.05);
+
+        let after = build(&drawn(vec![trendline(
+            moved(start.a1_fraction, dx, dy),
+            moved(
+                start
+                    .a2_fraction
+                    .expect("a trendline is a kind with two anchors"),
+                dx,
+                dy,
+            ),
+        )]));
+
+        let (x1, y1, x2, y2) = first_segment(&before.drawings[0]);
+        let (nx1, ny1, nx2, ny2) = first_segment(&after.drawings[0]);
+
+        // The same delta at both ends, expressed in pixels rather than asserted
+        // in prices: the shell's delta is a fraction of the plot, so that is what
+        // it has to come back as.
+        let want_x = dx * before.plot.w;
+        let want_y = dy * before.plot.h;
+        for (end, got) in [("first", nx1 - x1), ("second", nx2 - x2)] {
+            assert!(
+                (got - want_x).abs() < 1e-6,
+                "the {end} end moved {got} across, wanted {want_x}"
+            );
+        }
+        for (end, got) in [("first", ny1 - y1), ("second", ny2 - y2)] {
+            assert!(
+                (got - want_y).abs() < 1e-6,
+                "the {end} end moved {got} down, wanted {want_y}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_body_drag_does_not_resize_a_rectangle() {
+        // The same property on the kind where getting it wrong is loudest: a
+        // rectangle dragged by its middle that collapses to a corner is the
+        // single most visible way for a body drag to be broken.
+        let before = build(&drawn(vec![rect(fraction(0.25, 0.75), fraction(0.5, 0.5))]));
+        let start = before.drawings[0].clone();
+        let (dx, dy) = (0.12, 0.08);
+
+        let after = build(&drawn(vec![rect(
+            moved(start.a1_fraction, dx, dy),
+            moved(
+                start.a2_fraction.expect("a rectangle has two anchors"),
+                dx,
+                dy,
+            ),
+        )]));
+
+        let (x, y, w, h) = first_rect(&before.drawings[0]);
+        let (nx, ny, nw, nh) = first_rect(&after.drawings[0]);
+        assert!((nw - w).abs() < 1e-6, "width went {w} -> {nw}");
+        assert!((nh - h).abs() < 1e-6, "height went {h} -> {nh}");
+        assert!((nx - x - dx * before.plot.w).abs() < 1e-6, "x {x} -> {nx}");
+        assert!((ny - y - dy * before.plot.h).abs() < 1e-6, "y {y} -> {ny}");
+    }
+
+    #[test]
+    fn a_drawing_stored_as_a_timestamp_still_reports_a_fraction_to_drag_by() {
+        // Every drawing loaded from the API arrives *absolute* -- that is the
+        // only form storage keeps. If the engine reported fractions only for
+        // anchors that arrived as fractions, a saved drawing would be undraggable
+        // until it had been dragged once, which is a feature that works the
+        // second time and not the first.
+        let scene = build(&drawn(vec![trendline(
+            absolute(1_700_000_000_000.0, 100.0),
+            absolute(1_700_000_600_000.0, 110.0),
+        )]));
+        let stored = &scene.drawings[0];
+        let a2 = stored.a2_fraction.expect("a trendline has two anchors");
+        assert!(
+            stored.a1_fraction.x.is_finite() && stored.a1_fraction.y.is_finite(),
+            "a stored drawing must report a usable drag base: {:?}",
+            stored.a1_fraction
+        );
+
+        // And the fraction is the *same point*: feeding it back as a fraction
+        // lands on the pixels the absolute anchors produced. That is what makes
+        // it usable as a base to add a delta to, rather than merely a number.
+        let again = build(&drawn(vec![trendline(
+            Anchor::Fraction {
+                x: stored.a1_fraction.x,
+                y: stored.a1_fraction.y,
+            },
+            Anchor::Fraction { x: a2.x, y: a2.y },
+        )]));
+        let (x1, y1, x2, y2) = first_segment(stored);
+        let (rx1, ry1, rx2, ry2) = first_segment(&again.drawings[0]);
+        for (what, got, want) in [
+            ("x1", rx1, x1),
+            ("y1", ry1, y1),
+            ("x2", rx2, x2),
+            ("y2", ry2, y2),
+        ] {
+            assert!(
+                (got - want).abs() < 1e-9,
+                "{what}: the fraction gave {got}, the timestamp gave {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_horizontal_line_moved_by_its_body_keeps_spanning_the_plot() {
+        // An `hline` has one anchor, so a body drag shifts its price and nothing
+        // else. Its width is not a property it has -- the engine draws it across
+        // the plot -- so a horizontal component must not be able to do anything.
+        let before = build(&drawn(vec![Drawing {
+            id: "h1".into(),
+            kind: DrawingKind::Hline,
+            a1: fraction(0.3, 0.4),
+            a2: None,
+            label: None,
+            selected: false,
+        }]));
+        let start = before.drawings[0].clone();
+
+        let after = build(&drawn(vec![Drawing {
+            id: "h1".into(),
+            kind: DrawingKind::Hline,
+            a1: moved(start.a1_fraction, 0.25, 0.1),
+            a2: None,
+            label: None,
+            selected: false,
+        }]));
+
+        let (x1, y1, x2, y2) = first_segment(&before.drawings[0]);
+        let (nx1, ny1, nx2, ny2) = first_segment(&after.drawings[0]);
+        assert!(
+            (ny1 - y1 - 0.1 * before.plot.h).abs() < 1e-6,
+            "the price did not follow the drag: {y1} -> {ny1}"
+        );
+        assert!(
+            (ny2 - y2 - 0.1 * before.plot.h).abs() < 1e-6,
+            "the two ends of one horizontal line disagreed"
+        );
+        // Across, it is the plot's own edges both times -- a horizontal drag of
+        // the body is not a thing this drawing can respond to.
+        for (got, want) in [(nx1, x1), (nx2, x2)] {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "a horizontal line should ignore the across component: {want} -> {got}"
+            );
+        }
+    }
+
+    // --- a click with no drag -------------------------------------------------
+
+    #[test]
+    fn a_click_with_no_drag_is_refused_rather_than_stored_without_extent() {
+        // The tool is a drag, so a click places both anchors at one point. That
+        // is a shape with no extent: nothing is drawn, and it is stored anyway --
+        // so it is still there on the next reload, and the user who clicked is
+        // left believing the tool does not work.
+        let scene = build(&drawn(vec![trendline(
+            fraction(0.3, 0.3),
+            fraction(0.3, 0.3),
+        )]));
+        assert!(scene.drawings.is_empty(), "{:?}", scene.drawings);
+        let note = scene.note.expect("a refusal must be reported");
+        assert!(note.contains("no extent"), "{note}");
+    }
+
+    #[test]
+    fn a_vertical_trendline_is_a_drawing_and_not_a_degenerate_one() {
+        // One shared coordinate is not the same as one shared point. A vertical
+        // trendline and a flat rectangle are both real things to draw, which is
+        // why the rule compares the whole anchor rather than a coordinate.
+        let scene = build(&drawn(vec![trendline(
+            fraction(0.3, 0.2),
+            fraction(0.3, 0.8),
+        )]));
+        assert_eq!(scene.drawings.len(), 1, "{:?}", scene.note);
+        assert!(scene.note.is_none(), "{:?}", scene.note);
+    }
+
+    #[test]
+    fn a_horizontal_line_is_one_point_and_is_not_refused_for_it() {
+        // The rule is about kinds that need *two* anchors, so the one kind that
+        // does not is untouched. It matters more than it looks: `hline` is placed
+        // by a click, so a rule written without the kind check would refuse the
+        // only tool that is not a drag.
+        let scene = build(&drawn(vec![Drawing {
+            id: "h1".into(),
+            kind: DrawingKind::Hline,
+            a1: fraction(0.3, 0.4),
+            a2: None,
+            label: None,
+            selected: false,
+        }]));
+        assert_eq!(scene.drawings.len(), 1);
+        assert!(scene.note.is_none(), "{:?}", scene.note);
     }
 }

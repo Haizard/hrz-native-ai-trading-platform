@@ -296,6 +296,156 @@ CPU calc   GPU-friendly buffers
   them, so a wheel burst becomes one rebuild and a drag that outruns the frame rate does not
   lose the pixels it skipped.
 
+  ### Drawing tools: a document the user owns
+
+  Added 2026-09-17. The bullet above has asked for "drawing tools (trendlines, Fibonacci,
+  rectangles — start minimal, expand later)" since this document was written, and none were
+  built. This is the specification.
+
+  **A drawing is two anchors and a kind.** Nothing else is stored, because nothing else is
+  needed: every shape a trader draws is a pair of `(time, price)` points and a rule for what
+  to put between them.
+
+  | kind | anchors | drawn as |
+  |---|---|---|
+  | `trendline` | 2 | the segment between them |
+  | `hline` | 1 | a horizontal line across the plot at the first anchor's price |
+  | `rect` | 2 | the rectangle they span |
+  | `fib` | 2 | the retracement levels between them |
+
+  Four kinds, and the kind is a `serde` enum rather than free text: a kind the engine does not
+  know is **refused**, because a drawing that saves and then never appears is worse than one
+  that will not save. `ray`, `channel` and a measured move are the obvious next ones, and each
+  is a variant plus an arm — no new storage, because they are all two anchors.
+
+  **An anchor is either absolute or a fraction of the plot, and the wire says which.**
+
+  ```json
+  {"kind": "trendline",
+   "a1": {"unit": "fraction", "x": 0.31, "y": 0.62},
+   "a2": {"unit": "fraction", "x": 0.74, "y": 0.20}}
+  ```
+
+  A `fraction` is a pointer position over the plot rectangle — the same number the viewport
+  gestures already use — and the engine resolves it. An `absolute` is a millisecond timestamp
+  and a price, which is what gets stored.
+
+  The shell sends fractions while a drawing is being placed or dragged, and the scene reports
+  every anchor back as `absolute`. So the shell never turns a pointer position into a price or
+  a time: it hands over the fraction and reads back the answer. This is the interaction model's
+  rule generalised — **the shell says where on the screen, the engine says what that is** —
+  and it is why a drag needs no gesture type of its own. A drag *is* a request whose anchor is
+  a fraction, so it folds into the same one-rebuild-per-frame coalescing a wheel does.
+
+  The two forms use different field names — `x`/`y` against `time`/`price` — and the difference
+  is load-bearing. One pair of names for both would make "the shell sent a fraction where the
+  engine expected a timestamp" a mistake nothing catches: the numbers are the same shape, the
+  units are not, and the result is a drawing somewhere in 1970.
+
+  **The time unit is milliseconds, and that is a deliberate exception.** The platform stores
+  nanoseconds (`docs/13`) and everything else crossing to the browser is nanoseconds —
+  `Scene::from`, `Scene::to`. A drawing anchor is the first value that has to make the round
+  trip *back* into the database, and JSON numbers are doubles: 1.7e18 is past 2^53, so a
+  nanosecond timestamp read into JavaScript and written back is a different number. It is a
+  few hundred nanoseconds, which is invisible on a chart and is still a write that changes the
+  data. Milliseconds fit, so the drawing wire is milliseconds and the conversion happens once,
+  in Rust, where a test can see it. `Scene::from` stays in nanoseconds precisely because
+  nothing ever sends it back.
+
+  **They are positioned in the engine and hit-tested in the shell.** The engine emits, per
+  drawing, the shapes to draw *and* a `handle` part at each anchor:
+
+  ```json
+  {"shape": "segment", "x1": 12.0, "y1": 40.0, "x2": 300.0, "y2": 90.0}
+  {"shape": "handle",  "x": 300.0, "y": 90.0, "anchor": 1}
+  ```
+
+  That is what makes a drag possible without putting the price scale in JavaScript. The shell's
+  hit-test is a distance between two screen points — display geometry, the same class as the
+  division in `plotFraction` — and the *meaning* of the point, which bar and which price, is
+  never derived there. It also means the engine decides which handles exist, so the shell
+  cannot offer a grab point the engine would not honour.
+
+  Handles are emitted only for the **selected** drawing. Every drawing's anchors at once is
+  visual noise, and it invites a drag nobody can aim. `anchor` is the engine's own numbering —
+  `0` for the first anchor and `1` for the second — because the engine emits the handles and so
+  it decides what they are called; a kind that reads only its first anchor emits only `0`.
+
+  **A handle drag moves one anchor; a body drag moves the drawing.** Grabbing a handle sends the
+  pointer's own position into that one anchor. Grabbing the *body* — a segment, a rectangle's
+  interior — has to move both anchors by the same amount, or a trendline dragged by its middle
+  changes slope and a rectangle collapses to a corner. That needs a *delta*, and the shell
+  cannot add a delta to a timestamp: it has no way to turn a price into a fraction, which is the
+  same prohibition that keeps the price scale in Rust.
+
+  So the scene also reports where each anchor sits **in plot fractions**:
+
+  ```json
+  {"a1": {"unit": "absolute", "time": 1767225600000.0, "price": 45000.0},
+   "a1_fraction": {"x": 0.31, "y": 0.62},
+   "a2": {"unit": "absolute", "time": 1767250800000.0, "price": 45250.0},
+   "a2_fraction": {"x": 0.74, "y": 0.20}}
+  ```
+
+  and a body drag is: read both fractions, add the pointer's offset over the plot's size — the
+  same division `pan` already does — and send them back. The engine resolves them exactly as it
+  resolves a placement, so there is still one implementation of "which price is under the
+  pointer", and it is in Rust.
+
+  Those two fields are a plain `{x, y}` and **not** an `Anchor`, which is a deliberate
+  asymmetry. An `Anchor` is tagged because it may be either unit; a reported fraction is only
+  ever a fraction, so a `unit` field there would be a branch the shell has to read and can never
+  find to be anything but `"fraction"` — a decision point that cannot be decided differently.
+  Two field names for two units is the rule from above; a tag on a value that has only one
+  possible unit is the same rule applied too far.
+
+  They are reported for **every** drawing, including one whose anchors arrived as timestamps.
+  That matters more than it looks: everything loaded from the API arrives absolute, because that
+  is the only form storage keeps. Reporting fractions only for anchors that arrived as fractions
+  would leave a saved drawing undraggable until it had been dragged once — a feature that works
+  the second time and not the first.
+
+  A drawing that cannot be resolved — an unknown kind, a two-anchor kind with one anchor, two
+  anchors at the *same* point, a `NaN` price — is **not drawn**, and the reason goes into
+  [`Scene::note`] with the drawing's id, exactly as a refused concept document does. Half a shape
+  is worse than none, and a silent refusal teaches whoever drew it nothing.
+
+  The same-point case is the one the shell cannot pre-empt and should not have to. Every tool
+  places its first anchor on pointer-down, so a *click* with the trendline tool selected puts
+  both anchors at one point: a shape with no extent, invisible on the chart, and still there on
+  the next reload. It is exactly "the pointer did not move between down and up", so the test is
+  equality rather than a tolerance — a one-pixel drag is a different pair of numbers and is
+  drawn. The whole anchor is compared rather than one coordinate, because a vertical trendline
+  and a flat rectangle are both real things to draw, and the kind check keeps `hline` — the one
+  tool that *is* a click — out of the rule entirely.
+
+  **They are stored per user and per symbol, and they are mutable.** This is the one
+  user-authored record in the schema that is *edited* rather than appended to.
+  `venue_opt_ins` is append-only because "who turned this on, when, and why" is a question an
+  incident review asks and a boolean column would destroy the answer. A trendline is not a
+  consent record: it is a shape the user is still moving, and an append-only table would
+  collect a row per drag of the mouse. The history that matters for a drawing is the drawing.
+
+  Per **symbol** rather than per symbol-and-timeframe, and that is worth naming because the
+  opposite is defensible. A trendline is two `(time, price)` points, and those two points mean
+  the same thing on a 1m chart as on a 1h one; scoping to the timeframe would hide a level
+  from the chart a trader switched to in order to check it.
+
+  **What a drawing does not do yet**, recorded rather than left to be discovered:
+
+  - **Nothing snaps.** An anchor lands where the pointer was, not on an open, high, low or
+    close. Most platforms offer both; this one has the harder half.
+  - **No text, no measurement, no undo.** A mis-placed drawing is deleted and redrawn.
+  - **No multi-select and no group move.** One drawing is selected at a time, and the keyboard
+    is that wide too: `Delete` removes the selected drawing, `Esc` abandons the shape being
+    placed and, pressed again, returns to the cursor.
+  - **The AI agent cannot see them.** That is a permission decision rather than a technical
+    one, and it is tracked in `docs/19` rather than guessed at here. The storage and the route
+    are already scoped by user, so turning it on is a context change, not a schema change.
+  - **A drawing is not confined to the window.** Its anchors are mapped absolutely and the
+    canvas clips, which is the same arrangement zones use: a trendline drawn last week is
+    still a trendline when the window has moved past it.
+
   ### What this interaction does not do yet
 
   Recorded 2026-09-17, so the next reader does not have to discover them:

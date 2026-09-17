@@ -78,6 +78,28 @@
   */
   #chart { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
   #chart.dragging { cursor: grabbing; }
+  /*
+    Moving a drawing is a different drag from panning the chart, so it gets a
+    different cursor. There is deliberately no rule for a placement: `crosshair`
+    is already the canvas's cursor and already the right one for drawing, and a
+    rule that cannot change what is on screen is not an affordance.
+  */
+  #chart.moving { cursor: move; }
+  /*
+    The drawing toolbar. An overlay on the chart rather than a row in the header:
+    a tool is a property of the canvas, and the header is already full of things
+    that are properties of the *series*.
+
+    `aria-pressed` is the state, the same treatment the Zones toggle gets, so
+    there is one variable and the button cannot disagree with it.
+  */
+  #tools {
+    position: absolute; top: 8px; left: 12px; z-index: 2;
+    display: flex; align-items: center; gap: 4px;
+  }
+  #tools button { padding: 2px 8px; font-size: 11px; color: var(--muted); }
+  #tools button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  #tools #clearDrawings { margin-left: 8px; }
   #chartHint {
     position: absolute; left: 12px; bottom: 8px; pointer-events: none;
     color: var(--muted); font-family: var(--mono); font-size: 10px; opacity: 0.75;
@@ -260,12 +282,31 @@
   <div id="chartWrap">
     <canvas id="chart"></canvas>
     <!--
+      The drawing tools. A tool stays active until it is changed, so several
+      shapes can be drawn in a row; `Esc` returns to the cursor, and the Cursor
+      button is always one click away.
+
+      `hline` is a click and the rest are drags, because a horizontal line is a
+      price rather than a span -- but the shell does not treat them differently:
+      every tool places a first anchor on pointer-down and the two-anchor ones
+      follow the pointer with the second. A click with no drag is refused by the
+      engine, in words, rather than stored as a shape with no extent.
+    -->
+    <div id="tools" role="toolbar" aria-label="Drawing tools">
+      <button data-tool="cursor" aria-pressed="true" title="Select a drawing, move its anchors, or pan the chart">Cursor</button>
+      <button data-tool="trendline" aria-pressed="false" title="Drag from one point to another">Trend</button>
+      <button data-tool="hline" aria-pressed="false" title="Click a price to mark it across the chart">H-line</button>
+      <button data-tool="rect" aria-pressed="false" title="Drag out a rectangle">Rect</button>
+      <button data-tool="fib" aria-pressed="false" title="Drag from one swing to another">Fib</button>
+      <button id="clearDrawings" class="danger" title="Delete every drawing on this symbol">Clear</button>
+    </div>
+    <!--
       The gesture hint. Kept visible rather than hidden behind a tooltip: the
       chart had no interaction at all until now, so nothing about it suggests a
       wheel or a drag would do anything, and an affordance nobody can find is the
       same as no affordance.
     -->
-    <div id="chartHint">wheel zooms · shift+wheel scales the price axis · drag pans · <b>Fit</b> resets</div>
+    <div id="chartHint">wheel zooms · shift+wheel scales the price axis · drag pans · pick a tool to draw · <b>Esc</b> back to the cursor</div>
     <div id="chartMsg" class="empty">Loading the chart engine…</div>
   </div>
 

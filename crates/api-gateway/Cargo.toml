@@ -18,6 +18,11 @@ trading-engine = { workspace = true }
 # The supervisor opens a market feed for the symbols its bots need.
 market-data = { workspace = true }
 strategy-runtime = { workspace = true }
+# The drawing layer's vocabulary: `DrawingKind` and `Anchor` are the shape the
+# browser sends, the engine positions and this crate stores. Depending on the
+# engine rather than mirroring the two types means a wire rename is a compile
+# error on both sides instead of a drawing that lands in 1970.
+chart-engine = { workspace = true }
 argon2 = { workspace = true }
 base64 = { workspace = true }
 hmac = { workspace = true }

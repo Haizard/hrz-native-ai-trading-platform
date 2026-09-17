@@ -32,7 +32,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 use tracing::warn;
@@ -50,6 +50,7 @@ pub mod auth_routes;
 pub mod bot_routes;
 pub mod bots;
 pub mod dom;
+pub mod drawing_routes;
 pub mod error;
 pub mod extract;
 pub mod footprint_routes;
@@ -200,6 +201,18 @@ pub fn router(state: AppState) -> Router {
         .route("/venues", get(venue_routes::list))
         .route("/venues/{venue}/opt-in", post(venue_routes::opt_in))
         .route("/venues/{venue}/revoke", post(venue_routes::revoke))
+        // The chart's drawing layer (`docs/14`). Owner-scoped like everything
+        // else that belongs to somebody: a drawing is the user's own analysis of
+        // a symbol, so it is behind a bearer token while the market data under it
+        // is not.
+        .route(
+            "/drawings",
+            get(drawing_routes::list).post(drawing_routes::create),
+        )
+        .route(
+            "/drawings/{id}",
+            put(drawing_routes::update).delete(drawing_routes::remove),
+        )
         .route("/agent/ask", post(agent_routes::ask))
         .route(
             "/agent/generate-strategy",

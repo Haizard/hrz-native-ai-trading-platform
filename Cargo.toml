@@ -53,6 +53,15 @@ db               = { path = "crates/db" }
 # analytics-core -- every service may depend on it, it depends on nothing
 # internal.
 observability    = { path = "crates/observability" }
+# The drawing layer's vocabulary. `DrawingKind` and `Anchor` are the shape the
+# browser sends, the engine positions and the API stores, so the gateway depends
+# on the engine rather than mirroring those two types. A rename then breaks both
+# sides at compile time -- which is the only thing that catches a wire rename,
+# since nothing checks a JSON key against anything (docs/14).
+#
+# `api-gateway -> everything` already covers this edge; the direction that would
+# be wrong is the engine depending on the gateway, and it does not.
+chart-engine     = { path = "frontend/chart-engine" }
 
 # --- async ---
 tokio      = { version = "1", features = ["full"] }

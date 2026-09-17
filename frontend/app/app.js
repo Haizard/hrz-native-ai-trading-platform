@@ -30,6 +30,20 @@ let scene = null; // the last scene the engine produced
 // This is the shell's *entire* zoom state: it never computes one, it only holds
 // this and returns it. See "the interaction model" in `docs/14`.
 let viewport = null;
+// The drawings on this symbol, in the engine's own shape. Loaded from the API on
+// a symbol change and never derived from the canvas: they are the user's
+// analysis, and the shell is a viewer of them rather than their author.
+let drawings = [];
+// The active drawing tool, or `"cursor"`.
+let tool = "cursor";
+// The id of the selected drawing, or null. Sent to the engine, which decides
+// which handles exist -- so a drawing cannot look selected here while offering
+// nothing to grab.
+let selectedDrawing = null;
+// The drawing being placed, before it has been saved. Held *outside* `drawings`
+// so the list only ever holds shapes that exist: a refusal, or a save that
+// failed, cannot leave a half-drawn one in it.
+let placing = null;
 let thesis = null; // the last thesis, for the chart overlay
 let socket = null; // the live candle channel
 let bookSocket = null; // the order-book channel
@@ -112,6 +126,9 @@ async function signIn(register) {
     });
     setToken(res.token);
     msg.textContent = `signed in as ${res.user.email}`;
+    // The drawings belong to the account, so they arrive with it. Everything
+    // else on the page is public market data and was already there.
+    refresh();
   } catch (e) {
     msg.textContent = e.message;
   }
@@ -183,6 +200,12 @@ const COLORS = {
   entry: "#58a6ff",
   stop: "#ef5350",
   target: "#26a69a",
+  // The drawing tools, one colour per kind so two shapes on the same chart are
+  // told apart by what they are rather than by which was drawn first.
+  trendline: "#4aa3ff",
+  hline: "#d29922",
+  rect: "#a371f7",
+  fib: "#3fb950",
   // The two bands the engine ships with. A concept a client defined has no
   // entry here -- it cannot, we have never heard of it -- which is what the
   // side fallback below is for.
@@ -239,6 +262,10 @@ function draw() {
   }
 
   drawLevels(ctx, scene);
+  // The user's own marks, above the levels and below the axis: a drawing that
+  // could cover the price labels would be a drawing that hides the scale it is
+  // read against.
+  drawDrawings(ctx, scene);
   drawAxis(ctx, scene);
   if (thesis) drawThesis(ctx, scene, thesis);
 }
@@ -486,6 +513,73 @@ function drawLevels(ctx, scene) {
   }
 }
 
+/// How close a pointer has to be to a handle to grab it, in canvas pixels.
+///
+/// Two numbers, and they are different on purpose: a handle is a small target
+/// the user is aiming at, so it gets a forgiving radius, while a line is a large
+/// one the user is aiming *near*, so a generous radius would steal drags that
+/// were meant to pan.
+const HANDLE_RADIUS = 7;
+/// How close it has to be to a line, or inside a rectangle, to grab the drawing.
+const GRAB_RADIUS = 5;
+
+/// The user's own shapes.
+///
+/// Every coordinate arrives positioned and every choice is already made, so this
+/// function strokes, fills and writes text -- the same contract `drawRegions` and
+/// `drawFootprintGrid` follow, and the reason the price scale stays in Rust.
+///
+/// The parts are a flat list rather than a shape per kind, because a Fibonacci is
+/// seven lines and a label each, and the engine has already decided that. Adding
+/// a kind is a variant in Rust and no change here.
+function drawDrawings(ctx, scene) {
+  if (!scene.drawings.length) return;
+
+  for (const drawing of scene.drawings) {
+    const colour = COLORS[drawing.kind] || COLORS.text;
+    ctx.strokeStyle = colour;
+    ctx.fillStyle = colour;
+    ctx.font = "10px ui-monospace, monospace";
+
+    for (const part of drawing.parts) {
+      switch (part.shape) {
+        case "segment":
+          ctx.setLineDash(part.dashed ? [4, 4] : []);
+          ctx.beginPath();
+          ctx.moveTo(part.x1, part.y1);
+          ctx.lineTo(part.x2, part.y2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          break;
+
+        case "rect":
+          if (part.filled) {
+            ctx.globalAlpha = drawing.selected ? 0.18 : 0.1;
+            ctx.fillRect(part.x, part.y, part.w, part.h);
+            ctx.globalAlpha = 1;
+          }
+          ctx.strokeRect(part.x + 0.5, part.y + 0.5, part.w - 1, part.h - 1);
+          break;
+
+        case "text":
+          ctx.fillText(part.text, part.x, part.y);
+          break;
+
+        case "handle":
+          // A filled dot. It is the one thing on this canvas a user is meant to
+          // aim at, so it is drawn as a target rather than as a point.
+          ctx.beginPath();
+          ctx.arc(part.x, part.y, HANDLE_RADIUS - 3, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+
+        default:
+          break;
+      }
+    }
+  }
+}
+
 function drawAxis(ctx, scene) {
   ctx.fillStyle = COLORS.text;
   ctx.font = "10px ui-monospace, monospace";
@@ -562,6 +656,10 @@ let footprint = null;
 async function refresh() {
   const message = el("chartMsg");
   footprint = null;
+  // Before the first render, so the drawings are in the frame the candles land
+  // in rather than appearing a beat later. They belong to the symbol, so this is
+  // also where a symbol change picks up the new one's.
+  await loadDrawings();
 
   if (el("mode").value === "footprint") {
     // A footprint is built from trades, not candles, so it comes from its own
@@ -633,6 +731,21 @@ function render(gesture = null) {
     zones: zonesOn(),
     footprint: footprint ? footprint.candles : [],
     footprint_trades: footprint ? footprint.trades : 0,
+    // The user's drawings, with the one being placed appended. An anchor may be
+    // a `fraction` here -- that is how placing and dragging work -- and the scene
+    // answers with every anchor absolute, which is the only form the API accepts.
+    //
+    // `selected` is *derived* from `selectedDrawing` rather than stored on each
+    // drawing, the same arrangement the toolbar's `aria-pressed` uses: one
+    // variable, so the two cannot disagree. Storing it meant every write to the
+    // list had to remember to re-apply it, and one of them did not -- a drawing
+    // that had just been saved came back from `fromServer` unselected and offered
+    // no handles, so the shape the user had this second finished drawing could
+    // not be grabbed.
+    drawings: (placing ? [...drawings, placing] : drawings).map((drawing) => ({
+      ...drawing,
+      selected: drawing.id === selectedDrawing,
+    })),
   };
   // Assigned rather than sent as `null`: a null is not a missing field, and the
   // engine's `Viewport` is a struct rather than an option, so `viewport: null`
@@ -701,40 +814,158 @@ function onWheel(event) {
   );
 }
 
-// The drag in progress, or null. `appliedX`/`appliedY` are the last position
-// that was actually *sent*, not the last one seen -- see `onPointerMove`.
+// The pointer gesture in progress, or null.
+//
+// One object with a `mode` rather than three nullable globals, because the three
+// are mutually exclusive -- the pointer is panning, moving an anchor, or drawing
+// something new -- and three variables would be three chances for two of them to
+// be set at once.
+//
+// `appliedX`/`appliedY` are the last position actually *sent*, not the last one
+// seen; see `onPointerMove`.
 let drag = null;
 
 function onPointerDown(event) {
   if (!scene || event.button !== 0) return;
-  drag = { appliedX: event.clientX, appliedY: event.clientY };
+
+  if (tool !== "cursor") {
+    startPlacing(event);
+    return;
+  }
+
+  const hit = hitTest(event);
+  if (hit) {
+    // A grab on a handle or a body selects that drawing and moves it. Selection
+    // follows the grab rather than a separate click, because on a chart the two
+    // are one intent and asking for both is one gesture too many.
+    select(hit.drawing);
+    drag = {
+      mode: "move",
+      target: hit,
+      startX: event.clientX,
+      startY: event.clientY,
+      // Only a body grab needs these. A handle drag writes the pointer's own
+      // position into one anchor, so where the anchors started is not a question
+      // it asks; a body drag moves both, which means it needs the starting point
+      // in a unit it can add to.
+      base: hit.anchor === null ? fractionsOf(hit.drawing) : null,
+    };
+    // `moving`, not `dragging`: the cursor should say which of the two drags
+    // this is, and only one of them moves the view.
+    el("chart").classList.add("moving");
+  } else {
+    // Empty canvas: nothing is selected, and the drag pans.
+    select(null);
+    drag = { mode: "pan", appliedX: event.clientX, appliedY: event.clientY };
+    el("chart").classList.add("dragging");
+  }
   el("chart").setPointerCapture(event.pointerId);
-  el("chart").classList.add("dragging");
 }
 
 function onPointerMove(event) {
   if (!scene || !drag) return;
-  const rect = el("chart").getBoundingClientRect();
-  // Measured from the last *applied* position rather than the last event, so a
-  // move that gets coalesced into the next frame does not lose its pixels --
-  // otherwise a fast drag visibly lags behind the pointer.
-  const dx = (event.clientX - drag.appliedX) / scene.plot.w;
-  const dy = (event.clientY - drag.appliedY) / scene.plot.h;
-  if (dx === 0 && dy === 0) return;
-  drag.appliedX = event.clientX;
-  drag.appliedY = event.clientY;
-  // Dragging the chart to the right reveals *older* bars, so the view moves the
-  // other way -- the direction a finger moves a sheet of paper. Vertically it is
-  // the same way round as the pointer, because price runs up the screen.
-  applyGesture({ kind: "pan", time: -dx, price: dy });
+
+  if (drag.mode === "pan") {
+    // Measured from the last *applied* position rather than the last event, so a
+    // move that gets coalesced into the next frame does not lose its pixels --
+    // otherwise a fast drag visibly lags behind the pointer.
+    const dx = (event.clientX - drag.appliedX) / scene.plot.w;
+    const dy = (event.clientY - drag.appliedY) / scene.plot.h;
+    if (dx === 0 && dy === 0) return;
+    drag.appliedX = event.clientX;
+    drag.appliedY = event.clientY;
+    // Dragging the chart to the right reveals *older* bars, so the view moves the
+    // other way -- the direction a finger moves a sheet of paper. Vertically it
+    // is the same way round as the pointer, because price runs up the screen.
+    applyGesture({ kind: "pan", time: -dx, price: dy });
+    return;
+  }
+
+  // A placement and a handle drag both put a *point* where the pointer is, so
+  // neither needs a delta: the anchor's new position is the pointer's, and the
+  // engine is what turns it into a time and a price. Measured from the pointer
+  // rather than accumulated, which is why there are no skipped pixels to lose.
+  //
+  // The body drag is the third case and does not want this at all -- it works
+  // from the pointer's *offset*, and `plotFraction` clamps to the plot, so
+  // asking for it here would freeze a drawing at the plot's edge the moment the
+  // user dragged it past one.
+  if (drag.mode === "place") {
+    const at = plotFraction(event);
+    if (!at) return;
+    // The second anchor follows the pointer; the first stays where the drag
+    // began. A horizontal line has no second anchor to move.
+    if (placing && placing.kind !== "hline") {
+      placing.a2 = { unit: "fraction", x: at.x, y: at.y };
+    }
+    scheduleRender();
+    return;
+  }
+
+  // A move is the only mode left, and it is one of two: a handle, or the body.
+  // `target` is read here rather than above because a placement has none.
+  if (drag.target.anchor !== null) {
+    const at = plotFraction(event);
+    if (!at) return;
+    // A handle: that one anchor follows the pointer and the other stays put.
+    // `0` is the first anchor and `1` the second, which is the engine's own
+    // numbering -- it emits the handles, so it decides what they are called.
+    const drawing = drawings.find((d) => d.id === drag.target.drawing);
+    if (!drawing) return;
+    const anchor = { unit: "fraction", x: at.x, y: at.y };
+    if (drag.target.anchor === 1) drawing.a2 = anchor;
+    else drawing.a1 = anchor;
+    scheduleRender();
+    return;
+  }
+
+  // The body: the whole drawing moves, so both anchors take the *same* delta.
+  // Dragging one of them to the pointer instead -- which is what this branch did
+  // before it had `drag.base` -- moves an endpoint rather than the shape, and a
+  // rectangle dragged by its middle collapses to a corner.
+  //
+  // The delta is the pointer's, over the plot's size: the same division the pan
+  // above does, and the only arithmetic the shell is allowed to do with a
+  // position. Measured from the drag's start rather than accumulated, so a
+  // coalesced frame cannot lose pixels and make the shape lag the pointer.
+  const moving = drawings.find((d) => d.id === drag.target.drawing);
+  if (!moving || !drag.base) return;
+  const dx = (event.clientX - drag.startX) / scene.plot.w;
+  const dy = (event.clientY - drag.startY) / scene.plot.h;
+  moving.a1 = shifted(drag.base.a1, dx, dy);
+  if (drag.base.a2) moving.a2 = shifted(drag.base.a2, dx, dy);
+  scheduleRender();
 }
 
 function onPointerUp(event) {
   if (!drag) return;
+  const finished = drag;
   drag = null;
-  el("chart").classList.remove("dragging");
+  // Both drag classes, not just the one this gesture used. A class left on the
+  // canvas outlives the gesture that set it, and from then on the cursor
+  // describes a drag that is not happening.
+  el("chart").classList.remove("dragging", "moving");
   if (el("chart").hasPointerCapture(event.pointerId)) {
     el("chart").releasePointerCapture(event.pointerId);
+  }
+
+  if (finished.mode === "place") finishPlacing();
+  else if (finished.mode === "move") finishMoving(finished.target.drawing);
+}
+
+/// A pointer the browser took away -- a touch that became a scroll, a window
+/// that lost focus. The gesture is abandoned rather than committed: whatever the
+/// pointer was doing, the user did not finish it.
+function onPointerCancel(event) {
+  if (!drag) return;
+  drag = null;
+  el("chart").classList.remove("dragging", "moving");
+  if (el("chart").hasPointerCapture(event.pointerId)) {
+    el("chart").releasePointerCapture(event.pointerId);
+  }
+  if (placing) {
+    placing = null;
+    renderNow();
   }
 }
 
@@ -771,16 +1002,39 @@ function foldGesture(waiting, next) {
   }
 }
 
-/// Send a gesture, at most one engine rebuild per frame.
-function applyGesture(gesture) {
-  waitingGesture = foldGesture(waitingGesture, gesture);
+/// Rebuild the scene and repaint, at most once per frame.
+///
+/// The shared tail of `applyGesture` and of the drawing gestures: a wheel, a pan
+/// and a drag of an anchor all end in one engine rebuild and one repaint, and
+/// none of them needs more than one per frame.
+function scheduleRender() {
   if (gestureFrame) return;
   gestureFrame = requestAnimationFrame(() => {
     gestureFrame = 0;
     const next = waitingGesture;
     waitingGesture = null;
-    if (next) render(next);
+    render(next);
   });
+}
+
+/// Send a gesture, at most one engine rebuild per frame.
+function applyGesture(gesture) {
+  waitingGesture = foldGesture(waitingGesture, gesture);
+  scheduleRender();
+}
+
+/// Rebuild and repaint *now*, cancelling anything waiting for a frame.
+///
+/// For the two moments where a frame of delay is wrong: a drop, which has to read
+/// the engine's answer before anything else can move, and a click, which is a
+/// down and an up with no frame between them at all.
+function renderNow() {
+  if (gestureFrame) {
+    cancelAnimationFrame(gestureFrame);
+    gestureFrame = 0;
+  }
+  waitingGesture = null;
+  render();
 }
 
 /// Throw the window away, so the next frame fits everything again.
@@ -790,6 +1044,362 @@ function applyGesture(gesture) {
 /// screen and the window is still the one the user chose.
 function resetViewport() {
   viewport = null;
+}
+
+// ---------------------------------------------------------------------------
+// Chart drawings: placing, moving, storing
+//
+// The shell's part is to say *where on the screen*; the engine's is to say what
+// that is. Nothing here converts a pixel into a price -- a placement or a drag
+// writes a `fraction` anchor into the request, and the scene answers with the
+// same drawing in absolute terms, which is what gets stored. So there is one
+// implementation of "which price is under the pointer", in Rust, and a drawing
+// cannot land somewhere the engine did not put it.
+// ---------------------------------------------------------------------------
+
+/// Where a pointer is, in canvas coordinates.
+///
+/// Not the same as `plotFraction`, which is clamped to the plot and is what the
+/// engine is given. This one is deliberately unclamped, because a hit test has
+/// to be able to answer "nothing" -- a clamped point is always inside the plot,
+/// so it would always grab whatever is nearest the edge.
+function canvasPoint(event) {
+  const rect = el("chart").getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+/// What is under the pointer, if anything.
+///
+/// The only geometry here is a distance between two screen points, which is a
+/// display concern -- the same class as the division in `plotFraction`. *Which*
+/// price or bar a point means is never derived here: the engine emits a `handle`
+/// part at every anchor it would let the user move, so this looks for a target
+/// the engine put there rather than deciding where one should be.
+///
+/// Handles are tested first. They sit on top of the drawing they belong to, so a
+/// body test that ran first would make an anchor impossible to grab.
+function hitTest(event) {
+  if (!scene) return null;
+  const at = canvasPoint(event);
+
+  for (const drawing of scene.drawings) {
+    for (const part of drawing.parts) {
+      if (part.shape !== "handle") continue;
+      if (Math.hypot(part.x - at.x, part.y - at.y) <= HANDLE_RADIUS) {
+        return { drawing: drawing.id, anchor: part.anchor };
+      }
+    }
+  }
+
+  for (const drawing of scene.drawings) {
+    for (const part of drawing.parts) {
+      if (part.shape === "segment" && distanceToSegment(at, part) <= GRAB_RADIUS) {
+        return { drawing: drawing.id, anchor: null };
+      }
+      if (part.shape === "rect" && insideRect(at, part)) {
+        return { drawing: drawing.id, anchor: null };
+      }
+    }
+  }
+  return null;
+}
+
+/// How far a point is from a segment, in canvas pixels.
+///
+/// Clamped to the segment's ends, so a point past the end measures to the end
+/// rather than to the infinite line -- otherwise a trendline would be grabbable
+/// along a ray it is not drawn on.
+function distanceToSegment(point, segment) {
+  const dx = segment.x2 - segment.x1;
+  const dy = segment.y2 - segment.y1;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return Math.hypot(point.x - segment.x1, point.y - segment.y1);
+  const along = Math.min(
+    1,
+    Math.max(0, ((point.x - segment.x1) * dx + (point.y - segment.y1) * dy) / lengthSquared)
+  );
+  return Math.hypot(point.x - (segment.x1 + along * dx), point.y - (segment.y1 + along * dy));
+}
+
+function insideRect(point, rect) {
+  return (
+    point.x >= rect.x &&
+    point.x <= rect.x + rect.w &&
+    point.y >= rect.y &&
+    point.y <= rect.y + rect.h
+  );
+}
+
+// How many drawings this tab has started, for naming one before the server has.
+let drawingCounter = 0;
+
+/// Begin a new drawing at the pointer.
+///
+/// A placement is a drag like any other, which is why it sets `drag` rather than
+/// keeping a state of its own. `onPointerMove` needs it to carry the pointer
+/// moves, and -- the part that is easy to leave out -- `onPointerUp` needs it to
+/// reach `finishPlacing` at all: without it every handler returns early and the
+/// shape appears under the press and then simply sits there, unstored.
+function startPlacing(event) {
+  const at = plotFraction(event);
+  if (!at) return;
+  placing = {
+    id: `new-${(drawingCounter += 1)}`,
+    kind: tool,
+    a1: { unit: "fraction", x: at.x, y: at.y },
+    // Two separate objects even when they start in the same place: `a2` follows
+    // the pointer and `a1` does not, and one shared object would move both.
+    a2: tool === "hline" ? null : { unit: "fraction", x: at.x, y: at.y },
+    label: null,
+  };
+  drag = { mode: "place", appliedX: event.clientX, appliedY: event.clientY };
+  el("chart").setPointerCapture(event.pointerId);
+  // No drag class. `crosshair` is already the canvas's cursor and it is the right
+  // one for drawing; adding `dragging` here would claim the chart is about to be
+  // panned, which is the one thing a placement does not do.
+  scheduleRender();
+}
+
+/// The engine's answer for one drawing: the same shape, anchors absolute.
+///
+/// This is where a placement or a drag stops being a pointer position. The scene
+/// is the only thing that knows what a fraction resolved to, and it is what gets
+/// stored -- so a reload puts the drawing back exactly where it was drawn.
+function resolvedDrawing(id) {
+  return scene ? scene.drawings.find((d) => d.id === id) : undefined;
+}
+
+/// Where a drawing's anchors sit in plot fractions, as the engine reported them.
+///
+/// Read from the scene rather than computed, and that is the whole point: the
+/// shell has no way to turn a price into a fraction, so it asks for the answer
+/// instead of deriving one.
+function fractionsOf(id) {
+  const drawing = resolvedDrawing(id);
+  if (!drawing) return null;
+  return { a1: drawing.a1_fraction, a2: drawing.a2_fraction ?? null };
+}
+
+/// A plot fraction moved by a fraction of the plot.
+///
+/// Adding two fractions is the same class of arithmetic as the division in
+/// `plotFraction`: both are about where something is on the canvas. Neither is
+/// about what a price is, which is why this is allowed here and `price * 1.01`
+/// would not be.
+function shifted(fraction, dx, dy) {
+  return { unit: "fraction", x: fraction.x + dx, y: fraction.y + dy };
+}
+
+/// Store the drawing that was just placed.
+function finishPlacing() {
+  const pending = placing;
+  if (!pending) return;
+
+  // Render synchronously first: the coalesced frame may not have run -- a click
+  // is a down and an up with no frame between them -- and the engine's answer is
+  // the only thing that knows what the fractions resolved to.
+  renderNow();
+  const resolved = resolvedDrawing(pending.id);
+  const reason = scene ? scene.note : null;
+  placing = null;
+
+  if (!resolved) {
+    // The engine refused it, and its note says why. The shape leaves with
+    // `placing` -- a drawing that cannot be drawn must not sit in the list
+    // looking like one that can -- and the reason is put back on screen, because
+    // a refusal that flashes past along with the shape is one nobody reads.
+    renderNow();
+    if (reason) note(reason);
+    return;
+  }
+  selectedDrawing = resolved.id;
+  void createDrawing(resolved);
+}
+
+/// Store a drawing the user has just moved.
+function finishMoving(id) {
+  renderNow();
+  const resolved = resolvedDrawing(id);
+  const stored = drawings.find((d) => d.id === id);
+  if (!resolved || !stored) return;
+
+  // The list takes the engine's numbers, so what is on screen and what is about
+  // to be stored are the same two points rather than two roundings of one.
+  stored.a1 = resolved.a1;
+  stored.a2 = resolved.a2;
+  void putDrawing(stored);
+}
+
+/// The API's body for one drawing.
+///
+/// Built from the engine's object rather than from a shape of our own: `kind` and
+/// the two anchors are exactly what `scene.drawings` reports, which is why they
+/// are read from there and never assembled from a pointer position.
+function drawingBody(drawing) {
+  return {
+    kind: drawing.kind,
+    a1: drawing.a1,
+    a2: drawing.a2 ?? null,
+    label: drawing.label ?? null,
+  };
+}
+
+async function createDrawing(drawing) {
+  // On the chart first and in the database second. The managed instance costs
+  // about a second a statement, and a shape that disappears for a second after
+  // the user finished drawing it reads as a refusal -- the same reasoning as
+  // `deleteSelected`, in the other direction.
+  drawings.push(drawing);
+  selectedDrawing = drawing.id;
+  renderNow();
+
+  let reason = null;
+  try {
+    const saved = await api("/drawings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ symbol: el("symbol").value, ...drawingBody(drawing) }),
+    });
+    // The row's id replaces the local one, so the next drag moves the stored
+    // drawing rather than creating a second copy of it.
+    drawings = drawings.map((d) => (d.id === drawing.id ? fromServer(saved) : d));
+    selectedDrawing = saved.id;
+  } catch (e) {
+    // It was never stored, so it must not stay on the chart looking like one
+    // that was. The same rule `finishPlacing` applies to a refusal, applied to
+    // the one refusal only the network can produce.
+    drawings = drawings.filter((d) => d.id !== drawing.id);
+    if (selectedDrawing === drawing.id) selectedDrawing = null;
+    reason = `the drawing was not saved: ${e.message}`;
+  }
+  // The render owns the note strip -- it writes the engine's own note into it --
+  // so a failure has to be stated *after* the frame that was meant to show it,
+  // or it is wiped by the render it was asking for.
+  renderNow();
+  if (reason) note(reason);
+}
+
+async function putDrawing(drawing) {
+  try {
+    await api(`/drawings/${drawing.id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(drawingBody(drawing)),
+    });
+  } catch (e) {
+    // The move is on screen but not stored. Saying so is the only honest option:
+    // silently reverting would look like the drag had been ignored, and silently
+    // keeping it would mean a reload loses the change.
+    note(`the drawing was moved but not saved: ${e.message}`);
+  }
+}
+
+/// Remove the selected drawing.
+async function deleteSelected() {
+  const id = selectedDrawing;
+  if (!id) return;
+  // Off the chart first and out of the database second. The managed instance
+  // costs about a second a statement, and a delete button that does nothing for
+  // a second reads as broken.
+  selectedDrawing = null;
+  drawings = drawings.filter((d) => d.id !== id);
+  renderNow();
+  try {
+    await api(`/drawings/${id}`, { method: "DELETE" });
+  } catch (e) {
+    note(`the drawing left the chart but not the database: ${e.message}`);
+  }
+}
+
+/// Remove every drawing on this symbol.
+async function clearDrawings() {
+  const ids = drawings.map((d) => d.id);
+  if (!ids.length) return;
+  selectedDrawing = null;
+  placing = null;
+  drawings = [];
+  renderNow();
+  // One at a time. A burst of concurrent deletes over a ten-connection pool is
+  // how a request path starts failing for somebody else, and nothing here is in
+  // a hurry.
+  for (const id of ids) {
+    try {
+      await api(`/drawings/${id}`, { method: "DELETE" });
+    } catch (e) {
+      note(`some drawings were not removed from the database: ${e.message}`);
+      return;
+    }
+  }
+}
+
+/// Select one drawing, or none.
+///
+/// Only the variable. Which drawing is selected is sent to the engine from
+/// `selectedDrawing` at render time, so there is no per-drawing flag to keep in
+/// step -- and the early return is safe for the same reason, where it would have
+/// been a bug against stored flags.
+function select(id) {
+  if (selectedDrawing === id) return;
+  selectedDrawing = id;
+  scheduleRender();
+}
+
+/// Switch the active tool.
+///
+/// `aria-pressed` is the state, like the Zones toggle: one variable, and the
+/// button cannot disagree with it. The tool stays active until it is changed, so
+/// several shapes can be drawn in a row.
+function selectTool(name) {
+  tool = name;
+  for (const button of document.querySelectorAll("#tools button[data-tool]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.tool === name));
+  }
+}
+
+/// This symbol's drawings.
+async function loadDrawings() {
+  const symbol = el("symbol").value.toUpperCase();
+  selectedDrawing = null;
+  placing = null;
+
+  if (!token()) {
+    // Drawings belong to a user, so without a token there is nothing to ask for
+    // and the answer would be a 401 rather than an empty list. Cleared rather
+    // than kept: the previous user's drawings are not this one's.
+    drawings = [];
+    return;
+  }
+
+  try {
+    const data = await api(`/drawings?symbol=${encodeURIComponent(symbol)}`);
+    // The response echoes the symbol it is for, so a reply that arrived after the
+    // user moved on is discarded rather than drawn on the wrong chart, at prices
+    // that look plausible.
+    drawings = data.symbol === symbol ? data.drawings.map(fromServer) : [];
+  } catch (e) {
+    drawings = [];
+    note(`drawings could not be loaded: ${e.message}`);
+  }
+}
+
+/// One drawing from the API, in the engine's own shape.
+///
+/// Four fields, and `selected` is deliberately not one of them: the API has no
+/// opinion about which drawing this tab is looking at, and `render` derives it
+/// from `selectedDrawing`. Carrying it here would be a field nothing reads.
+function fromServer(drawing) {
+  return {
+    id: drawing.id,
+    kind: drawing.kind,
+    a1: drawing.a1,
+    a2: drawing.a2 ?? null,
+    label: drawing.label ?? null,
+  };
+}
+
+/// Say something about the chart, in the strip the engine's own notes use.
+function note(message) {
+  el("chartNote").textContent = message;
 }
 
 /// Milliseconds per bar, for sizing a footprint window.
@@ -2460,6 +3070,38 @@ async function main() {
     connectBook();
   });
   el("fit").addEventListener("click", () => applyGesture({ kind: "fit" }));
+  document.querySelectorAll("#tools button[data-tool]").forEach((button) =>
+    button.addEventListener("click", () => selectTool(button.dataset.tool))
+  );
+  el("clearDrawings").addEventListener("click", clearDrawings);
+  // Delete removes the selected drawing; Escape cancels -- a drawing in progress
+  // first, and the tool after that. Bound to the window rather than the canvas,
+  // because the canvas is not focusable: a keyboard user would have to click it
+  // first, and a click on the chart is already a selection.
+  window.addEventListener("keydown", (event) => {
+    // Not while the user is typing. The strategy editor and the question box are
+    // on the same page, and a Backspace in a textarea has to delete a character.
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+    if (event.key === "Escape") {
+      if (placing) {
+        // The shape, not the tool. Escape mid-drag means "not this one", and
+        // having to pick the tool again afterwards would be a second punishment
+        // for one mistake.
+        placing = null;
+        renderNow();
+      } else {
+        selectTool("cursor");
+      }
+      return;
+    }
+
+    if ((event.key === "Delete" || event.key === "Backspace") && selectedDrawing) {
+      event.preventDefault();
+      deleteSelected();
+    }
+  });
   // `passive: false` because the handler calls `preventDefault`. Without it the
   // browser assumes the listener cannot cancel, and scrolls the page behind the
   // chart anyway -- which is the "I can't zoom" report, from the other end.
@@ -2467,7 +3109,9 @@ async function main() {
   el("chart").addEventListener("pointerdown", onPointerDown);
   el("chart").addEventListener("pointermove", onPointerMove);
   el("chart").addEventListener("pointerup", onPointerUp);
-  el("chart").addEventListener("pointercancel", onPointerUp);
+  // Not `onPointerUp`. A cancelled pointer is a gesture the user did not finish,
+  // and committing a drawing from it would store a shape nobody drew.
+  el("chart").addEventListener("pointercancel", onPointerCancel);
   el("ask").addEventListener("click", ask);
   el("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
 

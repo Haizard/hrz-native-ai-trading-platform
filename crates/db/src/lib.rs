@@ -21,6 +21,7 @@
 
 pub mod bots;
 pub mod config;
+pub mod drawings;
 pub mod error;
 pub mod live;
 pub mod loading;
@@ -34,6 +35,10 @@ pub mod users;
 
 pub use bots::{create_bot, delete_bot, get_bot, list_bots, set_status, BotRow, STATUSES};
 pub use config::DatabaseConfig;
+pub use drawings::{
+    create_drawing, delete_drawing, list_drawings, needs_second_anchor, update_drawing, DrawingRow,
+    NewDrawing, KINDS as DRAWING_KINDS,
+};
 pub use error::DbError;
 pub use live::{
     list_live_orders, open_live_orders, opted_in_venues, record_live_order, record_venue_opt_in,

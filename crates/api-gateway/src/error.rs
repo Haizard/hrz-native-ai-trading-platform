@@ -153,6 +153,17 @@ impl ApiError {
     pub fn code(&self) -> &str {
         &self.code
     }
+
+    /// The human-readable message.
+    ///
+    /// Here for the same reason as [`ApiError::status`] and [`ApiError::code`]:
+    /// a test that asserts only the code cannot tell "the reason is in the
+    /// message" from "the reason is missing", and the reason is the whole value
+    /// of a 422.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 /// Turn a strategy-document failure into a response the editor can act on.

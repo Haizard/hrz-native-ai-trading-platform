@@ -40,10 +40,12 @@
 
 #![deny(missing_docs)]
 
+pub mod drawing;
 pub mod footprint;
 pub mod scene;
 pub mod viewport;
 
+pub use drawing::{Anchor, Drawing, DrawingKind, DrawingPart, Fraction, SceneDrawing, FIB_LEVELS};
 pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
 pub use scene::{
     build, heikin_ashi, Bar, Level, Mode, Plot, Point, ProfileBar, Request, Scene, SceneOrigin,
