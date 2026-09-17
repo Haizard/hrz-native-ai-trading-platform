@@ -7,7 +7,23 @@
 //!   --strategy strategies/liquidity-sweep.yaml \
 //!   --symbol BTCUSDT --from 2024-01-01 --to 2024-07-01 \
 //!   --report-out reports/liquidity-sweep-2024h1.json
+//!
+//! strategy-cli verify --symbol BTCUSDT --trades 25
 //! ```
+//!
+//! ## `verify` checks stored trades against the candle table
+//!
+//! Phase 3's exit criterion asks for "manually-verified spot checks" and, until
+//! `verify` existed, the repository had none — the phrase appears in the
+//! roadmap and nowhere else. The golden-file test cannot stand in for it: its
+//! fixture was generated from this implementation, so it detects a *changed*
+//! backtester and never a wrong one.
+//!
+//! `verify` asks the other question: given the trades a stored run recorded,
+//! does the candle table actually support them? That table is produced by the
+//! collector and the backfill, not by the backtester, so it is external to the
+//! thing under test. See `verify.rs` for exactly which claims are checked and
+//! which are not.
 //!
 //! ## Loading a multi-timeframe document
 //!
@@ -32,6 +48,8 @@
 //! and resampled.
 
 use std::path::Path;
+
+mod verify;
 
 use analytics_core::Timeframe;
 use anyhow::{bail, Context, Result};
@@ -62,6 +80,29 @@ enum Command {
         /// Path to the YAML/JSON strategy document.
         #[arg(long)]
         strategy: String,
+    },
+    /// Re-check a backtest's trades against the candle table.
+    ///
+    /// Exits non-zero when any checked trade contradicts itself or the market
+    /// data, so it is usable as a gate rather than only as a report.
+    Verify {
+        /// A JSON report written by `backtest run --report-out`.
+        ///
+        /// The run Phase 3's exit criterion refers to lives in `reports/`, not in
+        /// the `backtests` table, so reading the file is the path that actually
+        /// reaches it.
+        #[arg(long, conflicts_with = "symbol")]
+        report: Option<String>,
+        /// Symbol whose newest stored run should be checked.
+        #[arg(long)]
+        symbol: Option<String>,
+        /// How many trades to check, spread across the run.
+        #[arg(long, default_value_t = 25)]
+        trades: usize,
+        /// Override the resolution to check against. Defaults to the run's own
+        /// decision timeframe, discovered from the candle table.
+        #[arg(long)]
+        timeframe: Option<String>,
     },
 }
 
@@ -139,6 +180,28 @@ async fn main() -> Result<()> {
                 .await
             }
         },
+        Command::Verify {
+            report,
+            symbol,
+            trades,
+            timeframe,
+        } => {
+            let clean = verify::run(
+                report.as_deref(),
+                symbol.as_deref(),
+                trades,
+                timeframe.as_deref(),
+            )
+            .await?;
+            // A failed check is a real answer, not an operational error, so it
+            // leaves through the exit code rather than an `Err`. A gate that
+            // printed the failure and exited zero would be a gate nobody could
+            // wire into CI.
+            if !clean {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
     }
 }
 

@@ -124,6 +124,39 @@ pub async fn insert_orderbook_snapshots(
     Ok(())
 }
 
+/// Which resolutions have a candle opening at exactly `open_time`.
+///
+/// ## Why this is a query and not a constant
+///
+/// A stored backtest records the *declared name* of its decision timeframe
+/// (`"entry"`), not the resolution behind it, so anything reading a report back
+/// has to find the resolution some other way. Guessing from the declared name
+/// is impossible; asking the candle table is exact.
+///
+/// More than one resolution can answer yes: every timeframe shares the same
+/// grid at a UTC day boundary, so a trade entered at midnight matches all six.
+/// That is why this returns a list rather than one value — the caller
+/// disambiguates with the trades themselves and asks for `--timeframe` if it
+/// still cannot tell. Returning the first match would silently verify against
+/// the wrong series.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn timeframes_with_candle_at(
+    pool: &PgPool,
+    symbol: &str,
+    open_time_ns: i64,
+) -> Result<Vec<String>, DbError> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT timeframe FROM candles WHERE symbol = $1 AND open_time = $2",
+    )
+    .bind(symbol)
+    .bind(ns_to_dt(open_time_ns))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// Load candles for `[from_ns, to_ns)` ordered by time.
 ///
 /// # Errors

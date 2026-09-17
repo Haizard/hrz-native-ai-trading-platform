@@ -78,7 +78,14 @@ pub struct BacktestReport {
     pub from: i64,
     /// End of the window (unix nanos).
     pub to: i64,
-    /// The timeframe decisions were made on.
+    /// The **declared name** of the timeframe decisions were made on.
+    ///
+    /// A name, not a resolution: a document that writes
+    /// `timeframes: { entry: 5m }` stores `"entry"` here, because that is what
+    /// the document calls it and what every condition in it refers to. Nothing
+    /// in the report records the resolution behind the name, so a reader that
+    /// needs the resolution has to find it — `strategy-cli verify` asks the
+    /// candle table rather than guessing from the name.
     pub decision_timeframe: String,
     /// Every completed trade.
     pub trades: Vec<TradeRecord>,
@@ -111,7 +118,10 @@ pub struct BacktestReport {
     /// without this attribute reading one back would fail outright.
     #[serde(default)]
     pub equity_curve: Vec<f64>,
-    /// The timeframe the run executed on.
+    /// The **declared name** of the timeframe the run executed on.
+    ///
+    /// Same caveat as [`BacktestReport::decision_timeframe`]: a name from the
+    /// document, not a resolution.
     pub best_timeframe: Option<String>,
     /// The regime with the worst mean R, when at least two regimes appeared.
     pub worst_regime: Option<String>,

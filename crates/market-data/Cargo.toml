@@ -8,7 +8,14 @@ license.workspace = true
 
 [dependencies]
 analytics-core = { workspace = true }
-db = { workspace = true }
+# No `db` edge, deliberately. This crate publishes normalized data to its bus and
+# a binary (`xtask collect`) persists it; the collector itself never writes, so
+# the dependency sat here unused. It read as "the collector persists", which is
+# the opposite of the truth and is how the missing candle pump went unnoticed --
+# `xtask collect` had no candle pump at all, so a collector run wrote zero
+# candles. Adding `db` back means the collector has grown a write path, and that
+# should be a decision rather than a leftover.
+#
 # Metrics only. `observability` is a leaf with no internal dependencies, so this
 # edge cannot introduce a cycle and cannot pull `trading-engine` into the
 # collector's process -- which matters, because the collector runs in the same

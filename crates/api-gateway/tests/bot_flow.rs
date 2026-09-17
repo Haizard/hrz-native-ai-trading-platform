@@ -539,6 +539,7 @@ async fn another_users_bot_is_absent_not_forbidden() {
 
     for (method, path) in [
         ("GET", format!("/bots/{bot_id}")),
+        ("GET", format!("/bots/{bot_id}/notifications")),
         ("POST", format!("/bots/{bot_id}/pause")),
         ("POST", format!("/bots/{bot_id}/resume")),
         ("POST", format!("/bots/{bot_id}/kill")),
@@ -558,6 +559,194 @@ async fn another_users_bot_is_absent_not_forbidden() {
         .unwrap();
     owner.cleanup(&h.database).await;
     stranger.cleanup(&h.database).await;
+}
+
+/// A notification written for a bot can be read back, and the count agrees.
+///
+/// ## Why this test exists
+///
+/// `docs/11` asks for the user to be *notified* on a breach. The writer was
+/// built -- `BotSession::flush` turns every `BotAlert` into a
+/// `bot.notification` audit row -- and no reader was, so the only trace was
+/// `activity.notifications`: a number that says something happened and nothing
+/// about what. A count with no list behind it reads as delivery.
+///
+/// The row is written through the real writer
+/// (`trading_engine::notification_payload`), not a hand-built JSON literal, so
+/// this also pins the contract between the two ends: the payload keys the SQL
+/// selects are the keys the writer writes. A rename on either side fails here
+/// rather than producing rows whose title is the empty string.
+#[tokio::test]
+async fn a_notification_written_for_a_bot_is_readable_through_the_route() {
+    use trading_engine::{notification_payload, BotAlert, NOTIFICATION_EVENT};
+
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+    let strategy_id = strategy(&h, &user.token).await;
+    let bot_id = h
+        .created(
+            "/bots",
+            json!({ "strategy_id": strategy_id }),
+            Some(&user.token),
+        )
+        .await;
+    let bot_uuid: uuid::Uuid = bot_id.parse().expect("the route returns a uuid");
+
+    // A real breach payload, with a timestamp distinct enough to order by.
+    let ts = 1_788_998_400_000_000_000i64;
+    db::paper::insert_audit_events(
+        h.database.pool(),
+        &[db::paper::AuditEvent {
+            user_id: Some(user.id),
+            event_type: NOTIFICATION_EVENT.into(),
+            payload: notification_payload(
+                &BotAlert::Killed {
+                    reason: "daily loss limit".into(),
+                    positions: "flat".into(),
+                },
+                bot_uuid,
+            ),
+            ts,
+        }],
+    )
+    .await
+    .expect("the audit row must be written");
+
+    let (status, body) = h
+        .get(&format!("/bots/{bot_id}/notifications"), Some(&user.token))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let list = body.as_array().expect("a JSON array");
+    assert_eq!(list.len(), 1, "exactly the row that was written: {body}");
+    assert_eq!(list[0]["kind"], "killed");
+    assert_eq!(list[0]["severity"], "critical");
+    assert_eq!(list[0]["title"], "Paper bot stopped by the risk engine");
+    assert_eq!(list[0]["body"], "daily loss limit");
+    assert_eq!(list[0]["at"], ts);
+    assert!(list[0]["id"].as_str().is_some_and(|s| !s.is_empty()));
+
+    // And the count the panel already showed is the length of the list it can
+    // now open. If these two ever disagree the panel is lying about one of them.
+    let (status, bot) = h.get(&format!("/bots/{bot_id}"), Some(&user.token)).await;
+    assert_eq!(status, StatusCode::OK, "{bot}");
+    assert_eq!(
+        bot["activity"]["notifications"], 1,
+        "the summary count and the list read the same rows"
+    );
+
+    h.delete(&format!("/bots/{bot_id}"), Some(&user.token))
+        .await;
+    db::strategies::delete_strategy(h.database.pool(), strategy_id.parse().unwrap())
+        .await
+        .unwrap();
+    user.cleanup(&h.database).await;
+}
+
+/// A bot that raised nothing answers with an empty list, not a 404.
+///
+/// The distinction the panel depends on: "no notifications" is an answer, and a
+/// client that cannot tell it from "no such bot" shows an error for a healthy
+/// bot.
+#[tokio::test]
+async fn a_bot_with_no_notifications_answers_with_an_empty_list() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+    let strategy_id = strategy(&h, &user.token).await;
+    let bot_id = h
+        .created(
+            "/bots",
+            json!({ "strategy_id": strategy_id }),
+            Some(&user.token),
+        )
+        .await;
+
+    let (status, body) = h
+        .get(&format!("/bots/{bot_id}/notifications"), Some(&user.token))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.as_array().map(Vec::len), Some(0), "{body}");
+
+    h.delete(&format!("/bots/{bot_id}"), Some(&user.token))
+        .await;
+    db::strategies::delete_strategy(h.database.pool(), strategy_id.parse().unwrap())
+        .await
+        .unwrap();
+    user.cleanup(&h.database).await;
+}
+
+/// Another bot's notifications must not leak through this one.
+///
+/// The query is keyed on `payload->>'bot_id'`, so this is the test that says so:
+/// two bots, one notification each, and each route returns only its own.
+#[tokio::test]
+async fn notifications_do_not_leak_between_bots() {
+    use trading_engine::{notification_payload, BotAlert, NOTIFICATION_EVENT};
+
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+    let strategy_id = strategy(&h, &user.token).await;
+
+    let first = h
+        .created(
+            "/bots",
+            json!({ "strategy_id": strategy_id }),
+            Some(&user.token),
+        )
+        .await;
+    let second = h
+        .created(
+            "/bots",
+            json!({ "strategy_id": strategy_id }),
+            Some(&user.token),
+        )
+        .await;
+
+    for (bot_id, detail) in [(&first, "first bot"), (&second, "second bot")] {
+        db::paper::insert_audit_events(
+            h.database.pool(),
+            &[db::paper::AuditEvent {
+                user_id: Some(user.id),
+                event_type: NOTIFICATION_EVENT.into(),
+                payload: notification_payload(
+                    &BotAlert::Clamped {
+                        detail: detail.into(),
+                    },
+                    bot_id.parse().unwrap(),
+                ),
+                ts: 1_788_998_400_000_000_000i64,
+            }],
+        )
+        .await
+        .expect("the audit row must be written");
+    }
+
+    for (bot_id, expected) in [(&first, "first bot"), (&second, "second bot")] {
+        let (status, body) = h
+            .get(&format!("/bots/{bot_id}/notifications"), Some(&user.token))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let list = body.as_array().expect("a JSON array");
+        assert_eq!(list.len(), 1, "{body}");
+        assert_eq!(list[0]["body"], expected);
+        assert_eq!(list[0]["kind"], "clamped");
+        assert_eq!(list[0]["severity"], "warning");
+    }
+
+    for bot_id in [&first, &second] {
+        h.delete(&format!("/bots/{bot_id}"), Some(&user.token))
+            .await;
+    }
+    db::strategies::delete_strategy(h.database.pool(), strategy_id.parse().unwrap())
+        .await
+        .unwrap();
+    user.cleanup(&h.database).await;
 }
 
 #[tokio::test]

@@ -196,6 +196,29 @@ impl MarketContext {
                 .copied()
                 .map_or(FieldValue::Absent, FieldValue::Num),
 
+            // Absent, not "none", when nothing has broken. A condition like
+            // `market_structure.break == "choch"` is then false, which is what
+            // you want; returning the string "none" would make every equality
+            // against a real kind false too, but would also make
+            // `market_structure.break != "choch"` true on a series with no
+            // structure at all -- a reversal strategy that enters on "not a
+            // CHoCH" would fire on an empty chart.
+            Field::MarketStructureBreak => state
+                .latest_break()
+                .map_or(FieldValue::Absent, |b| FieldValue::Str(b.kind.name())),
+            Field::MarketStructureBreakDirection => state
+                .latest_break()
+                .map_or(FieldValue::Absent, |b| FieldValue::Str(b.direction.name())),
+            Field::MarketStructureBreakLevel => state
+                .latest_break()
+                .map_or(FieldValue::Absent, |b| FieldValue::Num(b.level)),
+            Field::MarketStructureBreakDistance => state
+                .break_distance()
+                .map_or(FieldValue::Absent, FieldValue::Num),
+            Field::MarketStructureBreakAge => state
+                .bars_since_break()
+                .map_or(FieldValue::Absent, |bars| FieldValue::Num(bars as f64)),
+
             Field::AbsorptionDetected => FieldValue::Bool(!state.absorption.is_empty()),
             Field::AbsorptionBullish => {
                 FieldValue::Bool(state.latest_absorption().is_some_and(|a| a.is_bullish()))
@@ -644,6 +667,96 @@ mod tests {
                 .as_num(),
             Some(12.0)
         );
+    }
+
+    /// The break fields reach a condition, which is the whole point of carrying
+    /// the breaks into `MarketState`.
+    ///
+    /// `series()` closes its last candle at 13 through the swing high at 12,
+    /// with `trend` still `Ranging` at the moment of the break -- so it is a
+    /// BOS, upward, one level above the newest close.
+    #[test]
+    fn break_fields_describe_the_most_recent_break() {
+        let c = ctx(series(), None);
+
+        assert_eq!(
+            c.read("entry", Field::MarketStructureBreak).as_str(),
+            Some("bos")
+        );
+        assert_eq!(
+            c.read("entry", Field::MarketStructureBreakDirection)
+                .as_str(),
+            Some("buy")
+        );
+        assert_eq!(
+            c.read("entry", Field::MarketStructureBreakLevel).as_num(),
+            Some(12.0)
+        );
+        // Close 13 less level 12.
+        assert_eq!(
+            c.read("entry", Field::MarketStructureBreakDistance)
+                .as_num(),
+            Some(1.0)
+        );
+        assert_eq!(
+            c.read("entry", Field::MarketStructureBreakAge).as_num(),
+            Some(0.0),
+            "the break is the newest candle"
+        );
+    }
+
+    /// Absent, not a placeholder string or a zero.
+    ///
+    /// A condition `market_structure.break != "choch"` on a chart that has
+    /// never broken anything must be false. Returning `"none"` would make it
+    /// true, and so would an age of zero -- a reversal strategy would fire on
+    /// an empty series.
+    #[test]
+    fn break_fields_are_absent_before_anything_breaks() {
+        let flat = vec![
+            candle(0, 10.0, 10.0, 10.0, 1.0, 1.0),
+            candle(60, 10.0, 10.0, 10.0, 1.0, 1.0),
+        ];
+        let c = ctx(flat, None);
+
+        for field in [
+            Field::MarketStructureBreak,
+            Field::MarketStructureBreakDirection,
+            Field::MarketStructureBreakLevel,
+            Field::MarketStructureBreakDistance,
+            Field::MarketStructureBreakAge,
+        ] {
+            assert!(c.read("entry", field).is_absent(), "{field} must be absent");
+        }
+    }
+
+    /// The vocabulary the generator is handed must contain the new fields.
+    ///
+    /// `ai_agent::strategy_system_prompt` injects `ALL_FIELDS` and
+    /// `api-gateway` serves it to the editor. Both read the same constant, so a
+    /// field that reaches `Field` but not `ALL_FIELDS` is invisible to every
+    /// client while still being readable by the engine -- the asymmetry that
+    /// makes a field unusable rather than merely undocumented.
+    #[test]
+    fn the_break_fields_are_in_the_published_vocabulary() {
+        for field in [
+            Field::MarketStructureBreak,
+            Field::MarketStructureBreakDirection,
+            Field::MarketStructureBreakLevel,
+            Field::MarketStructureBreakDistance,
+            Field::MarketStructureBreakAge,
+        ] {
+            assert!(
+                strategy_dsl::ALL_FIELDS.contains(&field),
+                "{field} is readable by the engine but missing from ALL_FIELDS, \
+                 so no client can write it"
+            );
+            assert_eq!(
+                Field::parse(field.name()),
+                Some(field),
+                "the name must round-trip through the parser"
+            );
+        }
     }
 
     #[test]

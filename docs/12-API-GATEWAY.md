@@ -41,6 +41,7 @@ GET    /bots/{id}
 POST   /bots/{id}/pause
 POST   /bots/{id}/resume
 POST   /bots/{id}/kill                   # the manual kill-switch: liquidates, then stops
+GET    /bots/{id}/notifications          # what the risk engine told the user, newest first
 DELETE /bots/{id}
 
 GET    /venues                           # which venues exist, are opted in, have credentials
@@ -79,6 +80,32 @@ because a route cannot block on a network round trip to a venue.
 same origin as the API (see the routes above), so this needs no second process and no
 CORS policy. `GET /venues` carries the gate's own thresholds, so the panel states the
 requirements the API enforces rather than a hardcoded copy that would drift.
+
+### `GET /bots/{id}/notifications` is the reader the count always implied
+
+`GET /bots/{id}` reports `activity.notifications`: how many times the risk engine raised
+something about this bot. For a while that was the *only* trace. `docs/11` asks for the
+user to be notified on a breach and the writer for that existed — `BotSession::flush`
+turns every `BotAlert` into a `bot.notification` row — but nothing ever read them back,
+so the count said something had happened and nothing about what.
+
+A count with no list behind it reads as delivery. That is the same failure as a metric
+with no writer, from the other side, and it is why this route is not optional.
+
+The four display fields are lifted out of the audit payload rather than passed through
+as JSONB. `notification_payload` writes `kind`, `severity`, `title` and `body` precisely
+so a UI can list these without parsing prose, and pinning the names here means a rename
+at either end is a failing test rather than a blank row —
+`the_payload_keys_the_reader_uses_are_the_keys_the_writer_writes` builds a real payload
+and asserts the SQL's keys are all in it.
+
+There is no cursor. Notifications are rare, the newest fifty carry the story, and an
+endpoint nobody has needed is worse than a limit that is documented.
+
+Ownership is checked first, through the same `get_bot` lookup every other bot route
+uses, so someone else's bot is a **404** — reading a bot's notifications is reading its
+trading history, and `docs/20` already says ownership failures are 404s here rather
+than 403s.
 
 ### `/metrics` is unauthenticated, and that is a decision
 

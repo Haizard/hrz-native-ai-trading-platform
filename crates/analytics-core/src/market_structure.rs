@@ -136,6 +136,13 @@ pub struct MarketStructure {
     pub swing_highs: Vec<f64>,
     /// Confirmed swing-low prices, oldest first.
     pub swing_lows: Vec<f64>,
+    /// Length of the candle slice this was detected over.
+    ///
+    /// Carried because [`SwingPoint::index`] and [`StructureBreak::index`] are
+    /// indices into *that slice*, and without its length an index is not
+    /// interpretable: `index: 40` is the newest bar of a 41-candle series and
+    /// ancient in a 500-candle one. Anything wanting "how long ago" needs both.
+    pub candle_count: usize,
 }
 
 impl MarketStructure {
@@ -328,6 +335,7 @@ pub fn detect_market_structure(candles: &[Candle], config: StructureConfig) -> M
         trend,
         swing_highs,
         swing_lows,
+        candle_count: candles.len(),
     }
 }
 
@@ -513,5 +521,30 @@ mod tests {
         assert!(structure.breaks.is_empty());
         assert_eq!(structure.trend, Trend::Ranging);
         assert!(structure.latest_break().is_none());
+    }
+
+    /// `index` counts into the slice the detector was handed, so the slice's
+    /// length has to travel with it or the index cannot be read.
+    ///
+    /// This is what lets `MarketState` answer "how many bars ago did that
+    /// break" -- the aggregate holds no candle slice of its own.
+    #[test]
+    fn the_candle_count_travels_with_the_indices() {
+        let candles = vec![
+            c(10.0, 8.0, 9.0),
+            c(12.0, 9.0, 11.0),
+            c(11.0, 9.0, 10.0),
+            c(13.0, 10.0, 13.0),
+        ];
+        let structure = detect_market_structure(&candles, config(1));
+
+        assert_eq!(structure.candle_count, 4);
+        let brk = structure.latest_break().expect("13 closes through 12");
+        assert_eq!(brk.index, 3);
+        assert_eq!(
+            structure.candle_count - 1 - brk.index,
+            0,
+            "the break is on the newest candle, so its age is zero"
+        );
     }
 }

@@ -113,6 +113,14 @@ completed trade.
   append-only audit trail (`docs/13-DATABASE-SCHEMA.md`) and optionally pushed to the
   user (in-app notification at minimum; email/webhook are later additions).
 
+  **The in-app reader exists**: `GET /bots/{id}/notifications` (`docs/12`) returns a
+  bot's `bot.notification` rows newest-first, and the bots pane shows them behind a
+  **Notifications** button. The writer (`BotSession::flush`) and the reader were built
+  separately and the reader was missing for a while, during which `activity.notifications`
+  — a count — was the only trace. A count is not a notification; it says something
+  happened and nothing about what. Email and webhook remain unbuilt, and `docs/19`
+  records them as the remaining additions rather than as delivered work.
+
 ## Done criteria (Phase 6 — paper trading)
 - The Phase 3 sample strategy runs as a paper bot continuously for ≥48h against live
   data without crashing, produces simulated trades consistent with what a manual replay

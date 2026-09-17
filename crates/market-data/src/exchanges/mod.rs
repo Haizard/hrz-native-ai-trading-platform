@@ -10,7 +10,7 @@ pub mod wire;
 
 pub use binance::{BinanceCollector, BinanceConfig};
 
-use analytics_core::{OrderBookSnapshot, Trade};
+use analytics_core::{Candle, OrderBookSnapshot, Trade};
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
@@ -53,6 +53,22 @@ pub trait ExchangeCollector: Send + Sync {
 
     /// Subscribe to the order-book stream for `symbol`, if it has one.
     fn order_book_stream(&self, symbol: &str) -> Option<broadcast::Receiver<OrderBookSnapshot>>;
+
+    /// Subscribe to the closed-candle stream for `symbol`, if it has one.
+    ///
+    /// ## Why this is on the trait and not left to the bus
+    ///
+    /// The collector already aggregates trades into every resolution the
+    /// platform uses and publishes the closed ones, but until this method
+    /// existed nothing outside `market-data` could reach them: `xtask collect`
+    /// subscribed to trades and order books only, so a collector run wrote
+    /// zero candles and the candle table could only ever be filled by
+    /// `backfill`. Phase 1's exit criterion is about a *collector* run
+    /// producing a candle table, and it could not be met.
+    ///
+    /// A collector that does not aggregate candles returns `None`, the same
+    /// contract the other two streams have.
+    fn candle_stream(&self, symbol: &str) -> Option<broadcast::Receiver<Candle>>;
 
     /// Current health of the connection.
     fn health(&self) -> HealthStatus;

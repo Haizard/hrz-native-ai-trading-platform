@@ -8,10 +8,11 @@
 //! * `collect` -- run the live Binance collector against one symbol.
 
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use analytics_core::{OrderBookSnapshot, Timeframe, Trade};
+use analytics_core::{Candle, OrderBookSnapshot, Timeframe, Trade};
 use clap::{Parser, Subcommand, ValueEnum};
 use db::repositories;
 use db::Database;
@@ -25,6 +26,14 @@ use tokio::time::interval;
 const TRADE_BATCH: usize = 1_000;
 /// Order-book snapshots buffered before a forced insert.
 const BOOK_BATCH: usize = 100;
+/// Closed candles buffered before a forced insert.
+///
+/// Deliberately the same order as the other two even though it will almost
+/// never be reached: six resolutions close at most six candles in the same
+/// instant, so for candles the flush ticker is the mechanism that actually
+/// writes and this is only a ceiling. Kept as a bound rather than removed so
+/// the three pumps read the same way.
+const CANDLE_BATCH: usize = 100;
 /// How often buffered rows are flushed even if the batch isn't full.
 const FLUSH_SECS: u64 = 5;
 
@@ -235,6 +244,14 @@ async fn collect(symbol: &str, persist: bool) -> anyhow::Result<()> {
     let mut books_rx = collector
         .order_book_stream(&symbol)
         .ok_or_else(|| anyhow::anyhow!("no order book stream for {symbol}"))?;
+    // The collector aggregates every resolution the platform uses, but until
+    // this pump existed nothing outside `market-data` ever read them: a
+    // collector run persisted trades and books and **zero candles**, so the
+    // candle table could only be filled by `backfill`. Phase 1's exit criterion
+    // is about a collector run producing that table.
+    let mut candles_rx = collector
+        .candle_stream(&symbol)
+        .ok_or_else(|| anyhow::anyhow!("no candle stream for {symbol}"))?;
 
     collector.subscribe_trades(&symbol).await?;
     collector.subscribe_order_book(&symbol).await?;
@@ -251,16 +268,30 @@ async fn collect(symbol: &str, persist: bool) -> anyhow::Result<()> {
         pump_books(&mut books_rx, book_db).await;
     });
 
+    // Counted so the status line can show candles landing. Without it a soak
+    // proves only that the process stayed up: the thing this pump exists to
+    // fix is "no candles were written", and that is invisible from the outside
+    // until you query the table afterwards.
+    let candles_written = Arc::new(AtomicU64::new(0));
+
+    let candle_db = db.clone();
+    let candle_counter = Arc::clone(&candles_written);
+    let candle_handle = tokio::spawn(async move {
+        pump_candles(&mut candles_rx, candle_db, candle_counter).await;
+    });
+
     let mut ticker = interval(Duration::from_secs(30));
+    let status_candles = Arc::clone(&candles_written);
     let status_handle = tokio::spawn(async move {
         loop {
             ticker.tick().await;
             println!(
-                "health: connected={} messages={} gaps={} reconnects={}",
+                "health: connected={} messages={} gaps={} reconnects={} candles_written={}",
                 health.is_connected(),
                 health.messages(),
                 health.gaps(),
-                health.reconnects()
+                health.reconnects(),
+                status_candles.load(Ordering::Relaxed)
             );
         }
     });
@@ -272,6 +303,12 @@ async fn collect(symbol: &str, persist: bool) -> anyhow::Result<()> {
     status_handle.abort();
     trade_handle.abort();
     book_handle.abort();
+    candle_handle.abort();
+
+    println!(
+        "{} candles written this run",
+        candles_written.load(Ordering::Relaxed)
+    );
 
     Ok(())
 }
@@ -454,6 +491,72 @@ async fn flush_books(db: &Option<Arc<Database>>, buffer: &mut Vec<OrderBookSnaps
     if let Some(db) = db {
         if let Err(e) = repositories::insert_orderbook_snapshots(db.pool(), &batch).await {
             tracing::error!("failed to insert {} order book snapshots: {e}", batch.len());
+        }
+    }
+}
+
+/// Consume closed candles, buffering and flushing to Postgres.
+///
+/// ## Why this pump had to exist
+///
+/// The collector has always aggregated every resolution the platform uses --
+/// `MultiTimeframeCandleBuilder::standard` builds 1m/5m/15m/1h/4h/1d -- and
+/// published the closed ones to the bus. Nothing subscribed in order to write
+/// them, so `xtask collect` persisted trades and order books and **zero
+/// candles**, and the only way to fill the candle table was `backfill`, which
+/// fetches from REST. Phase 1's exit criterion is explicitly about a
+/// *collector* run producing that table, so it could not be met.
+///
+/// The upsert is idempotent on `(symbol, timeframe, open_time)`, which matters
+/// here more than for the other two pumps: a reconnect replays nothing, but a
+/// restarted collector re-emits a bucket it had already closed, and a
+/// duplicate would otherwise be a primary-key error.
+async fn pump_candles(
+    rx: &mut tokio::sync::broadcast::Receiver<Candle>,
+    db: Option<Arc<Database>>,
+    written: Arc<AtomicU64>,
+) {
+    let mut buffer: Vec<Candle> = Vec::new();
+    let mut flush = interval(Duration::from_secs(FLUSH_SECS));
+    let mut total: u64 = 0;
+
+    loop {
+        tokio::select! {
+            received = rx.recv() => match received {
+                Ok(candle) => {
+                    buffer.push(candle);
+                    total += 1;
+                    if buffer.len() >= CANDLE_BATCH {
+                        flush_candles(&db, &mut buffer, &written).await;
+                    }
+                }
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!("candle subscriber lagged by {n} messages");
+                }
+                Err(RecvError::Closed) => break,
+            },
+            _ = flush.tick() => flush_candles(&db, &mut buffer, &written).await,
+        }
+    }
+
+    flush_candles(&db, &mut buffer, &written).await;
+    println!("candle pump stopped after {total} candles closed");
+}
+
+async fn flush_candles(db: &Option<Arc<Database>>, buffer: &mut Vec<Candle>, written: &AtomicU64) {
+    if buffer.is_empty() {
+        return;
+    }
+    let batch = std::mem::take(buffer);
+    if let Some(db) = db {
+        match repositories::insert_candles(db.pool(), &batch).await {
+            // Counted only on success. Counting the attempt would let a run
+            // against an unreachable database report the same number as a
+            // healthy one, which is the opposite of what a counter is for.
+            Ok(()) => {
+                written.fetch_add(batch.len() as u64, Ordering::Relaxed);
+            }
+            Err(e) => tracing::error!("failed to insert {} candles: {e}", batch.len()),
         }
     }
 }

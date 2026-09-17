@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use analytics_core::{OrderBookSnapshot, Trade};
+use analytics_core::{Candle, OrderBookSnapshot, Trade};
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc};
@@ -255,6 +255,11 @@ impl ExchangeCollector for BinanceCollector {
     fn order_book_stream(&self, symbol: &str) -> Option<broadcast::Receiver<OrderBookSnapshot>> {
         let bus = self.buses.bus(&symbol.to_uppercase());
         Some(bus.subscribe_orderbook())
+    }
+
+    fn candle_stream(&self, symbol: &str) -> Option<broadcast::Receiver<Candle>> {
+        let bus = self.buses.bus(&symbol.to_uppercase());
+        Some(bus.subscribe_candles())
     }
 
     fn health(&self) -> HealthStatus {
@@ -503,4 +508,87 @@ fn now_ns() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use analytics_core::Timeframe;
+
+    /// A collector that cannot hand out a candle stream cannot have its candles
+    /// persisted, however well it aggregates them.
+    ///
+    /// This is the row-12 gap in miniature. The collector has always built all
+    /// six resolutions and published the closed ones to the bus, and
+    /// `bus.rs`'s own test proves the bus delivers them -- but the bus is
+    /// *internal* to `market-data`, so that test passed for as long as
+    /// `xtask collect` wrote zero candles. What was missing was a way out of
+    /// the crate, and only the collector can offer one.
+    ///
+    /// Constructing without `connect()` keeps this offline: it exercises the
+    /// subscription wiring, not the socket.
+    #[test]
+    fn the_collector_hands_out_a_reachable_candle_stream() {
+        let registry = Arc::new(MarketBusRegistry::new());
+        let collector = BinanceCollector::with_defaults(Arc::clone(&registry));
+
+        let mut rx = collector
+            .candle_stream("btcusdt")
+            .expect("a Binance collector aggregates candles and must expose them");
+
+        // Lower case in, upper case out: the caller passes whatever the user
+        // typed and the bus keys on the canonical symbol.
+        registry.bus("BTCUSDT").publish_candle(Candle {
+            symbol: "BTCUSDT".into(),
+            timeframe: Timeframe::M5,
+            open_time: 1_700_000_000_000_000_000,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.5,
+            volume: 3.0,
+            buy_volume: 2.0,
+            sell_volume: 1.0,
+        });
+
+        let received = rx.try_recv().expect("the subscription must be live");
+        assert_eq!(received.timeframe, Timeframe::M5);
+        assert_eq!(received.close, 100.5);
+    }
+
+    /// The three streams are independent channels, not one shared queue.
+    ///
+    /// Worth pinning because the fix for row 12 was a *third* subscription on
+    /// an existing collector: if `candle_stream` had returned the trade or
+    /// order-book channel, the pump would have been wired to the wrong bus and
+    /// the failure would look exactly like the bug it replaced.
+    #[test]
+    fn the_candle_stream_is_not_the_trade_or_book_stream() {
+        let registry = Arc::new(MarketBusRegistry::new());
+        let collector = BinanceCollector::with_defaults(Arc::clone(&registry));
+
+        let mut candles = collector.candle_stream("BTCUSDT").expect("candle stream");
+        let bus = registry.bus("BTCUSDT");
+
+        bus.publish_trade(Trade {
+            symbol: "BTCUSDT".into(),
+            price: 100.0,
+            quantity: 1.0,
+            timestamp: 1,
+            is_buyer_maker: false,
+            trade_id: 1,
+        });
+        bus.publish_orderbook(OrderBookSnapshot {
+            symbol: "BTCUSDT".into(),
+            timestamp: 1,
+            bids: vec![],
+            asks: vec![],
+        });
+
+        assert_eq!(
+            candles.try_recv().unwrap_err(),
+            broadcast::error::TryRecvError::Empty,
+            "a trade or a snapshot must not arrive on the candle channel"
+        );
+    }
 }

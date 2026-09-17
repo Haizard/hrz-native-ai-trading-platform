@@ -33,6 +33,8 @@ let botSocket = null; // the channel for the one bot being watched
 let watchedBot = null; // its id, or null when watching none
 let bots = []; // the last bot list read from the API
 let botLog = []; // frames from `botSocket`, oldest first
+let botNotifications = {}; // bot id -> notifications, once asked for
+let notificationsOpen = null; // the bot whose notifications are shown
 let venues = []; // the last venue list, so opt-in state has one source
 
 let agentSocket = null; // the agent channel, opened on first ask
@@ -1984,10 +1986,16 @@ function renderBots() {
     .map((bot) => {
       const watching = bot.id === watchedBot;
       const log = watching ? botLogHtml() : "";
+      const open = bot.id === notificationsOpen;
+      const feed = open ? notificationsHtml(bot) : "";
       // "Killed" is a `status`, not a flag of its own -- so the button reads the
       // same field the table above it shows and the two cannot disagree about
       // whether the switch is thrown.
       const killed = bot.status === "killed";
+      // The count comes from the activity summary and the list from
+      // `/bots/{id}/notifications`; they read the same `bot.notification` rows,
+      // so a count above zero with an empty list would be a bug worth seeing.
+      const raised = bot.activity?.notifications ?? 0;
       return `<dl class="kv">
           <dt>id</dt><dd>${escapeHtml(bot.id.slice(0, 8))}</dd>
           <dt>status</dt><dd>${escapeHtml(bot.status)}</dd>
@@ -1998,10 +2006,14 @@ function renderBots() {
           <dt>trades</dt><dd>${bot.activity?.trades ?? 0}</dd>
           <dt>decisions</dt><dd>${bot.activity?.decisions ?? 0}</dd>
           <dt>cumulative R</dt><dd>${(bot.activity?.cumulative_r ?? 0).toFixed(3)}</dd>
+          <dt>notifications</dt><dd>${raised}</dd>
         </dl>
         <div class="row">
           <button data-bot="${bot.id}" data-act="${watching ? "unwatch" : "watch"}">${
             watching ? "Stop watching" : "Watch"
+          }</button>
+          <button data-bot="${bot.id}" data-act="${open ? "hide-notifications" : "notifications"}">${
+            open ? "Hide notifications" : "Notifications"
           }</button>
           <button data-bot="${bot.id}" data-act="pause">Pause</button>
           <button data-bot="${bot.id}" data-act="resume">Resume</button>
@@ -2012,9 +2024,61 @@ function renderBots() {
                     killed ? "Killed" : "Kill switch"
                   }</button>
         </div>
+        ${feed}
         ${log}`;
     })
     .join("<hr />");
+}
+
+/// A bot's notifications, newest first.
+///
+/// This is the reader the audit rows never had. `docs/11` asks for the user to
+/// be *notified* on a breach and the risk engine has always written a
+/// `bot.notification` row for one; until this existed the only trace was the
+/// count in the row above, which says something happened and not what.
+function notificationsHtml(bot) {
+  const entries = botNotifications[bot.id];
+  if (entries === undefined) {
+    return `<p class="muted">Loading notifications…</p>`;
+  }
+  if (!entries.length) {
+    // Distinguished from "loading" on purpose: an empty list is the answer to
+    // the question, and a spinner that never resolves is how a broken read
+    // looks like a slow one.
+    return `<p class="muted">No notifications. A breach or a clamped risk limit appears here.</p>`;
+  }
+  const rows = entries
+    .map((n) => {
+      const at = n.at ? new Date(n.at / 1e6).toLocaleString() : "";
+      const cls = n.severity === "critical" ? "fail" : "muted";
+      return `<li class="${cls}"><strong>${escapeHtml(n.title)}</strong> · ${escapeHtml(
+        n.severity
+      )}<br /><span class="muted">${at} · ${escapeHtml(n.kind)}</span><br />${escapeHtml(n.body)}</li>`;
+    })
+    .join("");
+  return `<ul class="botlog">${rows}</ul>`;
+}
+
+/// Fetch a bot's notifications and show them.
+async function toggleNotifications(id) {
+  if (notificationsOpen === id) {
+    notificationsOpen = null;
+    renderBots();
+    return;
+  }
+  notificationsOpen = id;
+  delete botNotifications[id];
+  renderBots();
+  try {
+    botNotifications[id] = await api(`/bots/${id}/notifications`);
+  } catch (e) {
+    // Kept as an entry rather than dropped, so the failure renders in the list
+    // instead of leaving the panel on "Loading…" forever.
+    botNotifications[id] = [
+      { kind: "error", severity: "critical", title: "Could not read notifications", body: e.message, at: 0 },
+    ];
+  }
+  renderBots();
 }
 
 /// The live log for the watched bot, newest first.
@@ -2150,6 +2214,13 @@ async function botAction(id, act) {
   }
   if (act === "unwatch") {
     unwatchBot();
+    return;
+  }
+  // Both of these are reads of `/bots/{id}/notifications`, which is a GET. They
+  // are handled here rather than falling through to the POST below, which would
+  // send `POST /bots/{id}/notifications` and get a 405.
+  if (act === "notifications" || act === "hide-notifications") {
+    await toggleNotifications(id);
     return;
   }
   try {

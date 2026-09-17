@@ -204,6 +204,62 @@ pub async fn get_backtest(
     }))
 }
 
+/// The newest stored backtest for a symbol, across every user.
+///
+/// ## Why this has no ownership filter
+///
+/// Every other read here is scoped to a user, and this one deliberately is not.
+/// It exists for offline verification — `strategy-cli verify` reads back a run
+/// the platform already produced and re-checks its trades against the candle
+/// table — and that is an operator reading the platform's own output, not a
+/// request for someone's data. It is not reachable over HTTP; `docs/12` has no
+/// route that could serve it.
+///
+/// ## Why `require_trades` exists
+///
+/// A stored run with an empty `trades` array is legitimate and common: an empty
+/// window, or a strategy whose conditions never fired over the period. It is
+/// also useless to a caller whose whole purpose is to check trades, and
+/// "the newest run happens to be empty" would otherwise be indistinguishable
+/// from "the symbol has no runs". The caller asks for what it needs and says
+/// which run it got.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn newest_backtest_for_symbol(
+    pool: &PgPool,
+    symbol: &str,
+    require_trades: bool,
+) -> Result<Option<BacktestRow>, DbError> {
+    // `jsonb_array_length` is safe here because `report` is written by
+    // `serde_json::to_value` of a `BacktestReport`, whose `trades` is always an
+    // array. `COALESCE` guards the shape rather than the intent: a hand-edited
+    // row without the key would make the whole query error, taking every other
+    // row with it.
+    let sql = if require_trades {
+        "SELECT id, strategy_id, symbol, date_from, date_to, report, created_at \
+         FROM backtests \
+         WHERE symbol = $1 AND COALESCE(jsonb_array_length(report->'trades'), 0) > 0 \
+         ORDER BY created_at DESC LIMIT 1"
+    } else {
+        "SELECT id, strategy_id, symbol, date_from, date_to, report, created_at \
+         FROM backtests WHERE symbol = $1 ORDER BY created_at DESC LIMIT 1"
+    };
+
+    let row = sqlx::query(sql).bind(symbol).fetch_optional(pool).await?;
+
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(BacktestRow {
+        id: row.try_get("id")?,
+        strategy_id: row.try_get("strategy_id")?,
+        symbol: row.try_get("symbol")?,
+        date_from: dt_to_ns(row.try_get("date_from")?),
+        date_to: dt_to_ns(row.try_get("date_to")?),
+        report: row.try_get("report")?,
+        created_at: dt_to_ns(row.try_get("created_at")?),
+    }))
+}
+
 /// List the backtests of one strategy, newest first.
 ///
 /// # Errors

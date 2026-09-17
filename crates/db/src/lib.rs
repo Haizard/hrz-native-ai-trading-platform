@@ -47,9 +47,10 @@ pub use market::{
 pub use models::Database;
 pub use paper::{
     bot_summary, count_audit_events, count_executed_trades, create_owner, find_or_create_strategy,
-    find_user_by_email, insert_audit_events, insert_bot, insert_executed_trades, purge_bot,
-    purge_owner, purge_owners_with_prefix, recent_decisions, set_bot_status, strategy_paper_record,
-    AuditEvent, BotSummary, ExecutedTrade, StrategyPaperRecord,
+    find_user_by_email, insert_audit_events, insert_bot, insert_executed_trades,
+    list_bot_notifications, purge_bot, purge_owner, purge_owners_with_prefix, recent_decisions,
+    set_bot_status, strategy_paper_record, AuditEvent, BotSummary, ExecutedTrade, Notification,
+    StrategyPaperRecord,
 };
 pub use repositories::TradeCoverage;
 pub use repositories::{dt_to_ns, ns_to_dt};
@@ -58,7 +59,8 @@ pub use skills::{
 };
 pub use strategies::{
     count_bots_for_strategy, create_backtest, create_strategy, delete_strategy, get_backtest,
-    get_strategy, list_backtests, list_strategies, BacktestRow, StrategyRow,
+    get_strategy, list_backtests, list_strategies, newest_backtest_for_symbol, BacktestRow,
+    StrategyRow,
 };
 pub use users::{create_user, delete_user, find_by_email, find_by_id, normalize_email, UserRow};
 

@@ -50,8 +50,16 @@ pub trait ExchangeCollector {
     async fn connect(&mut self) -> Result<(), MarketDataError>;
     async fn subscribe_trades(&mut self, symbol: &str) -> Result<(), MarketDataError>;
     async fn subscribe_order_book(&mut self, symbol: &str) -> Result<(), MarketDataError>;
-    fn trade_stream(&self) -> BroadcastReceiver<Trade>;
-    fn order_book_stream(&self) -> BroadcastReceiver<OrderBookSnapshot>;
+    fn trade_stream(&self, symbol: &str) -> Option<BroadcastReceiver<Trade>>;
+    fn order_book_stream(&self, symbol: &str) -> Option<BroadcastReceiver<OrderBookSnapshot>>;
+    /// Closed candles for every resolution the collector aggregates.
+    ///
+    /// This belongs on the trait rather than being read off the bus directly
+    /// because the aggregator lives *inside* the collector: nothing outside
+    /// `market-data` can reach the candle channel any other way. It was absent
+    /// until 2026-09-17, and its absence is why a collector run built candles
+    /// and persisted none of them — see `docs/19` row 12.
+    fn candle_stream(&self, symbol: &str) -> Option<BroadcastReceiver<Candle>>;
 }
 ```
 Implement `BinanceCollector` against this trait first.
@@ -62,6 +70,15 @@ Implement `BinanceCollector` against this trait first.
   analytics (needed for delta/CVD downstream).
 - Maintain in-memory rolling aggregation per (symbol, timeframe); flush closed candles
   to Postgres; emit closed candles on the internal pub/sub.
+
+  **The flush is `xtask collect`, and it did not exist until 2026-09-17.** The
+  aggregator was always correct — it built all six resolutions and published them —
+  but `collect()` spawned only `pump_trades` and `pump_books`, so the only writer of
+  the `candles` table was `xtask backfill`. A 24h collector run added **zero** rows.
+  `collect` now drains `candle_stream` through a third pump and upserts in batches of
+  100 with `ON CONFLICT DO NOTHING`, counting **successes** (a counter that counts
+  attempts reports a healthy run against an unreachable database). `docs/19` row 12
+  records the closure and `reports/phase1-verification.md` the observation.
 
 ## Order book handling
 - Maintain an in-memory order book per symbol from the diff stream; periodically persist

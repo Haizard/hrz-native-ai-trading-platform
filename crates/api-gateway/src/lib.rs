@@ -196,6 +196,7 @@ pub fn router(state: AppState) -> Router {
         .route("/bots/{id}/pause", post(bot_routes::pause))
         .route("/bots/{id}/resume", post(bot_routes::resume))
         .route("/bots/{id}/kill", post(bot_routes::kill))
+        .route("/bots/{id}/notifications", get(bot_routes::notifications))
         .route("/venues", get(venue_routes::list))
         .route("/venues/{venue}/opt-in", post(venue_routes::opt_in))
         .route("/venues/{venue}/revoke", post(venue_routes::revoke))

@@ -21,7 +21,7 @@ commit. Written after the fact from real runs, not from intent.
 | Kill-switch works while the agent/market-data is degraded | **verified by construction** | `RiskEngine` has no I/O, no async and no clock of its own. There is nothing to degrade. |
 | **Tight limit → kill-switch fires** | **verified on real data** | Below. |
 | **The user is notified on a breach** | **verified against the real database** | `a_breach_writes_a_notification_the_ui_can_list`. |
-| **≥48h continuous run** | **started, not yet elapsed** | See "The 48-hour run" below. This is the only criterion whose *observation* is outstanding. |
+| **≥48h continuous run** | **bounded run observed; the 48h duration has not elapsed** | See "The 48-hour run" below. A 30-minute live run on 2026-09-17 started, built `[M5, H4]` from the live feed, decided on every closed 5m bar, persisted, and stopped cleanly. The *duration* is the outstanding part, and it is `docs/19` row 15. |
 
 ---
 
@@ -275,9 +275,35 @@ Two things to know about it:
   writes `bot.killed` and a notification. That is the risk engine working, not a
   crash, and `paper-cli status` distinguishes the two.
 
-The wall-clock observation itself is the one thing this record cannot claim.
-Watching it is `paper-cli status --bot <id> --decisions`; a `bot.started` with
-no matching `bot.stopped` is how a crash is told apart from a clean stop.
+### What was actually observed (2026-09-17)
+
+The command above, bounded by `--minutes 30` instead of by Ctrl-C:
+
+| | |
+|---|---|
+| Started | 2026-09-17 07:33:03 UTC (`bot.started` in `audit_log`) |
+| Stopped | 2026-09-17 08:03:07 UTC (`bot.stopped`, "reached the configured run length") |
+| **Duration** | **30 minutes 4 seconds** |
+| Bot | `fed41dd7-b388-4d05-b6f3-b48e84526a3a`, final `status = stopped` |
+| Timeframes | `[M5, H4]`, built from the live trade stream |
+| Decisions persisted | **6** `bot.decision` rows, 07:35:00 → 08:00:00 — exactly one per closed 5m bar |
+| Trades | 0 — the strategy found no setup in a 30-minute window |
+| Crashes | none; no `bot.killed`, no panic |
+| Kill switch | not tripped (the wider limits above are deliberate) |
+
+The row counts come from `audit_log` read by a separate process, not from the bot's own
+console output. The `bot.decision` timestamps are the useful part: six rows on the five-minute
+grid with no gaps means the bot woke for **every** closed bar in the window, which is what
+"continuous" means at this duration.
+
+**What this does not establish** is the duration. A run that ends because a flag told it to
+is not evidence that it would have survived two days; it is evidence that the path works end
+to end against a live feed and a real database, which the table at the top already claimed and
+which had never been observed on this code. The wall-clock observation is the one thing this
+record still cannot claim.
+
+Watching it is `paper-cli status --bot <id> --decisions`; a `bot.started` with no matching
+`bot.stopped` is how a crash is told apart from a clean stop.
 
 ---
 
@@ -294,16 +320,33 @@ New this phase: 16 tests in `trading-engine::risk`, 12 in
 `trading-engine/tests/persistence.rs`, 2 in `backtester::replay_golden`, and 5
 in `strategy-runtime::rolling`.
 
+> **Updated 2026-09-17.** The workspace is now at **946 passed, 0 failed across 47 test
+> binaries**, with `cargo fmt --all --check` and
+> `cargo clippy --workspace --all-targets -- -D warnings` both clean. The three numbers
+> above are this phase's snapshot and are left as they were.
+>
+> One caveat about that run, recorded because it is the kind of thing a green suite hides:
+> the *first* attempt at `cargo test --workspace` failed
+> `an_agent_authored_strategy_records_who_wrote_it` with `pool timed out while waiting for
+> an open connection` — a 500 from the connection pool, not an assertion about behaviour.
+> Re-run alone it passed in 10s, and it passed in the full `--no-fail-fast` run. The
+> managed database costs roughly a second per statement, and a suite that creates a fresh
+> 10-connection pool per harness will occasionally exhaust it. Worth knowing before
+> treating a single red run as a regression.
+
 ---
 
 ## Not verified
 
-- **The 48-hour wall-clock observation.** See above: implemented, started, and
-  every part of it exercised, but the duration has not elapsed.
+- **The 48-hour wall-clock observation.** See above: **30 minutes 4 seconds** elapsed on
+  2026-09-17, against a criterion that asks for 48 hours. Implemented and exercised end to
+  end on live data; the duration has not elapsed.
 - **Partial fills.** `docs/11` marks them optional at this stage; they are not
   modelled.
 - **Email/webhook notification delivery.** `docs/11` calls these later
-  additions. The notification *rows* are written; nothing pushes them anywhere
-  yet, and there is no UI to read them until Phase 7.
+  additions. The notification *rows* are written and — as of the row-14 work on
+  2026-09-17 — readable: `GET /bots/{id}/notifications` plus a **Notifications**
+  button in the bots pane. What is still missing is pushing them anywhere
+  off-platform, which is what "later additions" meant.
 - **Live trading (Phase 8).** `ExchangeAdapter`, idempotent order IDs and
   reconciliation are untouched, as intended.

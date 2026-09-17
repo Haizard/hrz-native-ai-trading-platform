@@ -33,3 +33,8 @@ frontend/app/.turbo/
 # matters is in Postgres; this is just the terminal output, and it is not worth
 # committing by the hour.
 reports/paper-bot-*.log
+
+# Same for the bounded soaks: the observation is written up in
+# `reports/phase1-verification.md` and `reports/phase6-verification.md`, and the
+# log itself is megabytes of sqlx slow-statement warnings.
+reports/*-soak.log

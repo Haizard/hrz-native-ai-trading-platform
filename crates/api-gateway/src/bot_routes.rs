@@ -122,6 +122,83 @@ pub struct ActivityResponse {
     pub notifications: i64,
 }
 
+/// How many notifications one request returns.
+///
+/// Notifications are rare -- a risk breach, or a limit clamped at startup -- so
+/// a bot that has produced more than this has produced a story worth paging
+/// through, and the newest fifty carry it. There is no cursor: the alternative
+/// is an endpoint nobody has needed yet.
+const NOTIFICATION_LIMIT: i64 = 50;
+
+/// One notification, as the panel shows it.
+///
+/// The four display fields are lifted out of the audit payload rather than
+/// passed through as JSON. `trading_engine::store::notification_payload` writes
+/// them for exactly this reason, and pinning the names here means a rename is a
+/// failing test rather than a blank row in the panel.
+#[derive(Debug, Serialize)]
+pub struct NotificationResponse {
+    /// `audit_log` row id, so a client can key a list on it.
+    pub id: String,
+    /// Short machine name: `killed` or `clamped`.
+    pub kind: String,
+    /// `critical` or `warning`.
+    pub severity: String,
+    /// One line, fit for a list.
+    pub title: String,
+    /// The detail behind the title.
+    pub body: String,
+    /// When it was raised, unix nanoseconds.
+    pub at: i64,
+}
+
+/// `GET /bots/{id}/notifications`
+///
+/// ## Why this route exists
+///
+/// `docs/11` asks for the user to be notified on a breach. The writer for that
+/// was built -- every alert the risk engine raises becomes a `bot.notification`
+/// row -- and no reader was. The bots pane showed `activity.notifications`, a
+/// *count*: it said something had happened and nothing about what.
+///
+/// A count with no list behind it reads as delivery. That is the same failure
+/// as a metric with no writer, and it is why this route is not optional.
+///
+/// # Errors
+/// 404 when the bot does not exist or belongs to someone else -- ownership
+/// failures are 404s rather than 403s throughout `docs/12`, so a caller cannot
+/// probe for ids that exist.
+pub async fn notifications(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<NotificationResponse>>, ApiError> {
+    let database = database(&state)?;
+    let id = parse_id(&id)?;
+
+    // Ownership first, and through the same lookup every other bot route uses.
+    // Reading a bot's notifications is reading its trading decisions, so it
+    // needs the same answer to "is this yours".
+    db::bots::get_bot(database.pool(), user.user_id, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("no such bot"))?;
+
+    let rows = db::paper::list_bot_notifications(database.pool(), id, NOTIFICATION_LIMIT).await?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| NotificationResponse {
+                id: row.id.to_string(),
+                kind: row.kind,
+                severity: row.severity,
+                title: row.title,
+                body: row.body,
+                at: row.ts,
+            })
+            .collect(),
+    ))
+}
+
 /// `POST /bots`
 ///
 /// # Errors
@@ -685,5 +762,67 @@ mod tests {
         assert_eq!(body["supervised_here"], true);
         assert_eq!(body["activity"]["trades"], 3);
         assert_eq!(body["activity"]["cumulative_r"], 2.5);
+        // The count and the list are two views of the same rows, so a panel
+        // showing both must be able to tell they are named differently.
+        assert_eq!(body["activity"]["notifications"], 1);
+    }
+
+    /// The notification list's keys, pinned for the same reason as the bot's.
+    ///
+    /// These four names are the ones `notification_payload` writes into the
+    /// audit row and the ones the panel reads out of the response. Nothing
+    /// joins the two ends: the writer is in `trading-engine`, the reader is
+    /// here, and a rename on either side is a silently blank row rather than a
+    /// compile error. This is the only place both ends are in scope at once.
+    #[test]
+    fn the_notification_response_pins_the_keys_the_panel_reads() {
+        let body = serde_json::to_value(vec![NotificationResponse {
+            id: "9c1f".into(),
+            kind: "killed".into(),
+            severity: "critical".into(),
+            title: "Paper bot stopped by the risk engine".into(),
+            body: "daily loss limit".into(),
+            at: 1_700_000_000_000_000_000,
+        }])
+        .expect("serializes");
+
+        let first = &body[0];
+        assert_eq!(first["id"], "9c1f");
+        assert_eq!(first["kind"], "killed");
+        assert_eq!(first["severity"], "critical");
+        assert_eq!(first["title"], "Paper bot stopped by the risk engine");
+        assert_eq!(first["body"], "daily loss limit");
+        assert_eq!(first["at"], 1_700_000_000_000_000_000i64);
+    }
+
+    /// The names this route reads must be the names the writer writes.
+    ///
+    /// A stronger guard than the one above, and the one that would have caught
+    /// the original gap: the payload keys are produced by
+    /// `trading_engine::store::notification_payload`, so the test builds a real
+    /// one and asserts the SQL's `payload->>'…'` keys are all present in it. A
+    /// typo in either the query or the payload fails here, rather than
+    /// returning rows whose `title` is the empty string.
+    #[test]
+    fn the_payload_keys_the_reader_uses_are_the_keys_the_writer_writes() {
+        use trading_engine::{notification_payload, BotAlert};
+
+        let payload = notification_payload(
+            &BotAlert::Killed {
+                reason: "daily loss limit".into(),
+                positions: "flat".into(),
+            },
+            Uuid::nil(),
+        );
+
+        for key in ["bot_id", "kind", "severity", "title", "body"] {
+            assert!(
+                payload.get(key).is_some(),
+                "the reader selects `payload->>'{key}'` but the writer does not \
+                 write it, so every row would come back with a default"
+            );
+        }
+        assert_eq!(payload["kind"], "killed");
+        assert_eq!(payload["severity"], "critical");
     }
 }

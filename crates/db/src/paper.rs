@@ -595,3 +595,91 @@ pub async fn count_audit_events(
             .await?;
     Ok(row.try_get::<i64, _>("n")?)
 }
+
+/// One `bot.notification` row, as a surface should show it.
+///
+/// ## Why this is a type and not the raw payload
+///
+/// The payload is written by `trading_engine::store::notification_payload` and
+/// carries `kind`, `severity`, `title` and `body` *precisely so* that a UI can
+/// list notifications without parsing prose. Handing the JSONB straight out
+/// would push that parsing back onto every reader, and the first reader to get
+/// it wrong would show a blank line rather than fail.
+///
+/// `payload` also carries `bot_id`, `reason`/`positions`/`detail`. Those are
+/// left in the table: the bot id is already the query key, and the long fields
+/// duplicate `body`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notification {
+    /// The `audit_log` row id.
+    pub id: Uuid,
+    /// Short machine name: `killed` or `clamped`.
+    pub kind: String,
+    /// `critical` or `warning`.
+    pub severity: String,
+    /// One line, fit for a list.
+    pub title: String,
+    /// The detail behind the title.
+    pub body: String,
+    /// When it was raised, unix nanoseconds.
+    pub ts: i64,
+}
+
+/// A bot's notifications, newest first.
+///
+/// ## Why this had to exist
+///
+/// `docs/11` asks for the user to be *notified* on a breach, and the writer for
+/// that was built: `BotSession::flush` writes a `bot.notification` row every
+/// time the risk engine raises an alert. Nothing ever read them back. The only
+/// trace was `bot_summary`'s `notifications` count -- a number in a JSON
+/// response that says a notification happened and nothing about what it said.
+///
+/// A notification with no reader is worse than no notification: the count reads
+/// as delivery. That is the same shape as a metric with no writer, from the
+/// other side.
+///
+/// ## Why it is keyed on `payload->>'bot_id'`
+///
+/// `audit_log` has no `bot_id` column (`docs/13`). The link is the payload key,
+/// written by `notification_payload`, and `bot_summary` counts through the same
+/// expression -- so the count and the list can never disagree about which rows
+/// belong to the bot.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn list_bot_notifications(
+    pool: &PgPool,
+    bot_id: Uuid,
+    limit: i64,
+) -> Result<Vec<Notification>, DbError> {
+    let rows = sqlx::query(
+        "SELECT id, \
+                coalesce(payload->>'kind', 'unknown') AS kind, \
+                coalesce(payload->>'severity', 'warning') AS severity, \
+                coalesce(payload->>'title', '') AS title, \
+                coalesce(payload->>'body', '') AS body, \
+                ts \
+         FROM audit_log \
+         WHERE event_type = 'bot.notification' AND payload->>'bot_id' = $1 \
+         ORDER BY ts DESC, id DESC \
+         LIMIT $2",
+    )
+    .bind(bot_id.to_string())
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(Notification {
+                id: row.try_get("id")?,
+                kind: row.try_get("kind")?,
+                severity: row.try_get("severity")?,
+                title: row.try_get("title")?,
+                body: row.try_get("body")?,
+                ts: dt_to_ns(row.try_get("ts")?),
+            })
+        })
+        .collect()
+}

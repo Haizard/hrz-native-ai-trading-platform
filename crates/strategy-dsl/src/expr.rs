@@ -145,6 +145,33 @@ pub enum Field {
     MarketStructureSwingHigh,
     /// Most recent confirmed swing low.
     MarketStructureSwingLow,
+    /// Kind of the most recent structural break: `bos`, `choch`, or `none`.
+    ///
+    /// The distinction `Field::Trend` cannot make. A close above the last swing
+    /// high while the trend was up is a BOS -- continuation, and the usual place
+    /// to add. The same close while the trend was down is a CHoCH -- reversal
+    /// evidence, and the usual place to reverse. Both leave `trend` reading
+    /// `bullish`, so a structure-based condition written against `trend` alone
+    /// cannot tell continuation from reversal.
+    MarketStructureBreak,
+    /// Direction of the most recent break: `buy`, `sell`, or `none`.
+    MarketStructureBreakDirection,
+    /// The swing level the most recent break closed through. Absent when
+    /// nothing has broken.
+    MarketStructureBreakLevel,
+    /// Signed distance from the newest close to that level.
+    ///
+    /// A separate field because the DSL has no arithmetic: `close - level`
+    /// cannot be written in a condition, so anything a strategy wants to
+    /// compare must be a field. Positive means price has held the break.
+    MarketStructureBreakDistance,
+    /// Bars between the newest candle and the most recent break. Absent when
+    /// nothing has broken; `0` means it happened on the current bar.
+    ///
+    /// Recency is most of what makes a break actionable. Without it every
+    /// condition over [`Field::MarketStructureBreak`] also matches a CHoCH from
+    /// forty bars ago that price has long since left behind.
+    MarketStructureBreakAge,
     /// Whether any absorption was detected recently.
     AbsorptionDetected,
     /// Whether the most recent absorption was bullish.
@@ -216,6 +243,11 @@ pub const ALL_FIELDS: &[Field] = &[
     Field::MarketStructureTrend,
     Field::MarketStructureSwingHigh,
     Field::MarketStructureSwingLow,
+    Field::MarketStructureBreak,
+    Field::MarketStructureBreakDirection,
+    Field::MarketStructureBreakLevel,
+    Field::MarketStructureBreakDistance,
+    Field::MarketStructureBreakAge,
     Field::AbsorptionDetected,
     Field::AbsorptionBullish,
     Field::AbsorptionBearish,
@@ -261,6 +293,11 @@ impl Field {
             Self::MarketStructureTrend => "market_structure.trend",
             Self::MarketStructureSwingHigh => "market_structure.swing_high",
             Self::MarketStructureSwingLow => "market_structure.swing_low",
+            Self::MarketStructureBreak => "market_structure.break",
+            Self::MarketStructureBreakDirection => "market_structure.break_direction",
+            Self::MarketStructureBreakLevel => "market_structure.break_level",
+            Self::MarketStructureBreakDistance => "market_structure.break_distance",
+            Self::MarketStructureBreakAge => "market_structure.break_age",
             Self::AbsorptionDetected => "absorption.detected",
             Self::AbsorptionBullish => "absorption.bullish",
             Self::AbsorptionBearish => "absorption.bearish",
@@ -290,6 +327,9 @@ impl Field {
             Self::Trend | Self::Divergence | Self::MarketStructureTrend | Self::LiquiditySwept => {
                 Type::Str
             }
+            // The break's kind and direction are names, not numbers -- `bos`
+            // and `choch` are compared as strings the same way `trend` is.
+            Self::MarketStructureBreak | Self::MarketStructureBreakDirection => Type::Str,
             Self::AbsorptionDetected
             | Self::AbsorptionBullish
             | Self::AbsorptionBearish

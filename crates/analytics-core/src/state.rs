@@ -29,7 +29,9 @@ use crate::liquidity::{
     detect_liquidity_levels_with, nearest_liquidity_above, nearest_liquidity_below,
     LiquidityConfig, LiquidityLevel,
 };
-use crate::market_structure::{detect_market_structure, MarketStructure, StructureConfig, Trend};
+use crate::market_structure::{
+    detect_market_structure, MarketStructure, StructureBreak, StructureConfig, Trend,
+};
 use crate::types::{Candle, Trade};
 use crate::volume_profile::{
     calculate_volume_profile, calculate_volume_profile_from_candles, VolumeProfile,
@@ -47,6 +49,12 @@ pub struct MarketStateConfig {
     pub divergence_lookback: usize,
     /// How many trailing candles get a full footprint.
     pub footprint_candles: usize,
+    /// How many recent structural breaks the state carries.
+    ///
+    /// Bounded because the state is serialized into the agent's prompt: a
+    /// 200-candle window can break a dozen levels, and the tenth-oldest break
+    /// costs tokens to say nothing the newest one does not.
+    pub structure_breaks: usize,
     /// Swing-detection tuning.
     pub structure: StructureConfig,
     /// Imbalance tuning.
@@ -64,6 +72,7 @@ impl Default for MarketStateConfig {
             cvd_reset_at_session: true,
             divergence_lookback: 20,
             footprint_candles: 200,
+            structure_breaks: 8,
             structure: StructureConfig::default(),
             imbalance: ImbalanceConfig::default(),
             absorption: AbsorptionConfig::default(),
@@ -119,6 +128,30 @@ pub struct MarketState {
     pub swing_highs: Vec<f64>,
     /// Confirmed swing-low prices, oldest first.
     pub swing_lows: Vec<f64>,
+    /// Recent BOS/CHoCH breaks, oldest first.
+    ///
+    /// ## Why the breaks are carried and not just the trend
+    ///
+    /// `detect_market_structure` has always computed these. `MarketState` kept
+    /// `trend` and the bare swing prices and dropped the breaks -- so the
+    /// aggregate lost a deliverable of the module it was aggregating, both of
+    /// them inside this crate.
+    ///
+    /// The loss is not cosmetic. A close above the last swing high *while the
+    /// trend was up* is a BOS: continuation, and the usual place to add. The
+    /// same close *while the trend was down* is a CHoCH: reversal evidence, and
+    /// the usual place to reverse. With only `trend`, both reads arrive as
+    /// "bullish" and the agent cannot tell which it is looking at -- which is
+    /// precisely the distinction a structure-based method is built on.
+    ///
+    /// Bounded to [`MarketStateConfig::structure_breaks`], most recent last.
+    pub breaks: Vec<StructureBreak>,
+    /// Bars between the newest candle and the most recent break.
+    ///
+    /// Stored rather than derived: [`StructureBreak::index`] counts into the
+    /// candle slice the detector was handed, and by the time anything reads the
+    /// state that slice is gone. `None` when nothing has broken.
+    pub bars_since_break: Option<usize>,
 }
 
 impl MarketState {
@@ -169,6 +202,35 @@ impl MarketState {
     #[must_use]
     pub fn latest_absorption(&self) -> Option<&AbsorptionEvent> {
         self.absorption.last()
+    }
+
+    /// The most recent structural break, if any.
+    #[must_use]
+    pub fn latest_break(&self) -> Option<&StructureBreak> {
+        self.breaks.last()
+    }
+
+    /// How many bars ago the most recent break happened.
+    ///
+    /// `None` when nothing has broken; `Some(0)` means it happened on the
+    /// newest candle. Recency is most of what makes a break actionable -- a
+    /// CHoCH nine bars ago is history, the same CHoCH on the current bar is a
+    /// decision -- and the state carries no other way to tell them apart,
+    /// because [`StructureBreak::index`] is an index into a candle slice the
+    /// caller no longer holds.
+    #[must_use]
+    pub fn bars_since_break(&self) -> Option<usize> {
+        self.bars_since_break
+    }
+
+    /// Signed distance from the newest close to the most recent break's level.
+    ///
+    /// Positive means price has held above the broken level. `None` when
+    /// nothing has broken -- absent rather than zero, so a comparison against
+    /// it is false rather than true against a price of zero.
+    #[must_use]
+    pub fn break_distance(&self) -> Option<f64> {
+        self.breaks.last().map(|b| self.price - b.level)
     }
 
     /// Whether the newest candle is part of the value area and above VWAP --
@@ -264,7 +326,16 @@ pub fn build_market_state(
     let absorption = detect_absorption(&footprints, config.absorption);
 
     Some(assemble(
-        last, cvd, vwap, &profile, divergence, &structure, imbalances, absorption, liquidity,
+        last,
+        cvd,
+        vwap,
+        &profile,
+        divergence,
+        &structure,
+        config.structure_breaks,
+        imbalances,
+        absorption,
+        liquidity,
     ))
 }
 
@@ -298,10 +369,28 @@ fn assemble(
     profile: &VolumeProfile,
     divergence: CvdDivergence,
     structure: &MarketStructure,
+    structure_breaks: usize,
     imbalances: Vec<ImbalanceEvent>,
     absorption: Vec<AbsorptionEvent>,
     liquidity: Vec<LiquidityLevel>,
 ) -> MarketState {
+    // The newest break, and how far back it is. Computed here because this is
+    // the last frame that knows how long the candle slice was; `index` alone
+    // means nothing to a reader of the state.
+    //
+    // The age is derived from `breaks` *after* bounding, not from the full
+    // structure. Otherwise a bound of zero leaves `latest_break()` returning
+    // `None` while `bars_since_break()` still reports a number -- and a
+    // strategy reading `market_structure.break_age` would act on a break that
+    // `market_structure.break` says does not exist.
+    let breaks = tail_of(&structure.breaks, structure_breaks);
+    let bars_since_break = breaks.last().map(|b| {
+        structure
+            .candle_count
+            .saturating_sub(1)
+            .saturating_sub(b.index)
+    });
+
     MarketState {
         symbol: last.symbol.clone(),
         timeframe: last.timeframe.to_string(),
@@ -323,13 +412,26 @@ fn assemble(
         liquidity,
         swing_highs: structure.swing_highs.clone(),
         swing_lows: structure.swing_lows.clone(),
+        breaks,
+        bars_since_break,
     }
+}
+
+/// The newest `n` items of `items`, oldest first.
+///
+/// `n == 0` yields an empty vector rather than everything: a bound of zero is a
+/// request for none, and reading it as "no bound" would put the whole break
+/// history back into the prompt.
+fn tail_of<T: Clone>(items: &[T], n: usize) -> Vec<T> {
+    let start = items.len().saturating_sub(n);
+    items[start..].to_vec()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Timeframe;
+    use crate::market_structure::BreakKind;
+    use crate::types::{Side, Timeframe};
 
     fn candle(open_time: i64, high: f64, low: f64, close: f64, buy: f64, sell: f64) -> Candle {
         Candle {
@@ -411,6 +513,136 @@ mod tests {
         let state = build_market_state(&rising(), &[], &config()).unwrap();
         assert_eq!(state.trend, Trend::Bullish);
         assert_eq!(state.swing_highs, vec![12.0]);
+    }
+
+    /// Two confirmed swing highs, each closed through on the next leg up.
+    ///
+    /// `rising()` happens to break exactly once, so it cannot show that the
+    /// list is a *history* rather than a single slot.
+    fn staircase() -> Vec<Candle> {
+        vec![
+            candle(0, 10.0, 8.0, 9.0, 1.0, 1.0),
+            candle(60, 12.0, 9.0, 11.0, 1.0, 1.0),
+            candle(120, 11.0, 9.0, 10.0, 1.0, 1.0),
+            candle(180, 14.0, 10.0, 14.0, 1.0, 1.0),
+            candle(240, 13.0, 11.0, 12.0, 1.0, 1.0),
+            candle(300, 15.0, 12.0, 15.0, 1.0, 1.0),
+        ]
+    }
+
+    /// The gap this closes: `detect_market_structure` computed the breaks,
+    /// `MarketState` dropped them, and both live in this crate.
+    ///
+    /// `rising()`'s last candle closes at 13 through the swing high at 12, with
+    /// `trend` still `Ranging` at the time of the break -- so the detector
+    /// labels it a BOS. The state must now say so, and say *where*.
+    #[test]
+    fn breaks_are_carried_with_their_kind_and_level() {
+        let state = build_market_state(&rising(), &[], &config()).unwrap();
+
+        assert_eq!(
+            state.breaks.len(),
+            1,
+            "one close through the swing high at 12"
+        );
+        let brk = state
+            .latest_break()
+            .expect("the break must survive assembly");
+        assert_eq!(brk.kind, BreakKind::Bos);
+        assert_eq!(brk.direction, Side::Buy);
+        assert!((brk.level - 12.0).abs() < 1e-9);
+        assert!((brk.price - 13.0).abs() < 1e-9);
+    }
+
+    /// `break.index` is meaningless without the length of the slice it indexes
+    /// into, so the age is computed while that length is still in hand.
+    #[test]
+    fn bars_since_break_counts_back_from_the_newest_candle() {
+        let state = build_market_state(&rising(), &[], &config()).unwrap();
+        assert_eq!(
+            state.bars_since_break(),
+            Some(0),
+            "the break is the newest candle in this fixture"
+        );
+
+        let older = build_market_state(&staircase(), &[], &config()).unwrap();
+        assert_eq!(
+            older.bars_since_break(),
+            Some(0),
+            "the second break is newest"
+        );
+    }
+
+    #[test]
+    fn a_state_with_no_break_reports_absence_not_zero() {
+        // Two candles, one swing lookback: the window is too short for any
+        // swing to be confirmed, let alone broken.
+        let candles = vec![
+            candle(0, 10.0, 8.0, 9.0, 1.0, 1.0),
+            candle(60, 11.0, 9.0, 10.0, 1.0, 1.0),
+        ];
+        let state = build_market_state(&candles, &[], &config()).unwrap();
+
+        assert!(state.breaks.is_empty());
+        assert!(state.latest_break().is_none());
+        // Absent, not `Some(0)`: a condition `market_structure.break_age < 3`
+        // must be false on a series that never broke anything, and `Some(0)`
+        // would make it true.
+        assert_eq!(state.bars_since_break(), None);
+        assert_eq!(state.break_distance(), None);
+    }
+
+    #[test]
+    fn structure_breaks_bounds_the_carried_history() {
+        let mut bounded = config();
+        bounded.structure_breaks = 1;
+        let state = build_market_state(&staircase(), &[], &bounded).unwrap();
+
+        assert_eq!(state.breaks.len(), 1, "the bound must be honoured");
+        let brk = state
+            .latest_break()
+            .expect("the newest break is the one kept");
+        assert!(
+            (brk.level - 14.0).abs() < 1e-9,
+            "bounding keeps the *newest* breaks, not the oldest: got level {}",
+            brk.level
+        );
+
+        // And the unbounded read really did see both, so the assertion above is
+        // not passing because the fixture only ever produced one.
+        assert_eq!(
+            build_market_state(&staircase(), &[], &config())
+                .unwrap()
+                .breaks
+                .len(),
+            2
+        );
+    }
+
+    /// A bound of zero means "carry none", not "carry everything".
+    ///
+    /// The distinction matters because the state is serialized into the agent's
+    /// prompt: reading zero as unbounded would put the entire break history
+    /// back in, which is the thing the bound exists to prevent.
+    #[test]
+    fn a_bound_of_zero_carries_no_breaks() {
+        let mut none = config();
+        none.structure_breaks = 0;
+        let state = build_market_state(&staircase(), &[], &none).unwrap();
+
+        assert!(state.breaks.is_empty());
+        assert!(state.latest_break().is_none());
+        assert_eq!(state.bars_since_break(), None);
+        // `trend` is independent of the carried history, so it survives.
+        assert_eq!(state.trend, Trend::Bullish);
+    }
+
+    #[test]
+    fn break_distance_is_signed_from_the_newest_close() {
+        let state = build_market_state(&rising(), &[], &config()).unwrap();
+        // Close 13, level 12: price held 1.0 above the broken level.
+        let distance = state.break_distance().expect("a break exists");
+        assert!((distance - 1.0).abs() < 1e-9);
     }
 
     #[test]

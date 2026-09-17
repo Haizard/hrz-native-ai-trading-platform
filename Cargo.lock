@@ -1535,7 +1535,6 @@ dependencies = [
  "analytics-core",
  "async-trait",
  "chrono",
- "db",
  "futures",
  "observability",
  "reqwest",

@@ -66,9 +66,37 @@ strategy-cli backtest run \
   --report-out reports/liquidity-sweep-2024h1.json
 ```
 
+The same binary carries the check that answers the first done criterion below:
+
+```
+strategy-cli verify --report reports/liquidity-sweep-2024h1.json --trades 40
+strategy-cli verify --symbol BTCUSDT          # the newest stored run instead of a file
+```
+
+`verify` re-derives each recorded trade from sources the backtester did not produce. Ten
+checks per trade, four of which read the `candles` table — written by the collector and the
+backfill, never by the backtester. It exits non-zero if any checked trade fails, so it can
+gate a release.
+
+What it deliberately is **not**: `tests/replay_golden.rs` compares against a fixture
+generated from this implementation, so it detects a *changed* implementation and can never
+detect a wrong one. `verify` asks the opposite question — given the trades that were
+recorded, does the market data actually support them? Results in
+`reports/phase3-spot-checks.md`.
+
+One trap worth knowing: `BacktestReport::decision_timeframe` holds the **declared name**
+(`"entry"`), not a resolution, so `verify` discovers the resolution from the candle table
+rather than reading it off the report. Reading that field as a timeframe fails with
+`unknown timeframe 'entry'`.
+
 ## Done criteria
 - Sample strategy backtested over ≥6 months of real BTCUSDT data; a handful of trades
   spot-checked by hand against the raw candle data confirm entries/exits are correct.
+  **Done, and mechanised.** The phrase "spot-checked by hand" had no record anywhere in the
+  repository until 2026-09-17; `strategy-cli verify` is that spot check as a tool.
+  `reports/phase3-spot-checks.md` records 40 of 219 trades passing all ten checks, and —
+  the part that makes it evidence — the checks shown to **fail** against six single-field
+  corruptions of the report.
 - No-look-ahead test passes (a strategy that "cheats" by reading future data is
   detectable and the harness catches it).
 - Backtests for independent symbol/date shards run concurrently without shared mutable

@@ -104,25 +104,24 @@ so; closing it needs `GET /api/v3/account` and a decision about which asset to s
 Each row is verified against the tree on 2026-09-16. The "lie" column is what the
 repository currently claims.
 
-Rows **12–14** come from an audit of Phases 1–6 against their own deliverables and exit
+Rows **12–14** came from an audit of Phases 1–6 against their own deliverables and exit
 criteria rather than against the later phases that consume them — which is also what
-corrected row 4's framing. Rows 1–11 were found by reading forwards; these three were
-found by reading each phase's exit criterion and asking who had ever observed it.
+corrected row 4's framing. Rows 1–11 were found by reading forwards; those three were
+found by reading each phase's exit criterion and asking who had ever observed it. **All
+four are now closed** and listed below. What the audit left behind is row 15: the part of
+it that building code cannot answer, because it is a question about elapsed time.
 
 | # | Item | Where | The lie | Done when |
 |---|---|---|---|---|
 | 1 | **The paper bot is not sandboxed** | `crates/trading-engine/Cargo.toml` declares `sandbox`; no `sandbox::` call site exists in `crates/trading-engine/src/` or `tools/paper-cli/src/`. `docs/08:236` admits it; `crates/trading-engine/src/lib.rs:5` and `:22` claim the opposite | The doc comment says the strategy runs through "the same `strategy-runtime`/sandbox path the backtester uses". It runs through `strategy-runtime` natively | Principle #6 (AI-authored logic never executes unsandboxed) holds on the paper path: an agent-authored document run by a bot executes inside the sandbox, with an equivalence test proving it matches native |
 | 3 | **No retention or downsampling** | `docs/13:138` requires it; `crates/db/migrations/0001_init.sql:189-190` has it as commented-out Timescale suggestions. Nothing in `crates/` or `tools/` mentions retention | `docs/13`'s own done criteria claim "a documented retention/downsampling job exists and is tested" | A tested job downsamples `trades`/`orderbook_snapshots` past a configured age, verified against a synthetic dataset |
-| 4 | **BOS/CHoCH are computed then thrown away** | `crates/analytics-core/src/market_structure.rs:128` computes `breaks: Vec<StructureBreak>` with `BreakKind::{Bos, Choch}`; `state.rs:320-325` builds `MarketState` from only `trend`, `swing_highs`, `swing_lows` | `MarketState` is the object every downstream consumer reads, and it cannot say "structure broke against the trend" — the single most useful structural fact. Both files are in `analytics-core`, so this is Phase 2's own aggregate losing a Phase 2 deliverable — the detector (`MarketStructure::latest_break`, `BreakKind`) is public and tested; only the aggregate drops it | `MarketState` carries the recent breaks (or a deliberately chosen subset), and a strategy condition can read one |
 | 5 | **`strategy-cli` reads the source series twice** | `tools/strategy-cli/src/main.rs` | — | The series is loaded once when source resolution is also declared |
 | 6 | **The Docker image has never been built** | `docs/17:36-59`; guarded only by `crates/api-gateway/tests/packaging.rs` | The Dockerfile looks production-ready. It has never produced a container | A real Linux build starts and answers `/healthz`; the static checks still pass |
 | 7 | **The shell cannot create a concept** | `frontend/app/app.js` colours and draws concepts but has no input for one | The concept layer reads as finished | A user can define a concept in the UI without writing YAML |
 | 9 | **A live bot sizes against a fixed equity** | `crates/api-gateway/src/bot_routes.rs`, `ASSUMED_EQUITY` | Position size is fixed-fractional, so this number *is* the risk per trade — and it is invented | The account's real balance is read from a signed endpoint and used, or the assumption is made explicit in the create request |
 | 10 | **Divergence between backtest, paper and live is not measured** | `docs/18` names the alert; nothing computes it | **Fixed in the honest direction 2026-09-16:** `Rule::Divergence` and `observability::metrics::DIVERGENCE_R` were **removed**. They could never fire, and an inert rule reads as coverage — `docs/20` had a runbook for an alert that did not exist in practice | A job compares a bot's realised R against its backtest over the same window and feeds a metric; the rule comes back with the writer, and `there_is_no_rule_for_something_nothing_measures` is updated in the same commit |
 | 11 | **No tracing export** | `observability::logging` installs a `tracing_subscriber`; nothing exports spans anywhere | `docs/18` asks for distributed tracing. Request ids are generated and put in a span, and the span goes to stdout | An OTLP exporter, or a written decision that stdout + request ids is the whole tracing story |
-| 12 | **The live collector never persists candles** | `tools/xtask/src/main.rs:214` — `collect()` spawns exactly two pumps, `pump_trades` and `pump_books`. `repositories::insert_candles` has **one** caller repo-wide: `xtask backfill`. `crates/market-data/Cargo.toml` declares `db`, and no file in `crates/market-data/src/` references it | Phase 1's exit criterion says a 24h *collector* run "produces a queryable, gap-checked candle table at 1m/5m/1h/4h/1d resolutions". The collector builds all six resolutions and publishes them to the bus, and writes none of them — a 24h run adds **zero** candles. The table can only be filled by `backfill`, which fetches from REST | `collect` subscribes to the candle bus and upserts, or the criterion is rewritten to say the candle table comes from `backfill` and the unused `db` dependency is dropped |
-| 13 | **Three exit criteria have no verification record** | Phase 1 (`docs/04:95`, "24h continuous run"), Phase 3 (`02-ROADMAP.md:112`, "manually-verified spot checks"), Phase 6 (`02-ROADMAP.md:181`, "at least 48h"). `reports/` has verification records for Phases 5 and 6 only, and the phrase "spot check" appears nowhere in the repository | Three phases are marked done against an exit criterion nobody has observed. Phase 6's own record is honest about it — `reports/phase6-verification.md:24`, "started, not yet elapsed" — but the other two have no record at all, and none of the three is listed here | Each is observed and written down, or amended to state what was actually done. Phase 3's `replay_golden.rs` does not substitute: its own header says the fixture is *generated* and the numbers move with `analytics-core`, so it detects a *changed* implementation, never a wrong one |
-| 14 | **Notifications have no delivery and no reader** | `crates/api-gateway/src/bot_routes.rs:122` exposes `notifications: i64` — a count and nothing else. No route, no UI. `insert_audit_events` is called from `bots.rs:964` and `bot_routes.rs:506`; nothing reads `audit_log` back through the API | Phase 6's deliverable is "Notifications/audit log of every simulated trade", and `reports/phase6-verification.md:305` defers the reader "until Phase 7". Phase 7 is built and never closed it, so the deferral has quietly become a permanent state | A route returning a bot's notification/audit rows plus somewhere in the shell to read them — or the deliverable narrowed to "the audit rows are written and reachable by SQL", which is what is actually true |
+| 15 | **The two long soaks are recorded at a bounded duration, not the duration the criteria name** | `docs/04:95` asks for a "24h continuous run"; `02-ROADMAP.md:181` asks for "≥48h". `reports/phase1-verification.md` and `reports/phase6-verification.md` now record real observations of both paths | Rows 12–14 were closed by building the missing mechanism and writing the missing record, which is what those rows were about. The *durations* are a different claim and they have not elapsed: a record that says "observed for N minutes" beside a criterion that says "24h" is honest and still unmet, and it is exactly the shape this document exists to catch | Either the duration elapses on a host that can stay up that long, or the criterion is amended to name the bounded run as the requirement |
 
 **Closed, and deleted from the table above** — the rule is to remove a row and note
 the commit rather than strike it through. Numbers are not renumbered, because other
@@ -186,6 +185,11 @@ Marked **[P]** = proposed, not yet investigated. **[V]** = verified today.
   must be reflected in the owning doc in the same change, per `docs/16`.
 - **Part 3 never closes.** It is a loop, not a milestone. Add to it whenever the
   platform is shown to be wrong about the market.
+- **Read each phase's exit criteria and ask who has ever observed them.** Rows 12–14
+  were found this way, after eleven rows found by reading forwards. A ledger that lists
+  what the code fails to do will still miss what nobody tested, and the two directions
+  find different things: reading forwards finds a missing writer, reading backwards finds
+  a criterion with no witness. Do both before declaring a phase audited.
 
 ## Done criteria
 
@@ -199,9 +203,10 @@ is met" — and that distinction is the whole reason this document exists.
   exports spans anywhere: row 11. There is no dashboard, and row 6 is why — a dashboard
   is a deployment artifact and the deployment has never been exercised.
 - **Every Part 2 row is either closed or explicitly accepted as won't-fix, with the
-  reason recorded here.** *Not yet.* Rows 2 and 8 are closed. Rows 1 and 3–14 are open
-  and recorded, and none has been formally accepted as won't-fix — they are a backlog,
-  not a decision.
+  reason recorded here.** *Not yet.* Rows 2, 4, 8 and 12–14 are closed — 12 and 14 by
+  building the mechanism, 13 by writing the records, 4 by carrying the value the aggregate
+  was dropping. Rows 1, 3, 5–7, 9–11 and 15 are open and recorded, and none has been
+  formally accepted as won't-fix — they are a backlog, not a decision.
 - **Phase 8B has not started without a recorded go/no-go from Haitham.** *Recorded.* The
   go was Haitham's instruction: "start implementing phase 8 and do not stop until all
   phase is completely done." 8B is built and gated; the funded-account test is the one
