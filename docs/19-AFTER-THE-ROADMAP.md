@@ -21,7 +21,11 @@ It carries three things, in priority order:
 Phases 0–7 are built and verified: workspace and CI, Binance collection and backfill,
 `analytics-core` (native + wasm32), the Strategy DSL/runtime/backtester, the WASM
 sandbox, the AI agent with 13 tools, the paper-trading bot, and the Rust/WASM chart
-with all three editor modes. Last commit reviewed: `d787695`.
+with all three editor modes. Last commit reviewed: `7045036`.
+
+**Update, 2026-09-17:** the four rows the backward audit found (4, 12, 13, 14) are closed
+in `7045036`, and row 15 records what the audit left behind. See the closure list under
+Part 2.
 
 **Phase 8 is built** — both halves, with one exit criterion left open on purpose (see
 below). What exists now:
@@ -137,6 +141,40 @@ docs cite "row 10" and "row 1" by number; 2 and 8 are simply gone.
   panel listing each venue, with `opted_in` and `credentials_configured` shown
   **separately** because they fail identically from outside and only one is fixable
   from a browser.
+- **Rows 4, 12, 13 and 14** — closed in `7045036`, the four the backward audit found.
+  In the order they were fixed:
+  - **Row 12, the live collector never persisted candles.** `ExchangeCollector` gained
+    a `candle_stream` method (the aggregator lives inside the collector, so the bus was
+    unreachable from outside `market-data`), `collect()` drains it through a third pump,
+    and the unused `db` dependency is gone. The counter counts **successes**: a counter
+    that counts attempts reports a healthy run against an unreachable database.
+    `tools/xtask/tests/collect_wiring.rs` parses `collect()` and fails if a subscription
+    has no pump — and it was verified to fail against a deliberately re-broken `collect`,
+    because a guard that has never fired is not a guard.
+  - **Row 4, BOS/CHoCH computed then thrown away.** `MarketState` carries a bounded tail
+    of breaks (`structure_breaks`, default 8) plus `bars_since_break`, and five DSL fields
+    read them: `market_structure.break`, `.break_direction`, `.break_level`,
+    `.break_distance`, `.break_age`. They read `Absent`, not `"none"`, before anything
+    breaks — `"none"` would make `!= "choch"` true on an empty chart. `MarketStructure`
+    gained `candle_count` in the same change: an index means nothing without the length of
+    the slice it indexes into. No shell change was needed, because the agent prompt and
+    `GET /strategies/schema` both derive from `ALL_FIELDS`.
+  - **Row 14, notifications with no reader.** `GET /bots/{id}/notifications`, plus a
+    Notifications button in the bots pane. The route lifts `kind`/`severity`/`title`/`body`
+    out of the audit payload and a test builds a **real** `notification_payload` and
+    asserts the SQL's keys are all in it, so a rename at either end is a failing test
+    rather than a row with an empty title.
+  - **Row 13, three exit criteria with no verification record.** Phase 3:
+    `strategy-cli verify`, 40 of 219 trades re-derived from the candle table, all passing,
+    with six single-field corruptions all caught — `reports/phase3-spot-checks.md`. Phase 1:
+    a 51-minute live collector run, 65 candles across five resolutions, 50 of 50 identical
+    to Binance's own klines — `reports/phase1-verification.md`. Phase 6: a 30-minute live
+    paper run, one decision per closed 5m bar, clean stop — `reports/phase6-verification.md`.
+
+  The audit's residue is **row 15**: three of those criteria name a *duration*, and a
+  bounded observation does not satisfy one. Closing the rows that said "no record exists"
+  is not the same as closing the ones that say "this has not run for 24 hours", and
+  conflating the two is exactly the failure this document is written against.
 
 **Also open, and a decision rather than a task:** whether the concept layer
 (`analytics-core/src/concepts.rs`, `regions.rs`) becomes its own roadmap phase. It was
