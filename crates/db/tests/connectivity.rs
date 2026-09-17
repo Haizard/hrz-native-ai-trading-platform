@@ -331,4 +331,36 @@ async fn live_orders_and_venue_opt_in_round_trip() {
         Some("12345"),
         "an update without a venue id must not clear the stored one"
     );
+
+    // Teardown. `docs/16`'s rule -- a test owns its fixture -- and here it is not
+    // academic: this test runs against whatever `DATABASE_URL` names, which in
+    // this repository is the **deployed managed instance**. Without this, every
+    // run leaves a user, a strategy, a bot, an order and four rows of
+    // `venue_opt_ins` behind, so the opt-in trail an incident review reads fills
+    // up with `reason='drill'`. The table is append-only for *operator actions*;
+    // a test's own scaffolding is not one.
+    //
+    // Every statement is keyed on the fresh UUIDs this run created, so it cannot
+    // reach a row an operator wrote. Order follows the foreign keys.
+    sqlx::query("DELETE FROM live_orders WHERE bot_id = $1")
+        .bind(bot_id)
+        .execute(pool)
+        .await
+        .expect("teardown: live_orders");
+    for statement in [
+        "DELETE FROM venue_opt_ins WHERE user_id = $1",
+        "DELETE FROM bots WHERE user_id = $1",
+        "DELETE FROM strategies WHERE user_id = $1",
+    ] {
+        sqlx::query(statement)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("teardown");
+    }
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("teardown: users");
 }
