@@ -11,8 +11,10 @@ Every section is one of two things, and says which: **an alert name that
 `crates/observability/src/alerts.rs` can actually raise**, or **a situation with
 no alert**, where the engineer is the detector. The first kind is indexed below;
 the second kind is §5–§8, and each of them states plainly that nothing will page
-you. If an alert fires and its name is not in this table, that is a gap in this
-document, not in the engineer.
+you. §9 is a third thing: the procedure for turning live trading on, which is here
+because its two failure modes look like each other and like a broken switch, and
+neither names its own fix. If an alert fires and its name is not in this table,
+that is a gap in this document, not in the engineer.
 
 | Alert | Severity | Runbook |
 |---|---|---|
@@ -223,6 +225,51 @@ investigation. See the note at the top of
 `crates/trading-engine/src/credentials.rs`.
 
 ---
+
+## 9. Turning live trading on
+
+Not a failure — a procedure. It is here because the two errors below look like
+each other, and like a broken switch, and neither names its own fix.
+
+**Three conditions, and opting in is only the first.** All three must hold before
+`POST /bots` with `mode: "live"` starts anything:
+
+1. **Opted in** — `POST /venues/{venue}/opt-in`. Per venue, per account, and
+   revocable. Revoking also throws the kill switch on every live bot running
+   there, so it is the one button that stops money moving.
+2. **Credentials on the API process** — `BINANCE_API_KEY` and
+   `BINANCE_API_SECRET` in the deployment environment (`docs/17`). They are never
+   stored in the database, and no button in the UI can set them.
+3. **A paper track record that passes the gate** — by default **20 closed paper
+   trades**, **48 hours** of paper trading, and a cumulative R no worse than
+   **−10**. `GET /venues` reports these thresholds, so the panel shows the same
+   numbers the gate enforces rather than a copy that can drift.
+
+**`503 EXCHANGE_CREDENTIALS_MISSING`** is condition 2. The message names the
+variables. The status is 503 rather than 403 deliberately: nothing about the
+request is wrong, the *deployment* is not configured. Check the API process's
+environment, not the worker's — the value is read where the request is served.
+`GET /venues` answers `credentials_configured: false` for the same reason, and
+both derive the variable names from one function, so they cannot disagree.
+
+**`403 LIVE_GATE_REFUSED`** is condition 3. The message lists **every** unmet
+condition at once, so one round trip tells you all of them — a strategy that has
+never run a paper bot fails on both the trade count and the hours. The duration is
+wall-clock: a paper bot that ran for an hour cannot satisfy a 48-hour requirement
+however many trades it made.
+
+**What this does not do.** Passing the gate is a statement about a *paper* track
+record, not a promise about live behaviour. Live positions are sized against
+`ASSUMED_EQUITY = 10_000` because no signed balance endpoint is implemented, and
+backtest / paper / live divergence is not measured (`docs/19` rows 9 and 10). The
+gate is a floor, not a validation.
+
+**The first live bot, and what to expect in the log.** `POST /bots` logs
+`starting a LIVE bot: orders placed by this bot spend real money` at `WARN`, once
+per bot actually started. **Two of those lines is two bots** — the endpoint has no
+idempotency key yet, so a retried or double-clicked request is a second bot
+placing its own orders, not a duplicate that gets ignored (`docs/19` row 16). Read
+that count before assuming one click made one bot.
 
 ## Deploy and rollback
 
