@@ -1449,6 +1449,31 @@ if (liveSocket) {
     `${badgeState()}: ${badge().textContent}`
   );
 
+  // A notice is not a promise that the silence lasts. The server says "no feed is
+  // configured", which means *this gateway* opens none -- not that nothing will
+  // ever publish into the bus -- and it does not close the socket for exactly
+  // that reason. So a frame arriving afterwards has to clear the notice, or the
+  // badge would go on saying "no feed" while its own age ticked, contradicting
+  // the evidence it is carrying.
+  deliver(liveSocket, {
+    type: "notice",
+    message: "no market feed is configured (MARKET_FEED is not `binance`)",
+  });
+  await settle();
+  check(
+    "a notice turns the badge into a statement about the feed",
+    badgeState() === "nofeed",
+    `${badgeState()}: ${badge().textContent}`
+  );
+
+  deliver(liveSocket, frame(0));
+  await settle();
+  check(
+    "and a candle published by something else outranks the notice",
+    badgeState() === "live",
+    `${badgeState()}: ${badge().textContent}`
+  );
+
   // A channel that closes with nothing else to say is offline, and the badge says
   // that rather than freezing on the last reading it had.
   liveSocket.close();

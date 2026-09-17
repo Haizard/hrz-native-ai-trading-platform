@@ -1834,7 +1834,7 @@ function createChartPane(root, hooks = {}) {
       set(
         "nofeed",
         "no feed",
-        "The server has no market feed configured, so this channel will never carry a candle. See the note under the chart."
+        "The server has no market feed configured, so nothing will arrive unless something else publishes. See the note under the chart."
       );
       return;
     }
@@ -1933,13 +1933,21 @@ function createChartPane(root, hooks = {}) {
         // arrives now, and "is the feed alive" is a question about arrivals.
         live.at = Date.now();
         live.bar = incoming.open_time;
+        // A frame outranks a notice, and this is the only place that can say so.
+        // The server explains a silence; it does not promise the silence lasts --
+        // `MARKET_FEED` being off means *this gateway* opens no feed, not that
+        // nothing will ever publish into the bus, and a channel that was told
+        // there is no feed still forwards a candle that arrives. Without this,
+        // that candle would make the age tick while the badge went on saying
+        // "no feed", which is the badge contradicting its own evidence.
+        live.state = "open";
         render();
       } else if (frame.type === "notice") {
         // The server's explanation outranks the engine's note. "The feed is not
         // configured" is why the candles are not moving; the engine's own note
-        // would be a true answer to a different question. The channel closes
-        // straight after this, and `onclose` deliberately leaves the message
-        // alone -- a socket that closed is not a reason to forget why.
+        // would be a true answer to a different question. A close does not erase
+        // it -- `onclose` deliberately leaves the message alone, because a socket
+        // that closed is not a reason to forget why.
         feedNotice = frame.message;
         live.state = "nofeed";
         el("chartNote").textContent = feedNotice;

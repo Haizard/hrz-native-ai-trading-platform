@@ -315,6 +315,13 @@ MUTATIONS = [
         "    if (false) {",
         ["a live feed over a frozen ladder says which of the two is stale"],
     ),
+    (
+        "a candle published after a notice does not outrank the notice",
+        APP,
+        '        live.state = "open";\n        render();',
+        "        render();",
+        ["and a candle published by something else outranks the notice"],
+    ),
 ]
 
 originals = {}
