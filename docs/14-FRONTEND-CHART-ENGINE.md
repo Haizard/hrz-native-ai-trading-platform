@@ -178,6 +178,43 @@ CPU calc   GPU-friendly buffers
     `"buy"` in the same object. `Side::name` and `BreakKind::name` are the same bridge, for
     the same reason.
 
+  ### What this view does not have yet
+
+  Recorded 2026-09-17, from using it. Four things are missing, and they are **not the same
+  kind of missing** — which is why they are written down here rather than kept as a list of
+  wishes.
+
+  **Specified above and not built: drawing tools.** The bullet above asks for "drawing tools
+  (trendlines, Fibonacci, rectangles — start minimal, expand later)". None exist. The "Built
+  as of" note covers zones and the concept layer, so this is a gap in a view this document
+  claims — the one item here a phase can be held to.
+
+  **Never specified: zoom and pan.** Nothing in this document mentions zoom, pan, scroll or
+  wheel, and the done criteria do not either. So there is no interaction model to implement,
+  and the first deliverable is this paragraph rather than code. It is also not a shell-only
+  change: `frontend/chart-engine/src/scene.rs` derives `price_min`/`price_max` from **every**
+  candle it is handed and the engine has no viewport type, so a zoom needs a bar range and a
+  price range in the scene request before the shell has anything to bind a wheel event to.
+  Today the only control that changes how much is visible is the `limit` select, which
+  refetches.
+
+  **Never specified: more than one chart.** The shell has a single `<canvas id="chart">`, and
+  its panes (`thesis`, `strategy`, `bots`, `book`) are *side panels chosen by tab*, not chart
+  panes. A second chart — the same symbol at another timeframe, or another symbol — needs a
+  layout decision this document has not made.
+
+  **Never specified, and half-built: responsive layout.** The canvas already scales
+  correctly: the shell sizes it from the wrapper's `clientWidth`/`clientHeight` times
+  `devicePixelRatio`, and re-renders on `resize`. The *page* does not adapt — `index.html`
+  has a fixed `aside { width: 380px }` and **no `@media` query anywhere**, so a narrow
+  viewport squeezes the chart instead of reflowing.
+
+  **Why the exit criterion caught none of this.** It reads: log in, view the BTCUSDT
+  footprint chart, ask the AI for a setup, review the thesis, run a backtest, launch a paper
+  bot. It tests a *session*, not a *chart*. A chart that cannot zoom, cannot be drawn on and
+  exists exactly once passes it — the same shape as the bounded-duration soaks (`docs/19`
+  row 15), where the criterion is met and the thing a user actually wanted was never in it.
+
 - **DOM/order book panel**: live bid/ask ladder from `/ws/orderbook/{symbol}`.
 
   **Built as of 2026-09-15: the ladder, and why it is computed in Rust.** The panel is a
