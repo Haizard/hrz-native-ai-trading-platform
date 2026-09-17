@@ -17,17 +17,25 @@
 //! throws the kill switch on every running live bot on that venue and reports
 //! which ones.
 //!
-//! ## The history is append-only
+//! ## The history is append-only, and records transitions
 //!
 //! Nothing here deletes. `venue_opt_ins` records the action, when, and an
 //! optional reason; the current state is the newest row per venue. A boolean
 //! column would have destroyed exactly the history an incident review needs.
+//!
+//! It records a *transition*, though, not a click. Repeating an opt-in for a
+//! venue that is already enabled writes nothing and answers 200, because the
+//! state cannot change and a second row would only make the trail ambiguous --
+//! and because the `WARN` below asserts "live trading was enabled", which on a
+//! repeat is simply false. Both the decision and the lock that makes it hold
+//! under concurrent requests live in [`db::live::record_venue_opt_in`].
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use trading_engine::credentials::var_names;
 use trading_engine::GateRequirements;
 
 use crate::auth::UserContext;
@@ -116,6 +124,9 @@ pub async fn list(
 
 /// `POST /venues/{venue}/opt-in`
 ///
+/// Idempotent: opting in to a venue that is already enabled changes nothing,
+/// writes nothing, and says so at `INFO` rather than claiming an event.
+///
 /// # Errors
 /// 404 for a venue with no adapter behind it; 503 without a database.
 pub async fn opt_in(
@@ -127,7 +138,7 @@ pub async fn opt_in(
     let database = database(&state)?;
     let venue = known(&venue)?;
 
-    db::live::record_venue_opt_in(
+    let changed = db::live::record_venue_opt_in(
         database.pool(),
         user.user_id,
         &venue,
@@ -136,13 +147,27 @@ pub async fn opt_in(
     )
     .await?;
 
-    tracing::warn!(%venue, "live trading was enabled for a venue by an operator");
+    if changed {
+        tracing::warn!(%venue, "live trading was enabled for a venue by an operator");
+    } else {
+        // Deliberately not a warning. This line used to fire unconditionally,
+        // so a double-click -- two overlapping requests -- put two
+        // "live trading was enabled" lines in the log for one decision, and the
+        // log is what an incident review reads. The state is unchanged either
+        // way; only the claim was wrong.
+        tracing::info!(%venue, "live trading was already enabled for this venue");
+    }
 
     let opted_in = db::live::opted_in_venues(database.pool(), user.user_id).await?;
     Ok(Json(describe(&venue, &opted_in)))
 }
 
 /// `POST /venues/{venue}/revoke`
+///
+/// Idempotent in the same way as the opt-in, with one deliberate difference:
+/// the kill switch runs whether or not the state changed. Revoking is the safe
+/// direction, so a revoke that finds a live bot running on an already-revoked
+/// venue must still stop it rather than reason that the trail already said so.
 ///
 /// # Errors
 /// 404 for an unknown venue; 503 without a database.
@@ -155,7 +180,7 @@ pub async fn revoke(
     let database = database(&state)?;
     let venue = known(&venue)?;
 
-    db::live::record_venue_opt_in(
+    let changed = db::live::record_venue_opt_in(
         database.pool(),
         user.user_id,
         &venue,
@@ -164,9 +189,15 @@ pub async fn revoke(
     )
     .await?;
 
-    // Recorded first, acted on second. The other order would leave a window
-    // where a bot had been liquidated but the trail still said the venue was
-    // enabled -- and the trail is what an incident review reads.
+    if changed {
+        tracing::info!(%venue, "live trading was disabled for a venue by an operator");
+    } else {
+        tracing::info!(%venue, "live trading was already disabled for this venue");
+    }
+
+    // Acted on after being recorded, and unconditionally. The other order would
+    // leave a window where a bot had been liquidated but the trail still said
+    // the venue was enabled -- and the trail is what an incident review reads.
     let killed = state.bots.kill_venue(&venue);
     if !killed.is_empty() {
         tracing::warn!(
@@ -206,15 +237,21 @@ fn describe(venue: &str, opted_in: &[String]) -> VenueResponse {
 /// Checks for the *presence* of the variables, never their value. A boolean
 /// derived from reading the secret is the only safe way to answer this over
 /// HTTP: returning anything about the secret itself would be the leak.
+///
+/// The names come from [`var_names`] rather than being formatted here, so this
+/// answer and the variables an order is actually signed with cannot drift
+/// apart. Two derivations of the same name is the shape this repository keeps
+/// finding: both compile, both look right, and the disagreement is visible only
+/// in production.
 #[must_use]
 pub fn credentials_present(venue: &str) -> bool {
-    let prefix = venue.to_ascii_uppercase();
-    let has = |suffix: &str| {
-        std::env::var(format!("{prefix}_{suffix}"))
+    let (key_var, secret_var) = var_names(venue);
+    let present = |name: &str| {
+        std::env::var(name)
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
     };
-    has("API_KEY") && has("API_SECRET")
+    present(&key_var) && present(&secret_var)
 }
 
 /// Normalise and validate a venue name.
@@ -257,17 +294,39 @@ mod tests {
     }
 
     #[test]
-    fn every_known_venue_has_a_capitalised_environment_prefix() {
-        // The prefix is what `credentials_present` looks for, so a venue added
-        // with a character that cannot appear in an environment variable name
-        // would be permanently unconfigured and never trade.
+    fn every_known_venue_has_a_usable_environment_prefix() {
+        // Derived from `var_names`, not re-formatted here, so the check covers
+        // the function the rest of the system actually uses. The property is
+        // that a venue added with a character that cannot appear in an
+        // environment variable name would be permanently unconfigured and never
+        // trade -- `GET /venues` would report `credentials_configured: false`
+        // for a venue whose keys are set.
         for venue in KNOWN_VENUES {
-            let prefix = venue.to_ascii_uppercase();
-            assert!(
-                prefix.chars().all(|c| c.is_ascii_uppercase() || c == '_'),
-                "{prefix} is not a usable environment variable prefix"
-            );
+            let (key_var, secret_var) = var_names(venue);
+            for name in [key_var, secret_var] {
+                assert!(
+                    name.chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+                    "{name} is not a usable environment variable name"
+                );
+            }
         }
+    }
+
+    /// The suffix pair, pinned.
+    ///
+    /// `docs/14`'s rule applied to the credential names: nothing checks a
+    /// string against anything, so this is the only place a rename is caught.
+    /// The deployment sets `BINANCE_API_KEY` because `docs/17` says so.
+    #[test]
+    fn the_credential_names_are_the_ones_the_deployment_sets() {
+        assert_eq!(
+            var_names("binance"),
+            (
+                "BINANCE_API_KEY".to_string(),
+                "BINANCE_API_SECRET".to_string()
+            )
+        );
     }
 
     /// The field names the live-trading panel reads.

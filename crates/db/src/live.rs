@@ -56,27 +56,75 @@ pub struct LiveOrderRow {
     pub placed_at: i64,
 }
 
-/// Record an opt-in or a revoke.
+/// Record an opt-in or a revoke, reporting whether it changed anything.
+///
+/// Returns `false` when the venue was **already** in the requested state, in
+/// which case nothing is written.
+///
+/// ## Why a repeat is not recorded
+///
+/// The current state is the newest row per venue, so a repeated `opt_in`
+/// cannot change the state -- it can only add a row. This table is read by an
+/// incident review to answer "when did consent change?", and two identical rows
+/// a third of a second apart do not answer that: they make the reader ask
+/// whether something happened twice. The trail records transitions, which is
+/// what makes it readable, and the caller gets the boolean so it can say
+/// "already enabled" rather than announcing an event that did not occur.
+///
+/// ## Why the read and the write share a lock
+///
+/// The interesting case *is* concurrency, because a double-click sends two
+/// requests that overlap. Without the lock both transactions read the
+/// pre-state, both insert, and both report a transition that happened once --
+/// which is exactly the duplicate this function's boolean exists to prevent,
+/// reintroduced by the check itself. The lock is advisory and keyed on
+/// `(user, venue)`, so unrelated venues never contend; `hashtext` folding two
+/// pairs onto one key costs a little contention and never correctness.
 ///
 /// # Errors
-/// Returns [`DbError::Pool`] if the insert fails.
+/// Returns [`DbError::Pool`] if the transaction or the insert fails.
 pub async fn record_venue_opt_in(
     pool: &PgPool,
     user_id: Uuid,
     venue: &str,
     action: &str,
     reason: Option<&str>,
-) -> Result<(), DbError> {
+) -> Result<bool, DbError> {
+    let venue = venue.to_ascii_lowercase();
+    let mut tx = pool.begin().await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)")
+        .bind(format!("{user_id}:{venue}"))
+        .execute(&mut *tx)
+        .await?;
+
+    let latest: Option<String> = sqlx::query_scalar(
+        "SELECT action FROM venue_opt_ins WHERE user_id = $1 AND venue = $2 \
+         ORDER BY ts DESC, id DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(venue.as_str())
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if latest.as_deref() == Some(action) {
+        // Nothing to record. Returning here drops `tx`, which rolls back and
+        // releases the lock -- there is no partial write to commit.
+        return Ok(false);
+    }
+
     sqlx::query(
         "INSERT INTO venue_opt_ins (user_id, venue, action, reason) VALUES ($1, $2, $3, $4)",
     )
     .bind(user_id)
-    .bind(venue.to_ascii_lowercase())
+    .bind(venue.as_str())
     .bind(action)
     .bind(reason)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(())
+
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// The venues a user currently has enabled.

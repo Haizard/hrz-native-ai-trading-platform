@@ -26,6 +26,29 @@
 
 use crate::error::ExecutionError;
 
+/// The environment variables a venue's credentials are read from.
+///
+/// **The names are derived here and nowhere else.** Two modules need them and
+/// they need them for opposite reasons: this one reads the values to sign an
+/// order, while `api-gateway` only reports whether they are *present*, for the
+/// `credentials_configured` field of `GET /venues`. A second derivation is a
+/// drift hazard with an invisible failure -- if the two disagreed, the panel
+/// would report a venue as configured and every order would still be refused
+/// with [`ExecutionError::Credentials`], which is precisely the pair of
+/// symptoms `credentials_configured` exists to tell apart.
+///
+/// `venue` is trimmed and upper-cased, so `binance` reads `BINANCE_API_KEY` and
+/// `BINANCE_API_SECRET`. Trimming matters because a venue name reaches this
+/// function from a URL path (`GET /venues/{venue}`), where a client is free to
+/// send surrounding whitespace -- and `  BINANCE  _API_KEY` is a variable name
+/// that can never be set, so the venue would report `credentials_configured:
+/// false` with the keys plainly present in the environment.
+#[must_use]
+pub fn var_names(venue: &str) -> (String, String) {
+    let prefix = venue.trim().to_ascii_uppercase();
+    (format!("{prefix}_API_KEY"), format!("{prefix}_API_SECRET"))
+}
+
 /// A venue's API key and secret.
 pub struct ExchangeCredentials {
     venue: String,
@@ -50,9 +73,7 @@ impl ExchangeCredentials {
     /// Returns [`ExecutionError::Credentials`] naming the *variables*, never
     /// their contents, when either is missing.
     pub fn from_env(venue: &str) -> Result<Self, ExecutionError> {
-        let prefix = venue.to_ascii_uppercase();
-        let key_var = format!("{prefix}_API_KEY");
-        let secret_var = format!("{prefix}_API_SECRET");
+        let (key_var, secret_var) = var_names(venue);
 
         let key = std::env::var(&key_var).map_err(|_| ExecutionError::Credentials {
             venue: venue.to_string(),
@@ -154,5 +175,27 @@ mod tests {
         );
         assert!(message.contains(ABSENT), "{message}");
         assert!(matches!(error, ExecutionError::Credentials { .. }));
+    }
+
+    /// The variable names, pinned.
+    ///
+    /// This is the golden value for a name that no compiler checks. The
+    /// deployment sets `BINANCE_API_KEY` because `docs/17` says so; a rename
+    /// here would compile, pass every other test, and show up only as a
+    /// production venue reporting `credentials_configured: false` while the
+    /// operator stares at a variable that is plainly set.
+    #[test]
+    fn the_variable_names_are_the_ones_the_deployment_sets() {
+        assert_eq!(
+            var_names("binance"),
+            (
+                "BINANCE_API_KEY".to_string(),
+                "BINANCE_API_SECRET".to_string()
+            )
+        );
+        // Case is normalised rather than trusted: a venue name arrives from a
+        // URL path, where a client is free to send `Binance`.
+        assert_eq!(var_names("Binance"), var_names("binance"));
+        assert_eq!(var_names("  binance  "), var_names("binance"));
     }
 }

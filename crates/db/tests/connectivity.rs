@@ -18,6 +18,20 @@ fn load_env() {
     let _ = dotenvy::dotenv();
 }
 
+/// How many rows the trail holds for one `(user, venue)` pair.
+///
+/// The count is the observable that distinguishes "recorded a transition" from
+/// "recorded a click": the state is the newest row, so only the count can tell
+/// whether a repeat added noise.
+async fn rows_for(pool: &sqlx::PgPool, user_id: Uuid, venue: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM venue_opt_ins WHERE user_id = $1 AND venue = $2")
+        .bind(user_id)
+        .bind(venue)
+        .fetch_one(pool)
+        .await
+        .expect("count rows")
+}
+
 /// Verifies the connection string works end to end.
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
@@ -77,14 +91,20 @@ async fn initial_schema_has_expected_tables() {
 
 /// The Phase 8 live path, against a real database.
 ///
-/// Three properties, and each one is load-bearing:
+/// Five properties, and each one is load-bearing:
 ///
 /// 1. An opt-in followed by a revoke leaves the venue **off** — the newest row
 ///    wins, so history can't resurrect a revoked venue.
-/// 2. Inserting the same `client_order_id` twice reports `false` the second
+/// 2. Repeating an action records nothing and reports `false`. That is what
+///    makes the caller's log line truthful: two overlapping requests from one
+///    double-click must not both claim that live trading *was enabled*.
+/// 3. A call that cannot take the `(user, venue)` lock writes nothing. This is
+///    what stops the check in (2) from being a race between two requests that
+///    overlap, which is the case it exists for.
+/// 4. Inserting the same `client_order_id` twice reports `false` the second
 ///    time. That is the database half of the idempotency guarantee; if this
 ///    returned `true` twice, a retry would look like a fresh placement.
-/// 3. A `FILLED` order drops out of `open_live_orders`, which is the query
+/// 5. A `FILLED` order drops out of `open_live_orders`, which is the query
 ///    reconciliation and the UI both build on.
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
@@ -123,9 +143,10 @@ async fn live_orders_and_venue_opt_in_round_trip() {
     .expect("insert bot");
 
     // 1. Opt-in, then revoke. Newest row wins.
-    db::live::record_venue_opt_in(pool, user_id, "binance", "opt_in", Some("initial"))
+    let first = db::live::record_venue_opt_in(pool, user_id, "binance", "opt_in", Some("initial"))
         .await
         .expect("opt in");
+    assert!(first, "the first opt-in is a transition");
     assert_eq!(
         db::live::opted_in_venues(pool, user_id)
             .await
@@ -134,9 +155,23 @@ async fn live_orders_and_venue_opt_in_round_trip() {
         "an opt-in should enable the venue"
     );
 
-    db::live::record_venue_opt_in(pool, user_id, "binance", "revoke", Some("drill"))
+    // 2. Repeating it changes nothing and records nothing. This is the contract
+    // the log line depends on: two "live trading was enabled" warnings for one
+    // decision is what an operator reads as a bug.
+    let repeat = db::live::record_venue_opt_in(pool, user_id, "binance", "opt_in", None)
+        .await
+        .expect("opt in again");
+    assert!(!repeat, "a repeated opt-in is not a transition");
+    assert_eq!(
+        rows_for(pool, user_id, "binance").await,
+        1,
+        "a repeat must not add a second row to the trail"
+    );
+
+    let revoked = db::live::record_venue_opt_in(pool, user_id, "binance", "revoke", Some("drill"))
         .await
         .expect("revoke");
+    assert!(revoked, "a revoke after an opt-in is a transition");
     assert!(
         db::live::opted_in_venues(pool, user_id)
             .await
@@ -145,10 +180,12 @@ async fn live_orders_and_venue_opt_in_round_trip() {
         "a revoke must win over the earlier opt-in"
     );
 
-    // Venue names are normalised, so `BINANCE` and `binance` are one venue.
-    db::live::record_venue_opt_in(pool, user_id, "BINANCE", "opt_in", None)
+    // Venue names are normalised, so `BINANCE` and `binance` are one venue --
+    // which also means the repeat check must compare the normalised name.
+    let cased = db::live::record_venue_opt_in(pool, user_id, "BINANCE", "opt_in", None)
         .await
         .expect("opt in again");
+    assert!(cased, "an opt-in after a revoke is a transition");
     assert_eq!(
         db::live::opted_in_venues(pool, user_id)
             .await
@@ -157,9 +194,82 @@ async fn live_orders_and_venue_opt_in_round_trip() {
         "case must not create a second venue"
     );
 
-    // 2. The same id twice is one order.
+    let cased_repeat = db::live::record_venue_opt_in(pool, user_id, "BiNaNcE", "opt_in", None)
+        .await
+        .expect("opt in a third time");
+    assert!(
+        !cased_repeat,
+        "case must not make a repeat look like a new decision"
+    );
+    assert_eq!(
+        rows_for(pool, user_id, "binance").await,
+        3,
+        "two opt-ins and one revoke -- three transitions, and the two repeats wrote nothing"
+    );
+
+    // 3. The check and the insert are serialised.
+    //
+    // This is the double-click, tested by its *mechanism* rather than by racing
+    // two calls and hoping they overlap. They often do not: an earlier version
+    // of this test used `tokio::join!` and passed with the advisory lock
+    // deleted, which made it worse than no guard at all. So the lock is taken
+    // here, from a connection of our own, and the call under test must be
+    // unable to write while it is held.
+    //
+    // `pg_advisory_lock` is session-scoped and `pg_advisory_xact_lock` is
+    // transaction-scoped, but both index the same lock space by the same key,
+    // so one blocks the other.
+    let mut blocker = pool.acquire().await.expect("a connection to hold the lock");
+    let key = format!("{user_id}:binance");
+    sqlx::query("SELECT pg_advisory_lock(hashtext($1)::bigint)")
+        .bind(key.as_str())
+        .execute(&mut *blocker)
+        .await
+        .expect("take the lock");
+
+    let waiting = tokio::spawn({
+        let pool = sqlx::PgPool::clone(pool);
+        async move { db::live::record_venue_opt_in(&pool, user_id, "binance", "revoke", None).await }
+    });
+
+    // Long enough that an *unblocked* call would certainly have finished: a
+    // begin, a lock, a select, an insert and a commit, against a managed
+    // instance that costs roughly a second per statement.
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+
+    assert_eq!(
+        rows_for(pool, user_id, "binance").await,
+        3,
+        "a call waiting on the (user, venue) lock must not have written anything"
+    );
+
+    sqlx::query("SELECT pg_advisory_unlock(hashtext($1)::bigint)")
+        .bind(key.as_str())
+        .execute(&mut *blocker)
+        .await
+        .expect("release the lock");
+
+    assert!(
+        waiting.await.expect("task").expect("revoke"),
+        "once the lock is released, the waiting revoke is a transition"
+    );
+    assert_eq!(
+        rows_for(pool, user_id, "binance").await,
+        4,
+        "and it writes exactly one row"
+    );
+
+    // 4. The same id twice is one order.
+    //
+    // The id carries the bot's fresh UUID because nothing here cleans up after
+    // itself, and `live_orders.client_order_id` is the primary key. A hardcoded
+    // id makes the "first insert reports new" assertion true only on a database
+    // that has never run this test -- it fails on the second run, for a reason
+    // that has nothing to do with the code under test. `docs/16`'s rule: a test
+    // owns its fixture.
+    let client_order_id = format!("p8bot_BTCUSDT_{}_entry", bot_id.simple());
     let order = db::live::LiveOrderRow {
-        client_order_id: "p8bot_BTCUSDT_abc_entry".to_string(),
+        client_order_id: client_order_id.clone(),
         bot_id,
         venue: "binance".to_string(),
         symbol: "BTCUSDT".to_string(),
@@ -186,7 +296,7 @@ async fn live_orders_and_venue_opt_in_round_trip() {
         "a repeated client order id must report that nothing was inserted"
     );
 
-    // 3. Open orders exclude terminal ones.
+    // 5. Open orders exclude terminal ones.
     assert_eq!(
         db::live::open_live_orders(pool, bot_id)
             .await
@@ -196,16 +306,9 @@ async fn live_orders_and_venue_opt_in_round_trip() {
         "a NEW order is open"
     );
 
-    db::live::update_live_order(
-        pool,
-        &order.client_order_id,
-        "FILLED",
-        0.01,
-        Some(60_000.0),
-        None,
-    )
-    .await
-    .expect("update");
+    db::live::update_live_order(pool, &client_order_id, "FILLED", 0.01, Some(60_000.0), None)
+        .await
+        .expect("update");
 
     assert!(
         db::live::open_live_orders(pool, bot_id)

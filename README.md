@@ -347,15 +347,30 @@ Northflank auto-detects the root `Dockerfile`, so no build config file is needed
 2. **Port** — add an HTTP port `8080`. This matches `EXPOSE 8080` and the
    `BIND_ADDR` the image sets.
 3. **Health check** — path `/healthz`, port `8080`.
-4. **Environment variables** (do not put these in the repo):
+4. **Environment variables** (do not put these in the repo). The full reference — including
+   what each one's *absence* does — is `docs/17-DEPLOYMENT-INFRA.md`:
 
-   | Variable | Value |
-   |---|---|
-   | `DATABASE_URL` | the Northflank Postgres addon's **internal** connection string |
-   | `RUST_LOG` | `info` (or `ai_trading_platform=debug,sqlx=warn`) |
-   | `RUN_MIGRATIONS` | `true` for the first deploy |
+   | Variable | Value | Needed for |
+   |---|---|---|
+   | `DATABASE_URL` | the Northflank Postgres addon's **internal** connection string | everything |
+   | `JWT_SECRET` | `openssl rand -base64 48`; **≥ 32 bytes or startup refuses it** | `/auth/*`, and every route needing a token |
+   | `MARKET_FEED` | `binance` | bots receiving candles at all |
+   | `AWS_BEDROCK_MODEL_ID` | `qwen.qwen3-coder-next` | `/agent/*` |
+   | `AWS_BEDROCK_REGION` | `us-east-1` | `/agent/*` (defaults to this) |
+   | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Bedrock credentials | `/agent/*` |
+   | `BINANCE_API_KEY` / `BINANCE_API_SECRET` | exchange credentials | **live trading** — without them a venue opts in but reports `credentials_configured: false` |
+   | `RUST_LOG` | `info` | log verbosity |
+   | `RUN_MIGRATIONS` | `true` for the first deploy | the entrypoint applying migrations |
 
    `BIND_ADDR` is already set in the image; override it only if you change the port.
+   `ALERT_WEBHOOK_URL` is optional — unset means alerts go to the log and the audit trail
+   only, which the gateway says at startup.
+
+   **Nothing here refuses to boot when missing**, by design: `main` serves `/healthz` even
+   with no database so the platform reports "up but not ready" rather than crash-looping.
+   The cost is that a missing variable shows up as one feature answering 503, not as a
+   failed deploy — so check `GET /readyz` and the startup lines rather than assuming a
+   green container means a configured one.
 
 5. **Database** — add a Postgres addon and link it to the service so
    `DATABASE_URL` is injected automatically, or paste the connection string manually.

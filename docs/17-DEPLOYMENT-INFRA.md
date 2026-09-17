@@ -82,6 +82,75 @@ tool that solves the specific problem, and document why here.
   via environment variables or a secrets manager appropriate to the hosting platform.
   The sandbox must never have access to any of these (see `docs/15-RISK-COMPLIANCE.md`).
 
+## Environment reference
+
+Every variable the code reads, and what its absence actually does. The "absent" column is
+the point of this table: **almost nothing here refuses to boot**, so a missing variable
+shows up as one feature quietly answering 503 rather than as a crash. That is deliberate —
+`main` still serves `/healthz` when the database is down, so the platform can report
+"up but not ready" instead of crash-looping — but it means the environment is worth
+checking deliberately rather than inferring from a healthy container.
+
+### Required
+
+| Variable | Absent |
+|---|---|
+| `DATABASE_URL` | `main` logs `database unavailable`, still serves `/healthz`, and every route that touches the database answers **503**. `RUN_MIGRATIONS=true` additionally refuses to start the entrypoint. |
+| `JWT_SECRET` | Must be **≥ 32 bytes**; a shorter one is refused rather than accepted quietly. Without it `/auth/*` answers 503 and so does every route needing a token — `/agent/*` included, since those call a paid model. |
+
+### Required for a feature
+
+| Variable | Needed by | Absent |
+|---|---|---|
+| `AWS_BEDROCK_MODEL_ID` | the AI agent | `/agent/*` answers 503 naming the variable. No default: the model id is a decision, not a guess. |
+| `AWS_ACCESS_KEY_ID` | the AI agent | as above |
+| `AWS_SECRET_ACCESS_KEY` | the AI agent | as above |
+| `AWS_BEDROCK_REGION` | the AI agent | defaults to `us-east-1` |
+| `AWS_SESSION_TOKEN` | the AI agent | optional; only for temporary credentials |
+| `BINANCE_API_KEY` | **live trading** | the venue still opts in, but `GET /venues` reports `credentials_configured: false` and an order is refused. |
+| `BINANCE_API_SECRET` | **live trading** | as above |
+| `MARKET_FEED` | live bots | defaults to `off`. Bots start and receive nothing, and say so — a bot that is `running` with no feed looks identical to one that is running and finding no setups. Set to `binance`. |
+
+Exchange credentials are named **`{VENUE}_API_KEY` / `{VENUE}_API_SECRET`** with the venue
+upper-cased — `binance` → `BINANCE_API_KEY`. The list of venues is closed
+(`venue_routes::KNOWN_VENUES`), so a typo in the prefix produces a venue that is opted in
+and can never trade, rather than an error.
+
+`credentials_configured` is reported **separately** from `opted_in` because the two
+failures look identical from outside — "I opted in and it still refused" — and only one of
+them is fixable from a browser.
+
+### Optional
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BIND_ADDR` | `127.0.0.1:8080`; the image sets `0.0.0.0:8080` | the local default is loopback, which would make a container unreachable |
+| `RUST_LOG` | `info` | tracing-subscriber `EnvFilter` syntax |
+| `LOG_FORMAT` | human-readable lines | `json` for machine-readable logs in deployment |
+| `RUN_MIGRATIONS` | `true` | the entrypoint applies migrations, then execs the command; sqlx takes an advisory lock so replicas serialize |
+| `ALERT_WEBHOOK_URL` | unset | unset means alerts go to the log and the audit trail only |
+| `AGENT_REQUESTS_PER_MINUTE` | `30` | per-user limit on `/agent/*` |
+| `AGENT_BURST` | `5` | deliberately smaller than the minute budget |
+| `DB_MAX_CONNECTIONS` | `10` | |
+| `DB_ACQUIRE_TIMEOUT_SECS` | `10` | |
+| `DB_SLOW_STATEMENT_MS` | `5000` | sqlx's own default is 1s, which fires on ordinary chunked upserts against a managed instance — and every warning dumps the whole statement |
+| `SKILLS_DIR` | `skills` | where the agent's methodology documents are read from |
+| `FRONTEND_DIR` | `frontend/app` | the workstation the gateway serves at `/` |
+| `BINANCE_BASE_URL` | mainnet | override for a testnet |
+
+### Read by the build, not the process
+
+`SANDBOX_GUEST_WASM`, `OUT_DIR`, `CARGO`, `CARGO_MANIFEST_DIR` are set by `cargo`/`build.rs`
+and baked in at compile time. They are not deployment configuration and setting them has no
+effect.
+
+### Not read at all
+
+`.env.example` lists `LLM_PROVIDER` and `LLM_API_KEY` under "secondary / fallback
+providers, if we add them later". They are commented out and no code reads them. They are
+kept as a note about intent, not as configuration — but a variable in an env template that
+nothing reads is the same shape as a metric with no writer, so this is the place to say so.
+
 ## Backups & disaster recovery
 - Automated Postgres backups with a tested restore procedure (test the restore, not just
   the backup job).
