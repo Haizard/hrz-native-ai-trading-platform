@@ -70,21 +70,52 @@
   #signinMsg { color: var(--muted); font-size: 11px; }
 
   main { flex: 1; display: flex; min-height: 0; }
-  #chartWrap { flex: 1; position: relative; min-width: 0; }
+  /*
+    The chart panes. A row, each pane an equal share, and a floor of zero so a
+    pane can be narrower than its content -- without `min-width: 0` a flex item
+    refuses to shrink below its content and the row overflows instead.
+
+    `min-height: 0` for the same reason down the other axis: a pane is a column
+    whose last child is the canvas, and a column that cannot shrink pushes the
+    canvas off the bottom of the page.
+  */
+  #charts { flex: 1; display: flex; min-width: 0; min-height: 0; }
+  .chartPane {
+    flex: 1 1 0; min-width: 0; min-height: 0;
+    display: flex; flex-direction: column;
+    border-left: 1px solid var(--line);
+  }
+  .chartPane:first-child { border-left: 0; }
+  /*
+    The pane's own controls. They used to be in the header, where they were
+    page-level because there was one chart. Now each pane has its own series, so
+    each pane has its own row of them.
+
+    The active pane is marked with an inset shadow rather than a border, so
+    highlighting it cannot change its size and reflow the chart underneath.
+  */
+  .chartBar {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  .chartBar select, .chartBar button { padding: 3px 6px; font-size: 11px; }
+  .chartPane.active .chartBar { box-shadow: inset 0 2px 0 var(--accent); }
+  .chartBar .close { margin-left: auto; padding: 3px 8px; color: var(--muted); }
+  .chartWrap { flex: 1; position: relative; min-width: 0; min-height: 0; }
   /*
     `touch-action: none` so a drag on a touchscreen pans the chart instead of
     scrolling the page, and `crosshair` because the chart is now something you
     can act on rather than only look at.
   */
-  #chart { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
-  #chart.dragging { cursor: grabbing; }
+  .chart { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  .chart.dragging { cursor: grabbing; }
   /*
     Moving a drawing is a different drag from panning the chart, so it gets a
     different cursor. There is deliberately no rule for a placement: `crosshair`
     is already the canvas's cursor and already the right one for drawing, and a
     rule that cannot change what is on screen is not an affordance.
   */
-  #chart.moving { cursor: move; }
+  .chart.moving { cursor: move; }
   /*
     The drawing toolbar. An overlay on the chart rather than a row in the header:
     a tool is a property of the canvas, and the header is already full of things
@@ -93,19 +124,19 @@
     `aria-pressed` is the state, the same treatment the Zones toggle gets, so
     there is one variable and the button cannot disagree with it.
   */
-  #tools {
+  .tools {
     position: absolute; top: 8px; left: 12px; z-index: 2;
     display: flex; align-items: center; gap: 4px;
   }
-  #tools button { padding: 2px 8px; font-size: 11px; color: var(--muted); }
-  #tools button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
-  #tools #clearDrawings { margin-left: 8px; }
-  #chartHint {
+  .tools button { padding: 2px 8px; font-size: 11px; color: var(--muted); }
+  .tools button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  .tools .clearDrawings { margin-left: 8px; }
+  .chartHint {
     position: absolute; left: 12px; bottom: 8px; pointer-events: none;
     color: var(--muted); font-family: var(--mono); font-size: 10px; opacity: 0.75;
   }
-  #chartHint b { font-weight: 600; }
-  #chartMsg {
+  .chartHint b { font-weight: 600; }
+  .chartMsg {
     position: absolute; inset: auto 0 40% 0; text-align: center;
     color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 0 20px;
   }
@@ -204,14 +235,19 @@
   textarea { width: 100%; min-height: 150px; resize: vertical; }
   .muted { color: var(--muted); }
   .empty { color: var(--muted); font-style: italic; }
-  #chartNote { padding: 6px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; background: var(--panel); }
-  #footprintStats {
+  /*
+    The note strip and the footprint stats belong to a pane rather than to the
+    page, so they sit inside it and their rules are classes. A refusal on one
+    chart has to read as a refusal on that chart, not on both.
+  */
+  .chartNote { padding: 6px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; background: var(--panel); }
+  .footprintStats {
     display: flex; flex-wrap: wrap; gap: 4px 18px;
     padding: 6px 12px; border-top: 1px solid var(--line);
     background: var(--panel); font-family: var(--mono); font-size: 11px;
   }
-  #footprintStats[hidden] { display: none; }
-  #footprintStats b { color: var(--muted); font-weight: 400; margin-right: 4px; }
+  .footprintStats[hidden] { display: none; }
+  .footprintStats b { color: var(--muted); font-weight: 400; margin-right: 4px; }
 
   /*
     Responsive layout.
@@ -244,7 +280,16 @@
   @media (max-width: 900px) {
     html, body { height: auto; }
     main { flex-direction: column; }
-    #chartWrap { flex: 0 0 auto; height: 60vh; min-height: 260px; }
+    /*
+      The panes stack too. Side by side at 900px is 450px each, which is under
+      the width a candlestick chart stops being readable at -- and the panel
+      below needs a full width as well. Each pane gets its own height instead,
+      for the same reason the single chart did.
+    */
+    #charts { flex-direction: column; }
+    .chartPane { flex: 0 0 auto; border-left: 0; border-top: 1px solid var(--line); }
+    .chartPane:first-child { border-top: 0; }
+    .chartWrap { flex: 0 0 auto; height: 60vh; min-height: 260px; }
     aside {
       width: auto; flex: 0 0 auto;
       border-left: 0; border-top: 1px solid var(--line);
@@ -254,14 +299,14 @@
       so anything past the right edge is not merely clipped, it is unreachable.
       It wraps instead.
     */
-    #tools { flex-wrap: wrap; max-width: calc(100% - 24px); }
+    .tools { flex-wrap: wrap; max-width: calc(100% - 24px); }
     /*
       The hint is one line of monospace prose, and at this width it would run off
       the right edge rather than under the toolbar. Given a right edge it wraps
       and stays readable; it is kept rather than hidden because the chart's
       gestures are still not discoverable without it.
     */
-    #chartHint { right: 12px; }
+    .chartHint { right: 12px; }
     /* Two fields and a button in one unwrapped row overflow a phone. */
     #signin { flex-wrap: wrap; }
     #signin input { flex: 1 1 140px; min-width: 0; }
@@ -272,53 +317,13 @@
 
 <header>
   <h1>Order-flow workstation <span>· chart by <code>chart-engine</code> (Rust/WASM)</span></h1>
-  <select id="symbol">
-    <option value="BTCUSDT">BTCUSDT</option>
-  </select>
-  <select id="timeframe">
-    <option value="5m" selected>5m</option>
-    <option value="1h">1h</option>
-    <option value="4h">4h</option>
-    <option value="1m">1m</option>
-  </select>
-  <select id="limit">
-    <option value="200">200 bars</option>
-    <option value="500" selected>500 bars</option>
-    <option value="1000">1000 bars</option>
-  </select>
   <!--
-    The chart type. The list mirrors `chart_engine::Mode` exactly, and a test in
-    the engine asserts every variant draws something -- a selector option that
-    renders nothing is worse than no option, because the user concludes the
-    chart is broken rather than the setting.
+    Add a chart. The one chart control the header keeps, and it is here because it
+    is about the *page*: it makes another pane rather than changing the one that is
+    already there. Everything that describes a series -- symbol, timeframe, bar
+    count, chart type, zones, Fit -- belongs to a pane and lives in its bar.
   -->
-  <select id="mode">
-    <option value="candles" selected>Candlesticks</option>
-    <option value="heikin_ashi">Heikin-Ashi</option>
-    <option value="bars">OHLC bars</option>
-    <option value="line">Line</option>
-    <option value="area">Area</option>
-    <option value="footprint">Footprint (volume by price)</option>
-  </select>
-  <!--
-    Supply/demand zones. A toggle rather than a chart type, because a zone is an
-    overlay on whatever rendering is selected -- the same series read the same
-    way, with the areas the engine detected drawn behind it.
-
-    Off by default: detection is a real cost on a long window, and an overlay
-    nobody asked for is noise on top of the candles.
-  -->
-  <button id="zones" aria-pressed="false" title="Draw the supply and demand zones the engine detects">Zones</button>
-  <!--
-    Fit. The one zoom control that needs a button: a wheel and a drag are
-    discoverable by trying them, but "put it back" has no gesture of its own.
-
-    It sends `{kind: "fit"}` to the engine rather than resetting anything here,
-    so "show everything" means the same thing whether it was asked for by a
-    button or by a client with no UI at all.
-  -->
-  <button id="fit" title="Show the whole series again (all the bars, and a price axis fitted to them)">Fit</button>
-  <button id="load">Reload</button>
+  <button id="split" title="Add a second chart beside this one">Add chart</button>
   <span class="spacer"></span>
   <span id="session">not signed in</span>
   <button id="signinToggle">Sign in</button>
@@ -333,35 +338,109 @@
 </div>
 
 <main>
-  <div id="chartWrap">
-    <canvas id="chart"></canvas>
-    <!--
-      The drawing tools. A tool stays active until it is changed, so several
-      shapes can be drawn in a row; `Esc` returns to the cursor, and the Cursor
-      button is always one click away.
+  <!--
+    The chart panes. One ships in the markup and the rest are cloned from it, so
+    the page has a chart before any script has run and the shape of a pane is
+    written down exactly once.
 
-      `hline` is a click and the rest are drags, because a horizontal line is a
-      price rather than a span -- but the shell does not treat them differently:
-      every tool places a first anchor on pointer-down and the two-anchor ones
-      follow the pointer with the second. A click with no drag is refused by the
-      engine, in words, rather than stored as a shape with no extent.
-    -->
-    <div id="tools" role="toolbar" aria-label="Drawing tools">
-      <button data-tool="cursor" aria-pressed="true" title="Select a drawing, move its anchors, or pan the chart">Cursor</button>
-      <button data-tool="trendline" aria-pressed="false" title="Drag from one point to another">Trend</button>
-      <button data-tool="hline" aria-pressed="false" title="Click a price to mark it across the chart">H-line</button>
-      <button data-tool="rect" aria-pressed="false" title="Drag out a rectangle">Rect</button>
-      <button data-tool="fib" aria-pressed="false" title="Drag from one swing to another">Fib</button>
-      <button id="clearDrawings" class="danger" title="Delete every drawing on this symbol">Clear</button>
-    </div>
-    <!--
-      The gesture hint. Kept visible rather than hidden behind a tooltip: the
-      chart had no interaction at all until now, so nothing about it suggests a
-      wheel or a drag would do anything, and an affordance nobody can find is the
-      same as no affordance.
-    -->
-    <div id="chartHint">wheel zooms · shift+wheel scales the price axis · drag pans · pick a tool to draw · <b>Esc</b> back to the cursor</div>
-    <div id="chartMsg" class="empty">Loading the chart engine…</div>
+    Every control carries a *class* rather than an id, because the shell looks them
+    up inside a pane: `el("symbol")` means "this pane's symbol", which is the whole
+    point of having more than one. The canvas, the message strip, the note, the
+    footprint stats and the toolbar are per-pane for the same reason -- a refusal
+    on one chart must not read as a refusal on both.
+  -->
+  <div id="charts">
+    <section class="chartPane">
+      <div class="chartBar">
+        <!--
+          The series. Both selects are filled from `GET /symbols`, which reports
+          the instruments that actually have candles and, per timeframe, how many
+          and how many are missing -- so the page cannot offer an instrument it
+          cannot chart, and a thin timeframe says so rather than drawing three
+          bars in silence.
+        -->
+        <select class="symbol" title="Which instrument this chart shows"></select>
+        <select class="timeframe" title="Which timeframe this chart shows"></select>
+        <select class="limit" title="How many bars to load">
+          <option value="200">200 bars</option>
+          <option value="500" selected>500 bars</option>
+          <option value="1000">1000 bars</option>
+        </select>
+        <!--
+          The chart type. The list mirrors `chart_engine::Mode` exactly, and a test
+          in the engine asserts every variant draws something -- a selector option
+          that renders nothing is worse than no option, because the user concludes
+          the chart is broken rather than the setting.
+        -->
+        <select class="mode" title="How this series is drawn">
+          <option value="candles" selected>Candlesticks</option>
+          <option value="heikin_ashi">Heikin-Ashi</option>
+          <option value="bars">OHLC bars</option>
+          <option value="line">Line</option>
+          <option value="area">Area</option>
+          <option value="footprint">Footprint (volume by price)</option>
+        </select>
+        <!--
+          Supply/demand zones. A toggle rather than a chart type, because a zone is
+          an overlay on whatever rendering is selected -- the same series read the
+          same way, with the areas the engine detected drawn behind it.
+
+          Off by default: detection is a real cost on a long window, and an overlay
+          nobody asked for is noise on top of the candles.
+        -->
+        <button class="zones" aria-pressed="false" title="Draw the supply and demand zones the engine detects">Zones</button>
+        <!--
+          Fit. The one zoom control that needs a button: a wheel and a drag are
+          discoverable by trying them, but "put it back" has no gesture of its own.
+
+          It sends `{kind: "fit"}` to the engine rather than resetting anything here,
+          so "show everything" means the same thing whether it was asked for by a
+          button or by a client with no UI at all.
+        -->
+        <button class="fit" title="Show the whole series again (all the bars, and a price axis fitted to them)">Fit</button>
+        <button class="load">Reload</button>
+        <!--
+          Shown only when there is more than one pane. Closing the last chart is
+          refused rather than leaving an empty page with no way back, and the honest
+          way to refuse it is to not draw the button.
+        -->
+        <button class="close" title="Close this chart" hidden>×</button>
+      </div>
+
+      <div class="chartWrap">
+        <canvas class="chart"></canvas>
+        <!--
+          The drawing tools. A tool stays active until it is changed, so several
+          shapes can be drawn in a row; `Esc` returns to the cursor, and the Cursor
+          button is always one click away.
+
+          `hline` is a click and the rest are drags, because a horizontal line is a
+          price rather than a span -- but the shell does not treat them differently:
+          every tool places a first anchor on pointer-down and the two-anchor ones
+          follow the pointer with the second. A click with no drag is refused by the
+          engine, in words, rather than stored as a shape with no extent.
+        -->
+        <div class="tools" role="toolbar" aria-label="Drawing tools">
+          <button data-tool="cursor" aria-pressed="true" title="Select a drawing, move its anchors, or pan the chart">Cursor</button>
+          <button data-tool="trendline" aria-pressed="false" title="Drag from one point to another">Trend</button>
+          <button data-tool="hline" aria-pressed="false" title="Click a price to mark it across the chart">H-line</button>
+          <button data-tool="rect" aria-pressed="false" title="Drag out a rectangle">Rect</button>
+          <button data-tool="fib" aria-pressed="false" title="Drag from one swing to another">Fib</button>
+          <button class="clearDrawings danger" title="Delete every drawing on this symbol">Clear</button>
+        </div>
+        <!--
+          The gesture hint. Kept visible rather than hidden behind a tooltip: the
+          chart had no interaction at all until now, so nothing about it suggests a
+          wheel or a drag would do anything, and an affordance nobody can find is the
+          same as no affordance.
+        -->
+        <div class="chartHint">wheel zooms · shift+wheel scales the price axis · drag pans · pick a tool to draw · <b>Esc</b> back to the cursor</div>
+        <div class="chartMsg empty">Loading the chart engine…</div>
+      </div>
+
+      <div class="footprintStats" hidden></div>
+      <div class="chartNote"></div>
+    </section>
   </div>
 
   <aside>
@@ -500,9 +579,6 @@
     </div>
   </aside>
 </main>
-
-<div id="footprintStats" hidden></div>
-<div id="chartNote"></div>
 
 <script src="builder.js"></script>
 <script src="app.js"></script>

@@ -495,6 +495,85 @@ CPU calc   GPU-friendly buffers
   harness reads the stylesheet and asserts the declarations that stop the squeeze, the same
   trade `api-gateway/tests/packaging.rs` makes for the Docker image.
 
+  ### More than one chart
+
+  Added 2026-09-17. The shell had a single `<canvas id="chart">`, and its *panes* (`thesis`,
+  `strategy`, `bots`, `book`) are side panels chosen by tab, not chart panes — which is the
+  naming collision that made this look already done. A trader reading a 5m entry against a 4h
+  trend wants both at once, and switching tabs is not that.
+
+  **A pane is a chart, and it owns everything a chart is.** The list is long because the
+  alternative is worse: a pane that shares any of it with its neighbour is a pane that can be
+  made to disagree with itself.
+
+  | the pane owns | why it cannot be shared |
+  |---|---|
+  | its series — symbol, timeframe, bar limit, chart type, zones | two panes exist in order to differ here |
+  | its window — the `Viewport` the engine resolved | zooming one chart must not move the other; a shared window is one chart drawn twice |
+  | the drawings it has *loaded*, its tool, its selection, the shape being placed | the store is per instrument, but "which chart am I drawing on" still has to be answerable, and a shared selection would draw handles on both |
+  | its candles, its footprint, its live channel | they follow the series |
+  | its note strip and its footprint stats | a refusal on one chart must not read as a refusal on both |
+  | its canvas | the hit test is in canvas coordinates, so two charts sharing one would each grab the other's shapes |
+
+  **The drawings store is per user and instrument, not per timeframe.** That was a deliberate
+  choice — a trendline drawn at 5m is a claim about the market, not about the bar size — and it
+  has a consequence worth stating: two panes on one instrument at two timeframes show the *same*
+  shapes. A reader who takes "the panes are independent" as the whole rule will read that as a
+  bug. The pane owns its loaded copy so that changing one pane's instrument does not empty the
+  other's chart; it does not own the store.
+
+  **What stays page-level is what is not a chart.** The session and the sign-in form; the aside
+  and its four panels; the AI conversation; the bot list; the venue list. Those describe the
+  *account*, and there is one account.
+
+  **The aside follows the active pane.** A pane becomes active when it is interacted with — a
+  pointer down on its canvas, or a change to one of its own controls — and the active pane is
+  the one with a visible border. Anything in the aside that is about a chart follows it. There
+  is exactly one such thing today and it needs the rule: the thesis overlay is drawn in
+  JavaScript against a pane's price axis, so on a pane showing another instrument it would put
+  one market's levels on another market's chart.
+
+  **One wasm instance, many panes.** `build_scene` is a function of its request and the engine
+  holds no viewport between calls — that is what makes the interaction model above work at all
+  — so the panes share the module and each request carries its own window. Loading it once is
+  also what stops the first pane being a different engine from the second.
+
+  **A pane's options come from the data, not from the markup.** `GET /symbols` reports every
+  instrument with candles and, per timeframe, how many there are and how many are missing. The
+  page shipped a hardcoded `<option>BTCUSDT</option>` and a timeframe list that omitted `15m`,
+  which the database has — so the page could not offer an instrument it was able to chart, and
+  could not say why a timeframe was thin. Both selects are filled from that response, and a
+  timeframe carries its bar count, because "3 bars" is the difference between a chart that is
+  broken and a chart that is telling you the truth.
+
+  **There is always at least one pane.** Closing the last one is refused rather than leaving an
+  empty page with no way back, and the control that would do it is not drawn. Adding stops at
+  four: past that nothing is readable, and an uncapped button is a way to make the page
+  unusable by accident.
+
+  **How any of this is checked.** `tools/shell_check.mjs` loads the page into a DOM and drives
+  it — `#split`, a wheel, a symbol change, a drawing gesture, a close — and asserts the two
+  panes stay two. The checks that matter are the negatives: a wheel in one chart must rebuild
+  that chart and leave the other's scene *the same object it was*, a symbol change in one must
+  not rebuild the other, a shape drawn in the second must be stored against the second's
+  instrument. Counting panes would pass for a shell where the second pane is a view of the
+  first, which is the only way this feature can be wrong quietly. The channels carry the
+  positive half: `/ws/market/SYMBOL/TIMEFRAME` is a per-pane claim and `/ws/orderbook/SYMBOL` is
+  a page-level one, so which socket is open says which chart the page thinks it is showing.
+
+  Every one of those checks was then run against the bug it names — the pane boundary replaced
+  by a document-wide lookup, the clone replaced by the node itself, the cap removed, the last
+  close button unguarded, `destroy` not closing its channel — by `tools/guard_check.py`, which
+  patches one thing, runs the harness, and requires the named check to fail. Two of them did
+  not, which is how the harness came to be sending a non-bubbling `change` event: no browser
+  sends one, the page listens on the container, and the check that needed it had been passing
+  because the pane it was about happened to be active already.
+
+  **What a pane does not do yet.** It cannot be reordered or resized against its neighbour, and
+  there is no layout beyond the row — a stack and a grid are the obvious next shapes. Two panes
+  on one symbol also fetch that symbol's candles twice, which is correct and wasteful in equal
+  measure.
+
   ### What this interaction does not do yet
 
   Recorded 2026-09-17, so the next reader does not have to discover them:
@@ -533,10 +612,19 @@ CPU calc   GPU-friendly buffers
   type, so a zoom needed a bar range and a price range in the scene request before the shell had
   anything to bind a wheel event to.
 
-  **Never specified: more than one chart.** The shell has a single `<canvas id="chart">`, and
-  its panes (`thesis`, `strategy`, `bots`, `book`) are *side panels chosen by tab*, not chart
-  panes. A second chart — the same symbol at another timeframe, or another symbol — needs a
-  layout decision this document has not made.
+  **Never specified until 2026-09-17: more than one chart.** The shell had a single
+  `<canvas id="chart">`, and its panes (`thesis`, `strategy`, `bots`, `book`) are *side panels
+  chosen by tab*, not chart panes — a naming collision that made this look already done. A
+  second chart needed a layout decision this document had not made: what a pane owns, what stays
+  page-level, and what happens when there are four of them and the window is narrow. All three
+  are now written down under *More than one chart* above, and built. The layout half is the same
+  question as *The layout: what gives way when the window narrows*, because four panes in a row
+  and one pane in a row are the same flex container.
+
+  The one thing that made it cheap was already true and is worth naming: `build_scene` is a
+  pure function of its request, so a pane is a *view* of a stateless engine and the second pane
+  needed no engine work at all. Had the engine held a viewport between calls, this would have
+  been a rewrite rather than a refactor.
 
   **Never specified, and half-built until 2026-09-17: responsive layout.** The canvas always
   scaled correctly — the shell sizes it from the wrapper's `clientWidth`/`clientHeight` times

@@ -79,10 +79,18 @@ const wasmBytes = await readFile(wasmPath);
 // The page's own console, forwarded. Without this a shell that throws on load
 // is a timeout with no explanation -- which is the least useful failure mode a
 // test can have.
+//
+// Uncaught exceptions are also *counted*, and asserted on at the end. A listener
+// that throws is invisible from outside: the page keeps working, the console
+// fills up, and every check still passes. That is exactly how a stale resize
+// handler referencing a variable that no longer existed survived a green run --
+// this file printed the error and reported success in the same breath.
+const pageErrors = [];
 const virtualConsole = new VirtualConsole();
-virtualConsole.on("jsdomError", (e) =>
-  console.error("  [page error]", e.message, e.detail && e.detail.stack)
-);
+virtualConsole.on("jsdomError", (e) => {
+  pageErrors.push(e.message);
+  console.error("  [page error]", e.message, e.detail && e.detail.stack);
+});
 virtualConsole.on("error", (...args) => console.error("  [page console.error]", ...args));
 virtualConsole.on("warn", (...args) => console.error("  [page warn]", ...args));
 
@@ -97,14 +105,19 @@ const { document } = window;
 
 // --- what the shell is allowed to believe about its surroundings -------------
 
-// A 2D context that records. `getContext` is called once per frame by `draw()`,
-// and the shell asks for `2d` and nothing else.
+// A 2D context that records. `getContext` is called once per frame per pane by
+// `draw()`, and the shell asks for `2d` and nothing else.
+//
+// One shared context for every canvas, which is fine because the shell never
+// reads `ctx.canvas` -- the canvas it draws on is the one it asked. It did used
+// to answer that property, and the branch was removed rather than left here: a
+// stub that supports something nothing calls is a claim about the shell that
+// nothing checks.
 const painted = { ops: [], text: [] };
 const context = new Proxy(
   {},
   {
     get(_target, prop) {
-      if (prop === "canvas") return document.getElementById("chart");
       if (prop === "measureText") return () => ({ width: 10 });
       // Every drawing call lands here, so a check can ask "did it stroke
       // anything at all" without knowing which call it was.
@@ -124,53 +137,182 @@ const context = new Proxy(
 // plot would be a degenerate rectangle. These are the only dimensions it needs.
 const VIEW = { width: 900, height: 420 };
 window.devicePixelRatio = 1;
-const wrap = document.getElementById("chartWrap");
-const canvas = document.getElementById("chart");
+
+/// The panes, in the order they are on the page.
+const paneNodes = () => [...document.querySelectorAll(".chartPane")];
+/// One pane's canvas.
+const canvasOf = (index = 0) => paneNodes()[index].querySelector(".chart");
+
+/// The pane these checks are about unless they say otherwise.
+///
+/// Almost every check here is about one chart, and the one the page ships is the
+/// first. The pane-independence section names its own panes explicitly.
+const PANE = 0;
+const paneNode = (index = PANE) => paneNodes()[index];
+const note = (index = PANE) => paneNode(index).querySelector(".chartNote").textContent;
+const lastScene = () => engine.scenes[engine.scenes.length - 1];
+const lastRequest = () => engine.requests[engine.requests.length - 1];
+/// Which instrument a scene request is for.
+///
+/// The recorder sees every pane's requests, so a check that is about one chart
+/// has to be able to say which one a request came from -- and the candles are
+/// what carry that, because the request is otherwise only numbers.
+const symbolOf = (request) => (request.candles[0] ? request.candles[0].symbol : "");
+
+/// One pointer event at a canvas coordinate, on one pane's canvas.
+///
+/// A `MouseEvent` with a `pointerId` bolted on. jsdom does not implement
+/// `PointerEvent`, and the shell reads only `clientX`, `clientY`, `button` and
+/// `pointerId` -- so this is the same information the browser would deliver.
+function pointer(type, x, y, index = PANE, id = 1) {
+  const event = new window.MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: x,
+    clientY: y,
+    button: 0,
+  });
+  Object.defineProperty(event, "pointerId", { value: id });
+  canvasOf(index).dispatchEvent(event);
+}
+
+/// A click on one pane's toolbar button, by the name the shell gave it.
+function pickTool(name, index = PANE) {
+  paneNode(index).querySelector(`.tools button[data-tool="${name}"]`).click();
+}
+
+/// A `change` event the way a `<select>` fires one: bubbling.
+///
+/// `new Event("change")` defaults to `bubbles: false`, and the page listens for
+/// `change` on the container so that a pane added later needs no wiring. A
+/// non-bubbling event therefore never arrives -- which went unnoticed because the
+/// check that needed it was passing for another reason entirely: the pane it was
+/// about happened to be the active one already, so a *different* code path
+/// reconnected the book. The event is now the one a browser sends, and the check
+/// fails when the delegated listener is the only thing that could have worked.
+const change = (node) => node.dispatchEvent(new window.Event("change", { bubbles: true }));
+
+/// One wheel notch in the middle of one pane's canvas.
+///
+/// jsdom implements `WheelEvent`, so this is the same event a browser delivers --
+/// `deltaY`, `deltaMode` and the shift modifier all read back. The pointer is at
+/// the centre of the plot so the zoom has somewhere to anchor.
+function wheel(index = PANE, deltaY = 120, shiftKey = false) {
+  canvasOf(index).dispatchEvent(
+    new window.WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: VIEW.width / 2,
+      clientY: VIEW.height / 2,
+      deltaY,
+      deltaMode: 0,
+      shiftKey,
+    })
+  );
+}
+
+/// One pane's control value, by the class the markup gave it.
+const selectIn = (index, name) => paneNode(index).querySelector(`.${name}`).value;
+/// How many scenes the engine has built for one series.
+const framesFor = (series) => engine.frames.filter((f) => f.series === series).length;
+/// Every series the engine has been asked for, once each.
+const seriesSeen = () => [...new Set(engine.frames.map((f) => f.series))];
+/// How many drawings one series' latest scene carries, or -1 if it never drew.
+///
+/// `-1` rather than a throw: a series that never drew is a *failing check*, and a
+/// check that takes the process down with it reports nothing at all -- including
+/// the failure it was written to find.
+const drawingsIn = (series) => {
+  const scene = sceneOf(series);
+  return scene ? scene.drawings.length : -1;
+};
+/// Which panes carry the active mark, as a string like "0,2" or "none".
+const activeIndexes = () =>
+  paneNodes()
+    .map((pane, index) => (pane.classList.contains("active") ? String(index) : ""))
+    .filter((s) => s !== "")
+    .join(",") || "none";
+
+// Every stub below is on a *prototype*, not on an element, because a pane added
+// at runtime is a new canvas and a new `.chartWrap` -- and a harness that had to
+// be told when one appeared would be unable to check the thing this file exists
+// to check. The page ships one pane in the markup and clones it, so nothing here
+// can be attached to "the" canvas.
+//
+// A canvas reports a rectangle anchored at (0, 0). That is not a simplification
+// to be embarrassed about: the shell turns a pointer position into a canvas
+// position with `event.clientX - rect.left`, so a rect at the origin makes the
+// coordinates this file dispatches *pane-local*, which is what a check wants to
+// talk about anyway.
+const RECT = {
+  x: 0,
+  y: 0,
+  left: 0,
+  top: 0,
+  right: VIEW.width,
+  bottom: VIEW.height,
+  width: VIEW.width,
+  height: VIEW.height,
+};
+Object.defineProperty(window.HTMLCanvasElement.prototype, "getContext", {
+  value: () => context,
+  configurable: true,
+});
+Object.defineProperty(window.HTMLCanvasElement.prototype, "getBoundingClientRect", {
+  value: () => RECT,
+  configurable: true,
+});
+
+// `clientWidth`/`clientHeight` are what `draw()` sizes the canvas from. A pane's
+// wrapper is the only element on the page that has a size.
 for (const [name, value] of [
   ["clientWidth", VIEW.width],
   ["clientHeight", VIEW.height],
 ]) {
-  Object.defineProperty(wrap, name, { value, configurable: true });
+  Object.defineProperty(window.Element.prototype, name, {
+    get() {
+      return this.classList && this.classList.contains("chartWrap") ? value : 0;
+    },
+    configurable: true,
+  });
 }
-Object.defineProperty(canvas, "getContext", {
-  value: () => context,
-  configurable: true,
-});
-Object.defineProperty(canvas, "getBoundingClientRect", {
-  value: () => ({
-    x: 0,
-    y: 0,
-    left: 0,
-    top: 0,
-    right: VIEW.width,
-    bottom: VIEW.height,
-    width: VIEW.width,
-    height: VIEW.height,
-  }),
-  configurable: true,
-});
+
 // Pointer capture is not implemented in jsdom, and the shell calls it on every
 // drag. Capturing is a browser nicety here -- the events are dispatched directly
 // at the canvas either way -- so the stubs only have to not throw.
 const captured = new Set();
-canvas.setPointerCapture = (id) => captured.add(id);
-canvas.releasePointerCapture = (id) => captured.delete(id);
-canvas.hasPointerCapture = (id) => captured.has(id);
+window.HTMLCanvasElement.prototype.setPointerCapture = (id) => captured.add(id);
+window.HTMLCanvasElement.prototype.releasePointerCapture = (id) => captured.delete(id);
+window.HTMLCanvasElement.prototype.hasPointerCapture = (id) => captured.has(id);
 
 // The socket. `connectLive` and `connectBook` both open one and both tolerate
 // it never saying anything, so a stub that stays silent is the honest double:
 // nothing about this file depends on a frame arriving.
+//
+// It does record *what it was opened for*, because a channel is the only part of
+// the page that says out loud which chart it belongs to: `/ws/market/BTCUSDT/5m`
+// is a per-pane claim and `/ws/orderbook/BTCUSDT` is a page-level one, and the
+// difference between those two is the whole of "which chart is the panel about".
+const sockets = [];
 window.WebSocket = class {
-  constructor() {
+  constructor(url) {
+    this.url = String(url);
     this.readyState = 1;
+    this.closed = false;
+    sockets.push(this);
     setTimeout(() => this.onopen && this.onopen(), 0);
   }
   send() {}
   close() {
     this.readyState = 3;
+    this.closed = true;
     if (this.onclose) this.onclose();
   }
 };
+/// Every socket opened for one path prefix, oldest first.
+const socketsFor = (prefix) => sockets.filter((s) => s.url.includes(prefix));
+/// The sockets still open for one path prefix.
+const openSocketsFor = (prefix) => socketsFor(prefix).filter((s) => !s.closed);
 
 // --- the API ----------------------------------------------------------------
 //
@@ -185,6 +327,28 @@ const backend = {
   requests: [],
   failCreate: null, // a status code, to exercise the failure path
   calls: [],
+  // Two instruments, because a chart per instrument is what a second pane is for
+  // and one symbol cannot tell two panes apart. The counts are the real ones this
+  // deployment has for BTCUSDT, `15m` included -- it holds three bars, and the
+  // label says so.
+  symbols: [
+    {
+      symbol: "BTCUSDT",
+      coverage_note: "",
+      timeframes: [
+        { timeframe: "5m", candles: 53182, expected: 54241, missing: 1059, first: 0, last: 0 },
+        { timeframe: "15m", candles: 3, expected: 3, missing: 0, first: 0, last: 0 },
+        { timeframe: "1h", candles: 4441, expected: 4520, missing: 79, first: 0, last: 0 },
+      ],
+    },
+    {
+      symbol: "ETHUSDT",
+      coverage_note: "",
+      timeframes: [
+        { timeframe: "5m", candles: 900, expected: 900, missing: 0, first: 0, last: 0 },
+      ],
+    },
+  ],
 };
 
 const json = (status, body) => ({
@@ -210,7 +374,7 @@ function basePriceFor(symbol) {
   return 100 + hash;
 }
 
-function candlesFor(count, symbol = "BTCUSDT") {
+function candlesFor(count, symbol = "BTCUSDT", timeframe = "5m") {
   const base0 = basePriceFor(symbol);
   return Array.from({ length: count }, (_, i) => {
     const base = base0 + i * 0.5;
@@ -218,7 +382,7 @@ function candlesFor(count, symbol = "BTCUSDT") {
     const close = base + (i % 2 === 0 ? 0.4 : -0.2);
     return {
       symbol,
-      timeframe: "5m",
+      timeframe,
       open_time: i * 300_000_000_000,
       open,
       high: Math.max(open, close) + 1,
@@ -256,6 +420,14 @@ window.fetch = async (path, options = {}) => {
     };
   }
 
+  if (url.startsWith("/symbols")) {
+    // The list the page builds every pane's selects from. An instrument the page
+    // cannot chart, or a timeframe it has no bars for, would be a selector option
+    // that draws nothing -- which is worse than no option, because the user
+    // concludes the chart is broken rather than the setting.
+    return json(200, backend.symbols);
+  }
+
   if (url.startsWith("/candles")) {
     const query = queryOf(url);
     const symbol = (query.get("symbol") ?? "BTCUSDT").toUpperCase();
@@ -264,7 +436,7 @@ window.fetch = async (path, options = {}) => {
     // timeframe onto the scene, so a stub that always answered "BTCUSDT/5m"
     // would make two panes on two instruments indistinguishable -- and telling
     // them apart is what the second pane has to be checked for.
-    return json(200, { symbol, timeframe, candles: candlesFor(200, symbol) });
+    return json(200, { symbol, timeframe, candles: candlesFor(200, symbol, timeframe) });
   }
 
   if (url.startsWith("/drawings")) {
@@ -342,7 +514,26 @@ window.localStorage.setItem(tokenKey, "a-token-for-the-harness");
 // shell then holds the proxy and every call it makes is observed, including the
 // ones made by code this file never calls directly.
 
-const engine = { requests: [], scenes: [] };
+const engine = { requests: [], scenes: [], frames: [] };
+
+/// Which series a scene request is for, as `SYMBOL/timeframe`.
+///
+/// The recorder sees every pane's requests, and `lastScene()` is only ever one of
+/// them. The candles are what carry the identity -- the request is otherwise only
+/// numbers -- and they carry both halves, because two panes on one instrument at
+/// two timeframes is the case this file most needs to tell apart.
+const seriesOf = (request) => {
+  const candle = request.candles[0];
+  return candle ? `${candle.symbol}/${candle.timeframe}` : "?";
+};
+/// The last scene built for one series.
+const sceneOf = (series) => {
+  for (let i = engine.frames.length - 1; i >= 0; i -= 1) {
+    if (engine.frames[i].series === series) return engine.frames[i].scene;
+  }
+  return null;
+};
+
 const RealWebAssembly = window.WebAssembly;
 // `defineProperty` rather than assignment: the global is an accessor on the
 // window in jsdom, and a plain assignment to it fails silently -- which would
@@ -365,19 +556,23 @@ Object.defineProperty(window, "WebAssembly", {
 
       const build = real.build_scene;
       wrapped.build_scene = (pointer, length) => {
-        const request = new TextDecoder().decode(
+        const decoded = new TextDecoder().decode(
           new Uint8Array(real.memory.buffer, pointer, length).slice()
         );
-        engine.requests.push(JSON.parse(request));
+        const request = JSON.parse(decoded);
+        engine.requests.push(request);
         const status = build(pointer, length);
         if (status === 0) {
           const start = real.scene_ptr();
           const size = real.scene_len();
-          engine.scenes.push(
-            JSON.parse(
-              new TextDecoder().decode(new Uint8Array(real.memory.buffer, start, size).slice())
-            )
+          const scene = JSON.parse(
+            new TextDecoder().decode(new Uint8Array(real.memory.buffer, start, size).slice())
           );
+          engine.scenes.push(scene);
+          // The same scene, filed under the series that produced it, so a check
+          // can ask what one pane's chart looks like *now* without depending on
+          // that pane having been the last to draw.
+          engine.frames.push({ series: seriesOf(request), scene });
         }
         return status;
       };
@@ -388,6 +583,11 @@ Object.defineProperty(window, "WebAssembly", {
 });
 
 // --- drive it ----------------------------------------------------------------
+//
+// The helpers below are defined before the script is injected, because `waitFor`
+// uses them: the first thing this file does is wait for the page's own load to
+// finish, and a helper declared after that point would be in its temporal dead
+// zone at exactly the moment it is needed.
 
 const waitFor = async (predicate, label, timeoutMs = 5000) => {
   const deadline = Date.now() + timeoutMs;
@@ -398,7 +598,7 @@ const waitFor = async (predicate, label, timeoutMs = 5000) => {
   // Say what the page did instead, rather than only what it failed to do.
   console.error(
     `\ntimed out waiting for ${label}\n` +
-      `  chartMsg: ${JSON.stringify(document.getElementById("chartMsg")?.textContent)}\n` +
+      `  chartMsg: ${JSON.stringify(paneNode()?.querySelector(".chartMsg").textContent)}\n` +
       `  fetch calls: ${backend.calls.length} ${JSON.stringify(backend.calls.map((c) => c.url).slice(0, 5))}\n` +
       `  scenes built: ${engine.scenes.length}\n`
   );
@@ -410,36 +610,11 @@ script.textContent = shell;
 document.head.appendChild(script);
 
 await waitFor(
-  () => document.getElementById("chartMsg").textContent === "",
+  () => paneNode().querySelector(".chartMsg").textContent === "",
   "the engine to load"
 );
 await waitFor(() => engine.scenes.length > 0, "the first scene");
 
-const note = () => document.getElementById("chartNote").textContent;
-const lastScene = () => engine.scenes[engine.scenes.length - 1];
-const lastRequest = () => engine.requests[engine.requests.length - 1];
-
-/// One pointer event at a canvas coordinate.
-///
-/// A `MouseEvent` with a `pointerId` bolted on. jsdom does not implement
-/// `PointerEvent`, and the shell reads only `clientX`, `clientY`, `button` and
-/// `pointerId` -- so this is the same information the browser would deliver.
-function pointer(type, x, y, id = 1) {
-  const event = new window.MouseEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    clientX: x,
-    clientY: y,
-    button: 0,
-  });
-  Object.defineProperty(event, "pointerId", { value: id });
-  canvas.dispatchEvent(event);
-}
-
-/// A click on a toolbar button, by the name the shell gave it.
-function pickTool(name) {
-  document.querySelector(`#tools button[data-tool="${name}"]`).click();
-}
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
@@ -449,8 +624,8 @@ console.log("\nthe page");
 
 check(
   "the engine loaded and cleared its message",
-  document.getElementById("chartMsg").textContent === "",
-  document.getElementById("chartMsg").textContent
+  paneNode().querySelector(".chartMsg").textContent === "",
+  paneNode().querySelector(".chartMsg").textContent
 );
 // The precondition for every drawing check below, asserted rather than assumed.
 // `loadDrawings` returns at its guard without a session, so a harness that failed
@@ -473,13 +648,13 @@ check(
 );
 check(
   "the drawing toolbar is on the page",
-  document.querySelectorAll("#tools button[data-tool]").length === 5,
-  `${document.querySelectorAll("#tools button[data-tool]").length} tools`
+  paneNode().querySelectorAll(".tools button[data-tool]").length === 5,
+  `${paneNode().querySelectorAll(".tools button[data-tool]").length} tools`
 );
 check(
   "every tool the engine knows has a button",
   ["cursor", "trendline", "hline", "rect", "fib"].every((name) =>
-    document.querySelector(`#tools button[data-tool="${name}"]`)
+    paneNode().querySelector(`.tools button[data-tool="${name}"]`)
   )
 );
 
@@ -504,8 +679,14 @@ const mediaBlockAt = (width) => {
   return styleText.slice(at, next < 0 ? styleText.length : next);
 };
 /// The declarations of one rule inside a block, or "" if it is not there.
+///
+/// The selector is escaped before it goes into a pattern, because selectors are
+/// full of `.` and `#` and an unescaped `.` matches any character -- so a check
+/// for `.chartWrap` would also pass on `#chartWrap`, which is the rule it was
+/// renamed away from.
 const ruleIn = (block, selector) => {
-  const found = new RegExp(`(^|[\\s,])${selector}\\s*\\{([^}]*)\\}`).exec(block);
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const found = new RegExp(`(^|[\\s,])${escaped}\\s*\\{([^}]*)\\}`).exec(block);
   return found ? found[2] : "";
 };
 
@@ -524,14 +705,20 @@ check(
 );
 check(
   "where the chart is given a height of its own, not a share of the column",
-  /height:\s*60vh/.test(ruleIn(narrowBlock, "#chartWrap")) &&
-    /min-height:/.test(ruleIn(narrowBlock, "#chartWrap")),
-  ruleIn(narrowBlock, "#chartWrap").trim() || "(no #chartWrap rule)"
+  /height:\s*60vh/.test(ruleIn(narrowBlock, ".chartWrap")) &&
+    /min-height:/.test(ruleIn(narrowBlock, ".chartWrap")),
+  ruleIn(narrowBlock, ".chartWrap").trim() || "(no .chartWrap rule)"
 );
 check(
   "and the page scrolls rather than holding one viewport",
   /height:\s*auto/.test(ruleIn(narrowBlock, "html, body")),
   ruleIn(narrowBlock, "html, body").trim() || "(no html, body rule)"
+);
+check(
+  "and the panes stack, so two charts are not two 450px charts",
+  /flex-direction:\s*column/.test(ruleIn(narrowBlock, "#charts")) &&
+    /flex:\s*0 0 auto/.test(ruleIn(narrowBlock, ".chartPane")),
+  ruleIn(narrowBlock, "#charts").trim() || "(no #charts rule)"
 );
 check(
   "and the panel is full width with its border moved to the seam",
@@ -562,7 +749,7 @@ console.log("\nplacing a drawing");
 pickTool("trendline");
 check(
   "the tool button reports itself pressed",
-  document.querySelector('#tools button[data-tool="trendline"]').getAttribute("aria-pressed") ===
+  paneNode().querySelector('.tools button[data-tool="trendline"]').getAttribute("aria-pressed") ===
     "true"
 );
 
@@ -851,7 +1038,7 @@ check(
   JSON.stringify(lastScene().drawings.map((d) => d.selected))
 );
 
-document.getElementById("clearDrawings").click();
+paneNode().querySelector(".clearDrawings").click();
 await settle();
 await settle();
 check("Clear empties the store", backend.drawings.length === 0, `${backend.drawings.length} left`);
@@ -869,7 +1056,7 @@ console.log("\na drawing belongs to a symbol");
 // A second instrument. The page ships one option, so a check that wants to
 // change symbol has to add the one it is changing to -- which is also what the
 // real page does when the symbol list grows.
-const symbolSelect = document.getElementById("symbol");
+const symbolSelect = paneNode().querySelector(".symbol");
 const other = document.createElement("option");
 other.value = "ETHUSDT";
 symbolSelect.appendChild(other);
@@ -890,7 +1077,7 @@ check(
 );
 
 symbolSelect.value = "ETHUSDT";
-symbolSelect.dispatchEvent(new window.Event("change"));
+change(symbolSelect);
 await settle();
 await settle();
 await settle();
@@ -912,7 +1099,7 @@ check(
 );
 
 symbolSelect.value = "BTCUSDT";
-symbolSelect.dispatchEvent(new window.Event("change"));
+change(symbolSelect);
 await settle();
 await settle();
 await settle();
@@ -926,7 +1113,7 @@ check(
 // --- a resize ----------------------------------------------------------------
 //
 // Responsiveness is not only the stylesheet. The canvas is sized from
-// `wrap.clientWidth/clientHeight` and the engine is told the same two numbers,
+// `.chartWrap`'s `clientWidth`/`clientHeight` and the engine is told the same two,
 // so a window that changes shape has to re-measure both or it keeps drawing at
 // the old size -- candles fitted to a plot that is no longer there.
 //
@@ -936,6 +1123,7 @@ check(
 console.log("\na resize");
 
 const rebuildsBefore = engine.scenes.length;
+const wrap = paneNode().querySelector(".chartWrap");
 Object.defineProperty(wrap, "clientWidth", { value: 640, configurable: true });
 Object.defineProperty(wrap, "clientHeight", { value: 320, configurable: true });
 window.dispatchEvent(new window.Event("resize"));
@@ -944,8 +1132,8 @@ await settle();
 
 check(
   "a resize re-measures the canvas",
-  canvas.width === 640 && canvas.height === 320,
-  `${canvas.width}x${canvas.height}`
+  canvasOf().width === 640 && canvasOf().height === 320,
+  `${canvasOf().width}x${canvasOf().height}`
 );
 check(
   "and rebuilds the scene at the new size rather than the old one",
@@ -966,6 +1154,280 @@ check(
   "and a burst of them costs one rebuild, not one each",
   engine.scenes.length === rebuildsBeforeBurst + 1,
   `${engine.scenes.length - rebuildsBeforeBurst} rebuilds for 5 events`
+);
+
+// --- more than one chart -----------------------------------------------------
+//
+// The complaint this section exists for: "multiple chart window option ... same
+// chart windows but different time zone on each chart window or different chart
+// each with its window".
+//
+// Two charts on a page are only worth anything if they are actually two, and the
+// failure is a quiet one: a second pane that shares the first one's state still
+// *looks* like two charts, and every check that only counts panes passes. So most
+// of what follows is the negative -- a gesture in one chart leaving the other
+// exactly as it was -- and the channels, which are the one part of the page that
+// says out loud which chart it belongs to.
+//
+// It is one function rather than a flat run of statements because the first thing
+// it does is assert that there are two charts, and everything below that reads
+// pane 1. Flat, it would throw on a missing pane and take the rest of the file
+// with it -- and a suite that dies instead of reporting is the same defect as a
+// listener that throws: from the outside it looks like a pass.
+
+console.log("\nmore than one chart");
+
+async function twoCharts() {
+  const scenesBefore = engine.scenes.length;
+  document.getElementById("split").click();
+  // Not `waitFor`, which ends the run: "the second chart never drew" is a defect
+  // this section exists to report, not a reason to stop reporting.
+  let drew = false;
+  const deadline = Date.now() + 2000;
+  while (!drew && Date.now() < deadline) {
+    drew = engine.scenes.length > scenesBefore;
+    if (!drew) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await settle();
+
+  check(
+    "adding a chart puts a second one beside it",
+    paneNodes().length === 2,
+    `${paneNodes().length} panes`
+  );
+  if (paneNodes().length !== 2) return;
+
+  check("and it drew a chart of its own", drew, drew ? "drew" : "never drew");
+  check(
+    "and the new one is its own canvas, not the first one drawn twice",
+    canvasOf(1) !== canvasOf(0) && canvasOf(1).tagName === "CANVAS",
+    canvasOf(1) === canvasOf(0) ? "the same node" : "distinct nodes"
+  );
+  check(
+    "and it opens on the next timeframe of the same instrument, so it is not a copy",
+    selectIn(1, "symbol") === "BTCUSDT" && selectIn(1, "timeframe") === "15m",
+    `${selectIn(1, "symbol")}/${selectIn(1, "timeframe")}`
+  );
+  check(
+    "so the two charts have asked the engine for two different series",
+    framesFor("BTCUSDT/5m") > 0 && framesFor("BTCUSDT/15m") > 0,
+    seriesSeen().join(", ")
+  );
+  check(
+    "and each one holds its own market channel",
+    openSocketsFor("/ws/market/").some((s) => s.url.includes("/ws/market/BTCUSDT/5m")) &&
+      openSocketsFor("/ws/market/").some((s) => s.url.includes("/ws/market/BTCUSDT/15m")),
+    openSocketsFor("/ws/market/").map((s) => s.url.replace(/^.*\/ws/, "/ws")).join(", ")
+  );
+
+  // Adding marks the new chart active, so the panel is already about the chart the
+  // user asked for. Touching the other one is what has to move it back -- and the
+  // *pointer* is what does that, because a chart has no other way of being pointed
+  // at. The controls do not count: clicking a button is not a click on a chart.
+  check(
+    "adding a chart makes it the one the panel follows",
+    paneNode(1).classList.contains("active") && !paneNode(0).classList.contains("active"),
+    `active: ${activeIndexes()}`
+  );
+  pickTool("cursor", 0);
+  pointer("pointerdown", 400, 200, 0);
+  pointer("pointerup", 400, 200, 0);
+  await settle();
+  check(
+    "and touching a chart is what makes it the one the panel follows",
+    paneNode(0).classList.contains("active") && !paneNode(1).classList.contains("active"),
+    `active: ${activeIndexes()}`
+  );
+
+  // Drawings are stored per user and instrument, not per timeframe -- that is the
+  // persistence that was chosen -- so two charts of one instrument legitimately
+  // show the same shape. Worth asserting rather than assuming, because the opposite
+  // reading of this section ("two charts are independent") would make a shared
+  // shape look like a bug.
+  check(
+    "and both charts of one instrument show that instrument's drawings",
+    drawingsIn("BTCUSDT/5m") === 1 && drawingsIn("BTCUSDT/15m") === 1,
+    `5m ${drawingsIn("BTCUSDT/5m")}, 15m ${drawingsIn("BTCUSDT/15m")}`
+  );
+
+  // A wheel in the first chart. The 5m chart is rebuilt and the 15m chart is not
+  // touched at all. A pane that shared a viewport, a scene or a render flag with its
+  // neighbour would pass every check above this line and fail here.
+  const fiveBefore = framesFor("BTCUSDT/5m");
+  const fifteenBefore = framesFor("BTCUSDT/15m");
+  const otherScene = sceneOf("BTCUSDT/15m");
+
+  wheel(0, 120);
+  await settle();
+  await settle();
+
+  check(
+    "a wheel in one chart rebuilds that chart and only that one",
+    framesFor("BTCUSDT/5m") > fiveBefore && framesFor("BTCUSDT/15m") === fifteenBefore,
+    `5m +${framesFor("BTCUSDT/5m") - fiveBefore}, 15m +${framesFor("BTCUSDT/15m") - fifteenBefore}`
+  );
+  check(
+    "and the chart beside it is the very same scene object it was",
+    otherScene !== null && sceneOf("BTCUSDT/15m") === otherScene,
+    sceneOf("BTCUSDT/15m") === otherScene ? "untouched" : "rebuilt"
+  );
+
+  // The second chart's instrument. `el("symbol")` resolving to *this* pane is the
+  // single line the whole refactor turns on: one call site, two different selects.
+  //
+  // Counted, not tested for presence: an earlier section already put this
+  // instrument on the *first* chart, so `framesFor("ETHUSDT/5m") > 0` was true
+  // before the gesture and stayed true when the gesture did nothing at all.
+  const fiveBeforeSymbol = framesFor("BTCUSDT/5m");
+  const ethBefore = framesFor("ETHUSDT/5m");
+  const secondSymbol = paneNode(1).querySelector(".symbol");
+  secondSymbol.value = "ETHUSDT";
+  change(secondSymbol);
+  await settle();
+  await settle();
+  await settle();
+
+  check(
+    "changing one chart's instrument fetches that instrument",
+    framesFor("ETHUSDT/5m") > ethBefore,
+    `ETHUSDT/5m +${framesFor("ETHUSDT/5m") - ethBefore}`
+  );
+  check(
+    "and does not rebuild the chart beside it",
+    framesFor("BTCUSDT/5m") === fiveBeforeSymbol,
+    `5m +${framesFor("BTCUSDT/5m") - fiveBeforeSymbol}`
+  );
+  check(
+    "and the panel's book channel moved to that instrument",
+    openSocketsFor("/ws/orderbook/").length === 1 &&
+      openSocketsFor("/ws/orderbook/")[0].url.includes("/ws/orderbook/ETHUSDT"),
+    openSocketsFor("/ws/orderbook/").map((s) => s.url.replace(/^.*\/ws/, "/ws")).join(", ") ||
+      "none open"
+  );
+  check(
+    "and the chart whose instrument changed is the one the panel follows",
+    paneNode(1).classList.contains("active"),
+    `active: ${activeIndexes()}`
+  );
+
+  const storedBefore = backend.drawings.length;
+  pickTool("trendline", 1);
+  pointer("pointerdown", 200, 180, 1);
+  await settle();
+  pointer("pointermove", 520, 240, 1);
+  await settle();
+  pointer("pointerup", 520, 240, 1);
+  await settle();
+  await settle();
+
+  check(
+    "a shape drawn in the second chart is stored against the second chart's instrument",
+    backend.drawings.length === storedBefore + 1 &&
+      backend.drawings[storedBefore].symbol === "ETHUSDT",
+    JSON.stringify(backend.drawings.map((d) => d.symbol))
+  );
+  check(
+    "and drawing it did not rebuild the first chart",
+    framesFor("BTCUSDT/5m") === fiveBeforeSymbol,
+    `5m +${framesFor("BTCUSDT/5m") - fiveBeforeSymbol}`
+  );
+
+  // The cap. The button is *disabled* at four rather than refusing on click, for the
+  // same reason the last close button is hidden: a control that is drawn and then
+  // does nothing teaches the user the page is broken, when the truth is that a limit
+  // was reached.
+  const splitButton = document.getElementById("split");
+  splitButton.click();
+  await settle();
+  splitButton.click();
+  await settle();
+  splitButton.click();
+  await settle();
+  await settle();
+
+  check("the page stops at four charts", paneNodes().length === 4, `${paneNodes().length} panes`);
+  check(
+    "and the button that would add a fifth says so instead of refusing",
+    splitButton.disabled === true,
+    splitButton.disabled ? "disabled" : "still enabled"
+  );
+
+  // Closing. The last chart is not closable -- an empty page has no way back.
+  check(
+    "every chart offers a way to close it while there is more than one",
+    paneNodes().every((p) => !p.querySelector(".close").hidden),
+    paneNodes().map((p) => (p.querySelector(".close").hidden ? "hidden" : "shown")).join(", ")
+  );
+
+  // Touch the rightmost chart, so closing it has to move the panel somewhere rather
+  // than leaving it pointing at a pane that is gone.
+  pointer("pointerdown", 100, 100, 3);
+  pointer("pointerup", 100, 100, 3);
+  await settle();
+
+  const marketBeforeClose = openSocketsFor("/ws/market/").length;
+  paneNode(3).querySelector(".close").click();
+  await settle();
+  await settle();
+
+  check(
+    "closing a chart takes it off the page",
+    paneNodes().length === 3,
+    `${paneNodes().length} panes`
+  );
+  check(
+    "and the panel moves to the chart beside it, not to nothing",
+    paneNode(2).classList.contains("active"),
+    `active: ${activeIndexes()}`
+  );
+  check(
+    "and its market channel was closed with it, not left running",
+    openSocketsFor("/ws/market/").length === marketBeforeClose - 1,
+    `${marketBeforeClose} open before, ${openSocketsFor("/ws/market/").length} after`
+  );
+  check(
+    "and the add button comes back once there is room again",
+    splitButton.disabled === false,
+    splitButton.disabled ? "still disabled" : "enabled"
+  );
+
+  paneNode(1).querySelector(".close").click();
+  await settle();
+  paneNode(1).querySelector(".close").click();
+  await settle();
+
+  check(
+    "closing down to one chart leaves it open, with nothing left to close",
+    paneNodes().length === 1 && paneNode(0).querySelector(".close").hidden === true,
+    `${paneNodes().length} panes, close ${
+      paneNode(0).querySelector(".close").hidden ? "hidden" : "shown"
+    }`
+  );
+  // The guard, not the hidden attribute: the last chart cannot be closed even if
+  // something clicks the button anyway.
+  paneNode(0).querySelector(".close").click();
+  await settle();
+  check(
+    "and clicking it anyway does not empty the page",
+    paneNodes().length === 1,
+    `${paneNodes().length} panes`
+  );
+}
+
+await twoCharts();
+
+// --- nothing threw -----------------------------------------------------------
+//
+// Last, so it covers every gesture above. A thrown listener is the one kind of
+// defect that leaves no trace in any other check: the page looks right, the API
+// calls are right, and the console is the only place it appears.
+
+console.log("\nnothing threw");
+
+check(
+  "no uncaught error on the page, across every gesture above",
+  pageErrors.length === 0,
+  pageErrors.join(" | ") || "none"
 );
 
 console.log(

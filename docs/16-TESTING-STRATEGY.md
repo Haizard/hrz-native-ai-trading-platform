@@ -64,7 +64,23 @@ this project has had to re-derive, each from a failure that pointed at the wrong
 - **Every guard is shown to fail against the bug it names.** Reintroduce the bug
   temporarily, watch the guard fail, revert. A guard nobody has seen fail is a guard
   nobody knows works — this is how the delta-publishing and non-finite-value guards were
-  confirmed.
+  confirmed. For the browser shell this is a tool rather than a habit:
+  `tools/guard_check.py` patches `frontend/app/app.js` one defect at a time, runs
+  `tools/shell_check.mjs`, and requires the *named* check to fail, restoring the file on
+  every exit path. Doing it by hand is what left the shell mutated after a run was
+  interrupted.
+- **A test suite that crashes on a broken subject reports nothing, and from a distance a
+  crash looks like a pass.** The mutation run above found this the hard way: several
+  deliberate defects made the harness exit on a `waitFor` precondition instead of
+  printing a failure, so the defect and a green run were indistinguishable in the output.
+  Preconditions that are *also* the thing under test must not be fatal — assert them and
+  skip what depends on them.
+- **A check can pass because something else happened.** Two of the pane checks were
+  green for reasons other than the code they named: the harness was dispatching a
+  non-bubbling `change` event (no browser sends one, and the page listens on the
+  container), and a check counted a series an earlier section had already fetched, so it
+  could not fail. Both were found by breaking the thing the check claimed to cover. When
+  a check counts something, count the *change*, not the presence.
 - **Database-backed tests run one at a time per test process.** The managed Postgres
   costs roughly a second per statement over a ten-connection pool, so concurrency
   produces acquire timeouts that read as defects rather than as contention. See the
