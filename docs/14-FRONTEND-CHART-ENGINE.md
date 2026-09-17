@@ -546,6 +546,25 @@ CPU calc   GPU-friendly buffers
   timeframe carries its bar count, because "3 bars" is the difference between a chart that is
   broken and a chart that is telling you the truth.
 
+  **But the response is not in a usable order, and taking it as given was a regression.** The
+  server lists its timeframes alphabetically — `15m, 1h, 1m, 4h, 5m` here — and the first option
+  is therefore `15m`, which holds **three** bars against 53,182 for `5m`. The markup this replaced
+  had `5m selected`, so the page started opening on the thinnest series on the deployment: the
+  thin-chart case the bar count was added to *explain* arrived as the default instead. Two rules
+  fix it, and neither names a timeframe:
+
+  | rule | why |
+  |---|---|
+  | the options are ordered by **length**, parsed from the value (`1m, 5m, 15m, 1h, 4h`) | the server's order is not a ladder, and "the next timeframe up" means nothing without one |
+  | a chart opens on the series with the **most bars** | derived, so it stays right when a different timeframe becomes the deepest; naming `5m` here would be the hardcoded option again, one line lower |
+  | a new pane opens on the next one up **that can fill the window it asks for** | the threshold is the bar-limit select's own value rather than a figure invented for it; a timeframe that cannot fill the chart is not a chart yet, and if none can, the next one up is still the answer |
+
+  The harness could not have caught this: its `/symbols` fixture had been tidied into
+  `5m, 15m, 1h`, which is both the right order and the right default, so the check that now
+  asserts the ladder passed against a fixture that made the question disappear. **A fixture that
+  is tidier than production hides production's defects** — the order and the counts in
+  `tools/shell_check.mjs` are now copied from a live `GET /symbols`.
+
   **There is always at least one pane.** Closing the last one is refused rather than leaving an
   empty page with no way back, and the control that would do it is not drawn. Adding stops at
   four: past that nothing is readable, and an uncapped button is a way to make the page

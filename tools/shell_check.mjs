@@ -328,17 +328,24 @@ const backend = {
   failCreate: null, // a status code, to exercise the failure path
   calls: [],
   // Two instruments, because a chart per instrument is what a second pane is for
-  // and one symbol cannot tell two panes apart. The counts are the real ones this
-  // deployment has for BTCUSDT, `15m` included -- it holds three bars, and the
-  // label says so.
+  // and one symbol cannot tell two panes apart.
+  //
+  // The order and the counts are the ones the live deployment reports, and both
+  // matter. The order is alphabetical -- `15m, 1h, 1m, 4h, 5m` -- which is what
+  // made the default timeframe regress to the *thinnest* series once the selects
+  // started coming from `/symbols` instead of from the markup, and the counts are
+  // what `nextFrame` reads to decide a timeframe cannot fill a chart. A fixture
+  // tidied into `5m, 15m, 1h` would have hidden both.
   symbols: [
     {
       symbol: "BTCUSDT",
       coverage_note: "",
       timeframes: [
-        { timeframe: "5m", candles: 53182, expected: 54241, missing: 1059, first: 0, last: 0 },
         { timeframe: "15m", candles: 3, expected: 3, missing: 0, first: 0, last: 0 },
         { timeframe: "1h", candles: 4441, expected: 4520, missing: 79, first: 0, last: 0 },
+        { timeframe: "1m", candles: 2930, expected: 10565, missing: 7635, first: 0, last: 0 },
+        { timeframe: "4h", candles: 1111, expected: 1130, missing: 19, first: 0, last: 0 },
+        { timeframe: "5m", candles: 53182, expected: 54241, missing: 1059, first: 0, last: 0 },
       ],
     },
     {
@@ -656,6 +663,25 @@ check(
   ["cursor", "trendline", "hline", "rect", "fib"].every((name) =>
     paneNode().querySelector(`.tools button[data-tool="${name}"]`)
   )
+);
+
+// The series a chart opens on now comes from `GET /symbols`, and the server lists
+// its timeframes alphabetically. Taking the first option therefore opened the
+// chart on the *thinnest* series on the deployment -- three bars -- which is the
+// "a thin chart is telling the truth" case the bar count in the label was added
+// for, arriving as the default instead of as a warning. The markup it replaced
+// had `5m selected`, so this was a regression, and the fixture had been tidied
+// into `5m, 15m, 1h` so the harness could not see it.
+check(
+  "the chart opens on the series with the most bars, not the first one listed",
+  selectIn(PANE, "timeframe") === "5m",
+  `opened on ${selectIn(PANE, "timeframe")}`
+);
+check(
+  "and the timeframe options read as a ladder rather than in the server's order",
+  [...paneNode().querySelector(".timeframe").options].map((o) => o.value).join(",") ===
+    "1m,5m,15m,1h,4h",
+  [...paneNode().querySelector(".timeframe").options].map((o) => o.value).join(",")
 );
 
 // --- the layout at a narrow width --------------------------------------------
@@ -1204,19 +1230,30 @@ async function twoCharts() {
     canvasOf(1) === canvasOf(0) ? "the same node" : "distinct nodes"
   );
   check(
-    "and it opens on the next timeframe of the same instrument, so it is not a copy",
-    selectIn(1, "symbol") === "BTCUSDT" && selectIn(1, "timeframe") === "15m",
-    `${selectIn(1, "symbol")}/${selectIn(1, "timeframe")}`
+    "and it opens on the same instrument as the chart it came from",
+    selectIn(1, "symbol") === "BTCUSDT",
+    selectIn(1, "symbol")
+  );
+  // `1h`, not `15m`: the next one up from `5m` is `15m`, which holds three bars,
+  // and a second chart that opens on three candles reads as a bug rather than as
+  // a second chart. The threshold is the bar count the pane is already asking
+  // for, not a number invented for this check.
+  check(
+    "and on the next timeframe up that can fill a chart, so it is not a copy",
+    selectIn(1, "timeframe") === "1h",
+    `${selectIn(1, "timeframe")} (15m holds 3 bars; the pane asks for ${
+      paneNode(1).querySelector(".limit").value
+    })`
   );
   check(
     "so the two charts have asked the engine for two different series",
-    framesFor("BTCUSDT/5m") > 0 && framesFor("BTCUSDT/15m") > 0,
+    framesFor("BTCUSDT/5m") > 0 && framesFor("BTCUSDT/1h") > 0,
     seriesSeen().join(", ")
   );
   check(
     "and each one holds its own market channel",
     openSocketsFor("/ws/market/").some((s) => s.url.includes("/ws/market/BTCUSDT/5m")) &&
-      openSocketsFor("/ws/market/").some((s) => s.url.includes("/ws/market/BTCUSDT/15m")),
+      openSocketsFor("/ws/market/").some((s) => s.url.includes("/ws/market/BTCUSDT/1h")),
     openSocketsFor("/ws/market/").map((s) => s.url.replace(/^.*\/ws/, "/ws")).join(", ")
   );
 
@@ -1246,16 +1283,16 @@ async function twoCharts() {
   // shape look like a bug.
   check(
     "and both charts of one instrument show that instrument's drawings",
-    drawingsIn("BTCUSDT/5m") === 1 && drawingsIn("BTCUSDT/15m") === 1,
-    `5m ${drawingsIn("BTCUSDT/5m")}, 15m ${drawingsIn("BTCUSDT/15m")}`
+    drawingsIn("BTCUSDT/5m") === 1 && drawingsIn("BTCUSDT/1h") === 1,
+    `5m ${drawingsIn("BTCUSDT/5m")}, 1h ${drawingsIn("BTCUSDT/1h")}`
   );
 
-  // A wheel in the first chart. The 5m chart is rebuilt and the 15m chart is not
+  // A wheel in the first chart. The 5m chart is rebuilt and the 1h chart is not
   // touched at all. A pane that shared a viewport, a scene or a render flag with its
   // neighbour would pass every check above this line and fail here.
   const fiveBefore = framesFor("BTCUSDT/5m");
-  const fifteenBefore = framesFor("BTCUSDT/15m");
-  const otherScene = sceneOf("BTCUSDT/15m");
+  const hourBefore = framesFor("BTCUSDT/1h");
+  const otherScene = sceneOf("BTCUSDT/1h");
 
   wheel(0, 120);
   await settle();
@@ -1263,13 +1300,13 @@ async function twoCharts() {
 
   check(
     "a wheel in one chart rebuilds that chart and only that one",
-    framesFor("BTCUSDT/5m") > fiveBefore && framesFor("BTCUSDT/15m") === fifteenBefore,
-    `5m +${framesFor("BTCUSDT/5m") - fiveBefore}, 15m +${framesFor("BTCUSDT/15m") - fifteenBefore}`
+    framesFor("BTCUSDT/5m") > fiveBefore && framesFor("BTCUSDT/1h") === hourBefore,
+    `5m +${framesFor("BTCUSDT/5m") - fiveBefore}, 1h +${framesFor("BTCUSDT/1h") - hourBefore}`
   );
   check(
     "and the chart beside it is the very same scene object it was",
-    otherScene !== null && sceneOf("BTCUSDT/15m") === otherScene,
-    sceneOf("BTCUSDT/15m") === otherScene ? "untouched" : "rebuilt"
+    otherScene !== null && sceneOf("BTCUSDT/1h") === otherScene,
+    sceneOf("BTCUSDT/1h") === otherScene ? "untouched" : "rebuilt"
   );
 
   // The second chart's instrument. `el("symbol")` resolving to *this* pane is the

@@ -184,6 +184,20 @@ const PANE_ELS = new Set([
   "load", "close", "clearDrawings",
 ]);
 
+/// A timeframe's length in minutes, for ordering the options.
+///
+/// `GET /symbols` reports its timeframes in its own order, which is alphabetical
+/// -- `15m, 1h, 1m, 4h, 5m` on this deployment. That is not a ladder anyone can
+/// read and it makes "the next timeframe up" mean nothing, so the shell sorts
+/// them. A suffix the server adds later sorts last rather than throwing: a new
+/// unit should cost an odd-looking position, not a blank chart.
+const FRAME_UNITS = { s: 1 / 60, m: 1, h: 60, d: 1440, w: 10080 };
+function frameMinutes(frame) {
+  const parts = /^(\d+)([smhdw])$/.exec(String(frame));
+  if (!parts) return Number.POSITIVE_INFINITY;
+  return Number(parts[1]) * FRAME_UNITS[parts[2]];
+}
+
 /// One chart, and everything that belongs to it.
 ///
 /// A factory rather than a set of module-level functions, because a chart is not
@@ -1618,9 +1632,15 @@ function createChartPane(root, hooks = {}) {
   /// The count is in the label because it is the difference between a chart that
   /// is broken and a chart that is telling the truth: `15m` holds three bars on
   /// this deployment, and a selector that said only "15m" would read as a bug.
+  ///
+  /// Ordered by length, because the server's order is its own -- alphabetical,
+  /// as it happens, which reads `15m, 1h, 1m, 4h, 5m`. That is not a ladder
+  /// anyone can use, and it makes "the next timeframe up" mean nothing.
   function fillTimeframes(symbol) {
     const entry = instruments.find((c) => c.symbol === symbol);
-    const frames = entry ? entry.timeframes : [];
+    const frames = [...(entry ? entry.timeframes : [])].sort(
+      (a, b) => frameMinutes(a.timeframe) - frameMinutes(b.timeframe)
+    );
     const values = frames.map((f) => f.timeframe);
     const keep = values.includes(el("timeframe").value) ? el("timeframe").value : values[0] || "";
     fillSelect(
@@ -1631,6 +1651,19 @@ function createChartPane(root, hooks = {}) {
       })),
       keep
     );
+  }
+
+  /// The series this symbol has the most of.
+  ///
+  /// What a chart opens on when nothing has an opinion. Derived rather than
+  /// named, so it stays right when a different timeframe becomes the deepest.
+  function deepestFrame(symbol) {
+    const entry = instruments.find((c) => c.symbol === symbol);
+    let best = null;
+    for (const frame of entry ? entry.timeframes : []) {
+      if (!best || frame.candles > best.candles) best = frame;
+    }
+    return best ? best.timeframe : "";
   }
 
   // ---------------------------------------------------------------------------
@@ -1662,7 +1695,13 @@ function createChartPane(root, hooks = {}) {
       const symbol = symbols.includes(preferred) ? preferred : symbols[0] || "";
       fillSelect(el("symbol"), symbols.map((value) => ({ value, label: value })), symbol);
       fillTimeframes(symbol);
-      if (preferredTimeframe && symbols.length) el("timeframe").value = preferredTimeframe;
+      if (preferredTimeframe) el("timeframe").value = preferredTimeframe;
+      // Otherwise the richest series, not the first option. The list is ordered
+      // by length, so the first option is `1m` -- and the alphabetically first
+      // was `15m`, which holds three bars. A chart that opens looking broken
+      // teaches the user the page is broken, and the rule that avoids it is
+      // derived from the data rather than naming `5m` here.
+      else el("timeframe").value = deepestFrame(symbol);
     },
 
     /// Put a freshly cloned pane back to its starting state.
@@ -1795,6 +1834,27 @@ function setActive(pane) {
   if (moved) connectBook();
 }
 
+/// What a new pane should open on: the next timeframe up that can fill a chart.
+///
+/// "The next one in the list" is not enough. This deployment holds **three** `15m`
+/// bars against 53,182 `5m` ones, so a second chart opening one step up from `5m`
+/// would open on three candles -- and the first thing anyone does with a new
+/// feature is judge it. The number of bars a chart is asking for is already on
+/// screen in the bar-limit select, so that is the threshold rather than a figure
+/// invented here: a timeframe that cannot fill the window this pane would ask for
+/// is not a chart yet. If none can, the next one up is still the answer -- the
+/// feature always does something, and the label says how thin it is.
+function nextFrame(symbol, from, wanted) {
+  const entry = coverage.find((c) => c.symbol === symbol);
+  const ordered = [...(entry ? entry.timeframes : [])].sort(
+    (a, b) => frameMinutes(a.timeframe) - frameMinutes(b.timeframe)
+  );
+  const at = ordered.findIndex((f) => f.timeframe === from);
+  const up = at >= 0 ? ordered.slice(at + 1) : ordered;
+  const fills = up.find((f) => f.candles >= wanted);
+  return (fills || up[0] || {}).timeframe;
+}
+
 /// Add a pane, cloning the one the markup ships.
 ///
 /// Cloned rather than built from a string: the markup is where a pane is
@@ -1816,12 +1876,16 @@ function addPane() {
   panes.push(pane);
   pane.reset();
 
-  // The same instrument on the *next* timeframe. An "Add chart" that produced an
-  // identical chart would look like nothing had happened, and comparing two
-  // timeframes is what a second chart is for; either dropdown changes it.
-  const frames = [...node.querySelector(".timeframe").options].map((o) => o.value);
-  const at = frames.indexOf(activePane.timeframe());
-  pane.fillSeries(coverage, activePane.symbol(), frames[at + 1]);
+  // The same instrument on the *next* timeframe up that can fill a chart. An
+  // "Add chart" that produced an identical chart would look like nothing had
+  // happened, and comparing two timeframes is what a second chart is for; either
+  // dropdown changes it.
+  const wanted = Number(node.querySelector(".limit").value) || 0;
+  pane.fillSeries(
+    coverage,
+    activePane.symbol(),
+    nextFrame(activePane.symbol(), activePane.timeframe(), wanted)
+  );
 
   // Marked active before anything is fetched, so the aside is already about the
   // chart the user just asked for rather than the one it was cloned from.

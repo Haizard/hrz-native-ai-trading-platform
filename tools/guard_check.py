@@ -48,8 +48,13 @@ MUTATIONS = [
         APP,
         EL_BOUNDARY,
         "PANE_ELS.has(name) ? document.querySelector(`.${name}`) : document.getElementById(name);",
+        # Not "and it opens on the same instrument as the chart it came from": the
+        # clone carries the first pane's option list, so its symbol select already
+        # reads BTCUSDT before `fillSeries` runs. That check is worth having -- it
+        # asserts the new pane starts on the instrument it came from -- but it
+        # cannot see this mutation, and claiming it does would be a lie.
         [
-            "and it opens on the next timeframe of the same instrument, so it is not a copy",
+            "and on the next timeframe up that can fill a chart, so it is not a copy",
             "changing one chart's instrument fetches that instrument",
             "a shape drawn in the second chart is stored against the second chart's instrument",
         ],
@@ -57,11 +62,40 @@ MUTATIONS = [
     (
         "Add chart opens a copy of the chart it came from",
         APP,
-        "pane.fillSeries(coverage, activePane.symbol(), frames[at + 1]);",
-        "pane.fillSeries(coverage, activePane.symbol(), activePane.timeframe());",
+        "nextFrame(activePane.symbol(), activePane.timeframe(), wanted)",
+        "activePane.timeframe()",
         [
-            "and it opens on the next timeframe of the same instrument, so it is not a copy",
+            "and on the next timeframe up that can fill a chart, so it is not a copy",
             "so the two charts have asked the engine for two different series",
+        ],
+    ),
+    (
+        "a new chart opens on the next timeframe whether or not it holds a chart",
+        APP,
+        "  const fills = up.find((f) => f.candles >= wanted);",
+        "  const fills = up[0];",
+        ["and on the next timeframe up that can fill a chart, so it is not a copy"],
+    ),
+    (
+        "the chart opens on the first series the server listed",
+        APP,
+        '      else el("timeframe").value = deepestFrame(symbol);',
+        "",
+        ["the chart opens on the series with the most bars, not the first one listed"],
+    ),
+    (
+        "the timeframe options keep the server's order",
+        APP,
+        "    const frames = [...(entry ? entry.timeframes : [])].sort(\n"
+        "      (a, b) => frameMinutes(a.timeframe) - frameMinutes(b.timeframe)\n"
+        "    );",
+        "    const frames = entry ? entry.timeframes : [];",
+        # Only the ladder. The default series is still right without the sort,
+        # because `deepestFrame` picks by bar count and does not care about order
+        # -- so this mutation is caught by the ordering check alone, which is the
+        # one that names it.
+        [
+            "and the timeframe options read as a ladder rather than in the server's order",
         ],
     ),
     (
