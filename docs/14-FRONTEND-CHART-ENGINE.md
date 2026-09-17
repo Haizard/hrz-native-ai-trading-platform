@@ -929,15 +929,37 @@ they were looking at.
 
 So the market channel now says why, the way the order-book channel already did:
 
-- **`/ws/market/{symbol}/{timeframe}` sends a `Notice` naming `MARKET_FEED` and closes** when
-  `FeedMode` is not `Binance`, instead of sending `Subscribed` and then nothing. It fires
-  immediately rather than after a grace period, unlike the order book's `DEPTH_GRACE`: the
-  order book has to wait to see whether depth arrives, while this fact is already known.
+- **`/ws/market/{symbol}/{timeframe}` sends a `Notice` naming `MARKET_FEED`** when `FeedMode` is
+  not `Binance`, instead of sending `Subscribed` and then nothing. It fires immediately rather than
+  after a grace period, unlike the order book's `DEPTH_GRACE`: the order book has to wait to see
+  whether depth arrives, while this fact is already known.
 - **The shell holds the notice rather than writing it once.** `render()` owns the note strip,
   so a message written straight into `el("chartNote")` is wiped by the next render — and a pan
   is a render. The notice lives in a variable and is re-applied every frame, which is why it
   survives a scroll wheel. The harness asserts exactly that, because "it appeared" and "it
   stayed" are different claims and only the second one helps.
+
+**The first version of that notice also closed the socket, and that was wrong** — found on
+2026-09-18 by running the workspace suite, which had not been run when the notice was added. Two
+tests in `crates/api-gateway/tests/ws_flow.rs` went red: they publish a candle with
+`feed_candle` and assert it reaches the client, and a channel that closes cannot forward anything.
+
+The temptation is to call the tests outdated and teach them about the feed mode. They are right
+and the notice was wrong, for a reason worth writing down: **`FeedMode::Off` means "this gateway
+will not open a feed", not "no candle will ever be published"** — its own documentation says a bot
+receives whatever something else publishes into the bus, and `feed_candle` is exactly that
+something. The order book may close after its notice because it *waited* for a book and has
+evidence; the market channel decided from configuration, which is a guess about a bus it does not
+own. Closing on a guess refused data that exists — and it put the resolution filter in
+`market_loop` beyond the reach of the only two tests that witness it, which is the defect this
+document exists to catch, wearing the fix as a disguise. The notice explains the silence; the
+channel keeps its contract. `a_channel_that_has_been_told_there_is_no_feed_still_forwards_a_candle`
+pins it, and was shown to fail by re-adding the close.
+
+The shell needed the matching change: a `data` frame now sets `live.state = "open"`, so a candle
+that arrives after a notice clears it. Without that the badge would tick its age while still
+saying `no feed` — contradicting the evidence it is carrying. `guard_check.py` patches the line out
+and requires the check that names it to fail.
 
 **Two things were found while proving it, and both are the same shape.**
 

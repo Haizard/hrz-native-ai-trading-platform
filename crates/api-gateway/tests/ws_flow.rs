@@ -135,6 +135,48 @@ async fn the_market_channel_only_forwards_the_subscribed_resolution() {
     );
 }
 
+/// The notice is about the gateway's own feed, not about the channel's contract.
+///
+/// Written because the first version of that notice **closed the socket**, which
+/// reads as a sensible way to make the problem obvious and is not: `FeedMode::Off`
+/// means this gateway will not open a feed, not that no candle will ever be
+/// published -- `feed_candle` publishes into the same bus from outside the feed.
+/// Closing refused data that exists, and it put the resolution filter in
+/// `market_loop` beyond the reach of the two tests above, which are the only
+/// witnesses it has. A property that stops being observable is worse than one
+/// that is missing, because the suite still reads as coverage.
+#[tokio::test]
+async fn a_channel_that_has_been_told_there_is_no_feed_still_forwards_a_candle() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let base = h.serve().await;
+    let mut socket = connect(&base, "/ws/market/BTCUSDT/5m").await;
+    read_until(&mut socket, |v| v["type"] == "subscribed").await;
+
+    // The harness runs with `MARKET_FEED` unset, so the channel explains itself.
+    let notice = read_until(&mut socket, |v| v["type"] == "notice")
+        .await
+        .expect("the channel must explain its silence");
+    assert!(
+        notice["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("MARKET_FEED"),
+        "it must name the likely cause: {notice}"
+    );
+
+    // And it must still be a channel. Something outside the feed publishes a
+    // candle, and it has to reach the client.
+    h.supervisor
+        .feed_candle(&candle(4_000_000, 102.0, Timeframe::M5));
+
+    let data = read_until(&mut socket, |v| v["type"] == "data")
+        .await
+        .expect("a candle published by something else must still arrive");
+    assert_eq!(data["payload"]["close"], 102.0);
+}
+
 #[tokio::test]
 async fn a_market_socket_closes_cleanly() {
     let Some(h) = Harness::new().await else {

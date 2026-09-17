@@ -189,10 +189,9 @@ pub async fn market(
 
     let channel = format!("/ws/market/{symbol}/{timeframe}");
     let metrics = Arc::clone(&state.metrics);
-    // Read once, at connect. The feed mode cannot change while the socket is
-    // open, so "this channel will never carry a candle" is a fact about the
-    // connection rather than a guess about the market -- which is what makes it
-    // safe to say immediately instead of after a timeout.
+    // Read once, at connect, and used only to *word* the notice below: a feed
+    // that is off is the likely cause of a channel that stays quiet, so it is
+    // worth naming -- exactly as the order book names `MARKET_FEED`.
     let feed_off = state.bots.feed_mode() != crate::bots::FeedMode::Binance;
     upgrade.on_upgrade(move |socket| {
         market_loop(
@@ -224,22 +223,36 @@ async fn market_loop(
 
     // An empty channel and a quiet market look identical from the client, which
     // is why this says which one it is -- the same argument as the order book's
-    // no-book notice. There is no grace period here, unlike the order book: that
-    // one waits to see whether a book arrives, and this one already knows it
-    // cannot. Waiting would only make the silence last longer.
+    // no-book notice. It does **not** close the socket, and the reason is worth
+    // writing down because the first version did.
+    //
+    // The order book waits for a first book and closes if none arrives. That
+    // pattern does not transfer: a book publishes every second, so "nothing
+    // within five seconds" is evidence, while a candle closes every five minutes,
+    // so waiting long enough to be evidence would mean minutes of silence before
+    // an explanation. So this one is decided from configuration instead -- and
+    // `FeedMode::Off` means "the gateway will not open a feed", not "no candle
+    // will ever be published": `feed_candle` publishes into the same bus from
+    // outside the feed, and `FeedMode::Off`'s own documentation says a bot
+    // receives whatever else publishes. Closing here would refuse data that
+    // exists, and it made the resolution filter below unreachable in the tests
+    // that witness it -- a property that stops being observable is the defect
+    // this codebase keeps finding. The notice explains the silence; the channel
+    // keeps its contract.
     if feed_off {
         let notice = Frame::Notice {
             message: format!(
-                "no market feed is configured (MARKET_FEED is not `binance`), so no candle \
-                 will be published into this channel. The chart can still draw stored \
-                 candles from GET /candles?symbol={symbol}, but it will not move. Set \
-                 MARKET_FEED=binance and restart the gateway."
+                "no market feed is configured (MARKET_FEED is not `binance`), so this gateway \
+                 will not publish candles into this channel and the chart will not move on its \
+                 own. The chart can still draw stored candles from \
+                 GET /candles?symbol={symbol}, and anything else that publishes into the bus \
+                 will still reach it. Set MARKET_FEED=binance and restart the gateway."
             ),
         };
-        let _ = send_text(&mut sink, &notice).await;
-        let _ = sink.close().await;
-        debug!(%channel, "market socket closed: no feed is configured");
-        return;
+        if send_text(&mut sink, &notice).await.is_err() {
+            return;
+        }
+        debug!(%channel, "market socket explained: no feed is configured");
     }
 
     loop {
