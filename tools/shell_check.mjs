@@ -482,10 +482,73 @@ check(
     document.querySelector(`#tools button[data-tool="${name}"]`)
   )
 );
+
+// --- the layout at a narrow width --------------------------------------------
+//
+// jsdom lays nothing out, so these read the stylesheet rather than measure the
+// page -- the same trade `packaging.rs` makes for the Docker image, and for the
+// same reason: the alternative is asserting nothing about it at all.
+//
+// They are not "a media query exists". A media query on its own changes nothing;
+// what stops the chart being squeezed to nothing is that `main` stacks *and* the
+// chart is given a height of its own, because a column that shares one height
+// between a chart and a panel hands the chart whatever the panel leaves.
+
+console.log("\nthe layout at a narrow width");
+
+const styleText = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
+const mediaBlockAt = (width) => {
+  const at = styleText.indexOf(`@media (max-width: ${width}px)`);
+  if (at < 0) return "";
+  const next = styleText.indexOf("@media", at + 1);
+  return styleText.slice(at, next < 0 ? styleText.length : next);
+};
+/// The declarations of one rule inside a block, or "" if it is not there.
+const ruleIn = (block, selector) => {
+  const found = new RegExp(`(^|[\\s,])${selector}\\s*\\{([^}]*)\\}`).exec(block);
+  return found ? found[2] : "";
+};
+
+const panelBlock = mediaBlockAt(1100);
+const narrowBlock = mediaBlockAt(900);
+
 check(
-  "the page has no media query yet, so this is the layout it ships",
-  !/ @media /.test(html),
-  "checked so the responsive work has to change this line"
+  "there is a breakpoint that narrows the panel",
+  /width:\s*300px/.test(ruleIn(panelBlock, "aside")),
+  ruleIn(panelBlock, "aside").trim() || "(no aside rule)"
+);
+check(
+  "and one that puts the panel below the chart",
+  /flex-direction:\s*column/.test(ruleIn(narrowBlock, "main")),
+  ruleIn(narrowBlock, "main").trim() || "(no main rule)"
+);
+check(
+  "where the chart is given a height of its own, not a share of the column",
+  /height:\s*60vh/.test(ruleIn(narrowBlock, "#chartWrap")) &&
+    /min-height:/.test(ruleIn(narrowBlock, "#chartWrap")),
+  ruleIn(narrowBlock, "#chartWrap").trim() || "(no #chartWrap rule)"
+);
+check(
+  "and the page scrolls rather than holding one viewport",
+  /height:\s*auto/.test(ruleIn(narrowBlock, "html, body")),
+  ruleIn(narrowBlock, "html, body").trim() || "(no html, body rule)"
+);
+check(
+  "and the panel is full width with its border moved to the seam",
+  /width:\s*auto/.test(ruleIn(narrowBlock, "aside")) &&
+    /border-left:\s*0/.test(ruleIn(narrowBlock, "aside")) &&
+    /border-top:/.test(ruleIn(narrowBlock, "aside")),
+  ruleIn(narrowBlock, "aside").trim() || "(no aside rule)"
+);
+// Order is load-bearing, not cosmetic. Both blocks match at 800px, and both set
+// `aside { width }`; if the stacking one came first the narrowing one would win
+// and the panel would be a 300px column under a full-width chart.
+check(
+  "and the stacking breakpoint comes second, so it wins at the widths that match both",
+  styleText.indexOf("@media (max-width: 900px)") >
+    styleText.indexOf("@media (max-width: 1100px)") &&
+    styleText.indexOf("@media (max-width: 900px)") > 0,
+  `${styleText.indexOf("@media (max-width: 900px)")} > ${styleText.indexOf("@media (max-width: 1100px)")}`
 );
 
 // --- placing a drawing -------------------------------------------------------
@@ -858,6 +921,51 @@ check(
   "and it comes back on the symbol it belongs to",
   lastScene().drawings.length === 1,
   `${lastScene().drawings.length} drawings`
+);
+
+// --- a resize ----------------------------------------------------------------
+//
+// Responsiveness is not only the stylesheet. The canvas is sized from
+// `wrap.clientWidth/clientHeight` and the engine is told the same two numbers,
+// so a window that changes shape has to re-measure both or it keeps drawing at
+// the old size -- candles fitted to a plot that is no longer there.
+//
+// jsdom lays nothing out, so the viewport is moved by hand. That is not a
+// workaround: those two properties are precisely the input `draw()` reads.
+
+console.log("\na resize");
+
+const rebuildsBefore = engine.scenes.length;
+Object.defineProperty(wrap, "clientWidth", { value: 640, configurable: true });
+Object.defineProperty(wrap, "clientHeight", { value: 320, configurable: true });
+window.dispatchEvent(new window.Event("resize"));
+await settle();
+await settle();
+
+check(
+  "a resize re-measures the canvas",
+  canvas.width === 640 && canvas.height === 320,
+  `${canvas.width}x${canvas.height}`
+);
+check(
+  "and rebuilds the scene at the new size rather than the old one",
+  lastRequest().width === 640 && lastRequest().height === 320,
+  `${lastRequest().width}x${lastRequest().height}`
+);
+
+// Dragging a window edge fires a resize per event, dozens a second, and each one
+// is a wasm rebuild plus a full repaint. They coalesce into one per frame, the
+// same way a wheel does -- so this asserts a *count*, which is the only way to
+// tell coalescing from a shell that happened to be fast.
+const rebuildsBeforeBurst = engine.scenes.length;
+for (let i = 0; i < 5; i += 1) window.dispatchEvent(new window.Event("resize"));
+await settle();
+await settle();
+
+check(
+  "and a burst of them costs one rebuild, not one each",
+  engine.scenes.length === rebuildsBeforeBurst + 1,
+  `${engine.scenes.length - rebuildsBeforeBurst} rebuilds for 5 events`
 );
 
 console.log(

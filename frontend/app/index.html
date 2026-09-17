@@ -212,6 +212,60 @@
   }
   #footprintStats[hidden] { display: none; }
   #footprintStats b { color: var(--muted); font-weight: 400; margin-right: 4px; }
+
+  /*
+    Responsive layout.
+
+    The page is a fixed-height column -- a header, a chart that takes what is
+    left, and a panel beside it -- and that fails on a narrow screen in one
+    specific way: the panel is a fixed 380px, so at 800px the chart is already
+    under half the width and at 500px it is nothing at all. The chart is the
+    surface the page exists for, so the panel is what gives way, in two steps.
+
+    `1100px` narrows the panel. Still side by side: the chart is the thing being
+    read and the panel is a reference beside it, and 300px still holds a table
+    and a paragraph.
+
+    `900px` gives up on side by side and puts the panel below the chart. That is
+    why the body stops being `height: 100%` here -- a column that shares one
+    height between a chart and a panel gives the chart whatever the panel's
+    content leaves, which is the same failure with the axis swapped. The chart
+    gets a height of its own instead, in viewport units so it still scales, with
+    a floor so it stays usable on a short one.
+
+    That height is also what the engine is told the plot is: `draw()` measures
+    `wrap.clientHeight`, so this rule and the candle count on screen are not
+    independent.
+  */
+  @media (max-width: 1100px) {
+    aside { width: 300px; }
+  }
+
+  @media (max-width: 900px) {
+    html, body { height: auto; }
+    main { flex-direction: column; }
+    #chartWrap { flex: 0 0 auto; height: 60vh; min-height: 260px; }
+    aside {
+      width: auto; flex: 0 0 auto;
+      border-left: 0; border-top: 1px solid var(--line);
+    }
+    /*
+      Six controls in a row do not fit a phone, and the toolbar is an overlay --
+      so anything past the right edge is not merely clipped, it is unreachable.
+      It wraps instead.
+    */
+    #tools { flex-wrap: wrap; max-width: calc(100% - 24px); }
+    /*
+      The hint is one line of monospace prose, and at this width it would run off
+      the right edge rather than under the toolbar. Given a right edge it wraps
+      and stays readable; it is kept rather than hidden because the chart's
+      gestures are still not discoverable without it.
+    */
+    #chartHint { right: 12px; }
+    /* Two fields and a button in one unwrapped row overflow a phone. */
+    #signin { flex-wrap: wrap; }
+    #signin input { flex: 1 1 140px; min-width: 0; }
+  }
 </style>
 </head>
 <body>

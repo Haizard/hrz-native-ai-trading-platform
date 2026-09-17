@@ -446,6 +446,55 @@ CPU calc   GPU-friendly buffers
     canvas clips, which is the same arrangement zones use: a trendline drawn last week is
     still a trendline when the window has moved past it.
 
+  ### The layout: what gives way when the window narrows
+
+  Added 2026-09-17. The canvas has always scaled — it is sized from the wrapper's
+  `clientWidth`/`clientHeight` times `devicePixelRatio`, and a `resize` re-renders — but the
+  *page* did not adapt. `aside` was a fixed 380px with **no `@media` query anywhere**, so at
+  800px the chart was already under half the width and at 500px it was nothing at all.
+
+  **The chart is the surface the page exists for, so the panel is what gives way.** Two
+  breakpoints, and they are two different problems rather than one problem at two sizes:
+
+  | width | what changes |
+  |---|---|
+  | ≤ 1100px | `aside` narrows to 300px. Still side by side: 300px still holds a table and a paragraph, and the chart gains 80px. |
+  | ≤ 900px | `main` becomes a column. The panel moves below the chart and the page scrolls. |
+
+  **The second breakpoint is why the body stops being `height: 100%`.** A column that shares one
+  height between a chart and a scrolling panel hands the chart whatever the panel's content
+  leaves — the same failure as the first breakpoint, with the axes swapped. So the chart gets a
+  height of its own (`60vh`, floor `260px`) and the page scrolls instead. That height is not
+  cosmetic: `draw()` measures `wrap.clientHeight`, so it is also the number the engine is told
+  the plot is.
+
+  Three smaller rules, each because something becomes **unreachable** rather than merely ugly:
+
+  - **The drawing toolbar wraps.** It is an overlay, so a control past the right edge is not
+    clipped, it is gone.
+  - **The gesture hint is given a right edge** so it wraps rather than running off the page. It
+    is kept rather than hidden: it is what makes the wheel and the drag discoverable at all, and
+    a narrow *window* is still a mouse.
+  - **The sign-in row wraps**, and its two fields may shrink. Two default-width inputs and a
+    button do not fit a phone.
+
+  **The order of the two breakpoints is load-bearing.** Both match at 800px and both set
+  `aside { width }`, so the stacking block has to come second or the panel ends up a 300px
+  column under a full-width chart. `tools/shell_check.mjs` asserts the order, because swapping
+  them looks like tidying.
+
+  **A resize is a gesture, and it coalesces like one.** The listener used to call `render()`
+  directly, so dragging a window edge — dozens of events a second, each a wasm rebuild plus a
+  full repaint — ran one rebuild per event. It goes through `scheduleRender()` now, the same
+  once-per-frame path a wheel and a pan use. The harness asserts a *count*, because that is the
+  only way to tell coalescing from a shell that merely happened to be fast.
+
+  **What the layout does not do yet.** There is no touch-specific hint: the copy names a wheel
+  and `Shift`, neither of which exists on the device the 900px breakpoint is most likely
+  serving. And the breakpoints are unverified in a real browser — jsdom lays nothing out, so the
+  harness reads the stylesheet and asserts the declarations that stop the squeeze, the same
+  trade `api-gateway/tests/packaging.rs` makes for the Docker image.
+
   ### What this interaction does not do yet
 
   Recorded 2026-09-17, so the next reader does not have to discover them:
@@ -468,10 +517,12 @@ CPU calc   GPU-friendly buffers
   kind of missing** — which is why they are written down here rather than kept as a list of
   wishes.
 
-  **Specified above and not built: drawing tools.** The bullet above asks for "drawing tools
-  (trendlines, Fibonacci, rectangles — start minimal, expand later)". None exist. The "Built
-  as of" note covers zones and the concept layer, so this is a gap in a view this document
-  claims — the one item here a phase can be held to.
+  **Specified above and not built, until 2026-09-17: drawing tools.** The bullet above asks for
+  "drawing tools (trendlines, Fibonacci, rectangles — start minimal, expand later)". All four
+  kinds now exist, and the specification is *Drawing tools: a document the user owns* above. The
+  four defects that building it exposed were all in the shell and all invisible from outside —
+  the toolbar rendered, the buttons pressed, and nothing happened — which is why
+  `tools/shell_check.mjs` exists: `chart-engine` had tests and `app.js` had none.
 
   **Never specified until 2026-09-17: zoom and pan.** Nothing in this document mentioned zoom,
   pan, scroll or wheel, and the done criteria did not either — so there was no interaction model
@@ -487,11 +538,13 @@ CPU calc   GPU-friendly buffers
   panes. A second chart — the same symbol at another timeframe, or another symbol — needs a
   layout decision this document has not made.
 
-  **Never specified, and half-built: responsive layout.** The canvas already scales
-  correctly: the shell sizes it from the wrapper's `clientWidth`/`clientHeight` times
-  `devicePixelRatio`, and re-renders on `resize`. The *page* does not adapt — `index.html`
-  has a fixed `aside { width: 380px }` and **no `@media` query anywhere**, so a narrow
-  viewport squeezes the chart instead of reflowing.
+  **Never specified, and half-built until 2026-09-17: responsive layout.** The canvas always
+  scaled correctly — the shell sizes it from the wrapper's `clientWidth`/`clientHeight` times
+  `devicePixelRatio`, and a `resize` re-renders — but the *page* did not adapt: `index.html` had
+  a fixed `aside { width: 380px }` and no `@media` query anywhere, so a narrow viewport squeezed
+  the chart instead of reflowing. Now specified and built: see *The layout: what gives way when
+  the window narrows* above. What remains of it is the part that cannot be checked here — the
+  breakpoints have never been seen in a browser.
 
   **Why the exit criterion caught none of this.** It reads: log in, view the BTCUSDT
   footprint chart, ask the AI for a setup, review the thesis, run a backtest, launch a paper

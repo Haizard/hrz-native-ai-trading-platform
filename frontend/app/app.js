@@ -3145,7 +3145,12 @@ async function main() {
     if (button) venueAction(button.dataset.venue, button.dataset.act);
   });
 
-  window.addEventListener("resize", () => { if (scene) render(); });
+  // A resize is a gesture like any other: it ends in one engine rebuild and one
+  // repaint, and dragging a window edge fires dozens of them a second. Rendered
+  // synchronously, that is a rebuild per event -- so it goes through the same
+  // once-per-frame coalescing a wheel or a pan does. The canvas is re-measured
+  // inside `draw()`, which is what makes this the resize path at all.
+  window.addEventListener("resize", () => { if (scene) scheduleRender(); });
 
   try {
     wasm = await loadEngine();
