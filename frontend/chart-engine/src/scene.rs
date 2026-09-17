@@ -179,6 +179,22 @@ pub struct Request {
     /// a silent refusal is worse than both.
     #[serde(default)]
     pub concepts: Vec<Concept>,
+    /// Which slice of the series is visible, and at what price range.
+    ///
+    /// Absent means "everything, fitted", which is where a chart starts and what
+    /// [`crate::viewport::Gesture::Fit`] returns it to. The shell holds the
+    /// *resolved* form of this — [`Scene::viewport`] — and sends it back
+    /// unchanged, so a reload cannot lose the view.
+    #[serde(default)]
+    pub viewport: crate::viewport::Viewport,
+    /// What the user just did, if anything.
+    ///
+    /// A gesture rather than a viewport so that the clamping, the minimum bar
+    /// count and the anchor arithmetic have one implementation. A wheel that
+    /// arrives a hundred times a second cannot accumulate a drift the engine
+    /// would have prevented, and a hostile factor cannot invert the axis.
+    #[serde(default)]
+    pub gesture: Option<crate::viewport::Gesture>,
 }
 
 /// The levels drawn when a request does not say.
@@ -199,6 +215,8 @@ impl Default for Request {
             lines: default_lines(),
             zones: false,
             concepts: Vec::new(),
+            viewport: crate::viewport::Viewport::default(),
+            gesture: None,
         }
     }
 }
@@ -417,10 +435,31 @@ pub struct Scene {
     pub price_min: f64,
     /// Highest price shown.
     pub price_max: f64,
-    /// First candle's open time.
+    /// First visible candle's open time.
     pub from: i64,
-    /// Last candle's close time.
+    /// One past the last visible candle's close time.
     pub to: i64,
+    /// The view that was drawn, expressed as the request that would reproduce it.
+    ///
+    /// Reported because the shell's zoom state *is* this value: it holds it, sends
+    /// it back with the next request, and applies no arithmetic to it.
+    ///
+    /// A [`Viewport`] rather than the resolved [`Window`] the engine sliced with,
+    /// and the difference is the whole point. A resolved window has every field
+    /// decided, so echoing one back would say "these five hundred bars" where the
+    /// user had asked for "all of them" -- the same view on the frame it is sent,
+    /// and then a chart that has quietly stopped following the market. See
+    /// [`Window::as_viewport`].
+    ///
+    /// It is the *resolved* view and not the requested one, which is what makes it
+    /// safe to echo: the engine may have clamped a pan at the oldest bar or a zoom
+    /// at the minimum bar count, and a shell that assumed its own arithmetic had
+    /// been honoured would drift out of step with what is on screen.
+    ///
+    /// [`Viewport`]: crate::viewport::Viewport
+    /// [`Window`]: crate::viewport::Window
+    /// [`Window::as_viewport`]: crate::viewport::Window::as_viewport
+    pub viewport: crate::viewport::Viewport,
     /// Candles, in time order. Empty for line, area and footprint.
     pub candles: Vec<Bar>,
     /// The close path, for line and area.
@@ -467,6 +506,30 @@ fn choose_bucket(price_min: f64, price_max: f64) -> f64 {
     analytics_core::volume_profile::round_bucket(price_max - price_min, PROFILE_ROWS as usize)
 }
 
+/// The price range a slice of candles would produce on its own.
+///
+/// This is the range the axis *fits* to, and the thing a price gesture scales
+/// from. It is deliberately un-padded: the padding is a drawing decision made
+/// once in [`build`], and baking it in here would make the padding compound every
+/// time the user zoomed.
+///
+/// A slice that cannot produce a usable range -- empty, or every candle at one
+/// price -- yields `min == max`, which [`PriceRange::is_usable`] rejects. Callers
+/// must check rather than divide: a flat market is a real state, and inventing a
+/// range for it would draw a chart of a move that did not happen.
+fn fitted_range(candles: &[Candle]) -> crate::viewport::PriceRange {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for candle in candles {
+        min = min.min(candle.low);
+        max = max.max(candle.high);
+    }
+    if !min.is_finite() || !max.is_finite() {
+        return crate::viewport::PriceRange { min: 0.0, max: 0.0 };
+    }
+    crate::viewport::PriceRange { min, max }
+}
+
 /// Build the scene.
 ///
 /// Total: an empty request produces an empty scene with the plot already laid
@@ -491,6 +554,7 @@ pub fn build(request: &Request) -> Scene {
         price_max: 0.0,
         from: 0,
         to: 0,
+        viewport: crate::viewport::Viewport::default(),
         candles: Vec::new(),
         line: Vec::new(),
         profile: Vec::new(),
@@ -502,6 +566,12 @@ pub fn build(request: &Request) -> Scene {
     };
 
     if request.candles.is_empty() {
+        // Resolved against zero bars rather than left at the literal above, so
+        // the shell's price zoom survives a window that momentarily holds no
+        // candles -- a live feed sitting between the backfill and its next tick.
+        // Echoing the user's own range back is the entire reason the resolved
+        // window carries one.
+        scene.viewport = request.viewport.resolve(0).as_viewport();
         scene.note = Some("no candles in this window".into());
         return scene;
     }
@@ -510,52 +580,96 @@ pub fn build(request: &Request) -> Scene {
     // measured from the *drawn* values: an HA candle can sit outside every real
     // high or low in the window, and clamping to the raw range would push it off
     // the plot.
+    //
+    // It is also why the transform runs on the **whole** series and the visible
+    // slice is taken afterwards. HA is recursive from the first candle, so
+    // slicing first would restart the averaging at the left edge of the window --
+    // and the same candle would then have a different open depending on how far
+    // the user had scrolled. The window must not change the data.
     let plotted: Vec<Candle> = match request.mode {
         Mode::HeikinAshi => heikin_ashi(&request.candles),
         _ => request.candles.clone(),
     };
 
-    // The visible range is the drawn candles' own range, padded a little so a
-    // wick touching the edge is not clipped.
-    let mut price_min = f64::INFINITY;
-    let mut price_max = f64::NEG_INFINITY;
-    for candle in &plotted {
-        price_min = price_min.min(candle.low);
-        price_max = price_max.max(candle.high);
+    // The range of what is visible *before* the gesture, because that is what a
+    // price zoom starts from: it anchors on a price the user can actually see.
+    let before = request.viewport.resolve(plotted.len());
+    let fitted = fitted_range(&plotted[before.from..before.end()]);
+
+    let viewport = match request.gesture {
+        Some(gesture) => request.viewport.apply(gesture, plotted.len(), fitted),
+        None => request.viewport,
+    };
+    let window = viewport.resolve(plotted.len());
+    scene.viewport = window.as_viewport();
+
+    let visible = &plotted[window.from..window.end()];
+    if visible.is_empty() {
+        scene.note = Some("no candles in this window".into());
+        return scene;
     }
-    if !price_min.is_finite() || !price_max.is_finite() {
+
+    // The drawn range is the visible candles' own range, padded a little so a
+    // wick touching the edge is not clipped -- unless the user has moved the
+    // price axis, in which case their range is used exactly and unpadded.
+    let visible_fit = fitted_range(visible);
+    if !visible_fit.is_usable() {
         scene.note = Some("candles have no usable prices".into());
         return scene;
     }
-    let pad = ((price_max - price_min) * 0.04).max(f64::EPSILON);
-    scene.price_min = price_min - pad;
-    scene.price_max = price_max + pad;
+    let drawn = match viewport
+        .price
+        .filter(crate::viewport::PriceRange::is_usable)
+    {
+        Some(range) => range,
+        None => {
+            let pad = (visible_fit.span() * 0.04).max(f64::EPSILON);
+            crate::viewport::PriceRange {
+                min: visible_fit.min - pad,
+                max: visible_fit.max + pad,
+            }
+        }
+    };
+    scene.price_min = drawn.min;
+    scene.price_max = drawn.max;
 
-    let first = &plotted[0];
-    let last = &plotted[plotted.len() - 1];
+    let first = &visible[0];
+    let last = &visible[visible.len() - 1];
     let width_nanos = first.timeframe.nanos().max(1);
     scene.from = first.open_time;
     scene.to = last.open_time + width_nanos;
 
-    let slot = plot.w / plotted.len() as f64;
+    // The slot is `plot.w / visible.len()`, so a candle keeps its width in *bars*
+    // and grows in pixels as the user zooms in. That is what zooming in means,
+    // and it is why the slot cannot be computed from the whole series.
+    let slot = plot.w / visible.len() as f64;
     if request.mode.draws_bars() {
-        scene.candles = candle_bars(&plotted, slot, &plot, scene.price_min, scene.price_max);
+        scene.candles = candle_bars(visible, slot, &plot, scene.price_min, scene.price_max);
     }
     if matches!(request.mode, Mode::Line | Mode::Area) {
-        scene.line = close_path(&plotted, slot, &plot, scene.price_min, scene.price_max);
+        scene.line = close_path(visible, slot, &plot, scene.price_min, scene.price_max);
     }
 
+    // The profile and the levels describe **what is on screen**, so they follow
+    // the visible slice too. A volume profile over the whole series beside
+    // candles showing a tenth of it is a chart that disagrees with itself, and
+    // VWAP is period-dependent: a VWAP line that ignored the window would mark a
+    // price nobody in the window traded at.
+    //
+    // Indexing `request.candles` with the window is sound because `plotted` is
+    // the same length -- the Heikin-Ashi transform maps one candle to one candle.
+    let visible_real = &request.candles[window.from..window.end()];
     let bucket_size = request
         .bucket_size
         .filter(|size| size.is_finite() && *size > 0.0)
-        .unwrap_or_else(|| choose_bucket(price_min, price_max));
+        .unwrap_or_else(|| choose_bucket(visible_fit.min, visible_fit.max));
     // From the **real** series, not `plotted`. A volume profile assigns each
     // candle's volume to price levels, and a Heikin-Ashi candle's high and low
     // are averages -- prices nobody traded at. The profile would still look
     // plausible, which is exactly why it is worth being explicit: the note for
     // that mode promises the real series, and this is where that promise is
-    // kept. `levels()` reads `request.candles` for the same reason.
-    let profile = calculate_volume_profile_from_candles(&request.candles, bucket_size);
+    // kept. `levels()` is handed the same slice for the same reason.
+    let profile = calculate_volume_profile_from_candles(visible_real, bucket_size);
 
     if request.mode.shows_profile() {
         scene.profile = profile_bars(&profile, &plot, scene.price_min, scene.price_max);
@@ -629,7 +743,19 @@ pub fn build(request: &Request) -> Scene {
         }
     }
 
-    scene.levels = levels(request, &profile, &plot, scene.price_min, scene.price_max);
+    scene.levels = levels(
+        request,
+        visible_real,
+        &profile,
+        &plot,
+        scene.price_min,
+        scene.price_max,
+    );
+    // The zones keep the **whole** series, unlike the profile and the levels: a
+    // zone that formed before the window is still a zone, and clipping it to the
+    // window would erase exactly the bands a trader scrolled back to look at.
+    // The `Mapping` carries the window, so a zone outside it lands off-plot and
+    // the canvas clips it, which is the correct rendering of "not in view".
     scene.regions = region_rects(
         request.zones,
         &concepts,
@@ -794,8 +920,16 @@ fn profile_bars(
         .collect()
 }
 
+/// The overlay levels, measured over the **visible window**.
+///
+/// `candles` is the visible slice of the real series, so the VWAP is the window's
+/// VWAP. That matters more than it looks: VWAP is period-dependent, so a line
+/// computed over the whole series and drawn across a tenth of it marks a price
+/// nobody in the window traded at. It still looks like a VWAP, which is why the
+/// wrong version survives review -- the same trap the profile has.
 fn levels(
     request: &Request,
+    candles: &[Candle],
     profile: &VolumeProfile,
     plot: &Plot,
     price_min: f64,
@@ -805,7 +939,7 @@ fn levels(
     let wanted = |name: &str| request.lines.iter().any(|line| line == name);
 
     if wanted("vwap") {
-        if let Some(vwap) = calculate_vwap(&request.candles) {
+        if let Some(vwap) = calculate_vwap(candles) {
             out.push(Level {
                 y: price_to_y(vwap, price_min, price_max, plot),
                 price: vwap,
@@ -831,19 +965,6 @@ fn levels(
     out
 }
 
-/// Where each region's band lands on the canvas.
-///
-/// The time mapping is the same one the candles use: a region's edges are
-/// timestamps, and the plot's width is divided by the window's duration exactly
-/// as a candle's slot is. That is what makes a band line up with the candles
-/// that formed it instead of drifting sideways -- a band drawn a slot off reads
-/// as a different level entirely.
-///
-/// `candles` is the **real** series, not the drawn one. [`build`] passes
-/// `request.candles` rather than its own `plotted`, deliberately: structure and
-/// patterns are facts about prices that traded, so switching the chart to
-/// Heikin-Ashi must not invent bands out of averaged candles. That holds for
-/// both producers below, because they are handed the same series here.
 /// Where a price and a time land on the canvas.
 ///
 /// One struct rather than four loose numbers because they are one thing: the
@@ -872,6 +993,26 @@ impl Mapping {
     }
 }
 
+/// Where each region's band lands on the canvas.
+///
+/// The time mapping is the same one the candles use: a region's edges are
+/// timestamps, and the plot's width is divided by the **visible window's**
+/// duration exactly as a candle's slot is. That is what makes a band line up with
+/// the candles that formed it instead of drifting sideways -- a band drawn a slot
+/// off reads as a different level entirely.
+///
+/// `candles` is the **real** series, not the drawn one. [`build`] passes
+/// `request.candles` rather than its own `plotted`, deliberately: structure and
+/// patterns are facts about prices that traded, so switching the chart to
+/// Heikin-Ashi must not invent bands out of averaged candles. That holds for
+/// both producers below, because they are handed the same series here.
+///
+/// Detection therefore runs over the **whole** series while the mapping covers
+/// only the window, which is the arrangement that makes zooming honest: a band
+/// that formed before the left edge is still a band, and clipping it away would
+/// erase exactly the levels a trader scrolled back to look at. The clamp below
+/// is what turns "outside the window" into an off-plot rectangle the canvas
+/// discards, rather than into a band drawn at the wrong x.
 fn region_rects(
     zones: bool,
     concepts: &[Concept],
@@ -1963,5 +2104,317 @@ mod tests {
         assert!(json["candles"].is_array());
         assert!(json["plot"]["w"].is_number());
         assert_eq!(json["style"], "candles");
+    }
+
+    // --- the viewport -------------------------------------------------------
+
+    /// A request for a window of `visible` bars starting at `from`.
+    fn windowed(count: i64, from: usize, visible: usize) -> Request {
+        Request {
+            viewport: crate::viewport::Viewport {
+                from,
+                count: Some(visible),
+                price: None,
+            },
+            ..request(count)
+        }
+    }
+
+    #[test]
+    fn the_window_decides_which_candles_are_drawn() {
+        let scene = build(&windowed(500, 100, 50));
+        assert_eq!(scene.candles.len(), 50, "the window is the slice");
+        assert_eq!(scene.viewport.from, 100);
+        assert_eq!(scene.viewport.count, Some(50));
+
+        // The *right* fifty, not the first fifty. The fixture rises, so the
+        // window's own prices are far above the start of the series -- and a
+        // scene that ignored `from` would still pass every count assertion above
+        // while drawing the wrong candles.
+        //
+        // Compared as prices rather than as y coordinates, because both scenes
+        // fit their own window: bar 100 is the cheapest bar *in its window* and
+        // so is bar 0 in its, which puts them at the same y and makes the two
+        // indistinguishable on the canvas.
+        let head = build(&windowed(500, 0, 50));
+        assert!(
+            scene.price_min > head.price_max,
+            "the axis must be fitted to the window's prices ({}, {}), not to the \
+             series' start ({}, {})",
+            scene.price_min,
+            scene.price_max,
+            head.price_min,
+            head.price_max
+        );
+
+        // And the times reported are the window's, which is what the shell's
+        // axis label is built from.
+        assert_eq!(scene.from, 100 * 300_000_000_000);
+        assert_eq!(scene.to, 150 * 300_000_000_000);
+    }
+
+    #[test]
+    fn zooming_in_draws_fewer_wider_bars_that_still_fill_the_plot() {
+        let wide = build(&request(500));
+        let narrow = build(&windowed(500, 200, 25));
+        assert_eq!(wide.candles.len(), 500);
+        assert_eq!(narrow.candles.len(), 25);
+        assert!(
+            narrow.candles[0].w > wide.candles[0].w,
+            "a bar has to grow in pixels when there are fewer of them: {} vs {}",
+            narrow.candles[0].w,
+            wide.candles[0].w
+        );
+
+        // The slot is the plot's width over the *window*, so the drawn bars
+        // still span the plot. Zooming in must not shrink the chart into its
+        // left-hand corner.
+        let slot = narrow.plot.w / 25.0;
+        let left = narrow.plot.x;
+        let right = narrow.plot.x + narrow.plot.w;
+        let first = &narrow.candles[0];
+        let last = &narrow.candles[24];
+        assert!(
+            first.x >= left - 1.0 && first.x < left + slot,
+            "the first visible bar starts at the left edge: {first:?}"
+        );
+        assert!(
+            last.x + last.w > right - slot && last.x + last.w <= right + 1.0,
+            "the last visible bar reaches the right edge: {last:?}"
+        );
+    }
+
+    #[test]
+    fn the_profile_and_the_levels_follow_the_window() {
+        // A volume profile over the whole series beside candles showing a tenth
+        // of it is a chart that disagrees with itself -- and VWAP is
+        // period-dependent, so a line computed over everything marks a price
+        // nobody in the window traded at. It still looks like a VWAP, which is
+        // exactly why this needs a test rather than an eye.
+        //
+        // The explicit bucket takes `choose_bucket` out of the comparison, so the
+        // only variable left is which slice was read.
+        let request = Request {
+            bucket_size: Some(0.5),
+            ..windowed(500, 100, 50)
+        };
+        let scene = build(&request);
+        let visible = &request.candles[100..150];
+
+        let expected = calculate_volume_profile_from_candles(visible, 0.5);
+        let want: Vec<f64> = expected.histogram.iter().map(|node| node.volume).collect();
+        let drawn: Vec<f64> = scene.profile.iter().map(|bar| bar.volume).collect();
+        assert!(!want.is_empty(), "the fixture must produce a profile");
+        assert_eq!(
+            drawn, want,
+            "the profile must be the window's, not the series'"
+        );
+
+        let vwap = scene
+            .levels
+            .iter()
+            .find(|level| level.kind == "vwap")
+            .expect("a vwap level");
+        assert!(
+            (vwap.price - calculate_vwap(visible).expect("a window vwap")).abs() < 1e-9,
+            "the vwap must be the window's"
+        );
+        // And demonstrably not the whole series', which for a rising series is a
+        // different number by a wide margin.
+        let whole = calculate_vwap(&request.candles).expect("a series vwap");
+        assert!(
+            (vwap.price - whole).abs() > 1.0,
+            "the window's vwap ({}) should differ from the series' ({whole})",
+            vwap.price
+        );
+    }
+
+    #[test]
+    fn a_gesture_is_applied_and_the_engine_reports_what_it_resolved_to() {
+        // The shell sends what the user *did*, not what it thinks the result is.
+        // What comes back is the resolved window, and that is the only thing the
+        // shell stores -- so a gesture the engine clamps cannot leave the shell
+        // out of step with what is on screen.
+        let scene = build(&Request {
+            gesture: Some(crate::viewport::Gesture::ZoomTime {
+                factor: 2.0,
+                anchor: 0.5,
+            }),
+            ..request(500)
+        });
+        assert_eq!(
+            scene.viewport.count,
+            Some(250),
+            "the gesture narrowed the window"
+        );
+        assert_eq!(scene.candles.len(), 250, "and the scene drew exactly that");
+
+        // A pan past the oldest bar is clamped, and the scene reports the clamp
+        // rather than the number that was asked for.
+        let clamped = build(&Request {
+            viewport: crate::viewport::Viewport {
+                from: 0,
+                count: Some(50),
+                price: None,
+            },
+            gesture: Some(crate::viewport::Gesture::Pan {
+                time: -50.0,
+                price: 0.0,
+            }),
+            ..request(500)
+        });
+        assert_eq!(clamped.viewport.from, 0);
+        assert_eq!(
+            clamped.candles.len(),
+            50,
+            "panning must not change the zoom"
+        );
+    }
+
+    #[test]
+    fn a_window_outside_the_series_is_clamped_rather_than_panicking() {
+        for (from, count) in [(9_999, 50), (0, 0), (0, 1), (499, 500), (usize::MAX, 10)] {
+            let scene = build(&windowed(500, from, count));
+            // What the scene *says* it is showing, resolved against the series it
+            // was given -- the shell's next request, in other words.
+            let reported = scene.viewport.resolve(500);
+            assert!(
+                reported.end() <= 500,
+                "{from}/{count} ran past the series: {reported:?}"
+            );
+            assert_eq!(
+                scene.candles.len(),
+                reported.count,
+                "{from}/{count}: the scene must draw what it says it is showing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zoomed_window_still_anchors_zones_to_their_own_candles() {
+        // Zones are detected over the whole series and clamped to the window, so
+        // zooming has to move them with the candles instead of leaving them at
+        // the x they had when the whole series was on screen.
+        let whole = build(&zoned_request());
+        let zone = whole
+            .regions
+            .iter()
+            .find(|region| region.name == "demand")
+            .expect("a demand zone in the fixture");
+
+        // Zoomed to the last ten bars, the zone's origin (candle 8) is off the
+        // left edge, so it clamps to the plot's left edge with a real width.
+        let zoomed = build(&Request {
+            viewport: crate::viewport::Viewport {
+                from: 10,
+                count: Some(10),
+                price: None,
+            },
+            ..zoned_request()
+        });
+        let clipped = zoomed
+            .regions
+            .iter()
+            .find(|region| region.name == "demand")
+            .expect("a zone still in play is still drawn");
+        assert!(
+            (clipped.x - zoomed.plot.x).abs() < 1e-6,
+            "a band that starts before the window clamps to its left edge: {} vs {}",
+            clipped.x,
+            zoomed.plot.x
+        );
+        assert!(clipped.w > 0.0, "{clipped:?}");
+        assert!(clipped.x + clipped.w <= zoomed.plot.x + zoomed.plot.w + 1e-6);
+        // The same band: the window changes where it is drawn, never what it is.
+        assert_eq!(clipped.price_low, zone.price_low);
+        assert_eq!(clipped.price_high, zone.price_high);
+    }
+
+    #[test]
+    fn the_shell_reads_these_viewport_keys() {
+        // A rename here is not a compile error anywhere. It is a chart that
+        // forgets where the user had scrolled to, once per frame -- which reads
+        // as a flicker rather than as a bug.
+        let scene = build(&windowed(500, 100, 50));
+        let json = serde_json::to_value(&scene).expect("serializes");
+        let viewport = &json["viewport"];
+        for key in ["from", "count", "price"] {
+            assert!(
+                viewport.get(key).is_some(),
+                "the shell reads `viewport.{key}`: {viewport}"
+            );
+        }
+        assert_eq!(viewport["from"], 100);
+        assert_eq!(viewport["count"], 50);
+
+        // And the shell sends the scene's viewport straight back, so the same
+        // object has to deserialize as a request's viewport.
+        let echoed: Request = serde_json::from_value(serde_json::json!({
+            "candles": [],
+            "width": 800.0,
+            "height": 400.0,
+            "viewport": viewport,
+        }))
+        .expect("the shell echoes the scene's viewport back");
+        assert_eq!(echoed.viewport.from, 100);
+        assert_eq!(echoed.viewport.count, Some(50));
+    }
+
+    #[test]
+    fn a_window_with_no_candles_still_reports_the_viewport() {
+        // A live feed between the backfill and its next tick momentarily has
+        // nothing to draw. The note says so; the viewport has to survive it, or
+        // the axis springs back the moment the candles return.
+        let scene = build(&Request {
+            viewport: crate::viewport::Viewport {
+                from: 0,
+                count: Some(50),
+                price: Some(crate::viewport::PriceRange {
+                    min: 150.0,
+                    max: 160.0,
+                }),
+            },
+            ..Request::default()
+        });
+        assert!(scene.note.is_some());
+        assert_eq!(
+            scene.viewport.count, None,
+            "an empty series is still 'everything', not 'zero bars' -- the shell \
+             echoes this back, and a zero would pin the chart to nothing"
+        );
+        assert_eq!(
+            scene.viewport.price,
+            Some(crate::viewport::PriceRange {
+                min: 150.0,
+                max: 160.0,
+            }),
+            "the user's price zoom must outlive an empty window"
+        );
+    }
+
+    #[test]
+    fn a_fitted_scene_keeps_following_new_candles() {
+        // The wiring, not the arithmetic: `build` has to report the *request* form
+        // rather than the window it sliced with, and getting that wrong is
+        // invisible on the frame it happens -- the chart simply stops including
+        // candles, one at a time, from then on. So the check is the round trip a
+        // live chart actually performs: scene, echo, one more candle.
+        let mut candles = series(200);
+        let mut viewport = crate::viewport::Viewport::default();
+        for added in 0..3 {
+            let scene = build(&Request {
+                candles: candles.clone(),
+                viewport,
+                ..Request::default()
+            });
+            assert_eq!(
+                scene.candles.len(),
+                candles.len(),
+                "a fitted chart stopped following the market at {} bars",
+                candles.len()
+            );
+            viewport = scene.viewport;
+            candles.push(candle(200 + added, 200.0, 200.5));
+        }
     }
 }

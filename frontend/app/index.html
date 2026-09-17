@@ -71,7 +71,18 @@
 
   main { flex: 1; display: flex; min-height: 0; }
   #chartWrap { flex: 1; position: relative; min-width: 0; }
-  #chart { display: block; width: 100%; height: 100%; }
+  /*
+    `touch-action: none` so a drag on a touchscreen pans the chart instead of
+    scrolling the page, and `crosshair` because the chart is now something you
+    can act on rather than only look at.
+  */
+  #chart { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  #chart.dragging { cursor: grabbing; }
+  #chartHint {
+    position: absolute; left: 12px; bottom: 8px; pointer-events: none;
+    color: var(--muted); font-family: var(--mono); font-size: 10px; opacity: 0.75;
+  }
+  #chartHint b { font-weight: 600; }
   #chartMsg {
     position: absolute; inset: auto 0 40% 0; text-align: center;
     color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 0 20px;
@@ -222,6 +233,15 @@
     nobody asked for is noise on top of the candles.
   -->
   <button id="zones" aria-pressed="false" title="Draw the supply and demand zones the engine detects">Zones</button>
+  <!--
+    Fit. The one zoom control that needs a button: a wheel and a drag are
+    discoverable by trying them, but "put it back" has no gesture of its own.
+
+    It sends `{kind: "fit"}` to the engine rather than resetting anything here,
+    so "show everything" means the same thing whether it was asked for by a
+    button or by a client with no UI at all.
+  -->
+  <button id="fit" title="Show the whole series again (all the bars, and a price axis fitted to them)">Fit</button>
   <button id="load">Reload</button>
   <span class="spacer"></span>
   <span id="session">not signed in</span>
@@ -239,6 +259,13 @@
 <main>
   <div id="chartWrap">
     <canvas id="chart"></canvas>
+    <!--
+      The gesture hint. Kept visible rather than hidden behind a tooltip: the
+      chart had no interaction at all until now, so nothing about it suggests a
+      wheel or a drag would do anything, and an affordance nobody can find is the
+      same as no affordance.
+    -->
+    <div id="chartHint">wheel zooms · shift+wheel scales the price axis · drag pans · <b>Fit</b> resets</div>
     <div id="chartMsg" class="empty">Loading the chart engine…</div>
   </div>
 

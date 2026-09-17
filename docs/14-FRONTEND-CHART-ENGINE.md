@@ -178,6 +178,140 @@ CPU calc   GPU-friendly buffers
     `"buy"` in the same object. `Side::name` and `BreakKind::name` are the same bridge, for
     the same reason.
 
+  ### The interaction model: a gesture, not a viewport
+
+  Added 2026-09-17. The paragraph *below* records that zoom and pan were never specified; this
+  is the specification, and it is short because it has exactly one rule.
+
+  **The shell sends what the user *did*, not the view it thinks should result.**
+
+  ```json
+  {"gesture": {"kind": "zoom_time", "factor": 1.1, "anchor": 0.42}}
+  ```
+
+  `anchor` is a fraction of the plot rectangle — 0 at the left edge, 1 at the right — which is a
+  number a pointer position gives you directly. The engine answers with the *view* it resolved
+  to, and that is the only thing the shell stores:
+
+  ```json
+  {"viewport": {"from": 318, "count": 140, "price": null}}
+  ```
+
+  Note what is **not** in that object: the total number of bars. The shell never learns it, and
+  the request never asserts it.
+
+  Three consequences, and they are the reason for the rule rather than decoration:
+
+  - **There is one implementation of the clamping.** The minimum bar count, the ends of the
+    series and the price floor are decided in Rust, where `cargo test -p chart-engine` reaches
+    them without a browser.
+  - **A wheel event cannot accumulate drift.** Every gesture is applied to the engine's own last
+    answer rather than to a number the shell carried forward, so there is nothing for a rounding
+    error to compound in. Had the shell computed the new viewport itself and sent that, a rounding
+    error would compound with every tick and the chart would slowly disagree with its own axis.
+    The shell also folds a burst of events into one gesture per frame, which is a performance
+    measure rather than the correctness one — see below.
+  - **The no-arithmetic rule is kept, with one known exception.** This document's hard rule is
+    that the shell performs no arithmetic over market data. Deciding which bar is under the cursor
+    and which price sits at the top of the plot is that kind of arithmetic, and the shell does
+    neither — it divides a pixel offset by a rectangle's width, which is a display concern, and
+    sends the fraction. The exception is `drawThesis`, which maps the thesis's stop and target
+    prices to y itself; it is pre-existing, and `docs/19` row 18 tracks it precisely because
+    zooming the price axis has just made it live.
+
+  **Why a gesture and not just a viewport.** The alternative is for the shell to send the
+  viewport it wants. That works, and it is what most chart libraries do, but it makes the
+  *client* the authority on how many bars exist: the shell would have to know the series length
+  to express "all of them", and once it knows that it is one step from computing a bar index. A
+  gesture has no opinion about the series, so the request stays O(1) and the shell never needs
+  the bar count at all.
+
+  **What the scene reports is the request that would reproduce the view, not the window it drew.**
+  The engine slices with a `Window` — every field decided, `count` a number — and then reports
+  `Window::as_viewport()`: the same view in request form. The two are the same picture until the
+  series grows, and then only one of them still means what the user asked for. A chart that was
+  showing *everything* and echoed back "these five hundred bars" would keep those five hundred
+  and stop including new candles, permanently, one candle at a time — a worse failure than the
+  missing zoom it was meant to fix, and invisible on the frame it happens.
+  `a_fitted_view_stays_fitted_across_a_new_candle` and `a_fitted_scene_keeps_following_new_candles`
+  assert it at both levels.
+
+  The shell echoes the object verbatim rather than copying fields across, which is why it is
+  pinned: a field-by-field copy is where a rename becomes a chart that forgets where the user had
+  scrolled to, once per frame — which reads as a flicker, not as a bug.
+  `a_window_reports_the_request_that_would_reproduce_it` and `the_shell_reads_these_viewport_keys`
+  hold the two ends of it.
+
+  **What moves with the window, and what does not.** The candles, the volume profile, the VWAP
+  and the price axis are all measured over the **visible slice**. A profile over the whole
+  series beside candles showing a tenth of it is a chart that disagrees with itself, and VWAP is
+  period-dependent: a line computed over everything marks a price nobody in the window traded
+  at, and still looks like a VWAP. `the_profile_and_the_levels_follow_the_window` therefore
+  compares the numbers rather than the shape.
+
+  Zones are the deliberate exception. They keep the **whole** series and are clamped to the
+  window at draw time, because a band that formed before the left edge is still a band — and
+  clipping the detection would erase exactly the levels a trader scrolled back to look at.
+
+  **Heikin-Ashi is transformed before the slice, never after.** The transform is recursive from
+  the first candle, so slicing first would restart the averaging at the window's left edge and
+  give the same candle a different open depending on how far the user had scrolled. The window
+  must not change the data.
+
+  The gestures are `zoom_time`, `zoom_price`, `pan`, and `fit`. A hostile factor or anchor is
+  **bounded rather than rejected** — `NaN` is a no-op, an infinite factor is capped at ten —
+  because the failure mode of trusting one is a chart with nothing on it and no error anywhere.
+  `no_hostile_input_can_produce_an_unusable_window` sweeps 1,715 combinations to say so.
+
+  **What a client can actually send, measured rather than assumed.** JSON has no `NaN` or
+  `Infinity` literal, and `JSON.stringify(1e999)` emits `null` — so those two branches are
+  *unreachable from the wire*, and the wasm ABI check now proves it rather than leaving it as a
+  belief: `1e999` arrives as `invalid type: null, expected f64` and is refused before the engine
+  sees it. The hostile input that does reach the engine is a large *finite* one, and `1e308` is
+  capped to a ten-fold zoom exactly as intended.
+
+  So the wire is defended by serde's types plus `MAX_FACTOR`, and the `NaN` branches are for Rust
+  callers — where a factor can be *computed* rather than parsed, and a `NaN` from a future
+  calculation is a real possibility. Both are worth having; neither is load-bearing for the other.
+  That is worth writing down because "the guard would catch it" is a comfortable thing to believe
+  about a path that cannot reach the guard.
+
+  Two of those guards are worth naming, because both were written wrong first and both were
+  caught by a test rather than by reading:
+
+  - **The price floor is measured against `fitted`, not against the current span.** The first
+    version used the current span, which shrinks along with the thing it was supposed to
+    bound — so the floor could never bind, and the axis halved its way to zero. The test that
+    caught it asserted the *floor's value*, not merely that the span was positive; "positive"
+    would have been satisfied by any arbitrary small number.
+  - **`f64::clamp` does not sanitise `NaN`.** It is two comparisons, `NaN` fails both, and the
+    value passes straight through — so a `NaN` anchor multiplied into the price range and
+    produced an axis `is_usable` rejects. The sweep found it; no single example would have.
+
+  **A drag is one gesture with two components, not two gestures.** `pan` carries `time` and
+  `price` together because a pointer move has both axes at once. Sending them separately would
+  mean two engine calls and two full repaints per pointer move, and a rebuild is a wasm call
+  plus a canvas clear — at pointer rates that is a drag that feels like a slideshow. The shell
+  also coalesces through `requestAnimationFrame` and *folds* gestures rather than replacing
+  them, so a wheel burst becomes one rebuild and a drag that outruns the frame rate does not
+  lose the pixels it skipped.
+
+  ### What this interaction does not do yet
+
+  Recorded 2026-09-17, so the next reader does not have to discover them:
+
+  - **No pinch-to-zoom.** A one-finger drag pans on a touchscreen (pointer events and
+    `touch-action: none` give that for free), but two-finger zoom is not implemented. It is
+    not written down as done because it has never been run on a touch device.
+  - **The chart does not follow the right edge.** Once the user has zoomed, a new candle
+    arriving extends the series and the view stays where it was — so a zoomed chart stops
+    tracking the market until it is dragged back. Most platforms pin to the newest bar when
+    the view is already at the edge; that needs the engine to know whether it is, which is a
+    question the `Window` can already answer and nothing yet asks.
+  - **The time axis labels only the two ends.** `drawAxis` prints `scene.from` and `scene.to`
+    and nothing between, so a zoomed window gives no sense of the interval. Not new, but more
+    visible now that the window can be small.
+
   ### What this view does not have yet
 
   Recorded 2026-09-17, from using it. Four things are missing, and they are **not the same
@@ -189,14 +323,14 @@ CPU calc   GPU-friendly buffers
   as of" note covers zones and the concept layer, so this is a gap in a view this document
   claims — the one item here a phase can be held to.
 
-  **Never specified: zoom and pan.** Nothing in this document mentions zoom, pan, scroll or
-  wheel, and the done criteria do not either. So there is no interaction model to implement,
-  and the first deliverable is this paragraph rather than code. It is also not a shell-only
-  change: `frontend/chart-engine/src/scene.rs` derives `price_min`/`price_max` from **every**
-  candle it is handed and the engine has no viewport type, so a zoom needs a bar range and a
-  price range in the scene request before the shell has anything to bind a wheel event to.
-  Today the only control that changes how much is visible is the `limit` select, which
-  refetches.
+  **Never specified until 2026-09-17: zoom and pan.** Nothing in this document mentioned zoom,
+  pan, scroll or wheel, and the done criteria did not either — so there was no interaction model
+  to implement, and the first deliverable was the specification rather than code. That is now
+  written: see *The interaction model: a gesture, not a viewport* above, which is built and
+  tested. It was never a shell-only change either: `frontend/chart-engine/src/scene.rs` derived
+  `price_min`/`price_max` from **every** candle it was handed and the engine had no viewport
+  type, so a zoom needed a bar range and a price range in the scene request before the shell had
+  anything to bind a wheel event to.
 
   **Never specified: more than one chart.** The shell has a single `<canvas id="chart">`, and
   its panes (`thesis`, `strategy`, `bots`, `book`) are *side panels chosen by tab*, not chart

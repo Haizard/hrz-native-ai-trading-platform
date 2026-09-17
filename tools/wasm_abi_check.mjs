@@ -464,6 +464,197 @@ check(
   `got ${emptyLines.levels.length}`
 );
 
+// --- the viewport and the gestures ------------------------------------------
+//
+// The host tests cover `scene::build` thoroughly, but they build `Viewport` and
+// `Gesture` *in Rust* -- so they cannot see the JSON the shell actually sends. A
+// mis-tagged variant (`zoomTime` for `zoom_time`) or a field renamed from
+// `fraction` to `time` passes every Rust test and fails in the browser with a
+// chart that will not move. That is the gap this section exists to close, and it
+// is the same shape as the `lines` default found above.
+
+const all = build({ candles: candles(200), width: 900, height: 420 });
+check(
+  "a request that never mentions a viewport shows everything",
+  all.candles.length === 200 && all.viewport.from === 0,
+  `drew ${all.candles.length} of 200, viewport ${JSON.stringify(all.viewport)}`
+);
+check(
+  "and it reports `count` as null, so echoing it keeps following the market",
+  all.viewport.count === null,
+  JSON.stringify(all.viewport)
+);
+check(
+  "the reported viewport carries no `total` -- the shell never learns the bar count",
+  !("total" in all.viewport),
+  JSON.stringify(all.viewport)
+);
+
+// A window, exactly as the shell echoes one back.
+const windowed = build({
+  candles: candles(200),
+  width: 900,
+  height: 420,
+  viewport: { from: 50, count: 25, price: null },
+});
+check(
+  "a viewport narrows what is drawn",
+  windowed.candles.length === 25,
+  `drew ${windowed.candles.length}`
+);
+check(
+  "and the bars grow, because the slot is the plot over the window",
+  windowed.candles[0].w > all.candles[0].w,
+  `${windowed.candles[0].w} vs ${all.candles[0].w}`
+);
+check(
+  "and it comes back as the window that was asked for",
+  windowed.viewport.from === 50 && windowed.viewport.count === 25,
+  JSON.stringify(windowed.viewport)
+);
+check(
+  "the drawn bars come from the window, not from the start of the series",
+  windowed.price_min > all.price_min,
+  `window starts at ${windowed.price_min}, series at ${all.price_min}`
+);
+
+// The gestures, by the exact tags the shell sends.
+const zoomed = build({
+  candles: candles(200),
+  width: 900,
+  height: 420,
+  gesture: { kind: "zoom_time", factor: 2, anchor: 0.5 },
+});
+check(
+  "`zoom_time` is the tag the engine knows",
+  zoomed.candles.length === 100,
+  `drew ${zoomed.candles.length}, expected 100`
+);
+check(
+  "and the bar under the anchor held still",
+  Math.abs(zoomed.viewport.from - 50) <= 1,
+  `from ${zoomed.viewport.from}, expected about 50`
+);
+
+const panned = build({
+  candles: candles(200),
+  width: 900,
+  height: 420,
+  viewport: { from: 50, count: 100, price: null },
+  gesture: { kind: "pan", time: 0.5, price: 0 },
+});
+check(
+  "`pan` carries both axes and the time half moves",
+  panned.viewport.from === 100,
+  `from ${panned.viewport.from}, expected 100`
+);
+check(
+  "and panning did not change the zoom",
+  panned.viewport.count === 100,
+  `count ${panned.viewport.count}`
+);
+
+const priceZoomed = build({
+  candles: candles(200),
+  width: 900,
+  height: 420,
+  gesture: { kind: "zoom_price", factor: 2, anchor: 0.5 },
+});
+check(
+  "`zoom_price` comes back as an explicit range",
+  priceZoomed.viewport.price !== null &&
+    priceZoomed.viewport.price.max > priceZoomed.viewport.price.min,
+  JSON.stringify(priceZoomed.viewport.price)
+);
+check(
+  "and the axis really is narrower than the fitted one",
+  priceZoomed.price_max - priceZoomed.price_min < all.price_max - all.price_min,
+  `${priceZoomed.price_max - priceZoomed.price_min} vs ${all.price_max - all.price_min}`
+);
+
+const refitted = build({
+  candles: candles(200),
+  width: 900,
+  height: 420,
+  viewport: { from: 50, count: 25, price: { min: 150, max: 160 } },
+  gesture: { kind: "fit" },
+});
+check(
+  "`fit` hands back the whole series and the fitted price axis",
+  refitted.candles.length === 200 &&
+    refitted.viewport.price === null &&
+    refitted.viewport.count === null,
+  `drew ${refitted.candles.length}, viewport ${JSON.stringify(refitted.viewport)}`
+);
+
+// An unknown gesture is a refusal with a message, not a trap: the shell can show
+// the message and the page survives.
+let unknownGesture = null;
+try {
+  build({
+    candles: candles(20),
+    width: 900,
+    height: 420,
+    gesture: { kind: "zoomDiagonal", factor: 2 },
+  });
+} catch (e) {
+  unknownGesture = e.message;
+}
+check(
+  "an unknown gesture kind is refused with a message",
+  typeof unknownGesture === "string" && unknownGesture.includes("zoomDiagonal"),
+  unknownGesture ?? "it was accepted"
+);
+
+// Hostile numbers, through the real boundary rather than through Rust.
+//
+// JSON has no `NaN` or `Infinity` literal, so what a client can actually send is
+// a huge finite number or an out-of-range exponent. Whether `serde_json` turns
+// `1e999` into infinity or refuses it outright is a detail of the parser rather
+// than of this engine, so both outcomes are acceptable here -- and a blank chart
+// or a trap is not. The Rust sweep proves the arithmetic; this proves the JSON
+// survives the trip.
+for (const factor of [1e308, 1e999, -1e308, 0, -1, -0]) {
+  let refused = null;
+  let drawn = null;
+  try {
+    drawn = build({
+      candles: candles(200),
+      width: 900,
+      height: 420,
+      gesture: { kind: "zoom_time", factor, anchor: 0.5 },
+    }).candles.length;
+  } catch (e) {
+    refused = e.message;
+  }
+  check(
+    `a factor of ${factor} is refused or usable, never blank`,
+    refused !== null || (drawn >= 10 && drawn <= 200),
+    refused ?? `drew ${drawn} bars`
+  );
+}
+
+for (const anchor of [1e308, 1e999, -1e308]) {
+  let refused = null;
+  let usable = false;
+  try {
+    const scene = build({
+      candles: candles(200),
+      width: 900,
+      height: 420,
+      gesture: { kind: "zoom_price", factor: 2, anchor },
+    });
+    usable = scene.viewport.price !== null && scene.price_max > scene.price_min;
+  } catch (e) {
+    refused = e.message;
+  }
+  check(
+    `an anchor of ${anchor} is refused or usable, never blank`,
+    refused !== null || usable,
+    refused ?? `price axis ${usable ? "ok" : "collapsed"}`
+  );
+}
+
 // --- the failure path -------------------------------------------------------
 //
 // A trap would take the whole page down with no explanation; a non-zero return

@@ -26,6 +26,10 @@ const TOKEN_KEY = "atp.token";
 
 let wasm = null; // the chart engine instance
 let scene = null; // the last scene the engine produced
+// The window the engine resolved last frame, echoed back with the next request.
+// This is the shell's *entire* zoom state: it never computes one, it only holds
+// this and returns it. See "the interaction model" in `docs/14`.
+let viewport = null;
 let thesis = null; // the last thesis, for the chart overlay
 let socket = null; // the live candle channel
 let bookSocket = null; // the order-book channel
@@ -239,10 +243,6 @@ function draw() {
   if (thesis) drawThesis(ctx, scene, thesis);
 }
 
-/// The footprint ladder: bid x ask per level, per candle.
-///
-/// Every coordinate and every string comes from the engine. This function picks
-/// colours and calls fillText -- nothing else.
 /// Regions -- the chart's only *area* overlay.
 ///
 /// Every coordinate, every price and the label itself come from the engine.
@@ -285,6 +285,10 @@ function drawRegions(ctx, scene) {
   }
 }
 
+/// The footprint ladder: bid x ask per level, per candle.
+///
+/// Every coordinate and every string comes from the engine. This function picks
+/// colours and calls fillText -- nothing else.
 function drawFootprintGrid(ctx, scene) {
   const grid = scene.footprint;
   const font = Math.max(6, Math.min(11, grid.font_px));
@@ -607,10 +611,17 @@ function zonesOn() {
   return el("zones").getAttribute("aria-pressed") === "true";
 }
 
-function render() {
+/// Rebuild the scene and repaint.
+///
+/// `gesture` is what the user just did, if anything. The engine applies it to
+/// the window below and answers with the result, which becomes the window for
+/// the next frame -- so the shell only ever holds a *resolved* window and never
+/// computes one. That is what keeps the clamping, the minimum bar count and the
+/// price floor in a single implementation, in Rust, where the tests reach them.
+function render(gesture = null) {
   if (!wasm) return;
   const wrap = el("chart").parentElement;
-  scene = buildScene({
+  const request = {
     candles,
     width: wrap.clientWidth,
     height: wrap.clientHeight,
@@ -622,10 +633,163 @@ function render() {
     zones: zonesOn(),
     footprint: footprint ? footprint.candles : [],
     footprint_trades: footprint ? footprint.trades : 0,
-  });
+  };
+  // Assigned rather than sent as `null`: a null is not a missing field, and the
+  // engine's `Viewport` is a struct rather than an option, so `viewport: null`
+  // would be a deserialization error rather than a default. Absent means
+  // "everything, fitted", which is where a chart starts.
+  if (viewport) request.viewport = viewport;
+  if (gesture) request.gesture = gesture;
+
+  scene = buildScene(request);
+  viewport = scene.viewport;
   el("chartNote").textContent = scene.note || "";
   renderFootprintStats(scene.footprint);
   draw();
+}
+
+// ---------------------------------------------------------------------------
+// Chart interaction: wheel, drag, fit
+//
+// The shell's whole contribution to zooming is to turn a pointer position into a
+// *fraction of the plot rectangle* and say what the user did. It never decides
+// which bar is under the cursor or which price sits at the top of the plot --
+// those are the two numbers a chart gets wrong when two implementations
+// disagree, and `docs/14` keeps them in Rust.
+// ---------------------------------------------------------------------------
+
+/// Where a pointer is, as a fraction of the plot rectangle.
+///
+/// The only arithmetic here is a pixel offset over a rectangle's width, which is
+/// a display concern rather than a market one. Clamped to the plot, so a pointer
+/// that has wandered onto the price axis zooms about the nearest edge rather
+/// than about a fraction outside the chart.
+function plotFraction(event) {
+  if (!scene) return null;
+  const rect = el("chart").getBoundingClientRect();
+  const x = (event.clientX - rect.left - scene.plot.x) / scene.plot.w;
+  const y = (event.clientY - rect.top - scene.plot.y) / scene.plot.h;
+  return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+}
+
+/// How much one pixel of wheel travel zooms.
+///
+/// Exponential, so one notch is the same *proportion* at every zoom level. A
+/// linear step crawls when zoomed out and lurches when zoomed in, because the
+/// same number of bars is a different fraction of the window at each end.
+const ZOOM_PER_PIXEL = 0.0015;
+
+function onWheel(event) {
+  if (!scene) return;
+  const at = plotFraction(event);
+  if (!at) return;
+  // Ours now: the page must not scroll behind the chart.
+  event.preventDefault();
+
+  // `deltaMode` is pixels in Chrome and lines in Firefox, so normalise here and
+  // keep the engine's `factor` a plain multiplier. `deltaY` is positive when the
+  // wheel rolls towards the user, which is zoom *out*.
+  const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : 1);
+  const factor = Math.exp(-pixels * ZOOM_PER_PIXEL);
+
+  // Shift is the price axis, which is the convention every charting package
+  // uses and therefore the one a trader will try first.
+  applyGesture(
+    event.shiftKey
+      ? { kind: "zoom_price", factor, anchor: at.y }
+      : { kind: "zoom_time", factor, anchor: at.x }
+  );
+}
+
+// The drag in progress, or null. `appliedX`/`appliedY` are the last position
+// that was actually *sent*, not the last one seen -- see `onPointerMove`.
+let drag = null;
+
+function onPointerDown(event) {
+  if (!scene || event.button !== 0) return;
+  drag = { appliedX: event.clientX, appliedY: event.clientY };
+  el("chart").setPointerCapture(event.pointerId);
+  el("chart").classList.add("dragging");
+}
+
+function onPointerMove(event) {
+  if (!scene || !drag) return;
+  const rect = el("chart").getBoundingClientRect();
+  // Measured from the last *applied* position rather than the last event, so a
+  // move that gets coalesced into the next frame does not lose its pixels --
+  // otherwise a fast drag visibly lags behind the pointer.
+  const dx = (event.clientX - drag.appliedX) / scene.plot.w;
+  const dy = (event.clientY - drag.appliedY) / scene.plot.h;
+  if (dx === 0 && dy === 0) return;
+  drag.appliedX = event.clientX;
+  drag.appliedY = event.clientY;
+  // Dragging the chart to the right reveals *older* bars, so the view moves the
+  // other way -- the direction a finger moves a sheet of paper. Vertically it is
+  // the same way round as the pointer, because price runs up the screen.
+  applyGesture({ kind: "pan", time: -dx, price: dy });
+}
+
+function onPointerUp(event) {
+  if (!drag) return;
+  drag = null;
+  el("chart").classList.remove("dragging");
+  if (el("chart").hasPointerCapture(event.pointerId)) {
+    el("chart").releasePointerCapture(event.pointerId);
+  }
+}
+
+// The gesture waiting for the next frame, and the frame it is waiting for.
+let waitingGesture = null;
+let gestureFrame = 0;
+
+/// Fold a new gesture into the one already waiting for the next frame.
+///
+/// Folding rather than replacing, because both kinds compose: two pans of half a
+/// span are a pan of one span, and two zooms of 1.1 are a zoom of 1.21. Replacing
+/// would drop the earlier movement, and a drag that outran the frame rate would
+/// lag the pointer by however much it dropped.
+///
+/// Not exactly equal to applying them in sequence, and worth being honest about:
+/// the engine clamps each gesture it sees, so a burst folded into one frame can
+/// travel slightly further than the same burst spread across frames. The
+/// alternative is one wasm rebuild and one full repaint per wheel event, at wheel
+/// rate.
+///
+/// A gesture of a *different* kind replaces the waiting one. That only happens
+/// when two input devices are used inside a single frame, and the most recent
+/// event is the better guess at what the user meant.
+function foldGesture(waiting, next) {
+  if (!waiting || waiting.kind !== next.kind) return next;
+  switch (next.kind) {
+    case "pan":
+      return { kind: "pan", time: waiting.time + next.time, price: waiting.price + next.price };
+    case "zoom_time":
+    case "zoom_price":
+      return { kind: next.kind, factor: waiting.factor * next.factor, anchor: next.anchor };
+    default:
+      return next;
+  }
+}
+
+/// Send a gesture, at most one engine rebuild per frame.
+function applyGesture(gesture) {
+  waitingGesture = foldGesture(waitingGesture, gesture);
+  if (gestureFrame) return;
+  gestureFrame = requestAnimationFrame(() => {
+    gestureFrame = 0;
+    const next = waitingGesture;
+    waitingGesture = null;
+    if (next) render(next);
+  });
+}
+
+/// Throw the window away, so the next frame fits everything again.
+///
+/// Called when the *series* changes -- a different symbol, timeframe or bar
+/// count. Not on a chart-type change, where the same candles are still on
+/// screen and the window is still the one the user chose.
+function resetViewport() {
+  viewport = null;
 }
 
 /// Milliseconds per bar, for sizing a footprint window.
@@ -2265,7 +2429,11 @@ async function main() {
   el("registerGo").addEventListener("click", () => signIn(true));
   el("password").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(false); });
 
-  el("load").addEventListener("click", () => { refresh().then(connectLive); connectBook(); });
+  el("load").addEventListener("click", () => {
+    resetViewport();
+    refresh().then(connectLive);
+    connectBook();
+  });
   // A redraw, not a refetch: the zones are detected from the candles the engine
   // already has, so there is nothing new to ask the backend for.
   el("zones").addEventListener("click", (e) => {
@@ -2275,11 +2443,31 @@ async function main() {
     render();
   });
   // Changing the chart type can change the *window* (a footprint uses the
-  // span that has trades), so it refetches rather than just redrawing.
+  // span that has trades), so it refetches rather than just redrawing. The
+  // viewport is deliberately kept: the same candles are still on screen.
   el("mode").addEventListener("change", () => { refresh(); });
-  el("timeframe").addEventListener("change", () => { refresh().then(connectLive); });
+  // These change the series itself, so the window means nothing afterwards -- a
+  // bar index into the old series is not a bar in the new one, and the limit
+  // select changes how many exist at all.
+  el("timeframe").addEventListener("change", () => {
+    resetViewport();
+    refresh().then(connectLive);
+  });
   // The book is per symbol, so it follows the same change.
-  el("symbol").addEventListener("change", () => { refresh().then(connectLive); connectBook(); });
+  el("symbol").addEventListener("change", () => {
+    resetViewport();
+    refresh().then(connectLive);
+    connectBook();
+  });
+  el("fit").addEventListener("click", () => applyGesture({ kind: "fit" }));
+  // `passive: false` because the handler calls `preventDefault`. Without it the
+  // browser assumes the listener cannot cancel, and scrolls the page behind the
+  // chart anyway -- which is the "I can't zoom" report, from the other end.
+  el("chart").addEventListener("wheel", onWheel, { passive: false });
+  el("chart").addEventListener("pointerdown", onPointerDown);
+  el("chart").addEventListener("pointermove", onPointerMove);
+  el("chart").addEventListener("pointerup", onPointerUp);
+  el("chart").addEventListener("pointercancel", onPointerUp);
   el("ask").addEventListener("click", ask);
   el("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
 

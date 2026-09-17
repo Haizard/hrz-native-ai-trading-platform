@@ -42,12 +42,14 @@
 
 pub mod footprint;
 pub mod scene;
+pub mod viewport;
 
 pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
 pub use scene::{
     build, heikin_ashi, Bar, Level, Mode, Plot, Point, ProfileBar, Request, Scene, SceneOrigin,
     SceneRegion, Tick,
 };
+pub use viewport::{Gesture, PriceRange, Viewport, Window, MIN_BARS};
 
 /// The ABI the shell talks to.
 ///
