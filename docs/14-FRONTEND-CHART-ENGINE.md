@@ -133,6 +133,62 @@ CPU calc   GPU-friendly buffers
   traded back through is not a level any more. Rendering the two the same is how a chart
   teaches someone to buy something that no longer exists.
 
+  ### The footprint: a ladder, and the font that decides whether it is one
+
+  Added 2026-09-17, from using it. Footprint mode existed and drew *something*, and the report
+  was that it "is not well designed and presented": every cell was a colour, not one cell had a
+  number, and the value area was a single band across the whole plot.
+
+  **The defect that mattered was not the drawing, it was the font — and the decision was being
+  made in two places.** The engine sized `font_px` from the row height alone
+  (`row_height * 0.62`, clamped 6.0–11.0). The shell then dropped every number below
+  `font_px >= 7`. `footprint_routes` sizes its bucket for `TARGET_ROWS = 45`; 45 rows on a 500px
+  plot is an 11.1px row, so `11.1 * 0.62 = 6.9` — a tenth of a pixel under the shell's
+  threshold. **A real window drew every cell and not one number.** A ladder with no numbers is
+  not a footprint, and nothing in either half looked wrong on its own.
+
+  The two halves of one decision have to be made in one place, and that place is the engine,
+  because that is where the layout is:
+
+  | number | what it is for |
+  |---|---|
+  | `legible_rows(plot_height)` | the row cap, derived from the plot rather than a constant |
+  | `font_for_width(cell_width, pair_chars)` | the font the *widest* `bid x ask` needs |
+  | `Grid::font_px` | the smaller of the two, clamped to a floor |
+  | `Grid::show_text` | whether the shell should draw numbers at all |
+
+  **The cap and the font are two ends of one decision.** Capping at a constant `MAX_ROWS = 80`
+  and *then* clamping the font meant the font fell under legibility and the text silently
+  vanished — a cap that does not do what it claims. `legible_rows` derives the cap from the plot
+  height so the font lands at or above `MIN_FONT_PX = 7.0`, and a truncation is **announced**
+  (`Grid::note`, which `scene.rs` copies to `scene.note`) rather than being a silent middle
+  slice: a chart that quietly drops levels is a chart that lies about the window.
+
+  **A font that fits the row but not the cell is not legible either.** `1.40 x 2.85` is eleven
+  characters; at 8.6px that is 59px of a 54px column. Both dimensions have to fit, so both are
+  decided in the engine and the shell only reads `grid.show_text`. `MIN_COLUMN_PX` in the shell
+  went 54 → 64 at the same time, because `width` is the *element's* `clientWidth` while the plot
+  is narrower by the price axis — a 54px element column is a 53px cell, one hundredth of a pixel
+  under the point where no numbers draw.
+
+  **The value area is per column.** It used to be `grid.rows.some(|row| row.in_value_area)`, so
+  one candle's value area striped every other candle's ladder at prices those candles never
+  traded. `ColumnScene` cells carry `in_value_area` and the shell bands each column separately.
+
+  Three things the drawing had to gain to read as a ladder at all, judged against a professional
+  footprint from another platform: every cell with volume **filled** and tinted by which side won
+  (`0.3 + oneSided * 0.42`, so an unbalanced cell is more saturated), the pair drawn as one
+  centred string `bid x ask` rather than two numbers in two corners, and a faint column
+  background plus a frame so a column reads as a column even where it has no volume.
+
+  **It was verified by looking at it, which is the only way it could have been.** jsdom lays
+  nothing out, so `tools/shell_check.mjs` can only assert *what was painted*, never where.
+  `tools/footprint_preview.mjs` renders a real `Mode::Footprint` scene to a self-contained page
+  and headless Chrome screenshots it (`chrome.exe --headless=new --disable-gpu --hide-scrollbars
+  --virtual-time-budget=4000 --window-size=W,H --screenshot=...`). The ladder was judged from
+  that image. A presentation defect is not findable by asserting on a paint log, and a preview
+  tool is cheaper than the alternative.
+
   ### The concept layer: a client's document, not a new detector
 
   The toggle above draws one measurement. The thing it generalises to is **a document the
@@ -430,6 +486,29 @@ CPU calc   GPU-friendly buffers
   opposite is defensible. A trendline is two `(time, price)` points, and those two points mean
   the same thing on a 1m chart as on a 1h one; scoping to the timeframe would hide a level
   from the chart a trader switched to in order to check it.
+
+  **Two destructive controls, and neither of them guesses.** Added 2026-09-17, from the report
+  "when I click the clear button it removes all the attached tools on the chart instead of the
+  one I have selected". The button said `Clear`, sat in a row of *drawing tools*, and deleted
+  every drawing on the symbol on the first click — and there was no way to delete just the
+  selection at all. Both halves of that are the same defect: **a control whose label does not
+  say what it does is worse than a control that is missing**, because the user has already
+  spent the click learning the wrong lesson.
+
+  So there are now two, each named for its job:
+
+  | control | deletes | guard |
+  |---|---|---|
+  | `Delete` | the selected drawing, and only it | **disabled** when nothing is selected |
+  | `Clear all` | every drawing on this symbol | two clicks: the first asks (`Sure?`) for 4s |
+
+  The `Delete` control is disabled rather than inert, because a button that looks pressable and
+  does nothing is the same lie in a smaller size. The `Clear all` confirm is *in the button*
+  rather than a `confirm()` dialog: a modal blocks the chart, and the chart is exactly what the
+  user needs to look at to decide. Four seconds because that is long enough to read `Sure?` and
+  short enough that a stray second click is not the thing that wipes the document. The label
+  reverts on a timer, and the timer is disarmed when the click *does* clear, so the control
+  cannot be left armed by a path that already fired.
 
   **What a drawing does not do yet**, recorded rather than left to be discovered:
 
@@ -796,6 +875,66 @@ CPU calc   GPU-friendly buffers
   resources.
 - Apply client-side interpolation/coalescing for very high-frequency updates if the
   render loop can't keep up — never let the UI thread block waiting on network data.
+
+**Added 2026-09-17, from "why am I not seeing live data on the chart — it has been over seven
+hours and I am seeing the same candles on each timeframe".** The chart was not broken. There was
+no feed: `MARKET_FEED` defaults to `off`, so `ensure_feed` returned early with a `warn!` in the
+log and nothing at all on the wire. The chart drew whatever `GET /candles` returned and sat
+still. The silence was the defect — **a channel that is quiet for a reason it does not state is
+indistinguishable from a channel that is broken**, and the user had no way to tell which one
+they were looking at.
+
+So the market channel now says why, the way the order-book channel already did:
+
+- **`/ws/market/{symbol}/{timeframe}` sends a `Notice` naming `MARKET_FEED` and closes** when
+  `FeedMode` is not `Binance`, instead of sending `Subscribed` and then nothing. It fires
+  immediately rather than after a grace period, unlike the order book's `DEPTH_GRACE`: the
+  order book has to wait to see whether depth arrives, while this fact is already known.
+- **The shell holds the notice rather than writing it once.** `render()` owns the note strip,
+  so a message written straight into `el("chartNote")` is wiped by the next render — and a pan
+  is a render. The notice lives in a variable and is re-applied every frame, which is why it
+  survives a scroll wheel. The harness asserts exactly that, because "it appeared" and "it
+  stayed" are different claims and only the second one helps.
+
+**Two things were found while proving it, and both are the same shape.**
+
+*Every candle arrived twice.* `BinanceCollector` owns a `MultiTimeframeCandleBuilder` per symbol
+and publishes closed candles into the bus itself; `run_binance_feed` built a **second** builder
+from the same trades and published again. Identical values, because both were fed the same
+trades — so the shell's replace-on-equal-`open_time` hid it and the chart looked correct. The
+duplicate was only visible on the wire. **One builder, one publisher:** the gateway's builder is
+gone and `run_binance_feed` now only holds the collector open and watches the bus.
+
+*`stale_market_data` could not fire however dead the feed was.* Its input, `MD_FEED_AGE`
+(`market_data_feed_age_seconds`), was written **only** by `BotSupervisor::feed_candle` — which
+only tests call. The live path publishes through the collector, so `/metrics` carried no
+`market_data_feed_age_seconds` at all while candles were demonstrably flowing, and the alert rule
+read a metric nothing wrote. That is the organising rule in its purest form: **who writes this,
+and what happens if they don't?** The answer was "nobody, and the alert silently never fires".
+`feed_candle` is now split into `note_candle` (stamp the age) and the publish half, and the live
+path calls the stamp from a bus watcher. The test that covers it was **shown to fail** against
+the bug: commenting the `note_candle` call out makes it report *"a candle the collector published
+must age the feed"*.
+
+**And the third thing, which is the one the report was actually about, and it is not fixed.**
+The gateway's live feed is **never written to the database.** `insert_candles` and `insert_trades`
+have exactly one caller between them, in `tools/xtask`; `crates/market-data` has no `db` edge by
+design; and `run_binance_feed` subscribes the collector's trades and depth but never drains
+`collector.candle_stream()` or `collector.trade_stream()` into anything. Measured on the running
+deployment: the newest stored BTCUSDT 1m candle was **13.1 hours** behind the clock, and
+`GET /footprint/coverage` stopped at the same second.
+
+So the two chart modes behave completely differently, and nothing says so:
+
+| mode | while the page is open | after a reload |
+|---|---|---|
+| **candles** | moves — the socket appends each closed bar to the in-memory series | snaps back to the last backfill, and every bar since is gone |
+| **footprint** | **does not move at all** — the ladder is built by `/footprint`, which reads stored trades | identical |
+
+That is why "I am seeing the same candles on each timeframe" survived the feed being fixed: in
+footprint mode the ladder is not a live view of anything, it is a rendering of a database that
+stopped updating. It is tracked as `docs/19` row 21, and it is the same defect row 12 closed for
+the *CLI* collector — `xtask collect` pumps its candle stream into `candles`; the gateway does not.
 
 ## Done criteria
 - A user can load a symbol, switch to footprint mode, see live-updating footprint cells

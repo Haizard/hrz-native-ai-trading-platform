@@ -189,8 +189,16 @@ pub async fn market(
 
     let channel = format!("/ws/market/{symbol}/{timeframe}");
     let metrics = Arc::clone(&state.metrics);
-    upgrade
-        .on_upgrade(move |socket| market_loop(socket, candles, channel, symbol, timeframe, metrics))
+    // Read once, at connect. The feed mode cannot change while the socket is
+    // open, so "this channel will never carry a candle" is a fact about the
+    // connection rather than a guess about the market -- which is what makes it
+    // safe to say immediately instead of after a timeout.
+    let feed_off = state.bots.feed_mode() != crate::bots::FeedMode::Binance;
+    upgrade.on_upgrade(move |socket| {
+        market_loop(
+            socket, candles, channel, symbol, timeframe, metrics, feed_off,
+        )
+    })
 }
 
 async fn market_loop(
@@ -200,6 +208,7 @@ async fn market_loop(
     symbol: String,
     timeframe: String,
     metrics: Arc<Registry>,
+    feed_off: bool,
 ) {
     let (mut sink, mut stream) = socket.split();
     let connection = Connection::open(metrics, "market");
@@ -210,6 +219,26 @@ async fn market_loop(
         detail: serde_json::json!({ "symbol": symbol, "timeframe": timeframe }),
     };
     if send_text(&mut sink, &hello).await.is_err() {
+        return;
+    }
+
+    // An empty channel and a quiet market look identical from the client, which
+    // is why this says which one it is -- the same argument as the order book's
+    // no-book notice. There is no grace period here, unlike the order book: that
+    // one waits to see whether a book arrives, and this one already knows it
+    // cannot. Waiting would only make the silence last longer.
+    if feed_off {
+        let notice = Frame::Notice {
+            message: format!(
+                "no market feed is configured (MARKET_FEED is not `binance`), so no candle \
+                 will be published into this channel. The chart can still draw stored \
+                 candles from GET /candles?symbol={symbol}, but it will not move. Set \
+                 MARKET_FEED=binance and restart the gateway."
+            ),
+        };
+        let _ = send_text(&mut sink, &notice).await;
+        let _ = sink.close().await;
+        debug!(%channel, "market socket closed: no feed is configured");
         return;
     }
 

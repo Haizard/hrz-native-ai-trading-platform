@@ -314,6 +314,16 @@ const socketsFor = (prefix) => sockets.filter((s) => s.url.includes(prefix));
 /// The sockets still open for one path prefix.
 const openSocketsFor = (prefix) => socketsFor(prefix).filter((s) => !s.closed);
 
+/// Hand a socket a frame, the way the server would.
+///
+/// The one thing a silent stub cannot exercise is the *content* of a frame, and
+/// content is the whole point of the market channel's notice: a channel that says
+/// nothing is indistinguishable from one with nothing to say, which is exactly
+/// how a chart sat on seven-hour-old candles with no explanation anywhere.
+const deliver = (socket, frame) => {
+  if (socket.onmessage) socket.onmessage({ data: JSON.stringify(frame) });
+};
+
 // --- the API ----------------------------------------------------------------
 //
 // A small in-memory backend. It stores what it is given and echoes it back the
@@ -402,6 +412,58 @@ function candlesFor(count, symbol = "BTCUSDT", timeframe = "5m") {
   });
 }
 
+/// Milliseconds per bar, matching `BAR_MS` in `app.js`.
+///
+/// The coverage and footprint stubs need it: the shell asks for a window in
+/// milliseconds and steps back one bar at a time, so a stub that answered in any
+/// other unit would hand it an empty window.
+const BAR_MS = { "1m": 60_000, "5m": 300_000, "1h": 3_600_000, "4h": 14_400_000 };
+
+/// A window of trade-level ladders, in the shape `/footprint` returns.
+///
+/// Twenty levels on a half-point step, which is what a real window looks like
+/// after the route has sized the bucket. The width matters as much as the count:
+/// at twenty columns across this viewport a cell is about the 54px the shell
+/// sizes for, so the engine has to bring its font down to what the cell can hold.
+/// A tidier fixture -- three levels, four columns -- would have made the ladder
+/// legible for free and hidden the whole question.
+function footprintColumns(count) {
+  return Array.from({ length: count }, (_, i) => {
+    const base = 100 + i * 0.5;
+    const cells = Array.from({ length: 12 }, (_, k) => {
+      const price = base + k * 0.5;
+      const bid = 0.4 + ((i + k) % 5) * 0.3;
+      const ask = 0.5 + ((i * 2 + k) % 6) * 0.35;
+      // A diagonal imbalance on every fourth level, alternating side, so a check
+      // can tell an outlined cell from a filled one.
+      const imbalance =
+        (i + k) % 4 === 0
+          ? { side: k % 2 === 0 ? "buy" : "sell", ratio: 2.5, stacked: 2 }
+          : null;
+      return { price, bid, ask, delta: ask - bid, imbalance };
+    });
+    const bid_volume = cells.reduce((sum, c) => sum + c.bid, 0);
+    const ask_volume = cells.reduce((sum, c) => sum + c.ask, 0);
+    const poc = cells.reduce(
+      (best, c) => (c.bid + c.ask > best.bid + best.ask ? c : best),
+      cells[0]
+    );
+    return {
+      open_time: i * 300_000_000_000,
+      open: base,
+      high: base + 6,
+      low: base - 1,
+      close: base + 3,
+      volume: bid_volume + ask_volume,
+      bid_volume,
+      ask_volume,
+      delta: ask_volume - bid_volume,
+      poc: poc.price,
+      cells,
+    };
+  });
+}
+
 /// The query string of a request, as an object.
 const queryOf = (url) => new URLSearchParams(url.split("?")[1] ?? "");
 
@@ -444,6 +506,43 @@ window.fetch = async (path, options = {}) => {
     // would make two panes on two instruments indistinguishable -- and telling
     // them apart is what the second pane has to be checked for.
     return json(200, { symbol, timeframe, candles: candlesFor(200, symbol, timeframe) });
+  }
+
+  if (url.startsWith("/footprint/coverage")) {
+    // Milliseconds, because that is the unit the shell's `BAR_MS` is in and it
+    // does `to - columns * bar` on this number. A window in nanoseconds would put
+    // `from` in the future and the request would come out empty.
+    return json(200, {
+      symbol: (queryOf(url).get("symbol") ?? "BTCUSDT").toUpperCase(),
+      from: 0,
+      to: 40 * BAR_MS["5m"],
+    });
+  }
+
+  if (url.startsWith("/footprint?")) {
+    const query = queryOf(url);
+    const timeframe = query.get("timeframe") ?? "5m";
+    const bar = BAR_MS[timeframe] ?? BAR_MS["5m"];
+    // The *requested* window, not a number invented here. The shell sizes its
+    // column count from the viewport and then asks for that many bars, so a stub
+    // that always answered with twenty would hand the engine twenty ladders in a
+    // fourteen-column plot -- narrower cells than the shell sized for, and the
+    // engine would correctly say the numbers no longer fit. A fixture that
+    // ignores the request tests a different program.
+    const span = Number(query.get("to")) - Number(query.get("from"));
+    const count = Math.max(1, Math.round(span / bar));
+    return json(200, {
+      symbol: (query.get("symbol") ?? "BTCUSDT").toUpperCase(),
+      timeframe,
+      trades: 1_234,
+      bucket_size: 0.5,
+      // The full ladders, in `candles`. That is the route's own shape and the
+      // shell depends on both halves of it: it maps this array down to OHLC for
+      // the axis *and* hands the same array back as the request's `footprint`
+      // field. A fixture that returned a tidied candle list here produced
+      // "missing field `delta`" from the engine.
+      candles: footprintColumns(count),
+    });
   }
 
   if (url.startsWith("/drawings")) {
@@ -1064,10 +1163,211 @@ check(
   JSON.stringify(lastScene().drawings.map((d) => d.selected))
 );
 
-paneNode().querySelector(".clearDrawings").click();
+// --- deleting one, and clearing all ------------------------------------------
+//
+// The report that produced this section: "when I click the clear button it
+// removes all the attached tools on the chart instead of the one I have
+// selected". There were two jobs and one button, labelled `Clear`, doing the
+// destructive one. Now there are two controls, each named for what it does, and
+// the destructive one asks first.
+
+console.log("\ndeleting one, and clearing all");
+
+const clearButton = () => paneNode().querySelector(".clearDrawings");
+const deleteButton = () => paneNode().querySelector(".deleteDrawing");
+
+// The section above leaves one shape behind -- the Delete key removed the shape
+// *it* drew, so the count returned to where that section started, and that is not
+// zero. Every count below is relative to this, so "one of two left" means what it
+// says rather than depending on what ran before.
+const alreadyStored = backend.drawings.length;
+
+// Nothing is selected here: the Delete key above removed the shape that was.
+// The control has to be *disabled* rather than drawn and inert, because a button
+// that is offered and then does nothing is worse than one that is not there.
+check(
+  "with nothing selected the delete control is disabled, not silently inert",
+  deleteButton().disabled === true,
+  `disabled=${deleteButton().disabled}`
+);
+
+// Two shapes, so "delete the selected one" and "delete everything" give
+// different answers and the check can tell them apart.
+pickTool("trendline");
+pointer("pointerdown", 240, 180);
+await settle();
+pointer("pointermove", 520, 240);
+await settle();
+pointer("pointerup", 520, 240);
 await settle();
 await settle();
-check("Clear empties the store", backend.drawings.length === 0, `${backend.drawings.length} left`);
+pointer("pointerdown", 300, 280);
+await settle();
+pointer("pointermove", 620, 330);
+await settle();
+pointer("pointerup", 620, 330);
+await settle();
+await settle();
+
+const twoStored = backend.drawings.length - alreadyStored;
+const twoSelected = lastRequest().drawings.filter((d) => d.selected).length;
+check(
+  "two shapes on the chart and exactly one of them selected",
+  twoStored === 2 && twoSelected === 1,
+  `${twoStored} drawn, ${twoSelected} selected`
+);
+check(
+  "and the delete control is offered now that there is something to delete",
+  deleteButton().disabled === false,
+  `disabled=${deleteButton().disabled}`
+);
+
+deleteButton().click();
+await settle();
+await settle();
+await settle();
+
+check(
+  "the delete control removes the selection and leaves the rest",
+  backend.drawings.length === alreadyStored + 1,
+  `${backend.drawings.length - alreadyStored} left of ${twoStored}`
+);
+check(
+  "and the shape it kept is off the chart too, so nothing was left selected",
+  lastScene().drawings.length === alreadyStored + 1 &&
+    !lastScene().drawings.some((d) => d.selected),
+  `${lastScene().drawings.length} drawn`
+);
+
+// `Clear all` is the destructive one, so it takes two clicks. The first is the
+// question; the second is the answer.
+clearButton().click();
+await settle();
+check(
+  "the first click on Clear all only asks",
+  backend.drawings.length === alreadyStored + 1 && clearButton().textContent.trim() === "Sure?",
+  `${backend.drawings.length - alreadyStored} left, label "${clearButton().textContent.trim()}"`
+);
+
+clearButton().click();
+await settle();
+await settle();
+await settle();
+
+check(
+  "and the second one clears everything",
+  backend.drawings.length === 0,
+  `${backend.drawings.length} left`
+);
+check(
+  "and the label goes back to naming what the button does",
+  clearButton().textContent.trim() === "Clear all",
+  `"${clearButton().textContent.trim()}"`
+);
+
+// --- a market channel that cannot carry anything says so ----------------------
+//
+// The other half of the same report: seven hours of the same candles on every
+// timeframe, with nothing anywhere saying why. The cause was `MARKET_FEED` not
+// being set, and the only evidence was a line in a startup log. The gateway now
+// sends a notice and closes, the way the order-book channel already did -- so the
+// shell has to *read* it, and keep it: the socket closes immediately afterwards
+// and a render would otherwise wipe the strip.
+
+console.log("\na market channel with no feed");
+
+const market = openSocketsFor("/ws/market/").slice(-1)[0];
+check(
+  "a market channel is open to deliver the notice on",
+  Boolean(market),
+  openSocketsFor("/ws/market/").map((s) => s.url.replace(/^.*\/ws/, "/ws")).join(", ") || "(none)"
+);
+
+if (market) {
+  deliver(market, {
+    type: "notice",
+    message: "no market feed is configured (MARKET_FEED is not `binance`)",
+  });
+  await settle();
+  check(
+    "a notice on the market channel reaches the strip under the chart",
+    note().includes("MARKET_FEED"),
+    note() || "(empty)"
+  );
+
+  // The server closes the channel straight after the notice, and the shell must
+  // not treat that as "forget what it said".
+  market.close();
+  await settle();
+  check(
+    "and closing the channel does not wipe the reason it closed",
+    note().includes("MARKET_FEED"),
+    note() || "(empty)"
+  );
+
+  // A render owns that strip, so the notice has to outrank the engine's own note
+  // rather than being written into it once. A wheel is the cheapest render there
+  // is, and it is also what the user was doing while the chart looked frozen.
+  wheel(PANE, 120);
+  await settle();
+  await settle();
+  check(
+    "and it survives the render a pan would have triggered",
+    note().includes("MARKET_FEED"),
+    note() || "(empty)"
+  );
+}
+
+// --- the footprint ladder -----------------------------------------------------
+//
+// The chart the user reported as "not well designed and presented". The cause
+// was not the drawing: the engine sized its font from the row height alone and
+// the shell dropped any text under 7px, so a real window came out as a colour
+// grid with no numbers in it at all. Nothing but a real scene can catch that --
+// the fixture has to have the row count and the column width of a real one -- so
+// this switches a chart to footprint mode and reads what was painted.
+
+console.log("\nthe footprint ladder");
+
+const modeSelect = paneNode().querySelector(".mode");
+const textBefore = painted.text.length;
+modeSelect.value = "footprint";
+change(modeSelect);
+await settle();
+await settle();
+await settle();
+
+const ladder = painted.text.slice(textBefore);
+const pairs = ladder.filter((t) => /^[\d.]+( [KM])? x [\d.]+( [KM])?$/.test(t));
+check(
+  "a footprint draws its ladder as `bid x ask` pairs",
+  pairs.length > 0,
+  `${pairs.length} pairs of ${ladder.length} strings; e.g. ${pairs.slice(0, 3).join(" | ") || "(none)"}`
+);
+// The contract, and the bug: the engine sizes the font from the row height *and*
+// the cell width and says whether it fits; the shell used to hold its own
+// threshold and the two drifted, which is how a real window came out as a colour
+// grid with no numbers. This fails if the engine ever hands back a font it cannot
+// draw, or if the shell stops believing it.
+const grid = lastScene().footprint;
+check(
+  "and the engine, not the shell, decided that the numbers fit",
+  grid.show_text === true && pairs.length > 0,
+  `show_text=${grid.show_text}, font=${grid.font_px.toFixed(2)}px, ${grid.columns.length} columns`
+);
+check(
+  "and the window totals reach the strip under the chart",
+  paneNode().querySelector(".footprintStats").textContent.includes("1,234"),
+  paneNode().querySelector(".footprintStats").textContent.slice(0, 60)
+);
+
+// Back to candles, because the sections below are about the candle chart and a
+// pane left in footprint mode would be testing a different one.
+modeSelect.value = "candles";
+change(modeSelect);
+await settle();
+await settle();
+await settle();
 
 // --- a drawing belongs to a symbol -------------------------------------------
 //

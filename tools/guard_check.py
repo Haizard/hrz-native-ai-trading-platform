@@ -198,6 +198,61 @@ MUTATIONS = [
         '    pane.root.querySelector(".close").hidden = false;',
         ["closing down to one chart leaves it open, with nothing left to close"],
     ),
+    # --- the two destructive controls, and the silent channel -----------------
+    #
+    # The report behind these: "when I click the clear button it removes all the
+    # attached tools on the chart instead of the one I have selected", and seven
+    # hours of the same candles with nothing anywhere saying why.
+    (
+        "Clear all deletes everything on the first click",
+        APP,
+        "    if (now > clearArmedUntil) {",
+        "    if (false) {",
+        ["the first click on Clear all only asks"],
+    ),
+    (
+        "the delete control is never disabled",
+        APP,
+        "    if (remove) remove.disabled = !selectedDrawing;",
+        "    if (remove) remove.disabled = false;",
+        ["with nothing selected the delete control is disabled, not silently inert"],
+    ),
+    (
+        "the delete control clears the chart instead of deleting the selection",
+        APP,
+        '    el("deleteDrawing").addEventListener("click", deleteSelected);',
+        '    el("deleteDrawing").addEventListener("click", clearDrawings);',
+        ["the delete control removes the selection and leaves the rest"],
+    ),
+    (
+        "a notice on the market channel is ignored",
+        APP,
+        '      } else if (frame.type === "notice") {',
+        "      } else if (false) {",
+        ["a notice on the market channel reaches the strip under the chart"],
+    ),
+    (
+        "the notice is written to the strip but not held",
+        APP,
+        "        feedNotice = frame.message;\n        el(\"chartNote\").textContent = feedNotice;",
+        '        el("chartNote").textContent = frame.message;',
+        ["and it survives the render a pan would have triggered"],
+    ),
+    (
+        "the shell goes back to splitting a cell into two numbers",
+        APP,
+        '        ctx.fillText(pair, cell.x + cell.w / 2, cell.y + cell.h / 2);',
+        "        ctx.fillText(cell.bid_text, cell.x + 4, cell.y + cell.h / 2);\n"
+        "        ctx.fillText(cell.ask_text, cell.x + 40, cell.y + cell.h / 2);",
+        ["a footprint draws its ladder as `bid x ask` pairs"],
+    ),
+    (
+        "the footprint asks for the largest column count the engine cannot draw",
+        APP,
+        "    const MIN_COLUMN_PX = 64;",
+        "    const MIN_COLUMN_PX = 54;",
+        ["a footprint draws its ladder as `bid x ask` pairs"],
+    ),
 ]
 
 originals = {}

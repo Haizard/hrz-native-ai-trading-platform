@@ -181,7 +181,7 @@ function buildScene(request) {
 const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartHint", "chartNote",
   "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "fit",
-  "load", "close", "clearDrawings",
+  "load", "close", "deleteDrawing", "clearDrawings",
 ]);
 
 /// A timeframe's length in minutes, for ordering the options.
@@ -274,6 +274,14 @@ function createChartPane(root, hooks = {}) {
     hline: "#d29922",
     rect: "#a371f7",
     fib: "#3fb950",
+    // The footprint ladder. Buy-aggressed volume is the ask side winning and
+    // sell-aggressed is the bid side winning, which is the same convention the
+    // level colours above already follow -- a level drawn green means the same
+    // thing in both panels. `footValue` is the value area, and is the profile
+    // blue rather than a new colour, because it is the same concept.
+    footBuy: "#a371f7",
+    footSell: "#4aa3ff",
+    footValue: "#58a6ff",
     // The two bands the engine ships with. A concept a client defined has no
     // entry here -- it cannot, we have never heard of it -- which is what the
     // side fallback below is for.
@@ -388,66 +396,142 @@ function createChartPane(root, hooks = {}) {
 
   /// The footprint ladder: bid x ask per level, per candle.
   ///
-  /// Every coordinate and every string comes from the engine. This function picks
-  /// colours and calls fillText -- nothing else.
+  /// ## What this is trying to be
+  ///
+  /// A footprint is read as a *grid*, so the drawing has to make the grid
+  /// visible. The first version filled a cell only where there was a diagonal
+  /// imbalance, so a ladder with few imbalances came out as a scatter of small
+  /// boxes on a dark field: which prices traded, which side won each of them and
+  /// where the value area sat were all in the data and none of them were on the
+  /// screen. The reference chart in `docs/14` fills every cell that has volume,
+  /// tints it by which side won, and outlines the ones that are imbalanced.
+  ///
+  /// Three rules follow, and each of them was a defect that could be seen:
+  ///
+  /// 1. **Every cell with volume is filled**, and the tint's strength is how
+  ///    one-sided the level was, so the ladder reads as a heat map rather than
+  ///    as a list of exceptions.
+  /// 2. **The value area is banded per column, not per row.** The first version
+  ///    asked whether *any* column had a value-area cell at that row and then
+  ///    banded the full width -- so one candle's value area drew a stripe across
+  ///    every other candle's ladder, at prices those candles never traded.
+  /// 3. **The pair is drawn as `bid x ask`, centred.** Two numbers pushed into
+  ///    the two halves of a wide cell stop reading as a pair at all, which is
+  ///    what a 3-column window looked like: a number, a gap, another number.
+  ///
+  /// Every coordinate and every string still comes from the engine, and the
+  /// ratio and run length arrive as numbers used only to pick an alpha and a
+  /// line width -- presentation, not arithmetic.
   function drawFootprintGrid(ctx, scene) {
     const grid = scene.footprint;
     const font = Math.max(6, Math.min(11, grid.font_px));
-    const showText = font >= 7;
-
-    // The value-area band, behind everything, so the eye finds it first.
-    for (const row of grid.rows) {
-      const inside = grid.columns.some((column) =>
-        column.cells.some((cell) => cell.y === row.y && cell.in_value_area)
-      );
-      if (!inside) continue;
-      ctx.fillStyle = "rgba(88, 166, 255, 0.05)";
-      ctx.fillRect(scene.plot.x, row.y, scene.plot.w, row.h);
-    }
+    // The engine decides whether a number fits, not the shell. It used to be a
+    // threshold here -- `font_px >= 7` -- while the engine clamped its font at 6,
+    // and the two drifted: a window of the row count the route targets came out at
+    // 6.9px, so every cell was drawn as a colour and not one number was. A ladder
+    // with no numbers is not a footprint.
+    const showText = grid.show_text;
+    // Looser than the padding the engine sized the font for (3px a side), on
+    // purpose: this check can only drop a pair the engine already decided fits,
+    // and a margin that drifted *above* the engine's would silently undo its
+    // arithmetic -- which is the shape of the bug this whole arrangement fixes.
+    const margin = Math.max(2, font * 0.3);
 
     ctx.font = `${font}px ui-monospace, monospace`;
     ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+
+    // Behind everything, so the eye finds the value area first -- one column at
+    // a time.
+    for (const column of grid.columns) {
+      for (const cell of column.cells) {
+        if (!cell.in_value_area) continue;
+        ctx.globalAlpha = 0.14;
+        ctx.fillStyle = COLORS.footValue;
+        ctx.fillRect(cell.x, cell.y, cell.w, cell.h);
+        ctx.globalAlpha = 1;
+      }
+    }
 
     for (const column of grid.columns) {
-      const half = column.w / 2;
+      // A faint column background, then the frame. Without it a row where a
+      // candle traded nothing is the same colour as the space outside the grid,
+      // and a sparse ladder stops reading as columns at all -- which is what the
+      // reference chart's tinted columns are for.
+      ctx.fillStyle = "#12171f";
+      ctx.fillRect(column.x, scene.plot.y, column.w, scene.plot.h);
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(column.x + 0.5, scene.plot.y + 0.5, column.w - 1, scene.plot.h - 1);
 
       for (const cell of column.cells) {
-        // A diagonal imbalance is the signal a footprint exists to show, so it
-        // gets the only saturated fill on the chart. Buy-aggressed volume is the
-        // ask side winning; sell-aggressed is the bid side.
-        if (cell.side === "buy") {
-          ctx.fillStyle = "rgba(194, 100, 216, 0.28)";
-          ctx.fillRect(cell.x + 1, cell.y, cell.w - 2, cell.h);
-        } else if (cell.side === "sell") {
-          ctx.fillStyle = "rgba(74, 158, 218, 0.28)";
-          ctx.fillRect(cell.x + 1, cell.y, cell.w - 2, cell.h);
-        }
+        const total = cell.bid + cell.ask;
+        // A price level with no volume is background. It has a row on the shared
+        // axis -- that is what the axis is -- but nothing traded there.
+        if (total <= 0) continue;
+
+        // `side` is the *diagonal* imbalance: this level measured against the one
+        // below it, not simply which of this cell's two numbers is larger. That
+        // is why a bid-heavy cell can still be flagged as a buy imbalance, and
+        // why the tint here answers a different question from `side`.
+        const buyShare = cell.ask / total;
+        const leansBuy = buyShare >= 0.5;
+        const oneSided = Math.abs(buyShare - 0.5) * 2;
+        const colour = leansBuy ? COLORS.footBuy : COLORS.footSell;
+
+        ctx.globalAlpha = 0.3 + oneSided * 0.42;
+        ctx.fillStyle = colour;
+        ctx.fillRect(cell.x + 1, cell.y, cell.w - 2, cell.h - 1);
+        ctx.globalAlpha = 1;
 
         if (cell.is_poc) {
-          ctx.strokeStyle = "rgba(230, 237, 243, 0.55)";
-          ctx.strokeRect(cell.x + 1, cell.y + 0.5, cell.w - 2, Math.max(1, cell.h - 1));
+          // The column's own point of control: the price it did most of its
+          // business at. Outlined rather than filled, so the numbers survive it.
+          ctx.strokeStyle = COLORS.poc;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(cell.x + 1.5, cell.y + 0.5, cell.w - 3, Math.max(1, cell.h - 1));
+        }
+
+        if (cell.side) {
+          // How one-sided (`ratio`) and how many levels in a row (`stacked`) --
+          // the two numbers a footprint is actually traded on. They set the
+          // outline rather than being printed over the pair, which at 7px would
+          // leave neither legible.
+          const strength = Math.max(0, Math.min(1, ((cell.ratio || 1) - 1) / 3));
+          ctx.strokeStyle = colour;
+          ctx.globalAlpha = 0.7 + strength * 0.3;
+          ctx.lineWidth = 1 + Math.min(2, (cell.stacked || 1) - 1);
+          ctx.strokeRect(cell.x + 1.5, cell.y + 0.5, cell.w - 3, Math.max(1, cell.h - 1));
+          ctx.globalAlpha = 1;
         }
 
         if (!showText) continue;
-        const mid = cell.y + cell.h / 2;
-        ctx.fillStyle = cell.bid >= cell.ask ? "#e6edf3" : "#8b949e";
-        ctx.textAlign = "right";
-        ctx.fillText(cell.bid_text, cell.x + half - 3, mid);
-        ctx.fillStyle = cell.ask >= cell.bid ? "#e6edf3" : "#8b949e";
-        ctx.textAlign = "left";
-        ctx.fillText(cell.ask_text, cell.x + half + 3, mid);
+        const pair = `${cell.bid_text} x ${cell.ask_text}`;
+        // A pair that does not fit is not drawn at all: a truncated number is a
+        // wrong number, and a ladder of wrong numbers is worse than a ladder of
+        // colours. Below ~54px a column is a heat map, which is the honest thing
+        // for it to be.
+        if (ctx.measureText(pair).width > cell.w - margin * 2) continue;
+        // One colour for the pair. The tint already says which side won, and
+        // splitting the pair into a bright half and a dim half cost three text
+        // measurements per cell on every frame of a pan.
+        ctx.fillStyle = "#e6edf3";
+        ctx.fillText(pair, cell.x + cell.w / 2, cell.y + cell.h / 2);
       }
 
-      // The candle summary: total volume over the delta, under the ladder.
+      // The candle's own totals, in its own column, under its own ladder.
       const summary = column.summary;
-      ctx.fillStyle = "#1c2129";
+      ctx.fillStyle = "#161b22";
       ctx.fillRect(summary.x + 1, summary.y, summary.w - 2, summary.h);
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(summary.x + 0.5, summary.y + 0.5, summary.w - 1, summary.h - 1);
       if (showText) {
         ctx.textAlign = "center";
         ctx.fillStyle = "#e6edf3";
-        ctx.fillText(summary.volume_text, summary.x + summary.w / 2, summary.y + font * 0.9);
+        ctx.fillText(summary.volume_text, summary.x + summary.w / 2, summary.y + font * 0.95);
         ctx.fillStyle = summary.delta_positive ? COLORS.up : COLORS.down;
-        ctx.fillText(summary.delta_text, summary.x + summary.w / 2, summary.y + summary.h - font * 0.7);
+        ctx.fillText(summary.delta_text, summary.x + summary.w / 2, summary.y + summary.h - font * 0.75);
       }
     }
     ctx.textAlign = "left";
@@ -726,10 +810,18 @@ function createChartPane(root, hooks = {}) {
   // the OHLC for the axis and the ladders for the grid, and they come from two
   // routes.
   let footprint = null;
+  // Why the live channel cannot carry anything, when the server says so. Held
+  // rather than written straight into the strip, because `render` owns that strip
+  // and a message written once is wiped by the next pan -- which is the "the
+  // chart is frozen and nothing anywhere says why" that this exists to end.
+  let feedNotice = "";
 
   async function refresh() {
     const message = el("chartMsg");
     footprint = null;
+    // A reload is followed by a reconnect, so whatever the last channel said
+    // about itself is about to be said again -- or not.
+    feedNotice = "";
     // Before the first render, so the drawings are in the frame the candles land
     // in rather than appearing a beat later. They belong to the symbol, so this is
     // also where a symbol change picks up the new one's.
@@ -830,8 +922,13 @@ function createChartPane(root, hooks = {}) {
 
     scene = buildScene(request);
     viewport = scene.viewport;
-    el("chartNote").textContent = scene.note || "";
+    el("chartNote").textContent = feedNotice || scene.note || "";
     renderFootprintStats(scene.footprint);
+    // The toolbar is about the *selection*, and the selection changes from the
+    // chart as well as from the toolbar -- a click on a shape, an `Esc`, a drop.
+    // Updating it here means there is one place that decides and no path that
+    // forgets, which is the same arrangement `aria-pressed` already uses.
+    refreshDrawingButtons();
     draw();
   }
 
@@ -1368,6 +1465,44 @@ function createChartPane(root, hooks = {}) {
     }
   }
 
+  /// How long an armed "Clear all" stays armed.
+  ///
+  /// Long enough to be a deliberate second click, short enough that a button
+  /// nobody touches again does not stay dangerous. The timeout is the point: a
+  /// control that stays armed until something else happens fires on a click the
+  /// user made about something else.
+  const CLEAR_ARMED_MS = 4000;
+
+  /// When the armed "Clear all" gives up, as a `Date.now()` reading. 0 is disarmed.
+  let clearArmedUntil = 0;
+  let clearArmedTimer = 0;
+
+  /// Say which of the drawing controls can do anything.
+  ///
+  /// Delete is *disabled* rather than drawn and then silently returning: a
+  /// button that is drawn and refuses is worse than one that is not there, and
+  /// "nothing is selected" is a state the user can be in at any moment rather
+  /// than an error.
+  function refreshDrawingButtons() {
+    const remove = el("deleteDrawing");
+    if (remove) remove.disabled = !selectedDrawing;
+  }
+
+  /// Disarm "Clear all", if it is armed.
+  function disarmClear() {
+    if (!clearArmedUntil) return;
+    clearArmedUntil = 0;
+    if (clearArmedTimer) {
+      clearTimeout(clearArmedTimer);
+      clearArmedTimer = 0;
+    }
+    const button = el("clearDrawings");
+    if (button) {
+      button.textContent = "Clear all";
+      button.setAttribute("aria-pressed", "false");
+    }
+  }
+
   /// Remove the selected drawing.
   async function deleteSelected() {
     const id = selectedDrawing;
@@ -1385,8 +1520,34 @@ function createChartPane(root, hooks = {}) {
     }
   }
 
-  /// Remove every drawing on this symbol.
+  /// Remove every drawing on this symbol, after asking.
+  ///
+  /// ## Why this asks
+  ///
+  /// This button was labelled `Clear` and deleted everything the instant it was
+  /// clicked, sitting in a row of *drawing tools*. So the reading every other
+  /// charting package trains -- "clear the thing I have selected" -- was wrong,
+  /// and nothing said so. A control whose label does not match what it does is
+  /// worse than a missing one: the user finds out afterwards, and the drawings
+  /// are already gone.
+  ///
+  /// So it is named for what it does and it takes two clicks. The second click is
+  /// the confirmation, and it is deliberately not a modal: an interrupt dialog
+  /// for a chart annotation is a heavier cost than the mistake it prevents.
   async function clearDrawings() {
+    const button = el("clearDrawings");
+    const now = Date.now();
+    if (now > clearArmedUntil) {
+      clearArmedUntil = now + CLEAR_ARMED_MS;
+      if (button) {
+        button.textContent = "Sure?";
+        button.setAttribute("aria-pressed", "true");
+      }
+      clearArmedTimer = setTimeout(disarmClear, CLEAR_ARMED_MS);
+      return;
+    }
+    disarmClear();
+
     const ids = drawings.map((d) => d.id);
     if (!ids.length) return;
     selectedDrawing = null;
@@ -1493,17 +1654,24 @@ function createChartPane(root, hooks = {}) {
   ///
   /// ## Why the column count comes from the viewport
   ///
-  /// A ladder cell has to fit `0.44 x 2.75` -- about nine characters. Below ~54px
-  /// per column the two numbers collide and the ladder stops being readable, which
-  /// is what the first version of this looked like: 40 columns of smeared text.
-  /// The column count is therefore a layout decision, which is the shell's to
-  /// make, and the engine is told how many candles to expect.
+  /// A ladder cell has to fit `1.40 x 2.85` -- eleven characters. Below about
+  /// 64px per column the two numbers collide and the ladder stops being readable,
+  /// which is what the first version of this looked like: 40 columns of smeared
+  /// text. The column count is therefore a layout decision, which is the shell's
+  /// to make, and the engine is told how many candles to expect.
+  ///
+  /// 64 rather than the 54 this started at, and the difference is the price axis:
+  /// `width` is the whole element and the plot is narrower, so a 54px *element*
+  /// column is a 53px *cell* -- which the engine sizes a 6.98px font for, one
+  /// hundredth of a pixel under the point where it draws no numbers at all. The
+  /// engine decides that now, but a shell that asks for the largest column count
+  /// the engine can draw is asking for the failure.
   async function loadFootprint() {
     const symbol = el("symbol").value;
     const timeframe = el("timeframe").value;
     const width = el("chart").parentElement.clientWidth || 900;
 
-    const MIN_COLUMN_PX = 54;
+    const MIN_COLUMN_PX = 64;
     const columns = Math.max(8, Math.min(40, Math.floor(width / MIN_COLUMN_PX)));
 
     const coverage = await api(`/footprint/coverage?symbol=${symbol}`);
@@ -1548,6 +1716,14 @@ function createChartPane(root, hooks = {}) {
         else candles.push(incoming);
         if (candles.length > Number(el("limit").value) + 50) candles.shift();
         render();
+      } else if (frame.type === "notice") {
+        // The server's explanation outranks the engine's note. "The feed is not
+        // configured" is why the candles are not moving; the engine's own note
+        // would be a true answer to a different question. The channel closes
+        // straight after this, and `onclose` deliberately leaves the message
+        // alone -- a socket that closed is not a reason to forget why.
+        feedNotice = frame.message;
+        el("chartNote").textContent = feedNotice;
       } else if (frame.type === "lagged") {
         el("chartNote").textContent =
           `the live feed dropped ${frame.dropped} candles; reload to resynchronise`;
@@ -1599,6 +1775,10 @@ function createChartPane(root, hooks = {}) {
     for (const button of root.querySelectorAll(".tools button[data-tool]")) {
       button.addEventListener("click", () => selectTool(button.dataset.tool));
     }
+    // Two destructive controls rather than one ambiguous one: this deletes the
+    // selection, the other deletes everything and asks first. The `title` on each
+    // is the only place either behaviour is stated, so they have to be exact.
+    el("deleteDrawing").addEventListener("click", deleteSelected);
     el("clearDrawings").addEventListener("click", clearDrawings);
     // `passive: false` because the handler calls `preventDefault`. Without it the
     // browser assumes the listener cannot cancel, and scrolls the page behind the

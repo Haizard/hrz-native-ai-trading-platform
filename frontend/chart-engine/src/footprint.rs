@@ -212,14 +212,92 @@ pub struct Grid {
     pub stats: Stats,
     /// Font size the rows were sized for, so the shell does not guess.
     pub font_px: f64,
+    /// Whether the shell should draw the numbers at all.
+    ///
+    /// Decided here rather than in the shell, because legibility is a property of
+    /// the layout and the layout is this crate's. The shell used to carry its own
+    /// `font_px >= 7` while this crate clamped at 6.0, and the two drifted apart:
+    /// a window of the row count `footprint_routes` targets came out at 6.9px, so
+    /// the ladder drew every cell as a colour and not one number.
+    pub show_text: bool,
+    /// The caveat that goes with a truncated axis, when it was truncated.
+    ///
+    /// On the grid rather than recomputed by the caller: the cap depends on the
+    /// plot height, and a caller working it out a second time is a second answer
+    /// waiting to disagree.
+    pub note: Option<Note>,
 }
 
-/// Rows beyond this and the text stops being readable.
+/// Rows beyond this and the axis is a smear at any height.
 ///
-/// A 5m BTCUSDT window on a $10 bucket runs to 160 levels, which at any sane
-/// canvas height is a smear. The cap is reported in the stats rather than
-/// silently applied, so a caller can ask for a coarser bucket or fewer candles.
+/// A ceiling, not the real cap: what a window can carry depends on the plot
+/// height, and [`legible_rows`] is where that is worked out. This exists because
+/// a caller can hand [`layout`] a plot of any height, and four hundred rows is
+/// unreadable at every one of them.
 const MAX_ROWS: usize = 80;
+
+/// The smallest font that is still a number rather than a smudge.
+///
+/// The same number the shell used to hold privately. It belongs to this crate
+/// because this crate is what decides how many rows fit.
+const MIN_FONT_PX: f64 = 7.0;
+
+/// A row's height as a fraction of the font that sits in it.
+///
+/// 0.62 was too tight, and the arithmetic is the whole story: `footprint_routes`
+/// sizes a window for 45 rows, 45 rows on a 500px plot is an 11.1px row, and
+/// 11.1 x 0.62 is 6.9 -- a tenth of a pixel under legibility, so the shell dropped
+/// every number. The reference chart in `docs/14` runs an 11px font on 12px rows.
+const FONT_PER_ROW: f64 = 0.78;
+
+/// The font floor, for a plot too short to hold a legible row at all.
+///
+/// Deliberately *below* [`MIN_FONT_PX`]. The cap above makes this unreachable for
+/// any real plot, and a floor that could never be reached would make
+/// [`Grid::show_text`] a constant -- a field that says nothing, which is the same
+/// mistake as a rule over a metric nothing writes.
+const FLOOR_FONT_PX: f64 = 4.0;
+
+/// A monospace glyph's width as a fraction of the font size.
+///
+/// The shell draws in `ui-monospace` and this is the advance that family uses.
+/// The engine cannot measure text -- there is no canvas here -- so it estimates,
+/// and the shell still drops any pair that does not fit. An estimate that is
+/// slightly too generous costs a number; one that is too mean costs an
+/// overlapping pair, which is worse.
+const GLYPH_PER_FONT: f64 = 0.62;
+
+/// The padding a cell keeps either side of its text, in pixels.
+///
+/// A constant rather than a function of the font, so the shell's own fit check
+/// can be strictly looser than this and never drop what the engine sized for.
+const CELL_MARGIN_PX: f64 = 3.0;
+
+/// The most rows a plot of this height can carry and still be read.
+///
+/// The cap and the font are two ends of one decision, so they are made together.
+/// Capping at a constant meant the font fell below legibility and the text simply
+/// vanished: a cap that does not do what it claims.
+#[must_use]
+pub fn legible_rows(plot_height: f64) -> usize {
+    let fits = (plot_height / (MIN_FONT_PX / FONT_PER_ROW)).floor();
+    (fits.max(1.0) as usize).min(MAX_ROWS)
+}
+
+/// The font a cell of this width can hold `pair_chars` characters in.
+///
+/// The second half of the same decision as [`legible_rows`], and the half that
+/// was missing: a row height of 11px wants an 8.6px font, and eleven characters at
+/// 8.6px need 59px of a 54px column. So the ladder drew every cell and not one
+/// number -- the font was sized by the rows and nothing looked at the width.
+#[must_use]
+pub fn font_for_width(cell_width: f64, pair_chars: usize) -> f64 {
+    let glyphs = pair_chars as f64 * GLYPH_PER_FONT;
+    if glyphs <= 0.0 {
+        return f64::INFINITY;
+    }
+    (cell_width - 2.0 * CELL_MARGIN_PX) / glyphs
+}
 
 /// Format a volume the way a ladder reads: two significant decimals, then a
 /// suffix once the number stops being readable.
@@ -281,20 +359,40 @@ pub fn layout(
     prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     prices.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
 
-    let truncated = prices.len() > MAX_ROWS;
+    // How many levels the window has, and how many this plot can carry.
+    let levels = prices.len();
+    let cap = legible_rows(plot.h);
+    let truncated = levels > cap;
     if truncated {
         // Keep the middle of the range rather than the bottom: the extremes of
         // a window are usually a single wick, and the structure is where the
         // volume is.
-        let drop = (prices.len() - MAX_ROWS) / 2;
-        prices = prices[drop..drop + MAX_ROWS].to_vec();
+        let drop = (levels - cap) / 2;
+        prices = prices[drop..drop + cap].to_vec();
     }
 
     let rows_len = prices.len();
     let row_height = plot.h / rows_len as f64;
-    // 11px is what the reference chart uses and about the smallest a `0.44 x
-    // 12.5` pair fits into. Below that the text is dropped by the shell.
-    let font_px = (row_height * 0.62).clamp(6.0, 11.0);
+    let slot = plot.w / columns.len() as f64;
+
+    // The widest `bid x ask` pair in the window, which is the one that has to fit.
+    // Counted in characters rather than measured: this crate has no font metrics.
+    let widest = columns
+        .iter()
+        .flat_map(|column| column.cells.iter())
+        .map(|cell| compact(cell.bid).len().max(compact(cell.ask).len()))
+        .max()
+        .unwrap_or(0);
+    // ` x ` is three characters around the two numbers.
+    let pair_chars = widest * 2 + 3;
+
+    // The font has to fit a row *and* a cell, and the smaller of the two wins.
+    // The cap above is chosen so the row half lands at or above `MIN_FONT_PX`; the
+    // clamp is the last resort for a plot too small for either, and it is what
+    // `show_text` reports rather than a threshold the shell keeps.
+    let font_px = (row_height * FONT_PER_ROW)
+        .min(font_for_width(slot, pair_chars))
+        .clamp(FLOOR_FONT_PX, 11.0);
 
     let rows: Vec<Row> = prices
         .iter()
@@ -307,7 +405,6 @@ pub fn layout(
         })
         .collect();
 
-    let slot = plot.w / columns.len() as f64;
     let (value_low, value_high) = value_area.unwrap_or((f64::INFINITY, f64::NEG_INFINITY));
 
     let mut max_delta = f64::NEG_INFINITY;
@@ -403,25 +500,13 @@ pub fn layout(
             rows: rows_len,
         },
         font_px,
-    })
-}
-
-/// The caveat that goes with a truncated axis, if it was truncated.
-#[must_use]
-pub fn truncation_note(columns: &[Column]) -> Option<Note> {
-    let mut prices: Vec<f64> = columns
-        .iter()
-        .flat_map(|column| column.cells.iter().map(|cell| cell.price))
-        .collect();
-    prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    prices.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-
-    (prices.len() > MAX_ROWS).then(|| Note {
-        message: format!(
-            "{} price levels in this window, showing the middle {MAX_ROWS}. Ask for fewer \
-             candles or a coarser bucket to see all of them.",
-            prices.len()
-        ),
+        show_text: font_px >= MIN_FONT_PX,
+        note: truncated.then(|| Note {
+            message: format!(
+                "{levels} price levels in this window, showing the middle {cap}. Ask for fewer \
+                 candles or a coarser bucket to see all of them."
+            ),
+        }),
     })
 }
 
@@ -660,32 +745,94 @@ mod tests {
     }
 
     #[test]
-    fn a_deep_window_is_truncated_to_a_readable_axis_and_says_so() {
+    fn a_deep_window_is_truncated_to_what_the_plot_can_carry_and_says_so() {
         let cells: Vec<ColumnCell> = (0..200).map(|i| cell(100.0 + i as f64, 1.0, 1.0)).collect();
-        let columns = vec![column(0, cells)];
-        let grid = layout(&columns, plot(), None, 20.0, 100).expect("a grid");
-        assert_eq!(grid.rows.len(), MAX_ROWS);
-        let note = truncation_note(&columns).expect("a caveat");
+        let grid = layout(&[column(0, cells)], plot(), None, 20.0, 100).expect("a grid");
+        assert_eq!(grid.rows.len(), legible_rows(plot().h));
+        assert!(grid.rows.len() < 200, "200 levels do not fit a 400px plot");
+        let note = grid.note.expect("a caveat");
         assert!(note.message.contains("200"), "{}", note.message);
+        // The truncation exists to keep the text legible, so a truncated grid that
+        // cannot draw its numbers would be the cap failing at the one thing it is
+        // for.
+        assert!(grid.show_text, "font {}px after truncating", grid.font_px);
     }
 
     #[test]
     fn a_shallow_window_is_not_truncated() {
-        let columns = vec![column(0, vec![cell(100.0, 1.0, 1.0)])];
-        assert!(truncation_note(&columns).is_none());
+        let grid = layout(&[column(0, vec![cell(100.0, 1.0, 1.0)])], plot(), None, 20.0, 1)
+            .expect("a grid");
+        assert!(grid.note.is_none());
     }
 
     #[test]
-    fn the_font_shrinks_with_the_rows_and_stops_being_readable() {
-        let wide = vec![column(0, vec![cell(100.0, 1.0, 1.0)])];
-        let tall = layout(&wide, plot(), None, 20.0, 1).expect("a grid");
-        assert!(tall.font_px >= 6.0 && tall.font_px <= 11.0);
+    fn the_row_count_the_route_targets_still_draws_its_numbers() {
+        // `footprint_routes` sizes its bucket for 45 rows, so this is the row
+        // count a real window has -- and at the old 0.62 font-per-row it came out
+        // at 6.9px on a 500px plot, a tenth of a pixel under the shell's
+        // threshold. Every cell was drawn and not one number was, which is what
+        // "the footprint is not well presented" turned out to mean.
+        let cells: Vec<ColumnCell> = (0..45).map(|i| cell(100.0 + i as f64, 1.0, 1.0)).collect();
+        let plot = Plot { x: 0.0, y: 0.0, w: 600.0, h: 500.0 };
+        let grid = layout(&[column(0, cells)], plot, None, 20.0, 1).expect("a grid");
+        assert_eq!(grid.rows.len(), 45, "45 rows fit a 500px plot");
+        assert!(
+            grid.show_text,
+            "45 rows is the row count the route targets, and {}px draws nothing",
+            grid.font_px
+        );
+    }
 
-        let deep: Vec<ColumnCell> = (0..MAX_ROWS)
-            .map(|i| cell(100.0 + i as f64, 1.0, 1.0))
-            .collect();
-        let squeezed = layout(&[column(0, deep)], plot(), None, 20.0, 1).expect("a grid");
-        assert!(squeezed.font_px >= 6.0, "never smaller than legible");
+    #[test]
+    fn the_font_also_has_to_fit_the_width_of_a_cell() {
+        // The half that was missing. 45 rows on a 500px plot wants an 8.6px font,
+        // and `1.40 x 2.85` at 8.6px is 59px of a 54px column -- so the font has
+        // to come down to what the cell can hold, not just what the row can.
+        let cells: Vec<ColumnCell> = (0..45).map(|i| cell(100.0 + i as f64, 1.4, 2.85)).collect();
+        // Twenty columns across a 1080px plot is the 54px column the shell sizes
+        // for (`MIN_COLUMN_PX` in `loadFootprint`).
+        let columns: Vec<Column> = (0..20).map(|i| column(i as i64, cells.clone())).collect();
+        let plot = Plot { x: 0.0, y: 0.0, w: 1080.0, h: 500.0 };
+        let grid = layout(&columns, plot, None, 20.0, 1).expect("a grid");
+
+        assert_eq!(grid.rows.len(), 45);
+        assert!(grid.show_text, "{}px in a 54px cell", grid.font_px);
+
+        // And the claim is the arithmetic, not the flag: an 11-character pair at
+        // this font has to fit the cell the shell will draw it in.
+        let pair_chars = "1.40 x 2.85".len();
+        let width = pair_chars as f64 * GLYPH_PER_FONT * grid.font_px;
+        let cell = grid.columns[0].w;
+        assert!(
+            width <= cell - 2.0 * CELL_MARGIN_PX,
+            "{pair_chars} characters at {}px is {width}px of a {cell}px cell",
+            grid.font_px
+        );
+    }
+
+    #[test]
+    fn a_narrow_cell_says_it_cannot_draw_its_numbers() {
+        // The other end: forty columns across the same plot is a 27px cell, and
+        // eleven characters do not fit one at any legible size. The honest answer
+        // is a heat map, and `show_text` is how it is said.
+        let cells: Vec<ColumnCell> = (0..10).map(|i| cell(100.0 + i as f64, 1.4, 2.85)).collect();
+        let columns: Vec<Column> = (0..40).map(|i| column(i as i64, cells.clone())).collect();
+        let plot = Plot { x: 0.0, y: 0.0, w: 1080.0, h: 500.0 };
+        let grid = layout(&columns, plot, None, 20.0, 1).expect("a grid");
+        assert!(!grid.show_text, "{}px in a 27px cell", grid.font_px);
+    }
+
+    #[test]
+    fn a_plot_too_short_for_a_row_says_it_cannot_draw_text() {
+        // The one case `show_text` is for. It is true for every real plot -- the
+        // cap above sees to that -- and a field that could never be false would be
+        // a field that says nothing, so this pins the case where it is not.
+        let plot = Plot { x: 0.0, y: 0.0, w: 600.0, h: 8.0 };
+        let grid = layout(&[column(0, vec![cell(100.0, 1.0, 1.0)])], plot, None, 20.0, 1)
+            .expect("a grid");
+        assert_eq!(grid.rows.len(), 1, "one row, because zero rows is not a grid");
+        assert!(grid.font_px < MIN_FONT_PX, "{}px in an 8px plot", grid.font_px);
+        assert!(!grid.show_text, "an 8px plot cannot hold a 7px number");
     }
 
     #[test]
@@ -696,5 +843,10 @@ mod tests {
         assert!(json["rows"].is_array());
         assert!(json["columns"][0]["cells"][0]["bid_text"].is_string());
         assert_eq!(json["stats"]["trades"], 7);
+        // The two fields the shell reads to decide whether to draw a number at
+        // all. A rename here is not a compile error anywhere -- it is a blank
+        // ladder -- which is the whole reason this test exists.
+        assert!(json["font_px"].is_number());
+        assert!(json["show_text"].is_boolean());
     }
 }

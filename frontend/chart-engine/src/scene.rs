@@ -750,8 +750,14 @@ pub fn build(request: &Request) -> Scene {
                     SUMMARY_HEIGHT,
                     request.footprint_trades,
                 );
-                scene.note =
-                    crate::footprint::truncation_note(&request.footprint).map(|note| note.message);
+                // The caveat comes off the grid rather than being recomputed here:
+                // the row cap depends on the plot height, and working it out a
+                // second time is a second answer waiting to disagree.
+                scene.note = scene
+                    .footprint
+                    .as_ref()
+                    .and_then(|grid| grid.note.as_ref())
+                    .map(|note| note.message.clone());
                 if scene.footprint.is_none() {
                     scene.note = Some("the footprint for this window holds no price levels".into());
                 }

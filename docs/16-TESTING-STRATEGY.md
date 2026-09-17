@@ -80,7 +80,30 @@ this project has had to re-derive, each from a failure that pointed at the wrong
   non-bubbling `change` event (no browser sends one, and the page listens on the
   container), and a check counted a series an earlier section had already fetched, so it
   could not fail. Both were found by breaking the thing the check claimed to cover. When
-  a check counts something, count the *change*, not the presence.
+  a check counts something, count the *change*, not the presence. The same trap caught a
+  footprint check that counted bare numbers in the paint log: the price-axis tick labels
+  (`98.34`, `101.31`) matched the pattern, so the check would have passed with every
+  ladder cell blank. It now asserts the contract that actually matters (`grid.show_text`)
+  rather than a string that happens to look like one.
+- **A fixture tidier than production hides production's defects.** The stub for
+  `/footprint` first answered with a *tidied* candle list — OHLC only. The real shell maps
+  that same array down to OHLC for the price axis **and** hands it back as the request's
+  `footprint` field, so the engine refused it with ``missing field `delta` at line 1
+  column 32688``. The stub's tidiness was the only thing wrong. Then the second version
+  answered with 20 ladders regardless of the requested window, while the shell sizes its
+  column count from the viewport — so the engine correctly said the numbers no longer fit,
+  and the harness failed against a defect that did not exist. **A stub that ignores the
+  request is testing a different program.** Both were fixed by making the fixture match
+  the route: full ladders, and a column count derived from `to - from`.
+- **A test that calls the only writer of a metric proves nothing about production.** The
+  `MD_FEED_AGE` metric had a passing test — which called `feed_candle` directly. Nothing in
+  the *live* path ever called it, so `/metrics` served no `market_data_feed_age_seconds`
+  while candles were demonstrably flowing, and the `stale_market_data` alert rule read a
+  metric nobody wrote. The test was green the whole time. **Ask of every test that
+  exercises a writer: does production reach this same call?** The replacement test drives
+  the *bus* — the same thing the live path drives — and was shown to fail when the stamp
+  is removed.
+
 - **Database-backed tests run one at a time per test process.** The managed Postgres
   costs roughly a second per statement over a ten-connection pool, so concurrency
   produces acquire timeouts that read as defects rather than as contention. See the

@@ -522,22 +522,38 @@ impl BotSupervisor {
         self.inner.events.subscribe()
     }
 
-    /// Publish a closed candle into the bus.
+    /// Publish a closed candle into the bus, and age the feed with it.
     ///
-    /// The seam described in the module docs: the live collector calls this, and
-    /// so does a test.
+    /// The seam a test uses. The *live* collector does **not** go through it:
+    /// `market-data` owns the candle builder and publishes straight into the bus.
+    /// So this is only half of what a feed needs, and the other half -- recording
+    /// that a candle arrived, publishing nothing -- is [`Self::note_candle`].
+    /// Keeping them apart is what lets the collector's path age the feed without
+    /// every bar being published twice.
     pub fn feed_candle(&self, candle: &Candle) {
-        // Stamped with the *arrival* time, not the candle's own open time.
-        // "Stale" means "nothing has arrived recently", and a replayed or
-        // backfilled candle arrives now even though it is about last Tuesday --
-        // so arrival time is the one that does not report a replay as an outage.
-        if let Ok(mut ages) = self.inner.last_candle_ns.lock() {
-            ages.insert(candle.symbol.clone(), now_ns());
-        }
+        self.note_candle(candle);
         self.inner
             .bus
             .bus(&candle.symbol)
             .publish_candle(candle.clone());
+    }
+
+    /// Record that a candle arrived for its symbol, without publishing it.
+    ///
+    /// Stamped with the *arrival* time, not the candle's own open time.
+    /// "Stale" means "nothing has arrived recently", and a replayed or
+    /// backfilled candle arrives now even though it is about last Tuesday --
+    /// so arrival time is the one that does not report a replay as an outage.
+    ///
+    /// The only writer of the input to `MD_FEED_AGE`, and it has to be reached by
+    /// the path the live feed actually takes. The collector publishes its own
+    /// candles, so a supervisor that stamped only inside [`Self::feed_candle`]
+    /// served no `market_data_feed_age_seconds` at all -- and `stale_market_data`
+    /// could not fire, however dead the feed was.
+    pub fn note_candle(&self, candle: &Candle) {
+        if let Ok(mut ages) = self.inner.last_candle_ns.lock() {
+            ages.insert(candle.symbol.clone(), now_ns());
+        }
     }
 
     /// How long ago each symbol's feed last produced a candle, in seconds.
@@ -940,8 +956,9 @@ impl BotSupervisor {
         let bus = Arc::clone(&self.inner.bus);
         let symbol = symbol.to_string();
         let for_task = symbol.clone();
+        let supervisor = self.clone();
         let handle = tokio::spawn(async move {
-            if let Err(e) = run_binance_feed(bus, &for_task).await {
+            if let Err(e) = run_binance_feed(bus, &for_task, supervisor).await {
                 warn!(symbol = %for_task, "the market feed stopped: {e}");
             }
         });
@@ -977,19 +994,30 @@ async fn write_fatal(
     .await
 }
 
-/// Connect to Binance and publish closed candles for one symbol.
+/// Connect to Binance and keep the feed for one symbol running.
+///
+/// ## It does not build candles, and that is the point
+///
+/// `BinanceCollector` owns a `MultiTimeframeCandleBuilder` per symbol and
+/// publishes every closed candle into the bus itself
+/// (`market-data/src/exchanges/binance.rs`). This task used to build a *second*
+/// one from the same trades, so every bar was published twice -- identical
+/// values, because both builders were fed the same trades -- and every chart
+/// appended each bar twice. One builder, one publisher.
+///
+/// What it does own is the collector: `Drop for BinanceCollector` aborts the
+/// pump, so a task that returned early would stop the market with nothing
+/// anywhere saying so. The `await` at the end is what keeps it alive.
 async fn run_binance_feed(
     bus: Arc<market_data::MarketBusRegistry>,
     symbol: &str,
+    supervisor: BotSupervisor,
 ) -> Result<(), String> {
     use market_data::{BinanceCollector, ExchangeCollector};
 
     let mut collector = BinanceCollector::with_defaults(Arc::clone(&bus));
     collector.connect().await.map_err(|e| e.to_string())?;
 
-    let mut trades = collector
-        .trade_stream(symbol)
-        .ok_or_else(|| format!("no trade stream for {symbol}"))?;
     collector
         .subscribe_trades(symbol)
         .await
@@ -1007,23 +1035,42 @@ async fn run_binance_feed(
         warn!(symbol, "the depth feed did not start: {e}");
     }
 
-    // The timeframes the feed builds are the ones the bots declared, but the
-    // feed starts before it knows them; `standard` builds the common set and a
-    // bot whose document declares something outside it simply never warms up.
-    let mut builder = market_data::MultiTimeframeCandleBuilder::standard(symbol.to_string());
     info!(symbol, "market feed connected");
 
+    // Subscribed before anything is awaited, so a candle that closes between the
+    // subscribe above and the watch below is not missed.
+    let candles = supervisor.subscribe_candles(symbol);
+    let watcher = tokio::spawn(watch_feed_candles(candles, supervisor));
+
+    // Hold the collector for as long as the watch runs. Everything this feed
+    // does is done by the pump inside `collector`; this task's only other job is
+    // not to drop it.
+    let _ = watcher.await;
+    Ok(())
+}
+
+/// Age a feed from the candles its collector publishes.
+///
+/// Split out of [`run_binance_feed`] because the failure it guards is silent:
+/// `MD_FEED_AGE` is read by `stale_market_data` and written by nothing else, so
+/// a supervisor that is never told a candle arrived serves a metric that does
+/// not exist and a rule that cannot fire. [`BotSupervisor::feed_candle`] cannot
+/// be used for this -- it publishes as well as stamps, and the collector has
+/// already published.
+async fn watch_feed_candles(
+    mut candles: broadcast::Receiver<Candle>,
+    supervisor: BotSupervisor,
+) {
     loop {
-        match trades.recv().await {
-            Ok(trade) => {
-                for candle in builder.on_trade(&trade) {
-                    bus.bus(&candle.symbol).publish_candle(candle);
-                }
-            }
+        match candles.recv().await {
+            Ok(candle) => supervisor.note_candle(&candle),
             Err(RecvError::Lagged(skipped)) => {
-                warn!(symbol, "trade feed lagged by {skipped} messages");
+                // Losing messages here loses *age* information, not data: the
+                // chart holds its own subscription. Say so rather than let the
+                // age jump by an unexplained amount.
+                warn!(skipped, "the feed's own candle watch lagged");
             }
-            Err(RecvError::Closed) => return Ok(()),
+            Err(RecvError::Closed) => return,
         }
     }
 }
@@ -1127,6 +1174,48 @@ mod tests {
         // rather than a latch.
         supervisor.feed_candle(&test_candle("BTCUSDT", 1));
         assert!(supervisor.feed_ages(now_ns())[0].1 < 1.0);
+    }
+
+    #[tokio::test]
+    async fn a_candle_the_collector_published_ages_the_feed() {
+        // The live path never calls `feed_candle`: `market-data` owns the candle
+        // builder and publishes straight into the bus. So the supervisor has to
+        // be told separately, or `MD_FEED_AGE` is written by nothing and
+        // `stale_market_data` cannot fire however dead the feed is. This drives
+        // the same function the feed task runs, through the same bus.
+        //
+        // Removing the `note_candle` call inside `watch_feed_candles` fails this
+        // test, which is the point of it.
+        let supervisor = BotSupervisor::new(FeedMode::Binance);
+        let candles = supervisor.subscribe_candles("BTCUSDT");
+        let watcher = tokio::spawn(watch_feed_candles(candles, supervisor.clone()));
+
+        // Exactly what `handle_trade` in `market-data` does -- and the reason the
+        // supervisor must not do it a second time: one publish, one bar.
+        supervisor
+            .inner
+            .bus
+            .bus("BTCUSDT")
+            .publish_candle(test_candle("BTCUSDT", 0));
+
+        // The watch is a task, so the stamp lands a scheduling hop later.
+        let mut ages = Vec::new();
+        for _ in 0..200 {
+            ages = supervisor.feed_ages(now_ns());
+            if !ages.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        watcher.abort();
+
+        assert_eq!(
+            ages.len(),
+            1,
+            "a candle the collector published must age the feed: MD_FEED_AGE has no \
+             other writer, and stale_market_data cannot fire without it"
+        );
+        assert_eq!(ages[0].0, "BTCUSDT");
     }
 
     #[test]

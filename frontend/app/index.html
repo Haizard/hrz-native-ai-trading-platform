@@ -419,6 +419,13 @@
           every tool places a first anchor on pointer-down and the two-anchor ones
           follow the pointer with the second. A click with no drag is refused by the
           engine, in words, rather than stored as a shape with no extent.
+
+          The two destructive controls are separate on purpose. `Delete` removes the
+          drawing that is selected, which is what a row of drawing tools implies and
+          what every other charting package does. `Clear all` removes every drawing
+          on the symbol, is named for it, and takes a second click -- because the
+          version that did this on one click was labelled `Clear` and read as "clear
+          what I have selected", and the user only found out afterwards.
         -->
         <div class="tools" role="toolbar" aria-label="Drawing tools">
           <button data-tool="cursor" aria-pressed="true" title="Select a drawing, move its anchors, or pan the chart">Cursor</button>
@@ -426,7 +433,8 @@
           <button data-tool="hline" aria-pressed="false" title="Click a price to mark it across the chart">H-line</button>
           <button data-tool="rect" aria-pressed="false" title="Drag out a rectangle">Rect</button>
           <button data-tool="fib" aria-pressed="false" title="Drag from one swing to another">Fib</button>
-          <button class="clearDrawings danger" title="Delete every drawing on this symbol">Clear</button>
+          <button class="deleteDrawing danger" title="Delete the selected drawing" disabled>Delete</button>
+          <button class="clearDrawings danger" aria-pressed="false" title="Delete every drawing on this symbol — click twice to confirm">Clear all</button>
         </div>
         <!--
           The gesture hint. Kept visible rather than hidden behind a tooltip: the
