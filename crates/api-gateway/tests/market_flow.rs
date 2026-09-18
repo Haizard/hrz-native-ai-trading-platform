@@ -114,6 +114,68 @@ async fn a_cold_start_still_offers_something_to_chart() {
     );
 }
 
+/// The cold-start note has to fire in the state a real boot is actually in,
+/// which is **not** the state the test above sets up.
+///
+/// `run_binance_feed` records the *forming* bar as soon as the feed starts, and
+/// `record_forming` registers the series -- so `history.timeframes()` answers all
+/// six resolutions within a second of boot while every one of them holds zero
+/// closed bars. Gating the note on "no series are registered" therefore made it
+/// unreachable on a live boot, and `a_cold_start_still_offers_something_to_chart`
+/// could not see that, because it seeds nothing at all and so never reaches the
+/// state the server is really in.
+#[tokio::test]
+async fn a_cold_start_with_a_forming_bar_still_says_the_symbol_is_chartable() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    h.supervisor.history().record_forming(&analytics_core::Candle {
+        symbol: "BTCUSDT".into(),
+        timeframe: "1m".parse().expect("a known resolution"),
+        open_time: 1_700_000_000_000_000_000,
+        open: 1.0,
+        high: 2.0,
+        low: 0.5,
+        close: 1.5,
+        volume: 10.0,
+        buy_volume: 6.0,
+        sell_volume: 4.0,
+    });
+
+    let (status, body) = h.get("/symbols", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let btc = body
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|s| s["symbol"] == "BTCUSDT")
+        .expect("BTCUSDT is on the watchlist");
+
+    let note = btc["coverage_note"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("chartable"),
+        "a forming bar is not buffered history, and the note is the only thing \
+         telling a client that zero bars does not mean unavailable: {note}"
+    );
+
+    // And it stops saying so once a real bar closes -- otherwise it is a banner
+    // that never goes away, which is the other way to make a warning useless.
+    seed(&h, "BTCUSDT", "1m", 1, 60_000_000_000);
+    let (_, body) = h.get("/symbols", None).await;
+    let btc = body
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|s| s["symbol"] == "BTCUSDT")
+        .expect("BTCUSDT is on the watchlist");
+    assert!(
+        btc["coverage_note"].is_null(),
+        "the note is about having nothing buffered, so it must clear: {btc}"
+    );
+}
+
 /// The point of the whole design: a chart is served from RAM, with no database
 /// read and no venue call.
 #[tokio::test]

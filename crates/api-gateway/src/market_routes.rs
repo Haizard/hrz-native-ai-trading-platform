@@ -350,7 +350,6 @@ pub async fn symbols(State(state): State<AppState>) -> Result<Json<Vec<SymbolRes
 
     let mut out = Vec::new();
     for symbol in names {
-        let buffered: Vec<Timeframe> = history.timeframes(&symbol);
         let mut timeframes = Vec::new();
 
         for timeframe in market_data::STANDARD_TIMEFRAMES {
@@ -380,8 +379,16 @@ pub async fn symbols(State(state): State<AppState>) -> Result<Json<Vec<SymbolRes
             });
         }
 
+        // Whether anything is buffered is a question about **closed** bars, not
+        // about whether the series exists. The recorder calls `record_forming`
+        // the moment the feed starts, which registers all six resolutions while
+        // every one of them still holds nothing -- so asking "are any series
+        // registered?" answers `true` on a cold start and the note below never
+        // appeared on a live boot at all, only in tests that seeded nothing.
+        let closed: i64 = timeframes.iter().map(|frame| frame.candles).sum();
+
         out.push(SymbolResponse {
-            coverage_note: (buffered.is_empty()).then(|| {
+            coverage_note: (closed == 0).then(|| {
                 format!(
                     "nothing is buffered for {symbol} yet. It is still chartable: asking for it \
                      starts its feed and fetches history from the venue."
