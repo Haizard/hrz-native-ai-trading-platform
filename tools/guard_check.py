@@ -36,9 +36,14 @@ NODE_PATH = "C:/Users/haizard/.workbuddy-ai/binaries/node/workspace/node_modules
 EL_BOUNDARY = (
     "PANE_ELS.has(name) ? root.querySelector(`.${name}`) : document.getElementById(name);"
 )
+# The market socket, as `connectLive` builds it. Rewritten when `connectLive`
+# started keeping a handle on the socket it opened, so a superseded one cannot
+# speak for the pane -- a mutation anchored on the old one-liner would silently
+# stop matching, and a mutation that does not apply is a guard that never runs.
 SOCKET = (
-    "    socket = new WebSocket(`${scheme}://${location.host}/ws/market/"
-    "${symbol}/${timeframe}${query}`);"
+    "    const ws = new WebSocket(\n"
+    "      `${scheme}://${location.host}/ws/market/${symbol}/${timeframe}${query}`\n"
+    "    );"
 )
 
 # (description, file, find, replace, checks that must fail)
@@ -123,7 +128,9 @@ MUTATIONS = [
         "every pane opens the first pane's channel",
         APP,
         SOCKET,
-        "    socket = new WebSocket(`${scheme}://${location.host}/ws/market/BTCUSDT/5m${query}`);",
+        "    const ws = new WebSocket(\n"
+        "      `${scheme}://${location.host}/ws/market/BTCUSDT/5m${query}`\n"
+        "    );",
         ["and each one holds its own market channel"],
     ),
     (

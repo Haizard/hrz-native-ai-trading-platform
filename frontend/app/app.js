@@ -1899,7 +1899,19 @@ function createChartPane(root, hooks = {}) {
   /// a WebSocket handshake. The channel is public anyway, but passing the token
   /// when we have one keeps the code honest about which channels need it.
   function connectLive() {
-    if (socket) socket.close();
+    // Closing a socket that has not opened yet is what makes a browser say
+    // "WebSocket is closed before the connection is established" -- and it
+    // throws away a handshake already in flight, so a pane that is re-pointed
+    // quickly pays for several connections to use one. A socket still
+    // connecting is told to close itself when it gets there instead.
+    //
+    // Captured, because `socket` is about to point at the new one and a closure
+    // over the variable would close the socket we are trying to open.
+    if (socket) {
+      const stale = socket;
+      if (stale.readyState === WebSocket.OPEN) stale.close();
+      else stale.onopen = () => stale.close();
+    }
     const symbol = el("symbol").value;
     const timeframe = el("timeframe").value;
     const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -1913,12 +1925,19 @@ function createChartPane(root, hooks = {}) {
     live.bar = 0;
     refreshLiveBadge();
 
-    socket = new WebSocket(`${scheme}://${location.host}/ws/market/${symbol}/${timeframe}${query}`);
-    socket.onopen = () => {
+    const ws = new WebSocket(
+      `${scheme}://${location.host}/ws/market/${symbol}/${timeframe}${query}`
+    );
+    socket = ws;
+    ws.onopen = () => {
+      if (socket !== ws) return;
       live.state = "open";
       refreshLiveBadge();
     };
-    socket.onmessage = (event) => {
+    ws.onmessage = (event) => {
+      // Same guard as `onopen`: a frame from a channel this pane has already
+      // left is not evidence about the one it is on now.
+      if (socket !== ws) return;
       let frame;
       try {
         frame = JSON.parse(typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data));
@@ -1961,7 +1980,11 @@ function createChartPane(root, hooks = {}) {
           `the live feed dropped ${frame.dropped} candles; reload to resynchronise`;
       }
     };
-    socket.onclose = () => {
+    ws.onclose = () => {
+      // A superseded socket must not speak for this pane: it would null the
+      // *new* one and set the badge from the death of the old, which is a chart
+      // reporting on a channel nobody is using.
+      if (socket !== ws) return;
       socket = null;
       // `nofeed` outranks `offline`: the channel closing is not news when the
       // server has already said why, and "offline" beside "no feed is
@@ -2639,7 +2662,7 @@ function onAgentFrame(event) {
     asking = false;
     paintAsk();
     renderTranscript();
-    draw();
+    redrawThesis();
   } else if (frame.type === "notice") {
     // A notice is a refusal or a failure -- a rate limit, a bad request, a
     // model error -- and it ends this question.
@@ -2648,8 +2671,19 @@ function onAgentFrame(event) {
     asking = false;
     paintAsk();
     renderTranscript();
-    draw();
+    redrawThesis();
   }
+}
+
+/// Put the current thesis on every chart, and take the old one off.
+///
+/// Not `draw()`, which is one pane's own function -- `onAgentFrame` is at page
+/// scope, so calling it there was a `ReferenceError` and the answer arrived with
+/// nothing drawn. And not just the active pane: each chart draws the thesis when
+/// the thesis is about *its* symbol, so a second chart on the same instrument
+/// has to be repainted too.
+function redrawThesis() {
+  for (const pane of panes) pane.draw();
 }
 
 function paintAsk() {

@@ -2034,6 +2034,98 @@ async function twoCharts() {
 
 await twoCharts();
 
+// --- the agent's answer ------------------------------------------------------
+//
+// No check in this file had ever opened the agent channel, so the one path that
+// *draws* an answer had never run under any guard. It shipped calling `draw()` --
+// which is one pane's own function -- from page scope, so every answer threw a
+// `ReferenceError` at the moment it arrived: the transcript was written and then
+// the chart was never touched. Found in a browser console, not by a test.
+
+console.log("\nthe agent's answer");
+
+const questionBox = document.getElementById("question");
+const askButton = document.getElementById("ask");
+const agentTextBefore = painted.text.length;
+
+questionBox.value = "find me a long setup";
+askButton.click();
+await settle();
+
+const agentSocket = socketsFor("/ws/agent").at(-1);
+check(
+  "asking opens the agent channel",
+  Boolean(agentSocket),
+  `${socketsFor("/ws/agent").length} agent sockets`
+);
+
+// The thesis is drawn by the pane whose symbol it is about, so the frame has to
+// name the instrument the chart is actually showing.
+const askedSymbol = paneNode().querySelector(".symbol").value;
+deliver(agentSocket, {
+  type: "progress",
+  payload: { stage: "tool", name: "analyze_timeframe" },
+});
+
+// The same shape `POST /agent/ask` returns -- `Frame::Data` carries
+// `to_response(answer)`, so `payload.thesis` is at the top level and not under
+// an `answer` key. A frame shaped the other way is a second thing for the shell
+// and the route to disagree about.
+// Caught rather than left to propagate: a throw inside `onmessage` escapes
+// `deliver` and takes the whole harness down, so an unguarded version of this
+// check aborts the run instead of failing it. Naming the bug is the point.
+let agentThrew = null;
+try {
+  deliver(agentSocket, {
+    type: "data",
+    payload: {
+    thesis: {
+      symbol: askedSymbol,
+      timeframe: "5m",
+      direction: "long",
+      confidence_pct: 61,
+      higher_timeframe_checks: [],
+      order_flow_checks: [],
+      entry_price: 100,
+      stop_price: 99,
+      target_price: 102,
+      risk_reward: 2,
+      // Every field `thesisHtml` reads, because a card that throws on a missing
+      // one is a card the transcript cannot render at all.
+      invalidation: "a close below the sweep low",
+      narrative: "a long from the sweep",
+      },
+    },
+  });
+} catch (e) {
+  agentThrew = e;
+}
+
+check(
+  "an answer reaches the chart without throwing",
+  !agentThrew,
+  agentThrew ? String(agentThrew.message) : ""
+);
+
+const drawn = painted.text.slice(agentTextBefore);
+check(
+  "the answer's levels are drawn on the chart, not only written in the panel",
+  drawn.some((line) => line.startsWith("stop")),
+  `drew ${drawn.length} labels; e.g. ${drawn[0] ?? "(nothing)"}`
+);
+
+const thesisPanel = document.getElementById("thesis");
+check(
+  "and the panel says what the answer was",
+  thesisPanel.textContent.includes("long"),
+  thesisPanel.textContent.slice(0, 60)
+);
+
+check(
+  "and the working state is over, so the button can be used again",
+  !askButton.disabled
+);
+
 // --- nothing threw -----------------------------------------------------------
 //
 // Last, so it covers every gesture above. A thrown listener is the one kind of
