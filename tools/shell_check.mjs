@@ -2126,6 +2126,35 @@ check(
   !askButton.disabled
 );
 
+// An answer the page cannot render must say so on the page. A throw inside a
+// socket handler is otherwise invisible: the panel sits on "Working…" or shows
+// an answer with no chart, and the only place it appears is a console nobody
+// was told to open. This is the failure `draw()` had.
+questionBox.value = "and now a broken one";
+askButton.click();
+await settle();
+const brokenSocket = socketsFor("/ws/agent").at(-1);
+// Caught for the same reason as above: without it, a page that throws here
+// takes the harness down and the run aborts instead of failing one check.
+try {
+  deliver(brokenSocket, {
+    type: "data",
+    payload: { thesis: { symbol: askedSymbol, direction: "long" } },
+  });
+} catch {
+  // Recorded by the check below, which is looking for the page having said so.
+}
+
+check(
+  "an answer the page cannot render says so, instead of hanging on Working…",
+  thesisPanel.textContent.includes("could not be shown"),
+  thesisPanel.textContent.slice(-90)
+);
+check(
+  "and it does not leave the Ask button stuck",
+  !askButton.disabled
+);
+
 // --- nothing threw -----------------------------------------------------------
 //
 // Last, so it covers every gesture above. A thrown listener is the one kind of

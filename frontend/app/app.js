@@ -2652,6 +2652,27 @@ function onAgentFrame(event) {
   const turn = turns[turns.length - 1];
   if (!turn) return;
 
+  // Everything below is wrapped, because a throw in here is otherwise visible
+  // only in the browser console: the panel sits on "Working…" or shows an
+  // answer with no chart, and nothing on the page says why. That is how
+  // `draw()` being out of scope shipped -- the one place it could be seen was
+  // a console the user happened to have open.
+  //
+  // Reported rather than swallowed. A swallowed failure is worse than a crash:
+  // the question looks like it is still running.
+  try {
+    applyAgentFrame(frame, turn);
+  } catch (e) {
+    turn.answer = null;
+    turn.error = `the answer arrived but could not be shown: ${e && e.message ? e.message : e}`;
+    thesis = null;
+    asking = false;
+    paintAsk();
+    renderTranscript();
+  }
+}
+
+function applyAgentFrame(frame, turn) {
   if (frame.type === "progress") {
     turn.steps.push(frame.payload);
     renderTranscript();
