@@ -78,6 +78,16 @@ pub struct AppState {
     pub auth: Option<Arc<AuthConfig>>,
     /// Owns the running bots and the market feed they share.
     pub bots: Arc<bots::BotSupervisor>,
+    /// REST client for the history the in-memory buffer does not cover.
+    ///
+    /// Chart history is **not** persisted -- the database is a free tier with
+    /// 6 GB for every symbol of every market -- so a window older than the
+    /// buffer is fetched from the venue, here, and then dropped. Always
+    /// present: it is a `reqwest` client and a base URL, not a connection.
+    // `::market_data` rather than `market_data`: this crate has its own
+    // `market_data` module (the agent's Postgres-backed source), and without the
+    // leading `::` the name resolves to that instead of the crate.
+    pub backfill: ::market_data::BackfillClient,
     /// Per-user limits on the endpoints that cost money (`docs/12`).
     pub agent_limits: Arc<rate_limit::RateLimiter>,
     /// The metric registry every handler records into, served at `/metrics`.

@@ -18,7 +18,7 @@ use futures::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::wire::{
     self, CombinedMessage, DepthMessage, DepthSnapshotResponse, SubscribeMessage, TradeMessage,
@@ -142,24 +142,7 @@ impl BinanceCollector {
         &self,
         symbol: &str,
     ) -> Result<DepthSnapshotResponse, MarketDataError> {
-        let url = format!("{}/api/v3/depth", self.config.rest_url);
-        let response = self
-            .client
-            .get(url)
-            .query(&[
-                ("symbol", symbol.to_uppercase()),
-                ("limit", self.config.snapshot_limit.to_string()),
-            ])
-            .send()
-            .await
-            .map_err(|e| MarketDataError::Transport(format!("depth snapshot request failed: {e}")))?
-            .error_for_status()
-            .map_err(|e| MarketDataError::Transport(format!("depth snapshot HTTP error: {e}")))?
-            .json::<DepthSnapshotResponse>()
-            .await
-            .map_err(|e| MarketDataError::Normalization(format!("depth snapshot decode: {e}")))?;
-
-        Ok(response)
+        fetch_depth_snapshot(&self.client, &self.config, symbol).await
     }
 
     /// Stream name for the trade feed.
@@ -284,6 +267,13 @@ struct SymbolState {
     book: OrderBookSynchronizer,
     gap_detector: TradeGapDetector,
     last_book_publish: Instant,
+    /// Depth diffs seen for this symbol, and whether the book ever synced.
+    ///
+    /// Only here so the one failure that is otherwise completely silent is not:
+    /// diffs arriving forever against a book that never bridges means the DOM
+    /// shows nothing and nothing anywhere says why.
+    depth_diffs: u64,
+    book_announced: bool,
 }
 
 /// Reconnect loop: connect, pump, back off, repeat.
@@ -334,6 +324,79 @@ async fn run(
 
 type PumpResult = Result<(), MarketDataError>;
 
+/// How often an unsynced book is given a fresh snapshot to try.
+///
+/// The venue's REST snapshot lags its own diff stream by a roughly constant
+/// number of update ids, so the bridge only lands once `lastUpdateId` has walked
+/// forward into the diffs we have retained. On BTCUSDT that took about thirty
+/// seconds. Polling every two seconds costs one small HTTP request per unsynced
+/// symbol and stops the moment the book syncs.
+const RESYNC_SECS: u64 = 2;
+
+/// `GET /api/v3/depth`, for both the first snapshot and the retries.
+async fn fetch_depth_snapshot(
+    client: &reqwest::Client,
+    config: &BinanceConfig,
+    symbol: &str,
+) -> Result<DepthSnapshotResponse, MarketDataError> {
+    let url = format!("{}/api/v3/depth", config.rest_url);
+    client
+        .get(url)
+        .query(&[
+            ("symbol", symbol.to_uppercase()),
+            ("limit", config.snapshot_limit.to_string()),
+        ])
+        .send()
+        .await
+        .map_err(|e| MarketDataError::Transport(format!("depth snapshot request failed: {e}")))?
+        .error_for_status()
+        .map_err(|e| MarketDataError::Transport(format!("depth snapshot HTTP error: {e}")))?
+        .json::<DepthSnapshotResponse>()
+        .await
+        .map_err(|e| MarketDataError::Normalization(format!("depth snapshot decode: {e}")))
+}
+
+/// Give every book that has diffs but no snapshot to bridge them a fresh one.
+///
+/// Without this the DOM is silently dead: the first snapshot's bridge event was
+/// emitted before we subscribed, nothing re-tries, and the book never syncs for
+/// the life of the process.
+async fn resync_unsynced_books(
+    client: &reqwest::Client,
+    config: &BinanceConfig,
+    states: &mut HashMap<String, SymbolState>,
+) {
+    let unsynced: Vec<String> = states
+        .iter()
+        .filter(|(_, state)| state.depth_diffs > 0 && !state.book.is_synced())
+        .map(|(symbol, _)| symbol.clone())
+        .collect();
+
+    for symbol in unsynced {
+        let snapshot = match fetch_depth_snapshot(client, config, &symbol).await {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                warn!(symbol, error = %e, "depth snapshot refetch failed");
+                continue;
+            }
+        };
+
+        let bids = wire::parse_levels(&snapshot.bids, "bid");
+        let asks = wire::parse_levels(&snapshot.asks, "ask");
+        let (Ok(bids), Ok(asks)) = (bids, asks) else {
+            warn!(symbol, "depth snapshot levels were unusable");
+            continue;
+        };
+
+        let Some(state) = states.get_mut(&symbol) else {
+            continue;
+        };
+        state
+            .book
+            .set_snapshot(&bids, &asks, snapshot.last_update_id, now_ns());
+    }
+}
+
 /// Drive one established connection until it closes or errors.
 async fn pump<S>(
     socket: S,
@@ -351,9 +414,14 @@ where
     use tokio_tungstenite::tungstenite::Error as WsError;
 
     let (mut sink, mut stream) = socket.split();
+    let client = reqwest::Client::new();
+    let mut resync = tokio::time::interval(Duration::from_secs(RESYNC_SECS));
 
     loop {
         tokio::select! {
+            _ = resync.tick() => {
+                resync_unsynced_books(&client, config, states).await;
+            }
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     CollectorCommand::Subscribe { params } => {
@@ -396,6 +464,8 @@ fn symbol_state<'a>(
             book: OrderBookSynchronizer::new(symbol),
             gap_detector: TradeGapDetector::new(),
             last_book_publish: Instant::now(),
+            depth_diffs: 0,
+            book_announced: false,
         }
     })
 }
@@ -477,6 +547,18 @@ fn handle_depth(
     let asks = wire::parse_levels(&message.asks, "ask")?;
     let ts = now_ns();
 
+    state.depth_diffs += 1;
+    if !state.book.is_synced() && state.depth_diffs % 100 == 1 {
+        warn!(
+            symbol,
+            diffs = state.depth_diffs,
+            snapshot = ?state.book.snapshot_id(),
+            first = message.first_update_id,
+            last = message.final_update_id,
+            "depth diffs are arriving but the book has not bridged onto its snapshot"
+        );
+    }
+
     state.book.on_diff(
         crate::orderbook::DepthDiff {
             first_update_id: message.first_update_id,
@@ -492,6 +574,10 @@ fn handle_depth(
     if due {
         if let Some(book) = state.book.book() {
             if state.book.is_synced() {
+                if !state.book_announced {
+                    state.book_announced = true;
+                    info!(symbol, diffs = state.depth_diffs, "order book synced");
+                }
                 buses
                     .bus(&symbol)
                     .publish_orderbook(book.snapshot(config.depth_levels));

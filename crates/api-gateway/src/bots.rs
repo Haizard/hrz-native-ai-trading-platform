@@ -422,6 +422,22 @@ struct Inner {
     /// Symbols a collector has been started for, so a second bot on the same
     /// symbol does not open a second websocket.
     feeds: Mutex<HashMap<String, JoinHandle<()>>>,
+    /// The chart's recent history, held in RAM.
+    ///
+    /// Held here rather than in the collector because a series has to survive
+    /// the thing that produced it: the collector is per-symbol and comes and
+    /// goes with the feed, while the buffer is what `GET /candles` answers
+    /// from, and it must answer even between feeds.
+    ///
+    /// Nothing in here is ever written to the database. That is the point --
+    /// see [`market_data::history`] for the arithmetic that decided it.
+    history: Arc<market_data::HistoryRegistry>,
+    /// Recent trades and the newest book, in RAM.
+    ///
+    /// The tape is the only place trades live -- they are the expensive half of
+    /// market data and the database cannot hold them. See
+    /// [`market_data::tape`] for what that costs and what it limits.
+    live: Arc<market_data::LiveRegistry>,
     /// Wall-clock time (unix nanos) of the most recent candle published for a
     /// symbol.
     ///
@@ -451,7 +467,7 @@ impl BotSupervisor {
     /// Build a supervisor.
     #[must_use]
     pub fn new(feed: FeedMode) -> Self {
-        Self::with_flush_interval(feed, DEFAULT_FLUSH_INTERVAL)
+        Self::build(feed, DEFAULT_FLUSH_INTERVAL)
     }
 
     /// Build a supervisor that flushes on a chosen interval.
@@ -460,17 +476,38 @@ impl BotSupervisor {
     /// seconds or assert against decisions that have not been written yet.
     #[must_use]
     pub fn with_flush_interval(feed: FeedMode, flush_interval: Duration) -> Self {
+        Self::build(feed, flush_interval)
+    }
+
+    fn build(feed: FeedMode, flush_interval: Duration) -> Self {
         Self {
             inner: Arc::new(Inner {
                 bus: Arc::new(market_data::MarketBusRegistry::new()),
                 running: Mutex::new(HashMap::new()),
                 feed,
                 feeds: Mutex::new(HashMap::new()),
+                history: Arc::new(market_data::HistoryRegistry::new()),
+                live: Arc::new(market_data::LiveRegistry::new()),
                 last_candle_ns: Mutex::new(HashMap::new()),
                 flush_interval,
                 events: broadcast::channel(EVENT_BUFFER).0,
             }),
         }
+    }
+
+    /// The chart's recent history -- what `GET /candles` answers from.
+    ///
+    /// Exposed rather than reached into so the route can say how much of a
+    /// window RAM can cover and fetch only the rest from the venue.
+    #[must_use]
+    pub fn history(&self) -> Arc<market_data::HistoryRegistry> {
+        Arc::clone(&self.inner.history)
+    }
+
+    /// The live tape and book -- what `/footprint` and `/orderbook` answer from.
+    #[must_use]
+    pub fn live(&self) -> Arc<market_data::LiveRegistry> {
+        Arc::clone(&self.inner.live)
     }
 
     /// How the feed is configured, for the startup log.
@@ -1005,6 +1042,12 @@ async fn write_fatal(
 /// values, because both builders were fed the same trades -- and every chart
 /// appended each bar twice. One builder, one publisher.
 ///
+/// The one thing it *does* build here is the bar that is still forming. The
+/// collector only publishes closed candles, so without this a chart that
+/// opened cold would draw its last `1d` bar up to a day late. The forming bar
+/// goes into the RAM history only -- never onto the bus, so nothing can
+/// receive it twice.
+///
 /// What it does own is the collector: `Drop for BinanceCollector` aborts the
 /// pump, so a task that returned early would stop the market with nothing
 /// anywhere saying so. The `await` at the end is what keeps it alive.
@@ -1014,6 +1057,13 @@ async fn run_binance_feed(
     supervisor: BotSupervisor,
 ) -> Result<(), String> {
     use market_data::{BinanceCollector, ExchangeCollector};
+
+    // Subscribed **before** the collector connects, for the same reason as the
+    // candle watch below: a candle that closes in the gap between connecting and
+    // subscribing is gone, and there is no second copy of it anywhere.
+    let symbol_bus = bus.bus(symbol);
+    let mut candles_rx = symbol_bus.subscribe_candles();
+    let mut trades_rx = symbol_bus.subscribe_trades();
 
     let mut collector = BinanceCollector::with_defaults(Arc::clone(&bus));
     collector.connect().await.map_err(|e| e.to_string())?;
@@ -1031,8 +1081,21 @@ async fn run_binance_feed(
     // A failure here is not fatal. Candles are what bots trade on; a DOM
     // without depth is a degraded panel, not a dead chart. The depth channel
     // tells the client when there is no book rather than showing an empty one.
-    if let Err(e) = collector.subscribe_order_book(symbol).await {
-        warn!(symbol, "the depth feed did not start: {e}");
+    match collector.subscribe_order_book(symbol).await {
+        Ok(()) => {
+            // From this instant a book is expected, and that is the whole
+            // reason the clock is started here rather than when the first book
+            // arrives. `docs/19` row 24: a stream that never bridges onto its
+            // snapshot publishes nothing at all, so if the age were measured
+            // only from the newest book there would be no number to alert on
+            // and the dead book would stay silent for the entire run.
+            //
+            // Not started when the subscription failed: that is a feed the
+            // platform chose not to open, and it already says so in the log
+            // above. The rule is for a book that was asked for and stopped.
+            supervisor.live().expect_book(symbol, now_ns());
+        }
+        Err(e) => warn!(symbol, "the depth feed did not start: {e}"),
     }
 
     info!(symbol, "market feed connected");
@@ -1040,12 +1103,56 @@ async fn run_binance_feed(
     // Subscribed before anything is awaited, so a candle that closes between the
     // subscribe above and the watch below is not missed.
     let candles = supervisor.subscribe_candles(symbol);
+    let history = supervisor.history();
+    let live = supervisor.live();
     let watcher = tokio::spawn(watch_feed_candles(candles, supervisor));
+
+    // ## Recording what the feed collects -- in RAM, never to disk
+    //
+    // `docs/19` row 21 asked why the live feed never reached storage. The answer
+    // turned out to be that it *shouldn't*: one symbol's trades are ~110 MB/day
+    // and the database has 6 GB in total for every symbol of every market this
+    // platform will carry. So the row is closed the other way round -- the feed
+    // records into a bounded in-memory buffer, and history older than the
+    // buffer is fetched from the venue on demand.
+    //
+    // Closed bars come off the bus, so there is exactly one builder producing
+    // them. Trades drive a second builder here purely for the *forming* bar,
+    // which the collector never publishes.
+    //
+    // The same trades go onto the tape, and the book straight into the cache --
+    // `/footprint` and `/orderbook` read both, and the tape is the only place
+    // trades exist.
+    let owned = symbol.to_string();
+    let mut books_rx = symbol_bus.subscribe_orderbook();
+    let recorder = tokio::spawn(async move {
+        let mut builder = market_data::MultiTimeframeCandleBuilder::standard(&owned);
+        loop {
+            tokio::select! {
+                Ok(candle) = candles_rx.recv() => history.record_closed(&candle),
+                Ok(trade) = trades_rx.recv() => {
+                    live.record_trade(&trade);
+                    let _closed = builder.on_trade(&trade);
+                    for forming in builder.forming() {
+                        history.record_forming(forming);
+                    }
+                }
+                Ok(book) = books_rx.recv() => live.record_book(&book),
+                else => break,
+            }
+        }
+    });
 
     // Hold the collector for as long as the watch runs. Everything this feed
     // does is done by the pump inside `collector`; this task's only other job is
     // not to drop it.
     let _ = watcher.await;
+
+    // The buffer outlives the feed -- that is the whole reason it is not the
+    // collector's. But a recorder left running would block on `recv` forever
+    // rather than noticing the socket is gone. Only reached when the feed has
+    // already failed.
+    recorder.abort();
     Ok(())
 }
 
@@ -1265,5 +1372,49 @@ mod tests {
         let supervisor = BotSupervisor::new(FeedMode::Off);
         assert_eq!(supervisor.running_count(), 0);
         assert_eq!(supervisor.feed_mode(), FeedMode::Off);
+    }
+
+    /// A chart's history starts empty and is filled by the feed, so the registry
+    /// has to exist before anything has been collected for it.
+    #[test]
+    fn a_fresh_supervisor_has_an_empty_history() {
+        use analytics_core::Timeframe;
+
+        let supervisor = BotSupervisor::new(FeedMode::Off);
+        assert_eq!(supervisor.history().series_count(), 0);
+        assert!(supervisor.history().symbols().is_empty());
+        assert_eq!(
+            supervisor.history().newest("BTCUSDT", Timeframe::M1),
+            None,
+            "no bars means no newest bar, not a newest bar at zero"
+        );
+    }
+
+    /// What the feed records for one symbol is what `GET /candles` serves, and
+    /// the forming bar has to be included or a chart's right-hand edge is up to
+    /// one whole resolution stale.
+    #[test]
+    fn recording_a_bar_makes_it_available_to_a_chart() {
+        use analytics_core::{Candle, Timeframe};
+
+        let supervisor = BotSupervisor::new(FeedMode::Off);
+        let history = supervisor.history();
+        let bar = Candle {
+            symbol: "BTCUSDT".into(),
+            timeframe: Timeframe::M1,
+            open_time: 60_000_000_000,
+            open: 1.0,
+            high: 2.0,
+            low: 0.5,
+            close: 1.5,
+            volume: 10.0,
+            buy_volume: 6.0,
+            sell_volume: 4.0,
+        };
+
+        history.record_closed(&bar);
+        assert_eq!(history.newest("BTCUSDT", Timeframe::M1), Some(60_000_000_000));
+        assert_eq!(history.symbols(), vec!["BTCUSDT"]);
+        assert_eq!(history.depth().len(), 1);
     }
 }

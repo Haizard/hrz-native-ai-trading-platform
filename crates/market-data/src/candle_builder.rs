@@ -132,6 +132,22 @@ impl CandleBuilder {
     }
 }
 
+/// The resolutions the platform builds and charts.
+///
+/// Named rather than inlined in [`MultiTimeframeCandleBuilder::standard`]
+/// because two other places need to agree with it: the in-memory buffer keeps
+/// one series per entry here, and `GET /symbols` offers them even for a symbol
+/// nothing has been buffered for yet. Three lists that must match is three
+/// chances for a chart to offer a series the buffer will never hold.
+pub const STANDARD_TIMEFRAMES: [Timeframe; 6] = [
+    Timeframe::M1,
+    Timeframe::M5,
+    Timeframe::M15,
+    Timeframe::H1,
+    Timeframe::H4,
+    Timeframe::D1,
+];
+
 /// Fans one trade stream out to several resolutions simultaneously.
 #[derive(Debug, Clone)]
 pub struct MultiTimeframeCandleBuilder {
@@ -154,17 +170,7 @@ impl MultiTimeframeCandleBuilder {
     /// Builders for the standard ladder used by the platform.
     #[must_use]
     pub fn standard(symbol: impl Into<String>) -> Self {
-        Self::new(
-            symbol,
-            &[
-                Timeframe::M1,
-                Timeframe::M5,
-                Timeframe::M15,
-                Timeframe::H1,
-                Timeframe::H4,
-                Timeframe::D1,
-            ],
-        )
+        Self::new(symbol, &STANDARD_TIMEFRAMES)
     }
 
     /// Feed one trade; returns every candle closed by it (0..n, one per
@@ -179,6 +185,20 @@ impl MultiTimeframeCandleBuilder {
     /// Flush all in-progress candles.
     pub fn flush(&mut self) -> Vec<Candle> {
         self.builders.iter_mut().filter_map(|b| b.flush()).collect()
+    }
+
+    /// The bar currently being built at each resolution.
+    ///
+    /// The trade stream closes a bar only when the *next* trade arrives, so
+    /// between trades the newest bar of a series does not exist as a closed
+    /// candle at all -- and on `1d` it can be hours old. Anything that renders
+    /// "the latest price" needs this, not the last closed bar.
+    ///
+    /// Borrows rather than collecting: recording the forming bar happens on
+    /// every trade, and allocating a `Vec` per trade per symbol is exactly the
+    /// kind of cost that only shows up at a hundred symbols.
+    pub fn forming(&self) -> impl Iterator<Item = &Candle> {
+        self.builders.iter().filter_map(|b| b.current())
     }
 }
 

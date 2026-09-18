@@ -16,27 +16,59 @@ use axum::http::StatusCode;
 use common::Harness;
 use serde_json::json;
 
+/// Bars for the tests that need the buffer to have something in it.
+///
+/// The buffer is RAM, so it starts empty on every test -- which is the whole
+/// point of it, and the reason a route test cannot assume a seeded database
+/// any more.
+fn seed(h: &Harness, symbol: &str, timeframe: &str, count: i64, step_ns: i64) {
+    let history = h.supervisor.history();
+    for i in 0..count {
+        history.record_closed(&analytics_core::Candle {
+            symbol: symbol.to_string(),
+            timeframe: timeframe.parse().expect("a known resolution"),
+            open_time: i * step_ns,
+            open: 1.0,
+            high: 2.0,
+            low: 0.5,
+            close: 1.5,
+            volume: 10.0,
+            buy_volume: 6.0,
+            sell_volume: 4.0,
+        });
+    }
+}
+
 #[tokio::test]
-async fn the_inventory_reports_every_resolution_and_its_span() {
+async fn the_inventory_reports_what_the_buffer_holds() {
     let Some(h) = Harness::new().await else {
         return;
     };
+    seed(&h, "BTCUSDT", "1m", 10, 60_000_000_000);
+    seed(&h, "BTCUSDT", "5m", 10, 300_000_000_000);
 
     let (status, body) = h.get("/symbols", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     let symbols = body.as_array().expect("a list");
-    assert!(!symbols.is_empty(), "the database has candles");
-
     let btc = symbols
         .iter()
         .find(|s| s["symbol"] == "BTCUSDT")
-        .expect("BTCUSDT is loaded");
+        .expect("BTCUSDT is on the watchlist");
     let timeframes = btc["timeframes"].as_array().expect("a list");
-    assert!(timeframes.len() >= 2, "several resolutions are loaded");
 
-    for tf in timeframes {
-        assert!(tf["candles"].as_i64().unwrap_or(0) > 0, "{tf}");
+    // The whole standard ladder is offered, buffered or not -- a client cannot
+    // ask for a resolution it was never told about.
+    assert_eq!(timeframes.len(), 6, "six standard resolutions: {timeframes:?}");
+
+    let buffered: Vec<_> = timeframes
+        .iter()
+        .filter(|tf| tf["candles"].as_i64().unwrap_or(0) > 0)
+        .collect();
+    assert_eq!(buffered.len(), 2, "two resolutions have bars buffered");
+
+    for tf in buffered {
+        assert_eq!(tf["candles"].as_i64().unwrap_or(0), 10, "{tf}");
         let first = tf["first"].as_i64().expect("a first timestamp");
         let last = tf["last"].as_i64().expect("a last timestamp");
         // The span, not just the count: "1,110 candles" is reassuring and says
@@ -45,20 +77,91 @@ async fn the_inventory_reports_every_resolution_and_its_span() {
         assert!(first <= last, "{tf}");
         assert!(
             tf["missing"].as_i64().is_some(),
-            "a known resolution must report its gaps: {tf}"
+            "a buffered resolution must report its gaps: {tf}"
         );
     }
+}
 
-    // And the warning fires when one resolution covers far less than another,
-    // which is the shape of the incident that cost real time here. Asserted as
-    // a shape rather than as text, because backfilling 1m would legitimately
-    // make it disappear.
-    if let Some(note) = btc.get("coverage_note").and_then(|n| n.as_str()) {
-        assert!(
-            note.contains("covers"),
-            "the note must name what is thin: {note}"
-        );
-    }
+/// The deadlock this route has to break: the buffer is empty on a cold start, so
+/// a `/symbols` that listed only what it had buffered would answer `[]`, and a
+/// page with no instruments can never ask for the one that fills the buffer.
+#[tokio::test]
+async fn a_cold_start_still_offers_something_to_chart() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    let (status, body) = h.get("/symbols", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let symbols = body.as_array().expect("a list");
+    assert!(
+        !symbols.is_empty(),
+        "the watchlist is offered even with nothing buffered"
+    );
+
+    let btc = symbols
+        .iter()
+        .find(|s| s["symbol"] == "BTCUSDT")
+        .expect("BTCUSDT is the default watchlist");
+    assert!(!btc["timeframes"].as_array().expect("a list").is_empty());
+
+    // And it says that zero buffered does not mean unavailable.
+    let note = btc["coverage_note"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("chartable"),
+        "zero buffered must not read as unavailable: {note}"
+    );
+}
+
+/// The point of the whole design: a chart is served from RAM, with no database
+/// read and no venue call.
+#[tokio::test]
+async fn a_window_the_buffer_covers_costs_nothing_to_serve() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    seed(&h, "BTCUSDT", "1m", 20, 60_000_000_000);
+
+    let (status, body) = h
+        .get("/candles?symbol=BTCUSDT&timeframe=1m&from=0&to=1200000000000", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let candles = body["candles"].as_array().expect("a list");
+    assert_eq!(candles.len(), 20, "twenty 1m bars in a 20-minute window");
+    assert_eq!(body["source"]["memory"], 20, "every one of them from RAM");
+    assert_eq!(body["source"]["venue"], 0, "and none from the venue");
+}
+
+/// A window reaching further back than the buffer is served by the venue, and
+/// the response says which part came from where.
+///
+/// The venue client in the harness points at a dead port, so the fetched part
+/// is empty here -- this asserts the *shape* of the merge, not that Binance is
+/// up. What it proves is that the route does not fail and does not lose the
+/// buffered bars just because the deeper page could not be fetched.
+#[tokio::test]
+async fn a_window_older_than_the_buffer_still_returns_what_ram_has() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    seed(&h, "BTCUSDT", "1m", 5, 60_000_000_000);
+
+    // Starting well before the buffer's first bar, so the gap has to be asked
+    // for -- and the ask fails.
+    let (status, body) = h
+        .get(
+            "/candles?symbol=BTCUSDT&timeframe=1m&from=-600000000000&to=600000000000",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let candles = body["candles"].as_array().expect("a list");
+    assert_eq!(candles.len(), 5, "the buffered bars survive a failed fetch");
+    assert_eq!(body["source"]["memory"], 5);
+    assert_eq!(body["source"]["venue"], 0, "the venue refused");
 }
 
 #[tokio::test]
@@ -78,18 +181,112 @@ async fn a_symbol_with_no_depth_says_so_rather_than_returning_an_empty_book() {
         }
         StatusCode::NOT_FOUND => {
             // An empty book would read as "no liquidity", which is a different
-            // and much more alarming claim than "nothing was collected".
+            // and much more alarming claim than "no book has arrived yet".
             assert_eq!(body["error"]["code"], "NO_ORDERBOOK_DATA", "{body}");
+            let message = body["error"]["message"].as_str().unwrap_or_default();
             assert!(
-                body["error"]["message"]
-                    .as_str()
-                    .unwrap()
-                    .contains("collector"),
-                "the message must say what would fix it: {body}"
+                message.contains("feed"),
+                "the message must name the live feed, not a backfill tool: {body}"
             );
         }
         other => panic!("unexpected status {other}: {body}"),
     }
+}
+
+/// The book is read from memory, not from a table nothing writes.
+#[tokio::test]
+async fn a_book_that_arrived_is_served_without_touching_the_database() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    h.supervisor.live().record_book(&analytics_core::OrderBookSnapshot {
+        symbol: "BTCUSDT".into(),
+        timestamp: 1_700_000_000_000_000_000,
+        bids: vec![analytics_core::OrderBookLevel {
+            price: 100.0,
+            quantity: 1.0,
+        }],
+        asks: vec![analytics_core::OrderBookLevel {
+            price: 101.0,
+            quantity: 2.0,
+        }],
+    });
+
+    let (status, body) = h.get("/orderbook?symbol=BTCUSDT", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["bids"].as_array().expect("bids").len(), 1, "{body}");
+    assert_eq!(body["asks"].as_array().expect("asks").len(), 1, "{body}");
+    assert_eq!(body["spread"].as_f64(), Some(1.0), "{body}");
+}
+
+/// `docs/19` row 24 closed: a book that never arrives used to be invisible --
+/// the DOM was empty, `/orderbook` answered 404, and there was no number
+/// anywhere for an alert to fire on. This is the number.
+#[tokio::test]
+async fn a_book_that_never_arrived_is_a_number_a_rule_can_fire_on() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    // A feed started for this symbol and no book ever came. Nothing is
+    // recorded -- that is the case being measured.
+    h.supervisor.live().expect_book("BTCUSDT", 0);
+    api_gateway::metrics::publish_book_ages(&h.supervisor, &h.metrics, 90_000_000_000);
+
+    let rendered = h.metrics.render();
+    assert!(
+        rendered.contains(r#"market_data_book_age_seconds{symbol="BTCUSDT"} 90"#),
+        "the writer for `Rule::StaleBook` must publish the age of a book that \
+         never arrived, or the rule is inert:\n{rendered}"
+    );
+
+    // Once one does arrive the age drops, so the rule clears.
+    h.supervisor.live().record_book(&analytics_core::OrderBookSnapshot {
+        symbol: "BTCUSDT".into(),
+        timestamp: 90_000_000_000,
+        bids: vec![],
+        asks: vec![],
+    });
+    api_gateway::metrics::publish_book_ages(&h.supervisor, &h.metrics, 95_000_000_000);
+    assert!(
+        h.metrics
+            .render()
+            .contains(r#"market_data_book_age_seconds{symbol="BTCUSDT"} 5"#),
+        "a book that arrives must reset the age, or a healthy symbol pages forever"
+    );
+}
+
+/// A footprint is the one chart with a hard limit under this design, and the
+/// route has to say what the limit is rather than returning an empty ladder.
+#[tokio::test]
+async fn a_footprint_says_what_window_the_tape_actually_covers() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    // Nothing on the tape: 404, and the message names the reason.
+    let (status, body) = h.get("/footprint/coverage?symbol=BTCUSDT", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "NO_TICK_DATA", "{body}");
+
+    // Put trades on the tape and it answers with their span.
+    let minute = 60_000_000_000i64;
+    let live = h.supervisor.live();
+    for i in 0..10 {
+        live.record_trade(&analytics_core::Trade {
+            symbol: "BTCUSDT".into(),
+            trade_id: i as u64,
+            price: 100.0 + i as f64,
+            quantity: 1.0,
+            is_buyer_maker: false,
+            timestamp: 1_700_000_000_000_000_000 + i * minute,
+        });
+    }
+
+    let (status, body) = h.get("/footprint/coverage?symbol=BTCUSDT", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["trades"], 10, "{body}");
+    assert_eq!(body["minutes"], 9, "{body}");
 }
 
 #[tokio::test]

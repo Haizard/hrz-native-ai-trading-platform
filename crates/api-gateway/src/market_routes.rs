@@ -10,14 +10,32 @@
 //! `open_time` in the response stays in nanoseconds because it is the
 //! `Candle` type's own field, and reformatting it here would mean the API and
 //! the engine disagree about what a timestamp is.
+//!
+//! ## Nothing here is read from the database
+//!
+//! Market data is **not persisted**. The database is a free tier with 6 GB for
+//! every symbol of every market this platform will carry, and one symbol's
+//! trades are about 110 MB a day, so five symbols would fill it in under a
+//! fortnight. Instead:
+//!
+//! * **recent** bars come from [`market_data::HistoryRegistry`], a bounded
+//!   buffer in RAM fed by the live trade stream;
+//! * **older** bars are fetched from the venue's REST API on demand and are
+//!   not kept afterwards.
+//!
+//! So this route answers by merging two sources, and it says which part of the
+//! window each one covered -- see [`CandlesResponse::source`]. A cold process
+//! answers entirely from the venue, which is slower but correct; a warm one
+//! answers the recent part with no network call at all.
 
 use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use analytics_core::types::Candle;
 use analytics_core::Timeframe;
-use db::repositories::{candles_range, load_candles};
+use ::market_data::BackfillClient;
 
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
@@ -38,6 +56,22 @@ pub struct CandlesQuery {
     pub limit: Option<usize>,
 }
 
+/// Where the bars in a response came from.
+///
+/// A single count cannot say whether the window was cheap or expensive, and
+/// "the chart took four seconds to open" is a question about this, not about
+/// the candles. `memory` bars cost nothing; `venue` bars cost one REST round
+/// trip per thousand, and if a window is slow this is the number that explains
+/// it.
+#[derive(Debug, Serialize)]
+pub struct CandleSourceResponse {
+    /// Bars served from the in-memory buffer.
+    pub memory: usize,
+    /// Bars fetched from the venue because the buffer did not reach back far
+    /// enough.
+    pub venue: usize,
+}
+
 /// Response of `GET /candles`.
 #[derive(Debug, Serialize)]
 pub struct CandlesResponse {
@@ -47,10 +81,20 @@ pub struct CandlesResponse {
     pub timeframe: String,
     /// Candles, oldest first. `open_time` is unix nanoseconds.
     pub candles: Vec<Candle>,
+    /// Where the bars came from.
+    pub source: CandleSourceResponse,
 }
 
 /// Most candles a single request may return.
 const MAX_LIMIT: usize = 5000;
+
+/// Most bars one request will fetch from the venue.
+///
+/// The buffer is meant to cover the recent part of a chart, not to be the whole
+/// history. Without a ceiling, a client asking for five years of `1m` asks this
+/// process to page through ~180 venue requests and hold the result -- and one
+/// such request per open chart is how a free-tier deployment gets throttled.
+const MAX_VENUE_FETCH: usize = 5000;
 
 /// `GET /candles`
 pub async fn candles(
@@ -63,64 +107,146 @@ pub async fn candles(
             format!("unknown timeframe `{}`", query.timeframe),
         )
     })?;
+    let symbol = query.symbol.to_uppercase();
 
-    let db = state
-        .db
-        .as_ref()
-        .ok_or_else(|| ApiError::unavailable("no database configured"))?;
+    // A chart is entitled to a live feed even before any bot is running, and
+    // without this the buffer never fills and every request pays for the venue.
+    state.bots.ensure_feed_for(&symbol);
 
-    let (from_ns, to_ns) = resolve_window(db, &query, timeframe).await?;
-    let candles = load_candles(db.pool(), &query.symbol, timeframe, from_ns, to_ns)
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("reading candles failed: {e}"),
-            )
-        })?;
+    let limit = query.limit.unwrap_or(500).clamp(1, MAX_LIMIT);
+    let history = state.bots.history();
+
+    let (from_ns, to_ns) = match (query.from, query.to) {
+        (Some(from_ms), Some(to_ms)) => (ms_to_ns(from_ms), ms_to_ns(to_ms)),
+        _ => window_ending_at_newest(&history, &symbol, timeframe, limit),
+    };
+
+    let (candles, source) = candles_in(&state, &symbol, timeframe, from_ns, to_ns).await;
 
     Ok(Json(CandlesResponse {
-        symbol: query.symbol,
+        symbol,
         timeframe: timeframe.to_string(),
         candles,
+        source,
     }))
 }
 
-/// Work out the window in nanoseconds.
+/// The window for "the most recent `limit` bars".
 ///
-/// With no `from`/`to`, the window is the **most recent** `limit` candles
-/// ending at the newest candle stored -- not "the last limit candles before
-/// now", which would return nothing at all on a symbol that stopped updating
-/// an hour ago.
-async fn resolve_window(
-    db: &db::Database,
-    query: &CandlesQuery,
+/// Measured from the newest bar this process knows about, not from `now` -- the
+/// latter returns nothing at all on a symbol that stopped updating an hour ago,
+/// which is indistinguishable from a symbol nobody has asked for yet.
+pub(crate) fn window_ending_at_newest(
+    history: &market_data::HistoryRegistry,
+    symbol: &str,
     timeframe: Timeframe,
-) -> Result<(i64, i64), ApiError> {
-    if let (Some(from_ms), Some(to_ms)) = (query.from, query.to) {
-        return Ok((ms_to_ns(from_ms), ms_to_ns(to_ms)));
+    limit: usize,
+) -> (i64, i64) {
+    let width = timeframe.nanos();
+    let span = i64::try_from(limit).unwrap_or(i64::MAX) * width;
+
+    match history.newest(symbol, timeframe) {
+        Some(newest) => (newest - span, newest + width),
+        None => {
+            let now = crate::now_ns();
+            (now - span, now)
+        }
+    }
+}
+
+/// Bars for `[from_ns, to_ns)`, from RAM first and the venue for the rest.
+///
+/// Shared by `/candles` and `/footprint` so the two charts cannot disagree
+/// about what a candle is: one source of bars, two renderings of them.
+pub(crate) async fn candles_in(
+    state: &AppState,
+    symbol: &str,
+    timeframe: Timeframe,
+    from_ns: i64,
+    to_ns: i64,
+) -> (Vec<Candle>, CandleSourceResponse) {
+    let mut candles = state.bots.history().series(symbol, timeframe).range(from_ns, to_ns);
+    let from_memory = candles.len();
+
+    // Whatever the buffer could not cover, fetch from the venue. Deliberately
+    // only the gap: re-fetching the whole window would throw away the one thing
+    // the buffer buys, which is not paying for bars already in hand.
+    let oldest_we_have = candles.first().map_or(to_ns, |c| c.open_time);
+    let mut venue = Vec::new();
+    if from_ns < oldest_we_have {
+        let gap_end = oldest_we_have.min(to_ns);
+        let wanted = ((gap_end - from_ns) / timeframe.nanos().max(1)) as usize;
+        if wanted > MAX_VENUE_FETCH {
+            debug!(
+                symbol, %timeframe, wanted, MAX_VENUE_FETCH,
+                "the window reaches further back than one request will fetch; \
+                 serving the newest part of it"
+            );
+            // Clamp from the front, not the back: the newest end of a window is
+            // the end the chart is scrolled to.
+            let width = i64::try_from(MAX_VENUE_FETCH).unwrap_or(i64::MAX) * timeframe.nanos();
+            venue = fetch_from_venue(&state.backfill, symbol, timeframe, gap_end - width, gap_end)
+                .await;
+        } else {
+            venue = fetch_from_venue(&state.backfill, symbol, timeframe, from_ns, gap_end).await;
+        }
+    }
+    let from_venue = venue.len();
+
+    if !venue.is_empty() {
+        candles.extend(venue);
+        // Both sources are sorted, and the buffer's copy of a bucket they share
+        // is the one built from this process's own trade stream -- so sort and
+        // keep the first of each pair.
+        candles.sort_by_key(|c| c.open_time);
+        candles.dedup_by_key(|c| c.open_time);
     }
 
-    let Some((_earliest, latest)) = candles_range(db.pool(), &query.symbol, timeframe)
-        .await
-        .map_err(|e| {
-            ApiError::new(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("reading candle range failed: {e}"),
-            )
-        })?
-    else {
-        return Err(ApiError::not_found(format!(
-            "no {} candles stored for {}",
-            timeframe, query.symbol
-        )));
-    };
+    (
+        candles,
+        CandleSourceResponse {
+            memory: from_memory,
+            venue: from_venue,
+        },
+    )
+}
 
-    let limit = query.limit.unwrap_or(500).clamp(1, MAX_LIMIT);
-    let width = timeframe.nanos();
-    let to_ns = latest + width; // the latest candle's own bucket is half-open
-    let from_ns = to_ns - i64::try_from(limit).unwrap_or(i64::MAX) * width;
-    Ok((from_ns, to_ns))
+/// Bars for `[from_ns, to_ns)` straight from the exchange.
+///
+/// Returns empty rather than erroring when the venue refuses: a chart that can
+/// draw the recent part of its window is better than one that draws nothing
+/// because a deeper page failed, and the caller can see from
+/// [`CandlesResponse::source`] that it is incomplete.
+async fn fetch_from_venue(
+    client: &BackfillClient,
+    symbol: &str,
+    timeframe: Timeframe,
+    from_ns: i64,
+    to_ns: i64,
+) -> Vec<Candle> {
+    if from_ns >= to_ns {
+        return Vec::new();
+    }
+
+    match client
+        .backfill_candles(
+            symbol,
+            timeframe,
+            from_ns,
+            to_ns,
+            market_data::BackfillSource::Klines,
+        )
+        .await
+    {
+        Ok(candles) => candles,
+        Err(e) => {
+            tracing::warn!(
+                symbol, %timeframe, error = %e,
+                "the venue would not serve history for this window"
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// Milliseconds to nanoseconds, saturating rather than wrapping.
@@ -172,38 +298,101 @@ pub struct SymbolResponse {
     pub coverage_note: Option<String>,
 }
 
+/// The instruments this deployment is willing to chart.
+///
+/// Read once from `MARKET_SYMBOLS` (comma-separated). It exists because
+/// `GET /symbols` cannot be answered from the buffer alone any more: the buffer
+/// is empty on a cold start, and a page whose instrument list is empty cannot
+/// ask for anything -- so it can never fill the buffer. The watchlist breaks
+/// that deadlock by naming what the platform *can* chart, which is anything the
+/// venue serves, since history is fetched on demand.
+///
+/// Defaults to `BTCUSDT` so a deployment with no configuration is a working
+/// chart rather than an empty one.
+pub fn watchlist() -> &'static [String] {
+    static WATCHLIST: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+    WATCHLIST.get_or_init(|| {
+        let raw = std::env::var("MARKET_SYMBOLS").unwrap_or_default();
+        let mut out: Vec<String> = raw
+            .split(',')
+            .map(|s| s.trim().to_uppercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if out.is_empty() {
+            out.push("BTCUSDT".to_string());
+        }
+        out
+    })
+}
+
 /// `GET /symbols`
 ///
-/// # Errors
-/// 503 without a database.
+/// Reports the **watchlist**, with what the buffer already holds per symbol --
+/// not the other way round. Market data is not persisted, so the buffer is
+/// empty on a cold start, and a route that listed only what it had buffered
+/// would answer `[]` on every fresh boot: the page would have no instrument to
+/// ask for, and the buffer would never fill.
+///
+/// A symbol with nothing buffered still reports the standard ladder, at zero
+/// bars with `coverage_note` saying so. Asking for it is answered from the
+/// venue, so "zero buffered" is not "unavailable" -- and a client that cannot
+/// tell those apart would grey out a chart it can perfectly well draw.
 pub async fn symbols(State(state): State<AppState>) -> Result<Json<Vec<SymbolResponse>>, ApiError> {
-    let database = state
-        .db
-        .as_ref()
-        .ok_or_else(|| ApiError::unavailable("no database configured"))?;
+    let history = state.bots.history();
 
-    let symbols = db::market::list_symbols(database.pool()).await?;
-    Ok(Json(
-        symbols
-            .into_iter()
-            .map(|coverage| SymbolResponse {
-                coverage_note: coverage.coverage_note(),
-                symbol: coverage.symbol,
-                timeframes: coverage
-                    .timeframes
-                    .into_iter()
-                    .map(|tf| TimeframeCoverageResponse {
-                        expected: tf.expected_candles(),
-                        missing: tf.missing_candles(),
-                        timeframe: tf.timeframe,
-                        candles: tf.candles,
-                        first: tf.first,
-                        last: tf.last,
-                    })
-                    .collect(),
-            })
-            .collect(),
-    ))
+    let mut names: Vec<String> = watchlist().to_vec();
+    for buffered in history.symbols() {
+        if !names.contains(&buffered) {
+            names.push(buffered);
+        }
+    }
+
+    let mut out = Vec::new();
+    for symbol in names {
+        let buffered: Vec<Timeframe> = history.timeframes(&symbol);
+        let mut timeframes = Vec::new();
+
+        for timeframe in market_data::STANDARD_TIMEFRAMES {
+            let series = history.series(&symbol, timeframe);
+            let Some((first, last)) = series.earliest().zip(series.newest()) else {
+                // Not buffered. Still offered: `/candles` fetches it.
+                timeframes.push(TimeframeCoverageResponse {
+                    timeframe: timeframe.to_string(),
+                    candles: 0,
+                    first: 0,
+                    last: 0,
+                    expected: None,
+                    missing: None,
+                });
+                continue;
+            };
+            let width = timeframe.nanos().max(1);
+            let expected = (last - first) / width + 1;
+            let missing = expected - series.len() as i64;
+            timeframes.push(TimeframeCoverageResponse {
+                timeframe: timeframe.to_string(),
+                candles: series.len() as i64,
+                first,
+                last,
+                expected: Some(expected),
+                missing: Some(missing.max(0)),
+            });
+        }
+
+        out.push(SymbolResponse {
+            coverage_note: (buffered.is_empty()).then(|| {
+                format!(
+                    "nothing is buffered for {symbol} yet. It is still chartable: asking for it \
+                     starts its feed and fetches history from the venue."
+                )
+            }),
+            symbol,
+            timeframes,
+        });
+    }
+
+    Ok(Json(out))
 }
 
 // ---------------------------------------------------------------------------
@@ -246,38 +435,32 @@ pub struct OrderBookResponse {
 
 /// `GET /orderbook`
 ///
-/// This is the **REST** view: the newest snapshot that was stored. The live
-/// ladder is `/ws/orderbook/{symbol}`, which does not exist yet -- so on a
-/// deployment with no tick collection this answers 404 and says so, rather than
-/// returning an empty book that looks like a market with no liquidity.
+/// This is the **REST** view of the live book: the newest snapshot the feed has
+/// published, held in memory. It is not read from Postgres, which no longer
+/// holds market data at all -- so this answers with the book as it is *now*
+/// rather than the last snapshot a pump happened to write. The streaming ladder
+/// is `/ws/orderbook/{symbol}`.
 ///
 /// # Errors
-/// 404 when the symbol has no stored snapshots, 503 without a database.
+/// 404 when no book has arrived for the symbol yet.
 pub async fn orderbook(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<OrderBookQuery>,
 ) -> Result<Json<OrderBookResponse>, ApiError> {
-    let database = state
-        .db
-        .as_ref()
-        .ok_or_else(|| ApiError::unavailable("no database configured"))?;
     let symbol = query.symbol.to_uppercase();
+    state.bots.ensure_feed_for(&symbol);
 
-    let Some(snapshot) = db::market::latest_orderbook(database.pool(), &symbol).await? else {
-        // Say which of the two it is. "No data" and "no data *for this symbol*"
-        // need different fixes, and an empty book would hide both.
-        let any = db::market::orderbook_snapshot_count(database.pool(), &symbol).await?;
+    let Some(snapshot) = state.bots.live().book(&symbol) else {
+        // An empty book would read as "no liquidity", which is a different and
+        // much more alarming claim than "no book has arrived yet".
         return Err(ApiError::coded(
             axum::http::StatusCode::NOT_FOUND,
             "NO_ORDERBOOK_DATA",
-            if any == 0 {
-                format!(
-                    "no order-book snapshots are stored for {symbol}. Depth is collected from \
-                     the trade stream, so a deployment that has not run the collector has none."
-                )
-            } else {
-                format!("no order-book snapshot could be read for {symbol}")
-            },
+            format!(
+                "no order-book snapshot has arrived for {symbol}. Depth comes from the live \
+                 feed: asking for a symbol starts its feed, and the first snapshot lands a \
+                 second or two later -- so retry once before concluding anything."
+            ),
         ));
     };
 

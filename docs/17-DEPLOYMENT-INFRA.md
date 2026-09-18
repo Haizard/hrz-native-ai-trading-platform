@@ -110,6 +110,8 @@ checking deliberately rather than inferring from a healthy container.
 | `BINANCE_API_KEY` | **live trading** | the venue still opts in, but `GET /venues` reports `credentials_configured: false` and an order is refused. |
 | `BINANCE_API_SECRET` | **live trading** | as above |
 | `MARKET_FEED` | live bots | defaults to `off`. Bots start and receive nothing, and say so — a bot that is `running` with no feed looks identical to one that is running and finding no setups. Set to `binance`. |
+| `MARKET_SYMBOLS` | what the charts can show | comma-separated, defaults to `BTCUSDT`. This is the watchlist `GET /symbols` reports and the set of feeds started at boot. Because market data is **not persisted**, the buffer is empty on a cold start — so a route that listed only what it had buffered would answer `[]`, and a page with no instruments could never ask for the one that fills it. Add every symbol you want charted; each one costs a socket and ~7 MB of RAM (a candle buffer plus a trade tape), not disk. |
+| `MARKET_REST_URL` | chart history older than the buffer | defaults to `https://api.binance.com`. Only used to fetch windows the in-memory buffer does not cover. |
 
 Exchange credentials are named **`{VENUE}_API_KEY` / `{VENUE}_API_SECRET`** with the venue
 upper-cased — `binance` → `BINANCE_API_KEY`. The list of venues is closed

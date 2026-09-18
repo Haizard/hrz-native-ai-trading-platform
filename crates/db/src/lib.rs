@@ -28,6 +28,7 @@ pub mod loading;
 pub mod market;
 pub mod models;
 pub mod paper;
+pub mod pump;
 pub mod repositories;
 pub mod skills;
 pub mod strategies;

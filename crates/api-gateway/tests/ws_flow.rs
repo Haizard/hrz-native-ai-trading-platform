@@ -21,6 +21,7 @@ use std::time::Duration;
 use analytics_core::types::{Candle, OrderBookLevel, OrderBookSnapshot, Timeframe};
 use common::Harness;
 use futures::{SinkExt, StreamExt};
+use observability::metrics::{Labels, WS_CONNECTIONS, WS_OPENS};
 use serde_json::json;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -384,4 +385,60 @@ async fn the_agent_endpoints_are_authenticated_and_rate_limited() {
 
     user.cleanup(&h.database).await;
     other.cleanup(&h.database).await;
+}
+
+/// A socket that opens and then closes must leave a trace in **both** numbers.
+///
+/// ## Why this is a test over a real socket
+///
+/// The unit test covers the guard arithmetic; this covers the thing the guard
+/// was added for -- that a client really connecting, really closing, and really
+/// being reaped moves the gauge back and leaves the counter where it was. That
+/// gap is the entire churn signal: a gauge alone would show `1` and then `0`
+/// again, which is indistinguishable from a socket that was never opened.
+///
+/// It is the regression witness for a log that showed seven "socket opened"
+/// lines in seven minutes with no closes beside them, because closes were
+/// logged at `debug` and every early `return` skipped them entirely.
+#[tokio::test]
+async fn a_closed_socket_returns_the_gauge_but_not_the_counter() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let base = h.serve().await;
+    let labels = Labels::new(&[("channel", "market")]);
+
+    let mut socket = connect(&base, "/ws/market/BTCUSDT/5m").await;
+    read_until(&mut socket, |v| v["type"] == "subscribed")
+        .await
+        .expect("a subscribed frame on connect");
+
+    assert_eq!(
+        h.metrics.gauge(WS_CONNECTIONS, &labels),
+        Some(1.0),
+        "one socket is open"
+    );
+    assert_eq!(h.metrics.counter(WS_OPENS, &labels), 1, "and one opened");
+
+    let _ = socket.close(None).await;
+
+    // The close has to travel to the server and the task has to be reaped, so
+    // this waits rather than assuming -- but it waits on a deadline, because a
+    // test that hangs is worse than one that fails.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut released = false;
+    while tokio::time::Instant::now() < deadline {
+        if h.metrics.gauge(WS_CONNECTIONS, &labels) == Some(0.0) {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(released, "the connection must be released on close");
+
+    assert_eq!(
+        h.metrics.counter(WS_OPENS, &labels),
+        1,
+        "the open outlives the close: that gap is what makes churn visible"
+    );
 }

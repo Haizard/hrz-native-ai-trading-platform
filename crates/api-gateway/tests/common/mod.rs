@@ -44,6 +44,11 @@ pub struct Harness {
     /// The agent limiter, so a test can read the limit it is testing against
     /// rather than hard-coding a number that would drift.
     pub limits: Arc<RateLimiter>,
+    /// The registry the app records into, so a test can read a metric the app
+    /// wrote rather than trusting that a handler called the right function.
+    ///
+    /// The same `Arc` the `AppState` holds, so it sees what the router sees.
+    pub metrics: Arc<Registry>,
     /// Held for the harness's whole life, so one test at a time owns the pool.
     ///
     /// Never read. It exists to be dropped, which is what releases the turn.
@@ -113,14 +118,19 @@ impl Harness {
             std::time::Duration::from_millis(100),
         ));
         let limits = Arc::new(RateLimiter::new(RateLimit::default()));
+        let metrics = Arc::new(Registry::new());
         let state = AppState {
             db: Some(Arc::new(database.clone())),
             agent: None,
             skills: Arc::new(ai_agent::SkillLibrary::new()),
             auth: Some(Arc::new(AuthConfig::new(SECRET))),
             bots: Arc::clone(&supervisor),
+            // Nothing in a test may reach a venue. Port 1 refuses instantly, so
+            // a route that tries to fetch history fails fast rather than
+            // hanging -- and `GET /candles` degrades to what RAM can answer.
+            backfill: market_data::BackfillClient::new("http://127.0.0.1:1"),
             agent_limits: Arc::clone(&limits),
-            metrics: Arc::new(Registry::new()),
+            metrics: Arc::clone(&metrics),
             alert_queue: None,
         };
         Some(Self {
@@ -128,6 +138,7 @@ impl Harness {
             database: Arc::new(database),
             supervisor,
             limits,
+            metrics,
             _turn: turn,
         })
     }
@@ -146,14 +157,19 @@ impl Harness {
             std::time::Duration::from_millis(100),
         ));
         let limits = Arc::new(RateLimiter::new(RateLimit::default()));
+        let metrics = Arc::new(Registry::new());
         let state = AppState {
             db: Some(Arc::new(database.clone())),
             agent: None,
             skills: Arc::new(ai_agent::SkillLibrary::new()),
             auth: None,
             bots: Arc::clone(&supervisor),
+            // Nothing in a test may reach a venue. Port 1 refuses instantly, so
+            // a route that tries to fetch history fails fast rather than
+            // hanging -- and `GET /candles` degrades to what RAM can answer.
+            backfill: market_data::BackfillClient::new("http://127.0.0.1:1"),
             agent_limits: Arc::clone(&limits),
-            metrics: Arc::new(Registry::new()),
+            metrics: Arc::clone(&metrics),
             alert_queue: None,
         };
         Some(Self {
@@ -161,6 +177,7 @@ impl Harness {
             database: Arc::new(database),
             supervisor,
             limits,
+            metrics,
             _turn: turn,
         })
     }

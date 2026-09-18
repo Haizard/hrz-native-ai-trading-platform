@@ -38,7 +38,7 @@
 //! taken when there is a measurement rather than a guess.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -46,7 +46,7 @@ use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
 use observability::metrics::{
     Labels, Registry, AGENT_LATENCY, AGENT_PROVIDER_ERRORS, AGENT_REQUESTS, AGENT_THESES,
-    AGENT_TOOL_CALLS, WS_CONNECTIONS, WS_DROPS,
+    AGENT_TOOL_CALLS, WS_CONNECTIONS, WS_DROPS, WS_OPENS,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -81,18 +81,33 @@ use crate::AppState;
 struct Connection {
     metrics: Arc<Registry>,
     channel: &'static str,
+    /// When the socket was accepted. Reported on close, because "opened and
+    /// closed again in 200ms" and "stayed for six hours" print as the same two
+    /// lines until something says how long the connection actually lived.
+    opened: Instant,
 }
 
 impl Connection {
     /// Count a connection in.
     fn open(metrics: Arc<Registry>, channel: &'static str) -> Self {
+        let labels = Labels::new(&[("channel", channel)]);
         metrics.add_gauge(
             WS_CONNECTIONS,
             "WebSocket connections currently open",
-            &Labels::new(&[("channel", channel)]),
+            &labels,
             1.0,
         );
-        Self { metrics, channel }
+        // The gauge says how many are open; the counter says how many opened.
+        // A client that reconnects every minute leaves the first flat and moves
+        // the second, and that difference is the whole signal: a flat gauge on
+        // a climbing counter is churn, a climbing gauge on a flat counter is a
+        // leak, and a gauge alone cannot tell you which one you are looking at.
+        metrics.count(WS_OPENS, "WebSocket connections accepted, total", &labels);
+        Self {
+            metrics,
+            channel,
+            opened: Instant::now(),
+        }
     }
 
     /// Record that this connection was handed a stream with holes in it.
@@ -107,6 +122,29 @@ impl Connection {
             "Messages a WebSocket client was too slow to receive",
             &Labels::new(&[("channel", self.channel)]),
             dropped as f64,
+        );
+    }
+
+    /// Write the closing line: one `info`, carrying why it ended and how long
+    /// it lasted.
+    ///
+    /// Why a method and not a line at the bottom of each loop: every loop below
+    /// exits in more than one place, and some of those exits are `return`s that
+    /// never reach the bottom. A close recorded in one place is missing from the
+    /// others, which is how a reconnect storm ends up in the log as seven
+    /// "opened" lines with no closes anywhere beside them -- the log this was
+    /// read from had exactly that shape.
+    ///
+    /// `detail` is whatever identifies the one connection: the full channel, the
+    /// session id, the bot id. The gauge is deliberately keyed only on the
+    /// channel *kind*, so this field is where the symbol and timeframe survive.
+    fn closed(&self, detail: &impl std::fmt::Display, reason: &'static str) {
+        info!(
+            socket = self.channel,
+            %detail,
+            reason,
+            open_for = ?self.opened.elapsed(),
+            "socket closed"
         );
     }
 }
@@ -218,6 +256,7 @@ async fn market_loop(
         detail: serde_json::json!({ "symbol": symbol, "timeframe": timeframe }),
     };
     if send_text(&mut sink, &hello).await.is_err() {
+        connection.closed(&channel, "hello send failed");
         return;
     }
 
@@ -250,12 +289,13 @@ async fn market_loop(
             ),
         };
         if send_text(&mut sink, &notice).await.is_err() {
+            connection.closed(&channel, "notice send failed");
             return;
         }
         debug!(%channel, "market socket explained: no feed is configured");
     }
 
-    loop {
+    let reason = loop {
         tokio::select! {
             received = candles.recv() => match received {
                 Ok(candle) => {
@@ -268,7 +308,7 @@ async fn market_loop(
                         payload: serde_json::to_value(&candle).unwrap_or(serde_json::Value::Null),
                     };
                     if send_binary(&mut sink, &frame).await.is_err() {
-                        break;
+                        break "send failed";
                     }
                 }
                 Err(RecvError::Lagged(dropped)) => {
@@ -277,24 +317,25 @@ async fn market_loop(
                     connection.missed(dropped);
                     let frame = Frame::Lagged { dropped };
                     if send_binary(&mut sink, &frame).await.is_err() {
-                        break;
+                        break "send failed";
                     }
                 }
-                Err(RecvError::Closed) => break,
+                Err(RecvError::Closed) => break "bus closed",
             },
             incoming = stream.next() => match incoming {
                 // A market channel is one-way; the only thing worth reading is
                 // a close.
-                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(Message::Close(_))) => break "client closed",
+                None => break "stream ended",
                 Some(Ok(_)) => {}
                 Some(Err(e)) => {
                     debug!(%channel, "market socket error: {e}");
-                    break;
+                    break "socket error";
                 }
             },
         }
-    }
-    debug!(%channel, "market socket closed");
+    };
+    connection.closed(&channel, reason);
 }
 
 /// `/ws/orderbook/{symbol}`
@@ -339,6 +380,7 @@ async fn orderbook_loop(
         detail: serde_json::json!({ "symbol": symbol }),
     };
     if send_text(&mut sink, &hello).await.is_err() {
+        connection.closed(&channel, "hello send failed");
         return;
     }
 
@@ -354,19 +396,21 @@ async fn orderbook_loop(
         };
         let _ = send_text(&mut sink, &notice).await;
         let _ = sink.close().await;
+        connection.closed(&channel, "no book within grace");
         return;
     };
     if send_book(&mut sink, &first).await.is_err() {
+        connection.closed(&channel, "send failed");
         return;
     }
     debug!(%symbol, "order book live");
 
-    loop {
+    let reason = loop {
         tokio::select! {
             received = books.recv() => match received {
                 Ok(snapshot) => {
                     if send_book(&mut sink, &snapshot).await.is_err() {
-                        break;
+                        break "send failed";
                     }
                 }
                 Err(RecvError::Lagged(dropped)) => {
@@ -376,22 +420,23 @@ async fn orderbook_loop(
                     connection.missed(dropped);
                     let frame = Frame::Lagged { dropped };
                     if send_binary(&mut sink, &frame).await.is_err() {
-                        break;
+                        break "send failed";
                     }
                 }
-                Err(RecvError::Closed) => break,
+                Err(RecvError::Closed) => break "bus closed",
             },
             incoming = stream.next() => match incoming {
-                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(Message::Close(_))) => break "client closed",
+                None => break "stream ended",
                 Some(Ok(_)) => {}
                 Some(Err(e)) => {
                     debug!(%channel, "order book socket error: {e}");
-                    break;
+                    break "socket error";
                 }
             },
         }
-    }
-    debug!(%channel, "order book socket closed");
+    };
+    connection.closed(&channel, reason);
 }
 
 /// The first book, or `None` if the grace period expired.
@@ -461,14 +506,12 @@ pub async fn agent(
 
 async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, session_id: String) {
     let (mut sink, mut stream) = socket.split();
-    // Bound only for its `Drop`. The agent channel has no `broadcast` receiver,
-    // so there is nothing to count as a drop -- but the connection itself still
-    // has to be counted, because an agent socket is the longest-lived one on the
-    // platform (a user leaves the panel open) and a leak there is the one that
-    // actually shows up in a connection graph. Underscored because the binding
-    // is never read; it is still dropped at the end of the scope, which is the
-    // whole point.
-    let _connection = Connection::open(Arc::clone(&state.metrics), "agent");
+    // Bound for its `Drop` and now for its closing line. The agent channel has
+    // no `broadcast` receiver, so there is nothing to count as a drop -- but the
+    // connection itself still has to be counted, because an agent socket is the
+    // longest-lived one on the platform (a user leaves the panel open) and a
+    // leak there is the one that actually shows up in a connection graph.
+    let connection = Connection::open(Arc::clone(&state.metrics), "agent");
     info!(%session_id, user = %user.user_id, "agent socket opened");
 
     let hello = Frame::Subscribed {
@@ -476,16 +519,21 @@ async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, sessi
         detail: serde_json::json!({ "session_id": session_id }),
     };
     if send_text(&mut sink, &hello).await.is_err() {
+        connection.closed(&session_id, "hello send failed");
         return;
     }
 
-    while let Some(message) = stream.next().await {
+    let reason = loop {
+        let Some(message) = stream.next().await else {
+            break "stream ended";
+        };
         let text = match message {
             Ok(Message::Text(text)) => text,
             // A close or a broken socket ends the loop. Anything else (binary,
             // ping, pong) is not a question, and ignoring it is what keeps the
             // socket open.
-            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(Message::Close(_)) => break "client closed",
+            Err(_) => break "socket error",
             Ok(_) => continue,
         };
 
@@ -502,7 +550,7 @@ async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, sessi
                 ),
             };
             if send_text(&mut sink, &frame).await.is_err() {
-                break;
+                break "send failed";
             }
             continue;
         }
@@ -515,12 +563,14 @@ async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, sessi
         };
         // `None` means the socket died while the run was reporting progress,
         // and there is nothing left to write to.
-        let Some(reply) = reply else { break };
+        let Some(reply) = reply else {
+            break "send failed";
+        };
         if send_text(&mut sink, &reply).await.is_err() {
-            break;
+            break "send failed";
         }
-    }
-    debug!(%session_id, "agent socket closed");
+    };
+    connection.closed(&session_id, reason);
 }
 
 /// The same fields `POST /agent/ask` accepts, minus `include_trace`: a socket
@@ -734,10 +784,11 @@ async fn bot_loop(
         detail: serde_json::json!({ "bot_id": bot_id }),
     };
     if send_text(&mut sink, &hello).await.is_err() {
+        connection.closed(&bot_id, "hello send failed");
         return;
     }
 
-    loop {
+    let reason = loop {
         tokio::select! {
             received = events.recv() => match received {
                 Ok(event) => {
@@ -751,29 +802,30 @@ async fn bot_loop(
                         payload: serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
                     };
                     if send_text(&mut sink, &frame).await.is_err() {
-                        break;
+                        break "send failed";
                     }
                 }
                 Err(RecvError::Lagged(dropped)) => {
                     connection.missed(dropped);
                     let frame = Frame::Lagged { dropped };
                     if send_text(&mut sink, &frame).await.is_err() {
-                        break;
+                        break "send failed";
                     }
                 }
-                Err(RecvError::Closed) => break,
+                Err(RecvError::Closed) => break "bus closed",
             },
             incoming = stream.next() => match incoming {
-                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(Message::Close(_))) => break "client closed",
+                None => break "stream ended",
                 Some(Ok(_)) => {}
                 Some(Err(e)) => {
                     debug!(%bot_id, "bot socket error: {e}");
-                    break;
+                    break "socket error";
                 }
             },
         }
-    }
-    debug!(%bot_id, "bot socket closed");
+    };
+    connection.closed(&bot_id, reason);
 }
 
 async fn send_text<S>(sink: &mut S, frame: &Frame<'_>) -> Result<(), ()>
@@ -861,5 +913,27 @@ mod tests {
         .expect("the post body's fields must parse here too");
         assert_eq!(request.timeframes, Some(vec!["4h".into(), "5m".into()]));
         assert_eq!(request.skill_id, None);
+    }
+
+    #[test]
+    fn an_open_moves_the_gauge_and_the_counter_but_only_the_gauge_comes_back() {
+        // The two numbers together are what separates churn from a leak, and
+        // neither is worth much alone: a gauge that returns to zero says nothing
+        // about how many times it got there. This pins the gap -- the counter
+        // keeps the close, the gauge does not.
+        let metrics = Arc::new(Registry::new());
+        let labels = Labels::new(&[("channel", "market")]);
+
+        let connection = Connection::open(Arc::clone(&metrics), "market");
+        assert_eq!(metrics.gauge(WS_CONNECTIONS, &labels), Some(1.0));
+        assert_eq!(metrics.counter(WS_OPENS, &labels), 1);
+
+        drop(connection);
+        assert_eq!(metrics.gauge(WS_CONNECTIONS, &labels), Some(0.0));
+        assert_eq!(
+            metrics.counter(WS_OPENS, &labels),
+            1,
+            "the open outlives the close, and that gap is the churn signal"
+        );
     }
 }

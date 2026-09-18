@@ -96,6 +96,20 @@ Implement `BinanceCollector` against this trait first.
 - See `docs/13-DATABASE-SCHEMA.md` for exact tables. Use `sqlx` with compile-time
   checked queries. Batch-insert trades/candles; never insert row-by-row in the hot path.
 
+  **The live feed does not persist anything, and that is a decision, not an omission.**
+  The database is a free tier with **6 GB total** for every symbol of every market this
+  platform will carry. One symbol's trades are about 110 MB a day, so five symbols fill it
+  in under a fortnight and a hundred symbols never fit at all. So:
+
+  * recent bars go into `market_data::history`, a bounded in-memory buffer (1500 bars per
+    symbol and resolution, roughly 1 MB per symbol) fed by the live feed;
+  * anything older is fetched from the venue's REST API on demand and dropped;
+  * `xtask collect` / `xtask backfill` may still write deliberately, from a terminal, for a
+    window somebody chose. That is the only path that writes market data.
+
+  A consequence worth stating: **a restart loses the buffer.** That costs one REST fetch on
+  the next chart load, not data, and it is the trade being made for a storage bill of zero.
+
 ## Internal pub/sub
 - A simple in-process broadcast (tokio `broadcast` channel) per (symbol, stream-type) is
   sufficient for Phase 1. Do not introduce Kafka/NATS until a concrete cross-process

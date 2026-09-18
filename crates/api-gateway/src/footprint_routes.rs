@@ -42,6 +42,14 @@ const MAX_CANDLES: usize = 400;
 /// tall enough to hold `0.44 x 2.75`.
 const TARGET_ROWS: usize = 45;
 
+/// How far back past the tape one request will fetch trades for.
+///
+/// The venue serves aggregate trades a thousand at a time, so filling history is
+/// one request per thousand -- on a symbol doing fifty trades a second, an hour
+/// is 180 requests. Ten minutes is the most a page load should pay, and anything
+/// older than that is reported as missing rather than fetched.
+const MAX_TAPE_GAP_NS: i64 = 600 * 1_000_000_000;
+
 /// Query for `GET /footprint`.
 #[derive(Debug, Deserialize)]
 pub struct FootprintQuery {
@@ -170,43 +178,44 @@ pub struct CoverageResponse {
 
 /// `GET /footprint/coverage`
 ///
-/// Exists because a footprint needs the user to choose a window and the trades
-/// are backfilled in capped chunks, so the newest candles almost never have any.
-/// Without this, "select Footprint" is a dead end until the user works out which
-/// window to ask for; with it, the chart can just ask.
+/// Exists because a footprint is the one chart where the user has to choose the
+/// window deliberately: trades are **not stored**, so the only trades available
+/// are the ones on the in-memory tape, and those cover the last few minutes to
+/// the last hour of trading depending on how busy the symbol is. Without this,
+/// "select Footprint" is a dead end until the user works out which window to
+/// ask for; with it, the chart can just ask.
 ///
 /// # Errors
-/// 404 when no trades are stored for the symbol at all.
+/// 404 when the tape for the symbol is empty.
 pub async fn coverage(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<CoverageQuery>,
 ) -> Result<Json<CoverageResponse>, ApiError> {
-    let database = state
-        .db
-        .as_ref()
-        .ok_or_else(|| ApiError::unavailable("no database configured"))?;
     let symbol = query.symbol.to_uppercase();
+    state.bots.ensure_feed_for(&symbol);
 
-    let Some(coverage) = db::repositories::trades_coverage(database.pool(), &symbol).await? else {
+    let tape = state.bots.live().tape(&symbol);
+    let (Some(first), Some(last)) = (tape.earliest_ns(), tape.newest_ns()) else {
         return Err(ApiError::coded(
             axum::http::StatusCode::NOT_FOUND,
             "NO_TICK_DATA",
             format!(
-                "no trades are stored for {symbol}. Run `cargo run -p xtask -- backfill-trades \
-                 --symbol {symbol} --from <start> --to <end>` to collect some (the window is \
-                 capped at 24h)."
+                "no trades are on the tape for {symbol} yet. Trades are not stored -- they live \
+                 in a bounded in-memory tape fed by the live feed -- so a footprint is only \
+                 available for the recent past, and only once the feed for this symbol is \
+                 running. Asking for the symbol starts it; try again in a few seconds."
             ),
         ));
     };
 
     Ok(Json(CoverageResponse {
         symbol,
-        from: coverage.first / 1_000_000,
+        from: first / 1_000_000,
         // Inclusive of the last trade's own millisecond, so a window ending here
         // contains it.
-        to: coverage.last / 1_000_000 + 1,
-        trades: coverage.count,
-        minutes: (coverage.last - coverage.first) / 60_000_000_000,
+        to: last / 1_000_000 + 1,
+        trades: tape.len() as i64,
+        minutes: (last - first) / 60_000_000_000,
     }))
 }
 
@@ -219,11 +228,6 @@ pub async fn footprint(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<FootprintQuery>,
 ) -> Result<Json<FootprintResponse>, ApiError> {
-    let database = state
-        .db
-        .as_ref()
-        .ok_or_else(|| ApiError::unavailable("no database configured"))?;
-
     let timeframe: Timeframe = query.timeframe.parse().map_err(|e| {
         ApiError::bad_request(
             "TIMEFRAME_INVALID",
@@ -232,10 +236,11 @@ pub async fn footprint(
     })?;
     let symbol = query.symbol.to_uppercase();
     let ratio = query.ratio.filter(|r| *r > 1.0).unwrap_or(3.0);
+    state.bots.ensure_feed_for(&symbol);
 
-    // Same window rule as `/candles`: with no explicit range, the newest `limit`
-    // candles -- not "the last limit before now", which is empty on a symbol
-    // that stopped updating.
+    // Same window rule as `/candles`, through the same helper: one source of
+    // bars, so the candle chart and the footprint cannot disagree about what a
+    // candle is.
     let (from_ns, to_ns, limit) = match (query.from, query.to) {
         (Some(from), Some(to)) => (
             from.saturating_mul(1_000_000),
@@ -244,35 +249,66 @@ pub async fn footprint(
         ),
         _ => {
             let limit = query.limit.unwrap_or(120).clamp(1, MAX_CANDLES);
-            let Some((_earliest, latest)) =
-                db::repositories::candles_range(database.pool(), &symbol, timeframe).await?
-            else {
-                return Err(ApiError::not_found(format!(
-                    "no {} candles stored for {symbol}",
-                    query.timeframe
-                )));
-            };
-            let width = timeframe.nanos();
-            let to_ns = latest + width;
-            let from_ns = to_ns - i64::try_from(limit).unwrap_or(i64::MAX) * width;
-            (from_ns, to_ns, Some(limit))
+            let (from, to) = crate::market_routes::window_ending_at_newest(
+                &state.bots.history(),
+                &symbol,
+                timeframe,
+                limit,
+            );
+            (from, to, Some(limit))
         }
     };
 
-    let candles =
-        db::repositories::load_candles(database.pool(), &symbol, timeframe, from_ns, to_ns).await?;
+    let (candles, _) =
+        crate::market_routes::candles_in(&state, &symbol, timeframe, from_ns, to_ns).await;
     if candles.is_empty() {
         return Err(ApiError::coded(
             axum::http::StatusCode::NOT_FOUND,
             "NO_MARKET_DATA",
             format!(
-                "no {} candles stored for {symbol} in that window",
+                "no {} candles are available for {symbol} in that window",
                 query.timeframe
             ),
         ));
     }
 
-    let trades = db::repositories::load_trades(database.pool(), &symbol, from_ns, to_ns).await?;
+    let tape = state.bots.live().tape(&symbol);
+    let mut trades = tape.range(from_ns, to_ns);
+    let mut note = None;
+
+    // The tape is bounded, so a window reaching further back than it can only be
+    // filled by asking the venue -- and that is one request per thousand trades,
+    // which on a liquid symbol is hundreds of requests. Capped, and clamped from
+    // the newest end: the newest candles are the ones on screen.
+    let tape_oldest = tape.earliest_ns().unwrap_or(to_ns);
+    if from_ns < tape_oldest {
+        let gap_end = tape_oldest.min(to_ns);
+        let start = from_ns.max(gap_end - MAX_TAPE_GAP_NS);
+        if start < gap_end {
+            match state.backfill.fetch_agg_trades(&symbol, start, gap_end).await {
+                Ok(older) => {
+                    if start > from_ns {
+                        note = Some(format!(
+                            "the tape holds {} trades; this window is older than that, so only \
+                             the newest {} of it could be filled from the venue. Ask for a \
+                             shorter window for a complete ladder.",
+                            tape.len(),
+                            iso(start) + ".." + &iso(gap_end)
+                        ));
+                    }
+                    trades.extend(older);
+                    trades.sort_by_key(|t| t.timestamp);
+                }
+                Err(e) => {
+                    note = Some(format!(
+                        "the older part of this window could not be filled from the venue ({e}); \
+                         the ladder covers {} onwards.",
+                        iso(tape_oldest)
+                    ));
+                }
+            }
+        }
+    }
 
     if trades.is_empty() {
         // The honest answer, and a different one from "nothing happened". A
@@ -281,34 +317,28 @@ pub async fn footprint(
         //
         // The message names the window that *does* have trades, because a
         // footprint is the one chart where the user has to choose the window
-        // deliberately -- trades are backfilled in capped chunks, so the newest
-        // candles usually have none.
-        let coverage = db::repositories::trades_coverage(database.pool(), &symbol)
-            .await
-            .ok()
-            .flatten()
-            .map(|coverage| {
-                format!(
-                    " {} trades are stored for this symbol, from {} to {} -- ask for a window \
-                     inside that.",
-                    coverage.count,
-                    iso(coverage.first),
-                    iso(coverage.last)
-                )
-            })
-            .unwrap_or_else(|| {
-                format!(
-                    " No trades are stored for {symbol} at all yet; run `cargo run -p xtask -- \
-                     backfill-trades --symbol {symbol} --from <start> --to <end>` (capped at 24h)."
-                )
-            });
+        // deliberately -- trades are not stored, so only the tape's recent span
+        // is available at all.
+        let coverage = match (tape.earliest_ns(), tape.newest_ns()) {
+            (Some(first), Some(last)) => format!(
+                " {} trades are on the tape for this symbol, from {} to {} -- ask for a window \
+                 inside that.",
+                tape.len(),
+                iso(first),
+                iso(last)
+            ),
+            _ => format!(
+                " The tape for {symbol} is empty: the feed for this symbol has not produced a \
+                 trade yet. Asking for the symbol starts its feed; try again in a few seconds."
+            ),
+        };
 
         return Err(ApiError::coded(
             axum::http::StatusCode::NOT_FOUND,
             "NO_TICK_DATA",
             format!(
-                "no trades are stored for {symbol} in this window. A footprint needs trade-level \
-                 data and it cannot be derived from candles.{coverage}"
+                "no trades are available for {symbol} in this window. A footprint needs \
+                 trade-level data and it cannot be derived from candles.{coverage}"
             ),
         ));
     }
@@ -411,10 +441,11 @@ pub async fn footprint(
         ratio,
         trades: trades.len(),
         candles: response,
-        note: if total_levels == 0 {
-            Some("trades fell inside these candles but produced no price levels".into())
-        } else {
-            None
+        note: match (total_levels, note) {
+            (0, _) => {
+                Some("trades fell inside these candles but produced no price levels".into())
+            }
+            (_, partial) => partial,
         },
     }))
 }

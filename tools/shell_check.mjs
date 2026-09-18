@@ -348,18 +348,32 @@ const backend = {
   // Two instruments, because a chart per instrument is what a second pane is for
   // and one symbol cannot tell two panes apart.
   //
-  // The order and the counts are the ones the live deployment reports, and both
-  // matter. The order is alphabetical -- `15m, 1h, 1m, 4h, 5m` -- which is what
-  // made the default timeframe regress to the *thinnest* series once the selects
-  // started coming from `/symbols` instead of from the markup, and the counts are
-  // what `nextFrame` reads to decide a timeframe cannot fill a chart. A fixture
-  // tidied into `5m, 15m, 1h` would have hidden both.
+  // The order and the counts matter, and each is adversarial on purpose.
+  //
+  // The order is **alphabetical** -- `15m, 1d, 1h, 1m, 4h, 5m` -- which is the
+  // order the live deployment used to report before the server moved to its
+  // standard ladder, and it is what made the default timeframe regress to the
+  // *thinnest* series once the selects started coming from `/symbols` instead of
+  // from the markup. It is kept here even though the server no longer sends it,
+  // because a fixture already in ladder order would let the shell's sort pass
+  // without ever having run -- the harness would be asserting the server's
+  // answer rather than the page's.
+  //
+  // The counts are what `deepestFrame` reads to pick the series a chart opens
+  // on and what `nextFrame` reads to decide a timeframe cannot fill a chart. A
+  // fixture tidied into `5m, 15m, 1h` would have hidden both.
+  //
+  // `1d` is the rung the ladder gained when `STANDARD_TIMEFRAMES` became one
+  // shared constant (`docs/19` row 23), and this fixture did not have it, so the
+  // harness could not see it at all. Its counts are representative rather than
+  // captured: a daily series is the one a fresh buffer has least of.
   symbols: [
     {
       symbol: "BTCUSDT",
       coverage_note: "",
       timeframes: [
         { timeframe: "15m", candles: 3, expected: 3, missing: 0, first: 0, last: 0 },
+        { timeframe: "1d", candles: 1180, expected: 1200, missing: 20, first: 0, last: 0 },
         { timeframe: "1h", candles: 4441, expected: 4520, missing: 79, first: 0, last: 0 },
         { timeframe: "1m", candles: 2930, expected: 10565, missing: 7635, first: 0, last: 0 },
         { timeframe: "4h", candles: 1111, expected: 1130, missing: 19, first: 0, last: 0 },
@@ -798,13 +812,14 @@ check(
   )
 );
 
-// The series a chart opens on now comes from `GET /symbols`, and the server lists
-// its timeframes alphabetically. Taking the first option therefore opened the
-// chart on the *thinnest* series on the deployment -- three bars -- which is the
-// "a thin chart is telling the truth" case the bar count in the label was added
-// for, arriving as the default instead of as a warning. The markup it replaced
-// had `5m selected`, so this was a regression, and the fixture had been tidied
-// into `5m, 15m, 1h` so the harness could not see it.
+// The series a chart opens on comes from `GET /symbols`, and the fixture lists
+// its timeframes alphabetically -- `15m, 1d, 1h, 1m, 4h, 5m` -- which is the
+// order the deployment actually sent. Taking the first option therefore opened
+// the chart on the *thinnest* series -- three bars -- which is the "a thin chart
+// is telling the truth" case the bar count in the label was added for, arriving
+// as the default instead of as a warning. The markup it replaced had
+// `5m selected`, so this was a regression, and the fixture had been tidied into
+// `5m, 15m, 1h` so the harness could not see it.
 check(
   "the chart opens on the series with the most bars, not the first one listed",
   selectIn(PANE, "timeframe") === "5m",
@@ -813,7 +828,7 @@ check(
 check(
   "and the timeframe options read as a ladder rather than in the server's order",
   [...paneNode().querySelector(".timeframe").options].map((o) => o.value).join(",") ===
-    "1m,5m,15m,1h,4h",
+    "1m,5m,15m,1h,4h,1d",
   [...paneNode().querySelector(".timeframe").options].map((o) => o.value).join(",")
 );
 

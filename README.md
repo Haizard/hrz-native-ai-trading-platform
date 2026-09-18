@@ -355,6 +355,7 @@ Northflank auto-detects the root `Dockerfile`, so no build config file is needed
    | `DATABASE_URL` | the Northflank Postgres addon's **internal** connection string | everything |
    | `JWT_SECRET` | `openssl rand -base64 48`; **≥ 32 bytes or startup refuses it** | `/auth/*`, and every route needing a token |
    | `MARKET_FEED` | `binance` | bots receiving candles at all |
+   | `MARKET_SYMBOLS` | `BTCUSDT` (or `BTCUSDT,ETHUSDT,…`) | which instruments the charts can show; also which feeds start at boot |
    | `AWS_BEDROCK_MODEL_ID` | `qwen.qwen3-coder-next` | `/agent/*` |
    | `AWS_BEDROCK_REGION` | `us-east-1` | `/agent/*` (defaults to this) |
    | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Bedrock credentials | `/agent/*` |

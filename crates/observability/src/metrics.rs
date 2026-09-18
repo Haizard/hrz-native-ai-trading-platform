@@ -74,8 +74,40 @@ pub const RECONCILE_MISMATCHES: &str = "trading_reconcile_mismatches_total";
 pub const HTTP_REQUESTS: &str = "http_requests_total";
 /// HTTP request duration, by route.
 pub const HTTP_LATENCY: &str = "http_request_duration_seconds";
+/// How many bars a symbol's chart can be served from RAM, per resolution.
+///
+/// The replacement for the store-age pair this module used to carry. Market
+/// data is **not persisted** -- the database is a free tier with 6 GB total for
+/// every symbol of every market -- so "how stale is the newest stored candle"
+/// stopped being a question anybody can ask. What matters now is how much of a
+/// chart's window RAM can answer without a REST call to the venue, because that
+/// is the difference between an instant chart and one that waits on Binance.
+///
+/// Labelled per symbol and resolution. A single global count would hide the
+/// symbol that just restarted behind the one that has been up for days, and the
+/// whole point of the number is per-series coverage.
+pub const MD_HISTORY_BARS: &str = "market_data_history_bars";
+/// Seconds since the newest order book for a symbol arrived.
+///
+/// The one number that can see `docs/19` row 24: a depth stream that has never
+/// bridged onto its REST snapshot publishes **nothing**, so from outside it is
+/// indistinguishable from a book nobody asked for -- empty DOM, 404 on
+/// `/orderbook`. Age separates them, and it is measured from when the symbol
+/// was first waited on if no book has ever arrived, so "never worked" has a
+/// growing number rather than no number at all.
+///
+/// Labelled per symbol, and only for symbols something has actually waited on.
+pub const MD_BOOK_AGE: &str = "market_data_book_age_seconds";
 /// Live WebSocket connections.
 pub const WS_CONNECTIONS: &str = "websocket_connections";
+/// WebSocket connections accepted, total.
+///
+/// The gauge answers "how many are open right now"; this answers "how many have
+/// ever been opened". Churn is only visible in the second: a gauge that sits at
+/// 2 while this climbs by 40 an hour is a client reconnecting, and a gauge at 40
+/// while this sits at 40 is a leak. Those are two different incidents with the
+/// same gauge reading, and the gauge alone cannot separate them.
+pub const WS_OPENS: &str = "websocket_connections_opened_total";
 /// Messages dropped because a client's socket was slow, total.
 pub const WS_DROPS: &str = "websocket_dropped_messages_total";
 

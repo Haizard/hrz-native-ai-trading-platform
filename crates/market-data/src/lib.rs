@@ -12,7 +12,9 @@
 //! | [`candle_builder`] | Building OHLCV **from trades** at multiple resolutions |
 //! | [`bus`] | In-process pub/sub, one bus per symbol |
 //! | [`health`] | Connection health counters + trade-id gap detection |
+//! | [`history`] | Recent candles held **in RAM**, never persisted |
 //! | [`backfill`] | Historical REST backfill (klines or aggregate trades) |
+//! | [`tape`] | Recent trades and the newest book, held **in RAM** |
 //!
 //! ## Design notes
 //!
@@ -33,11 +35,13 @@ pub mod candle_builder;
 pub mod error;
 pub mod exchanges;
 pub mod health;
+pub mod history;
 pub mod orderbook;
+pub mod tape;
 
 pub use backfill::{BackfillClient, BackfillSource};
 pub use bus::{MarketBusRegistry, MarketEventBus};
-pub use candle_builder::{CandleBuilder, MultiTimeframeCandleBuilder};
+pub use candle_builder::{CandleBuilder, MultiTimeframeCandleBuilder, STANDARD_TIMEFRAMES};
 pub use error::MarketDataError;
 pub use exchanges::binance::{BinanceCollector, BinanceConfig};
 pub use exchanges::wire;
@@ -46,4 +50,6 @@ pub use health::{
     spawn_health_publisher, CollectorHealth, HealthStatus, TradeGapDetector,
     HEALTH_PUBLISH_INTERVAL,
 };
+pub use history::{CandleHistory, HistoryRegistry, DEFAULT_HISTORY_BARS};
 pub use orderbook::{DepthDiff, DiffOutcome, OrderBook, OrderBookSynchronizer};
+pub use tape::{BookCache, LiveRegistry, TradeTape, DEFAULT_TAPE_TRADES};

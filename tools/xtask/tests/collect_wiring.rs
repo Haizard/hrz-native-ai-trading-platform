@@ -32,6 +32,27 @@ fn source() -> String {
         .unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()))
 }
 
+/// The pumps themselves, which do **not** live in `xtask`.
+///
+/// They were defined in `src/main.rs` when this file was written and moved to
+/// `crates/db/src/pump.rs` when the gateway needed the same batching loop --
+/// two copies of a writer is the `docs/19` row 20 defect. Anything here that
+/// asserts on a pump's *body* has to read that file, or it silently checks the
+/// wrong one: `the_candle_pump_uses_the_idempotent_upsert` passed for a while
+/// after the move only because `backfill` in `main.rs` also calls
+/// `insert_candles`, which is a witness for nothing about the pump.
+fn pump_source() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("crates")
+        .join("db")
+        .join("src")
+        .join("pump.rs");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()))
+}
+
 /// The body of `fn collect`, brace-matched.
 ///
 /// Scoped deliberately: `pump_candles` is spawned in `collect` and defined
@@ -77,6 +98,7 @@ const PUMPS: &[(&str, &str)] = &[
 #[test]
 fn every_subscription_in_collect_is_drained_by_a_pump() {
     let src = source();
+    let pumps = pump_source();
     let body = collect_body(&src);
 
     for (stream, pump) in PUMPS {
@@ -94,8 +116,11 @@ fn every_subscription_in_collect_is_drained_by_a_pump() {
              fails silently -- the broadcast channel simply has no receiver."
         );
         assert!(
-            src.contains(&format!("async fn {pump}(")),
-            "`{pump}` is spawned by `collect` but not defined"
+            pumps.contains(&format!("async fn {pump}(")),
+            "`{pump}` is spawned by `collect` but not defined. It is defined in \
+             `crates/db/src/pump.rs`, not in `xtask` -- if it has moved again, \
+             `pump_source()` and every assertion that reads a pump body move \
+             with it."
         );
     }
 }
@@ -148,39 +173,44 @@ fn no_subscription_is_missing_from_the_pump_table() {
 /// restart into a primary-key error rather than a no-op.
 #[test]
 fn the_candle_pump_uses_the_idempotent_upsert() {
-    let src = source();
+    let src = pump_source();
     assert!(
         src.contains("repositories::insert_candles("),
         "the candle pump must persist through `repositories::insert_candles`, \
-         which upserts on (symbol, timeframe, open_time)"
+         which upserts on (symbol, timeframe, open_time). Asserted against \
+         `crates/db/src/pump.rs`: `xtask/src/main.rs` calls `insert_candles` \
+         too, in `backfill`, so checking there proves nothing about the pump."
     );
 }
 
 /// A counter is for what happened, not what was attempted.
 #[test]
 fn candle_writes_are_counted_only_on_success() {
-    let src = source();
+    let src = pump_source();
+    // The candle-specific `flush_candles` became the generic `flush_buffer`
+    // plus `note` when the pumps moved into `db::pump`. `note` is where the
+    // rule now lives, and it is the only place a flush outcome is recorded.
     let start = src
-        .find("async fn flush_candles(")
-        .expect("`flush_candles` must exist");
+        .find("fn note(")
+        .expect("`note` must exist -- the flush bookkeeping moved out of `xtask`");
     let end = src[start..]
         .find("\n}\n")
         .map(|i| start + i)
-        .expect("`flush_candles` must terminate");
+        .expect("`note` must terminate");
     let body = &src[start..end];
 
-    let (before_err, after_err) = body
-        .split_once("Err(")
-        .expect("`flush_candles` must handle the failure of `insert_candles`");
+    let (before_ok, after_ok) = body
+        .split_once("is_ok()")
+        .expect("`note` must branch on whether the write succeeded");
     assert!(
-        before_err.contains("fetch_add"),
-        "the success arm of `flush_candles` must be the one that counts. \
-         Counting the attempt would let a run against an unreachable database \
-         report the same number as a healthy one."
+        after_ok.contains("fetch_add"),
+        "the success arm of `note` must be the one that counts. Counting the \
+         attempt would let a run against an unreachable database report the \
+         same number as a healthy one."
     );
     assert!(
-        !after_err.contains("fetch_add"),
-        "the error arm must not count a write that did not happen"
+        !before_ok.contains("fetch_add"),
+        "nothing outside the success arm may count a write that did not happen"
     );
 }
 

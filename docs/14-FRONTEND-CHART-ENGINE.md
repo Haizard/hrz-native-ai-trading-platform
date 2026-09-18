@@ -982,24 +982,38 @@ the bug: commenting the `note_candle` call out makes it report *"a candle the co
 must age the feed"*.
 
 **And the third thing, which is the one the report was actually about, and it is not fixed.**
-The gateway's live feed is **never written to the database.** `insert_candles` and `insert_trades`
-have exactly one caller between them, in `tools/xtask`; `crates/market-data` has no `db` edge by
-design; and `run_binance_feed` subscribes the collector's trades and depth but never drains
-`collector.candle_stream()` or `collector.trade_stream()` into anything. Measured on the running
-deployment: the newest stored BTCUSDT 1m candle was **13.1 hours** behind the clock, and
-`GET /footprint/coverage` stopped at the same second.
+The gateway's live feed is **never written to the database, and that is now the design rather
+than the defect.** This section used to describe a 13.1-hour gap between the live feed and the
+stored series, and `docs/19` row 21 was opened for it. The row was closed the other way round:
+the database is a free tier with 6 GB for every symbol of every market, one symbol's trades are
+~110 MB a day, so persisting the feed would fill it in weeks. `docs/19` rows 21 and 22 record
+what replaced it.
 
-So the two chart modes behave completely differently, and nothing says so:
+Market data now has exactly two homes, and neither is Postgres:
 
-| mode | while the page is open | after a reload |
+| data | where it lives | how far back it goes |
 |---|---|---|
-| **candles** | moves — the socket appends each closed bar to the in-memory series | snaps back to the last backfill, and every bar since is gone |
-| **footprint** | **does not move at all** — the ladder is built by `/footprint`, which reads stored trades | identical |
+| candles, recent | `market_data::history`, a bounded RAM buffer (1500 bars per symbol and resolution) | 1500 bars -- 25 hours at 1m |
+| candles, older | the venue's REST klines, fetched on demand and dropped | as far back as the venue serves |
+| trades | `market_data::tape`, a bounded RAM ring (100,000 per symbol) | **~33 minutes of BTCUSDT** at ~50 trades/s |
+| the book | `market_data::BookCache`, newest snapshot per symbol | the current book only |
 
-That is why "I am seeing the same candles on each timeframe" survived the feed being fixed: in
-footprint mode the ladder is not a live view of anything, it is a rendering of a database that
-stopped updating. It is tracked as `docs/19` row 21, and it is the same defect row 12 closed for
-the *CLI* collector — `xtask collect` pumps its candle stream into `candles`; the gateway does not.
+So the two chart modes behave the same way *while the page is open*, and differ only in how far
+back they can look:
+
+| mode | while the page is open | how far back |
+|---|---|---|
+| **candles** | moves -- the socket appends each closed bar | unlimited; the older part costs one REST call per 1000 bars |
+| **footprint** | moves, but is rebuilt from `/footprint` over the tape | **the tape's span only** |
+
+**The footprint limit is real and is not going away.** A footprint is built from individual
+trades, and trades are the one thing that cannot be stored under this constraint. 100,000 trades
+is about 33 minutes of BTCUSDT; a window older than the tape is filled from the venue's aggTrades
+up to a 10-minute gap (one request per thousand trades -- an hour of a liquid symbol is ~180
+requests), and beyond that `/footprint` returns a `note` saying which part of the ladder is
+missing. `GET /footprint/coverage` exists so the UI can ask what window actually works instead of
+guessing. If deeper footprint history is ever wanted, the tape size is the knob, and the cost is
+RAM rather than disk.
 
 ### The live badge: evidence, not a claim
 

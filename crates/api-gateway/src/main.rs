@@ -53,6 +53,13 @@ async fn main() -> anyhow::Result<()> {
     }
     let bots = Arc::new(BotSupervisor::new(feed));
 
+    // Chart history older than the in-memory buffer is fetched from the venue
+    // and dropped, not stored: `MARKET_REST_URL` exists so a test or a proxy can
+    // point it somewhere else.
+    let backfill = market_data::BackfillClient::new(
+        std::env::var("MARKET_REST_URL").unwrap_or_else(|_| "https://api.binance.com".to_string()),
+    );
+
     let agent_limits = Arc::new(RateLimiter::new(RateLimit::from_env()));
     let limit = agent_limits.limit();
     info!(
@@ -72,12 +79,22 @@ async fn main() -> anyhow::Result<()> {
         info!("ALERT_WEBHOOK_URL is not set; alerts go to the log and the audit trail only");
     }
 
+    // The watchlist's feeds start with the process rather than on the first
+    // chart that asks. A feed only begins when something requests its symbol, so
+    // without this a freshly deployed gateway has an empty buffer and answers
+    // its first chart entirely from the venue -- slower, and the buffer stays
+    // empty for the one request that would have warmed it.
+    for symbol in api_gateway::market_routes::watchlist() {
+        bots.ensure_feed_for(symbol);
+    }
+
     let state = AppState {
         db,
         agent,
         skills: Arc::new(skills),
         auth,
         bots,
+        backfill,
         agent_limits,
         metrics: Registry::global_handle(),
         alert_queue: alert_queue.clone(),

@@ -186,11 +186,15 @@ const PANE_ELS = new Set([
 
 /// A timeframe's length in minutes, for ordering the options.
 ///
-/// `GET /symbols` reports its timeframes in its own order, which is alphabetical
-/// -- `15m, 1h, 1m, 4h, 5m` on this deployment. That is not a ladder anyone can
-/// read and it makes "the next timeframe up" mean nothing, so the shell sorts
-/// them. A suffix the server adds later sorts last rather than throwing: a new
-/// unit should cost an odd-looking position, not a blank chart.
+/// The shell sorts the options itself rather than trusting the server's order.
+/// It *used* to have to: `GET /symbols` listed them alphabetically --
+/// `15m, 1h, 1m, 4h, 5m` -- and taking the first one opened every chart on the
+/// thinnest series on the deployment. The server now sends a proper ladder
+/// (`1m, 5m, 15m, 1h, 4h, 1d`), but the sort stays, because "the next timeframe
+/// up" is the shell's question and depending on the server to have answered it
+/// is one more thing that can be silently wrong. A suffix the server adds later
+/// sorts last rather than throwing: a new unit should cost an odd-looking
+/// position, not a blank chart.
 const FRAME_UNITS = { s: 1 / 60, m: 1, h: 60, d: 1440, w: 10080 };
 function frameMinutes(frame) {
   const parts = /^(\d+)([smhdw])$/.exec(String(frame));
@@ -2048,9 +2052,10 @@ function createChartPane(root, hooks = {}) {
   /// is broken and a chart that is telling the truth: `15m` holds three bars on
   /// this deployment, and a selector that said only "15m" would read as a bug.
   ///
-  /// Ordered by length, because the server's order is its own -- alphabetical,
-  /// as it happens, which reads `15m, 1h, 1m, 4h, 5m`. That is not a ladder
-  /// anyone can use, and it makes "the next timeframe up" mean nothing.
+  /// Ordered by length, because the order is this shell's to decide and not
+  /// the server's to grant -- see `frameMinutes`. The server sends a ladder
+  /// today; it sent an alphabetical one before that, and neither is a reason
+  /// for the page to stop knowing what "the next timeframe up" means.
   function fillTimeframes(symbol) {
     const entry = instruments.find((c) => c.symbol === symbol);
     const frames = [...(entry ? entry.timeframes : [])].sort(

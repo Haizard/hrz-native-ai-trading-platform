@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::metrics::{
-    Registry, HTTP_REQUESTS, KILL_SWITCH, MD_FEED_AGE, RECONCILE_MISMATCHES, RISK_BREACHES,
+    Registry, HTTP_REQUESTS, KILL_SWITCH, MD_BOOK_AGE, MD_FEED_AGE, RECONCILE_MISMATCHES,
+    RISK_BREACHES, WS_OPENS,
 };
 
 /// How urgent an alert is.
@@ -154,6 +155,17 @@ pub enum Rule {
         /// Threshold.
         max_age_secs: f64,
     },
+    /// No order book has arrived for a symbol in this many seconds.
+    ///
+    /// `StaleFeed` cannot see this. Candles come from a different aggregation
+    /// than the book, so a run can publish a perfect candle series while the
+    /// book has never bridged onto its snapshot -- which is precisely what
+    /// happened in `docs/19` row 24: healthy candles, empty DOM, nothing
+    /// anywhere saying so.
+    StaleBook {
+        /// Threshold.
+        max_age_secs: f64,
+    },
     /// 5xx responses as a fraction of requests to one route, once the route has
     /// served enough requests for the ratio to mean anything.
     ErrorRate {
@@ -161,6 +173,24 @@ pub enum Rule {
         min_requests: u64,
         /// Maximum tolerated fraction of 5xx.
         max_ratio: f64,
+    },
+    /// WebSocket connections are being opened faster than this, and it is not
+    /// stopping.
+    ///
+    /// A client in a reconnect loop and fifty clients arriving normally look
+    /// identical to the gauge -- both leave `websocket_connections` where it is
+    /// -- so this reads the *counter* instead, over time. The rate is what
+    /// separates the two: normal traffic is bursty and then quiet, a loop is
+    /// the same rate tick after tick.
+    SocketChurn {
+        /// Openings per minute above which something is reconnecting in a loop.
+        max_opens_per_min: f64,
+        /// Consecutive evaluations that must breach before it is news.
+        ///
+        /// One tick of a lot of opens is a dashboard loading, or every client
+        /// reconnecting after a restart -- both expected. Two ticks is a minute
+        /// of it, which nothing normal does.
+        sustained_rounds: u32,
     },
     /// The kill-switch tripped.
     KillSwitch,
@@ -176,7 +206,9 @@ impl Rule {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::StaleFeed { .. } => "stale_market_data",
+            Self::StaleBook { .. } => "stale_order_book",
             Self::ErrorRate { .. } => "http_error_rate",
+            Self::SocketChurn { .. } => "socket_churn",
             Self::KillSwitch => "kill_switch_engaged",
             Self::RiskBreach => "risk_limit_breached",
             Self::ReconcileMismatch => "reconcile_mismatch",
@@ -205,7 +237,8 @@ impl Rule {
     #[must_use]
     pub const fn severity(&self) -> Severity {
         match self {
-            Self::StaleFeed { .. } | Self::ErrorRate { .. } => Severity::Warning,
+            Self::StaleFeed { .. } | Self::StaleBook { .. } | Self::ErrorRate { .. }
+            | Self::SocketChurn { .. } => Severity::Warning,
             Self::KillSwitch | Self::RiskBreach | Self::ReconcileMismatch => Severity::Critical,
         }
     }
@@ -232,9 +265,34 @@ pub fn default_rules() -> Vec<Rule> {
         Rule::StaleFeed {
             max_age_secs: 120.0,
         },
+        // Tighter than the feed's 120s, and deliberately so: a book is
+        // republished every `orderbook_publish_ms` while it is healthy, so
+        // 60 seconds of silence is not "a quiet market" -- it is a stream that
+        // stopped, or one that never bridged at all. The 2s resync means a
+        // book that *can* recover does so well inside this window, so the rule
+        // fires on the ones that cannot.
+        Rule::StaleBook {
+            max_age_secs: 60.0,
+        },
         Rule::ErrorRate {
             min_requests: 50,
             max_ratio: 0.05,
+        },
+        // 20/min sustained over two checks, and the two numbers are not
+        // independent: rules are evaluated every 30s, so this is "more than ten
+        // new sockets per check, for a full minute".
+        //
+        // Ten was chosen against the traffic this gateway actually sees. A
+        // dashboard opening is six to eight sockets at once -- one round, well
+        // under, and it does not repeat. A restart reopens every client's
+        // sockets in a single round, which is exactly what `sustained_rounds`
+        // exists to absorb. A client retrying every five seconds is twelve a
+        // minute, round after round, and that is the thing being looked for.
+        // Raise `max_opens_per_min` as the number of concurrent dashboards
+        // grows; the rule is a field, not a constant, for that reason.
+        Rule::SocketChurn {
+            max_opens_per_min: 20.0,
+            sustained_rounds: 2,
         },
         Rule::KillSwitch,
         Rule::RiskBreach,
@@ -251,6 +309,16 @@ pub struct Alerter {
     /// Last seen value per counter rule, so "it went up" is detectable without
     /// the caller having to remember anything.
     last: HashMap<String, u64>,
+    /// When each of those values was seen, in milliseconds.
+    ///
+    /// A value alone cannot produce a *rate*: five new sockets is alarming if
+    /// it happened in a second and unremarkable if it took an hour. Only the
+    /// rules that need a rate read this, and the rest leave it empty rather
+    /// than every rule carrying a clock it does not use.
+    last_at: HashMap<String, i64>,
+    /// Consecutive evaluations a rule has breached, for rules that must be
+    /// sustained before they are news.
+    streak: HashMap<String, u32>,
 }
 
 impl std::fmt::Debug for Alerter {
@@ -261,6 +329,8 @@ impl std::fmt::Debug for Alerter {
             .field("sinks", &self.sinks.len())
             .field("active", &self.active)
             .field("last", &self.last)
+            .field("last_at", &self.last_at)
+            .field("streak", &self.streak)
             .finish()
     }
 }
@@ -280,6 +350,8 @@ impl Alerter {
             sinks,
             active: HashSet::new(),
             last: HashMap::new(),
+            last_at: HashMap::new(),
+            streak: HashMap::new(),
         }
     }
 
@@ -295,11 +367,30 @@ impl Alerter {
     /// trail without having to install a sink that knows about the database.
     #[must_use]
     pub fn evaluate(&mut self, registry: &Registry) -> Vec<Alert> {
+        self.evaluate_at(registry, now_ms())
+    }
+
+    /// Evaluate every rule as of an explicit clock reading.
+    ///
+    /// The rules that read a *rate* cannot be tested against the wall clock: two
+    /// evaluations in a test land microseconds apart, which is not an interval
+    /// anyone can assert on. This exists so a test can pass the time itself,
+    /// rather than sleeping for a minute to make the clock say what it wants.
+    #[must_use]
+    pub fn evaluate_at(&mut self, registry: &Registry, now: i64) -> Vec<Alert> {
         let samples = registry.snapshot();
+        let raised_at = now;
         let mut raised = Vec::new();
 
         for rule in self.rules.clone() {
-            let breach = Self::breach(&rule, &samples, &mut self.last);
+            let breach = Self::breach(
+                &rule,
+                &samples,
+                &mut self.last,
+                &mut self.last_at,
+                &mut self.streak,
+                raised_at,
+            );
             let name = rule.name().to_string();
 
             if rule.is_event() {
@@ -359,6 +450,9 @@ impl Alerter {
         rule: &Rule,
         samples: &[crate::metrics::Sample],
         last: &mut HashMap<String, u64>,
+        last_at: &mut HashMap<String, i64>,
+        streak: &mut HashMap<String, u32>,
+        now: i64,
     ) -> Option<String> {
         match *rule {
             Rule::StaleFeed { max_age_secs } => {
@@ -374,6 +468,24 @@ impl Alerter {
                 }
                 worst.map(|(value, labels)| {
                     format!("newest candle is {value:.0}s old (limit {max_age_secs:.0}s) {labels}")
+                })
+            }
+            Rule::StaleBook { max_age_secs } => {
+                let mut worst: Option<(f64, String)> = None;
+                for sample in samples.iter().filter(|s| s.name == MD_BOOK_AGE) {
+                    if sample.value > max_age_secs
+                        && worst
+                            .as_ref()
+                            .is_none_or(|(value, _)| sample.value > *value)
+                    {
+                        worst = Some((sample.value, sample.labels.render()));
+                    }
+                }
+                worst.map(|(value, labels)| {
+                    format!(
+                        "no order book for {value:.0}s (limit {max_age_secs:.0}s) {labels}: \
+                         the depth stream has stopped, or never bridged onto its snapshot"
+                    )
                 })
             }
             Rule::ErrorRate {
@@ -403,6 +515,28 @@ impl Alerter {
                     format!("{route}: {:.1}% of {total} requests are 5xx", ratio * 100.0)
                 })
             }
+            Rule::SocketChurn {
+                max_opens_per_min,
+                sustained_rounds,
+            } => {
+                let rate = churn_rate(rule, samples, last, last_at, now)?;
+                let key = rule.name().to_string();
+                if rate <= max_opens_per_min {
+                    // Not sustained: the count resets, so a burst has to start
+                    // again from the first round before it can be news.
+                    streak.insert(key, 0);
+                    return None;
+                }
+                let rounds = streak.entry(key).or_insert(0);
+                *rounds += 1;
+                let rounds = *rounds;
+                (rounds >= sustained_rounds).then(move || {
+                    format!(
+                        "{rate:.0} sockets/min are opening (limit {max_opens_per_min:.0}), \
+                         sustained across {rounds} checks: something is reconnecting in a loop"
+                    )
+                })
+            }
             Rule::KillSwitch => counter_rose(rule, KILL_SWITCH, samples, last).map(|delta| {
                 format!("the kill-switch engaged ({delta} activation(s)); no new entries")
             }),
@@ -429,6 +563,45 @@ fn counter_rose(
     let key = rule.name().to_string();
     let previous = last.insert(key, total).unwrap_or(0);
     (total > previous).then_some(total - previous)
+}
+
+/// WebSocket openings per minute since the previous evaluation.
+///
+/// `None` on the first evaluation, deliberately: there is no previous reading to
+/// difference against, and treating "everything opened since boot" as one
+/// minute of traffic would make the gateway alert on its own startup.
+fn churn_rate(
+    rule: &Rule,
+    samples: &[crate::metrics::Sample],
+    last: &mut HashMap<String, u64>,
+    last_at: &mut HashMap<String, i64>,
+    now_ms: i64,
+) -> Option<f64> {
+    let key = rule.name().to_string();
+    // All channels together: the loop being looked for reopens the same sockets
+    // over and over, and a per-channel rate would only ever see a fraction of
+    // it. The detail a human wants (which channel) is in the log line.
+    let total: u64 = samples
+        .iter()
+        .filter(|s| s.name == WS_OPENS)
+        .map(|s| s.value as u64)
+        .sum();
+
+    let previous = last.insert(key.clone(), total);
+    let previous_at = last_at.insert(key, now_ms);
+    let (Some(previous), Some(previous_at)) = (previous, previous_at) else {
+        return None;
+    };
+
+    let elapsed_ms = now_ms.saturating_sub(previous_at);
+    // Below a second, the rate is an artefact of the clock rather than a
+    // measurement: two evaluations in the same millisecond would otherwise
+    // report infinity. A counter that did not move is no rate at all.
+    if elapsed_ms < 1_000 || total <= previous {
+        return None;
+    }
+
+    Some((total - previous) as f64 * 60_000.0 / elapsed_ms as f64)
 }
 
 /// Read one label out of a sample, defaulting to an empty string.
@@ -499,6 +672,155 @@ mod tests {
         assert_eq!(cleared[0].detail, "resolved");
         assert!(!alerter.is_active("stale_market_data"));
         assert_eq!(sink.alerts().len(), 2);
+    }
+
+    /// A gateway that has just started has opened every socket it will open in
+    /// its first minute, and that is not churn.
+    #[test]
+    fn churn_says_nothing_on_the_first_evaluation() {
+        let registry = Registry::new();
+        let (mut alerter, _) = alerter(vec![Rule::SocketChurn {
+            max_opens_per_min: 20.0,
+            sustained_rounds: 2,
+        }]);
+        registry.inc_counter(WS_OPENS, "opens", &Labels::new(&[("channel", "market")]), 500);
+
+        assert!(
+            alerter.evaluate_at(&registry, 1_000).is_empty(),
+            "there is no previous reading to difference against, so 500 opens \
+             must not be read as 500 opens per minute"
+        );
+    }
+
+    /// A restart reopens every client's sockets at once. That is one round of a
+    /// lot, and it is expected -- which is what `sustained_rounds` is for.
+    #[test]
+    fn churn_ignores_a_single_round_of_opens() {
+        let registry = Registry::new();
+        let (mut alerter, _) = alerter(vec![Rule::SocketChurn {
+            max_opens_per_min: 20.0,
+            sustained_rounds: 2,
+        }]);
+        let labels = Labels::new(&[("channel", "market")]);
+
+        registry.inc_counter(WS_OPENS, "opens", &labels, 10);
+        assert!(alerter.evaluate_at(&registry, 1_000).is_empty());
+
+        // 30s later, 20 more opens -- 40/min, well over the limit, for one
+        // round only. Every client reconnecting after a deploy looks like this.
+        registry.inc_counter(WS_OPENS, "opens", &labels, 20);
+        assert!(
+            alerter.evaluate_at(&registry, 31_000).is_empty(),
+            "one round above the limit is a page load or a restart, not a loop"
+        );
+    }
+
+    #[test]
+    fn churn_fires_when_the_rate_holds() {
+        let registry = Registry::new();
+        let (mut alerter, sink) = alerter(vec![Rule::SocketChurn {
+            max_opens_per_min: 20.0,
+            sustained_rounds: 2,
+        }]);
+        let labels = Labels::new(&[("channel", "market")]);
+
+        registry.inc_counter(WS_OPENS, "opens", &labels, 5);
+        assert!(alerter.evaluate_at(&registry, 1_000).is_empty());
+
+        // 15 opens per 30s = 30/min, twice running.
+        registry.inc_counter(WS_OPENS, "opens", &labels, 15);
+        assert!(alerter.evaluate_at(&registry, 31_000).is_empty());
+
+        registry.inc_counter(WS_OPENS, "opens", &labels, 15);
+        let raised = alerter.evaluate_at(&registry, 61_000);
+
+        assert_eq!(raised.len(), 1, "a loop must be announced");
+        assert_eq!(raised[0].name, "socket_churn");
+        assert_eq!(raised[0].severity, Severity::Warning);
+        assert!(
+            raised[0].detail.contains("30 sockets/min"),
+            "the detail must name the measured rate: {}",
+            raised[0].detail
+        );
+
+        // And it stays quiet while it stays broken.
+        registry.inc_counter(WS_OPENS, "opens", &labels, 15);
+        assert!(
+            alerter.evaluate_at(&registry, 91_000).is_empty(),
+            "a rule that re-fires every tick gets muted"
+        );
+        assert_eq!(sink.alerts().len(), 1);
+    }
+
+    /// The traffic actually observed on this platform -- roughly one socket a
+    /// minute -- is not an incident, and must never become one.
+    #[test]
+    fn churn_ignores_traffic_at_the_rate_the_platform_actually_sees() {
+        let registry = Registry::new();
+        let (mut alerter, _) = alerter(vec![Rule::SocketChurn {
+            max_opens_per_min: 20.0,
+            sustained_rounds: 2,
+        }]);
+        let labels = Labels::new(&[("channel", "market")]);
+
+        let mut at = 1_000;
+        registry.inc_counter(WS_OPENS, "opens", &labels, 7);
+        assert!(alerter.evaluate_at(&registry, at).is_empty());
+
+        // Seven sockets over seven minutes, as one open per check.
+        for _ in 0..7 {
+            at += 30_000;
+            registry.inc_counter(WS_OPENS, "opens", &labels, 1);
+            assert!(
+                alerter.evaluate_at(&registry, at).is_empty(),
+                "one socket per check is a dashboard being used, not a loop"
+            );
+        }
+    }
+
+    /// `docs/19` row 24: candles were healthy for a whole run while the book
+    /// had never synced, and no rule could see it. This is the guard that
+    /// would have fired.
+    #[test]
+    fn a_book_that_never_arrived_is_its_own_alert_and_not_the_feeds() {
+        let registry = Registry::new();
+        let (mut alerter, sink) = alerter(vec![Rule::StaleBook { max_age_secs: 60.0 }]);
+
+        // The candle feed is fine, which is exactly the case that hid the
+        // defect: `StaleFeed` is reading a healthy number.
+        registry.set_gauge(MD_FEED_AGE, "age", &Labels::none(), 2.0);
+        registry.set_gauge(
+            MD_BOOK_AGE,
+            "book age",
+            &Labels::new(&[("symbol", "BTCUSDT")]),
+            900.0,
+        );
+
+        let raised = alerter.evaluate(&registry);
+        assert_eq!(raised.len(), 1, "a dead book must be news");
+        assert_eq!(raised[0].name, "stale_order_book");
+        assert_eq!(raised[0].severity, Severity::Warning);
+        assert!(
+            raised[0].detail.contains("BTCUSDT") && raised[0].detail.contains("900"),
+            "the detail must name the symbol and the age: {0}",
+            raised[0].detail
+        );
+        assert_eq!(sink.alerts().len(), 1);
+    }
+
+    /// A fresh process has not had time for a book to arrive. Publishing an age
+    /// for a symbol nobody has waited on would page on every restart.
+    #[test]
+    fn a_book_within_the_threshold_is_never_announced() {
+        let registry = Registry::new();
+        let (mut alerter, _) = alerter(vec![Rule::StaleBook { max_age_secs: 60.0 }]);
+        registry.set_gauge(
+            MD_BOOK_AGE,
+            "book age",
+            &Labels::new(&[("symbol", "BTCUSDT")]),
+            10.0,
+        );
+        assert!(alerter.evaluate(&registry).is_empty());
     }
 
     #[test]
@@ -608,13 +930,15 @@ mod tests {
     }
 
     #[test]
-    fn the_default_rules_are_the_five_that_can_actually_fire() {
+    fn the_default_rules_are_the_seven_that_can_actually_fire() {
         let names: Vec<&str> = default_rules().iter().map(|rule| rule.name()).collect();
         assert_eq!(
             names,
             vec![
                 "stale_market_data",
+                "stale_order_book",
                 "http_error_rate",
+                "socket_churn",
                 "kill_switch_engaged",
                 "risk_limit_breached",
                 "reconcile_mismatch",

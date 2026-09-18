@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>chart-engine preview — the footprint ladder</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #2a313c;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 20px; }
+  h1 { font-size: 14px; margin: 0 0 4px; font-weight: 600; }
+  p.lede { color: var(--muted); margin: 0 0 16px; max-width: 88ch; }
+  .wrap { position: relative; border: 1px solid var(--line); border-radius: 8px;
+          background: var(--panel); overflow: hidden; }
+  canvas { display: block; width: 100%; }
+  .stats { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px;
+           font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .stats b { color: var(--text); font-weight: 500; }
+  ul { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
+  li { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line);
+       border-radius: 999px; padding: 3px 10px; color: var(--muted); }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+            margin-right: 5px; vertical-align: -1px; }
+  code { font-family: var(--mono); color: var(--accent); }
+  .note { color: var(--muted); font-size: 11px; margin-top: 14px; max-width: 96ch; }
+</style>
+</head>
+<body>
+<h1>The footprint ladder, drawn the way the shell draws it</h1>
+<p class="lede">
+  A real <code>Mode::Footprint</code> scene from <code>chart_engine.wasm</code>, rendered with
+  the same rules as <code>drawFootprintGrid</code> in <code>app.js</code>. Every coordinate and
+  every string below comes from the engine; the drawing only picks colours and calls
+  <code>fillText</code>.
+</p>
+<p class="lede">
+  The three things to look at: <strong>every cell with volume is filled</strong>, tinted by
+  which side won the level; <strong>the value area is banded per column</strong>, so it is a
+  band inside each ladder rather than a stripe across all of them; and <strong>the pair reads
+  as <code>bid x ask</code></strong>, centred, rather than as two numbers pushed into the two
+  halves of the cell.
+</p>
+<div class="wrap"><canvas id="c"></canvas></div>
+<div class="stats" id="stats"></div>
+<ul id="legend"></ul>
+<p class="note">
+  <strong>An imbalance is outlined, and its outline is the data.</strong> A diagonal imbalance
+  is this level measured against the level below it — not simply which of this cell's two
+  numbers is larger — which is why a bid-heavy cell can still be flagged as a buy imbalance.
+  The <code>ratio</code> sets how saturated the outline is and <code>stacked</code> sets how
+  thick, so both numbers the detector produces are load-bearing rather than carried and unused.
+  <br /><br />
+  A pair that does not fit in its cell is <strong>not drawn</strong>. A truncated number is a
+  wrong number, and a ladder of wrong numbers is worse than a ladder of colours — so below
+  roughly 54px a column is a heat map, which is the honest thing for it to be. Narrow the
+  window and that is what you should see.
+</p>
+<script>
+const scene = {"width":1180,"height":560,"plot":{"x":10,"y":10,"w":1074,"h":524},"style":"footprint","price_min":75773.6,"price_max":77026.4,"from":1788998400000000000,"to":1789000200000000000,"viewport":{"from":0,"count":null,"price":null},"candles":[],"line":[],"profile":[],"levels":[{"y":253.17816091954006,"price":76445,"kind":"poc"},{"y":169.52554278416255,"price":76645,"kind":"vah"},{"y":378.65708812260635,"price":76145,"kind":"val"}],"regions":[],"ticks":[{"y":534,"price":75773.6},{"y":446.66666666666464,"price":75982.40000000001},{"y":359.33333333333536,"price":76191.2},{"y":272,"price":76400},{"y":184.66666666666464,"price":76608.8},{"y":97.33333333333536,"price":76817.59999999999},{"y":10,"price":77026.4}],"footprint":{"rows":[{"price":76980,"y":10,"h":17.466666666666665},{"price":76940,"y":27.466666666666665,"h":17.466666666666665},{"price":76900,"y":44.93333333333333,"h":17.466666666666665},{"price":76860,"y":62.39999999999999,"h":17.466666666666665},{"price":76820,"y":79.86666666666666,"h":17.466666666666665},{"price":76780,"y":97.33333333333333,"h":17.466666666666665},{"price":76740,"y":114.79999999999998,"h":17.466666666666665},{"price":76700,"y":132.26666666666665,"h":17.466666666666665},{"price":76660,"y":149.73333333333332,"h":17.466666666666665},{"price":76620,"y":167.2,"h":17.466666666666665},{"price":76580,"y":184.66666666666666,"h":17.466666666666665},{"price":76540,"y":202.13333333333333,"h":17.466666666666665},{"price":76500,"y":219.59999999999997,"h":17.466666666666665},{"price":76460,"y":237.06666666666663,"h":17.466666666666665},{"price":76420,"y":254.5333333333333,"h":17.466666666666665},{"price":76380,"y":272,"h":17.466666666666665},{"price":76340,"y":289.46666666666664,"h":17.466666666666665},{"price":76300,"y":306.9333333333333,"h":17.466666666666665},{"price":76260,"y":324.4,"h":17.466666666666665},{"price":76220,"y":341.8666666666666,"h":17.466666666666665},{"price":76180,"y":359.3333333333333,"h":17.466666666666665},{"price":76140,"y":376.79999999999995,"h":17.466666666666665},{"price":76100,"y":394.26666666666665,"h":17.466666666666665},{"price":76060,"y":411.7333333333333,"h":17.466666666666665},{"price":76020,"y":429.19999999999993,"h":17.466666666666665},{"price":75980,"y":446.66666666666663,"h":17.466666666666665},{"price":75940,"y":464.13333333333327,"h":17.466666666666665},{"price":75900,"y":481.59999999999997,"h":17.466666666666665},{"price":75860,"y":499.0666666666666,"h":17.466666666666665},{"price":75820,"y":516.5333333333333,"h":17.466666666666665}],"columns":[{"x":10,"w":179,"open_time":1788998400000000000,"cells":[{"x":10,"y":359.3333333333333,"w":179,"h":17.466666666666665,"price":76180,"bid":0.02,"ask":0.02,"bid_text":"0.02","ask_text":"0.02","delta":0,"side":"sell","ratio":4.014333367074995,"stacked":2,"in_value_area":true,"is_poc":false},{"x":10,"y":341.8666666666666,"w":179,"h":17.466666666666665,"price":76220,"bid":0.7,"ask":0.47,"bid_text":"0.70","ask_text":"0.47","delta":-0.22999999999999998,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":10,"y":324.4,"w":179,"h":17.466666666666665,"price":76260,"bid":2.45,"ask":1.65,"bid_text":"2.45","ask_text":"1.65","delta":-0.8000000000000003,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":10,"y":306.9333333333333,"w":179,"h":17.466666666666665,"price":76300,"bid":1.5,"ask":2.55,"bid_text":"1.50","ask_text":"2.55","delta":1.0499999999999998,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":10,"y":289.46666666666664,"w":179,"h":17.466666666666665,"price":76340,"bid":1.43,"ask":3.31,"bid_text":"1.43","ask_text":"3.31","delta":1.8800000000000001,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":10,"y":272,"w":179,"h":17.466666666666665,"price":76380,"bid":1.3,"ask":4.76,"bid_text":"1.30","ask_text":"4.76","delta":3.46,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":10,"y":254.5333333333333,"w":179,"h":17.466666666666665,"price":76420,"bid":0,"ask":7.59,"bid_text":"0.00","ask_text":"7.59","delta":7.59,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":10,"y":237.06666666666663,"w":179,"h":17.466666666666665,"price":76460,"bid":4.22,"ask":6.47,"bid_text":"4.22","ask_text":"6.47","delta":2.25,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":true},{"x":10,"y":219.59999999999997,"w":179,"h":17.466666666666665,"price":76500,"bid":0,"ask":1.94,"bid_text":"0.00","ask_text":"1.94","delta":1.94,"side":"buy","ratio":2.548867889283629,"stacked":2,"in_value_area":true,"is_poc":false},{"x":10,"y":202.13333333333333,"w":179,"h":17.466666666666665,"price":76540,"bid":3.22,"ask":0.99,"bid_text":"3.22","ask_text":"0.99","delta":-2.2300000000000004,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":10,"y":184.66666666666666,"w":179,"h":17.466666666666665,"price":76580,"bid":2.18,"ask":2.54,"bid_text":"2.18","ask_text":"2.54","delta":0.3599999999999999,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":10,"y":167.2,"w":179,"h":17.466666666666665,"price":76620,"bid":1.23,"ask":0.93,"bid_text":"1.23","ask_text":"0.93","delta":-0.29999999999999993,"side":"sell","ratio":2.3359382186718,"stacked":4,"in_value_area":true,"is_poc":false},{"x":10,"y":149.73333333333332,"w":179,"h":17.466666666666665,"price":76660,"bid":0,"ask":0.02,"bid_text":"0.00","ask_text":"0.02","delta":0.02,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false}],"summary":{"x":10,"y":536,"w":179,"h":22,"volume_text":"51.5","delta_text":"+15.0","delta_positive":true,"close_text":"76.3 K"}},{"x":189,"w":179,"open_time":1788998700000000000,"cells":[{"x":189,"y":516.5333333333333,"w":179,"h":17.466666666666665,"price":75820,"bid":0.01,"ask":0.01,"bid_text":"0.01","ask_text":"0.01","delta":0,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":189,"y":499.0666666666666,"w":179,"h":17.466666666666665,"price":75860,"bid":0.89,"ask":0.29,"bid_text":"0.89","ask_text":"0.29","delta":-0.6000000000000001,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":189,"y":481.59999999999997,"w":179,"h":17.466666666666665,"price":75900,"bid":0.65,"ask":1.36,"bid_text":"0.65","ask_text":"1.36","delta":0.7100000000000001,"side":"buy","ratio":2.589428890305305,"stacked":1,"in_value_area":false,"is_poc":false},{"x":189,"y":464.13333333333327,"w":179,"h":17.466666666666665,"price":75940,"bid":2.43,"ask":1.79,"bid_text":"2.43","ask_text":"1.79","delta":-0.6400000000000001,"side":"sell","ratio":1.9202199267783295,"stacked":3,"in_value_area":false,"is_poc":false},{"x":189,"y":446.66666666666663,"w":179,"h":17.466666666666665,"price":75980,"bid":2.04,"ask":3.29,"bid_text":"2.04","ask_text":"3.29","delta":1.25,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":189,"y":429.19999999999993,"w":179,"h":17.466666666666665,"price":76020,"bid":2.87,"ask":4.38,"bid_text":"2.87","ask_text":"4.38","delta":1.5099999999999998,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":189,"y":411.7333333333333,"w":179,"h":17.466666666666665,"price":76060,"bid":2.78,"ask":5.29,"bid_text":"2.78","ask_text":"5.29","delta":2.5100000000000002,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":189,"y":394.26666666666665,"w":179,"h":17.466666666666665,"price":76100,"bid":4.98,"ask":3.1,"bid_text":"4.98","ask_text":"3.10","delta":-1.8800000000000003,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":189,"y":376.79999999999995,"w":179,"h":17.466666666666665,"price":76140,"bid":3.93,"ask":7.32,"bid_text":"3.93","ask_text":"7.32","delta":3.39,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":true},{"x":189,"y":359.3333333333333,"w":179,"h":17.466666666666665,"price":76180,"bid":0,"ask":5.5,"bid_text":"0.00","ask_text":"5.50","delta":5.5,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":189,"y":341.8666666666666,"w":179,"h":17.466666666666665,"price":76220,"bid":1.4,"ask":0,"bid_text":"1.40","ask_text":"0.00","delta":-1.4,"side":"sell","ratio":2.9155426449680433,"stacked":4,"in_value_area":true,"is_poc":false},{"x":189,"y":324.4,"w":179,"h":17.466666666666665,"price":76260,"bid":1.44,"ask":6.32,"bid_text":"1.44","ask_text":"6.32","delta":4.880000000000001,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":189,"y":306.9333333333333,"w":179,"h":17.466666666666665,"price":76300,"bid":3.39,"ask":0,"bid_text":"3.39","ask_text":"0.00","delta":-3.39,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":189,"y":289.46666666666664,"w":179,"h":17.466666666666665,"price":76340,"bid":2.37,"ask":2.84,"bid_text":"2.37","ask_text":"2.84","delta":0.46999999999999975,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":189,"y":272,"w":179,"h":17.466666666666665,"price":76380,"bid":1.55,"ask":0.77,"bid_text":"1.55","ask_text":"0.77","delta":-0.78,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":189,"y":254.5333333333333,"w":179,"h":17.466666666666665,"price":76420,"bid":2.2,"ask":1.72,"bid_text":"2.20","ask_text":"1.72","delta":-0.4800000000000002,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":189,"y":237.06666666666663,"w":179,"h":17.466666666666665,"price":76460,"bid":1.35,"ask":1.39,"bid_text":"1.35","ask_text":"1.39","delta":0.039999999999999813,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":189,"y":219.59999999999997,"w":179,"h":17.466666666666665,"price":76500,"bid":0.57,"ask":0,"bid_text":"0.57","ask_text":"0.00","delta":-0.57,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":189,"y":202.13333333333333,"w":179,"h":17.466666666666665,"price":76540,"bid":0.02,"ask":0.02,"bid_text":"0.02","ask_text":"0.02","delta":0,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false}],"summary":{"x":189,"y":536,"w":179,"h":22,"volume_text":"80.3","delta_text":"+10.5","delta_positive":true,"close_text":"75.9 K"}},{"x":368,"w":179,"open_time":1788999000000000000,"cells":[{"x":368,"y":411.7333333333333,"w":179,"h":17.466666666666665,"price":76060,"bid":0.02,"ask":0.02,"bid_text":"0.02","ask_text":"0.02","delta":0,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":368,"y":394.26666666666665,"w":179,"h":17.466666666666665,"price":76100,"bid":0.75,"ask":0.46,"bid_text":"0.75","ask_text":"0.46","delta":-0.29,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":368,"y":376.79999999999995,"w":179,"h":17.466666666666665,"price":76140,"bid":1.98,"ask":1.09,"bid_text":"1.98","ask_text":"1.09","delta":-0.8899999999999999,"side":"sell","ratio":1.4534363404165191,"stacked":3,"in_value_area":false,"is_poc":false},{"x":368,"y":359.3333333333333,"w":179,"h":17.466666666666665,"price":76180,"bid":2.72,"ask":0.76,"bid_text":"2.72","ask_text":"0.76","delta":-1.9600000000000002,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":341.8666666666666,"w":179,"h":17.466666666666665,"price":76220,"bid":4.1,"ask":4.18,"bid_text":"4.10","ask_text":"4.18","delta":0.08000000000000007,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":324.4,"w":179,"h":17.466666666666665,"price":76260,"bid":1.32,"ask":3.28,"bid_text":"1.32","ask_text":"3.28","delta":1.9599999999999997,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":306.9333333333333,"w":179,"h":17.466666666666665,"price":76300,"bid":4.01,"ask":3.41,"bid_text":"4.01","ask_text":"3.41","delta":-0.5999999999999996,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":289.46666666666664,"w":179,"h":17.466666666666665,"price":76340,"bid":6.76,"ask":3.56,"bid_text":"6.76","ask_text":"3.56","delta":-3.1999999999999997,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":272,"w":179,"h":17.466666666666665,"price":76380,"bid":5.41,"ask":6.22,"bid_text":"5.41","ask_text":"6.22","delta":0.8099999999999996,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":true},{"x":368,"y":254.5333333333333,"w":179,"h":17.466666666666665,"price":76420,"bid":2.48,"ask":4.2,"bid_text":"2.48","ask_text":"4.20","delta":1.7200000000000002,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":237.06666666666663,"w":179,"h":17.466666666666665,"price":76460,"bid":1.16,"ask":3.61,"bid_text":"1.16","ask_text":"3.61","delta":2.45,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":219.59999999999997,"w":179,"h":17.466666666666665,"price":76500,"bid":2.03,"ask":1.03,"bid_text":"2.03","ask_text":"1.03","delta":-0.9999999999999998,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":202.13333333333333,"w":179,"h":17.466666666666665,"price":76540,"bid":1.34,"ask":2.6,"bid_text":"1.34","ask_text":"2.60","delta":1.26,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":184.66666666666666,"w":179,"h":17.466666666666665,"price":76580,"bid":1.66,"ask":1.81,"bid_text":"1.66","ask_text":"1.81","delta":0.15000000000000013,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":167.2,"w":179,"h":17.466666666666665,"price":76620,"bid":0.24,"ask":0.23,"bid_text":"0.24","ask_text":"0.23","delta":-0.009999999999999981,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":368,"y":149.73333333333332,"w":179,"h":17.466666666666665,"price":76660,"bid":0.01,"ask":0.01,"bid_text":"0.01","ask_text":"0.01","delta":0,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false}],"summary":{"x":368,"y":536,"w":179,"h":22,"volume_text":"72.5","delta_text":"+0.48","delta_positive":true,"close_text":"76.2 K"}},{"x":547,"w":179,"open_time":1788999300000000000,"cells":[{"x":547,"y":306.9333333333333,"w":179,"h":17.466666666666665,"price":76300,"bid":0.07,"ask":0.05,"bid_text":"0.07","ask_text":"0.05","delta":-0.020000000000000004,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":547,"y":289.46666666666664,"w":179,"h":17.466666666666665,"price":76340,"bid":3.05,"ask":3.18,"bid_text":"3.05","ask_text":"3.18","delta":0.13000000000000034,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":547,"y":272,"w":179,"h":17.466666666666665,"price":76380,"bid":2.41,"ask":4.27,"bid_text":"2.41","ask_text":"4.27","delta":1.8599999999999994,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":true},{"x":547,"y":254.5333333333333,"w":179,"h":17.466666666666665,"price":76420,"bid":2.39,"ask":0.95,"bid_text":"2.39","ask_text":"0.95","delta":-1.4400000000000002,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":547,"y":237.06666666666663,"w":179,"h":17.466666666666665,"price":76460,"bid":0.09,"ask":0.07,"bid_text":"0.09","ask_text":"0.07","delta":-0.01999999999999999,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false}],"summary":{"x":547,"y":536,"w":179,"h":22,"volume_text":"16.5","delta_text":"+0.51","delta_positive":true,"close_text":"76.4 K"}},{"x":726,"w":179,"open_time":1788999600000000000,"cells":[{"x":726,"y":429.19999999999993,"w":179,"h":17.466666666666665,"price":76020,"bid":0.02,"ask":0,"bid_text":"0.02","ask_text":"0.00","delta":-0.02,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":726,"y":411.7333333333333,"w":179,"h":17.466666666666665,"price":76060,"bid":0.56,"ask":0.68,"bid_text":"0.56","ask_text":"0.68","delta":0.12,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":726,"y":394.26666666666665,"w":179,"h":17.466666666666665,"price":76100,"bid":1.34,"ask":1.8,"bid_text":"1.34","ask_text":"1.80","delta":0.45999999999999996,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":726,"y":376.79999999999995,"w":179,"h":17.466666666666665,"price":76140,"bid":3.51,"ask":0.92,"bid_text":"3.51","ask_text":"0.92","delta":-2.59,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":726,"y":359.3333333333333,"w":179,"h":17.466666666666665,"price":76180,"bid":0,"ask":1.83,"bid_text":"0.00","ask_text":"1.83","delta":1.83,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":726,"y":341.8666666666666,"w":179,"h":17.466666666666665,"price":76220,"bid":1.43,"ask":1.73,"bid_text":"1.43","ask_text":"1.73","delta":0.30000000000000004,"side":"buy","ratio":2.7200595131703,"stacked":2,"in_value_area":true,"is_poc":false},{"x":726,"y":324.4,"w":179,"h":17.466666666666665,"price":76260,"bid":4.1,"ask":1.57,"bid_text":"4.10","ask_text":"1.57","delta":-2.5299999999999994,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":true},{"x":726,"y":306.9333333333333,"w":179,"h":17.466666666666665,"price":76300,"bid":4.79,"ask":0,"bid_text":"4.79","ask_text":"0.00","delta":-4.79,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":726,"y":289.46666666666664,"w":179,"h":17.466666666666665,"price":76340,"bid":0,"ask":4.27,"bid_text":"0.00","ask_text":"4.27","delta":4.27,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":726,"y":272,"w":179,"h":17.466666666666665,"price":76380,"bid":0,"ask":1.9,"bid_text":"0.00","ask_text":"1.90","delta":1.9,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":726,"y":254.5333333333333,"w":179,"h":17.466666666666665,"price":76420,"bid":0.3,"ask":0.75,"bid_text":"0.30","ask_text":"0.75","delta":0.45,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":726,"y":237.06666666666663,"w":179,"h":17.466666666666665,"price":76460,"bid":0.01,"ask":0.03,"bid_text":"0.01","ask_text":"0.03","delta":0.019999999999999997,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false}],"summary":{"x":726,"y":536,"w":179,"h":22,"volume_text":"31.5","delta_text":"-0.58","delta_positive":false,"close_text":"76.0 K"}},{"x":905,"w":179,"open_time":1788999900000000000,"cells":[{"x":905,"y":237.06666666666663,"w":179,"h":17.466666666666665,"price":76460,"bid":0.02,"ask":0.03,"bid_text":"0.02","ask_text":"0.03","delta":0.009999999999999998,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":905,"y":219.59999999999997,"w":179,"h":17.466666666666665,"price":76500,"bid":0.65,"ask":0.47,"bid_text":"0.65","ask_text":"0.47","delta":-0.18000000000000005,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":905,"y":202.13333333333333,"w":179,"h":17.466666666666665,"price":76540,"bid":2.16,"ask":0,"bid_text":"2.16","ask_text":"0.00","delta":-2.16,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":905,"y":184.66666666666666,"w":179,"h":17.466666666666665,"price":76580,"bid":0,"ask":1.62,"bid_text":"0.00","ask_text":"1.62","delta":1.62,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":905,"y":167.2,"w":179,"h":17.466666666666665,"price":76620,"bid":1.26,"ask":1.8,"bid_text":"1.26","ask_text":"1.80","delta":0.54,"side":null,"ratio":null,"stacked":null,"in_value_area":true,"is_poc":false},{"x":905,"y":149.73333333333332,"w":179,"h":17.466666666666665,"price":76660,"bid":5.62,"ask":3.3,"bid_text":"5.62","ask_text":"3.30","delta":-2.3200000000000003,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":905,"y":132.26666666666665,"w":179,"h":17.466666666666665,"price":76700,"bid":3.98,"ask":5.32,"bid_text":"3.98","ask_text":"5.32","delta":1.3400000000000003,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":905,"y":114.79999999999998,"w":179,"h":17.466666666666665,"price":76740,"bid":6.66,"ask":6.7,"bid_text":"6.66","ask_text":"6.70","delta":0.040000000000000036,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":true},{"x":905,"y":97.33333333333333,"w":179,"h":17.466666666666665,"price":76780,"bid":5.14,"ask":2.75,"bid_text":"5.14","ask_text":"2.75","delta":-2.3899999999999997,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":905,"y":79.86666666666666,"w":179,"h":17.466666666666665,"price":76820,"bid":4.3,"ask":5.17,"bid_text":"4.30","ask_text":"5.17","delta":0.8700000000000001,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":905,"y":62.39999999999999,"w":179,"h":17.466666666666665,"price":76860,"bid":0.88,"ask":2.23,"bid_text":"0.88","ask_text":"2.23","delta":1.35,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":905,"y":44.93333333333333,"w":179,"h":17.466666666666665,"price":76900,"bid":1.77,"ask":1.19,"bid_text":"1.77","ask_text":"1.19","delta":-0.5800000000000001,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false},{"x":905,"y":27.466666666666665,"w":179,"h":17.466666666666665,"price":76940,"bid":0.99,"ask":0.38,"bid_text":"0.99","ask_text":"0.38","delta":-0.61,"side":"sell","ratio":3.5874631534272168,"stacked":3,"in_value_area":false,"is_poc":false},{"x":905,"y":10,"w":179,"h":17.466666666666665,"price":76980,"bid":0.01,"ask":0,"bid_text":"0.01","ask_text":"0.00","delta":-0.01,"side":null,"ratio":null,"stacked":null,"in_value_area":false,"is_poc":false}],"summary":{"x":905,"y":536,"w":179,"h":22,"volume_text":"64.4","delta_text":"-2.48","delta_positive":false,"close_text":"76.8 K"}}],"stats":{"bid_text":"147","ask_text":"170","total_text":"317","delta_text":"+23.4","delta_positive":true,"max_delta_text":"+7.59","min_delta_text":"-4.79","trades":143960,"columns":6,"rows":30},"font_px":11,"show_text":true,"note":null},"drawings":[],"note":null};
+
+const COLORS = {
+  up: "#26a69a", down: "#ef5350", wick: "#8b949e", grid: "#21262d",
+  text: "#8b949e", vwap: "#d29922", poc: "#e6edf3", vah: "#8b949e", val: "#8b949e",
+  footBuy: "#a371f7", footSell: "#4aa3ff", footValue: "#58a6ff",
+};
+
+const canvas = document.getElementById("c");
+const ratio = window.devicePixelRatio || 1;
+canvas.width = scene.width * ratio;
+canvas.height = scene.height * ratio;
+canvas.style.height = scene.height + "px";
+const ctx = canvas.getContext("2d");
+ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+// --- the same order draw() uses ---------------------------------------------
+
+for (const tick of scene.ticks) {
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(scene.plot.x, tick.y + 0.5);
+  ctx.lineTo(scene.plot.x + scene.plot.w, tick.y + 0.5);
+  ctx.stroke();
+}
+
+// --- drawFootprintGrid, copied from frontend/app/app.js ----------------------
+
+function drawFootprintGrid(ctx, scene) {
+  const grid = scene.footprint;
+  const font = Math.max(6, Math.min(11, grid.font_px));
+  // The engine decides, not the shell -- see drawFootprintGrid in app.js.
+  const showText = grid.show_text;
+  // Looser than the engine's own 3px-a-side assumption, deliberately -- see
+  // drawFootprintGrid in app.js.
+  const margin = Math.max(2, font * 0.3);
+
+  ctx.font = font + "px ui-monospace, monospace";
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+
+  for (const column of grid.columns) {
+    for (const cell of column.cells) {
+      if (!cell.in_value_area) continue;
+      ctx.globalAlpha = 0.14;
+      ctx.fillStyle = COLORS.footValue;
+      ctx.fillRect(cell.x, cell.y, cell.w, cell.h);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  for (const column of grid.columns) {
+    // A faint column background, then the frame -- see drawFootprintGrid in app.js.
+    ctx.fillStyle = "#12171f";
+    ctx.fillRect(column.x, scene.plot.y, column.w, scene.plot.h);
+    ctx.strokeStyle = COLORS.grid;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(column.x + 0.5, scene.plot.y + 0.5, column.w - 1, scene.plot.h - 1);
+
+    for (const cell of column.cells) {
+      const total = cell.bid + cell.ask;
+      if (total <= 0) continue;
+
+      const buyShare = cell.ask / total;
+      const leansBuy = buyShare >= 0.5;
+      const oneSided = Math.abs(buyShare - 0.5) * 2;
+      const colour = leansBuy ? COLORS.footBuy : COLORS.footSell;
+
+      ctx.globalAlpha = 0.3 + oneSided * 0.42;
+      ctx.fillStyle = colour;
+      ctx.fillRect(cell.x + 1, cell.y, cell.w - 2, cell.h - 1);
+      ctx.globalAlpha = 1;
+
+      if (cell.is_poc) {
+        ctx.strokeStyle = COLORS.poc;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cell.x + 1.5, cell.y + 0.5, cell.w - 3, Math.max(1, cell.h - 1));
+      }
+
+      if (cell.side) {
+        const strength = Math.max(0, Math.min(1, ((cell.ratio || 1) - 1) / 3));
+        ctx.strokeStyle = colour;
+        ctx.globalAlpha = 0.7 + strength * 0.3;
+        ctx.lineWidth = 1 + Math.min(2, (cell.stacked || 1) - 1);
+        ctx.strokeRect(cell.x + 1.5, cell.y + 0.5, cell.w - 3, Math.max(1, cell.h - 1));
+        ctx.globalAlpha = 1;
+      }
+
+      if (!showText) continue;
+      const pair = cell.bid_text + " x " + cell.ask_text;
+      if (ctx.measureText(pair).width > cell.w - margin * 2) continue;
+      ctx.fillStyle = "#e6edf3";
+      ctx.fillText(pair, cell.x + cell.w / 2, cell.y + cell.h / 2);
+    }
+
+    const summary = column.summary;
+    ctx.fillStyle = "#161b22";
+    ctx.fillRect(summary.x + 1, summary.y, summary.w - 2, summary.h);
+    ctx.strokeStyle = COLORS.grid;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(summary.x + 0.5, summary.y + 0.5, summary.w - 1, summary.h - 1);
+    if (showText) {
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#e6edf3";
+      ctx.fillText(summary.volume_text, summary.x + summary.w / 2, summary.y + font * 0.95);
+      ctx.fillStyle = summary.delta_positive ? COLORS.up : COLORS.down;
+      ctx.fillText(summary.delta_text, summary.x + summary.w / 2, summary.y + summary.h - font * 0.75);
+    }
+  }
+  ctx.textAlign = "left";
+}
+
+drawFootprintGrid(ctx, scene);
+
+for (const level of scene.levels) {
+  ctx.strokeStyle = COLORS[level.kind] || COLORS.text;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(scene.plot.x, level.y);
+  ctx.lineTo(scene.plot.x + scene.plot.w, level.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = COLORS[level.kind] || COLORS.text;
+  ctx.font = "10px ui-monospace, monospace";
+  ctx.fillText(level.kind.toUpperCase(), scene.plot.x + 4, level.y - 3);
+}
+
+ctx.fillStyle = COLORS.text;
+ctx.font = "10px ui-monospace, monospace";
+ctx.textAlign = "left";
+for (const tick of scene.ticks) {
+  ctx.fillText(tick.price.toFixed(2), scene.plot.x + scene.plot.w + 6, tick.y + 3);
+}
+
+// --- the footer strip, as the shell renders it -------------------------------
+
+const s = scene.footprint.stats;
+const field = (label, value, cls) =>
+  '<span><b>' + label + '</b><span class="' + (cls || "") + '">' + value + "</span></span>";
+document.getElementById("stats").innerHTML = [
+  field("trades", s.trades.toLocaleString()),
+  field("columns", s.columns),
+  field("rows", s.rows),
+  field("bid", s.bid_text),
+  field("ask", s.ask_text),
+  field("total", s.total_text),
+  field("delta", s.delta_text),
+  field("max delta", s.max_delta_text),
+  field("min delta", s.min_delta_text),
+  field("font", scene.footprint.font_px.toFixed(1) + "px"),
+  field("text drawn", scene.footprint.show_text ? "yes" : "no — cells are a heat map"),
+  field("engine note", scene.note || "(none)"),
+].join("");
+
+const legend = document.getElementById("legend");
+for (const [label, colour] of [
+  ["ask side won the level", COLORS.footBuy],
+  ["bid side won the level", COLORS.footSell],
+  ["value area", COLORS.footValue],
+  ["point of control (per column)", COLORS.poc],
+]) {
+  const li = document.createElement("li");
+  li.innerHTML =
+    '<span class="swatch" style="background:' + colour + '"></span>' + label;
+  legend.appendChild(li);
+}
+</script>
+</body>
+</html>

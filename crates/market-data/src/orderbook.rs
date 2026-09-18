@@ -9,12 +9,32 @@
 //!    apply it and everything after it.
 //! 3. From then on, apply diffs in order and raise a gap flag if `U > last_u + 1`.
 //!
+//! ## Step 2 does not work as written, and that is why this module retries
+//!
+//! It assumes the REST snapshot is current. On a busy symbol it is not: measured
+//! against Binance, `lastUpdateId` was **15,748 update ids behind the diff stream
+//! at the same instant** -- about three seconds of BTCUSDT updates, where one
+//! event spans ~530 ids. The event that would bridge the snapshot was therefore
+//! emitted before the subscription and can never arrive.
+//!
+//! [`OrderBookSynchronizer::set_snapshot`] keeps what step 2 would have dropped
+//! and lets a later snapshot bridge onto it. Since the venue's lag is roughly
+//! constant, `L` walks forward into the retained window and the bridge lands.
+//!
 //! Everything here is pure and synchronous so the sequence logic is unit
 //! testable without a socket (`docs/04-MARKET-DATA-ENGINE.md`).
 
 use std::collections::BTreeMap;
 
 use analytics_core::{OrderBookLevel, OrderBookSnapshot};
+
+/// Diffs retained while waiting for a snapshot that can bridge them.
+///
+/// At ten events a second this is about seven minutes of updates, which is far
+/// more than the venue's lag needs and small enough that an unsynced symbol is
+/// not a memory problem. Bounded because a book that never syncs would
+/// otherwise grow without limit.
+pub const MAX_BUFFERED_DIFFS: usize = 4096;
 
 /// A price level, ordered by price.
 ///
@@ -280,13 +300,52 @@ impl OrderBookSynchronizer {
         self.gaps
     }
 
+    /// How many diffs are being held for a snapshot that can bridge them.
+    ///
+    /// Bounded by [`MAX_BUFFERED_DIFFS`]; that it is bounded at all is the point,
+    /// because a book that never syncs would otherwise hold every diff forever.
+    #[must_use]
+    pub fn buffered(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// The `lastUpdateId` of the REST snapshot, once it has arrived.
+    ///
+    /// Read by the collector's diagnostics: a book that never bridges is silent
+    /// otherwise, and the snapshot id next to the diff ids is what says whether
+    /// the stream is behind the snapshot or ahead of it.
+    #[must_use]
+    pub const fn snapshot_id(&self) -> Option<u64> {
+        self.snapshot_id
+    }
+
     /// The maintained book, if a snapshot has arrived.
     #[must_use]
     pub const fn book(&self) -> Option<&OrderBook> {
         self.book.as_ref()
     }
 
-    /// Install the REST snapshot and drain any diffs that arrived before it.
+    /// Install a REST snapshot and try to bridge the buffered diffs onto it.
+    ///
+    /// ## Why the buffer is kept rather than drained
+    ///
+    /// The textbook rule is "drop every event whose `u <= lastUpdateId`, then
+    /// apply the first one with `U <= lastUpdateId+1 <= u`". That works when the
+    /// REST snapshot is current. It is **not** current on a busy symbol: measured
+    /// against Binance, `GET /api/v3/depth`'s `lastUpdateId` was **15,748 update
+    /// ids behind the diff stream at the same instant** -- roughly three seconds
+    /// of updates on BTCUSDT, where one event spans ~530 ids.
+    ///
+    /// The consequence is brutal and silent. The event that would bridge the
+    /// snapshot was emitted *before* we subscribed, so it is not in the buffer
+    /// and never will be: the book stays permanently unsynced, no snapshot is
+    /// ever published, and the DOM shows nothing with no error anywhere. That is
+    /// the state this deployment was in.
+    ///
+    /// So diffs are **retained**, and a later snapshot bridges onto an earlier
+    /// event. Since the venue's lag is roughly constant, `lastUpdateId` walks
+    /// forward into the retained window and the bridge eventually succeeds --
+    /// which is what the caller's periodic re-snapshot is for.
     pub fn set_snapshot(
         &mut self,
         bids: &[(f64, f64)],
@@ -294,33 +353,53 @@ impl OrderBookSynchronizer {
         last_update_id: u64,
         ts: i64,
     ) {
+        if self.synced {
+            return; // the live book is ahead of anything a snapshot can say
+        }
+
         let mut book = OrderBook::new(self.symbol.clone());
         book.apply_snapshot(bids, asks, last_update_id, ts);
         self.book = Some(book);
         self.snapshot_id = Some(last_update_id);
 
-        let buffered = std::mem::take(&mut self.buffer);
-        let mut bridged = false;
+        // Drop only what the snapshot already reflects.
+        self.buffer
+            .retain(|diff| diff.final_update_id > last_update_id);
 
-        for diff in buffered {
-            if diff.final_update_id <= last_update_id {
-                continue; // already reflected in the snapshot
-            }
-            if !bridged {
-                if diff.first_update_id <= last_update_id + 1
-                    && diff.final_update_id > last_update_id
-                {
-                    bridged = true;
-                } else {
-                    continue;
-                }
+        self.try_bridge(ts);
+    }
+
+    /// Apply the contiguous run of buffered diffs that starts at the bridge.
+    ///
+    /// The bridge is the first diff spanning `snapshot_id + 1`. Everything after
+    /// it is applied only while it stays contiguous -- a hole means an update was
+    /// missed, and applying across one would leave levels in the book that the
+    /// venue has already removed.
+    fn try_bridge(&mut self, ts: i64) {
+        let Some(snapshot_id) = self.snapshot_id else {
+            return;
+        };
+        let Some(start) = self.buffer.iter().position(|diff| {
+            diff.first_update_id <= snapshot_id + 1 && diff.final_update_id > snapshot_id
+        }) else {
+            return;
+        };
+
+        let mut consumed = 0usize;
+        let mut expected = snapshot_id;
+        for diff in self.buffer.iter().skip(start) {
+            if diff.first_update_id > expected + 1 {
+                break; // a hole; wait for it to be filled or resynced
             }
             if let Some(book) = self.book.as_mut() {
-                book.apply_diff(&diff.bids, &diff.asks, diff.final_update_id, 0);
+                book.apply_diff(&diff.bids, &diff.asks, diff.final_update_id, ts);
             }
+            expected = diff.final_update_id;
+            consumed += 1;
         }
 
-        self.synced = bridged;
+        self.buffer.drain(..start + consumed);
+        self.synced = consumed > 0;
     }
 
     /// Handle one diff event.
@@ -337,14 +416,24 @@ impl OrderBookSynchronizer {
         if !self.synced {
             let bridges =
                 diff.first_update_id <= snapshot_id + 1 && diff.final_update_id > snapshot_id;
-            if !bridges {
-                return DiffOutcome::OutOfOrder;
+            if bridges {
+                if let Some(book) = self.book.as_mut() {
+                    book.apply_diff(&diff.bids, &diff.asks, diff.final_update_id, ts);
+                }
+                self.synced = true;
+                self.buffer.clear();
+                return DiffOutcome::Applied;
             }
-            if let Some(book) = self.book.as_mut() {
-                book.apply_diff(&diff.bids, &diff.asks, diff.final_update_id, ts);
+
+            // Not a bridge -- but not garbage either. The venue's REST snapshot
+            // lags its own stream, so this diff may well be the one a *later*
+            // snapshot bridges onto. Keep it (bounded) rather than dropping it,
+            // which is what left the book permanently unsynced.
+            if self.buffer.len() >= MAX_BUFFERED_DIFFS {
+                self.buffer.remove(0);
             }
-            self.synced = true;
-            return DiffOutcome::Applied;
+            self.buffer.push(diff);
+            return DiffOutcome::Buffered;
         }
 
         let expected_next = self
@@ -435,6 +524,76 @@ mod tests {
         assert_eq!(outcome, DiffOutcome::Buffered);
         assert!(!s.is_synced());
         assert!(s.book().is_none());
+    }
+
+    /// The failure that left the DOM silently empty on the running deployment.
+    ///
+    /// Measured against Binance: `GET /api/v3/depth`'s `lastUpdateId` was
+    /// 15,748 update ids behind the diff stream at the same instant. The event
+    /// spanning `L+1` had therefore already been emitted before the
+    /// subscription, so it could never arrive -- and the textbook rule ("drop
+    /// everything, then bridge") left the book permanently unsynced with no
+    /// error anywhere.
+    #[test]
+    fn a_snapshot_that_lags_the_stream_bridges_on_a_later_one() {
+        let mut s = OrderBookSynchronizer::new("BTCUSDT");
+
+        // The stream is already far ahead of anything the REST snapshot says.
+        for (first, last) in [(100u64, 110u64), (111, 120), (121, 130)] {
+            s.on_diff(
+                DepthDiff {
+                    first_update_id: first,
+                    final_update_id: last,
+                    bids: vec![],
+                    asks: vec![],
+                },
+                0,
+            );
+        }
+
+        // A snapshot 50 behind: nothing in the retained run spans 51.
+        s.set_snapshot(&[(100.0, 1.0)], &[(101.0, 1.0)], 50, 0);
+        assert!(
+            !s.is_synced(),
+            "the bridging event predates the subscription"
+        );
+        assert_eq!(s.buffered(), 3, "and the diffs are kept, not discarded");
+
+        // A later snapshot has walked forward into them: L+1 = 116 is in 111..120.
+        s.set_snapshot(&[(100.0, 1.0)], &[(101.0, 1.0)], 115, 0);
+        assert!(s.is_synced(), "116 falls inside 111..120");
+        assert_eq!(
+            s.book().map(OrderBook::last_update_id),
+            Some(130),
+            "and the rest of the run applied contiguously behind it"
+        );
+    }
+
+    /// A book that never syncs must not hold every diff it ever saw.
+    #[test]
+    fn an_unsynced_book_bounds_what_it_retains() {
+        let mut s = OrderBookSynchronizer::new("BTCUSDT");
+        s.set_snapshot(&[], &[], 1, 0);
+
+        for i in 0..(MAX_BUFFERED_DIFFS + 500) {
+            let first = 1_000 + i as u64 * 10;
+            s.on_diff(
+                DepthDiff {
+                    first_update_id: first,
+                    final_update_id: first + 9,
+                    bids: vec![],
+                    asks: vec![],
+                },
+                0,
+            );
+        }
+
+        assert!(!s.is_synced());
+        assert!(
+            s.buffered() <= MAX_BUFFERED_DIFFS,
+            "an unsynced book is a leak otherwise: {}",
+            s.buffered()
+        );
     }
 
     #[test]

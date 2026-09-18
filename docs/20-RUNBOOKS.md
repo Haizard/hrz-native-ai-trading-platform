@@ -13,16 +13,24 @@ no alert**, where the engineer is the detector. The first kind is indexed below;
 the second kind is §5–§8, and each of them states plainly that nothing will page
 you. §9 is a third thing: the procedure for turning live trading on, which is here
 because its two failure modes look like each other and like a broken switch, and
-neither names its own fix. If an alert fires and its name is not in this table,
+neither names its own fix. §10 is a fourth: an alert whose symptom looks alarming
+in a log and is usually nothing, so the section spends as long on what it does
+*not* mean as on what to do. If an alert fires and its name is not in this table,
 that is a gap in this document, not in the engineer.
 
 | Alert | Severity | Runbook |
 |---|---|---|
 | `stale_market_data` | warning | [§1](#1-stale-market-data) |
+| `stale_order_book` | warning | [§12](#12-no-order-book-is-arriving) |
 | `http_error_rate` | warning | [§2](#2-http-error-rate) |
 | `kill_switch_engaged` | critical | [§3](#3-kill-switch-engaged) |
 | `risk_limit_breached` | critical | [§3](#3-kill-switch-engaged) |
 | `reconcile_mismatch` | critical | [§4](#4-reconciliation-mismatch) |
+| `socket_churn` | warning | [§10](#10-sockets-keep-opening) |
+
+`stale_stored_data` used to be in this table. It is **gone on purpose**: market data is no
+longer persisted, so there is no stored series that can go stale. Charts are served from an
+in-memory buffer plus the venue's REST API — see `docs/18` and §11.
 
 ## Where to look first
 
@@ -271,6 +279,124 @@ idempotency key yet, so a retried or double-clicked request is a second bot
 placing its own orders, not a duplicate that gets ignored (`docs/19` row 16). Read
 that count before assuming one click made one bot.
 
+## 10. Sockets keep opening
+
+**Symptom.** `socket_churn` fires, or the log shows repeated `market socket opened`
+/ `order book socket opened` lines for the same channels, seconds or minutes apart,
+with no closes beside them.
+
+**What the alert is actually claiming.** `> 20 socket openings per minute, sustained
+across two consecutive checks` — at the 30s evaluation interval, more than ten new
+sockets per check for a full minute. It fires on entering that state and reports
+`resolved` on leaving it, so it will not repeat while the loop keeps looping. It
+cannot fire on the first evaluation after a boot, and a single round above the
+limit is ignored on purpose — see §"What it does not mean" below.
+
+**First, rule out the feed.** The outbound venue feed is a different thing and has
+its own line: `market feed connected`. It logs **once per symbol per boot**. If it
+appears repeatedly, the gateway is reconnecting to the venue — go to §1 instead.
+If it logged twice and the process booted twice, the feed is fine and the churn is
+inbound.
+
+**Then read the two numbers, not one.**
+```
+curl https://<host>/metrics | grep websocket_connections
+```
+| `websocket_connections` | `websocket_connections_opened_total` | Meaning | Action |
+|---|---|---|---|
+| flat | climbing | **Churn.** A client in a reconnect loop | Find the client. Usually a dashboard tab with a retry, or a browser waking a backgrounded tab |
+| climbing | flat | **Leak.** Sockets are not being reaped | Bug. Check whether the handler task is being dropped |
+| flat | flat | Nothing is wrong; those opens were distinct clients | None |
+
+A gauge alone cannot separate the first two: forty distinct clients and one client
+reconnecting forty times both leave it at 1.
+
+**Then read the closes.** Every close is logged at `info` with a `reason` and an
+`open_for`:
+```
+socket=market detail=/ws/market/BTCUSDT/5m reason=client closed open_for=214.8ms socket closed
+```
+`open_for` is the whole point — a socket that lived 200ms and one that lived six
+hours otherwise print as the same pair of lines. Reasons: `client closed`,
+`stream ended`, `socket error`, `send failed`, `bus closed`, `hello send failed`,
+`notice send failed`, `no book within grace`.
+
+**What this is usually not.** It is not the venue throttling you. `/ws/market/*`
+and `/ws/orderbook/*` are *inbound* — they are our clients connecting to us, not
+us connecting to the exchange. Exchange rate limits apply to the feed in §1.
+
+**What it does not mean.** A handful of opens after a deploy is not churn: every
+client reconnects when the process restarts, and that is expected.
+
+## 11. The feed is live but the chart has nothing
+
+**Symptom.** A chart opens and draws nothing, or draws only part of the window it asked
+for. `market_data_feed_age_seconds` is small — candles are arriving — but
+`market_data_history_bars{symbol=...,timeframe=...}` is still zero.
+
+**This is not the old "table is frozen" incident.** Market data is no longer persisted at
+all: the database is a free tier with 6 GB for every symbol of every market, and one
+symbol's trades are about 110 MB a day. Recent bars live in RAM and older ones are fetched
+from the venue on demand, so there is no stored series to go stale.
+
+**Then, in order:**
+
+1. **Has anything asked for the symbol?** The feed starts lazily — `ensure_feed_for`, from
+   `/ws/market/*` and now from `GET /candles`. A gateway that has served nothing has an
+   empty buffer, which is correct and not an incident.
+2. **Is the *forming* bar the only thing missing?** `/candles` returns the bar being built
+   as well as the closed ones. If the right-hand edge of the chart is up to one resolution
+   stale, the recorder's trade subscription is not running (`run_binance_feed`).
+3. **Is the venue refusing history?** A window older than the buffer costs one REST call
+   per thousand bars. A failure is logged at `warn` (`the venue would not serve history for
+   this window`) and the route still answers with what RAM had — which is why the response
+   carries `source.memory` / `source.venue`. Both zero with a live feed means the feed has
+   not produced a single bar; see §1.
+4. **Is the window too deep?** One request fetches at most 5000 bars from the venue, and
+   clamps from the *newest* end. A five-year `1m` window is served partially, on purpose.
+
+**What it does not mean.** It is not a database problem. Nothing about a chart touches
+Postgres any more, and `/candles` answers 200 with an empty list rather than 503 when there
+is no data.
+
+## 12. No order book is arriving
+
+**Symptom.** `market_data_book_age_seconds{symbol=...}` rises past 60s. The DOM pane is
+empty and `GET /orderbook` answers 404 `NO_ORDERBOOK_DATA`. **Candles are usually fine** —
+`market_data_feed_age_seconds` is small and charts draw normally, because candles come from
+a different aggregation than the book.
+
+**This is the failure that used to be silent.** On 2026-09-18 a run went the whole way with
+the book dead (`docs/19` row 24). The venue's REST snapshot lagged its own diff stream by
+~15,700 update ids, so the bridging event had already passed before the subscription
+existed, and every later diff was dropped as out-of-order. Nothing crashed, nothing logged,
+and the empty DOM read as "no data" rather than "a synchroniser that has been failing for
+an hour".
+
+**Then, in order:**
+
+1. **Read the log for the cause.** The collector warns every 100th unbridged diff with
+   `snapshot`, `first` and `last` update ids, and logs `order book synced` once. If the
+   `first` id is far ahead of `snapshot`, the venue's REST is behind its stream — that is
+   the row 24 case, and the 2s resync should clear it within a minute. If there are no
+   warnings at all, no diffs are arriving: this is §1 (a dead socket) wearing a different
+   hat.
+2. **Is the symbol even subscribed?** The age is published only for symbols something has
+   waited on — `run_binance_feed` starts the clock when the depth subscription succeeds. If
+   that subscription failed, the log says `the depth feed did not start` and there is
+   deliberately **no** metric: that is a feed the platform chose not to open, not a book
+   that went missing.
+3. **Is it one symbol or all of them?** All of them points at the socket or at the venue's
+   REST endpoint (`MARKET_REST_URL`). One symbol points at that symbol's snapshot.
+4. **Has it recovered?** A book that can recover does so well inside 60s, because an
+   unsynced book re-fetches a snapshot every 2s. Sustained breach means it cannot.
+
+**What it does not mean.** It is not a database problem and it is not a trading problem.
+Bots trade on candles, not on the book; a dead book is a **degraded panel**, and no position
+is at risk because of it. Do not restart the gateway to "clear" it — a restart throws away
+the RAM buffer that every chart is reading from (§11), which turns one missing panel into
+every chart being empty.
+
 ## Deploy and rollback
 
 1. `docker-entrypoint.sh` applies migrations before exec'ing the binary, under a
@@ -286,6 +412,12 @@ that count before assuming one click made one bot.
 - **No alert delivery is configured by default.** `ALERT_WEBHOOK_URL` is unset
   in every environment right now, so alerts reach the log and the `audit_log`
   table and nobody's phone. Setting that variable is a deployment task.
+- **The churn threshold is sized for today's traffic.** `socket_churn` fires at
+  20 openings/min over two checks. That is above what one or two dashboards
+  produce and below a client looping every few seconds, but it is not sized for
+  50 concurrent users, whose ordinary reconnects would look identical to a loop.
+  Raise `max_opens_per_min` with the user count — it is a field on the rule, not
+  a constant.
 - **No automatic position liquidation on stale data.** The feed-age alert is a
   warning and nothing acts on it. That is deliberate for now — closing positions
   because a websocket hiccuped is its own incident — but it means §1 is a manual
