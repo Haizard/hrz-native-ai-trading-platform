@@ -139,7 +139,29 @@ impl CandleBuilder {
 /// one series per entry here, and `GET /symbols` offers them even for a symbol
 /// nothing has been buffered for yet. Three lists that must match is three
 /// chances for a chart to offer a series the buffer will never hold.
-pub const STANDARD_TIMEFRAMES: [Timeframe; 6] = [
+pub const STANDARD_TIMEFRAMES: [Timeframe; 7] = [
+    Timeframe::M1,
+    Timeframe::M5,
+    Timeframe::M15,
+    Timeframe::H1,
+    Timeframe::H4,
+    Timeframe::D1,
+    Timeframe::W1,
+];
+
+/// Resolutions whose bars a **live trade stream** can build as they close.
+///
+/// `1w` is deliberately absent. A weekly bar fed only by the live feed would
+/// not close until the following Monday, so for the whole week it exists only
+/// as a forming bar with no history behind it -- and the feed does not run for
+/// a symbol nobody is watching. There is no way to reconstruct the weeks that
+/// already happened from a live socket, because the socket was not open then.
+///
+/// Weekly bars therefore come from the venue's REST API, which serves the
+/// entire weekly series in one request, and are merged into the same
+/// reconstructed window. The buffer still holds a weekly series; the stream
+/// just is not what fills it on a cold start.
+pub const LIVE_TIMEFRAMES: [Timeframe; 6] = [
     Timeframe::M1,
     Timeframe::M5,
     Timeframe::M15,
@@ -167,9 +189,23 @@ impl MultiTimeframeCandleBuilder {
         }
     }
 
-    /// Builders for the standard ladder used by the platform.
+    /// Builders for the ladder a **live trade stream** can actually fill.
+    ///
+    /// Excludes `1w`; see [`LIVE_TIMEFRAMES`] for why that is not an
+    /// oversight. Any caller that needs a weekly series asks the venue for it
+    /// through [`crate::BackfillClient`] instead of waiting a week for the
+    /// socket to produce one bar.
     #[must_use]
     pub fn standard(symbol: impl Into<String>) -> Self {
+        Self::new(symbol, &LIVE_TIMEFRAMES)
+    }
+
+    /// Every resolution the platform charts, weekly included.
+    ///
+    /// Used by the in-memory history registry, which holds a series per
+    /// resolution whether the stream fills it or the venue does.
+    #[must_use]
+    pub fn full_ladder(symbol: impl Into<String>) -> Self {
         Self::new(symbol, &STANDARD_TIMEFRAMES)
     }
 

@@ -151,6 +151,14 @@
   /* The zones overlay, off by default. Same "pressed means active" treatment as
      the strategy editor's mode tabs, so one visual language covers both. */
   #zones[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  /* Attaching the chart to a question. `aria-pressed` again, for the same reason
+     as the two above: one variable, so the button cannot disagree with the state
+     it describes. The note beside it says what is being sent, because "attach
+     chart" is not specific enough to justify sending a picture of the screen. */
+  .chartAttach { align-items: center; gap: 8px; margin-top: 6px; }
+  #attachChart { flex: 0 1 auto; padding: 2px 8px; font-size: 11px; color: var(--muted); }
+  #attachChart[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  #attachNote { font-size: 10px; flex: 1 1 auto; }
   #nlPane[hidden], #builderPane[hidden], #dslPane[hidden] { display: none; }
   #nlDescription { min-height: 64px; }
 
@@ -505,6 +513,20 @@
       <div class="row">
         <input id="question" placeholder="find me a long setup using my liquidity-sweep skill" />
         <button id="ask" class="primary">Ask</button>
+      </div>
+      <!--
+        Attaching the chart is a *mode*, not a one-shot action. It stays on until
+        it is switched off, because the question that follows is usually a
+        follow-up ("and here?"), and a button that has to be pressed before every
+        message is one the user stops pressing -- after which the agent is back to
+        answering about the latest bar while the user is looking at a swing high.
+      -->
+      <div class="row chartAttach">
+        <button id="attachChart" aria-pressed="false"
+                title="Send this chart's viewport, your drawings, and a screenshot with each question">
+          Attach chart
+        </button>
+        <span id="attachNote" class="muted"></span>
       </div>
       <div id="thesis"><p class="empty">Ask a question. The thesis's own levels are drawn on the chart.</p></div>
     </div>

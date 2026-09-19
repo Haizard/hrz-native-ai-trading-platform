@@ -69,6 +69,32 @@ impl Message {
         }
     }
 
+    /// A user message with an image attached ahead of its text.
+    ///
+    /// The image goes **first**, which is not cosmetic: a model reading
+    /// "the chart in the image" before the image has to hold a reference for a
+    /// block it has not seen, and providers that stream blocks in order make
+    /// that a visible difference rather than a stylistic one. Text after the
+    /// image also means the grounding instruction ("do not read prices off it")
+    /// is the last thing the model reads before answering.
+    #[must_use]
+    pub fn user_with_image(
+        text: impl Into<String>,
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Image {
+                    media_type: media_type.into(),
+                    data: data.into(),
+                },
+                ContentBlock::Text(text.into()),
+            ],
+        }
+    }
+
     /// The tool-result message for a batch of results.
     ///
     /// Every result must go back in **one** message: Bedrock rejects a
@@ -125,6 +151,20 @@ impl Message {
 pub enum ContentBlock {
     /// Plain text.
     Text(String),
+    /// An image the model can see.
+    ///
+    /// Used for exactly one thing: a screenshot of the user's chart viewport
+    /// (`crate::chart_context`). It is *illustration*, not data -- the model is
+    /// told so in the prompt, because letting a vision model transcribe prices
+    /// off a rendered canvas reintroduces the arithmetic-by-eye failure that
+    /// principle #2 exists to forbid. The base64 is already encoded by the
+    /// sender so the LLM layer never handles raw bytes.
+    Image {
+        /// Media type, e.g. `image/png`.
+        media_type: String,
+        /// Base64-encoded image data.
+        data: String,
+    },
     /// The model asking for a tool.
     ToolUse {
         /// Provider-generated id, echoed back with the result.

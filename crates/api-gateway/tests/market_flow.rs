@@ -59,7 +59,21 @@ async fn the_inventory_reports_what_the_buffer_holds() {
 
     // The whole standard ladder is offered, buffered or not -- a client cannot
     // ask for a resolution it was never told about.
-    assert_eq!(timeframes.len(), 6, "six standard resolutions: {timeframes:?}");
+    //
+    // Seven, not six: `1w` joined the ladder when weekly analysis became
+    // end-to-end. This assertion is the only place the *route's* view of the
+    // ladder is checked, and a unit test over `STANDARD_TIMEFRAMES` would not
+    // have caught a route that kept sending the old list.
+    assert_eq!(timeframes.len(), 7, "seven standard resolutions: {timeframes:?}");
+    let offered: Vec<&str> = timeframes
+        .iter()
+        .filter_map(|tf| tf["timeframe"].as_str())
+        .collect();
+    assert_eq!(
+        offered,
+        vec!["1m", "5m", "15m", "1h", "4h", "1d", "1w"],
+        "the ladder reads fine to coarse, and weekly is last: {timeframes:?}"
+    );
 
     let buffered: Vec<_> = timeframes
         .iter()
@@ -400,5 +414,309 @@ async fn the_market_routes_are_public() {
     let (status, _) = h
         .get("/candles?symbol=BTCUSDT&timeframe=5m&limit=5", None)
         .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------
+// Symbol search and validation
+//
+// These routes exist because the platform's premise is that it works for any
+// market, not just the one an operator configured. A search over a deployment's
+// watchlist would answer "we have never heard of ETHUSDT" to a user looking at
+// a venue that trades it -- wrong about a fact the platform can check.
+//
+// Every assertion below runs against an *empty* index, which is the state these
+// tests can reach without a venue. That is deliberate: an empty index is where
+// the honesty rule is easiest to break and cheapest to verify, because the lazy
+// answer ("no such symbol") and the true one ("we have not looked") are
+// indistinguishable in the payload unless something pins them apart.
+// ---------------------------------------------------------------------------
+
+/// An empty index must not be reported as "no such symbol".
+///
+/// The defect this guards against is subtle and would never look like a bug: a
+/// user types a valid symbol, the index happens to be cold, and the platform
+/// tells them it does not exist. The user believes it, because the platform
+/// sounds certain. Both `fetched_at: null` and the `note` exist to make that
+/// failure visible in the payload rather than only in the log.
+#[tokio::test]
+async fn an_empty_index_says_it_has_not_looked_rather_than_that_nothing_exists() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    let (status, body) = h.get("/symbols/search?q=ETH", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The query is echoed, so a client can drop a stale answer.
+    assert_eq!(body["query"], "ETH", "{body}");
+
+    assert_eq!(body["indexed"], 0, "{body}");
+    assert!(
+        body["fetched_at"].is_null(),
+        "an index that was never fetched must not claim a fetch time: {body}"
+    );
+    assert_eq!(body["stale"], true, "{body}");
+    assert_eq!(
+        body["results"].as_array().map(Vec::len),
+        Some(0),
+        "the harness never reaches a venue, so there is nothing to match: {body}"
+    );
+
+    // The note is the whole point: it separates "the venue does not offer that"
+    // from "we could not check", and only the first is the user's problem.
+    let note = body["note"]
+        .as_str()
+        .expect("an unexplained empty result is the defect this route exists to prevent");
+    assert!(
+        note.contains("not been fetched"),
+        "the note must name the platform's own state: {note}"
+    );
+    assert!(
+        note.contains("does not exist") || note.contains("does not"),
+        "the note must explicitly deny the wrong reading: {note}"
+    );
+    assert!(
+        note.contains("Charts still work"),
+        "and it must say what still works, or the user concludes the platform is down: {note}"
+    );
+}
+
+/// The echo is normalised, and a query is never required.
+///
+/// A client that sends a lowercase or padded symbol is not making a mistake --
+/// symbols are conventionally written in caps but users type what they type.
+#[tokio::test]
+async fn search_normalises_its_query_and_tolerates_an_empty_one() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    let (status, body) = h.get("/symbols/search?q=%20ethusdt%20", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["query"], "ETHUSDT",
+        "padded and lowercased input is normalised, not rejected: {body}"
+    );
+
+    // No `q` at all is a listing request, not an error. It must not 400 --
+    // nothing about "show me what exists" is malformed.
+    let (status, body) = h.get("/symbols/search", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["query"], "", "{body}");
+}
+
+/// A missing query parameter still comes back in this API's envelope.
+#[tokio::test]
+async fn validation_without_a_symbol_is_a_400_in_this_envelope() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    let (status, body) = h.get("/symbols/validate", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "QUERY_INVALID", "{body}");
+}
+
+/// With no listing, validation must say "unknown_index" -- never "unknown".
+///
+/// `unknown` is a verdict on the symbol. `unknown_index` is a statement about
+/// the platform. Emitting the first from the second state is how a transient
+/// network problem becomes a message telling the user their symbol is
+/// misspelled, and it would send them editing a symbol that was correct.
+#[tokio::test]
+async fn an_unfetched_index_never_tells_the_user_their_symbol_is_wrong() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    let (status, body) = h.get("/symbols/validate?symbol=btcusdt", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    assert_eq!(body["symbol"], "BTCUSDT", "normalised: {body}");
+    assert_eq!(
+        body["status"], "unknown_index",
+        "an empty index cannot conclude a symbol is absent: {body}"
+    );
+
+    // Chartable even though the index is empty, because asking for a chart
+    // fetches history directly and never consults the listing at all. This is
+    // the assertion that keeps the two subsystems honestly decoupled.
+    assert_eq!(
+        body["chartable"], true,
+        "a chart does not depend on the instrument listing: {body}"
+    );
+    assert_eq!(
+        body["tradable"], false,
+        "but a bot must not be started on an unverified symbol: {body}"
+    );
+
+    let note = body["note"].as_str().expect("a note");
+    assert!(
+        note.contains("platform") && note.contains("not a verdict"),
+        "the note must attribute the uncertainty to the platform: {note}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Capability and freshness reporting
+//
+// The endpoint exists so a user learns what a deployment cannot do *before*
+// they walk into it -- otherwise the first sign is a minute-long wait followed
+// by "the agent is not configured". The tests below pin the two properties that
+// make it worth having: it reports capability separately from proof, and it
+// reports freshness separately from capability.
+// ---------------------------------------------------------------------------
+
+/// The report describes this deployment, and does not overclaim.
+#[tokio::test]
+async fn the_capability_report_says_what_is_configured_without_claiming_proof() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    let (status, body) = h.get("/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let capabilities = body["capabilities"].as_array().expect("a list");
+    assert!(!capabilities.is_empty(), "{body}");
+
+    // Every entry carries the four fields a client branches on.
+    for capability in capabilities {
+        assert!(capability["name"].is_string(), "{capability}");
+        assert!(capability["readiness"].is_string(), "{capability}");
+        assert!(capability["verified"].is_boolean(), "{capability}");
+        assert!(capability["depends_on"].is_string(), "{capability}");
+    }
+
+    // The harness has a database and a signing secret and no Bedrock, so:
+    let named = |name: &str| {
+        capabilities
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("{name} must appear in the report: {body}"))
+    };
+
+    assert_eq!(named("database")["readiness"], "ready", "{body}");
+    assert_eq!(named("auth")["readiness"], "ready", "{body}");
+    assert_eq!(
+        named("agent")["readiness"],
+        "not_configured",
+        "the harness configures no model: {body}"
+    );
+
+    // The honesty rule: no capability claims to have been *exercised* on the
+    // strength of its configuration. The agent in particular would otherwise
+    // read as proven working, and this endpoint is what people check before
+    // trusting the rest.
+    assert_eq!(
+        named("agent")["verified"], false,
+        "a configured-but-untested capability must not claim proof: {body}"
+    );
+    // Market data is exercised by definition -- the platform read RAM to answer.
+    assert_eq!(named("market_data")["verified"], true, "{body}");
+
+    // And the warning is written for a user, naming what they cannot do.
+    let warning = body["warning"].as_str().expect("a missing agent is worth saying");
+    assert!(warning.contains("asking the AI analyst"), "{warning}");
+    assert!(
+        !warning.contains("AWS_BEDROCK"),
+        "the variable belongs in the capability's detail field, not the warning: {warning}"
+    );
+}
+
+/// Freshness is reported per symbol, and an empty buffer reports nothing.
+#[tokio::test]
+async fn freshness_is_reported_for_what_the_buffer_holds_and_nothing_more() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    // Nothing buffered: `data` must be empty rather than padded with nulls for
+    // every instrument on the venue. "Not collected" and "collection stopped"
+    // are different facts, and a null age cannot tell them apart.
+    let (status, body) = h.get("/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"].as_array().map(Vec::len),
+        Some(0),
+        "a cold buffer has no freshness to report: {body}"
+    );
+
+    // Buffer some bars and it reports their age.
+    seed(&h, "BTCUSDT", "1m", 10, 60_000_000_000);
+    let (status, body) = h.get("/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let data = body["data"].as_array().expect("a list");
+    let btc = data
+        .iter()
+        .find(|entry| entry["symbol"] == "BTCUSDT")
+        .expect("BTCUSDT has bars buffered");
+    assert!(btc["newest_bar_ns"].is_i64(), "{btc}");
+    assert!(btc["age_seconds"].is_i64(), "{btc}");
+    assert_eq!(
+        btc["timeframes"].as_array().map(Vec::len),
+        Some(1),
+        "only the timeframe that has bars: {btc}"
+    );
+    // The fixture seeds bars at the epoch, so they are decades stale -- and the
+    // report must say so rather than reporting a healthy feed.
+    assert_eq!(
+        btc["stale"], true,
+        "bars from 1970 are not a live feed: {btc}"
+    );
+    assert!(
+        body["warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("BTCUSDT")),
+        "a stale feed has to reach the warning, or the chart silently draws the past: {body}"
+    );
+}
+
+/// The instrument index reports its own emptiness as the platform's state.
+#[tokio::test]
+async fn the_capability_report_explains_an_unfetched_instrument_index() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    let (status, body) = h.get("/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    assert_eq!(body["instruments"]["indexed"], 0, "{body}");
+    assert!(
+        body["instruments"]["fetched_at_ns"].is_null(),
+        "an index that was never fetched must not claim a fetch time: {body}"
+    );
+    assert_eq!(body["instruments"]["stale"], true, "{body}");
+    assert!(
+        body["instruments"]["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("Charts are unaffected")),
+        "an empty index is not a broken platform, and the report must say so: {body}"
+    );
+
+    // The feed ceiling is reported so a client can see it approaching.
+    assert_eq!(
+        body["feeds"]["max_active"],
+        api_gateway::bots::MAX_ACTIVE_FEEDS,
+        "{body}"
+    );
+    assert_eq!(body["feeds"]["route"], 0, "{body}");
+    assert_eq!(body["feeds"]["bot"], 0, "{body}");
+}
+
+/// The capability report is public, like the rest of the platform's own state.
+#[tokio::test]
+async fn the_capability_report_does_not_require_a_token() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+
+    // `docs/12`: this describes the deployment, not anybody's data. Gating it
+    // would mean a user has to sign in to find out that signing in is not
+    // configured.
+    let (status, _) = h.get("/capabilities", None).await;
     assert_eq!(status, StatusCode::OK);
 }

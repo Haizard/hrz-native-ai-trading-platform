@@ -581,6 +581,14 @@ struct AgentWsRequest {
     question: String,
     skill_id: Option<String>,
     timeframes: Option<Vec<String>>,
+    /// The chart the user is looking at, when the shell sent one.
+    ///
+    /// Accepted on the socket as well as the POST route because the shell asks
+    /// over the socket -- it is how progress reaches the panel -- and a
+    /// viewport that only worked on one of the two transports would be a feature
+    /// that silently does nothing in the app the user is actually using.
+    #[serde(default)]
+    chart: Option<ai_agent::ChartContext>,
 }
 
 /// Hands the agent's steps to a channel, so they can be written to the socket
@@ -623,15 +631,10 @@ where
             message: "the agent is not configured".into(),
         });
     };
-    let Some(db) = state.db.as_ref() else {
-        return Some(Frame::Notice {
-            message: "no database configured; the agent has no market data to read".into(),
-        });
-    };
 
     // Timed from here, so the number covers the whole paid run: the market
     // reads, every model turn, and every tool. A latency measured around the
-    // provider call alone would miss the four database round trips that
+    // provider call alone would miss the window reconstructions that
     // `ReadingMarket` exists to make visible.
     let started = std::time::Instant::now();
     metrics.count(AGENT_REQUESTS, "Agent runs started", &Labels::none());
@@ -643,8 +646,34 @@ where
     if let Some(timeframes) = request.timeframes {
         ask = ask.with_timeframes(timeframes);
     }
+    if let Some(mut chart) = request.chart {
+        // Same validation as `POST /agent/ask`, and for the same reason: an
+        // oversize or undecodable screenshot should be refused before a paid run
+        // starts, not discovered by the provider a turn later. On the socket the
+        // refusal is a `Notice` frame rather than a 422 -- the client is already
+        // connected, so there is no status code to carry it.
+        if let Some(screenshot) = chart.screenshot.take() {
+            match screenshot.validate() {
+                Ok(valid) => chart.screenshot = Some(valid),
+                Err(reason) => {
+                    return Some(Frame::Notice {
+                        message: format!("{reason} The question was not asked."),
+                    })
+                }
+            }
+        }
+        chart.clamp_drawings();
+        if !chart.is_empty() {
+            ask = ask.with_chart(chart);
+        }
+    }
 
-    let data = crate::market_data::DbMarketData::new(db.clone());
+    // The same claim `POST /agent/ask` makes: asking about a symbol is a reason
+    // for it to have a feed, and without one the buffer never fills and every
+    // read costs a venue round trip.
+    state.bots.ensure_feed_for(&request.symbol.to_uppercase());
+
+    let data = crate::market_data::WindowMarketData::new(state.windows.clone());
     let (tx, mut steps) = tokio::sync::mpsc::unbounded_channel();
     // Bound rather than inlined: the run borrows this for its whole life.
     let progress = ProgressToChannel(tx);

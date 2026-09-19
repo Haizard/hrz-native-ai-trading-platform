@@ -19,6 +19,8 @@
 //!   Converse provider in [`providers`].
 //! * [`skills`] -- contextual skill retrieval (never wholesale prompt stuffing).
 //! * [`multi_timeframe`] -- the 1D -> 4H -> 1H -> 5M ladder.
+//! * [`chart_context`] -- what the user is *looking at*, so a question about
+//!   "this level" is answered about the viewport rather than the latest bar.
 //! * [`thesis`] -- the explainable `TradeThesis`.
 //! * [`agent`] -- the orchestration loop, and NL -> validated Strategy DSL.
 //!
@@ -28,6 +30,7 @@
 #![deny(missing_docs)]
 
 pub mod agent;
+pub mod chart_context;
 pub mod error;
 pub mod llm_client;
 pub mod multi_timeframe;
@@ -42,6 +45,10 @@ pub use agent::draft_strategy_spec;
 pub use agent::{
     Agent, AgentAnswer, AgentConfig, AskRequest, GeneratedStrategy, StrategyRequest,
     DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
+};
+pub use chart_context::{
+    ChartContext, ChartScreenshot, DrawnLevel, MAX_DRAWINGS, MAX_SCREENSHOT_BYTES,
+    SCREENSHOT_MEDIA_TYPES,
 };
 pub use error::AgentError;
 pub use llm_client::{

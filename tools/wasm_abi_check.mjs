@@ -947,6 +947,103 @@ check("and explains itself", errorMessage.length > 0, errorMessage);
 const empty = build({ candles: [], width: 900, height: 420 });
 check("an empty window is a scene with a note", empty.candles.length === 0 && !!empty.note, empty.note);
 
+// --- the answer's levels cross the boundary as prices ----------------------
+//
+// This is the one place a rename is invisible: serde takes a `default` for a
+// field it does not recognise, so a misspelled key is not a compile error in the
+// shell, not an error in Rust, and not a failed test -- it is a level that never
+// appears. The request below is written by hand, in the shell's spelling, for
+// exactly that reason.
+
+{
+  const levels = build({
+    candles: candles(10),
+    width: 900,
+    height: 420,
+    overlays: [
+      { price: 105.0, label: "stop", role: "stop", band_to: null },
+      { price: 108.0, label: "entry", role: "entry", band_to: 112.0, filled: true },
+      { price: 112.0, label: "target", role: "target" },
+    ],
+  });
+
+  check(
+    "overlays sent as prices come back positioned",
+    Array.isArray(levels.overlays) &&
+      levels.overlays.length === 3 &&
+      levels.overlays.every((o) => typeof o.y === "number"),
+    JSON.stringify(levels.overlays)
+  );
+  check(
+    "and the price is echoed, so the shell can label without re-deriving it",
+    levels.overlays[0]?.price === 105.0,
+    JSON.stringify(levels.overlays[0])
+  );
+  check(
+    "and the role survives, because it is the shell's colour key",
+    levels.overlays.map((o) => o.role).join(",") === "stop,entry,target",
+    levels.overlays.map((o) => o.role).join(",")
+  );
+  check(
+    "and the band's far edge is a position, not the price again",
+    typeof levels.overlays[1]?.band_y === "number" && levels.overlays[1]?.filled === true,
+    JSON.stringify(levels.overlays[1])
+  );
+  check(
+    "and a level with no band reports none, rather than a zero-height band",
+    levels.overlays[0]?.band_y === null,
+    JSON.stringify(levels.overlays[0]?.band_y)
+  );
+
+  // A level that cannot be placed is refused, and the refusal is *loud*. Two
+  // layers, deliberately:
+  //
+  //   * `null` is not a price, so serde rejects the whole request. That is the
+  //     right call -- a request built by hand with a missing field is a bug in
+  //     the caller, and building a scene from it would draw an answer that was
+  //     never fully made.
+  //   * a *finite but unplaceable* price (a huge number) is inside the type and
+  //     is refused per-overlay with a note, so one bad level does not cost the
+  //     chart.
+  //
+  // Asserting both, because "refused" and "refused with the chart intact" are
+  // different promises and the shell behaves differently around each.
+  let serdeRefused = "";
+  try {
+    build({
+      candles: candles(10),
+      width: 900,
+      height: 420,
+      overlays: [{ price: null, label: "stop", role: "stop" }],
+    });
+  } catch (e) {
+    serdeRefused = String(e.message);
+  }
+  check(
+    "a level whose price is null is refused rather than drawn at zero",
+    serdeRefused.includes("expected f64"),
+    serdeRefused || "(the request was accepted, which would draw a stop at the origin)"
+  );
+
+  // `1e308` is finite, so serde accepts it and the mapping places it far off the
+  // plot. The canvas clips it, which is the correct rendering of "a price this
+  // chart cannot show" -- and the candles are untouched.
+  const offScale = build({
+    candles: candles(10),
+    width: 900,
+    height: 420,
+    overlays: [
+      { price: 1e308, label: "absurd", role: "other" },
+      { price: 108.0, label: "entry", role: "entry" },
+    ],
+  });
+  check(
+    "and a price too large to draw is placed off-plot without costing the chart",
+    offScale.overlays.length === 2 && offScale.candles.length === 10,
+    `overlays ${offScale.overlays.length}, candles ${offScale.candles.length}, note ${JSON.stringify(offScale.note ?? null)}`
+  );
+}
+
 console.log(
   failures === 0
     ? `\nall checks passed (${path})`

@@ -27,6 +27,15 @@
 //! window each one covered -- see [`CandlesResponse::source`]. A cold process
 //! answers entirely from the venue, which is slower but correct; a warm one
 //! answers the recent part with no network call at all.
+//!
+//! ## The merge itself is not written here
+//!
+//! It used to be. This module held its own RAM-then-venue merge with its own
+//! overlap rule, and the agent held a different one (Postgres), so the chart
+//! and the AI could and did disagree about the same bar. Both now call
+//! [`market_data::WindowService`], which is the single implementation of "what
+//! is the series for this symbol and resolution over this span". What remains
+//! here is the HTTP shape of the answer.
 
 use axum::extract::State;
 use axum::Json;
@@ -35,7 +44,6 @@ use tracing::debug;
 
 use analytics_core::types::Candle;
 use analytics_core::Timeframe;
-use ::market_data::BackfillClient;
 
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
@@ -88,14 +96,6 @@ pub struct CandlesResponse {
 /// Most candles a single request may return.
 const MAX_LIMIT: usize = 5000;
 
-/// Most bars one request will fetch from the venue.
-///
-/// The buffer is meant to cover the recent part of a chart, not to be the whole
-/// history. Without a ceiling, a client asking for five years of `1m` asks this
-/// process to page through ~180 venue requests and hold the result -- and one
-/// such request per open chart is how a free-tier deployment gets throttled.
-const MAX_VENUE_FETCH: usize = 5000;
-
 /// `GET /candles`
 pub async fn candles(
     State(state): State<AppState>,
@@ -111,7 +111,11 @@ pub async fn candles(
 
     // A chart is entitled to a live feed even before any bot is running, and
     // without this the buffer never fills and every request pays for the venue.
+    // `touch_feed` after it, so a symbol being looked at is not reclaimed as
+    // idle while it is on screen -- `ensure_feed_for` alone only says the feed
+    // exists, and the sweep reads *use*, not existence.
     state.bots.ensure_feed_for(&symbol);
+    state.bots.touch_feed(&symbol);
 
     let limit = query.limit.unwrap_or(500).clamp(1, MAX_LIMIT);
     let history = state.bots.history();
@@ -158,6 +162,10 @@ pub(crate) fn window_ending_at_newest(
 ///
 /// Shared by `/candles` and `/footprint` so the two charts cannot disagree
 /// about what a candle is: one source of bars, two renderings of them.
+///
+/// A thin layer over [`market_data::WindowService`], which is the same call the
+/// agent makes. It reports the *venue* count rather than the merge's own tally,
+/// so what a client sees here and what a bot reasons over are the same series.
 pub(crate) async fn candles_in(
     state: &AppState,
     symbol: &str,
@@ -165,86 +173,37 @@ pub(crate) async fn candles_in(
     from_ns: i64,
     to_ns: i64,
 ) -> (Vec<Candle>, CandleSourceResponse) {
-    let mut candles = state.bots.history().series(symbol, timeframe).range(from_ns, to_ns);
-    let from_memory = candles.len();
-
-    // Whatever the buffer could not cover, fetch from the venue. Deliberately
-    // only the gap: re-fetching the whole window would throw away the one thing
-    // the buffer buys, which is not paying for bars already in hand.
-    let oldest_we_have = candles.first().map_or(to_ns, |c| c.open_time);
-    let mut venue = Vec::new();
-    if from_ns < oldest_we_have {
-        let gap_end = oldest_we_have.min(to_ns);
-        let wanted = ((gap_end - from_ns) / timeframe.nanos().max(1)) as usize;
-        if wanted > MAX_VENUE_FETCH {
-            debug!(
-                symbol, %timeframe, wanted, MAX_VENUE_FETCH,
-                "the window reaches further back than one request will fetch; \
-                 serving the newest part of it"
-            );
-            // Clamp from the front, not the back: the newest end of a window is
-            // the end the chart is scrolled to.
-            let width = i64::try_from(MAX_VENUE_FETCH).unwrap_or(i64::MAX) * timeframe.nanos();
-            venue = fetch_from_venue(&state.backfill, symbol, timeframe, gap_end - width, gap_end)
-                .await;
-        } else {
-            venue = fetch_from_venue(&state.backfill, symbol, timeframe, from_ns, gap_end).await;
+    match state.windows.candles(symbol, timeframe, from_ns, to_ns).await {
+        Ok(window) => {
+            if window.source.venue > 0 {
+                debug!(provenance = %window.provenance(), "served from the venue");
+            }
+            let source = CandleSourceResponse {
+                memory: window.source.memory,
+                venue: window.source.venue,
+            };
+            (window.candles, source)
         }
-    }
-    let from_venue = venue.len();
-
-    if !venue.is_empty() {
-        candles.extend(venue);
-        // Both sources are sorted, and the buffer's copy of a bucket they share
-        // is the one built from this process's own trade stream -- so sort and
-        // keep the first of each pair.
-        candles.sort_by_key(|c| c.open_time);
-        candles.dedup_by_key(|c| c.open_time);
-    }
-
-    (
-        candles,
-        CandleSourceResponse {
-            memory: from_memory,
-            venue: from_venue,
-        },
-    )
-}
-
-/// Bars for `[from_ns, to_ns)` straight from the exchange.
-///
-/// Returns empty rather than erroring when the venue refuses: a chart that can
-/// draw the recent part of its window is better than one that draws nothing
-/// because a deeper page failed, and the caller can see from
-/// [`CandlesResponse::source`] that it is incomplete.
-async fn fetch_from_venue(
-    client: &BackfillClient,
-    symbol: &str,
-    timeframe: Timeframe,
-    from_ns: i64,
-    to_ns: i64,
-) -> Vec<Candle> {
-    if from_ns >= to_ns {
-        return Vec::new();
-    }
-
-    match client
-        .backfill_candles(
-            symbol,
-            timeframe,
-            from_ns,
-            to_ns,
-            market_data::BackfillSource::Klines,
-        )
-        .await
-    {
-        Ok(candles) => candles,
+        // A chart that can draw the recent part of its window beats one that
+        // draws nothing because a deeper page failed. The service already
+        // degrades to RAM for a refused venue fetch; reaching here means the
+        // request itself failed, so the buffer is still worth serving -- and
+        // `source` says the window is incomplete.
         Err(e) => {
             tracing::warn!(
                 symbol, %timeframe, error = %e,
                 "the venue would not serve history for this window"
             );
-            Vec::new()
+            let candles = state
+                .bots
+                .history()
+                .series(symbol, timeframe)
+                .range(from_ns, to_ns);
+            let memory = candles.len();
+            (
+                candles,
+                CandleSourceResponse { memory, venue: 0 },
+            )
         }
     }
 }
@@ -309,6 +268,16 @@ pub struct SymbolResponse {
 ///
 /// Defaults to `BTCUSDT` so a deployment with no configuration is a working
 /// chart rather than an empty one.
+///
+/// ## What this is not
+///
+/// It is **not** the set of symbols the platform accepts. It used to be, and
+/// that was a defect rather than a simplification: a chart that could draw any
+/// Binance symbol refused one nobody had listed, and the refusal named a
+/// variable the user has never heard of. The authority on what exists is the
+/// venue -- see [`search_symbols`] and [`market_data::SymbolIndex`]. This list
+/// now means only "keep these feeds warm from boot", which is a performance
+/// choice rather than a permission.
 pub fn watchlist() -> &'static [String] {
     static WATCHLIST: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 
@@ -324,6 +293,194 @@ pub fn watchlist() -> &'static [String] {
         }
         out
     })
+}
+
+// ---------------------------------------------------------------------------
+// GET /symbols/search -- what the venue offers, and whether a symbol is real
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /symbols/search`.
+#[derive(Debug, Deserialize)]
+pub struct SearchQuery {
+    /// Free text: a symbol, a base asset, a quote asset, or part of any.
+    #[serde(default)]
+    pub q: String,
+    /// Most results to return.
+    pub limit: Option<usize>,
+}
+
+/// One instrument, as a client sees it.
+#[derive(Debug, Serialize)]
+pub struct InstrumentResponse {
+    /// The symbol as the venue spells it, e.g. `BTCUSDT`.
+    pub symbol: String,
+    /// Base asset, e.g. `BTC`.
+    pub base: String,
+    /// Quote asset, e.g. `USDT`.
+    pub quote: String,
+    /// Whether the venue is currently accepting orders for it.
+    pub trading: bool,
+}
+
+/// Response of `GET /symbols/search`.
+#[derive(Debug, Serialize)]
+pub struct SearchResponse {
+    /// What was asked for, echoed so a client can drop a stale answer.
+    pub query: String,
+    /// The matches, best first.
+    pub results: Vec<InstrumentResponse>,
+    /// How many instruments the venue offers in total.
+    pub indexed: usize,
+    /// When the listing was fetched, unix nanoseconds. `null` when the index is
+    /// empty, in which case `results` is empty for a reason that has nothing to
+    /// do with the query.
+    pub fetched_at: Option<i64>,
+    /// Whether the listing is stale or missing.
+    ///
+    /// Reported rather than hidden because it changes what an empty result
+    /// means: "the venue does not offer that" and "we could not reach the venue"
+    /// are different answers, and only the first is the user's problem.
+    pub stale: bool,
+    /// A sentence explaining the current state, when there is something to say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Most results a search may return.
+const MAX_SEARCH_LIMIT: usize = 100;
+
+/// `GET /symbols/search`
+///
+/// ## Why search goes to the venue rather than to `MARKET_SYMBOLS`
+///
+/// The platform's premise is that it works for any market, not just the one the
+/// operator happened to configure. A search over a deployment's watchlist would
+/// answer "we have never heard of `ETHUSDT`" to a user looking at a venue that
+/// trades it -- and the platform would be wrong about a fact it can check.
+pub async fn search_symbols(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<SearchQuery>,
+) -> Result<Json<SearchResponse>, ApiError> {
+    let limit = query.limit.unwrap_or(25).clamp(1, MAX_SEARCH_LIMIT);
+    let q = query.q.trim().to_uppercase();
+
+    // Best-effort refresh before answering. A failure leaves the previous index
+    // in place: a user asking what symbols exist should not be told the platform
+    // cannot look them up when it can, from the copy it already holds.
+    state.symbols.refresh_if_stale(&state.backfill).await;
+
+    let results = state
+        .symbols
+        .search(&q, limit)
+        .into_iter()
+        .map(|instrument| InstrumentResponse {
+            symbol: instrument.symbol,
+            base: instrument.base,
+            quote: instrument.quote,
+            trading: instrument.trading,
+        })
+        .collect();
+
+    let indexed = state.symbols.len();
+    let fetched_at = state.symbols.fetched_at();
+
+    Ok(Json(SearchResponse {
+        query: q,
+        results,
+        indexed,
+        fetched_at,
+        stale: state.symbols.is_stale(crate::now_ns()),
+        note: index_note(indexed, fetched_at.is_some()),
+    }))
+}
+
+/// What to say when the index is empty or never fetched.
+///
+/// `None` when there is nothing to explain: a note on every healthy response is
+/// noise, and noise is what makes a real warning invisible.
+fn index_note(indexed: usize, fetched: bool) -> Option<String> {
+    if fetched && indexed > 0 {
+        return None;
+    }
+    Some(
+        "the instrument listing has not been fetched from the venue yet, so this \
+         search result is empty because the platform has nothing to search -- not \
+         because the symbol does not exist. Charts still work: asking for a symbol \
+         fetches its history directly."
+            .to_string(),
+    )
+}
+
+/// Query parameters for `GET /symbols/{symbol}`.
+#[derive(Debug, Deserialize)]
+pub struct ValidateQuery {
+    /// The instrument to check.
+    pub symbol: String,
+}
+
+/// Response of `GET /symbols/validate`.
+#[derive(Debug, Serialize)]
+pub struct ValidateResponse {
+    /// The symbol as the venue spells it.
+    pub symbol: String,
+    /// `tradable` | `not_trading` | `unknown` | `unknown_index`.
+    pub status: &'static str,
+    /// Whether a chart can be drawn for it.
+    pub chartable: bool,
+    /// Whether a bot may trade it.
+    pub tradable: bool,
+    /// A sentence a client can show, rather than a status code to decode.
+    pub note: String,
+}
+
+/// `GET /symbols/validate`
+///
+/// The endpoint a client needs before it opens a chart: it separates "the venue
+/// does not offer this", "the venue has halted it", and "we could not check".
+/// Collapsing those into a 404 is how a transient network problem becomes a
+/// message telling the user their symbol is misspelled.
+pub async fn validate_symbol(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<ValidateQuery>,
+) -> Result<Json<ValidateResponse>, ApiError> {
+    state.symbols.refresh_if_stale(&state.backfill).await;
+
+    let symbol = query.symbol.trim().to_uppercase();
+    let check = state.symbols.lookup(&symbol);
+
+    let (status, note) = match check {
+        market_data::SymbolCheck::Tradable => (
+            "tradable",
+            format!("{symbol} is listed and the venue is accepting orders."),
+        ),
+        market_data::SymbolCheck::NotTrading => (
+            "not_trading",
+            format!(
+                "{symbol} is listed but the venue is not currently trading it. Its history is \
+                 still chartable; a bot must not be started on it."
+            ),
+        ),
+        market_data::SymbolCheck::Unknown => (
+            "unknown",
+            format!("the venue does not list {symbol}."),
+        ),
+        market_data::SymbolCheck::UnknownIndex => (
+            "unknown_index",
+            format!(
+                "the platform has not fetched the venue's instrument listing, so it cannot say \
+                 whether {symbol} exists. This is the platform's own state, not a verdict on the \
+                 symbol -- asking for its chart will fetch history directly."
+            ),
+        ),
+    };
+
+    Ok(Json(ValidateResponse {
+        symbol,
+        status,
+        chartable: check.chartable(),
+        tradable: check.tradable(),
+        note,
+    }))
 }
 
 /// `GET /symbols`
@@ -456,6 +613,7 @@ pub async fn orderbook(
 ) -> Result<Json<OrderBookResponse>, ApiError> {
     let symbol = query.symbol.to_uppercase();
     state.bots.ensure_feed_for(&symbol);
+    state.bots.touch_feed(&symbol);
 
     let Some(snapshot) = state.bots.live().book(&symbol) else {
         // An empty book would read as "no liquidity", which is a different and

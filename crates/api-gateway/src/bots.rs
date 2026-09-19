@@ -56,7 +56,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::Notify;
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -87,6 +87,92 @@ pub const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(30);
 /// A watcher that falls this far behind is told it lagged rather than blocking
 /// the bots, which is the same backpressure rule the market channels use.
 const EVENT_BUFFER: usize = 256;
+
+/// How many market feeds may be open at once.
+///
+/// ## Why there is a ceiling at all
+///
+/// Every feed is a websocket plus a candle builder per resolution plus a slot
+/// in the RAM history and a tape. A platform whose whole point is "any symbol,
+/// not just BTCUSDT" will be asked for a lot of symbols, and `ensure_feed_for`
+/// is called by *routes* -- opening a chart, asking a question -- so the number
+/// of sockets was previously bounded only by how many distinct symbol strings
+/// a client cared to send. One tab with a symbol list is enough to open
+/// hundreds, and Binance's own limit is 300 connections per 5 minutes per IP,
+/// after which it stops answering *everything*, including the symbol the
+/// operator actually trades.
+///
+/// ## Why 32
+///
+/// Chosen against the memory budget rather than the venue's connection limit.
+/// The interesting cost is not the socket, it is `HistoryRegistry`: a series
+/// holds up to 1500 bars per resolution, and a feed fills seven of them. At
+/// roughly a hundred bytes a bar that is ~1 MB a symbol for candles, plus a
+/// tape that is capped separately. Thirty-two symbols lands around 40-50 MB of
+/// buffer, which is affordable on a small instance and comfortably above what
+/// one person watches at once.
+///
+/// ## What happens at the ceiling
+///
+/// The oldest *unused* feed is closed to make room, never a symbol somebody is
+/// looking at. See [`BotSupervisor::evict_for`]. Refusing outright was the
+/// first design and it is wrong here: the request that arrives when the table
+/// is full is usually the one the user just clicked, and answering it with
+/// "too many" would make a full table feel like a broken platform. Eviction is
+/// cheap because the buffer going cold costs one venue round trip, not data.
+pub const MAX_ACTIVE_FEEDS: usize = 32;
+
+/// How long a feed lives after its last use.
+///
+/// Shorter than the 5-minute staleness rule in `docs/18`, deliberately: that
+/// rule is about a feed that was *supposed* to be producing and stopped, while
+/// this is about a feed nobody is looking at any more. A feed that goes idle
+/// and is reclaimed is a normal event; a feed that goes stale is an incident,
+/// and they must not be reported by the same signal.
+///
+/// Long enough to survive a user stepping away from the tab and coming back --
+/// a browser that loses focus still polls, but a chart left open overnight
+/// should not hold a socket for eight hours.
+pub const DEFAULT_FEED_IDLE: Duration = Duration::from_secs(180);
+
+/// What asked for a feed, which decides how long it may stay idle.
+///
+/// The distinction is not cosmetic. A feed opened because a **bot** is trading
+/// that symbol must never be reclaimed for idleness: the bot is deciding on
+/// those candles, and a feed that vanished mid-run would make the bot stop
+/// seeing bars with nothing reported anywhere except a gap in the audit trail.
+/// A feed opened because a **chart** asked is reclaimable, because the chart
+/// will ask again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedReason {
+    /// A running bot trades this symbol. Not reclaimable while it runs.
+    Bot,
+    /// A route asked -- a chart, a question, an order book.
+    Route,
+}
+
+/// A feed the supervisor owns.
+struct Feed {
+    /// How to stop the collector.
+    ///
+    /// An [`AbortHandle`] rather than the [`JoinHandle`] itself, and not merely
+    /// for tidiness: the supervisor only ever *aborts* a feed, and `JoinHandle`
+    /// owns the task's output and its `Result`. Keeping the full handle in the
+    /// table means the table is a place a panic could be collected from, which
+    /// is exactly the kind of thing that quietly is not done. An `AbortHandle`
+    /// is `Send + Sync`, cloneable, and constructible without spawning -- so
+    /// the eviction rule can be tested without a runtime and without a socket.
+    handle: AbortHandle,
+    /// What asked for it, which bounds whether it may be reclaimed.
+    reason: FeedReason,
+    /// When something last used it, unix nanos.
+    ///
+    /// Shared with the feed's own task so a candle arriving counts as a use.
+    /// Without that, a symbol nobody is *asking* about but that is actively
+    /// publishing would look idle and be closed -- and reopening it would cost
+    /// a REST round trip to rebuild a buffer that was one bar from complete.
+    last_used_ns: Arc<std::sync::atomic::AtomicI64>,
+}
 
 /// Whether the supervisor opens a market feed of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,7 +507,10 @@ struct Inner {
     feed: FeedMode,
     /// Symbols a collector has been started for, so a second bot on the same
     /// symbol does not open a second websocket.
-    feeds: Mutex<HashMap<String, JoinHandle<()>>>,
+    ///
+    /// Bounded by [`MAX_ACTIVE_FEEDS`], with the least-recently-used reclaimable
+    /// entry evicted at the ceiling. See [`BotSupervisor::ensure_feed`].
+    feeds: Mutex<HashMap<String, Feed>>,
     /// The chart's recent history, held in RAM.
     ///
     /// Held here rather than in the collector because a series has to survive
@@ -450,6 +539,8 @@ struct Inner {
     last_candle_ns: Mutex<HashMap<String, i64>>,
     /// How often a running bot flushes.
     flush_interval: Duration,
+    /// How long a route-opened feed may sit unused before it is reclaimed.
+    feed_idle: Duration,
     /// Everything the running bots have done, for `/ws/bots/{id}`.
     events: broadcast::Sender<BotEvent>,
 }
@@ -490,6 +581,7 @@ impl BotSupervisor {
                 live: Arc::new(market_data::LiveRegistry::new()),
                 last_candle_ns: Mutex::new(HashMap::new()),
                 flush_interval,
+                feed_idle: DEFAULT_FEED_IDLE,
                 events: broadcast::channel(EVENT_BUFFER).0,
             }),
         }
@@ -549,8 +641,214 @@ impl BotSupervisor {
     /// A chart opening `/ws/market` should start the feed just as a bot does:
     /// otherwise the channel is silent until somebody happens to launch a bot,
     /// and "the chart shows nothing" has two possible causes again.
+    ///
+    /// The feed is opened as [`FeedReason::Route`], so it can be reclaimed when
+    /// nobody is looking at it. A bot's feed is opened as [`FeedReason::Bot`]
+    /// and is not.
     pub fn ensure_feed_for(&self, symbol: &str) {
-        self.ensure_feed(symbol);
+        self.ensure_feed(symbol, FeedReason::Route);
+    }
+
+    /// Note that a symbol's feed was just used, so it is not reclaimed.
+    ///
+    /// Called by the routes that answer from the buffer -- `/candles`,
+    /// `/orderbook`, `/footprint`, an agent question -- because "used" is the
+    /// input to the idle rule and a symbol being read is a symbol that must
+    /// not be closed underneath the reader.
+    pub fn touch_feed(&self, symbol: &str) {
+        if let Ok(feeds) = self.inner.feeds.lock() {
+            if let Some(feed) = feeds.get(&symbol.to_uppercase()) {
+                feed.last_used_ns.store(now_ns(), Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// How many feeds are open, and how many of them a bot depends on.
+    ///
+    /// Reported rather than inferred so a ceiling that is being hit is visible
+    /// before it becomes "the chart is slow": the difference between 4 feeds and
+    /// 32 is the difference between a platform used by hand and one being
+    /// scraped, and only one of those is a reason to raise the limit.
+    #[must_use]
+    pub fn feed_counts(&self) -> (usize, usize) {
+        let Ok(feeds) = self.inner.feeds.lock() else {
+            return (0, 0);
+        };
+        let bots = feeds
+            .values()
+            .filter(|feed| feed.reason == FeedReason::Bot)
+            .count();
+        (feeds.len(), bots)
+    }
+
+    /// The symbols with an open feed, sorted.
+    #[must_use]
+    pub fn feed_symbols(&self) -> Vec<String> {
+        let Ok(feeds) = self.inner.feeds.lock() else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = feeds.keys().cloned().collect();
+        out.sort();
+        out
+    }
+
+    /// Close every feed nobody has used within [`Inner::feed_idle`].
+    ///
+    /// Returns the symbols closed, so the caller can log a number rather than
+    /// leave an operator guessing whether the ceiling is being reached.
+    ///
+    /// A bot's feed is never touched, however idle: the bot holds a subscription
+    /// to that symbol's bus, and closing the feed would leave it reading a
+    /// channel nothing publishes into -- a running bot that silently stops
+    /// deciding, which is the failure mode this whole module is arranged to
+    /// avoid. A bot that ends calls [`Self::release_feed`], which is what makes
+    /// its symbol reclaimable again.
+    pub fn reclaim_idle_feeds(&self, now: i64) -> Vec<String> {
+        let Ok(mut feeds) = self.inner.feeds.lock() else {
+            return Vec::new();
+        };
+        let idle_ns = i64::try_from(self.inner.feed_idle.as_nanos()).unwrap_or(i64::MAX);
+
+        let stale: Vec<String> = feeds
+            .iter()
+            .filter(|(_, feed)| feed.reason == FeedReason::Route)
+            .filter(|(_, feed)| {
+                now.saturating_sub(feed.last_used_ns.load(Ordering::Relaxed)) > idle_ns
+            })
+            .map(|(symbol, _)| symbol.clone())
+            .collect();
+
+        for symbol in &stale {
+            if let Some(feed) = feeds.remove(symbol) {
+                feed.handle.abort();
+                info!(symbol, "closed an idle market feed");
+            }
+        }
+        stale
+    }
+
+    /// Drop a bot's claim on its symbol's feed.
+    ///
+    /// Called when a bot's task ends. The feed itself is left open -- its
+    /// buffer is what makes the symbol's chart instant, and closing it would
+    /// throw away the bars for a symbol the user is probably still watching.
+    /// What changes is that the feed becomes *reclaimable*, so it will be
+    /// closed by [`Self::reclaim_idle_feeds`] once nobody reads it.
+    pub fn release_feed(&self, symbol: &str) {
+        let Ok(mut feeds) = self.inner.feeds.lock() else {
+            return;
+        };
+        let symbol = symbol.to_uppercase();
+        if let Some(feed) = feeds.get_mut(&symbol) {
+            // Downgraded rather than removed. A bot that stops and starts again
+            // a second later should not pay a reconnect for it.
+            feed.reason = FeedReason::Route;
+            feed.last_used_ns.store(now_ns(), Ordering::Relaxed);
+        }
+    }
+
+    /// Start a collector for a symbol if the feed is enabled and it has none.
+    ///
+    /// ## The ceiling
+    ///
+    /// At [`MAX_ACTIVE_FEEDS`] the least-recently-used **reclaimable** feed is
+    /// closed to make room. Refusing instead was the first design, and it is
+    /// wrong: the request that arrives at a full table is usually the one the
+    /// user just clicked, so "too many symbols" would be the error a platform
+    /// advertised as "any symbol" gives to the person using it normally.
+    ///
+    /// If every entry is a bot's, nothing is evicted and this symbol gets no
+    /// feed -- the bots are the reason the table is full, and cancelling a
+    /// trading bot's market data to serve a chart is the wrong way round. That
+    /// case is logged at `warn`, and it is the only case where a chart can ask
+    /// for a symbol and not get a feed.
+    fn ensure_feed(&self, symbol: &str, reason: FeedReason) {
+        if self.inner.feed != FeedMode::Binance {
+            warn!(
+                symbol,
+                "no market feed is configured (MARKET_FEED is not `binance`): this bot is running \
+                 and will receive no candles until something publishes into the bus"
+            );
+            return;
+        }
+
+        let symbol = symbol.to_uppercase();
+        let Ok(mut feeds) = self.inner.feeds.lock() else {
+            return;
+        };
+        if let Some(feed) = feeds.get_mut(&symbol) {
+            // Already open. Record the use, and promote it if a bot now needs
+            // it: a route-opened feed that a bot starts trading must stop being
+            // reclaimable, or the bot loses its market data at the next sweep.
+            feed.last_used_ns.store(now_ns(), Ordering::Relaxed);
+            if reason == FeedReason::Bot {
+                feed.reason = FeedReason::Bot;
+            }
+            return;
+        }
+
+        self.evict_for(&mut feeds, &symbol);
+
+        let bus = Arc::clone(&self.inner.bus);
+        let supervisor = self.clone();
+        let last_used_ns = Arc::new(std::sync::atomic::AtomicI64::new(now_ns()));
+        let for_task = symbol.clone();
+        let task_used = Arc::clone(&last_used_ns);
+        let handle = tokio::spawn(async move {
+            if let Err(e) = run_binance_feed(bus, &for_task, supervisor, task_used).await {
+                warn!(symbol = %for_task, "the market feed stopped: {e}");
+            }
+        });
+        feeds.insert(
+            symbol,
+            Feed {
+                handle: handle.abort_handle(),
+                reason,
+                last_used_ns,
+            },
+        );
+    }
+
+    /// Make room at the ceiling by closing the least-recently-used route feed.
+    ///
+    /// Split out so the choice is testable without opening a socket: the
+    /// decision -- *which* entry goes -- is the part that can be wrong, and it
+    /// is the part a test can drive through `feeds` directly.
+    fn evict_for(&self, feeds: &mut HashMap<String, Feed>, incoming: &str) {
+        if feeds.len() < MAX_ACTIVE_FEEDS {
+            return;
+        }
+
+        let victim = feeds
+            .iter()
+            .filter(|(_, feed)| feed.reason == FeedReason::Route)
+            .min_by_key(|(_, feed)| feed.last_used_ns.load(Ordering::Relaxed))
+            .map(|(symbol, _)| symbol.clone());
+
+        match victim {
+            Some(symbol) => {
+                if let Some(feed) = feeds.remove(&symbol) {
+                    feed.handle.abort();
+                    info!(
+                        evicted = %symbol,
+                        incoming,
+                        open = feeds.len(),
+                        "at the market-feed ceiling; closed the least recently used feed"
+                    );
+                }
+            }
+            None => {
+                // Every open feed is a bot's. Nothing is closed -- see the
+                // rationale on `ensure_feed`.
+                warn!(
+                    incoming,
+                    open = feeds.len(),
+                    MAX_ACTIVE_FEEDS,
+                    "every market feed is in use by a running bot; not opening one for this \
+                     symbol. The bots keep their data and this symbol waits."
+                );
+            }
+        }
     }
 
     /// Subscribe to what the running bots are doing.
@@ -671,10 +969,16 @@ impl BotSupervisor {
 
         let symbol = kind.symbol().to_string();
         let venue = kind.venue().map(str::to_string);
-        self.ensure_feed(&symbol);
+        // A bot's feed is not reclaimable while the bot runs: the bot holds a
+        // subscription to this symbol's bus, so closing the feed would leave it
+        // reading a channel nothing publishes into -- a running bot that
+        // silently stops deciding.
+        self.ensure_feed(&symbol, FeedReason::Bot);
 
         let flush_interval = self.inner.flush_interval;
         let events = self.inner.events.clone();
+        // Moved into the task so it can hand the feed back when it ends.
+        let release = self.clone();
         let mut candles = self.inner.bus.bus(&symbol).subscribe_candles();
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
@@ -803,6 +1107,10 @@ impl BotSupervisor {
                     halt_reason: kind.halt_reason().map(str::to_string),
                 })
                 .ok();
+            // Hand the feed back to the reclaimable pool. A bot that stopped is
+            // no longer a reason to hold a websocket open forever, but its bars
+            // stay in the buffer for whoever is looking at the chart.
+            release.release_feed(&symbol);
             info!(%bot_id, trades = kind.trade_count(), "bot finished");
         });
 
@@ -972,34 +1280,35 @@ impl BotSupervisor {
         futures::future::join_all(ids.into_iter().map(|id| self.stop(id))).await;
     }
 
-    /// Start a collector for a symbol if the feed is enabled and it has none.
-    fn ensure_feed(&self, symbol: &str) {
-        if self.inner.feed != FeedMode::Binance {
-            warn!(
-                symbol,
-                "no market feed is configured (MARKET_FEED is not `binance`): this bot is running \
-                 and will receive no candles until something publishes into the bus"
-            );
-            return;
-        }
+    /// Sweep idle feeds until the process ends.
+    ///
+    /// Spawned once by the gateway rather than run per request, because the
+    /// rule it enforces is about *absence* of use: nothing calls a function
+    /// when a user closes a tab, so a sweep driven by requests would only ever
+    /// run while the thing it is meant to reclaim is still being used.
+    ///
+    /// The interval is deliberately a fraction of the idle window. Sweeping at
+    /// the window itself would let a feed live up to twice its configured age,
+    /// so a deployment that lowers `MARKET_FEED_IDLE` would not see the change
+    /// take effect for that long.
+    pub fn spawn_reaper(self: &Arc<Self>) {
+        let supervisor = Arc::clone(self);
+        let idle = supervisor.inner.feed_idle;
+        let every = (idle / 4).max(Duration::from_secs(5));
 
-        let Ok(mut feeds) = self.inner.feeds.lock() else {
-            return;
-        };
-        if feeds.contains_key(symbol) {
-            return;
-        }
-
-        let bus = Arc::clone(&self.inner.bus);
-        let symbol = symbol.to_string();
-        let for_task = symbol.clone();
-        let supervisor = self.clone();
-        let handle = tokio::spawn(async move {
-            if let Err(e) = run_binance_feed(bus, &for_task, supervisor).await {
-                warn!(symbol = %for_task, "the market feed stopped: {e}");
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(every);
+            // The first tick fires immediately; skip it so a fresh process does
+            // not run a sweep before any feed exists.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let closed = supervisor.reclaim_idle_feeds(now_ns());
+                if !closed.is_empty() {
+                    info!(count = closed.len(), "reclaimed idle market feeds");
+                }
             }
         });
-        feeds.insert(symbol, handle);
     }
 }
 
@@ -1055,6 +1364,7 @@ async fn run_binance_feed(
     bus: Arc<market_data::MarketBusRegistry>,
     symbol: &str,
     supervisor: BotSupervisor,
+    last_used_ns: Arc<std::sync::atomic::AtomicI64>,
 ) -> Result<(), String> {
     use market_data::{BinanceCollector, ExchangeCollector};
 
@@ -1105,7 +1415,11 @@ async fn run_binance_feed(
     let candles = supervisor.subscribe_candles(symbol);
     let history = supervisor.history();
     let live = supervisor.live();
-    let watcher = tokio::spawn(watch_feed_candles(candles, supervisor));
+    let watcher = tokio::spawn(watch_feed_candles(
+        candles,
+        supervisor,
+        Arc::clone(&last_used_ns),
+    ));
 
     // ## Recording what the feed collects -- in RAM, never to disk
     //
@@ -1164,10 +1478,22 @@ async fn run_binance_feed(
 /// not exist and a rule that cannot fire. [`BotSupervisor::feed_candle`] cannot
 /// be used for this -- it publishes as well as stamps, and the collector has
 /// already published.
-async fn watch_feed_candles(mut candles: broadcast::Receiver<Candle>, supervisor: BotSupervisor) {
+async fn watch_feed_candles(
+    mut candles: broadcast::Receiver<Candle>,
+    supervisor: BotSupervisor,
+    last_used_ns: Arc<std::sync::atomic::AtomicI64>,
+) {
     loop {
         match candles.recv().await {
-            Ok(candle) => supervisor.note_candle(&candle),
+            Ok(candle) => {
+                supervisor.note_candle(&candle);
+                // A bar arriving is a use of this feed, even when nobody is
+                // asking for the symbol right now. Without this a symbol that
+                // is publishing steadily but is not the one on screen would be
+                // closed for idleness -- and reopening it costs a REST round
+                // trip to rebuild a buffer that was one bar from complete.
+                last_used_ns.store(now_ns(), Ordering::Relaxed);
+            }
             Err(RecvError::Lagged(skipped)) => {
                 // Losing messages here loses *age* information, not data: the
                 // chart holds its own subscription. Say so rather than let the
@@ -1188,7 +1514,46 @@ mod tests {
         // A bot that is `running` with no feed looks exactly like a bot that is
         // running and finding no setups, so the default has to be the one that
         // does not open sockets and says so.
+        //
+        // `from_env` reads the process environment, so this test is only about
+        // the default when the variable is *absent*. `.env` ships
+        // `MARKET_FEED=binance`, and any shell that has exported it -- e.g.
+        // `set -a && . ./.env && cargo test`, which is how the gateway is run
+        // against the real venue -- would otherwise fail here for a reason that
+        // has nothing to do with the default and everything to do with the
+        // caller's environment. Skip rather than lie in either direction.
+        if let Ok(mode) = std::env::var("MARKET_FEED") {
+            eprintln!("MARKET_FEED=`{mode}` is set; the default is not observable here");
+            return;
+        }
         assert_eq!(FeedMode::from_env(), FeedMode::Off);
+    }
+
+    #[test]
+    fn a_nonsense_feed_mode_is_off_and_says_so() {
+        // The real function with a value nobody recognises. `from_env` reads the
+        // process environment, and this is the one case where writing it is
+        // safe: the mode it sets is one that opens no sockets, and the test
+        // restores whatever was there before. `unsafe` because setting an env
+        // var in a multi-threaded test process races any concurrent reader --
+        // which is why the assertion below does not depend on a *concurrent*
+        // read, only on the value this thread wrote.
+        let previous = std::env::var("MARKET_FEED").ok();
+        // SAFETY: the value written is a string literal that outlives the call,
+        // and the restore happens in the same test before it returns.
+        unsafe { std::env::set_var("MARKET_FEED", "definitely-not-a-mode") };
+
+        let resolved = FeedMode::from_env();
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("MARKET_FEED", value) },
+            None => unsafe { std::env::remove_var("MARKET_FEED") },
+        }
+
+        // An unrecognised mode must not become a feed that opens sockets: a typo
+        // in a deployment variable would otherwise start streaming from a venue
+        // nobody asked for.
+        assert_eq!(resolved, FeedMode::Off);
     }
 
     #[tokio::test]
@@ -1292,7 +1657,14 @@ mod tests {
         // test, which is the point of it.
         let supervisor = BotSupervisor::new(FeedMode::Binance);
         let candles = supervisor.subscribe_candles("BTCUSDT");
-        let watcher = tokio::spawn(watch_feed_candles(candles, supervisor.clone()));
+        // The same handle `ensure_feed` hands the real task, so this exercises
+        // the production call shape rather than a simplified one.
+        let last_used = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let watcher = tokio::spawn(watch_feed_candles(
+            candles,
+            supervisor.clone(),
+            Arc::clone(&last_used),
+        ));
 
         // Exactly what `handle_trade` in `market-data` does -- and the reason the
         // supervisor must not do it a second time: one publish, one bar.
@@ -1377,8 +1749,7 @@ mod tests {
     /// A chart's history starts empty and is filled by the feed, so the registry
     /// has to exist before anything has been collected for it.
     #[test]
-    fn a_fresh_supervisor_has_an_empty_history() {
-        use analytics_core::Timeframe;
+    fn a_fresh_supervisor_has_an_empty_history() {        use analytics_core::Timeframe;
 
         let supervisor = BotSupervisor::new(FeedMode::Off);
         assert_eq!(supervisor.history().series_count(), 0);
@@ -1416,5 +1787,215 @@ mod tests {
         assert_eq!(history.newest("BTCUSDT", Timeframe::M1), Some(60_000_000_000));
         assert_eq!(history.symbols(), vec!["BTCUSDT"]);
         assert_eq!(history.depth().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // The feed ceiling and the idle sweep
+    // -----------------------------------------------------------------------
+
+    /// Insert a feed entry without opening a socket.
+    ///
+    /// The decision under test is *which* entry the ceiling picks, and that is
+    /// a question about the map. Opening a real websocket to ask it would make
+    /// the test depend on the venue and prove nothing extra.
+    ///
+    /// Spawns a task that parks until dropped, because an `AbortHandle` can only
+    /// come from a spawned task -- so these tests are async. The task does
+    /// nothing and touches nothing; it exists so `abort()` has something real
+    /// to act on, which is the path being exercised.
+    fn seed_feed(supervisor: &BotSupervisor, symbol: &str, reason: FeedReason, used_at: i64) {
+        let handle = tokio::spawn(std::future::pending::<()>()).abort_handle();
+        let previous = supervisor
+            .inner
+            .feeds
+            .lock()
+            .expect("feeds")
+            .insert(
+                symbol.to_string(),
+                Feed {
+                    handle,
+                    reason,
+                    last_used_ns: Arc::new(std::sync::atomic::AtomicI64::new(used_at)),
+                },
+            );
+        assert!(
+            previous.is_none(),
+            "{symbol} was seeded twice; the second insert would silently win"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_full_table_evicts_the_least_recently_used_route_feed() {
+        // The failure this guards: an unbounded table. `ensure_feed_for` is
+        // reached by routes, so without a ceiling the number of sockets this
+        // process holds is decided by how many symbol strings a client sends --
+        // and Binance stops answering *everything* past 300 connections, the
+        // traded symbol included.
+        let supervisor = BotSupervisor::new(FeedMode::Binance);
+        for i in 0..MAX_ACTIVE_FEEDS {
+            seed_feed(
+                &supervisor,
+                &format!("SYM{i}USDT"),
+                FeedReason::Route,
+                i as i64,
+            );
+        }
+        assert_eq!(supervisor.feed_counts().0, MAX_ACTIVE_FEEDS);
+
+        let mut feeds = supervisor.inner.feeds.lock().expect("feeds");
+        supervisor.evict_for(&mut feeds, "NEWUSDT");
+        assert_eq!(
+            feeds.len(),
+            MAX_ACTIVE_FEEDS - 1,
+            "exactly one entry must go, not more"
+        );
+        assert!(
+            !feeds.contains_key("SYM0USDT"),
+            "the least recently used entry is the one to close"
+        );
+        assert!(
+            feeds.contains_key("SYM1USDT"),
+            "and nothing else may be touched"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_running_bots_feed_is_never_evicted() {
+        // The bug this prevents: a chart asking for a symbol closes the feed a
+        // trading bot is deciding on. The bot would then hold a subscription to
+        // a bus nothing publishes into -- a running bot that silently stops
+        // seeing bars, with the gap visible only in the audit trail.
+        let supervisor = BotSupervisor::new(FeedMode::Binance);
+        // The bot's feed is the *oldest*, so a naive LRU would pick it first.
+        seed_feed(&supervisor, "BTCUSDT", FeedReason::Bot, 0);
+        for i in 1..MAX_ACTIVE_FEEDS {
+            seed_feed(
+                &supervisor,
+                &format!("SYM{i}USDT"),
+                FeedReason::Route,
+                i as i64,
+            );
+        }
+
+        let mut feeds = supervisor.inner.feeds.lock().expect("feeds");
+        supervisor.evict_for(&mut feeds, "NEWUSDT");
+        assert!(
+            feeds.contains_key("BTCUSDT"),
+            "a bot's feed must survive the sweep however idle it looks"
+        );
+        assert!(!feeds.contains_key("SYM1USDT"), "the next-oldest went instead");
+    }
+
+    #[tokio::test]
+    async fn when_every_feed_belongs_to_a_bot_nothing_is_evicted() {
+        // The other half of the rule: a chart asking for a new symbol must not
+        // take market data away from a trading bot to get it. The request is
+        // declined instead, and this asserts that the table is left *intact* --
+        // a version that evicted anyway would still be "bounded", so a length
+        // assertion alone would not catch it.
+        let supervisor = BotSupervisor::new(FeedMode::Binance);
+        for i in 0..MAX_ACTIVE_FEEDS {
+            seed_feed(
+                &supervisor,
+                &format!("SYM{i}USDT"),
+                FeedReason::Bot,
+                i as i64,
+            );
+        }
+
+        let mut feeds = supervisor.inner.feeds.lock().expect("feeds");
+        supervisor.evict_for(&mut feeds, "NEWUSDT");
+        assert_eq!(
+            feeds.len(),
+            MAX_ACTIVE_FEEDS,
+            "nothing may be closed when every feed has a bot on it"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_idle_sweep_closes_route_feeds_and_spares_bots() {
+        let supervisor = BotSupervisor::new(FeedMode::Binance);
+        let now = 1_000_000_000_000_i64;
+        let idle = i64::try_from(DEFAULT_FEED_IDLE.as_nanos()).expect("fits");
+
+        // Route feeds: one long idle, one fresh.
+        seed_feed(&supervisor, "OLDUSDT", FeedReason::Route, now - idle * 2);
+        seed_feed(&supervisor, "NEWUSDT", FeedReason::Route, now - idle / 2);
+        // A bot's feed, idle for far longer than any route feed.
+        seed_feed(&supervisor, "BOTUSDT", FeedReason::Bot, now - idle * 100);
+
+        let closed = supervisor.reclaim_idle_feeds(now);
+        assert_eq!(closed, vec!["OLDUSDT".to_string()]);
+        assert_eq!(
+            supervisor.feed_symbols(),
+            vec!["BOTUSDT".to_string(), "NEWUSDT".to_string()],
+            "the fresh route feed stays and the bot's is untouchable"
+        );
+    }
+
+    #[tokio::test]
+    async fn releasing_a_bot_feed_makes_it_reclaimable() {
+        // The handover that stops a stopped bot holding a socket forever, and
+        // the reason `release_feed` downgrades rather than removes: a bot that
+        // restarts a second later should not pay a reconnect.
+        let supervisor = BotSupervisor::new(FeedMode::Binance);
+        seed_feed(&supervisor, "BTCUSDT", FeedReason::Bot, 0);
+
+        supervisor.release_feed("BTCUSDT");
+        assert!(supervisor.feed_symbols().contains(&"BTCUSDT".to_string()));
+
+        // Not idle yet. Measured against the real clock, because `release_feed`
+        // stamps with `now_ns()` -- a synthetic "now" from the epoch would be
+        // *earlier* than the release and the age would come out negative, which
+        // the rule reads as "freshly used" and passes for the wrong reason.
+        let idle = i64::try_from(DEFAULT_FEED_IDLE.as_nanos()).expect("fits");
+        let just_after = now_ns();
+        assert!(
+            supervisor.reclaim_idle_feeds(just_after).is_empty(),
+            "a feed released a moment ago is not idle yet -- otherwise reopening a bot \
+             would reconnect on every sweep"
+        );
+
+        // Now genuinely idle, and the sweep may take it.
+        let later = just_after + idle * 2;
+        assert_eq!(
+            supervisor.reclaim_idle_feeds(later),
+            vec!["BTCUSDT".to_string()],
+            "once nobody has read it for the idle window, a released feed is reclaimed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_feed_at_the_ceiling_exactly_is_not_evicted_for_itself() {
+        // Off-by-one guard: `ensure_feed` calls `evict_for` only after checking
+        // the symbol is absent, so the table can legitimately be at the ceiling
+        // with room for the incoming entry.
+        let supervisor = BotSupervisor::new(FeedMode::Binance);
+        for i in 0..(MAX_ACTIVE_FEEDS - 1) {
+            seed_feed(
+                &supervisor,
+                &format!("SYM{i}USDT"),
+                FeedReason::Route,
+                i as i64,
+            );
+        }
+        let mut feeds = supervisor.inner.feeds.lock().expect("feeds");
+        supervisor.evict_for(&mut feeds, "NEWUSDT");
+        assert_eq!(
+            feeds.len(),
+            MAX_ACTIVE_FEEDS - 1,
+            "one below the ceiling means the new entry fits; nothing is closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_symbol_has_no_feed_to_touch() {
+        // `touch_feed` is called on every read, including for a symbol whose
+        // feed failed to open. It must be a no-op rather than a panic or an
+        // insert -- inserting would let a request create a table entry with no
+        // task behind it, which the sweep would then never reclaim.
+        let supervisor = BotSupervisor::new(FeedMode::Binance);
+        supervisor.touch_feed("NOPEUSDT");
+        assert!(supervisor.feed_symbols().is_empty());
     }
 }

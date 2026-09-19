@@ -16,6 +16,7 @@
 //! the short windows used by the "backfilled == live" regression test in
 //! `docs/04-MARKET-DATA-ENGINE.md`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use analytics_core::{Candle, Timeframe, Trade};
@@ -23,7 +24,8 @@ use tracing::debug;
 
 use crate::candle_builder::CandleBuilder;
 use crate::error::MarketDataError;
-use crate::exchanges::wire::{AggTrade, RawKline};
+use crate::exchanges::venue::{BinanceVenue, Venue};
+use crate::exchanges::wire::AggTrade;
 
 /// Longest window the `Trades` source will accept.
 ///
@@ -40,29 +42,79 @@ pub enum BackfillSource {
 }
 
 /// REST client for historical data.
+///
+/// ## It reads through a [`Venue`], not through a URL
+///
+/// This type used to hold a bare `rest_url` and spell Binance's API into the
+/// request path, the interval strings, the array shape and the `taker_buy_base`
+/// column. That is `docs/19` row 25: *"a second market needs a venue adapter and
+/// not just a URL."* The URL parameter is still accepted -- every existing call
+/// site keeps working -- but it now selects a [`BinanceVenue`] pointed at that
+/// host, so the venue-specific knowledge lives in one place per venue instead of
+/// being assumed by the pager.
+///
+/// [`Venue`]: crate::exchanges::venue::Venue
 #[derive(Debug, Clone)]
 pub struct BackfillClient {
     client: reqwest::Client,
-    rest_url: String,
+    /// The venue whose API this client speaks.
+    ///
+    /// Boxed because the trait is not object-safe by value: a `BackfillClient`
+    /// is cloned into every `WindowService` and every task that reads history,
+    /// and it must be able to hold any venue without the type parameter
+    /// infecting each of those signatures.
+    venue: Arc<dyn Venue>,
     /// Politeness delay between paginated requests.
     pub request_delay: Duration,
 }
 
 impl BackfillClient {
     /// A client against Binance's public REST API.
+    ///
+    /// Kept as the default constructor so that the dozens of call sites that
+    /// pass a URL -- including every test harness, which points it at
+    /// `127.0.0.1:1` to guarantee no network access -- keep meaning what they
+    /// meant. The URL is the *host*; the API spoken to that host is Binance's,
+    /// which is what it always was.
     #[must_use]
     pub fn new(rest_url: impl Into<String>) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            rest_url: rest_url.into(),
-            request_delay: Duration::from_millis(120),
-        }
+        Self::at_venue(BinanceVenue::at(rest_url))
     }
 
     /// Client against `https://api.binance.com`.
     #[must_use]
     pub fn binance() -> Self {
-        Self::new("https://api.binance.com")
+        Self::at_venue(BinanceVenue::new())
+    }
+
+    /// A client against any venue, speaking that venue's API.
+    ///
+    /// This is the constructor a second market uses. `BackfillClient::new(url)`
+    /// is exactly `at_venue(BinanceVenue::at(url))`, so there is one code path
+    /// and no second implementation to drift.
+    #[must_use]
+    pub fn at_venue(venue: impl Venue + 'static) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            venue: Arc::new(venue),
+            request_delay: Duration::from_millis(120),
+        }
+    }
+
+    /// The venue this client speaks.
+    ///
+    /// Exposed so a caller can ask questions the venue answers rather than
+    /// assuming Binance: whether it can spell a resolution, or whether its
+    /// klines carry an order-flow split at all.
+    #[must_use]
+    pub fn venue(&self) -> &dyn Venue {
+        self.venue.as_ref()
+    }
+
+    /// The venue's name, for a log line or a response field.
+    #[must_use]
+    pub fn venue_name(&self) -> &'static str {
+        self.venue.name()
     }
 
     /// Backfill candles for `symbol`/`timeframe` over `[from_ns, to_ns)`.
@@ -90,6 +142,38 @@ impl BackfillClient {
         }
     }
 
+    /// Fetch the venue's instrument listing, as raw JSON.
+    ///
+    /// Returned as a string rather than a typed struct because the payload is
+    /// ~2 MB and the platform reads three fields per symbol. Decoding it into
+    /// owned Rust structures for every filter and permission of every
+    /// instrument would be the single most expensive thing the gateway does per
+    /// refresh, to throw almost all of it away -- so the reduction happens in
+    /// [`crate::symbols::SymbolIndex::install`], against a serde struct that
+    /// declares only what is kept.
+    ///
+    /// # Errors
+    /// [`MarketDataError::Transport`] on an HTTP failure.
+    pub async fn exchange_info(&self) -> Result<String, MarketDataError> {
+        // Binance-shaped, and it stays that way deliberately: this returns the
+        // raw `exchangeInfo` body for `SymbolIndex::install` to parse, and that
+        // parser is Binance's schema. A second venue needs its own instrument
+        // endpoint *and* its own parser -- which is a different piece of work
+        // from the kline adapter, and pretending otherwise by swapping only the
+        // URL would hand `SymbolIndex` a payload it would parse into nonsense.
+        let url = format!("{}/api/v3/exchangeInfo", self.venue.rest_url());
+        self.client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| MarketDataError::Transport(format!("exchangeInfo request failed: {e}")))?
+            .error_for_status()
+            .map_err(|e| MarketDataError::Transport(format!("exchangeInfo HTTP error: {e}")))?
+            .text()
+            .await
+            .map_err(|e| MarketDataError::Transport(format!("exchangeInfo body: {e}")))
+    }
+
     /// Fetch raw klines, paginating 1000 at a time.
     pub async fn fetch_klines(
         &self,
@@ -97,27 +181,44 @@ impl BackfillClient {
         timeframe: Timeframe,
         from_ns: i64,
         to_ns: i64,
-    ) -> Result<Vec<RawKline>, MarketDataError> {
-        let interval = timeframe.to_string();
+    ) -> Result<Vec<crate::exchanges::venue::RawKline>, MarketDataError> {
+        // The venue's own spelling, and a refusal when it has none. Emitting a
+        // Binance string at a venue that does not use it produces a 400 that
+        // names the parameter but not the resolution -- so the platform would
+        // say "bad request" where the truth is "this venue has no weekly bars".
+        let interval = self.venue.interval(timeframe).ok_or_else(|| {
+            MarketDataError::Normalization(format!(
+                "{} does not serve {} klines",
+                self.venue.name(),
+                timeframe
+            ))
+        })?;
+
+        let limit = self.venue.page_limit();
         let mut out = Vec::new();
         let mut cursor_ms = from_ns / 1_000_000;
-        // Binance treats endTime as INCLUSIVE; platform windows are [from, to).
-        // Without the -1ms a one-day backfill returns 1441 candles, and the
-        // extra one is the first candle of the *next* window -- which then gets
-        // double-counted when ranges are walked back to back.
-        let end_ms = (to_ns / 1_000_000).saturating_sub(1);
+        // A `[from, to)` window against a venue whose `end` is INCLUSIVE must
+        // send one millisecond less, or the first candle of the *next* window is
+        // returned and double-counted when ranges are walked back to back. The
+        // venue says whether its own end is inclusive; the `-1` is not applied
+        // to a venue that does not need it.
+        let end_ms = if self.venue.end_is_inclusive() {
+            (to_ns / 1_000_000).saturating_sub(1)
+        } else {
+            to_ns / 1_000_000
+        };
 
         loop {
-            let url = format!("{}/api/v3/klines", self.rest_url);
-            let rows: Vec<Vec<serde_json::Value>> = self
+            let url = format!("{}{}", self.venue.rest_url(), self.venue.klines_path());
+            let body: serde_json::Value = self
                 .client
                 .get(url)
                 .query(&[
                     ("symbol", symbol.to_uppercase()),
-                    ("interval", interval.clone()),
-                    ("startTime", cursor_ms.to_string()),
-                    ("endTime", end_ms.to_string()),
-                    ("limit", "1000".to_string()),
+                    ("interval", interval.to_string()),
+                    (self.venue.start_param(), cursor_ms.to_string()),
+                    (self.venue.end_param(), end_ms.to_string()),
+                    ("limit", limit.to_string()),
                 ])
                 .send()
                 .await
@@ -128,18 +229,30 @@ impl BackfillClient {
                 .await
                 .map_err(|e| MarketDataError::Normalization(format!("klines decode: {e}")))?;
 
-            let received = rows.len();
-            for row in &rows {
-                out.push(RawKline::from_array(row)?);
-            }
+            // The venue decodes its own envelope and normalises row order, so
+            // everything past this line is ascending regardless of what
+            // arrived.
+            let page = self.venue.parse_klines(&body)?;
+            let received = page.len();
+            let newest = page.iter().map(|k| k.open_time_ms).max();
+            out.extend(page);
 
-            debug!(symbol, %interval, received, total = out.len(), "klines page");
+            debug!(symbol, interval, received, total = out.len(), venue = self.venue.name(), "klines page");
 
-            if received < 1000 || out.is_empty() {
+            if received == 0 {
                 break;
             }
 
-            let last_open = out.last().map_or(0, |k| k.open_time_ms);
+            // A short page ends the walk only for a venue that pages forwards.
+            // A venue paging backwards from now returns short pages for reasons
+            // other than exhaustion, and stopping there truncates history.
+            if self.venue.short_page_means_done() && received < limit {
+                break;
+            }
+
+            let last_open = newest.ok_or_else(|| {
+                MarketDataError::Normalization("a kline page carried no open time".into())
+            })?;
             let next = last_open + 1;
             if next >= end_ms {
                 break;
@@ -193,14 +306,29 @@ impl BackfillClient {
         out: &mut Vec<Trade>,
     ) -> Result<(), MarketDataError> {
         let mut cursor_ms = from_ns / 1_000_000;
-        // Same inclusive-endTime correction as fetch_klines.
-        let end_ms = (to_ns / 1_000_000).saturating_sub(1);
+        // Same inclusive-`end` correction as `fetch_klines`, asked of the venue
+        // rather than assumed: Binance's `endTime` is inclusive so a `[from, to)`
+        // window sends one millisecond less, and a venue whose end is already
+        // exclusive must not have the adjustment applied.
+        let end_ms = if self.venue.end_is_inclusive() {
+            (to_ns / 1_000_000).saturating_sub(1)
+        } else {
+            to_ns / 1_000_000
+        };
+
+        // Binance's `aggTrades` path, and the same caveat as `exchange_info`:
+        // the URL follows the venue's host but the endpoint and the `AggTrade`
+        // schema are Binance's. Bybit's own trade history endpoint has a
+        // different path and a different row shape, so `BackfillSource::Trades`
+        // is a Binance-only capability until a venue supplies one -- reported as
+        // such by `BackfillClient::supports_trade_backfill` rather than failing
+        // as a 404 on a symbol that exists.
+        let url = format!("{}/api/v3/aggTrades", self.venue.rest_url());
 
         loop {
-            let url = format!("{}/api/v3/aggTrades", self.rest_url);
             let rows: Vec<AggTrade> = self
                 .client
-                .get(url)
+                .get(&url)
                 .query(&[
                     ("symbol", symbol.to_uppercase()),
                     ("startTime", cursor_ms.to_string()),
@@ -372,6 +500,11 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 }
 
 /// Binance interval string for a timeframe.
+///
+/// Spelled out rather than delegating to `Display`, so this stays a compile
+/// error when a variant is added. `Timeframe`'s own name and the venue's
+/// interval string agree today and are two different contracts; the day the
+/// venue renames one, this is the line that has to change.
 #[must_use]
 pub fn interval_for(timeframe: Timeframe) -> &'static str {
     match timeframe {
@@ -381,6 +514,7 @@ pub fn interval_for(timeframe: Timeframe) -> &'static str {
         Timeframe::H1 => "1h",
         Timeframe::H4 => "4h",
         Timeframe::D1 => "1d",
+        Timeframe::W1 => "1w",
     }
 }
 
@@ -396,6 +530,33 @@ mod tests {
         assert_eq!(interval_for(Timeframe::H1), "1h");
         assert_eq!(interval_for(Timeframe::H4), "4h");
         assert_eq!(interval_for(Timeframe::D1), "1d");
+        assert_eq!(interval_for(Timeframe::W1), "1w");
+    }
+
+    #[test]
+    fn the_week_interval_is_supported_by_both_venue_transports() {
+        // The calendar property -- that a `1w` bucket lands on a Monday, the
+        // way Binance's own weekly bars do -- belongs to `bucket_of` and is
+        // pinned there (`analytics_core::types`). What is this layer's business
+        // is that `1w` is a resolution the venue actually serves, on both the
+        // REST klines endpoint and the kline stream, and under this spelling.
+        assert_eq!(interval_for(Timeframe::W1), "1w");
+        // Weekly is the one resolution the live stream does **not** build: a
+        // weekly bar fed only by the socket could not close until the following
+        // Monday, so it comes from REST instead. Pinning the pair keeps that
+        // division visible -- it is a decision, not an oversight.
+        assert!(
+            crate::candle_builder::LIVE_TIMEFRAMES.contains(&Timeframe::D1),
+            "the ladder the live stream fills must reach 1d"
+        );
+        assert!(
+            !crate::candle_builder::LIVE_TIMEFRAMES.contains(&Timeframe::W1),
+            "1w is served from the venue, not built from the stream"
+        );
+        assert!(
+            crate::candle_builder::STANDARD_TIMEFRAMES.contains(&Timeframe::W1),
+            "but 1w is part of the standard ladder the platform offers"
+        );
     }
 
     #[test]

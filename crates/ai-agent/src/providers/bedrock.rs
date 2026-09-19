@@ -312,6 +312,14 @@ impl From<&Message> for WireMessage {
             .iter()
             .map(|block| match block {
                 ContentBlock::Text(text) => json!({ "text": text }),
+                // Bedrock Converse names the image block by source bytes and
+                // media type; the payload is already base64 from the shell.
+                ContentBlock::Image { media_type, data } => json!({
+                    "image": {
+                        "format": media_type.strip_prefix("image/").unwrap_or(media_type),
+                        "source": { "bytes": data },
+                    }
+                }),
                 ContentBlock::ToolUse { id, name, input } => json!({
                     "toolUse": {
                         "toolUseId": id,

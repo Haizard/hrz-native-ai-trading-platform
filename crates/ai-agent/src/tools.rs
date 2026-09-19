@@ -447,7 +447,20 @@ fn timeframe_arg(args: &Value, tool: &str) -> Result<Timeframe, AgentError> {
     raw.parse::<Timeframe>()
         .map_err(|_| AgentError::InvalidToolArgs {
             tool: tool.into(),
-            reason: format!("`timeframe` must be one of 1m, 5m, 15m, 1h, 4h, 1d; got `{raw}`"),
+            // Built from `Timeframe::all()` rather than typed out, so a new
+            // resolution cannot be added to the engine and stay invisible to
+            // the model. The list was hand-written once and `1w` was promptly
+            // missing from it, which reads to a model as "weekly is
+            // unsupported" rather than as a stale string.
+            reason: format!(
+                "`timeframe` must be one of {}; got `{raw}`",
+                Timeframe::all()
+                    .iter()
+                    .rev()
+                    .map(|tf| tf.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         })
 }
 

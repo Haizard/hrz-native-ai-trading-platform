@@ -316,9 +316,303 @@ pub struct SceneDrawing {
     pub parts: Vec<DrawingPart>,
 }
 
+/// A level an *answer* put on the chart, as a request carries it.
+///
+/// ## Why this is not a `Drawing`
+///
+/// A `Drawing` is the user's mark: it has an id, a selection, a handle to grab,
+/// and it is stored. An overlay is a claim the agent made -- "entry", "stop",
+/// "target", "a level I cited" -- and it is derived fresh from every answer. It
+/// has no id because nothing persists it, and no handles because the user did
+/// not place it and must not drag it: dragging the AI's stop would silently
+/// change what the answer said.
+///
+/// ## Why it carries absolute prices
+///
+/// The shell already draws the thesis, and it does so with its own `y = plot - …`
+/// arithmetic -- a second copy of the price scale that is also the one thing
+/// `docs/14` says must live in Rust. The copy drifts: resize, zoom, or a mode
+/// change and the band is a few pixels off the candles it describes, which reads
+/// as "the level moved" rather than "the overlay is stale".
+///
+/// So the shell sends the *prices* and the engine resolves the coordinates. That
+/// is the same split [`crate::drawing::Anchor`] uses for the user's shapes, and
+/// it is why an overlay is a price and a name rather than a pair of points.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Overlay {
+    /// The price it sits at, in absolute price units.
+    pub price: f64,
+    /// The label: `entry`, `stop`, `target`, or an answer's own words.
+    pub label: String,
+    /// The role, which is also the shell's colour key and its z-order.
+    ///
+    /// A closed vocabulary rather than free text, for the same reason
+    /// [`DrawingKind`] is: a role the palette has no colour for is a level that
+    /// draws in the fallback colour and means nothing. [`OverlayRole::Other`]
+    /// exists so an answer can say something the vocabulary does not cover, and
+    /// it is deliberately the *last* colour, not a refusal.
+    pub role: OverlayRole,
+    /// The far end of a band, when this overlay is an area rather than a line.
+    ///
+    /// `Some` for a stop-to-target band, `None` for a single level. A separate
+    /// field rather than a second overlay so the band cannot be drawn from two
+    /// overlays that disagree -- and so the engine can order the two edges
+    /// itself, since a short's stop is above its entry and a long's is below.
+    #[serde(default)]
+    pub band_to: Option<f64>,
+    /// Whether to shade the band as well as outline it.
+    #[serde(default)]
+    pub filled: bool,
+}
+
+impl Overlay {
+    /// Why this overlay cannot be drawn, if it cannot.
+    ///
+    /// The same rule [`Drawing::validate_anchors`] applies, for the same reason:
+    /// a `NaN` price maps to a `NaN` y and the canvas silently drops the shape,
+    /// so the level would simply be absent with nothing saying why. A `NaN` here
+    /// is not a far-fetched case -- it is what an answer with a missing field
+    /// produces once anything does arithmetic on it.
+    ///
+    /// # Errors
+    /// Returns the reason as a `String`.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.price.is_finite() {
+            return Err(format!(
+                "the `{}` overlay has a price that is not a number",
+                self.label
+            ));
+        }
+        if let Some(far) = self.band_to {
+            if !far.is_finite() {
+                return Err(format!(
+                    "the `{}` overlay's band ends at something that is not a number",
+                    self.label
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The two prices this overlay spans, low first.
+    ///
+    /// Ordered here rather than at draw time, because "which edge is on top" is
+    /// a question about the direction of the trade and the engine is who knows
+    /// it. A caller that passed a band as `(stop, target)` on a short would get
+    /// an inside-out rectangle from any code that assumed `a < b`.
+    #[must_use]
+    pub fn bounds(&self) -> (f64, f64) {
+        match self.band_to {
+            Some(far) if far < self.price => (far, self.price),
+            Some(far) => (self.price, far),
+            None => (self.price, self.price),
+        }
+    }
+}
+
+/// What an overlay *is*, which decides its colour and nothing else.
+///
+/// The scene never reads this to make a decision -- it carries it so the shell
+/// can pick a colour without inventing a mapping from label text. That split is
+/// deliberate: a shell that matched on the label would colour "Stop Loss" as
+/// `other` the first time an answer phrased it differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayRole {
+    /// Where the trade would be entered.
+    Entry,
+    /// Where it would be abandoned.
+    Stop,
+    /// Where it would be taken off.
+    Target,
+    /// A level the answer cited that is not one of the three above.
+    Level,
+    /// Something the vocabulary does not cover.
+    ///
+    /// Present rather than refused, and the distinction matters: an answer that
+    /// says "watch 101250 for a reclaim" is making a real claim about a real
+    /// price, and dropping it because it is not an entry, stop or target would
+    /// hide the one line the user was told to watch.
+    Other,
+}
+
+impl OverlayRole {
+    /// The wire name, which is also the shell's colour key.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Entry => "entry",
+            Self::Stop => "stop",
+            Self::Target => "target",
+            Self::Level => "level",
+            Self::Other => "other",
+        }
+    }
+
+    /// Everything, for a client that wants to build a legend.
+    pub const ALL: [Self; 5] = [
+        Self::Entry,
+        Self::Stop,
+        Self::Target,
+        Self::Level,
+        Self::Other,
+    ];
+}
+
+/// One overlay, positioned.
+///
+/// The output counterpart of [`Overlay`], and the same reason [`SceneDrawing`]
+/// exists: every coordinate is already in canvas pixels and every ordering
+/// decision is already made, so the shell strokes and adds nothing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneOverlay {
+    /// Canvas y of the level itself.
+    pub y: f64,
+    /// The price it marks, echoed so the shell can label without re-deriving.
+    pub price: f64,
+    /// The label to draw.
+    pub label: String,
+    /// The role, for colour.
+    pub role: OverlayRole,
+    /// Canvas y of the far edge of the band, when there is one.
+    ///
+    /// `None` for a single level. Present so the shell can shade without
+    /// comparing two pixels whose order it would have to guess at.
+    pub band_y: Option<f64>,
+    /// Whether to shade it.
+    pub filled: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn overlay(price: f64, band_to: Option<f64>) -> Overlay {
+        Overlay {
+            price,
+            label: "entry".into(),
+            role: OverlayRole::Entry,
+            band_to,
+            filled: false,
+        }
+    }
+
+    #[test]
+    fn an_overlay_band_is_ordered_low_first() {
+        // A short's stop is above its entry and a long's is below. Both reach
+        // `bounds`, and both have to come back low-first or the rectangle is
+        // inside out -- which draws a band that shades the wrong region and
+        // looks like the answer was wrong rather than the renderer.
+        assert_eq!(overlay(100.0, Some(90.0)).bounds(), (90.0, 100.0));
+        assert_eq!(overlay(100.0, Some(110.0)).bounds(), (100.0, 110.0));
+    }
+
+    #[test]
+    fn a_single_level_spans_nothing() {
+        // Not `(price, 0.0)` and not `(0.0, price)`: a level with no band has to
+        // be distinguishable from a band down to zero, because one of those is
+        // a line and the other is a rectangle over the whole chart.
+        assert_eq!(overlay(100.0, None).bounds(), (100.0, 100.0));
+    }
+
+    #[test]
+    fn a_level_that_is_not_a_number_is_refused_by_name() {
+        // The failure this prevents: a `NaN` y, which the canvas silently skips.
+        // The level would be absent and nothing would say why -- so the answer
+        // would look like it had no stop.
+        //
+        // Reachability: *not* from the shell. JSON has no `NaN`, and a `null`
+        // price is rejected by serde before this runs -- see the
+        // `nan_reachability` module below, which asserts exactly that. This
+        // guards the direct-construction route: Rust code, a test, or a future
+        // transport that is not JSON.
+        let bad = overlay(f64::NAN, None);
+        let error = bad.validate().expect_err("must refuse");
+        assert!(error.contains("entry"), "{error}");
+
+        let bad_band = overlay(100.0, Some(f64::INFINITY));
+        let error = bad_band.validate().expect_err("must refuse");
+        assert!(error.contains("band"), "{error}");
+    }
+
+    #[test]
+    fn an_overlay_accepts_every_role_and_is_never_refused_for_one() {
+        // `Other` is the interesting case. An answer that cites a level the
+        // vocabulary does not cover is making a real claim about a real price,
+        // and refusing it would hide the one line the user was told to watch.
+        for role in OverlayRole::ALL {
+            let candidate = Overlay {
+                role,
+                ..overlay(100.0, None)
+            };
+            assert_eq!(candidate.validate(), Ok(()), "{role:?}");
+        }
+    }
+
+    #[test]
+    fn every_overlay_role_name_is_a_snake_case_wire_value() {
+        // The shell switches on this string for the colour, so it has to be on
+        // the wire and it has to match `name()`.
+        for role in OverlayRole::ALL {
+            let json = serde_json::to_value(role).expect("serializes");
+            assert_eq!(json, role.name(), "{role:?} renamed on the wire");
+        }
+    }
+
+    #[test]
+    fn the_overlay_wire_is_pinned() {
+        // Four consumers depend on these spellings: the shell that draws them,
+        // the shell that *sends* them, the API route that builds them from a
+        // thesis, and the tests that read the scene. A rename here is not a
+        // compile error anywhere -- it is an overlay that never appears.
+        let json = serde_json::to_value(Overlay {
+            price: 45_000.0,
+            label: "stop".into(),
+            role: OverlayRole::Stop,
+            band_to: Some(44_500.0),
+            filled: true,
+        })
+        .expect("serializes");
+        assert_eq!(json["price"], 45_000.0);
+        assert_eq!(json["label"], "stop");
+        assert_eq!(json["role"], "stop");
+        assert_eq!(json["band_to"], 44_500.0);
+        assert_eq!(json["filled"], true);
+    }
+
+    #[test]
+    fn an_overlay_that_omits_its_optional_fields_still_parses() {
+        // `band_to` and `filled` are `default`, and a request that sends only a
+        // price and a label must not be a 422. A shell that later drops the
+        // optional fields should degrade to a plain line, not to nothing.
+        let parsed: Overlay = serde_json::from_value(serde_json::json!({
+            "price": 100.0, "label": "vwap", "role": "level"
+        }))
+        .expect("parses without the optional fields");
+        assert_eq!(parsed.price, 100.0);
+        assert_eq!(parsed.band_to, None);
+        assert!(!parsed.filled);
+    }
+
+    #[test]
+    fn a_scene_overlay_serializes_with_its_own_field_names() {
+        // Distinct from `Overlay` on purpose: this one has `y`, and a shell that
+        // read `price` and tried to stroke at it would draw every level at the
+        // top-left corner.
+        let json = serde_json::to_value(SceneOverlay {
+            y: 120.5,
+            price: 45_000.0,
+            label: "entry".into(),
+            role: OverlayRole::Entry,
+            band_y: Some(90.0),
+            filled: true,
+        })
+        .expect("serializes");
+        assert_eq!(json["y"], 120.5);
+        assert_eq!(json["band_y"], 90.0);
+        assert_eq!(json["role"], "entry");
+        assert!(json["price"].is_number(), "the price is echoed for the label");
+    }
 
     fn drawing(kind: DrawingKind, a2: Option<Anchor>) -> Drawing {
         Drawing {
@@ -571,5 +865,43 @@ mod tests {
             serde_json::from_value::<Anchor>(fraction.clone()).is_err(),
             "a bare fraction must not parse as an anchor: {fraction}"
         );
+    }
+
+
+    /// Whether a `NaN` price can reach the engine at all.
+    ///
+    /// `Overlay::validate` refuses a non-finite price, and that check is worth
+    /// having *only if something can produce one*. JSON has no NaN literal, so
+    /// the only route is a `null` -- and serde rejects that before `validate`
+    /// ever runs, which would make the guard unreachable from the wire.
+    ///
+    /// This asserts which it is, so the guard's own tests are not claiming to
+    /// protect a path that does not exist.
+    #[test]
+    fn a_null_price_never_reaches_the_validator() {
+        let from_json: Result<Overlay, _> = serde_json::from_value(serde_json::json!({
+            "price": null, "label": "stop", "role": "stop"
+        }));
+        assert!(
+            from_json.is_err(),
+            "if this ever parses, the guard below is the only thing standing \
+             between a null and a level drawn at the origin"
+        );
+    }
+
+    /// And the direct-construction route, which is the one `validate` is for.
+    #[test]
+    fn a_price_that_is_a_nan_is_still_refused_at_the_type() {
+        // Rust code -- a test, a future non-JSON transport, an arithmetic slip --
+        // can build a `NaN` without touching serde. That is the caller this
+        // guard exists for.
+        let direct = Overlay {
+            price: f64::NAN,
+            label: "stop".into(),
+            role: OverlayRole::Stop,
+            band_to: None,
+            filled: false,
+        };
+        assert!(direct.validate().is_err());
     }
 }

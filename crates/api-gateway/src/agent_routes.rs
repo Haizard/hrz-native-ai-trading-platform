@@ -11,7 +11,7 @@ use ai_agent::{AgentAnswer, AskRequest, StrategyRequest};
 use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
-use crate::market_data::DbMarketData;
+use crate::market_data::WindowMarketData;
 use crate::AppState;
 
 /// Body of `POST /agent/ask`.
@@ -25,6 +25,13 @@ pub struct AskBody {
     pub skill_id: Option<String>,
     /// Ladder override, coarse to fine, e.g. `["4h", "1h", "5m"]`.
     pub timeframes: Option<Vec<String>>,
+    /// The chart the user is looking at when they ask.
+    ///
+    /// Optional, and absent for every existing client. See
+    /// [`ai_agent::ChartContext`] for why this is a viewport rather than data:
+    /// it says where to look, and carries no numbers the agent may cite.
+    #[serde(default)]
+    pub chart: Option<ai_agent::ChartContext>,
     /// Return every tool call and its raw result alongside the thesis.
     ///
     /// Off by default because a four-timeframe ladder of full `MarketState`s
@@ -45,9 +52,46 @@ pub struct AskResponse {
     pub turns: usize,
     /// Per-timeframe summary the model was shown.
     pub ladder: Vec<FrameSummary>,
+    /// The viewport the agent was told about, echoed back.
+    ///
+    /// Echoed rather than omitted because the user needs to be able to check
+    /// that the agent reasoned about the chart they were actually on. A stale
+    /// viewport is a plausible failure -- the user pans, then types -- and
+    /// without this the answer would look wrong for reasons nothing explains.
+    /// The screenshot is reported by description, never by payload: an audit
+    /// view that re-downloads a megabyte of PNG is not an audit view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chart: Option<ChartSummary>,
     /// Present only when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace: Option<Vec<ai_agent::ToolTrace>>,
+}
+
+/// What the agent was told about the viewport, minus the image.
+#[derive(Debug, Serialize)]
+pub struct ChartSummary {
+    /// Resolution that anchored the ladder, e.g. `1h`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeframe: Option<String>,
+    /// Bars the viewport spanned, when the resolution was known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visible_bars: Option<i64>,
+    /// How many drawings were carried.
+    pub drawings: usize,
+    /// A description of the screenshot, when one was attached.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot: Option<String>,
+}
+
+impl ChartSummary {
+    fn from_context(chart: &ai_agent::ChartContext) -> Self {
+        Self {
+            timeframe: chart.timeframe.map(|tf| tf.to_string()),
+            visible_bars: chart.visible_bars().filter(|bars| *bars >= 0),
+            drawings: chart.drawings.len(),
+            screenshot: chart.screenshot.as_ref().map(|s| s.describe()),
+        }
+    }
 }
 
 /// One line of the ladder, for rendering next to the chart.
@@ -124,9 +168,6 @@ pub async fn ask(
              and AWS credentials",
         )
     })?;
-    let db = state.db.as_ref().ok_or_else(|| {
-        ApiError::unavailable("no database configured; the agent has no market data to read")
-    })?;
 
     let mut request = AskRequest::new(&body.symbol, &body.question);
     if let Some(id) = &body.skill_id {
@@ -134,6 +175,32 @@ pub async fn ask(
     }
     if let Some(frames) = &body.timeframes {
         request = request.with_timeframes(frames.clone());
+    }
+    if let Some(mut chart) = body.chart {
+        // Validated *here*, before the rate limit is spent and before the model
+        // is called. A screenshot the provider cannot decode would otherwise
+        // cost a full paid turn and surface as an opaque upstream error, and a
+        // user has no way to tell that from the model failing to understand.
+        if let Some(screenshot) = chart.screenshot.take() {
+            chart.screenshot = Some(screenshot.validate().map_err(|reason| {
+                ApiError::coded(
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                    "SCREENSHOT_INVALID",
+                    reason,
+                )
+            })?);
+        }
+        // A busy chart is not an error, so the clamp trims rather than refuses.
+        chart.clamp_drawings();
+        if !chart.is_empty() {
+            tracing::info!(
+                target: "api_gateway",
+                symbol = %body.symbol,
+                context = %chart.summary(),
+                "agent asked with chart context"
+            );
+            request = request.with_chart(chart);
+        }
     }
 
     let started = std::time::Instant::now();
@@ -143,8 +210,13 @@ pub async fn ask(
         &observability::metrics::Labels::none(),
     );
 
+    // A chart is entitled to a live feed even before any bot is running, and
+    // asking the agent about a symbol is the same claim. Without this the
+    // buffer never fills for that symbol and every read pays for the venue.
+    state.bots.ensure_feed_for(&body.symbol.to_uppercase());
+
     let answer: AgentAnswer = agent
-        .ask(&request, &DbMarketData::new(db.clone()))
+        .ask(&request, &WindowMarketData::new(state.windows.clone()))
         .await
         .map_err(ApiError::from)?;
 
@@ -164,7 +236,11 @@ pub async fn ask(
         &observability::metrics::Labels::none(),
     );
 
-    Ok(Json(to_response(answer, body.include_trace)))
+    Ok(Json(to_response_with_chart(
+        answer,
+        body.include_trace,
+        request.chart.as_ref(),
+    )))
 }
 
 /// `POST /agent/generate-strategy`
@@ -202,6 +278,15 @@ pub async fn generate_strategy(
 }
 
 pub(crate) fn to_response(answer: AgentAnswer, include_trace: bool) -> AskResponse {
+    to_response_with_chart(answer, include_trace, None)
+}
+
+/// [`to_response`], echoing the viewport the agent was given.
+pub(crate) fn to_response_with_chart(
+    answer: AgentAnswer,
+    include_trace: bool,
+    chart: Option<&ai_agent::ChartContext>,
+) -> AskResponse {
     let ladder = answer
         .ladder
         .frames
@@ -218,6 +303,9 @@ pub(crate) fn to_response(answer: AgentAnswer, include_trace: bool) -> AskRespon
         skill: answer.skill,
         turns: answer.turns,
         ladder,
+        chart: chart
+            .filter(|context| !context.is_empty())
+            .map(ChartSummary::from_context),
         trace: include_trace.then_some(answer.trace),
     }
 }

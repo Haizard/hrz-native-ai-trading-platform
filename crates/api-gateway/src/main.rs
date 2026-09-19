@@ -60,6 +60,19 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("MARKET_REST_URL").unwrap_or_else(|_| "https://api.binance.com".to_string()),
     );
 
+    // One window service, over the same buffer the feeds fill, built from the
+    // same venue client. Constructed from the supervisor's own registries
+    // rather than fresh ones: a second `HistoryRegistry` would be a second,
+    // permanently empty answer to the same question, which is the shape of the
+    // defect this replaced.
+    let windows = market_data::WindowService::new(bots.history(), bots.live(), backfill.clone());
+
+    // The venue's own listing, for search and validation. Fetched lazily on
+    // first use rather than here, so a venue that is slow or unreachable at boot
+    // delays a symbol lookup instead of delaying the whole process -- and so a
+    // cold start's first chart does not wait on a 2 MB payload it does not need.
+    let symbols = market_data::SymbolIndex::new();
+
     let agent_limits = Arc::new(RateLimiter::new(RateLimit::from_env()));
     let limit = agent_limits.limit();
     info!(
@@ -88,6 +101,13 @@ async fn main() -> anyhow::Result<()> {
         bots.ensure_feed_for(symbol);
     }
 
+    // And they are closed again when nobody wants them. A feed is a websocket
+    // plus a builder per resolution plus RAM, and `ensure_feed_for` is reached
+    // by routes -- so without a ceiling and a sweep, how many sockets this
+    // process holds open is decided by how many symbol strings a client cares
+    // to send. See `MAX_ACTIVE_FEEDS`.
+    bots.spawn_reaper();
+
     let state = AppState {
         db,
         agent,
@@ -95,6 +115,8 @@ async fn main() -> anyhow::Result<()> {
         auth,
         bots,
         backfill,
+        windows,
+        symbols,
         agent_limits,
         metrics: Registry::global_handle(),
         alert_queue: alert_queue.clone(),

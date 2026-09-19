@@ -129,6 +129,18 @@ impl Harness {
             // a route that tries to fetch history fails fast rather than
             // hanging -- and `GET /candles` degrades to what RAM can answer.
             backfill: market_data::BackfillClient::new("http://127.0.0.1:1"),
+            // Built over the supervisor's own registries, exactly as `main.rs`
+            // does: a window service with its own fresh buffer would satisfy
+            // every assertion here and answer nothing in production.
+            windows: market_data::WindowService::new(
+                supervisor.history(),
+                supervisor.live(),
+                market_data::BackfillClient::new("http://127.0.0.1:1"),
+            ),
+            // Empty and never refreshed: no test may reach a venue. An empty
+            // index is also the *interesting* state, because it is what makes a
+            // lookup say "we do not know" rather than inventing an answer.
+            symbols: market_data::SymbolIndex::new(),
             agent_limits: Arc::clone(&limits),
             metrics: Arc::clone(&metrics),
             alert_queue: None,
@@ -168,6 +180,15 @@ impl Harness {
             // a route that tries to fetch history fails fast rather than
             // hanging -- and `GET /candles` degrades to what RAM can answer.
             backfill: market_data::BackfillClient::new("http://127.0.0.1:1"),
+            windows: market_data::WindowService::new(
+                supervisor.history(),
+                supervisor.live(),
+                market_data::BackfillClient::new("http://127.0.0.1:1"),
+            ),
+            // Empty and never refreshed: no test may reach a venue. An empty
+            // index is also the *interesting* state, because it is what makes a
+            // lookup say "we do not know" rather than inventing an answer.
+            symbols: market_data::SymbolIndex::new(),
             agent_limits: Arc::clone(&limits),
             metrics: Arc::clone(&metrics),
             alert_queue: None,

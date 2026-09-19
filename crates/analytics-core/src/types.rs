@@ -40,6 +40,22 @@ pub enum Timeframe {
     /// One day.
     #[serde(rename = "1d")]
     D1,
+    /// One week.
+    ///
+    /// The venue's own weekly bars, not seven daily bars stitched together.
+    ///
+    /// Binance aligns `1w` to Monday 00:00 UTC, and [`Self::bucket_of`] agrees
+    /// with that -- but the reason is worth stating, because the usual
+    /// explanation is wrong. The epoch began on a **Thursday**
+    /// (1970-01-01), so the epoch's own week runs Thursday to Wednesday and
+    /// the first Monday (1970-01-05) is *four days into* week 0, not the start
+    /// of it. What makes the two agree is that a weekday repeats exactly every
+    /// seven days: the first Monday sits at offset 4 within its week, and every
+    /// later week's Monday sits at that same offset 4. So every week bucket
+    /// after 0 starts on a Monday, and the only boundary that does not is
+    /// week 0 itself -- which ended on 1970-01-07, before any crypto bar.
+    #[serde(rename = "1w")]
+    W1,
 }
 
 impl Timeframe {
@@ -53,6 +69,7 @@ impl Timeframe {
             Self::H1 => 60 * 60 * NS_PER_SEC,
             Self::H4 => 4 * 60 * 60 * NS_PER_SEC,
             Self::D1 => 24 * 60 * 60 * NS_PER_SEC,
+            Self::W1 => 7 * 24 * 60 * 60 * NS_PER_SEC,
         }
     }
 
@@ -63,16 +80,59 @@ impl Timeframe {
     }
 
     /// Bucket start (unix nanos) that `ts` belongs to.
+    ///
+    /// Pure division for every intraday and daily resolution, because the epoch
+    /// began at a UTC midnight and those boundaries are all derived from it.
+    ///
+    /// **Weekly is the exception**, and it is not a detail: the epoch was a
+    /// *Thursday*, so dividing by seven days puts the boundary on Thursday
+    /// 00:00 UTC. Binance's own `1w` bars open on **Monday** 00:00 UTC --
+    /// verified against `/api/v3/klines?interval=1w`, which returns
+    /// `2026-09-14 Monday 00:00` and the Mondays before it. Without the shift a
+    /// weekly bar built from this platform's own trade stream would sit in a
+    /// different bucket from the venue's own bar, three days out, for the whole
+    /// series -- which is the disagreement the shared `analytics-core` exists
+    /// to make impossible.
+    ///
+    /// The shift moves the *division* rather than the result, which is the part
+    /// worth stating because getting it wrong is silent: subtracting
+    /// `W1_MONDAY_OFFSET` puts every Monday on a whole number of weeks from the
+    /// epoch, so the floor is Monday-aligned, and adding it back recovers the
+    /// real timestamp. An earlier version added the offset back and then
+    /// subtracted a whole week, which made every bar a week early.
     #[must_use]
     pub const fn bucket_of(self, ts: i64) -> i64 {
         let width = self.nanos();
-        ts - ts.rem_euclid(width)
+        match self {
+            Self::W1 => {
+                let shifted = ts - Self::W1_MONDAY_OFFSET;
+                shifted - shifted.rem_euclid(width) + Self::W1_MONDAY_OFFSET
+            }
+            _ => ts - ts.rem_euclid(width),
+        }
     }
+
+    /// How far the first Monday is from the epoch.
+    ///
+    /// 1970-01-01 was a Thursday, so the first Monday was 1970-01-05 -- four
+    /// days later. Mondays are therefore at `4 days + 7k`, and shifting by four
+    /// days makes them land on whole weeks from zero. This is the constant the
+    /// weekly bucket is built from, and the first thing to check if the venue
+    /// ever changes its alignment.
+    const W1_MONDAY_OFFSET: i64 = 4 * 24 * 60 * 60 * NS_PER_SEC;
 
     /// Every supported timeframe, coarse to fine.
     #[must_use]
     pub const fn all() -> &'static [Timeframe] {
-        &[Self::D1, Self::H4, Self::H1, Self::M15, Self::M5, Self::M1]
+        &[
+            Self::W1,
+            Self::D1,
+            Self::H4,
+            Self::H1,
+            Self::M15,
+            Self::M5,
+            Self::M1,
+        ]
     }
 }
 
@@ -97,6 +157,23 @@ impl PartialOrd for Timeframe {
 }
 
 impl Timeframe {
+    /// Every resolution, cheapest first.
+    ///
+    /// The same order as [`Self::nanos`] and the one the storage ladder uses.
+    /// Exists so a caller that must *list* the accepted values -- a refusal
+    /// message, a schema, a shell's dropdown -- reads them from the type rather
+    /// than restating them, which is how a list of "known timeframes" drifts
+    /// out of date the moment [`Self::W1`] is added.
+    pub const ALL: [Self; 7] = [
+        Self::M1,
+        Self::M5,
+        Self::M15,
+        Self::H1,
+        Self::H4,
+        Self::D1,
+        Self::W1,
+    ];
+
     /// Canonical name, as written in a document or a query string.
     ///
     /// The `&'static str` form of [`Timeframe`]: `Display` cannot hand one out,
@@ -111,6 +188,7 @@ impl Timeframe {
             Self::H1 => "1h",
             Self::H4 => "4h",
             Self::D1 => "1d",
+            Self::W1 => "1w",
         }
     }
 }
@@ -132,6 +210,7 @@ impl FromStr for Timeframe {
             "1h" => Ok(Self::H1),
             "4h" => Ok(Self::H4),
             "1d" => Ok(Self::D1),
+            "1w" => Ok(Self::W1),
             other => Err(AnalyticsError::InvalidTimeframe(other.to_string())),
         }
     }
@@ -354,6 +433,93 @@ mod tests {
     }
 
     #[test]
+    fn a_week_bucket_lands_on_a_monday_like_the_venue() {
+        // The venue aligns `1w` to **Monday** 00:00 UTC. Checked against the
+        // live endpoint rather than reasoned about:
+        //
+        //   GET /api/v3/klines?symbol=BTCUSDT&interval=1w&limit=3
+        //   2026-08-31 Monday 00:00 UTC
+        //   2026-09-07 Monday 00:00 UTC
+        //   2026-09-14 Monday 00:00 UTC
+        //
+        // The reason this needs a shift is that 1970-01-01 was a *Thursday*.
+        // Plain division by seven days puts the boundary on Thursday 00:00, so
+        // a weekly bar built from this platform's own stream would land three
+        // days away from the venue's bar for the whole series. The first two
+        // versions of this test asserted the wrong alignment in opposite
+        // directions; the dates below are the ones that were actually verified.
+        const NS_PER_DAY: i64 = 24 * 60 * 60 * NS_PER_SEC;
+        let week = Timeframe::W1.nanos();
+
+        // 2026-09-10T22:26:40Z, a Thursday. Its Monday-aligned week began on
+        // 2026-09-07, so the bucket must be three days before the timestamp.
+        let thursday: i64 = 1_789_000_000 * NS_PER_SEC;
+        let bucket = Timeframe::W1.bucket_of(thursday);
+        assert_eq!(
+            (thursday - bucket) / NS_PER_DAY,
+            3,
+            "a Thursday sits three days into a Monday-started week"
+        );
+        assert_eq!(bucket % NS_PER_DAY, 0, "a week bucket is a whole day");
+        // Monday-aligned buckets are *not* whole weeks from the epoch -- that
+        // is the whole point, since the epoch was a Thursday. They are four
+        // days past a whole week: the offset the shift exists to introduce.
+        assert_eq!(
+            (bucket / NS_PER_DAY) % 7,
+            4,
+            "a Monday bucket sits four days past a whole number of weeks from the epoch"
+        );
+
+        // Every bucket boundary is the same weekday, and that weekday is
+        // Monday. Monday is day index 4 after the epoch plus a multiple of 7.
+        let bucket_day = bucket / NS_PER_DAY;
+        assert_eq!(
+            (bucket_day - 4).rem_euclid(7),
+            0,
+            "day index {bucket_day} must be a Monday"
+        );
+
+        // The venue's own bar opens at this bucket, so the two agree.
+        let binance_week_open: i64 = 1_788_739_200 * NS_PER_SEC; // 2026-09-07T00:00Z
+        assert_eq!(
+            bucket, binance_week_open,
+            "the bucket must be exactly the open time the venue reports"
+        );
+
+        // Sunday belongs to the week that started six days earlier, and the
+        // next Monday opens a new one.
+        let sunday = bucket + 6 * NS_PER_DAY;
+        assert_eq!(Timeframe::W1.bucket_of(sunday), bucket, "Sunday closes the week");
+        let next_monday = bucket + week;
+        assert_eq!(
+            Timeframe::W1.bucket_of(next_monday),
+            next_monday,
+            "a Monday is its own bucket start"
+        );
+        assert_eq!(
+            Timeframe::W1.bucket_of(next_monday - 1),
+            bucket,
+            "one nanosecond earlier is still the previous week"
+        );
+
+        // And the property holds across a long span, so a leap year or a
+        // century boundary cannot quietly move it.
+        for week_number in 0..600_i64 {
+            let open = binance_week_open + week_number * week;
+            assert_eq!(
+                Timeframe::W1.bucket_of(open),
+                open,
+                "week {week_number} after 2026-09-07 does not open on a Monday"
+            );
+            assert_eq!(
+                (open / NS_PER_DAY - 4).rem_euclid(7),
+                0,
+                "week {week_number} does not start on a Monday"
+            );
+        }
+    }
+
+    #[test]
     fn ordering_follows_duration_not_declaration_order() {
         // Sorted from the declaration-independent `all()` listing, which is
         // documented coarse-to-fine; the reverse must be strictly increasing by
@@ -370,12 +536,13 @@ mod tests {
             assert!(pair[1] > pair[0]);
         }
         assert_eq!(fine_to_coarse[0], Timeframe::M1);
-        assert_eq!(fine_to_coarse[fine_to_coarse.len() - 1], Timeframe::D1);
+        assert_eq!(fine_to_coarse[fine_to_coarse.len() - 1], Timeframe::W1);
         // And sorting a shuffled copy lands in the same place.
         let mut shuffled = vec![
             Timeframe::H1,
             Timeframe::M1,
             Timeframe::D1,
+            Timeframe::W1,
             Timeframe::M15,
             Timeframe::M5,
             Timeframe::H4,

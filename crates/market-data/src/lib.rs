@@ -37,11 +37,16 @@ pub mod exchanges;
 pub mod health;
 pub mod history;
 pub mod orderbook;
+pub mod scanner;
+pub mod symbols;
 pub mod tape;
+pub mod window;
 
 pub use backfill::{BackfillClient, BackfillSource};
 pub use bus::{MarketBusRegistry, MarketEventBus};
-pub use candle_builder::{CandleBuilder, MultiTimeframeCandleBuilder, STANDARD_TIMEFRAMES};
+pub use candle_builder::{
+    CandleBuilder, MultiTimeframeCandleBuilder, LIVE_TIMEFRAMES, STANDARD_TIMEFRAMES,
+};
 pub use error::MarketDataError;
 pub use exchanges::binance::{BinanceCollector, BinanceConfig};
 pub use exchanges::wire;
@@ -52,4 +57,6 @@ pub use health::{
 };
 pub use history::{CandleHistory, HistoryRegistry, DEFAULT_HISTORY_BARS};
 pub use orderbook::{DepthDiff, DiffOutcome, OrderBook, OrderBookSynchronizer};
+pub use symbols::{Instrument, SymbolCheck, SymbolIndex, INDEX_TTL};
 pub use tape::{BookCache, LiveRegistry, TradeTape, DEFAULT_TAPE_TRADES};
+pub use window::{Window, WindowService, WindowSource, MAX_VENUE_BARS};

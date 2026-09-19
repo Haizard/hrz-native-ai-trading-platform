@@ -6,9 +6,11 @@
 //! (`docs/04-MARKET-DATA-ENGINE.md`).
 
 pub mod binance;
+pub mod venue;
 pub mod wire;
 
 pub use binance::{BinanceCollector, BinanceConfig};
+pub use venue::{BinanceVenue, BybitVenue, Columns, KlinePage, RawKline, Venue};
 
 use analytics_core::{Candle, OrderBookSnapshot, Trade};
 use async_trait::async_trait;

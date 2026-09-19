@@ -190,6 +190,17 @@ impl CandleHistory {
         out
     }
 
+    /// The in-progress bar, if one has been recorded.
+    ///
+    /// Distinct from "the newest bar" on purpose. Anything reporting whether a
+    /// series ends on a closed candle or a bar still being built needs to ask
+    /// this, because a forming bar and a closed one are the same shape and
+    /// differ only in whether more trades can still land in the bucket.
+    #[must_use]
+    pub fn forming(&self) -> Option<Candle> {
+        self.forming.read().ok().and_then(|guard| guard.clone())
+    }
+
     /// Open time of the oldest closed bar, nanoseconds.
     #[must_use]
     pub fn earliest(&self) -> Option<i64> {

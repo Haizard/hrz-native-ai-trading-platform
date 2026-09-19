@@ -21,7 +21,7 @@ pub mod ema;
 pub mod rsi;
 pub mod sma;
 
-pub use atr::{atr, true_range};
+pub use atr::{atr, atr_percent, true_range};
 pub use ema::ema;
 pub use rsi::rsi;
 pub use sma::sma;

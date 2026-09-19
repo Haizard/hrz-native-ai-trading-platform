@@ -38,3 +38,7 @@ reports/paper-bot-*.log
 # `reports/phase1-verification.md` and `reports/phase6-verification.md`, and the
 # log itself is megabytes of sqlx slow-statement warnings.
 reports/*-soak.log
+
+# Scratch output from long test/build runs -- console output, not evidence.
+# Anything worth keeping is written up in `reports/*.md` or `docs/`.
+/.cargo-logs/

@@ -272,6 +272,13 @@ function createChartPane(root, hooks = {}) {
     entry: "#58a6ff",
     stop: "#ef5350",
     target: "#26a69a",
+    // The rest of the engine's overlay vocabulary. A level an answer *cited*
+    // rather than one of the three trade prices is deliberately the quiet
+    // grey-blue the other reference levels use -- it is context, not a plan --
+    // and `other` is the text colour so a role the palette does not cover draws
+    // as an annotation rather than as something with a meaning it does not have.
+    level: "#8b949e",
+    other: "#8b949e",
     // The drawing tools, one colour per kind so two shapes on the same chart are
     // told apart by what they are rather than by which was drawn first.
     trendline: "#4aa3ff",
@@ -342,18 +349,18 @@ function createChartPane(root, hooks = {}) {
     }
 
     drawLevels(ctx, scene);
-    // The user's own marks, above the levels and below the axis: a drawing that
-    // could cover the price labels would be a drawing that hides the scale it is
-    // read against.
+    // The answer's own levels, above the derived ones and below the user's own
+    // marks. They arrive from the engine already positioned -- the shell picks a
+    // colour and strokes, which is the same contract `drawLevels` and the regions
+    // follow. Whether a thesis belongs on *this* pane is decided in `render`,
+    // where the request is built: the engine has no way to know which instrument
+    // a bare price belongs to.
+    drawOverlays(ctx, scene);
+    // The user's own marks, above everything: a drawing that could cover the
+    // answer's levels, or the price labels, would be an annotation they cannot
+    // read.
     drawDrawings(ctx, scene);
     drawAxis(ctx, scene);
-    // The thesis's levels are prices, so they mean something on any window of the
-    // instrument they were computed for -- and nothing at all on another one. A
-    // BTCUSDT entry drawn across an ETHUSDT chart would be a level that looks
-    // plausible and is not, and with more than one chart that is one click away.
-    // The timeframe is deliberately not part of the test: reading a 5m thesis
-    // against the 4h chart is the reason to have a second chart at all.
-    if (thesis && thesis.symbol === el("symbol").value) drawThesis(ctx, scene, thesis);
   }
 
   /// Regions -- the chart's only *area* overlay.
@@ -752,44 +759,64 @@ function createChartPane(root, hooks = {}) {
     ctx.fillText(label, scene.plot.x + scene.plot.w - ctx.measureText(label).width, scene.height - 8);
   }
 
-  /// Highlight the thesis's own levels.
+  /// Stroke the answer's own levels.
   ///
-  /// docs/14: "the ability to highlight the exact chart region(s) referenced in
-  /// the AI's explanation (map thesis fields like `entry_price`/timestamps back to
-  /// chart coordinates)". So the stop-to-target band is shaded and the three
-  /// prices are drawn -- the numbers come from the thesis, the coordinates come
-  /// from the engine's own price scale.
-  function drawThesis(ctx, scene, thesis) {
-    const span = scene.price_max - scene.price_min;
-    if (!(span > 0)) return;
-    const y = (price) =>
-      scene.plot.y + scene.plot.h - ((price - scene.price_min) / span) * scene.plot.h;
+  /// Every coordinate arrives already resolved -- `y` and `band_y` are canvas
+  /// pixels from the engine's own price scale. This function picks a colour from
+  /// the role, fills the band when there is one, and writes the label. It does
+  /// no arithmetic on a price at all, which is the change from the version that
+  /// mapped the three thesis prices itself: that copy of the scale drifted from
+  /// the engine's on every resize and zoom, so the stop-to-target band sat a few
+  /// pixels off the candles it was describing.
+  ///
+  /// The role is a closed vocabulary from the engine, not the label text. A
+  /// shell that matched on the label would colour "Stop Loss" as `other` the
+  /// first time an answer phrased it differently.
+  function drawOverlays(ctx, scene) {
+    if (!scene.overlays || !scene.overlays.length) return;
 
-    const stop = y(thesis.stop_price);
-    const target = y(thesis.target_price);
-    const entry = y(thesis.entry_price);
+    // Bands first, under the lines that bound them: a fill drawn over its own
+    // edges dulls them, and the edges are the part that marks a price.
+    for (const overlay of scene.overlays) {
+      if (overlay.band_y === null || overlay.band_y === undefined) continue;
+      const top = Math.min(overlay.y, overlay.band_y);
+      const height = Math.abs(overlay.band_y - overlay.y);
+      ctx.globalAlpha = overlay.filled ? 0.12 : 0;
+      if (overlay.filled) {
+        ctx.fillStyle = COLORS[overlay.role] || COLORS.text;
+        ctx.fillRect(scene.plot.x, top, scene.plot.w, height);
+      }
+      ctx.globalAlpha = 1;
+    }
 
-    ctx.globalAlpha = 0.12;
-    ctx.fillStyle = thesis.direction === "long" ? COLORS.target : COLORS.stop;
-    ctx.fillRect(scene.plot.x, Math.min(stop, target), scene.plot.w, Math.abs(target - stop));
-    ctx.globalAlpha = 1;
-
-    for (const [price, colour, label] of [
-      [thesis.stop_price, COLORS.stop, "stop"],
-      [thesis.entry_price, COLORS.entry, "entry"],
-      [thesis.target_price, COLORS.target, "target"],
-    ]) {
-      const yy = y(price);
+    for (const overlay of scene.overlays) {
+      const colour = COLORS[overlay.role] || COLORS.text;
       ctx.strokeStyle = colour;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(scene.plot.x, yy);
-      ctx.lineTo(scene.plot.x + scene.plot.w, yy);
+      ctx.moveTo(scene.plot.x, overlay.y);
+      ctx.lineTo(scene.plot.x + scene.plot.w, overlay.y);
       ctx.stroke();
+
+      // A band's far edge is drawn too, dashed: it is the same claim as the
+      // near one but the consumer of the two is the shaded area, and a solid
+      // line there would read as a third level.
+      if (overlay.band_y !== null && overlay.band_y !== undefined) {
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(scene.plot.x, overlay.band_y);
+        ctx.lineTo(scene.plot.x + scene.plot.w, overlay.band_y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
       ctx.fillStyle = colour;
       ctx.font = "bold 10px ui-monospace, monospace";
-      const text = `${label} ${price.toFixed(2)}`;
-      ctx.fillText(text, scene.plot.x + scene.plot.w - ctx.measureText(text).width - 4, yy - 3);
+      // The price comes back from the engine rather than being read off the
+      // thesis here, so a level the answer cited as a bare `level` is labelled
+      // with the number that was actually drawn.
+      const text = `${overlay.label} ${overlay.price.toFixed(2)}`;
+      ctx.fillText(text, scene.plot.x + scene.plot.w - ctx.measureText(text).width - 4, overlay.y - 3);
     }
     ctx.lineWidth = 1;
   }
@@ -951,6 +978,23 @@ function createChartPane(root, hooks = {}) {
         ...drawing,
         selected: drawing.id === selectedDrawing,
       })),
+      // The answer's levels, as **prices**. Mapped to pixels by the engine, not
+      // here: this pane has no price scale, and the copy of one it used to carry
+      // (`drawThesis`'s own `y =`) drifted from the engine's on every resize and
+      // zoom -- so a band sat a few pixels off the candles it described, which
+      // reads as "the level moved" rather than "the overlay is stale".
+      //
+      // Only for the instrument the thesis is about. The engine cannot know
+      // which symbol an overlay belongs to -- a price is just a number -- so a
+      // BTCUSDT entry drawn over an ETHUSDT chart would be a level that means
+      // nothing. That check is here because this is where the symbol is known.
+      //
+      // `el("symbol").value`, not a bare `symbol`: this function has no local of
+      // that name (the one in `loadCandles` is a different function's), so a
+      // bare identifier would be a `ReferenceError` the moment a thesis existed
+      // -- and short-circuiting on `thesis &&` is exactly what would hide it,
+      // because the read that throws is the one after the guard.
+      overlays: thesis && thesis.symbol === el("symbol").value ? thesisOverlays(thesis) : [],
     };
     // Assigned rather than sent as `null`: a null is not a missing field, and the
     // engine's `Viewport` is a struct rather than an option, so `viewport: null`
@@ -1381,6 +1425,32 @@ function createChartPane(root, hooks = {}) {
     // one for drawing; adding `dragging` here would claim the chart is about to be
     // panned, which is the one thing a placement does not do.
     scheduleRender();
+  }
+
+  /// The price a drawing marks, as the engine resolved it.
+  ///
+  /// Read from the scene's own object rather than computed, for the same reason
+  /// `fractionsOf` reads the resolved anchors: the shell cannot turn a pointer
+  /// position into a price, and an anchor the engine has already resolved
+  /// carries the answer.
+  ///
+  /// A drawing can legitimately have no price -- as an unresolved anchor, or
+  /// once the whole shape has been dragged off the plot. `null` rather than `0`,
+  /// because a level at zero on a BTC chart is a fact and "we do not know" is
+  /// not.
+  function anchorPrice(drawing) {
+    const resolved = resolvedDrawing(drawing.id);
+    const anchor = resolved ? resolved.a2 || resolved.a1 : null;
+    if (anchor && anchor.unit === "absolute" && Number.isFinite(anchor.price)) {
+      return anchor.price;
+    }
+    // Not yet resolved by the engine: fall back to whatever the stored anchor
+    // says, which is absolute for anything that has been saved.
+    const stored = drawing.a2 || drawing.a1;
+    if (stored && stored.unit === "absolute" && Number.isFinite(stored.price)) {
+      return stored.price;
+    }
+    return null;
   }
 
   /// The engine's answer for one drawing: the same shape, anchors absolute.
@@ -2126,6 +2196,65 @@ function createChartPane(root, hooks = {}) {
     symbol: () => el("symbol").value,
     timeframe: () => el("timeframe").value,
 
+    /// What the user is looking at, as `POST /agent/ask` accepts it.
+    ///
+    /// Built *here* rather than at page scope because every field comes from
+    /// state the page deliberately cannot reach -- `scene` and `drawings`. The
+    /// page could scrape the selects for the symbol and timeframe, and it would
+    /// then have a second opinion about which bars are on screen the moment the
+    /// two drifted.
+    ///
+    /// ## What is deliberately not sent
+    ///
+    /// No candle data. The agent reads the window itself through the same
+    /// `WindowService` the chart is drawn from, so sending prices here would
+    /// create a second source for one fact -- and the two would differ exactly
+    /// where it matters most, on the newest bar. This packet says *where to
+    /// look*, never what is there.
+    ///
+    /// Every optional field is omitted when unknown rather than sent as `null`:
+    /// the server's `ChartContext` defaults each one, and a `null` price axis
+    /// would have to be told apart from an absent one for no gain.
+    chartPacket() {
+      if (!scene) return null;
+      const packet = { timeframe: el("timeframe").value };
+
+      // `from`/`to` are open times in unix nanoseconds, straight from the
+      // engine -- the one place that decides which bars are visible. `to` is
+      // one past the last bar's close, so the range is [first_open, one_past_last).
+      //
+      // Compared against `null` rather than tested for truthiness: a chart
+      // scrolled fully to the left resolves `from` to timestamp `0`, and `0` is
+      // a real bar that a truthiness check would silently drop -- sending a
+      // window with an end and no start, which the server renders as a range it
+      // cannot describe.
+      if (scene.from !== null && scene.from !== undefined) packet.visible_from_ns = scene.from;
+      if (scene.to !== null && scene.to !== undefined) packet.visible_to_ns = scene.to;
+      if (Number.isFinite(scene.price_min) && Number.isFinite(scene.price_max)) {
+        packet.price_low = scene.price_min;
+        packet.price_high = scene.price_max;
+      }
+
+      // The shapes the user actually drew, not the one being placed: a
+      // half-finished trendline is not analysis yet, and sending it would let
+      // the agent cite a level the user was still deciding about.
+      //
+      // An anchor carries either a `price` or a `fraction`, and only the price
+      // is meaningful to an analysis. A shape with no priced anchor at all is
+      // still sent, because "the user drew a zone here" is context worth having
+      // -- it is the price that is omitted, not the shape.
+      const drawn = drawings
+        .map((drawing) => ({
+          kind: drawing.kind,
+          price: anchorPrice(drawing),
+          label: drawing.label || null,
+        }))
+        .filter(Boolean);
+      if (drawn.length) packet.drawings = drawn;
+
+      return packet;
+    },
+
     /// Rebuild this pane's series options from the coverage the page read.
     ///
     /// The pane owns its selects, so the pane fills them; the page owns the list,
@@ -2698,13 +2827,55 @@ function applyAgentFrame(frame, turn) {
 
 /// Put the current thesis on every chart, and take the old one off.
 ///
-/// Not `draw()`, which is one pane's own function -- `onAgentFrame` is at page
-/// scope, so calling it there was a `ReferenceError` and the answer arrived with
-/// nothing drawn. And not just the active pane: each chart draws the thesis when
-/// the thesis is about *its* symbol, so a second chart on the same instrument
-/// has to be repainted too.
+/// `redraw()`, not `draw()`. The answer's levels are positioned by the *engine*
+/// -- the shell has no price scale and must not grow one -- so a new thesis means
+/// a new request. `draw()` repaints the scene already in hand, which was right
+/// when the shell mapped the three prices itself and is now a thesis that is
+/// stored and never drawn.
+///
+/// Not `activePane` alone, either: each chart draws the thesis when the thesis is
+/// about *its* symbol, so a second chart on the same instrument has to be
+/// repainted too. And not `draw()`, which is one pane's own function -- calling
+/// it from page scope was a `ReferenceError` once, and the answer arrived with
+/// nothing drawn.
 function redrawThesis() {
-  for (const pane of panes) pane.draw();
+  for (const pane of panes) pane.redraw();
+}
+
+/// The thesis's own prices, as the overlays a chart request carries.
+///
+/// Three levels and a band, built from the thesis's numeric fields. The engine
+/// resolves the coordinates -- this function does no arithmetic on a price, and
+/// that is the whole design: the stop-to-target band used to be mapped here with
+/// the shell's own copy of the price scale, which drifted from the engine's on
+/// every resize and zoom.
+///
+/// A `direction` of `none` carries zeroed levels (the thesis is exempt from the
+/// level checks precisely so an honest "no trade" is not forced to invent one),
+/// and a level at zero is not a price -- so a stand-aside thesis contributes
+/// nothing rather than three lines along the bottom of the chart.
+function thesisOverlays(thesis) {
+  if (!thesis || thesis.direction === "none") return [];
+  const levels = [
+    { price: thesis.stop_price, label: "stop", role: "stop" },
+    { price: thesis.entry_price, label: "entry", role: "entry" },
+    { price: thesis.target_price, label: "target", role: "target" },
+  ].filter((level) => Number.isFinite(level.price) && level.price > 0);
+
+  // The band is one overlay spanning stop to target, not two more overlays:
+  // two lines that disagreed would shade the wrong region, and the engine can
+  // order the edges itself because it knows which way the trade points.
+  if (levels.length === 3) {
+    const entry = levels.find((level) => level.role === "entry");
+    const stop = levels.find((level) => level.role === "stop");
+    const target = levels.find((level) => level.role === "target");
+    entry.band_to = target.price;
+    entry.filled = true;
+    // The stop gets no band: the shaded region is the *reward* the thesis is
+    // claiming, and shading the risk as well would make the two look alike.
+    stop.band_to = null;
+  }
+  return levels;
 }
 
 function paintAsk() {
@@ -2726,13 +2897,38 @@ async function ask() {
 
   try {
     const ws = await ensureAgentSocket();
-    ws.send(
-      JSON.stringify({
-        symbol: activeSymbol(),
-        question,
-        timeframes: [activeTimeframe()],
-      })
-    );
+    const message = {
+      symbol: activeSymbol(),
+      question,
+      timeframes: [activeTimeframe()],
+    };
+
+    // The viewport goes on every question while it is switched on. A screenshot
+    // is captured at send time rather than at attach time: the chart moves
+    // between the two, and an image of where the user *was* would have the agent
+    // reasoning about a view nobody is looking at any more.
+    if (attachChart && activePane) {
+      const packet = activePane.chartPacket();
+      if (packet) {
+        const shot = captureChart(activePane.canvas);
+        if (shot) {
+          packet.screenshot = shot;
+        } else {
+          // No silently-dropped image. The viewport still goes, so the agent
+          // still knows where the user is -- but the user is told the picture
+          // did not make it, because "it can see your chart" is exactly the sort
+          // of belief that goes wrong quietly.
+          activePane.setMessage(
+            "the chart picture could not be captured, so this question went with the " +
+              "viewport only -- the agent still knows which symbol, resolution and window " +
+              "you are looking at."
+          );
+        }
+        message.chart = packet;
+      }
+    }
+
+    ws.send(JSON.stringify(message));
   } catch (e) {
     turn.error = e.message;
     asking = false;
@@ -2740,6 +2936,93 @@ async function ask() {
     renderTranscript();
   }
 }
+
+/// Whether to attach the chart's viewport and a screenshot to each question.
+let attachChart = false;
+
+/// Most a screenshot may be, in bytes, before the shell downscales.
+///
+/// Matches the server's `MAX_SCREENSHOT_BYTES`. Checking here as well is not
+/// redundant: the server refuses an oversize payload with a 422 and the turn is
+/// lost, whereas the shell can downscale and send something usable. A refusal the
+/// client could have avoided is a bug in the client.
+const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
+
+/// Longest edge of a downscaled capture, in pixels.
+///
+/// A chart is legible to a vision model well below its native resolution, and a
+/// 4K pane at full size is several megabytes for detail nothing reads. This is
+/// the same "build a superset in Rust, let the shell only set width" split
+/// `docs/14` uses for presentation, applied to what leaves the page.
+const MAX_SCREENSHOT_EDGE = 1600;
+
+/// Capture the chart canvas as a PNG the agent can see.
+///
+/// ## Why this is `toDataURL` and not `getImageData`
+///
+/// `getImageData` would mean reading every pixel and re-encoding by hand or
+/// through an offscreen canvas, for no benefit: the browser's own PNG encoder is
+/// faster and produces a smaller file. `toDataURL` also handles the
+/// device-pixel-ratio backing store for us, so what is captured is what is drawn
+/// rather than a crop of its top-left corner.
+///
+/// Returns `null` when a capture is not possible, which the caller reports rather
+/// than sending a question the user believes has a picture attached.
+function captureChart(canvas) {
+  if (!canvas || !canvas.toDataURL) return null;
+  try {
+    // A downscale pass. `drawImage` on an offscreen canvas is the only way to
+    // resize without re-encoding twice, and it keeps the aspect ratio so the
+    // chart the model sees is the shape of the chart the user sees.
+    const scale = Math.min(1, MAX_SCREENSHOT_EDGE / Math.max(canvas.width, canvas.height));
+    if (scale >= 1) {
+      const url = canvas.toDataURL("image/png");
+      return screenshotFromUrl(url);
+    }
+
+    const scaled = document.createElement("canvas");
+    scaled.width = Math.max(1, Math.round(canvas.width * scale));
+    scaled.height = Math.max(1, Math.round(canvas.height * scale));
+    const ctx = scaled.getContext("2d");
+    // A chart is drawn on a transparent background, so without this the PNG has
+    // transparent pixels where the model expects a plot. A screenshot that looks
+    // like a dark void reads to a vision model as "there is no chart here".
+    ctx.fillStyle = "#0d1117";
+    ctx.fillRect(0, 0, scaled.width, scaled.height);
+    ctx.drawImage(canvas, 0, 0, scaled.width, scaled.height);
+    return screenshotFromUrl(scaled.toDataURL("image/png"));
+  } catch (e) {
+    // A tainted canvas, an out-of-memory resize, a browser that refuses. All of
+    // them mean no picture, and none of them should stop the question.
+    return null;
+  }
+}
+
+/// Split a `data:` URL into the media type and payload the API wants.
+///
+/// Returns `null` for anything the server would refuse, so the shell does not
+/// send a payload it already knows will come back as a 422.
+function screenshotFromUrl(url) {
+  const match = /^data:([^;,]+);base64,(.+)$/.exec(url || "");
+  if (!match) return null;
+  const [, media_type, data] = match;
+  if (!["image/png", "image/jpeg", "image/webp"].includes(media_type)) return null;
+  // Base64 is 4 characters per 3 bytes, so the byte count is a `* 3 / 4`. The
+  // budget is in *image* bytes on both sides, which is the mistake that rejects a
+  // legal image when it is measured in the wrong unit.
+  if ((data.length * 3) / 4 > MAX_SCREENSHOT_BYTES) return null;
+  return { media_type, data };
+}
+
+/// Turn chart attachment on and off.
+function paintAttach() {
+  const button = el("attachChart");
+  button.setAttribute("aria-pressed", attachChart ? "true" : "false");
+  el("attachNote").textContent = attachChart
+    ? "the chart's viewport, your drawings and a picture go with each question"
+    : "";
+}
+
 
 // ---------------------------------------------------------------------------
 // Strategy, backtest, bots
@@ -4070,6 +4353,13 @@ async function main() {
   });
   el("ask").addEventListener("click", ask);
   el("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
+  // A toggle rather than a one-shot: the follow-up question is the common case,
+  // and re-pressing a button before every message is a habit users drop.
+  el("attachChart").addEventListener("click", () => {
+    attachChart = !attachChart;
+    paintAttach();
+  });
+  paintAttach();
 
   el("example").addEventListener("change", (e) => loadExample(e.target.value));
   el("validate").addEventListener("click", validateStrategy);

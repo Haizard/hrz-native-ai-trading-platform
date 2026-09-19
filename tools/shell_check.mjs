@@ -293,6 +293,30 @@ window.HTMLCanvasElement.prototype.setPointerCapture = (id) => captured.add(id);
 window.HTMLCanvasElement.prototype.releasePointerCapture = (id) => captured.delete(id);
 window.HTMLCanvasElement.prototype.hasPointerCapture = (id) => captured.has(id);
 
+// `toDataURL` is not implemented in jsdom either -- it needs the native `canvas`
+// package, which this harness deliberately does not depend on.
+//
+// This one is *not* a "just do not throw" stub, and the difference matters. The
+// shell's `captureChart` downscales through an offscreen canvas and then calls
+// `toDataURL`, so a stub that throws would exercise only the failure path and
+// leave the success path -- the allowlist check, the byte arithmetic, the
+// `screenshot` field on the packet -- completely unverified. That is the half of
+// the feature a user actually depends on.
+//
+// So it returns a real base64 `image/png` header instead: small, valid, and
+// shaped exactly like what a browser hands back, which is enough for every check
+// downstream of the pixels. The 1x1 transparent PNG below is the standard one.
+//
+// `width`/`height` are honoured so the downscale can be *observed*: a shell that
+// forgot to cap the long edge would hand back a payload as large as the canvas
+// it started from, and one of the checks reads the size it produced.
+const ONE_PIXEL_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+window.HTMLCanvasElement.prototype.toDataURL = function (type) {
+  const mediaType = typeof type === "string" && type ? type : "image/png";
+  return `data:${mediaType};base64,${ONE_PIXEL_PNG}`;
+};
+
 // The socket. `connectLive` and `connectBook` both open one and both tolerate
 // it never saying anything, so a stub that stays silent is the honest double:
 // nothing about this file depends on a frame arriving.
@@ -307,10 +331,18 @@ window.WebSocket = class {
     this.url = String(url);
     this.readyState = 1;
     this.closed = false;
+    // Everything this socket was told, in order. Recorded rather than ignored
+    // because the request *body* is the only place several contracts live: the
+    // agent message's `chart` packet exists nowhere else, and a stub that
+    // swallowed it made "the shell sends the viewport" untestable -- so an
+    // `ask()` that dropped it on the floor would have passed every check here.
+    this.sent = [];
     sockets.push(this);
     setTimeout(() => this.onopen && this.onopen(), 0);
   }
-  send() {}
+  send(payload) {
+    this.sent.push(String(payload));
+  }
   close() {
     this.readyState = 3;
     this.closed = true;
@@ -2107,12 +2139,71 @@ check(
   agentThrew ? String(agentThrew.message) : ""
 );
 
+// The answer's levels are positioned by the engine, so the frame that draws them
+// is a *rebuild* -- and the pane schedules that on `requestAnimationFrame`. The
+// read below has to wait for it, or it inspects the canvas as it was before the
+// answer arrived. That is not a detail of the harness: it is the shape of the
+// feature, and a check that skipped this wait would pass against a shell that
+// never redrew at all.
+await settle();
+
 const drawn = painted.text.slice(agentTextBefore);
+const activePaneSymbol = () => paneNode().querySelector(".symbol").value;
 check(
   "the answer's levels are drawn on the chart, not only written in the panel",
   drawn.some((line) => line.startsWith("stop")),
-  `drew ${drawn.length} labels; e.g. ${drawn[0] ?? "(nothing)"}`
+  `drew ${drawn.length} labels: ${drawn.join(" / ")}`
 );
+// All three, at the prices the answer gave. The engine positions them, so this
+// also proves the shell sent prices rather than pixels: a shell that mapped them
+// itself would have to reproduce the engine's price scale exactly, and the
+// numbers below would drift away from the axis ticks on the next resize.
+check(
+  "and it is the engine that put them there, at the prices the answer gave",
+  ["stop 99.00", "entry 100.00", "target 102.00"].every((label) =>
+    drawn.includes(label)
+  ),
+  `looking for the answer's three levels; drew ${drawn.join(" / ")}`
+);
+// The thesis is drawn by the pane whose symbol it is about, and by no other. With
+// a second chart on the page this is the difference between a level and a level
+// that means nothing -- a BTCUSDT entry is not a price on an ETHUSDT chart.
+check(
+  "and it is drawn by the pane the answer was about, not by every pane",
+  activePaneSymbol() === askedSymbol,
+  `the pane reads ${activePaneSymbol()}, the answer was about ${askedSymbol}`
+);
+// The architectural half: what the shell *sends* is prices, and the engine
+// answers with pixels. Asserted on the request and the scene rather than on the
+// drawn labels, because the labels are the same two numbers either way -- a
+// shell that inverted the price scale itself would look identical on the canvas
+// and diverge the moment the axis moved.
+{
+  const sentOverlays = engine.requests.at(-1)?.overlays ?? null;
+  const sceneOverlays = engine.frames.at(-1)?.scene?.overlays ?? null;
+  check(
+    "and the shell sends prices, because it has no price scale of its own",
+    Array.isArray(sentOverlays) &&
+      sentOverlays.length > 0 &&
+      sentOverlays.every((o) => typeof o.price === "number" && !("y" in o)),
+    JSON.stringify(sentOverlays)
+  );
+  check(
+    "and the scene answers with canvas coordinates",
+    Array.isArray(sceneOverlays) &&
+      sceneOverlays.length > 0 &&
+      sceneOverlays.every((o) => typeof o.y === "number" && typeof o.price === "number"),
+    JSON.stringify(sceneOverlays)
+  );
+  // The band: the engine orders the two edges, so the shell never has to know
+  // whether a short's stop is above or below its entry.
+  const banded = (sceneOverlays ?? []).filter((o) => o.band_y !== null && o.band_y !== undefined);
+  check(
+    "and the stop-to-target band arrives with both edges resolved",
+    banded.length === 1,
+    `${banded.length} of ${(sceneOverlays ?? []).length} carry a band`
+  );
+}
 
 const thesisPanel = document.getElementById("thesis");
 check(
@@ -2124,6 +2215,207 @@ check(
 check(
   "and the working state is over, so the button can be used again",
   !askButton.disabled
+);
+
+// --- the chart the question was asked about ---------------------------------
+
+console.log("\nthe chart attached to a question");
+
+/// The shell's own screenshot budget, read out of its source.
+///
+/// Read rather than repeated: a second copy of the number here would agree with
+/// itself forever while the shell and the server drifted apart, which is the one
+/// thing this check exists to notice. Falls back to the server's value so a
+/// rename in the shell shows up as a failed check rather than a crash.
+const MAX_SCREENSHOT_BYTES_JS = (() => {
+  const match = /const MAX_SCREENSHOT_BYTES = ([0-9 *]+);/.exec(shell);
+  if (!match) return 4 * 1024 * 1024;
+  // eslint-disable-next-line no-eval -- a literal this file just matched.
+  return eval(match[1]);
+})();
+
+/// What the shell last put on the agent socket, parsed.
+const lastAsk = () => {
+  const socket = socketsFor("/ws/agent").at(-1);
+  const frames = (socket?.sent ?? []).map((raw) => {
+    try { return JSON.parse(raw); } catch { return null; }
+  });
+  // The last *question*, not the last frame. A socket carries the discussion and
+  // the shell reuses it, so reading by index would answer with a previous
+  // question's packet the moment a second message is sent -- which is exactly
+  // what the "switched off" check below needs to be able to tell apart.
+  return frames.filter((frame) => frame && typeof frame.question === "string").at(-1) ?? null;
+};
+
+// Off by default. Attaching a picture of somebody's screen is a thing the user
+// asks for, not a thing that happens because they typed a question.
+check(
+  "the attach control starts off",
+  document.getElementById("attachChart").getAttribute("aria-pressed") === "false",
+  document.getElementById("attachChart").getAttribute("aria-pressed")
+);
+check(
+  "and a plain question carries no chart context at all",
+  lastAsk() !== null && !("chart" in lastAsk()),
+  JSON.stringify(lastAsk()?.chart ?? null)
+);
+
+// jsdom has no layout engine, so there are no pixels -- but `toDataURL` is
+// stubbed above, which means the shell's *capture path* runs for real: the
+// downscale decision, the `data:` URL parse, the allowlist and the byte
+// arithmetic all execute, and everything after them is a plain value the packet
+// carries. So this section asserts the packet from the frame the shell actually
+// sent, and asserts the capture from the field that frame now carries.
+document.getElementById("attachChart").click();
+check(
+  "switching it on reads as pressed",
+  document.getElementById("attachChart").getAttribute("aria-pressed") === "true",
+  document.getElementById("attachChart").getAttribute("aria-pressed")
+);
+check(
+  "and it says what it is about to send",
+  document.getElementById("attachNote").textContent.includes("viewport"),
+  document.getElementById("attachNote").textContent ||
+    "(nothing -- a control that sends a screenshot without saying so is the problem)"
+);
+
+questionBox.value = "what is this level?";
+askButton.click();
+await settle();
+
+const withChart = lastAsk();
+check(
+  "a question asked with it on carries the chart context",
+  withChart !== null && Boolean(withChart.chart),
+  JSON.stringify(withChart?.chart ?? null)
+);
+
+// The window comes from the engine, so it is the same one the chart is drawn
+// from. Compared against the *active pane's* own scene rather than
+// `lastScene()`: with more than one chart on the page the recorder's last frame
+// belongs to whichever pane redrew most recently, and comparing against it made
+// this check fail on two correct numbers from two different charts.
+const sentChart = withChart?.chart ?? {};
+const activeSeries = `${selectIn(PANE, "symbol")}/${selectIn(PANE, "timeframe")}`;
+const paneScene = sceneOf(activeSeries);
+check(
+  "the harness found the active pane's own scene",
+  Boolean(paneScene),
+  `looked for ${activeSeries}; frames: ${engine.frames.map((f) => f.series).join(", ")}`
+);
+check(
+  "and the window it sends is the window the engine resolved",
+  paneScene !== null &&
+    sentChart.visible_from_ns === paneScene.from &&
+    sentChart.visible_to_ns === paneScene.to,
+  `sent ${sentChart.visible_from_ns}..${sentChart.visible_to_ns}, engine resolved ${paneScene?.from}..${paneScene?.to}`
+);
+check(
+  "and it sends the visible price axis",
+  paneScene !== null &&
+    sentChart.price_low === paneScene.price_min &&
+    sentChart.price_high === paneScene.price_max,
+  `sent ${sentChart.price_low}..${sentChart.price_high}, engine drew ${paneScene?.price_min}..${paneScene?.price_max}`
+);
+check(
+  "and the resolution on screen",
+  sentChart.timeframe === selectIn(PANE, "timeframe"),
+  `sent ${sentChart.timeframe}, the select reads ${selectIn(PANE, "timeframe")}`
+);
+// The whole design rule: the agent reads the window itself through the same
+// service the chart is drawn from. Sending candles here would be a second source
+// for one fact -- and the two would differ at the newest bar, which is the bar
+// a question about "now" is about.
+check(
+  "and no candle data rides along",
+  !("candles" in sentChart) && !("bars" in sentChart),
+  `keys: ${Object.keys(sentChart).join(", ")}`
+);
+
+// The capture, asserted from the frame rather than described at the source.
+// The stub above is what makes this possible: `captureChart` runs its real
+// downscale-and-encode path and `screenshotFromUrl` runs its real parse, so a
+// field arriving here means both of them did their job.
+check(
+  "and a picture of the chart goes with it",
+  Boolean(sentChart.screenshot),
+  JSON.stringify(sentChart.screenshot?.media_type ?? null)
+);
+check(
+  "and the picture is one the model can actually read",
+  ["image/png", "image/jpeg", "image/webp"].includes(sentChart.screenshot?.media_type),
+  `${sentChart.screenshot?.media_type} -- anything else is a 422 the client could have avoided`
+);
+check(
+  "and it carries bytes, not a data URL",
+  typeof sentChart.screenshot?.data === "string" &&
+    /^[A-Za-z0-9+/]+=*$/.test(sentChart.screenshot.data),
+  "the API wants the base64 payload alone; sending the whole `data:` URL would be a decode error at the provider"
+);
+check(
+  "and the packet never sends the picture as a page-sized blob",
+  // The budget is in image bytes. A stub returns something tiny, so this checks
+  // the *direction* of the arithmetic rather than the limit itself: a shell that
+  // compared base64 characters against the byte budget, or skipped the check
+  // entirely, would still pass here -- which is why the unit itself is asserted
+  // separately below.
+  (sentChart.screenshot?.data?.length ?? 0) * 0.75 <= MAX_SCREENSHOT_BYTES_JS,
+  `${Math.round(((sentChart.screenshot?.data?.length ?? 0) * 3) / 4)} bytes against a ${MAX_SCREENSHOT_BYTES_JS} byte budget`
+);
+
+// Switching it off must actually stop it. A toggle whose off state still sends
+// is worse than no toggle: the user believes their screen is private.
+//
+// The turn is closed first. `ask()` refuses while `asking` is true -- a second
+// question during a running one would be queued against an answer nobody
+// matched -- so without delivering the answer above, the click below is dropped
+// and this section silently re-reads the *previous* question's frame. That is
+// what it did: two questions sent, the third never left the page, and the check
+// still passed by looking at the old one.
+deliver(socketsFor("/ws/agent").at(-1), {
+  type: "data",
+  payload: { thesis: { symbol: askedSymbol, direction: "long" } },
+});
+await settle();
+
+document.getElementById("attachChart").click();
+check(
+  "switching it off reads as unpressed",
+  document.getElementById("attachChart").getAttribute("aria-pressed") === "false",
+  document.getElementById("attachChart").getAttribute("aria-pressed")
+);
+questionBox.value = "and now?";
+askButton.click();
+await settle();
+const asks = (socketsFor("/ws/agent").at(-1)?.sent ?? [])
+  .map((raw) => {
+    try { return JSON.parse(raw); } catch { return null; }
+  })
+  .filter((frame) => frame && typeof frame.question === "string");
+check(
+  "and the next question carries no chart context again",
+  asks.length >= 2 && !("chart" in asks.at(-1)),
+  `questions sent: ${asks.length}; last has chart: ${"chart" in (asks.at(-1) ?? {})}; ` +
+    `questions: ${asks.map((f) => f.question).join(" | ")}`
+);
+
+// The capture half, which the DOM here cannot perform. These are source checks,
+// and they are about units and allowlists rather than logic -- the two ways a
+// capture silently stops working.
+check(
+  "the shell downscales a capture before sending it",
+  shell.includes("MAX_SCREENSHOT_EDGE") && shell.includes("drawImage"),
+  "the capture must resize rather than send the pane at its native size"
+);
+check(
+  "and it measures the payload in image bytes, not base64 characters",
+  /data\.length \* 3\) \/ 4/.test(shell) || /length \* 3\)\s*\/\s*4/.test(shell),
+  "base64 is ~33% longer than the image; comparing the encoded length to a byte budget rejects a legal image"
+);
+check(
+  "and the media types it will send are the three the server accepts",
+  ["image/png", "image/jpeg", "image/webp"].every((type) => shell.includes(type)),
+  "an allowlist that drifts from `SCREENSHOT_MEDIA_TYPES` is a 422 the client could have avoided"
 );
 
 // An answer the page cannot render must say so on the page. A throw inside a

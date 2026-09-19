@@ -72,6 +72,12 @@ pub struct AskRequest {
     pub skill_id: Option<String>,
     /// Candles per timeframe; `None` uses the context default.
     pub lookback: Option<usize>,
+    /// The chart the user is looking at, when the shell told us.
+    ///
+    /// See [`crate::chart_context`] for why this is a *viewport* and not data:
+    /// it says where to look, and every number in it is subject to the same
+    /// grounding rule as a tool result.
+    pub chart: Option<crate::chart_context::ChartContext>,
 }
 
 impl AskRequest {
@@ -84,6 +90,7 @@ impl AskRequest {
             timeframes: None,
             skill_id: None,
             lookback: None,
+            chart: None,
         }
     }
 
@@ -98,6 +105,13 @@ impl AskRequest {
     #[must_use]
     pub fn with_timeframes(mut self, timeframes: Vec<String>) -> Self {
         self.timeframes = Some(timeframes);
+        self
+    }
+
+    /// Attach the viewport the user is looking at.
+    #[must_use]
+    pub fn with_chart(mut self, chart: crate::chart_context::ChartContext) -> Self {
+        self.chart = Some(chart);
         self
     }
 }
@@ -267,12 +281,31 @@ impl Agent {
     ) -> Result<AgentAnswer, AgentError> {
         let skill = self.select_skill(request)?;
 
+        // The user's own resolution anchors the ladder. A question asked while
+        // looking at the 5m chart is about the 5m chart, and answering it from
+        // the default 1D/4H/1H/5M ladder reads the right market at the wrong
+        // place. The anchor only *promotes* a timeframe into a ladder that
+        // already exists -- it never replaces the higher-timeframe context,
+        // which is the part that makes the answer more than a zoomed-in guess.
+        let chart_anchor = request
+            .chart
+            .as_ref()
+            .and_then(crate::chart_context::ChartContext::ladder_anchor);
+
         let ladder = match &request.timeframes {
             Some(frame_strings) => TimeframeLadder::from_strs(frame_strings),
             None => match &skill {
                 Some(s) => TimeframeLadder::from_skill(s),
                 None => TimeframeLadder::default(),
             },
+        };
+        let ladder = match chart_anchor {
+            Some(anchor) if !ladder.timeframes().contains(&anchor) => {
+                let mut timeframes = ladder.timeframes().to_vec();
+                timeframes.push(anchor);
+                TimeframeLadder::new(timeframes)
+            }
+            _ => ladder,
         };
         if ladder.is_empty() {
             return Err(AgentError::DataUnavailable {
@@ -311,8 +344,28 @@ impl Agent {
             });
         }
 
-        let system = ask_system_prompt(&request.symbol, skill.as_ref(), &view);
-        let mut messages = vec![Message::user(&request.question)];
+        let system = ask_system_prompt(
+            &request.symbol,
+            skill.as_ref(),
+            &view,
+            request.chart.as_ref(),
+        );
+        // The screenshot rides on the first user message. It is attached here
+        // rather than as a separate message because Bedrock requires a `user`
+        // turn to alternate with `assistant`, and an extra image-only message
+        // would consume a turn of the loop's budget for no reasoning.
+        let mut messages = vec![match request
+            .chart
+            .as_ref()
+            .and_then(|chart| chart.screenshot.as_ref())
+        {
+            Some(screenshot) => Message::user_with_image(
+                &request.question,
+                &screenshot.media_type,
+                &screenshot.data,
+            ),
+            None => Message::user(&request.question),
+        }];
         let mut tools = self.registry.specs();
         tools.push(submit_thesis_spec());
 
@@ -688,7 +741,12 @@ fn add_tokens(a: Option<i32>, b: Option<i32>) -> Option<i32> {
 ///
 /// The rules are stated as constraints rather than encouragement because this
 /// is the only place the boundary in `docs/09` is enforced at runtime.
-fn ask_system_prompt(symbol: &str, skill: Option<&Skill>, ladder: &LadderView) -> String {
+fn ask_system_prompt(
+    symbol: &str,
+    skill: Option<&Skill>,
+    ladder: &LadderView,
+    chart: Option<&crate::chart_context::ChartContext>,
+) -> String {
     let mut out = String::new();
     out.push_str("You are the market analyst for an order-flow trading terminal.\n\n");
 
@@ -728,6 +786,14 @@ fn ask_system_prompt(symbol: &str, skill: Option<&Skill>, ladder: &LadderView) -
     out.push_str("These were computed in Rust from real candles. They are facts.\n\n");
     out.push_str(&ladder.digest());
     out.push('\n');
+
+    // Placed after the ladder so the model reads the facts first and the
+    // viewport second: the viewport says where to look, and must not be
+    // mistaken for another source of numbers.
+    if let Some(rendered) = chart.and_then(crate::chart_context::ChartContext::render) {
+        out.push('\n');
+        out.push_str(&rendered);
+    }
 
     out.push_str(&format!(
         "\nSymbol: {symbol}. Use `submit_thesis` when you have enough, even if \
@@ -1125,6 +1191,20 @@ mod tests {
         )
     }
 
+    /// The system prompt the orchestrator actually sent.
+    ///
+    /// Asserting on this rather than on a prompt the test builds itself is the
+    /// point: the failure worth catching is the orchestrator forgetting to pass
+    /// the chart through, and a test that constructs the prompt directly would
+    /// pass while the loop dropped the packet on the floor.
+    fn system_prompt_of(llm: &Arc<ScriptedClient>) -> String {
+        llm.requests()
+            .into_iter()
+            .next()
+            .and_then(|request| request.system)
+            .expect("the orchestrator must send a system prompt")
+    }
+
     #[tokio::test]
     async fn a_question_produces_a_thesis_grounded_in_the_ladder() {
         let source = Fixture::new();
@@ -1147,6 +1227,171 @@ mod tests {
         assert!(!answer.trace.is_empty());
         assert!(answer.trace.iter().all(|t| t.tool == "analyze_timeframe"));
         assert!(!answer.thesis.narrative.is_empty());
+    }
+
+    /// The user's resolution joins the ladder rather than replacing it.
+    ///
+    /// This is the whole point of the packet: a question asked while looking at
+    /// the 5m chart must be answered with the 5m chart *in view*, but the
+    /// higher-timeframe context is what makes the answer more than a zoomed-in
+    /// guess. Dropping the ladder would trade one failure for another.
+    #[tokio::test]
+    async fn the_viewport_resolution_joins_the_ladder_and_does_not_replace_it() {
+        let source = Fixture::new();
+        let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
+            100_100.0, 100_000.0, 100_400.0,
+        )]));
+        let agent = Agent::new(
+            llm.clone(),
+            SkillLibrary::new(),
+            AgentConfig::default(),
+        );
+
+        let chart = crate::chart_context::ChartContext {
+            // Not in the default 1D/4H/1H/5M ladder.
+            timeframe: Some(Timeframe::M15),
+            ..Default::default()
+        };
+
+        agent
+            .ask(
+                &AskRequest::new("BTCUSDT", "what is this level?").with_chart(chart),
+                &source,
+            )
+            .await
+            .unwrap();
+
+        let system = system_prompt_of(&llm);
+        // The default ladder survived...
+        for expected in ["1d", "4h", "1h", "5m"] {
+            assert!(
+                system.contains(expected),
+                "the default ladder lost {expected} when the viewport was attached: {system}"
+            );
+        }
+        // ...and the user's resolution was added to it, not substituted for it.
+        assert!(
+            system.contains("15m"),
+            "the viewport resolution is missing from the ladder: {system}"
+        );
+        assert!(
+            system.contains("What the user is looking at"),
+            "the viewport section is missing: {system}"
+        );
+    }
+
+    /// A chart-aware question tells the model what "this" means.
+    #[tokio::test]
+    async fn a_viewport_question_is_told_that_deictics_mean_the_viewport() {
+        let source = Fixture::new();
+        let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
+            100_100.0, 100_000.0, 100_400.0,
+        )]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        let chart = crate::chart_context::ChartContext {
+            timeframe: Some(Timeframe::H1),
+            visible_from_ns: Some(1_788_739_200 * 1_000_000_000),
+            visible_to_ns: Some((1_788_739_200 + 11 * 3600) * 1_000_000_000),
+            drawings: vec![crate::chart_context::DrawnLevel {
+                kind: "horizontal".into(),
+                price: Some(112_500.0),
+                label: Some("weekly open".into()),
+            }],
+            ..Default::default()
+        };
+
+        agent
+            .ask(
+                &AskRequest::new("BTCUSDT", "do we hold this?").with_chart(chart),
+                &source,
+            )
+            .await
+            .unwrap();
+
+        let system = system_prompt_of(&llm);
+        assert!(system.contains("2026-09-07T00:00:00Z"), "{system}");
+        assert!(system.contains("112500.0000"), "{system}");
+        assert!(system.contains("weekly open"), "{system}");
+        assert!(
+            system.contains("\"this\", \"here\", \"that level\""),
+            "without this the model answers about the latest bar, which is the \
+             bug the whole packet exists to fix: {system}"
+        );
+    }
+
+    /// A request with no chart renders exactly the prompt it always did.
+    ///
+    /// The regression that would otherwise be invisible: an older client sends
+    /// no `chart`, and if the empty packet still emitted a heading the model
+    /// would read "What the user is looking at" with nothing under it -- and
+    /// speculate about what was withheld.
+    #[tokio::test]
+    async fn a_request_without_a_chart_produces_an_unchanged_prompt() {
+        let source = Fixture::new();
+        let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
+            100_100.0, 100_000.0, 100_400.0,
+        )]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        agent
+            .ask(&AskRequest::new("BTCUSDT", "find me a long setup"), &source)
+            .await
+            .unwrap();
+
+        let system = system_prompt_of(&llm);
+        assert!(
+            !system.contains("What the user is looking at"),
+            "an absent chart must not leave a heading behind: {system}"
+        );
+        assert!(!system.contains("deictic"), "{system}");
+    }
+
+    /// A screenshot reaches the model as an image block, not as prose.
+    ///
+    /// Sending it as text would be the quiet failure: the request succeeds, the
+    /// model is told a screenshot exists, and it never actually sees one -- so
+    /// it answers as though the user had sent nothing and the user has no way to
+    /// tell.
+    #[tokio::test]
+    async fn a_screenshot_is_sent_as_an_image_block_ahead_of_the_question() {
+        let source = Fixture::new();
+        let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
+            100_100.0, 100_000.0, 100_400.0,
+        )]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        let chart = crate::chart_context::ChartContext {
+            timeframe: Some(Timeframe::H1),
+            screenshot: Some(crate::chart_context::ChartScreenshot {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo=".into(),
+            }),
+            ..Default::default()
+        };
+
+        agent
+            .ask(
+                &AskRequest::new("BTCUSDT", "what do you see?").with_chart(chart),
+                &source,
+            )
+            .await
+            .unwrap();
+
+        let request = llm.requests().into_iter().next().expect("a request");
+        let first = request.messages.first().expect("a first user message");
+        assert_eq!(first.content.len(), 2, "image plus text: {first:?}");
+        match &first.content[0] {
+            ContentBlock::Image { media_type, data } => {
+                assert_eq!(media_type, "image/png");
+                assert_eq!(data, "iVBORw0KGgo=");
+            }
+            other => panic!("the image must come first, got {other:?}"),
+        }
+        match &first.content[1] {
+            ContentBlock::Text(text) => assert_eq!(text, "what do you see?"),
+            other => panic!("the question must follow the image, got {other:?}"),
+        }
     }
 
     #[tokio::test]

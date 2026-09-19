@@ -42,7 +42,8 @@ use analytics_core::vwap::calculate_vwap;
 use serde::{Deserialize, Serialize};
 
 use crate::drawing::{
-    Anchor, Drawing, DrawingKind, DrawingPart, Fraction, SceneDrawing, FIB_LEVELS,
+    Anchor, Drawing, DrawingKind, DrawingPart, Fraction, Overlay, SceneDrawing, SceneOverlay,
+    FIB_LEVELS,
 };
 
 /// Layout constants, in CSS pixels of the scene's own coordinate space.
@@ -216,6 +217,23 @@ pub struct Request {
     /// none, and a silent refusal teaches whoever drew it nothing.
     #[serde(default)]
     pub drawings: Vec<Drawing>,
+    /// Levels an *answer* put on the chart.
+    ///
+    /// The thesis's entry, stop and target, plus any level the answer cited. The
+    /// shell already holds these -- it read them off the frame the agent sent --
+    /// so they arrive with every rebuild the same way the user's drawings do.
+    ///
+    /// They are sent as **prices**, never as pixels, and this is the whole point
+    /// of the field. The shell used to map them itself with its own copy of the
+    /// price scale, which is a second implementation of the one thing `docs/14`
+    /// keeps in Rust -- and the copy drifts from the real one on every resize,
+    /// zoom and mode change. A band a few pixels off the candles it describes
+    /// reads as "the AI's level moved", which is a lie about the answer.
+    ///
+    /// An overlay whose price is not a number is **not drawn** and the reason
+    /// goes into [`Scene::note`], the same arrangement a refused drawing gets.
+    #[serde(default)]
+    pub overlays: Vec<crate::drawing::Overlay>,
 }
 
 /// The levels drawn when a request does not say.
@@ -239,6 +257,7 @@ impl Default for Request {
             viewport: crate::viewport::Viewport::default(),
             gesture: None,
             drawings: Vec::new(),
+            overlays: Vec::new(),
         }
     }
 }
@@ -510,6 +529,16 @@ pub struct Scene {
     /// be an annotation they cannot see. Always present and usually empty, like
     /// [`Scene::regions`], so the shell's draw loop needs no null check.
     pub drawings: Vec<SceneDrawing>,
+    /// The levels an answer cited, positioned.
+    ///
+    /// Drawn *under* the user's own drawings and *over* everything the engine
+    /// derived. The z-order is the claim being made: a volume profile is a
+    /// measurement, an answer's entry is an opinion, and the user's own mark is
+    /// the last word. An overlay that covered a drawing the user placed would
+    /// hide their annotation behind somebody else's.
+    ///
+    /// Always present and usually empty, like [`Scene::regions`].
+    pub overlays: Vec<SceneOverlay>,
     /// A caveat about what is being shown, when there is one.
     pub note: Option<String>,
 }
@@ -592,6 +621,7 @@ pub fn build(request: &Request) -> Scene {
         ticks: Vec::new(),
         footprint: None,
         drawings: Vec::new(),
+        overlays: Vec::new(),
         note: None,
     };
 
@@ -816,6 +846,12 @@ pub fn build(request: &Request) -> Scene {
     let (drawings, unplaceable) = drawing_parts(&request.drawings, &frame);
     scene.drawings = drawings;
 
+    // The answer's levels, between the derived geometry and the user's own
+    // marks. Positioned here rather than in the shell because the shell has no
+    // price scale -- see `Request::overlays` for why that matters.
+    let (overlays, refused_overlays) = overlay_parts(&request.overlays, &frame);
+    scene.overlays = overlays;
+
     if !refused.is_empty() {
         add_note(
             &mut scene.note,
@@ -836,8 +872,54 @@ pub fn build(request: &Request) -> Scene {
             ),
         );
     }
+    if !refused_overlays.is_empty() {
+        add_note(
+            &mut scene.note,
+            format!(
+                "{} answer level(s) could not be drawn: {}",
+                refused_overlays.len(),
+                refused_overlays.join("; ")
+            ),
+        );
+    }
 
     scene
+}
+
+/// Resolve the answer's levels onto the frame.
+///
+/// Returns the positioned overlays and the reasons any were refused, so the
+/// caller can put them in the scene's note. Refused rather than skipped: a stop
+/// that silently does not appear reads as "the answer had no stop", which is a
+/// different and much worse statement than "the stop it gave was not a number".
+fn overlay_parts(overlays: &[Overlay], frame: &Frame) -> (Vec<SceneOverlay>, Vec<String>) {
+    let mut placed = Vec::with_capacity(overlays.len());
+    let mut refused = Vec::new();
+
+    for overlay in overlays {
+        if let Err(reason) = overlay.validate() {
+            refused.push(reason);
+            continue;
+        }
+        placed.push(position_overlay(overlay, frame));
+    }
+
+    (placed, refused)
+}
+
+/// One overlay, mapped onto canvas pixels.
+fn position_overlay(overlay: &Overlay, frame: &Frame) -> SceneOverlay {
+    SceneOverlay {
+        y: frame.y_at(overlay.price),
+        price: overlay.price,
+        label: overlay.label.clone(),
+        role: overlay.role,
+        // `None` stays `None`: a level is a line, and turning it into a band
+        // from its own price to its own price would make the shell stroke a
+        // zero-height rectangle it then has to special-case away.
+        band_y: overlay.band_to.map(|far| frame.y_at(far)),
+        filled: overlay.filled,
+    }
 }
 
 /// Append a sentence to the scene's note, keeping whatever was already there.
@@ -1494,6 +1576,7 @@ pub fn series_timeframe(candles: &[Candle]) -> Option<Timeframe> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drawing::OverlayRole;
     use crate::footprint;
     use analytics_core::concepts::{Compare, Requirement, Selector};
     use analytics_core::types::Side;
@@ -3505,5 +3588,174 @@ mod tests {
         }]));
         assert_eq!(scene.drawings.len(), 1);
         assert!(scene.note.is_none(), "{:?}", scene.note);
+    }
+
+    // --- the answer's own levels --------------------------------------------
+
+    fn overlay(price: f64, role: OverlayRole, band_to: Option<f64>) -> Overlay {
+        Overlay {
+            price,
+            label: role.name().to_string(),
+            role,
+            band_to,
+            filled: false,
+        }
+    }
+
+    fn with_overlays(overlays: Vec<Overlay>, count: i64) -> Request {
+        Request {
+            overlays,
+            ..request(count)
+        }
+    }
+
+    #[test]
+    fn an_answers_levels_are_positioned_against_the_engines_own_price_scale() {
+        // The whole reason the overlays travel as prices: the engine owns the
+        // scale, so the y a level gets here is the same y the candle at that
+        // price gets. A shell mapping the prices itself is a second copy of
+        // that arithmetic, and this asserts there is only one.
+        let scene = build(&with_overlays(
+            vec![
+                overlay(105.0, OverlayRole::Entry, None),
+                overlay(110.0, OverlayRole::Target, None),
+            ],
+            20,
+        ));
+        assert_eq!(scene.overlays.len(), 2, "{:?}", scene.note);
+        assert!(scene.note.is_none(), "{:?}", scene.note);
+
+        let frame = Frame {
+            plot: scene.plot,
+            from: scene.from,
+            to: scene.to,
+            price_min: scene.price_min,
+            price_max: scene.price_max,
+        };
+        for placed in &scene.overlays {
+            assert!(
+                (placed.y - frame.y_at(placed.price)).abs() < 1e-9,
+                "{} sat at {}, the scale says {}",
+                placed.label,
+                placed.y,
+                frame.y_at(placed.price)
+            );
+        }
+    }
+
+    #[test]
+    fn a_higher_price_is_drawn_higher_up_the_canvas() {
+        // y grows downward and price grows upward, and an overlay is the one
+        // place that inversion is easy to get backwards because the caller
+        // never sees a pixel. If it were backwards the stop and target would
+        // swap places, which is a chart that quietly argues for the other side.
+        let scene = build(&with_overlays(
+            vec![
+                overlay(110.0, OverlayRole::Target, None),
+                overlay(100.0, OverlayRole::Stop, None),
+            ],
+            20,
+        ));
+        let target = scene
+            .overlays
+            .iter()
+            .find(|o| o.role == OverlayRole::Target)
+            .expect("the target is drawn");
+        let stop = scene
+            .overlays
+            .iter()
+            .find(|o| o.role == OverlayRole::Stop)
+            .expect("the stop is drawn");
+        assert!(
+            target.y < stop.y,
+            "the target at {} drew at y={} and the stop at {} drew at y={}",
+            target.price,
+            target.y,
+            stop.price,
+            stop.y
+        );
+    }
+
+    #[test]
+    fn a_band_reports_both_edges_in_canvas_pixels() {
+        // So the shell can shade without subtracting two pixels whose order it
+        // would have to guess at.
+        let scene = build(&with_overlays(
+            vec![Overlay {
+                filled: true,
+                ..overlay(105.0, OverlayRole::Entry, Some(110.0))
+            }],
+            20,
+        ));
+        assert_eq!(scene.overlays.len(), 1, "{:?}", scene.note);
+        let band = scene.overlays[0].band_y.expect("the band is positioned");
+        assert!(
+            band < scene.overlays[0].y,
+            "the far edge at 110 must sit above the level at 105"
+        );
+    }
+
+    #[test]
+    fn a_level_with_no_band_reports_no_band() {
+        // Not a band of zero height. The shell strokes a line for `None` and
+        // fills a rectangle for `Some`, so collapsing the two would make every
+        // level a rectangle it has to special-case back into a line.
+        let scene = build(&with_overlays(
+            vec![overlay(105.0, OverlayRole::Level, None)],
+            20,
+        ));
+        assert_eq!(scene.overlays[0].band_y, None);
+    }
+
+    #[test]
+    fn a_level_that_is_not_a_number_is_refused_and_says_so() {
+        // Silently dropped would read as "the answer had no stop", which is a
+        // claim about the analysis. The note makes it a claim about the number.
+        //
+        // The refusal path is reached by *direct construction* here rather than
+        // through JSON -- `drawing::tests::a_null_price_never_reaches_the_validator`
+        // asserts that serde rejects a `null` before this code runs. What is
+        // being tested is that the scene reports the refusal and keeps the
+        // levels it can draw, not that the shell can produce a `NaN`.
+        let scene = build(&with_overlays(
+            vec![
+                overlay(f64::NAN, OverlayRole::Stop, None),
+                overlay(105.0, OverlayRole::Entry, None),
+            ],
+            20,
+        ));
+        assert_eq!(scene.overlays.len(), 1, "only the usable one is drawn");
+        assert_eq!(scene.overlays[0].role, OverlayRole::Entry);
+        let note = scene.note.expect("a refusal must be reported");
+        assert!(note.contains("stop"), "{note}");
+    }
+
+    #[test]
+    fn an_overlay_never_costs_the_chart_its_candles() {
+        // The failure mode this guards: an overlay so malformed that building
+        // the scene bails out. A chart with no candles because the AI's stop
+        // was `NaN` is a much worse outcome than a chart without the stop.
+        let scene = build(&with_overlays(
+            vec![
+                overlay(f64::INFINITY, OverlayRole::Target, None),
+                overlay(f64::NAN, OverlayRole::Entry, None),
+            ],
+            20,
+        ));
+        assert!(!scene.candles.is_empty(), "the candles survived");
+        assert!(scene.overlays.is_empty());
+        assert!(scene.note.is_some(), "and both refusals are explained");
+    }
+
+    #[test]
+    fn a_request_that_says_nothing_about_overlays_gets_none() {
+        // `#[serde(default)]` filling an empty `Vec` is correct here, unlike
+        // `lines`: there is no standard set of levels an answer cited.
+        let parsed: Request = serde_json::from_value(serde_json::json!({
+            "candles": [], "width": 800.0, "height": 400.0
+        }))
+        .expect("a bare request parses");
+        assert!(parsed.overlays.is_empty());
+        assert!(build(&parsed).overlays.is_empty());
     }
 }

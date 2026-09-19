@@ -49,6 +49,7 @@ pub mod auth;
 pub mod auth_routes;
 pub mod bot_routes;
 pub mod bots;
+pub mod capabilities;
 pub mod dom;
 pub mod drawing_routes;
 pub mod error;
@@ -59,6 +60,7 @@ pub mod market_routes;
 pub mod metrics;
 pub mod plot;
 pub mod rate_limit;
+pub mod scan_routes;
 pub mod skills_routes;
 pub mod strategy_routes;
 pub mod venue_routes;
@@ -88,6 +90,26 @@ pub struct AppState {
     // `market_data` module (the agent's Postgres-backed source), and without the
     // leading `::` the name resolves to that instead of the crate.
     pub backfill: ::market_data::BackfillClient,
+    /// The one place a candle window is assembled, for every consumer.
+    ///
+    /// The chart route and the agent both read through this, over the same
+    /// `HistoryRegistry` the bots' feed fills. It exists so the two **cannot
+    /// disagree** about what a bar was -- which they did while the chart merged
+    /// RAM with the venue and the agent read Postgres, so a symbol the agent
+    /// had no rows for answered "no data" at the same moment its chart drew
+    /// perfectly well.
+    pub windows: ::market_data::WindowService,
+    /// What the venue actually offers, for search and validation.
+    ///
+    /// `MARKET_SYMBOLS` is this deployment's *watchlist* -- what to keep warm --
+    /// and it was being used as the limit of what the platform would admit
+    /// exists. That is why a chart that could draw any Binance symbol refused
+    /// one nobody had listed, and why the error named a variable the user has
+    /// never heard of. The authority is the venue's `exchangeInfo`, fetched once
+    /// and cached in RAM; the watchlist stays a *warm-start hint*.
+    // `::market_data` for the same reason as `backfill` above: this crate has
+    // its own `market_data` module and a bare name would resolve to it.
+    pub symbols: ::market_data::SymbolIndex,
     /// Per-user limits on the endpoints that cost money (`docs/12`).
     pub agent_limits: Arc<rate_limit::RateLimiter>,
     /// The metric registry every handler records into, served at `/metrics`.
@@ -162,6 +184,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/capabilities", get(capability_report))
         // Prometheus scrapes this. Public, like the health endpoints: it names
         // no user and no strategy, only counts.
         .route("/metrics", get(metrics::scrape))
@@ -170,6 +193,14 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/me", get(auth_routes::me))
         .route("/candles", get(market_routes::candles))
         .route("/symbols", get(market_routes::symbols))
+        // Both literal paths must be registered before any `/symbols/{symbol}`
+        // wildcard, or they would be read as a symbol named "search".
+        .route("/symbols/search", get(market_routes::search_symbols))
+        .route("/symbols/validate", get(market_routes::validate_symbol))
+        // The question that comes *before* a chart: which symbol. One route,
+        // because a scan is one measurement over many instruments -- see the
+        // module doc for why it is not a `/candles` parameter.
+        .route("/scan", get(scan_routes::scan))
         .route("/footprint", get(footprint_routes::footprint))
         .route("/footprint/coverage", get(footprint_routes::coverage))
         .route("/orderbook", get(market_routes::orderbook))
@@ -444,6 +475,23 @@ async fn healthz() -> Json<HealthResponse> {
         status: "ok",
         database: "unknown",
     })
+}
+
+/// `GET /capabilities`
+///
+/// What this deployment can do and how fresh its data is, in one document.
+///
+/// Public, like the market routes and for the same reason (`docs/12`): none of
+/// it is anybody's data. It names which dependencies are configured and how old
+/// the newest bar is -- facts about the platform, not about its users.
+///
+/// Exists because every capability here is optional at startup, and the
+/// alternative was a user discovering each absence by walking into it: typing a
+/// question, waiting a minute, and being told the agent was never configured.
+/// Answering that before they start is the difference between a deployment with
+/// limits and a deployment that looks broken.
+async fn capability_report(State(state): State<AppState>) -> Json<capabilities::CapabilityReport> {
+    Json(capabilities::report(&state, now_ns()))
 }
 
 /// Readiness: can we serve traffic (i.e. is the database reachable)?
