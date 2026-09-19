@@ -181,3 +181,63 @@ NODE_PATH=<managed-node>/node_modules node tools/shell_check.mjs
 Note: jsdom is required for `shell_check.mjs` and was **installed into the managed Node
 workspace during this audit** — it was not present, so the shell harness could not have
 been run before.
+
+---
+
+## Follow-up, later the same day: items 1–5 are done
+
+All five recommended actions were carried out, and three more defects were found and fixed
+while doing them.
+
+**1–2. Committed, pushed, gitignored.** `d5060f1` (41 files, 9,282 insertions) is on
+`origin/main`, verified with `git ls-remote origin main` rather than the push's own output.
+`/.cargo-logs/` is in `.gitignore`.
+
+**3. The DB pool flake is documented, not "fixed".** It is infrastructure: the pool is 10
+connections with a 10s acquire and the managed instance took 9.19s to release an advisory
+lock. It passes alone and serially, so the integration suites are run with
+`--test-threads=1`. Recorded in MEMORY.md so the next person does not chase it as a defect.
+
+**4. `agent-cli` no longer reads market data from Postgres.** `DbMarketData` was replaced by
+`WindowMarketData` over `market_data::WindowService` — the same RAM+venue merge the chart
+route and the agent already read through. This was not merely dead code: it was a market-data
+*read* path that only worked because `xtask` had backfilled the database, which the 6 GB rule
+means will never be the case in production. The build is clean.
+
+**5. The scanner has a shell surface.** A `Scan` tab, `renderScan()` and `runScan()` in
+`app.js`, and `table.scan` styles. The panel shows the server's `summary` verbatim, renders
+`failures` in their own fold rather than as ranked rows, and shows `as_of_ms` as an age.
+
+### Three defects found on the way
+
+- **The orderbook socket misreported every deliberate close.** `connectBook` aborts the old
+  socket when the active pane's instrument changes, and `onclose` answered that with "The book
+  disconnected." — so moving between charts told the user their book had broken. This is also
+  the literal origin of the browser error Haitham pasted ("WebSocket is closed before the
+  connection is established" is what an aborted handshake reports). The server's own
+  `DEPTH_GRACE` notice was *also* overwritten by the same sentence, destroying the only
+  message that names `MARKET_FEED` and the sync state. And nothing re-opened a closed book, so
+  a book that arrived late left the ladder dead for the session.
+- **The agent channel's refusal was a single generic sentence.** A refused WebSocket handshake
+  is opaque to script — no status is exposed — so `onerror` said "could not reach the agent
+  channel" whether the deployment had no Bedrock credentials or the token had expired. Those
+  have opposite fixes. `onerror` now asks `/capabilities` (answerable without a valid token)
+  and then `/auth/me` to tell them apart.
+- **`.git/refs/remotes/origin/` is deleted by a successful push** in this sandbox; see
+  MEMORY.md for the repair.
+
+### Verification
+
+| Suite | Result |
+|---|---|
+| `cargo build --workspace` | clean |
+| `cargo test --workspace --lib --bins --tests -- --test-threads=1` | all green |
+| `node tools/wasm_abi_check.mjs` | all pass |
+| `node tools/shell_check.mjs` | **148 checks** pass (was 133) |
+| `python tools/guard_check.py` | **all 39 mutations fail as named** (was 29) |
+
+Every check added for the three defects above was confirmed to fail against the defect it
+names, one mutation at a time, through `tools/guard_check.py`. Two of the scanner checks
+*passed* on the first attempt and had to be fixed before they were guards: the fixture's
+ranked values descended, so a shell that re-sorted them looked correct; and the `symbols`
+parameter was only asserted when it was present, never when it was correctly absent.

@@ -234,6 +234,13 @@
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-family: var(--mono); font-size: 12px; }
   .kv dt { color: var(--muted); }
   .kv dd { margin: 0; text-align: right; }
+  /* The scanner's ranking. Left-aligned numbers, unlike `.kv`: a column of
+     right-aligned values reads as a sum, and these are measurements of different
+     instruments rather than parts of one total. */
+  table.scan { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; margin: 6px 0; }
+  table.scan th { color: var(--muted); font-weight: normal; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); padding: 3px 4px; }
+  table.scan td { padding: 3px 4px; border-bottom: 1px solid var(--line); }
+  table.scan td:nth-child(1) { color: var(--muted); width: 1.5em; }
   .checks { list-style: none; padding: 0; margin: 6px 0; font-size: 12px; }
   .checks li { padding: 3px 0; border-bottom: 1px solid var(--line); display: flex; gap: 8px; }
   .checks .status { font-family: var(--mono); font-size: 10px; text-transform: uppercase; min-width: 52px; }
@@ -504,6 +511,7 @@
   <aside>
     <div class="tabs" role="tablist">
       <button role="tab" data-pane="thesis" aria-selected="true">Thesis</button>
+      <button role="tab" data-pane="scan" aria-selected="false">Scan</button>
       <button role="tab" data-pane="strategy" aria-selected="false">Strategy</button>
       <button role="tab" data-pane="bots" aria-selected="false">Bots</button>
       <button role="tab" data-pane="book" aria-selected="false">Book</button>
@@ -529,6 +537,44 @@
         <span id="attachNote" class="muted"></span>
       </div>
       <div id="thesis"><p class="empty">Ask a question. The thesis's own levels are drawn on the chart.</p></div>
+    </div>
+
+    <!--
+      The scanner. Every other panel on this page answers about the symbol you
+      already chose; this is the one that answers *which* symbol, which is the
+      question that comes first.
+
+      It reads `GET /scan` and keeps nothing: the route fetches bars behind a
+      concurrency permit, reduces each instrument to one number and drops them,
+      so ranking 300 symbols costs the same memory as ranking 3. Nothing here
+      caches the result either -- a ranking with no timestamp is a claim about
+      now, and `as_of_ms` is on every row precisely so the panel can say when
+      each measurement is from instead.
+    -->
+    <div class="pane" id="pane-scan" hidden>
+      <p class="muted">
+        Ranks instruments on one measurement. Nothing is stored: each is fetched,
+        measured and dropped, so this costs the same to run over the whole venue as
+        over a handful.
+      </p>
+      <div class="row">
+        <select id="scanMetric" title="Which measurement to rank by">
+          <option value="rsi">RSI</option>
+          <option value="atr_percent">ATR % of price</option>
+          <option value="change_percent">change %</option>
+        </select>
+        <select id="scanTimeframe" title="The resolution every instrument is measured on">
+          <option value="15m">15m</option>
+          <option value="1h" selected>1h</option>
+          <option value="4h">4h</option>
+          <option value="1d">1d</option>
+        </select>
+      </div>
+      <div class="row">
+        <input id="scanSymbols" placeholder="BTCUSDT,ETHUSDT (blank = whole venue)" />
+        <button id="scanGo" class="primary">Scan</button>
+      </div>
+      <div id="scanOut"><p class="empty">Pick a measurement and scan.</p></div>
     </div>
 
     <div class="pane" id="pane-strategy" hidden>

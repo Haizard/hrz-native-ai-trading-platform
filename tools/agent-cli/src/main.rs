@@ -33,8 +33,6 @@ use analytics_core::Timeframe;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use clap::{Parser, Subcommand};
-use db::repositories::{candles_range, load_candles, load_trades};
-use db::Database;
 
 #[derive(Parser)]
 #[command(name = "agent-cli", about = "ask the trading agent real questions")]
@@ -169,16 +167,66 @@ async fn main() -> Result<()> {
 // Data source
 // ---------------------------------------------------------------------------
 
-/// `MarketDataSource` over Postgres.
+/// `MarketDataSource` over the unified RAM + venue window.
 ///
 /// `ai-agent` cannot depend on `db` (`docs/03`), so this adapter lives here --
 /// one layer up, exactly as the trait was designed for.
-struct DbMarketData {
-    db: Arc<Database>,
+///
+/// ## Why this is no longer `DbMarketData`
+///
+/// It used to read candles out of Postgres. That was the last surviving trace
+/// of the assumption that market data is stored, and by the time it was removed
+/// from the gateway it had already produced a real defect there: the chart drew
+/// a symbol from RAM plus the venue while the agent answered "no data" for the
+/// same symbol at the same moment, because nobody had backfilled it by hand.
+///
+/// The CLI kept a copy, which meant `--trace` audited the agent against a
+/// *different* source than the one the product serves. An audit tool that
+/// disagrees with production about what a candle was is worse than no audit
+/// tool. It now reads [`market_data::WindowService`] -- the same merge the
+/// chart, the scanner and `/candles` read through.
+struct WindowMarketData {
+    windows: market_data::WindowService,
+}
+
+impl WindowMarketData {
+    /// Build the one service this CLI reads from.
+    ///
+    /// The registries are empty and stay empty: the CLI opens no websocket
+    /// feed, so every bar comes from the venue's REST. That is the point of the
+    /// window service -- a consumer with no feed still gets a correct answer --
+    /// and it is also why `2026-09-19`'s `1w` work matters here: weekly exists
+    /// only on this path.
+    fn from_env() -> Self {
+        let backfill = market_data::BackfillClient::new(
+            std::env::var("MARKET_REST_URL")
+                .unwrap_or_else(|_| "https://api.binance.com".to_string()),
+        );
+        Self {
+            windows: market_data::WindowService::new(
+                Arc::new(market_data::HistoryRegistry::new()),
+                Arc::new(market_data::LiveRegistry::new()),
+                backfill,
+            ),
+        }
+    }
+
+    /// The error a failed read produces, in the agent's own vocabulary.
+    fn unavailable(
+        symbol: &str,
+        timeframe: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> AgentError {
+        AgentError::DataUnavailable {
+            symbol: symbol.into(),
+            timeframe: timeframe.into(),
+            reason: reason.into(),
+        }
+    }
 }
 
 #[async_trait]
-impl MarketDataSource for DbMarketData {
+impl MarketDataSource for WindowMarketData {
     async fn candles(
         &self,
         symbol: &str,
@@ -186,13 +234,26 @@ impl MarketDataSource for DbMarketData {
         from_ns: i64,
         to_ns: i64,
     ) -> Result<Vec<Candle>, AgentError> {
-        load_candles(self.db.pool(), symbol, timeframe, from_ns, to_ns)
+        let window = self
+            .windows
+            .candles(symbol, timeframe, from_ns, to_ns)
             .await
-            .map_err(|e| AgentError::DataUnavailable {
-                symbol: symbol.into(),
-                timeframe: timeframe.to_string(),
-                reason: e.to_string(),
-            })
+            .map_err(|e| Self::unavailable(symbol, timeframe.to_string(), e.to_string()))?;
+
+        // Printed on `--trace` rather than only on failure, because the
+        // interesting case is not "the read threw" -- it is "the read returned
+        // twelve bars out of three hundred, and nothing said so". The agent
+        // reasons over whatever it is handed, so a thin window it cannot see is
+        // a confident answer built on a sample nobody checked -- and this is the
+        // tool whose whole purpose is auditing that.
+        tracing::debug!(
+            symbol,
+            timeframe = %timeframe,
+            bars = window.candles.len(),
+            provenance = %window.provenance(),
+            "market read"
+        );
+        Ok(window.candles)
     }
 
     async fn trades(
@@ -201,13 +262,13 @@ impl MarketDataSource for DbMarketData {
         from_ns: i64,
         to_ns: i64,
     ) -> Result<Vec<Trade>, AgentError> {
-        load_trades(self.db.pool(), symbol, from_ns, to_ns)
-            .await
-            .map_err(|e| AgentError::DataUnavailable {
-                symbol: symbol.into(),
-                timeframe: "ticks".into(),
-                reason: e.to_string(),
-            })
+        // Never an error, and never a venue call: the tape is the only place
+        // trades exist (`docs/04`), and a CLI opens no feed, so its tape is
+        // empty. Returning empty is the honest answer -- `ai-agent` reports
+        // `NO_TICK_DATA` for it rather than reading an empty tape as "the book
+        // was balanced". The old path answered from Postgres, where the rows
+        // only existed if someone had pumped them by hand.
+        Ok(self.windows.trades(symbol, from_ns, to_ns))
     }
 
     async fn latest_candle_time(
@@ -215,14 +276,20 @@ impl MarketDataSource for DbMarketData {
         symbol: &str,
         timeframe: Timeframe,
     ) -> Result<Option<i64>, AgentError> {
-        candles_range(self.db.pool(), symbol, timeframe)
+        let symbol = symbol.to_uppercase();
+        // With no feed the buffer is always empty, so this always pays the
+        // venue; kept as the buffer-first check anyway so the two adapters read
+        // the same, and so a future `agent-cli` that does open a feed needs no
+        // change here.
+        if let Some(newest) = self.windows.history().newest(&symbol, timeframe) {
+            return Ok(Some(newest));
+        }
+
+        self.windows
+            .latest(&symbol, timeframe, 1)
             .await
-            .map(|range| range.map(|(_, hi)| hi))
-            .map_err(|e| AgentError::DataUnavailable {
-                symbol: symbol.into(),
-                timeframe: timeframe.to_string(),
-                reason: e.to_string(),
-            })
+            .map(|window| window.candles.last().map(|c| c.open_time))
+            .map_err(|e| Self::unavailable(&symbol, timeframe.to_string(), e.to_string()))
     }
 }
 
@@ -240,9 +307,7 @@ async fn run_ask(
     json_out: Option<&str>,
 ) -> Result<()> {
     let library = load_skills(skills_dir)?;
-    let data = DbMarketData {
-        db: Arc::new(connect().await?),
-    };
+    let data = WindowMarketData::from_env();
     let agent = Agent::new(bedrock()?, library, AgentConfig::default());
 
     let mut request = AskRequest::new(symbol, question);
@@ -440,11 +505,4 @@ fn bedrock() -> Result<Arc<ai_agent::BedrockClient>> {
     let config = ai_agent::BedrockConfig::from_env()?;
     tracing::info!(model = %config.model_id, region = %config.region, "using bedrock");
     Ok(Arc::new(ai_agent::BedrockClient::new(config)?))
-}
-
-async fn connect() -> Result<Database> {
-    let db = Database::from_env()
-        .await
-        .context("connecting to the database -- is DATABASE_URL set?")?;
-    Ok(db)
 }

@@ -12,6 +12,7 @@ ai-agent = { workspace = true }
 analytics-core = { workspace = true }
 strategy-dsl = { workspace = true, features = ["yaml"] }
 db = { workspace = true }
+market-data = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

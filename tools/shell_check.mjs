@@ -326,6 +326,15 @@ window.HTMLCanvasElement.prototype.toDataURL = function (type) {
 // is a per-pane claim and `/ws/orderbook/BTCUSDT` is a page-level one, and the
 // difference between those two is the whole of "which chart is the panel about".
 const sockets = [];
+/// Additions to the socket mock, so a check can drive a refusal.
+///
+/// Declared before the class that reads them, because the class body runs at
+/// assignment time and a `const` after it would be in its temporal dead zone.
+/// `refuse` is a predicate on the URL: a refused socket fires `onerror` instead
+/// of `onopen`, which is what a browser does when the handshake gets a non-101
+/// -- and per spec it hands script no status, which is the whole reason the
+/// shell has to go and ask.
+const socketBehaviour = { refuse: null };
 window.WebSocket = class {
   constructor(url) {
     this.url = String(url);
@@ -338,7 +347,16 @@ window.WebSocket = class {
     // `ask()` that dropped it on the floor would have passed every check here.
     this.sent = [];
     sockets.push(this);
-    setTimeout(() => this.onopen && this.onopen(), 0);
+    setTimeout(() => {
+      if (socketBehaviour.refuse && socketBehaviour.refuse(this.url)) {
+        // A refusal, then a close -- the order a browser uses. `onerror` first
+        // is what makes the shell's reason-probe run.
+        if (this.onerror) this.onerror({ type: "error" });
+        if (this.onclose) this.onclose({ code: 1006 });
+        return;
+      }
+      if (this.onopen) this.onopen();
+    }, 0);
   }
   send(payload) {
     this.sent.push(String(payload));
@@ -377,6 +395,42 @@ const backend = {
   requests: [],
   failCreate: null, // a status code, to exercise the failure path
   calls: [],
+  // What `/capabilities` reports for the agent, and what `/auth/me` answers.
+  //
+  // Mutable so a check can drive the two refusal causes the shell must tell
+  // apart. Default `ready` + `200`: a harness whose default was "not
+  // configured" would make every other check's agent socket fail for a reason
+  // nobody chose.
+  agentCapability: "ready",
+  meStatus: 200,
+  // The answer `GET /scan` gives. Two ranked rows, one failure and a note, which
+  // is the shape that makes the panel's three regions all visible at once --
+  // ranked first, the unmeasured in their own fold, and the caveat below. A
+  // fixture with only ranked rows would let a shell that dropped `failures`
+  // entirely still look correct.
+  scan: {
+    metric: "rsi",
+    timeframe: "1h",
+    // The order and the values deliberately **disagree**, and that is the point:
+    // the server ranks by the metric's own direction over a set the caller cannot
+    // see (the full universe, then truncated), so "highest number first" is not
+    // the same as "server's order". A client that re-sorted would look correct
+    // against a fixture whose values happened to descend, and wrong here.
+    rows: [
+      { symbol: "BTCUSDT", value: 43.5, as_of_ms: null, bars: 300, error: null },
+      { symbol: "ETHUSDT", value: 71.234, as_of_ms: null, bars: 300, error: null },
+    ],
+    failures: [
+      { symbol: "XRPUSDT", value: null, as_of_ms: null, bars: 0, error: "no candles for 1h" },
+    ],
+    skipped: 0,
+    requested: 3,
+    complete: false,
+    summary: "3 instruments measured on 1h by RSI; 2 could be ranked.",
+    universe: "venue",
+    universe_size: 842,
+    note: "the ranking covers the 50 most liquid instruments",
+  },
   // Two instruments, because a chart per instrument is what a second pane is for
   // and one symbol cannot tell two panes apart.
   //
@@ -651,6 +705,65 @@ window.fetch = async (path, options = {}) => {
       backend.drawings = backend.drawings.filter((d) => d.id !== id);
       return json(200, { id, deleted: true });
     }
+  }
+
+  // What the agent channel reports when a handshake is refused.
+  //
+  // The socket itself cannot say why: a non-101 response is opaque to script, so
+  // the shell goes and asks. These two stubs are the answers it can get, and the
+  // point of the checks below is that the shell distinguishes them rather than
+  // printing one generic sentence for both.
+  if (url.startsWith("/scan")) {
+    // Echoes back what the shell *asked*, rather than returning a canned answer
+    // for every query. The parameters are the contract: a shell that sent the
+    // wrong metric name or dropped the explicit symbols would still render a
+    // plausible table against a fixture that ignored them.
+    const asked = new URLSearchParams(url.slice(url.indexOf("?") + 1));
+    const scan = { ...backend.scan };
+    scan.metric = asked.get("metric") || "rsi";
+    scan.timeframe = asked.get("timeframe") || "1h";
+    scan.universe = asked.get("symbols") ? "explicit" : "venue";
+    scan.universe_size = asked.get("symbols") ? null : backend.scan.universe_size;
+    // A real `as_of_ms` on the ranked rows, so the panel's age column has a
+    // number to render and a check on it is not asserting the formatting of null.
+    scan.rows = backend.scan.rows.map((r) => ({ ...r, as_of_ms: Date.now() - 120000 }));
+    return json(200, scan);
+  }
+
+  if (url.startsWith("/capabilities")) {
+    const agent = backend.agentCapability;
+    return json(200, {
+      capabilities: [
+        agent === "ready"
+          ? { name: "agent", readiness: "ready", verified: true, depends_on: "AWS_BEDROCK_*" }
+          : {
+              name: "agent",
+              readiness: agent,
+              verified: false,
+              depends_on: "AWS_BEDROCK_REGION",
+              detail: "not configured",
+            },
+      ],
+      data: [],
+      instruments: { indexed: 0, fetched_at_ns: null, stale: true },
+      feeds: { route: 0, bot: 0, max_active: 32, symbols: [] },
+      all_ready: agent === "ready",
+    });
+  }
+
+  if (url.startsWith("/auth/me")) {
+    // The token the harness wrote is accepted unless a check says otherwise --
+    // this is the "the agent is configured, so the refusal was the credential"
+    // half of the pair.
+    if (backend.meStatus !== 200) {
+      return json(backend.meStatus, {
+        error: {
+          code: "UNAUTHORIZED",
+          message: "the session token is missing, malformed or expired",
+        },
+      });
+    }
+    return json(200, { user_id: "harness", email: "harness@example.test" });
   }
 
   // Anything else the shell asks for: an empty object is what an endpoint with
@@ -2446,6 +2559,408 @@ check(
   "and it does not leave the Ask button stuck",
   !askButton.disabled
 );
+
+// --- the scanner ---------------------------------------------------------------
+//
+// `GET /scan` shipped with eight route tests and no reader. Nothing in this file
+// had ever opened the panel, so the whole surface -- the ranking, the unmeasured
+// instruments, the universe the answer came from -- was unobserved, and the route
+// was reachable only by hand.
+//
+// The checks below are about the things the response carries that a panel could
+// plausibly drop without any Rust test noticing: that the ranking is drawn in the
+// order given, that a symbol which could not be measured is *not* drawn as one
+// that ranked last, that the summary is shown as written, and that the metric and
+// timeframe the user picked are what actually went on the wire.
+
+console.log("\nthe scanner");
+
+const scanOut = document.getElementById("scanOut");
+const scanGo = document.getElementById("scanGo");
+const scanTab = document.querySelector('.tabs button[data-pane="scan"]');
+
+scanTab.click();
+await settle();
+
+check(
+  "the scan panel is reachable from the tab strip",
+  document.getElementById("pane-scan").hidden === false,
+  "a route with no reader is a route only its own tests can reach"
+);
+check(
+  "and it opens saying what to do, not showing an empty table",
+  scanOut.textContent.includes("Pick a measurement"),
+  scanOut.textContent.slice(0, 60)
+);
+
+// The metric and timeframe the user chose are the ones that have to go out. Both
+// are read from the DOM rather than set from the fixture, because a shell that
+// hardcoded either -- or that sent the label instead of the wire name -- would
+// render a correct-looking table under a heading that is a lie.
+document.getElementById("scanMetric").value = "atr_percent";
+document.getElementById("scanTimeframe").value = "4h";
+document.getElementById("scanSymbols").value = "BTCUSDT,ETHUSDT";
+scanGo.click();
+await settle();
+await settle();
+
+const scanCall = backend.calls.filter((c) => c.url.startsWith("/scan")).at(-1);
+const scanQuery = new URLSearchParams(scanCall ? scanCall.url.split("?")[1] : "");
+check(
+  "the metric and timeframe the user picked are what is asked for",
+  scanQuery.get("metric") === "atr_percent" && scanQuery.get("timeframe") === "4h",
+  scanCall ? scanCall.url : "(no scan request)"
+);
+check(
+  "and the instruments typed into the box are sent as an explicit universe",
+  scanQuery.get("symbols") === "BTCUSDT,ETHUSDT",
+  scanQuery.get("symbols") ?? "(absent)"
+);
+
+// And an *empty* box must send no `symbols` at all, rather than an empty one.
+//
+// `symbols=` present-but-blank is a third request: `Some("")` at the route, which
+// parses to an explicit universe of nothing rather than falling back to the
+// venue's instruments -- so the user who cleared the box would get an empty
+// ranking instead of everything, and the panel would report `universe: explicit`
+// while showing none.
+document.getElementById("scanSymbols").value = "";
+scanGo.click();
+await settle();
+await settle();
+const cleared = backend.calls.filter((c) => c.url.startsWith("/scan")).at(-1);
+check(
+  "and an empty box asks about the venue, sending no symbols at all",
+  cleared && !new URLSearchParams(cleared.url.split("?")[1]).has("symbols"),
+  cleared ? cleared.url : "(no scan request)"
+);
+check(
+  "and the server's own summary is shown, not a sentence invented here",
+  scanOut.textContent.includes("3 instruments measured on 1h by RSI"),
+  scanOut.textContent.slice(0, 90)
+);
+
+// The *ranked* table only. `table.scan` matches the unmeasured one too, and a
+// selector that caught both would make the check below pass while the panel drew
+// a symbol it could not measure in rank order -- which is the exact defect it
+// names. `table.scan` outside the `details` is the ranking.
+const scanRows = () => {
+  const ranked = [...scanOut.querySelectorAll("table.scan")].find((t) => !t.closest("details"));
+  return ranked ? [...ranked.querySelectorAll("tbody tr")] : [];
+};
+check(
+  "the ranking is drawn, one row per measured instrument",
+  scanRows().length >= backend.scan.rows.length,
+  `${scanRows().length} rows`
+);
+check(
+  "and in the order the server ranked them, not re-sorted here",
+  scanRows().length > 0 && scanRows()[0].textContent.includes("BTCUSDT"),
+  scanRows().length ? scanRows()[0].textContent.trim().slice(0, 40) : "(no rows)"
+);
+check(
+  "and the value under it is that instrument's own, in the server's order",
+  scanRows().length > 0 && scanRows()[0].textContent.includes("43.50"),
+  scanRows().length ? scanRows()[0].textContent.trim().slice(0, 40) : "(no rows)"
+);
+
+// The failure case, which is what the fixture exists for. A symbol that could not
+// be measured must not appear as a ranked row: "we could not measure this" and
+// "this ranked last" are different claims, and drawing the first as the second
+// states something false.
+check(
+  "a symbol that could not be measured is not shown as one that ranked last",
+  !scanRows().some((r) => r.textContent.includes("XRPUSDT")),
+  scanRows().map((r) => r.textContent.slice(0, 12).trim()).join(" | ")
+);
+check(
+  "and it is kept, with its own reason, rather than dropped",
+  scanOut.textContent.includes("XRPUSDT") && scanOut.textContent.includes("no candles for 1h"),
+  "an instrument the scan could not measure is the answer to why it is not on the list"
+);
+
+// --- the order book -----------------------------------------------------------
+//
+// Nothing in this file had ever looked at the book panel, so the three ways its
+// channel can end were all unobserved -- and the live log showed they matter:
+// the feed is healthy and the books sync, yet a user can still see "WebSocket is
+// closed before the connection is established" over an empty ladder.
+//
+// The closes are (a) we aborted it by moving panes, (b) the server closed it
+// after DEPTH_GRACE with a notice explaining why, and (c) it failed outright.
+// They must produce three different outcomes, because one generic sentence for
+// all of them is how a healthy book reads as a broken one.
+//
+// Driven through the DOM like every other check here: `bookMsg` is the panel's
+// own element, and the pane's symbol select is how a user moves the book.
+
+console.log("\nthe order book");
+
+const bookMsg = document.getElementById("bookMsg");
+/// Every message the book panel was made to show, in order.
+///
+/// Read by `inOne` below rather than read after the fact, because a post-hoc read
+/// cannot see an abort: a later close overwrites the panel, and the state the
+/// guard protects is gone by the time a check looks at it. Captured here, at the
+/// instant of the write, is the only place the abort is observable at all.
+const __log = [];
+// `window.MutationObserver`, not a bare `MutationObserver`: this file is an ES
+// module, and jsdom's globals live on the `window` it was given rather than in
+// this scope. A bare reference threw `ReferenceError` -- which the guard below
+// turned into a silent skip, so the observer simply never ran and every check
+// reading `__log` failed against an empty array while the panel clearly held the
+// right text. The guard is now on the thing that actually exists.
+if (typeof window.MutationObserver === "function") {
+  new window.MutationObserver(() => __log.push(bookMsg.textContent)).observe(bookMsg, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+}
+
+/// Every book socket opened so far, oldest first.
+const bookSockets = () => socketsFor("/ws/orderbook");
+/// The sockets still open for the book channel.
+const openBooks = () => openSocketsFor("/ws/orderbook");
+
+/// Fail unless `run()` produces exactly the `want` list, in order.
+///
+/// Every check in this section asserts on *every* close, not on the last one, and
+/// the reason is the harness itself: a socket's `onclose` is synchronous here but
+/// a browser's is a task, and a socket opened microseconds before its close can
+/// therefore land in either order. "The last message is right" does not survive
+/// that. "These two messages were produced, each exactly once, and neither is the
+/// wrong one" does -- because a duplicate is the only shape the reordering could
+/// hide, and it is what an unguarded shell actually produces.
+const inOne = async (what, run, want) => {
+  __log.length = 0;
+  await run();
+  // The observer is a callback, not a synchronous hook: jsdom delivers it on the
+  // microtask queue, so reading `__log` on the line after `run()` returns would
+  // read it before the write that `run()` just made. This is the same trap
+  // `settle` exists for on the socket side.
+  await Promise.resolve();
+  const seen = [...__log];
+  const missing = want.filter((w) => !seen.includes(w));
+  const extra = seen.filter((s) => !want.includes(s));
+  check(
+    what,
+    missing.length === 0 && extra.length === 0,
+    `wanted [${want.join(", ")}]; got [${seen.join(", ")}]`
+  );
+};
+
+/// Reopen the book channel from a known state, and *leave a socket open behind
+/// it* for the next check to abort.
+///
+/// The book follows the active pane, and the two gestures that put a pane in the
+/// book's path are a pointer press (which makes that pane active) and a `change`
+/// on that pane's own symbol select (which is what `onSymbolChange` is wired to).
+///
+/// Both are needed, and each was learned from a failing check:
+///
+/// * Without the press, the select belongs to a pane that is not active, so
+///   `onSymbolChange`'s `which === activePane` is false and `connectBook` never
+///   runs -- the whole section would have been inert.
+/// * Without the select changing to a *different* instrument, `setActive` skips
+///   the reconnect (`moved` is false for a same-symbol move), so a check that
+///   wanted a superseded socket would find the same one still open and pass
+///   without the guard ever being read.
+///
+/// `setActive` runs on a capture-phase listener, so the press has taken effect by
+/// the time the dispatch returns -- no waiting between the two.
+///
+/// One pane, because the multi-chart section closes back down to one before this
+/// runs: there is no second select to move, and the press has to address the pane
+/// that exists rather than the one the earlier section happened to end on.
+async function reset() {
+  pickTool("cursor", 0);
+  pointer("pointerdown", 400, 200, 0);
+  pointer("pointerup", 400, 200, 0);
+  const select = paneNode(0).querySelector(".symbol");
+  const to = select.value === "BTCUSDT" ? "ETHUSDT" : "BTCUSDT";
+  if (![...select.options].some((o) => o.value === to)) {
+    const option = document.createElement("option");
+    option.value = to;
+    select.appendChild(option);
+  }
+  select.value = to;
+  change(select);
+  await settle();
+  // Open, and still connecting. Its `onclose` is either the abort below or the
+  // harness's shutdown -- never one the server sent, which is the whole
+  // distinction this section is about.
+  return openBooks().at(-1);
+}
+
+// (c) A refused handshake. The panel must not sit on "Connecting…" forever.
+//
+// This is the one close the shell has no message for: no `notice` arrived, and
+// nothing asked for the abort, so the honest reading is "the book disconnected"
+// -- a sentence that is unhelpful but true. What it must *not* be is silence.
+socketBehaviour.refuse = (url) => url.includes("/ws/orderbook/");
+await inOne(
+  "a refused book socket does not leave the panel on Connecting…",
+  async () => {
+    await reset();
+    await settle();
+  },
+  ["The book disconnected."]
+);
+socketBehaviour.refuse = null;
+
+// (a) A close we asked for is not news.
+//
+// Moving the book off a socket aborts it, and that abort is the literal cause of
+// the browser error this section exists for: "WebSocket is closed before the
+// connection is established" is what a socket that never finished its handshake
+// reports when something closes it. An unguarded shell answers that by telling
+// the user their book disconnected -- on every instrument change, over a book
+// that is perfectly fine.
+//
+// The new socket is left *connecting* (no frame delivered), so it stays silent in
+// the log: this read is the abort and nothing else.
+const superseded = await reset();
+await inOne(
+  "a close we asked for is reported as no close at all",
+  async () => {
+    await reset();
+  },
+  []
+);
+check(
+  "and the socket that was moved off really was closed",
+  superseded.closed === true && !openBooks().includes(superseded),
+  superseded.closed ? "closed" : "still open"
+);
+
+// (b) The server closing with an explanation. `/ws/orderbook` gives up after
+// `DEPTH_GRACE` and says why, and that notice is the only sentence naming the real
+// cause -- either `MARKET_FEED` is unset or the book has not finished syncing.
+// Overwriting it with "disconnected" throws away the one useful thing the
+// exchange carried and leaves the user with a healthy feed and no explanation.
+await reset();
+const noticeText =
+  "no order book for BTCUSDT arrived within 5s. The feed subscribes depth alongside " +
+  "trades, so this means either no market feed is configured (MARKET_FEED) or the " +
+  "book has not finished syncing.";
+await inOne(
+  "a book the server closed keeps the server's own explanation",
+  async () => {
+    const noticeSocket = openBooks().at(-1);
+    deliver(noticeSocket, { type: "notice", message: noticeText });
+    noticeSocket.close();
+    await settle();
+  },
+  [noticeText]
+);
+
+// The retry. `/ws/orderbook` closes after its grace period whenever a book has
+// not synced yet, and the live log shows books arriving 8-29 diffs later -- so a
+// book that was merely late has to come back on its own rather than needing a
+// page reload. Nothing else in this file would notice if it never did: every
+// other check here is about a message, and this one is about a socket that
+// reappears with no gesture behind it.
+await reset();
+await settle();
+const retrySymbol = openBooks().at(-1).url.split("/").pop();
+const retryBefore = bookSockets().length;
+openBooks().at(-1).close();
+await settle();
+// Past `BOOK_RETRY_MS` (1000ms in the shell). The retry re-checks that the pane
+// has not moved, which is why nothing may touch the symbol select in between.
+await new Promise((resolve) => setTimeout(resolve, 1400));
+const reopened = openBooks().at(-1);
+check(
+  "a book channel that closed is re-opened on its own",
+  bookSockets().length > retryBefore && Boolean(reopened) && reopened.url.endsWith("/" + retrySymbol),
+  `${retryBefore} -> ${bookSockets().length} sockets, ${
+    reopened ? reopened.url.split("/").pop() : "none open"
+  }`
+);
+
+// --- why the agent channel refused -------------------------------------------
+//
+// A refused WebSocket handshake is opaque to script -- per spec the response
+// status is not exposed -- so `onerror` cannot tell an expired token from an
+// agent that was never configured, and the shell said one generic sentence for
+// both. They have opposite fixes (sign in again, versus tell the operator to set
+// `AWS_BEDROCK_*`), so reporting one as the other sends the user at the wrong
+// problem.
+//
+// The cached socket has to go before a refusal can be observed at all.
+//
+// `ensureAgentSocket` returns the *same* promise once it has opened one, so
+// everything above has left a live agent socket behind and a new question would
+// reuse it -- the refuse predicate would never be consulted, no `onerror` would
+// fire, and the checks below would read a panel that just says "Working…"
+// forever while passing for the wrong reason. Closing the live socket is what
+// the shell's own `onclose` treats as "this one is gone": it nulls `agentReady`.
+//
+// This is also the only way to make the refusal path reachable twice in one run,
+// which matters because the two checks below are the same failure mode with two
+// different causes.
+const dropAgentSocket = async () => {
+  const live = socketsFor("/ws/agent").filter((s) => !s.closed).at(-1);
+  if (live) live.close();
+  // `asking` may still be true from the close above; clear it by finishing that
+  // turn, or the next `ask()` returns early and never opens anything.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+};
+
+/// The text the panel ended up showing for the last turn.
+///
+/// Read from the last `.turn` rather than from the whole panel: the transcript
+/// keeps every earlier question, so `textContent.includes(...)` over the lot
+/// would match an answer from several sections ago and pass against a shell that
+/// said nothing about this one. The last turn is the only one that can be the
+/// answer to the question just asked.
+const lastTurnText = () => {
+  const cards = thesisPanel.querySelectorAll(".turn");
+  return cards.length ? cards[cards.length - 1].textContent : "";
+};
+
+// Not configured. The capabilities route answers this without a valid token,
+// which is why the shell asks it first -- and the deployment-level answer beats
+// the credential one: a user who reads "sign in again" when the server has no
+// Bedrock credentials will sign in forever.
+await dropAgentSocket();
+backend.agentCapability = "not_configured";
+socketBehaviour.refuse = (url) => url.includes("/ws/agent/");
+questionBox.value = "is the agent there?";
+askButton.click();
+await new Promise((resolve) => setTimeout(resolve, 80));
+
+check(
+  "an agent that is not configured says so, rather than blaming the connection",
+  lastTurnText().includes("not configured"),
+  lastTurnText().slice(-90)
+);
+check(
+  "and it asks the server before answering, instead of guessing from the socket",
+  backend.calls.some((c) => c.url.startsWith("/capabilities")),
+  "a refused handshake carries no status, so the reason has to come from somewhere"
+);
+
+// Configured, and the credential is the thing that failed. The same refusal must
+// produce the *other* message -- otherwise "not configured" is just a second
+// generic sentence wearing the first one's words, and the shell has learned
+// nothing about why the handshake was refused.
+await dropAgentSocket();
+backend.agentCapability = "ready";
+backend.meStatus = 401;
+questionBox.value = "and now?";
+askButton.click();
+await new Promise((resolve) => setTimeout(resolve, 80));
+
+check(
+  "a refused credential is reported as a credential, not as a missing agent",
+  lastTurnText().includes("refused") && !lastTurnText().includes("not configured"),
+  lastTurnText().slice(-90)
+);
+
+socketBehaviour.refuse = null;
+backend.meStatus = 200;
 
 // --- nothing threw -----------------------------------------------------------
 //

@@ -329,6 +329,102 @@ MUTATIONS = [
         "        render();",
         ["and a candle published by something else outranks the notice"],
     ),
+    # The order book. Three ways its channel ends and three different things the
+    # panel has to say, plus the retry that turns "not yet" into a book. Each was
+    # written after the live log showed the feed healthy, the books syncing, and a
+    # user still seeing "WebSocket is closed before the connection is established"
+    # over an empty ladder.
+    (
+        "a close we asked for is reported as a disconnect",
+        APP,
+        "    if (ws.bookSuperseded) return;",
+        "    if (false) return;",
+        ["a close we asked for is reported as no close at all"],
+    ),
+    (
+        "the server's own explanation is overwritten by a generic one",
+        APP,
+        "    if (ws.bookNotice) {\n"
+        '      el("bookMsg").textContent = ws.bookNotice;\n'
+        "    } else {\n"
+        '      el("bookMsg").textContent = "The book disconnected.";\n'
+        "    }",
+        '    el("bookMsg").textContent = "The book disconnected.";',
+        ["a book the server closed keeps the server's own explanation"],
+    ),
+    (
+        "a book that was merely late is never asked for again",
+        APP,
+        "    scheduleBookRetry(symbol);",
+        "    // no retry",
+        ["a book channel that closed is re-opened on its own"],
+    ),
+    (
+        "a refused agent channel reports one generic sentence for every cause",
+        APP,
+        "      agentChannelReason().then((reason) => {\n"
+        '        reject(new Error(reason || "could not reach the agent channel"));\n'
+        "      });",
+        '      reject(new Error("could not reach the agent channel"));',
+        [
+            "an agent that is not configured says so, rather than blaming the connection",
+            "and it asks the server before answering, instead of guessing from the socket",
+            "a refused credential is reported as a credential, not as a missing agent",
+        ],
+    ),
+    (
+        "an agent with no Bedrock credentials is reported as a credential problem",
+        APP,
+        '    if (agent && agent.readiness === "not_configured") {\n'
+        '      return "the AI analyst is not configured on this deployment";\n'
+        "    }",
+        "    // the deployment-level answer is never consulted",
+        ["an agent that is not configured says so, rather than blaming the connection"],
+    ),
+    # The scanner. `GET /scan` shipped with eight route tests and no reader, so
+    # these are the first checks that have ever looked at the panel -- and the
+    # four ways it could be wrong without a Rust test noticing.
+    (
+        "a symbol the scan could not measure is drawn as one that ranked last",
+        APP,
+        "  const ranked = (scan.rows || []).map((r, i) => row(r, i + 1)).join(\"\");",
+        "  const ranked = [...(scan.rows || []), ...(scan.failures || [])]"
+        ".map((r, i) => row(r, i + 1)).join(\"\");",
+        ["a symbol that could not be measured is not shown as one that ranked last"],
+    ),
+    (
+        "the metric's label is sent instead of its wire name",
+        APP,
+        '    params.set("metric", el("scanMetric").value);',
+        '    params.set("metric", el("scanMetric").selectedOptions[0].text);',
+        ["the metric and timeframe the user picked are what is asked for"],
+    ),
+    (
+        "the ranking is re-sorted in the shell",
+        APP,
+        "  const ranked = (scan.rows || []).map((r, i) => row(r, i + 1)).join(\"\");",
+        "  const ranked = [...(scan.rows || [])].sort((a, b) => (b.value ?? 0) - (a.value ?? 0))"
+        ".map((r, i) => row(r, i + 1)).join(\"\");",
+        [
+            "and in the order the server ranked them, not re-sorted here",
+            "and the value under it is that instrument's own, in the server's order",
+        ],
+    ),
+    (
+        "an empty symbols box sends a blank list instead of the whole venue",
+        APP,
+        '    const typed = el("scanSymbols").value.trim();\n'
+        '    if (typed) params.set("symbols", typed);',
+        '    params.set("symbols", el("scanSymbols").value.trim());',
+        ["and an empty box asks about the venue, sending no symbols at all"],
+    ),
+    (
+        "the server's summary is replaced by a sentence the shell wrote",
+        APP,
+        '    <p class="muted">${escapeHtml(scan.summary || "")}</p>',
+        '    <p class="muted">Scan complete.</p>',
+        ["and the server's own summary is shown, not a sentence invented here"],
+    ),
 ]
 
 originals = {}

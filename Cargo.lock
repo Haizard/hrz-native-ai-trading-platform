@@ -22,6 +22,7 @@ dependencies = [
  "clap",
  "db",
  "dotenvy",
+ "market-data",
  "serde_json",
  "strategy-dsl",
  "tokio",

@@ -33,6 +33,7 @@ let wasm = null; // the chart engine instance, loaded once and shared
 let thesis = null;
 
 let bookSocket = null; // the order-book channel
+let bookRetry = null; // pending re-open of that channel, see `scheduleBookRetry`
 let botSocket = null; // the channel for the one bot being watched
 let watchedBot = null; // its id, or null when watching none
 let bots = []; // the last bot list read from the API
@@ -40,6 +41,7 @@ let botLog = []; // frames from `botSocket`, oldest first
 let botNotifications = {}; // bot id -> notifications, once asked for
 let notificationsOpen = null; // the bot whose notifications are shown
 let venues = []; // the last venue list, so opt-in state has one source
+let scan = null; // the last `GET /scan`, or null before the first one
 
 let agentSocket = null; // the agent channel, opened on first ask
 let agentReady = null; // resolves when it is open
@@ -2552,7 +2554,15 @@ async function loadCoverage() {
 /// parts of this shell could disagree about the same book. Formatting is all
 /// that is left to do, and that is all this does.
 function connectBook() {
-  if (bookSocket) bookSocket.close();
+  if (bookSocket) {
+    // Marked before closing, because `close()` fires `onclose` synchronously in
+    // this shell's own harness and asynchronously in a browser -- and the mark
+    // has to be set on the *old* socket either way, which is why it is not
+    // cleared from the new one below.
+    bookSocket.bookSuperseded = true;
+    bookSocket.close();
+  }
+  clearTimeout(bookRetry);
   // The book follows the *active* pane, because there is one book and one aside.
   // A pane that is not active has no claim on it, however recently it changed.
   const symbol = activePane ? activePane.symbol() : "";
@@ -2560,6 +2570,12 @@ function connectBook() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${scheme}://${location.host}/ws/orderbook/${symbol}`);
   bookSocket = ws;
+  // A socket we closed on purpose must not report its own closure.
+  ws.bookSuperseded = false;
+  // Whether the server explained itself before closing. Set by a `notice`
+  // frame, read by `onclose`, which is the difference between "the book is
+  // still syncing" (a message worth keeping) and a bare disconnect.
+  ws.bookNotice = null;
 
   ws.onmessage = (event) => {
     let frame;
@@ -2572,8 +2588,10 @@ function connectBook() {
     if (frame.type === "data") renderBook(frame.payload);
     // The channel says why when there is no book, and a DOM that showed an
     // empty ladder instead would look like a market with no liquidity.
-    else if (frame.type === "notice") el("bookMsg").textContent = frame.message;
-    else if (frame.type === "lagged") {
+    else if (frame.type === "notice") {
+      ws.bookNotice = frame.message;
+      el("bookMsg").textContent = frame.message;
+    } else if (frame.type === "lagged") {
       el("bookMsg").textContent = `the book dropped ${frame.dropped} update(s)`;
     }
   };
@@ -2581,8 +2599,53 @@ function connectBook() {
     // Only the socket we are still meant to be using may speak for the panel.
     if (bookSocket !== ws) return;
     bookSocket = null;
-    el("bookMsg").textContent = "The book disconnected.";
+
+    // Two closes look identical from here and mean opposite things.
+    //
+    // A close we asked for is not news: switching panes aborts a socket whose
+    // handshake may not have finished, which the browser reports as "closed
+    // before the connection is established". Saying anything would tell the
+    // user their book broke every time they changed chart.
+    if (ws.bookSuperseded) return;
+
+    // The server explains itself when it can. `/ws/orderbook` closes after
+    // `DEPTH_GRACE` with a notice naming MARKET_FEED and the sync state, and
+    // overwriting that with "disconnected" would throw away the only useful
+    // sentence in the exchange.
+    if (ws.bookNotice) {
+      el("bookMsg").textContent = ws.bookNotice;
+    } else {
+      el("bookMsg").textContent = "The book disconnected.";
+    }
+
+    // A book that was a few seconds late should appear when it arrives, not
+    // need a page reload. This is the case the live log showed: the feed is
+    // healthy and the book does sync, so a close here is almost always "not
+    // yet" rather than "never" -- and only the retry can tell them apart.
+    scheduleBookRetry(symbol);
   };
+}
+
+/// How long to wait before re-asking for a book that closed.
+///
+/// The server's own grace is 5s, and the observed sync times are single-digit
+/// diffs, so one second is comfortably inside a healthy startup and far below
+/// anything a user would call a hang.
+const BOOK_RETRY_MS = 1000;
+
+/// Re-open the book channel for `symbol`, if it is still the right one.
+///
+/// The retry re-checks that the pane has not moved: a user who switched to
+/// another instrument while this one was backing off must not have the old
+/// symbol's book yanked back onto the panel.
+function scheduleBookRetry(symbol) {
+  clearTimeout(bookRetry);
+  bookRetry = setTimeout(() => {
+    if (bookSocket) return;
+    const wanted = activePane ? activePane.symbol() : "";
+    if (wanted !== symbol) return;
+    connectBook();
+  }, BOOK_RETRY_MS);
 }
 
 function bookRows(levels, side) {
@@ -2727,6 +2790,65 @@ function renderTranscript() {
     .join("");
 }
 
+/// Why the agent channel refused to open.
+///
+/// A refused WebSocket handshake reaches script as an opaque `error` event:
+/// per spec the response status is **not** exposed, so `onerror` cannot tell an
+/// expired token from an unconfigured agent from a host that does not exist —
+/// all three arrive identically, and "could not reach the agent channel" was
+/// the most this shell could honestly say until it went and looked.
+///
+/// ## What it asks, and why those two things
+///
+/// The refusal does have a reason, and both halves are already served with
+/// meaning elsewhere:
+///
+/// * `/capabilities` reports the `agent` capability. When Bedrock is not
+///   configured it is `not_configured` with a `warning` naming the consequence,
+///   so this can say "the AI analyst is not configured on this deployment"
+///   rather than sending the user to check a token that is fine.
+/// * `/auth/me` (through `api`) distinguishes a token the server accepts from
+///   one it does not, because that is the *only* remaining reason a
+///   handshake would be refused with the agent configured.
+///
+/// The two are genuinely different problems with opposite fixes — sign in
+/// again, versus tell the operator to set `AWS_BEDROCK_*` — and reporting one
+/// as the other is worse than reporting neither. A user with a seven-day-old
+/// token who reads "the agent is not configured" goes looking for a server
+/// variable they cannot see while the real fix is one click.
+///
+/// This runs **after** the socket has already failed, so it costs nothing on
+/// the happy path, and it never turns a working deployment into a broken one:
+/// if neither probe produces an answer, the caller keeps its generic message.
+async function agentChannelReason() {
+  // Is the agent there at all? This is the deployment-level answer and it does
+  // not need the token to be valid, which is why it is asked first.
+  try {
+    const report = await api("/capabilities");
+    const agent = (report.capabilities || []).find((c) => c.name === "agent");
+    if (agent && agent.readiness === "not_configured") {
+      return "the AI analyst is not configured on this deployment";
+    }
+    if (agent && agent.readiness === "degraded") {
+      return "the AI analyst is configured but not usable";
+    }
+  } catch {
+    // The capabilities route itself is down; fall through to the token check,
+    // which will fail too and produce the honest generic message.
+  }
+
+  // Agent is configured, so the handshake was refused over the credential.
+  try {
+    await api("/auth/me");
+  } catch (e) {
+    // `api` already turns a non-2xx into a message carrying the server's own
+    // words, and the 401 body here says the session token is missing,
+    // malformed or expired.
+    return `the agent channel refused the connection: ${e.message}`;
+  }
+  return null;
+}
+
 /// The agent socket, opened on first use.
 ///
 /// Lazily rather than at load: an anonymous visitor cannot open it (the
@@ -2746,7 +2868,14 @@ function ensureAgentSocket() {
     );
     agentSocket = ws;
     ws.onopen = () => resolve(ws);
-    ws.onerror = () => reject(new Error("could not reach the agent channel"));
+    ws.onerror = () => {
+      // Ask the server why rather than reporting the browser's silence. The
+      // socket is already dead either way; this decides what to *say*, and a
+      // wrong reason sends the user at the wrong fix.
+      agentChannelReason().then((reason) => {
+        reject(new Error(reason || "could not reach the agent channel"));
+      });
+    };
     ws.onmessage = onAgentFrame;
     ws.onclose = () => {
       // Only the socket we are still meant to be using may speak for the panel.
@@ -4137,6 +4266,109 @@ async function refreshBots() {
   }
 }
 
+/// The scan panel, drawn from the last `GET /scan`.
+///
+/// ## Why the summary is shown verbatim and the failures are their own list
+///
+/// The route already writes the sentence a user should read, with the
+/// consequences named -- how many instruments were measured, whether the ranking
+/// covers everything asked for, and whether the universe was the venue's or the
+/// list the user typed. Rephrasing it here would be a second opinion about what
+/// the scan means, and the two would drift.
+///
+/// `failures` is a separate list from `rows` and is rendered as one, because "we
+/// could not measure this" and "this ranked last" are different claims. A row
+/// with a null value drawn in rank order would state the first while looking like
+/// the second.
+///
+/// `as_of_ms` is on every row and is shown, not dropped: a ranking reads as "now",
+/// and on a thin listing whose newest bar is an hour old that is false in a way
+/// the reader cannot see.
+function renderScan() {
+  if (!scan) {
+    el("scanOut").innerHTML = `<p class="empty">Pick a measurement and scan.</p>`;
+    return;
+  }
+
+  const age = (ms) => {
+    if (ms === null || ms === undefined) return "unknown";
+    const mins = Math.round(Math.max(0, Date.now() - ms) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.round(mins / 60);
+    return hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
+  };
+
+  const dash = `<span class="muted">—</span>`;
+  const row = (r, rank) => `<tr>
+      <td>${rank || dash}</td>
+      <td>${escapeHtml(r.symbol)}</td>
+      <td>${r.value === null || r.value === undefined ? dash : r.value.toFixed(2)}</td>
+      <td class="muted">${escapeHtml(age(r.as_of_ms))}</td>
+      <td class="muted">${r.bars}</td>
+      <td class="muted">${r.error ? escapeHtml(r.error) : ""}</td>
+    </tr>`;
+
+  const ranked = (scan.rows || []).map((r, i) => row(r, i + 1)).join("");
+  const unmeasured = (scan.failures || []).map((r) => row(r, 0)).join("");
+
+  el("scanOut").innerHTML = `
+    <p class="muted">${escapeHtml(scan.summary || "")}</p>
+    ${
+      ranked
+        ? `<table class="scan">
+             <thead><tr><th>#</th><th>symbol</th><th>${escapeHtml(scan.metric || "")}</th>
+               <th>measured</th><th>bars</th><th></th></tr></thead>
+             <tbody>${ranked}</tbody>
+           </table>`
+        : `<p class="empty">Nothing could be ranked.</p>`
+    }
+    ${
+      unmeasured
+        ? `<details class="steps-wrap"><summary>${
+            (scan.failures || []).length
+          } could not be measured</summary>
+             <table class="scan">
+               <thead><tr><th></th><th>symbol</th><th>value</th>
+                 <th>measured</th><th>bars</th><th>reason</th></tr></thead>
+               <tbody>${unmeasured}</tbody>
+             </table>
+           </details>`
+        : ""
+    }
+    ${scan.note ? `<p class="muted">${escapeHtml(scan.note)}</p>` : ""}`;
+}
+
+/// Run a scan and show it.
+///
+/// The `symbols` box is sent only when it has something in it, and that is the
+/// difference between two universes the route reports back: an empty box asks
+/// about the venue's indexed instruments, a filled one asks about exactly what was
+/// typed. Sending an empty `symbols=` would be a third thing -- an explicit
+/// request for nothing -- so the parameter is omitted rather than left blank, and
+/// the panel's `universe` line is what tells the user which of the two they got.
+async function runScan() {
+  const button = el("scanGo");
+  button.disabled = true;
+  el("scanOut").innerHTML = `<p class="empty">Scanning…</p>`;
+  try {
+    const params = new URLSearchParams();
+    params.set("metric", el("scanMetric").value);
+    params.set("timeframe", el("scanTimeframe").value);
+    const typed = el("scanSymbols").value.trim();
+    if (typed) params.set("symbols", typed);
+
+    scan = await api(`/scan?${params.toString()}`);
+    renderScan();
+  } catch (e) {
+    el("scanOut").innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+  } finally {
+    // In `finally` rather than after the render: a scan that fails still has to
+    // give the button back, or the panel is a dead end the user cannot retry.
+    button.disabled = false;
+  }
+}
+
 /// The live-trading panel, drawn from state.
 ///
 /// Two facts per venue, and they are shown separately on purpose.
@@ -4289,6 +4521,21 @@ async function main() {
   el("signinGo").addEventListener("click", () => signIn(false));
   el("registerGo").addEventListener("click", () => signIn(true));
   el("password").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(false); });
+
+  // The scanner. Run on the button, and on Enter in the symbols box, because a
+  // field with one box beside it has to answer to Enter -- a user who types three
+  // symbols and hits return should not be told to reach for the mouse.
+  el("scanGo").addEventListener("click", runScan);
+  el("scanSymbols").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") runScan();
+  });
+  // Changing either dropdown re-runs a scan that is already on screen rather than
+  // leaving it. A stale ranking under a new heading is the failure this avoids,
+  // and the alternative -- showing nothing until the button is pressed again --
+  // leaves the user unsure whether the change took.
+  for (const id of ["scanMetric", "scanTimeframe"]) {
+    el(id).addEventListener("change", () => { if (scan) runScan(); });
+  }
 
   // -------------------------------------------------------------------------
   // The page: a list of panes, and which one the aside is about
