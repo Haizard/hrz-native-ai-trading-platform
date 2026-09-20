@@ -246,7 +246,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/indicator-workspaces/{id}/revisions",
-            get(indicator_workspace_routes::revisions),
+            get(indicator_workspace_routes::revisions).post(indicator_workspace_routes::create_revision),
         )
         .route("/bots", get(bot_routes::list).post(bot_routes::create))
         .route(

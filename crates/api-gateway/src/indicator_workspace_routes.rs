@@ -23,6 +23,17 @@ pub struct CreateWorkspaceBody {
     pub timeframe: String,
 }
 
+/// A revision produced by the workspace AI after it has generated and previewed
+/// source. The client may display it but cannot mark an invalid preview active.
+#[derive(Debug, Deserialize)]
+pub struct CreateRevisionBody {
+    pub parent_revision_id: Option<Uuid>,
+    pub source: String,
+    pub summary: String,
+    pub change_summary: String,
+    pub preview: chart_engine::IndicatorOutput,
+}
+
 /// An owned workspace as a client sees it.
 #[derive(Debug, Serialize)]
 pub struct WorkspaceResponse {
@@ -104,4 +115,31 @@ pub async fn revisions(State(state): State<AppState>, user: UserContext, Path(id
     }
     let rows = db::list_indicator_revisions(database.pool(), user.user_id, id, DEFAULT_LIMIT).await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+/// `POST /indicator-workspaces/{id}/revisions`.
+///
+/// This is the gate between AI generation and chart attachment: output is
+/// validated server-side and a refused result is persisted for explanation but
+/// cannot replace the workspace's attached revision.
+pub async fn create_revision(
+    State(state): State<AppState>, user: UserContext, Path(id): Path<Uuid>,
+    ApiJson(body): ApiJson<CreateRevisionBody>,
+) -> Result<Json<RevisionResponse>, ApiError> {
+    if body.source.trim().is_empty() || body.summary.trim().is_empty() || body.change_summary.trim().is_empty() {
+        return Err(ApiError::bad_request("INDICATOR_REVISION_FIELD_REQUIRED", "source, summary and change_summary must not be empty"));
+    }
+    let database = database(&state)?;
+    let valid = body.preview.validate();
+    let (status, validation) = match valid {
+        Ok(()) => ("validated", serde_json::json!({"valid": true, "engine": "indicator-output-v1"})),
+        Err(reason) => ("rejected", serde_json::json!({"valid": false, "reason": reason, "engine": "indicator-output-v1"})),
+    };
+    let preview = serde_json::to_value(&body.preview)
+        .map_err(|e| ApiError::internal(format!("could not store indicator preview: {e}")))?;
+    let row = db::create_indicator_revision(
+        database.pool(), user.user_id, id, body.parent_revision_id, &body.source,
+        &body.summary, &body.change_summary, &validation, &preview, status,
+    ).await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    Ok(Json(row.into()))
 }
