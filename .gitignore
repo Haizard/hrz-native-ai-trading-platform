@@ -5,6 +5,9 @@
 # Local agent working memory (project-local scratch, not source)
 .workbuddy-ai/
 
+# Local visual brainstorming sessions and other agent scratch artifacts.
+.superpowers/
+
 # Environment / secrets -- NEVER commit real credentials
 .env
 .env.*
