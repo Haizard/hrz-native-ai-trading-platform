@@ -4,7 +4,7 @@
 //! strategies, backtests, bots, audit log) land with their owning phases.
 
 use sqlx::PgPool;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::DatabaseConfig;
 use crate::error::DbError;
@@ -69,7 +69,34 @@ impl Database {
     /// `_sqlx_migrations`.
     pub async fn migrate(&self) -> Result<(), DbError> {
         MIGRATIONS.run(&self.pool).await?;
-        info!(target: "db", "migrations up to date");
+
+        // The count, not "up to date".
+        //
+        // `run` reports nothing about what it did, so the message this used to
+        // log -- "migrations up to date" -- was printed identically after
+        // applying four migrations and after applying none. That is not a
+        // cosmetic problem: it is a log line that cannot distinguish two
+        // opposite states, which is how a reader comes to believe a migration
+        // is missing when it is not, or present when it is not. It cost real
+        // time here on 2026-09-20 while adding 0004.
+        //
+        // `embedded` against `applied` answers the question the old message
+        // pretended to: if they differ, something did not go in, and which one
+        // is short is visible without another query.
+        let applied: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations")
+            .fetch_one(&self.pool)
+            .await?;
+        let embedded = MIGRATIONS.iter().count();
+        if applied == embedded as i64 {
+            info!(target: "db", applied, embedded, "migrations up to date");
+        } else {
+            warn!(
+                target: "db",
+                applied,
+                embedded,
+                "the database is not at the embedded migration count"
+            );
+        }
         Ok(())
     }
 

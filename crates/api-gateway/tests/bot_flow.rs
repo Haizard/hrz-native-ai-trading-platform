@@ -805,3 +805,140 @@ fn the_window_the_tests_feed_from_is_the_one_they_claim() {
         1_788_998_400_000_000_000i64
     );
 }
+
+/// A retried `POST /bots` makes one bot, not two (`docs/19` row 16).
+///
+/// ## Why the existing guard did not catch this
+///
+/// `BotSupervisor::is_running` keys on the bot id, so it refuses to start *the
+/// same bot* twice. Two requests do not make the same id -- they make two -- so
+/// both pass the guard and both start. It reads as protection against a double
+/// start and is protection against a retry of one id.
+///
+/// ## What this test is actually pinning, and what caught what
+///
+/// Checked against the defect by making the paper path ignore the key: the retry
+/// became a second `201`, and the **status** assertion failed first. That is worth
+/// recording rather than presenting as a clean sweep, because it means the cheap
+/// assertions are the ones that fire on this particular mutation.
+///
+/// The **count** is the assertion that names the harm, and it is not redundant
+/// with the status. Two bots is the thing that costs money -- for `mode: "live"`
+/// each task places its own orders against the real account -- and a test that
+/// only read the response would assert that the route *says* the right thing
+/// rather than that one bot exists. A status code is a convention this route
+/// could change while the defect stayed; the count is the fact.
+#[tokio::test]
+async fn a_retried_create_makes_one_bot_not_two() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+    let strategy_id = strategy(&h, &user.token).await;
+
+    let body = json!({ "strategy_id": strategy_id, "idempotency_key": "retry-same-key" });
+
+    let (status, first) = h.post("/bots", body.clone(), Some(&user.token)).await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    let first_id = first["id"].as_str().expect("an id").to_string();
+
+    // The retry. 200, not 201: nothing was created this time.
+    let (status, second) = h.post("/bots", body.clone(), Some(&user.token)).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(
+        second["id"], first_id,
+        "a retry must return the bot the first attempt made"
+    );
+
+    // The assertion that would catch a fix that only changed the response.
+    let (status, listed) = h.get("/bots", Some(&user.token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = listed.as_array().expect("a list");
+    assert_eq!(
+        listed.len(),
+        1,
+        "a retried create made a second bot: {listed:?}"
+    );
+    assert_eq!(listed[0]["id"], first_id);
+    assert_eq!(
+        listed[0]["supervised_here"], true,
+        "the one bot must still be running"
+    );
+
+    // A *different* key is a deliberate second bot, and must still work -- the
+    // key distinguishes a retry from an intention, it does not forbid two bots.
+    let other = json!({ "strategy_id": strategy_id, "idempotency_key": "a-second-bot" });
+    let (status, third) = h.post("/bots", other, Some(&user.token)).await;
+    assert_eq!(status, StatusCode::CREATED, "{third}");
+    assert_ne!(
+        third["id"], first_id,
+        "a different key is a deliberate second bot, not a retry"
+    );
+
+    let (_, listed) = h.get("/bots", Some(&user.token)).await;
+    assert_eq!(
+        listed.as_array().expect("a list").len(),
+        2,
+        "the deliberate second bot must exist"
+    );
+
+    // Leave nothing behind. A bot row references the user, so a bot that is
+    // never stopped and deleted makes `cleanup` fail on the foreign key -- the
+    // harness refuses rather than leaking, which is why this is explicit.
+    let second_bot_id = third["id"].as_str().expect("an id").to_string();
+    for id in [first_id.clone(), second_bot_id] {
+        let bot: uuid::Uuid = id.parse().expect("a uuid");
+        assert!(h.supervisor.stop(bot).await, "the bot must stop");
+        let (status, _) = h.delete(&format!("/bots/{id}"), Some(&user.token)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    db::strategies::delete_strategy(h.database.pool(), strategy_id.parse().unwrap())
+        .await
+        .unwrap();
+    user.cleanup(&h.database).await;
+}
+
+/// An empty idempotency key is refused rather than treated as absent.
+///
+/// An empty key is worse than no key: every request carrying `""` would be the
+/// same request, so the first bot a user made would come back for all their
+/// later creates and the symptom would look like a bot ignoring its own
+/// settings. The route says which it means instead of choosing silently.
+#[tokio::test]
+async fn an_empty_idempotency_key_is_refused_not_ignored() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+    let strategy_id = strategy(&h, &user.token).await;
+
+    for key in ["", "   "] {
+        let (status, body) = h
+            .post(
+                "/bots",
+                json!({ "strategy_id": strategy_id, "idempotency_key": key }),
+                Some(&user.token),
+            )
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "an empty key must be refused, not treated as no key: {body}"
+        );
+        assert_eq!(body["error"]["code"], "IDEMPOTENCY_KEY_EMPTY", "{body}");
+    }
+
+    // And nothing was created by either attempt.
+    let (_, listed) = h.get("/bots", Some(&user.token)).await;
+    assert_eq!(
+        listed.as_array().expect("a list").len(),
+        0,
+        "a refused key must not leave a bot behind"
+    );
+
+    // The strategy still references the user, so it goes before the account.
+    db::strategies::delete_strategy(h.database.pool(), strategy_id.parse().unwrap())
+        .await
+        .unwrap();
+    user.cleanup(&h.database).await;
+}

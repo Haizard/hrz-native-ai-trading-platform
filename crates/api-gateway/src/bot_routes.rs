@@ -76,6 +76,53 @@ pub struct CreateBotRequest {
     pub daily_loss_limit_r: Option<f64>,
     /// Weekly loss budget, in R.
     pub weekly_loss_limit_r: Option<f64>,
+    /// A key that makes this request safe to retry (`docs/19` row 16).
+    ///
+    /// Send the same value again and the bot the first attempt made is
+    /// returned, rather than a second one being started. Omit it to create a
+    /// new bot every time, which is the behaviour for a deliberate second bot.
+    pub idempotency_key: Option<String>,
+}
+
+/// The longest idempotency key accepted.
+///
+/// The key is stored on the row, so an unbounded one is an unbounded column.
+/// 200 is well past any real client's key -- a UUID is 36 -- and short enough
+/// that a pasted document is refused rather than stored.
+const MAX_IDEMPOTENCY_KEY: usize = 200;
+
+/// Check a client-supplied idempotency key, or `None` for no key at all.
+///
+/// An empty or whitespace-only key is **refused**, not treated as absent. Every
+/// request carrying `""` would be the same request, so the first bot a user
+/// created would come back for all their later creates and the symptom would
+/// look like a bot ignoring its own settings. Saying so is better than silently
+/// choosing one of the two meanings.
+fn checked_idempotency_key(raw: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "IDEMPOTENCY_KEY_EMPTY",
+            "`idempotency_key` was sent but is empty. Omit it to create a new bot every time, or \
+             send a unique value to make a retry return the bot the first attempt made."
+                .to_string(),
+        ));
+    }
+    if trimmed.len() > MAX_IDEMPOTENCY_KEY {
+        return Err(ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "IDEMPOTENCY_KEY_TOO_LONG",
+            format!(
+                "`idempotency_key` is {} characters; the limit is {MAX_IDEMPOTENCY_KEY}",
+                trimmed.len()
+            ),
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 fn default_mode() -> String {
@@ -224,6 +271,10 @@ pub async fn create(
         ));
     }
 
+    // Checked before anything is read, so a malformed key is refused without a
+    // round trip and without a strategy being loaded.
+    let idempotency_key = checked_idempotency_key(request.idempotency_key.as_deref())?;
+
     let strategy_id = Uuid::parse_str(&request.strategy_id).map_err(|_| {
         ApiError::bad_request("ID_INVALID", "`strategy_id` is not a valid strategy id")
     })?;
@@ -270,6 +321,7 @@ pub async fn create(
             symbol,
             limits,
             rolling,
+            idempotency_key.as_deref(),
         )
         .await;
     }
@@ -284,6 +336,7 @@ pub async fn create(
         symbol,
         limits,
         rolling,
+        idempotency_key.as_deref(),
     )
     .await
 }
@@ -300,7 +353,27 @@ async fn start_paper(
     symbol: String,
     limits: RiskLimits,
     rolling: strategy_runtime::RollingConfig,
+    idempotency_key: Option<&str>,
 ) -> Result<(StatusCode, Json<BotResponse>), ApiError> {
+    // The row first, so a crash between this and the start below leaves a
+    // `running` bot with no task -- visible and recoverable -- rather than a
+    // task with nowhere to write.
+    let (bot_id, created) = db::bots::create_bot_with_key(
+        database.pool(),
+        user.user_id,
+        strategy_id,
+        "paper",
+        request.venue.as_deref(),
+        idempotency_key,
+    )
+    .await?;
+
+    if !created {
+        return replay(state, database, user.user_id, bot_id).await;
+    }
+
+    // Built only once the row is ours. On a retry there is nothing to build --
+    // starting a second task here is the exact thing the key exists to stop.
     let bot = PaperBot::new(
         engine,
         PaperConfig {
@@ -314,18 +387,6 @@ async fn start_paper(
         tracing::warn!(%note, "the requested risk was clamped");
     }
 
-    let bot_id = db::bots::create_bot(
-        database.pool(),
-        user.user_id,
-        strategy_id,
-        "paper",
-        request.venue.as_deref(),
-    )
-    .await?;
-
-    // The task owns the bot from here. The row exists first, so a crash between
-    // these two lines leaves a `running` bot with no task -- visible and
-    // recoverable -- rather than a task with nowhere to write.
     state
         .bots
         .start(bot_id, user.user_id, database.clone(), bot);
@@ -357,6 +418,7 @@ async fn start_live(
     symbol: String,
     limits: RiskLimits,
     rolling: strategy_runtime::RollingConfig,
+    idempotency_key: Option<&str>,
 ) -> Result<(StatusCode, Json<BotResponse>), ApiError> {
     let Some(venue) = request
         .venue
@@ -420,14 +482,23 @@ async fn start_live(
 
     // The row first, so the bot's client order ids can carry its own id -- two
     // bots on one account must not be able to generate the same order id.
-    let bot_id = db::bots::create_bot(
+    let (bot_id, created) = db::bots::create_bot_with_key(
         database.pool(),
         user.user_id,
         strategy_id,
         "live",
         Some(&venue),
+        idempotency_key,
     )
     .await?;
+
+    if !created {
+        // A retry, and the one place this matters most: without this the second
+        // request would place its own orders against the real account, and the
+        // "spending real money" warning below would be logged a second time as
+        // though a new bot were starting.
+        return replay(state, database, user.user_id, bot_id).await;
+    }
 
     let bot = LiveBot::new(
         engine,
@@ -675,6 +746,32 @@ async fn transition(
         .ok_or_else(|| ApiError::not_found("no such bot"))?;
     let activity = db::paper::bot_summary(database.pool(), updated.id).await?;
     Ok(Json(respond(updated, &state.bots, activity)))
+}
+
+/// The answer for a request whose idempotency key had already been used.
+///
+/// Read back from the row rather than echoed from the request, because the
+/// caller is asking "what did my earlier attempt make?" and the row is the only
+/// thing that knows. Three deliberate choices:
+///
+/// * **200, not 201.** Nothing was created, and a client that branches on the
+///   status should not be told otherwise.
+/// * **No task is started.** This is the whole point of the key; the bot is
+///   already running under whatever instance made it.
+/// * **`supervised_here` is read, not assumed.** A retry that landed on a
+///   different instance than the original request is honestly `false` -- the
+///   same answer `GET /bots/{id}` would give, so the two cannot disagree.
+async fn replay(
+    state: &AppState,
+    database: &db::Database,
+    user_id: Uuid,
+    bot_id: Uuid,
+) -> Result<(StatusCode, Json<BotResponse>), ApiError> {
+    let row = db::bots::get_bot(database.pool(), user_id, bot_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("no such bot"))?;
+    let activity = db::paper::bot_summary(database.pool(), row.id).await?;
+    Ok((StatusCode::OK, Json(respond(row, &state.bots, activity))))
 }
 
 fn respond(

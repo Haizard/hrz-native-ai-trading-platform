@@ -61,6 +61,10 @@ fn from_row(row: &sqlx::postgres::PgRow) -> Result<BotRow, sqlx::Error> {
 
 /// Create a bot in the `running` state.
 ///
+/// A one-line delegation to [`create_bot_with_key`] with no key, so every
+/// existing caller keeps its meaning and there is only one INSERT to keep
+/// correct.
+///
 /// # Errors
 /// Returns [`DbError::Pool`] if the write fails.
 pub async fn create_bot(
@@ -70,17 +74,86 @@ pub async fn create_bot(
     mode: &str,
     venue: Option<&str>,
 ) -> Result<Uuid, DbError> {
-    let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO bots (user_id, strategy_id, mode, status, venue) \
-         VALUES ($1, $2, $3, 'running', $4) RETURNING id",
+    create_bot_with_key(pool, user_id, strategy_id, mode, venue, None)
+        .await
+        .map(|(id, _created)| id)
+}
+
+/// Create a bot in the `running` state, idempotent on a client-supplied key.
+///
+/// Returns the bot's id and whether **this call** created it. `true` means the
+/// row is new; `false` means the key had already been used and the id belongs to
+/// the bot that call made. A retry therefore returns the bot it already made
+/// rather than starting a second one -- which for `mode: "live"` is the
+/// difference between one bot placing orders and two.
+///
+/// ## Why the conflict is resolved by the database, not by a read
+///
+/// The obvious shape is "look for a bot with this key; if there is one, return
+/// it; else insert". That has a time-of-check-to-time-of-use window: two
+/// requests that overlap both read nothing, both insert, and the bug survives
+/// its own fix. A retry usually arrives well after the first request finished,
+/// so the window is small, easy to miss in review, and exactly the kind of thing
+/// that passes a test and fails in production.
+///
+/// So the insert carries `ON CONFLICT ... DO NOTHING`, and a call that gets no
+/// row back *knows* another request won and goes to read the winner. Two
+/// concurrent requests cannot both insert, because there is nothing for the
+/// second to insert into.
+///
+/// ## Why `None` cannot reach the conflict path
+///
+/// A unique index treats NULLs as **distinct** in PostgreSQL, so a keyless
+/// insert never conflicts and always returns a row. That is what lets the
+/// keyless path keep working unchanged, and it is why the branch below is an
+/// invariant rather than a case.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the write fails.
+pub async fn create_bot_with_key(
+    pool: &PgPool,
+    user_id: Uuid,
+    strategy_id: Uuid,
+    mode: &str,
+    venue: Option<&str>,
+    idempotency_key: Option<&str>,
+) -> Result<(Uuid, bool), DbError> {
+    let inserted: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO bots (user_id, strategy_id, mode, status, venue, idempotency_key) \
+         VALUES ($1, $2, $3, 'running', $4, $5) \
+         ON CONFLICT (user_id, idempotency_key) DO NOTHING \
+         RETURNING id",
     )
     .bind(user_id)
     .bind(strategy_id)
     .bind(mode)
     .bind(venue)
-    .fetch_one(pool)
+    .bind(idempotency_key)
+    .fetch_optional(pool)
     .await?;
-    Ok(id)
+
+    if let Some(id) = inserted {
+        return Ok((id, true));
+    }
+
+    // No row came back: the key is taken and another request made the bot. Read
+    // it and hand it back.
+    //
+    // The `else` is unreachable -- see the note above, a keyless insert cannot
+    // conflict -- but it returns an error rather than panicking. A broken
+    // invariant should be a 500 the logs name, not a process that dies while
+    // holding a live bot's creation.
+    let Some(key) = idempotency_key else {
+        return Err(DbError::Pool(sqlx::Error::RowNotFound));
+    };
+
+    let existing: Uuid =
+        sqlx::query_scalar("SELECT id FROM bots WHERE user_id = $1 AND idempotency_key = $2")
+            .bind(user_id)
+            .bind(key)
+            .fetch_one(pool)
+            .await?;
+    Ok((existing, false))
 }
 
 /// Read one bot, if this user owns it.

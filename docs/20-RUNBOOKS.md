@@ -274,10 +274,17 @@ gate is a floor, not a validation.
 
 **The first live bot, and what to expect in the log.** `POST /bots` logs
 `starting a LIVE bot: orders placed by this bot spend real money` at `WARN`, once
-per bot actually started. **Two of those lines is two bots** — the endpoint has no
-idempotency key yet, so a retried or double-clicked request is a second bot
-placing its own orders, not a duplicate that gets ignored (`docs/19` row 16). Read
-that count before assuming one click made one bot.
+per bot actually started. **Two of those lines is two bots.** The endpoint now
+takes an optional `idempotency_key` (`docs/19` row 16): send the same value on a
+retry and you get `200` with the bot the first attempt made, and no second
+warning line, because no second task started. Send no key, or a different one,
+and two lines means two deliberate bots.
+
+Read that count before assuming one click made one bot — but read it knowing
+what it can no longer tell you. A client that sends **no** key still gets a
+second bot from a double-click, and the log will show two warnings that are
+indistinguishable from two intended bots. The key is what makes the distinction,
+and only the caller can supply it.
 
 ## 10. Sockets keep opening
 
