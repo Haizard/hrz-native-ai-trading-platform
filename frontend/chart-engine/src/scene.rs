@@ -40,11 +40,13 @@ use analytics_core::types::{Candle, Timeframe};
 use analytics_core::volume_profile::{calculate_volume_profile_from_candles, VolumeProfile};
 use analytics_core::vwap::calculate_vwap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::drawing::{
     Anchor, Drawing, DrawingKind, DrawingPart, Fraction, Overlay, SceneDrawing, SceneOverlay,
     FIB_LEVELS,
 };
+use crate::indicator::{IndicatorOutput, MarkerKind, ZoneState};
 
 /// Layout constants, in CSS pixels of the scene's own coordinate space.
 ///
@@ -234,6 +236,13 @@ pub struct Request {
     /// goes into [`Scene::note`], the same arrangement a refused drawing gets.
     #[serde(default)]
     pub overlays: Vec<crate::drawing::Overlay>,
+    /// The output from one validated generated indicator revision.
+    ///
+    /// This remains optional while the workspace has no indicator attached. A
+    /// module output is positioned here, not in JavaScript, so source revisions
+    /// cannot drift from the chart's own time and price transforms.
+    #[serde(default)]
+    pub indicator: Option<IndicatorOutput>,
 }
 
 /// The levels drawn when a request does not say.
@@ -258,6 +267,7 @@ impl Default for Request {
             gesture: None,
             drawings: Vec::new(),
             overlays: Vec::new(),
+            indicator: None,
         }
     }
 }
@@ -439,6 +449,77 @@ pub struct SceneRegion {
     pub label: String,
 }
 
+/// A generated indicator revision after its evidence graph is positioned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneIndicator {
+    /// Immutable source revision that produced this scene.
+    pub revision_id: String,
+    /// Stateful price bands.
+    pub zones: Vec<SceneIndicatorZone>,
+    /// Evidence nodes visible as chart markers.
+    pub markers: Vec<SceneIndicatorMarker>,
+    /// Causal connectors between evidence nodes.
+    pub links: Vec<SceneEvidenceLink>,
+}
+
+/// A generated zone mapped into the chart's coordinate system.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneIndicatorZone {
+    /// Stable generated id.
+    pub id: String,
+    /// Left canvas coordinate.
+    pub x: f64,
+    /// Width in canvas pixels.
+    pub w: f64,
+    /// Upper canvas coordinate.
+    pub y_top: f64,
+    /// Height in canvas pixels.
+    pub h: f64,
+    /// Ready-to-display label.
+    pub label: String,
+    /// Lifecycle state controlling presentation.
+    pub state: ZoneState,
+}
+
+/// A generated evidence marker mapped into the chart's coordinate system.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneIndicatorMarker {
+    /// Stable generated id.
+    pub id: String,
+    /// Evidence node represented by this marker.
+    pub evidence_id: String,
+    /// Canvas coordinate.
+    pub x: f64,
+    /// Canvas coordinate.
+    pub y: f64,
+    /// Ready-to-display label.
+    pub label: String,
+    /// Semantic style key.
+    pub kind: MarkerKind,
+    /// Client-readable reason the marker exists.
+    pub explanation: String,
+}
+
+/// A causal edge in the evidence graph, positioned at both ends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneEvidenceLink {
+    /// Stable generated id.
+    pub id: String,
+    /// Start coordinate.
+    pub from_x: f64,
+    /// Start coordinate.
+    pub from_y: f64,
+    /// The curve's control coordinate, selected by the engine to keep the
+    /// browser shell from deriving geometry from market-anchored points.
+    pub control_x: f64,
+    /// The curve's control coordinate.
+    pub control_y: f64,
+    /// End coordinate.
+    pub to_x: f64,
+    /// End coordinate.
+    pub to_y: f64,
+}
+
 /// A price-axis tick.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tick {
@@ -539,6 +620,9 @@ pub struct Scene {
     ///
     /// Always present and usually empty, like [`Scene::regions`].
     pub overlays: Vec<SceneOverlay>,
+    /// The attached generated indicator, when its output was valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indicator: Option<SceneIndicator>,
     /// A caveat about what is being shown, when there is one.
     pub note: Option<String>,
 }
@@ -622,6 +706,7 @@ pub fn build(request: &Request) -> Scene {
         footprint: None,
         drawings: Vec::new(),
         overlays: Vec::new(),
+        indicator: None,
         note: None,
     };
 
@@ -852,6 +937,17 @@ pub fn build(request: &Request) -> Scene {
     let (overlays, refused_overlays) = overlay_parts(&request.overlays, &frame);
     scene.overlays = overlays;
 
+    match request.indicator.as_ref() {
+        Some(output) => match indicator_parts(output, &frame) {
+            Ok(indicator) => scene.indicator = Some(indicator),
+            Err(reason) => add_note(
+                &mut scene.note,
+                format!("generated indicator is not drawn: {reason}"),
+            ),
+        },
+        None => {}
+    }
+
     if !refused.is_empty() {
         add_note(
             &mut scene.note,
@@ -905,6 +1001,100 @@ fn overlay_parts(overlays: &[Overlay], frame: &Frame) -> (Vec<SceneOverlay>, Vec
     }
 
     (placed, refused)
+}
+
+/// Position a generated indicator's already-validated market coordinates.
+///
+/// Generated code never gets a canvas coordinate. Its contract is market time
+/// and price; this is the one place those values become pixels, shared with
+/// candles, regions, hand drawings, and answer overlays.
+fn indicator_parts(output: &IndicatorOutput, frame: &Frame) -> Result<SceneIndicator, String> {
+    output.validate()?;
+
+    let evidence: BTreeMap<&str, (f64, f64, &str)> = output
+        .evidence
+        .iter()
+        .map(|node| {
+            (
+                node.id.as_str(),
+                (
+                    frame.x_at_nanos(node.time),
+                    frame.y_at(node.price),
+                    node.explanation.as_str(),
+                ),
+            )
+        })
+        .collect();
+
+    let zones = output
+        .zones
+        .iter()
+        .map(|zone| {
+            let left = frame.x_at_nanos(zone.start_time);
+            let right = frame.x_at_nanos(zone.end_time);
+            let top = frame.y_at(zone.price_high);
+            let bottom = frame.y_at(zone.price_low);
+            SceneIndicatorZone {
+                id: zone.id.clone(),
+                x: left,
+                w: right - left,
+                y_top: top,
+                h: bottom - top,
+                label: zone.label.clone(),
+                state: zone.state,
+            }
+        })
+        .collect();
+    let markers = output
+        .markers
+        .iter()
+        .map(|marker| {
+            let explanation = evidence
+                .get(marker.evidence_id.as_str())
+                .map(|(_, _, explanation)| (*explanation).to_owned())
+                // `validate` above guarantees this branch is unreachable. It
+                // still names the failure rather than panicking if a future
+                // refactor weakens validation.
+                .ok_or_else(|| format!("marker `{}` has no evidence", marker.id))?;
+            Ok(SceneIndicatorMarker {
+                id: marker.id.clone(),
+                evidence_id: marker.evidence_id.clone(),
+                x: frame.x_at_nanos(marker.time),
+                y: frame.y_at(marker.price),
+                label: marker.label.clone(),
+                kind: marker.kind,
+                explanation,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let links = output
+        .links
+        .iter()
+        .map(|link| {
+            let (from_x, from_y, _) = evidence
+                .get(link.from.as_str())
+                .ok_or_else(|| format!("link `{}` has no `from` evidence", link.id))?;
+            let (to_x, to_y, _) = evidence
+                .get(link.to.as_str())
+                .ok_or_else(|| format!("link `{}` has no `to` evidence", link.id))?;
+            Ok(SceneEvidenceLink {
+                id: link.id.clone(),
+                from_x: *from_x,
+                from_y: *from_y,
+                control_x: (*from_x + *to_x) / 2.0,
+                control_y: from_y.min(*to_y) - 18.0,
+                to_x: *to_x,
+                to_y: *to_y,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(SceneIndicator {
+        revision_id: output.revision_id.clone(),
+        zones,
+        markers,
+        links,
+    })
 }
 
 /// One overlay, mapped onto canvas pixels.
@@ -1578,6 +1768,7 @@ mod tests {
     use super::*;
     use crate::drawing::OverlayRole;
     use crate::footprint;
+    use crate::indicator::{Evidence, EvidenceLink, IndicatorMarker, IndicatorOutput, MarkerKind};
     use analytics_core::concepts::{Compare, Requirement, Selector};
     use analytics_core::types::Side;
 
@@ -3674,6 +3865,57 @@ mod tests {
             stop.price,
             stop.y
         );
+    }
+
+    #[test]
+    fn generated_indicator_evidence_is_positioned_and_linked_by_the_engine() {
+        let first = 20 * 300_000_000_000;
+        let second = 40 * 300_000_000_000;
+        let output = IndicatorOutput {
+            revision_id: "revision-7".into(),
+            evidence: vec![
+                Evidence {
+                    id: "sweep".into(),
+                    event: "liquidity_sweep".into(),
+                    time: first,
+                    price: 108.0,
+                    explanation: "Price swept the prior low.".into(),
+                },
+                Evidence {
+                    id: "choch".into(),
+                    event: "bullish_choch".into(),
+                    time: second,
+                    price: 116.0,
+                    explanation: "Close broke the prior swing high.".into(),
+                },
+            ],
+            zones: vec![],
+            markers: vec![IndicatorMarker {
+                id: "sweep-marker".into(),
+                evidence_id: "sweep".into(),
+                time: first,
+                price: 108.0,
+                label: "Sweep".into(),
+                kind: MarkerKind::Context,
+            }],
+            links: vec![EvidenceLink {
+                id: "sweep-to-choch".into(),
+                from: "sweep".into(),
+                to: "choch".into(),
+            }],
+        };
+        let scene = build(&Request {
+            indicator: Some(output),
+            ..request(100)
+        });
+        let indicator = scene.indicator.expect("valid output is drawn");
+        assert_eq!(indicator.revision_id, "revision-7");
+        assert_eq!(
+            indicator.markers[0].explanation,
+            "Price swept the prior low."
+        );
+        assert!(indicator.links[0].from_x < indicator.links[0].to_x);
+        assert!(indicator.links[0].control_y < indicator.links[0].from_y);
     }
 
     #[test]

@@ -326,6 +326,7 @@ function createChartPane(root, hooks = {}) {
     // Zones go under everything, before the candles: a supply/demand band is a
     // backdrop the price is read against, not a mark on top of it.
     drawRegions(ctx, scene);
+    drawIndicatorZones(ctx, scene);
 
     // The engine says what to draw, so this is a dispatch rather than a decision.
     // Adding a chart type means adding a case here and a variant in Rust -- not
@@ -358,6 +359,7 @@ function createChartPane(root, hooks = {}) {
     // where the request is built: the engine has no way to know which instrument
     // a bare price belongs to.
     drawOverlays(ctx, scene);
+    drawIndicatorEvidence(ctx, scene);
     // The user's own marks, above everything: a drawing that could cover the
     // answer's levels, or the price labels, would be an annotation they cannot
     // read.
@@ -404,6 +406,72 @@ function createChartPane(root, hooks = {}) {
 
       ctx.fillStyle = colour;
       ctx.fillText(region.label, region.x + 4, region.y_top + 11);
+    }
+  }
+
+  /// Generated indicators use a richer but still disciplined visual language:
+  /// zones sit below price, their lifecycle changes the opacity/dash treatment,
+  /// and the named evidence chain is drawn later above price. The engine has
+  /// already placed every coordinate; this code only paints it.
+  function drawIndicatorZones(ctx, scene) {
+    const indicator = scene.indicator;
+    if (!indicator || !indicator.zones.length) return;
+    const palette = {
+      created: "#a78bfa",
+      active: "#2dd4bf",
+      tapped: "#fbbf24",
+      mitigated: "#94a3b8",
+      invalidated: "#fb7185",
+    };
+    ctx.font = "600 10px ui-sans-serif, system-ui";
+    for (const zone of indicator.zones) {
+      const colour = palette[zone.state] || palette.active;
+      const alpha = zone.state === "mitigated" || zone.state === "invalidated" ? 0.06 : 0.16;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = colour;
+      ctx.fillRect(zone.x, zone.y_top, zone.w, zone.h);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = colour;
+      ctx.lineWidth = 1;
+      ctx.setLineDash(zone.state === "active" ? [] : [4, 3]);
+      ctx.strokeRect(zone.x + 0.5, zone.y_top + 0.5, zone.w - 1, zone.h - 1);
+      ctx.setLineDash([]);
+      ctx.fillStyle = colour;
+      ctx.fillText(`${zone.label} · ${zone.state}`, zone.x + 6, zone.y_top + 13);
+    }
+  }
+
+  /// Draw the generated module's evidence graph after candles so it explains a
+  /// setup without hiding price. The rounded path is a visual connection, not
+  /// a synthetic price line: it joins two already-positioned logical events.
+  function drawIndicatorEvidence(ctx, scene) {
+    const indicator = scene.indicator;
+    if (!indicator || (!indicator.markers.length && !indicator.links.length)) return;
+    const palette = {
+      bullish: "#34d399",
+      bearish: "#fb7185",
+      context: "#a78bfa",
+      signal: "#60a5fa",
+    };
+    ctx.lineWidth = 1.25;
+    ctx.strokeStyle = "rgba(167, 139, 250, 0.65)";
+    ctx.setLineDash([3, 4]);
+    for (const link of indicator.links) {
+      ctx.beginPath();
+      ctx.moveTo(link.from_x, link.from_y);
+      ctx.quadraticCurveTo(link.control_x, link.control_y, link.to_x, link.to_y);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.font = "600 10px ui-sans-serif, system-ui";
+    for (const marker of indicator.markers) {
+      const colour = palette[marker.kind] || palette.context;
+      ctx.fillStyle = colour;
+      ctx.beginPath();
+      ctx.arc(marker.x, marker.y, marker.kind === "signal" ? 5 : 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#e2e8f0";
+      ctx.fillText(marker.label, marker.x + 7, marker.y - 7);
     }
   }
 

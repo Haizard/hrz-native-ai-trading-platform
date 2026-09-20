@@ -23,6 +23,7 @@ pub mod bots;
 pub mod config;
 pub mod drawings;
 pub mod error;
+pub mod indicator_workspaces;
 pub mod live;
 pub mod loading;
 pub mod market;
@@ -41,6 +42,10 @@ pub use drawings::{
     NewDrawing, KINDS as DRAWING_KINDS,
 };
 pub use error::DbError;
+pub use indicator_workspaces::{
+    create_indicator_revision, create_indicator_workspace, get_indicator_workspace,
+    list_indicator_revisions, list_indicator_workspaces, IndicatorRevisionRow, IndicatorWorkspaceRow,
+};
 pub use live::{
     list_live_orders, open_live_orders, opted_in_venues, record_live_order, record_venue_opt_in,
     update_live_order, LiveOrderRow, TERMINAL_STATUSES,

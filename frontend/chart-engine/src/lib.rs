@@ -42,6 +42,7 @@
 
 pub mod drawing;
 pub mod footprint;
+pub mod indicator;
 pub mod scene;
 pub mod viewport;
 
@@ -50,8 +51,13 @@ pub use drawing::{
     SceneOverlay, FIB_LEVELS,
 };
 pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
+pub use indicator::{
+    Evidence, EvidenceLink, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind, ZoneState,
+    MAX_PRIMITIVES,
+};
 pub use scene::{
-    build, heikin_ashi, Bar, Level, Mode, Plot, Point, ProfileBar, Request, Scene, SceneOrigin,
+    build, heikin_ashi, Bar, Level, Mode, Plot, Point, ProfileBar, Request, Scene,
+    SceneEvidenceLink, SceneIndicator, SceneIndicatorMarker, SceneIndicatorZone, SceneOrigin,
     SceneRegion, Tick,
 };
 pub use viewport::{Gesture, PriceRange, Viewport, Window, MIN_BARS};
