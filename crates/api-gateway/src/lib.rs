@@ -248,6 +248,16 @@ pub fn router(state: AppState) -> Router {
             "/indicator-workspaces/{id}/revisions",
             get(indicator_workspace_routes::revisions).post(indicator_workspace_routes::create_revision),
         )
+        .route(
+            "/indicator-workspaces/{id}/messages",
+            get(indicator_workspace_routes::messages).post(indicator_workspace_routes::create_message),
+        )
+        .route(
+            "/indicator-workspaces/{id}/revisions/{revision_id}/restore",
+            post(indicator_workspace_routes::restore_revision),
+        )
+        .route("/indicator-workspaces/{id}/alerts", put(indicator_workspace_routes::set_alert))
+        .route("/indicator-workspaces/{id}/bot-drafts", post(indicator_workspace_routes::create_bot_draft))
         .route("/bots", get(bot_routes::list).post(bot_routes::create))
         .route(
             "/bots/{id}",

@@ -161,3 +161,52 @@ active and records the failed attempt without affecting alerts or bots.
   and paper-bot decisions.
 - Bot creation is a separate draft workflow, and no indicator revision can silently
   change an active bot.
+
+## Approved implementation decisions
+
+### Generation path
+
+The first workspace release uses the existing Bedrock-backed agent and its validated
+Strategy DSL generator. A workspace message is grounded in the owned workspace's
+compact memory, current revision, declared chart context, and a bounded recent-message
+window. It produces a candidate Strategy DSL document rather than arbitrary executable
+indicator source. The platform validates and runs that document in the existing WASM
+sandbox, replays it against the requested window, and converts the deterministic result
+into the restricted `IndicatorOutput` preview contract.
+
+This deliberately reuses the existing agent rate limit, DSL validator, sandbox, and bot
+runtime. An indicator-specific SDK is deferred until the shared DSL cannot express a
+required capability; it must not create a second execution path in the meantime.
+
+### Durable workspace conversation
+
+`indicator_workspace_messages` stores append-only user and assistant messages, with a
+message kind and structured payload for revision outcomes. The workspace's `memory`
+field is updated only by the service after a successful turn, with a compact summary
+that bounds prompt growth. Revisions retain their source, preview, validation report,
+and parent link independently of chat messages, so the history remains auditable even
+when memory is compacted.
+
+### API and attachment contract
+
+Authenticated workspace endpoints expose message submission, revision source/preview,
+revision restore, alert preferences, and revision-pinned bot drafts. The server, not the
+browser, chooses an active revision. The browser receives only a server-validated preview
+and attaches it to the Rust/WASM chart engine; it never evaluates generated source or
+transforms market coordinates itself.
+
+### Bot promotion
+
+Creating a bot from an indicator creates an immutable draft tied to the source revision.
+The draft stores its required historical backtest and execution/risk settings. Promotion
+requires an explicit approval request naming that exact draft and revision. Approval then
+delegates to the existing paper/live bot creation and live-risk gates. Editing or restoring
+an indicator always creates a new candidate revision and never mutates a draft or an
+active bot.
+
+### Verification
+
+Integration tests cover user ownership, Bedrock-unavailable handling, failed-revision
+rollback, source/preview read-only behavior, alert ownership and preference persistence,
+revision restore, and the invariant that a bot draft or active bot retains its original
+indicator revision after later workspace edits.

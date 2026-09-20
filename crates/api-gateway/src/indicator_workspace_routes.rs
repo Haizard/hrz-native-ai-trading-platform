@@ -1,9 +1,11 @@
 //! Authenticated persistence endpoints for AI-generated indicator workspaces.
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use trading_engine::Decisions;
 
 use crate::auth::UserContext;
 use crate::error::ApiError;
@@ -32,6 +34,91 @@ pub struct CreateRevisionBody {
     pub summary: String,
     pub change_summary: String,
     pub preview: chart_engine::IndicatorOutput,
+}
+
+/// Body of `POST /indicator-workspaces/{id}/messages`.
+#[derive(Debug, Deserialize)]
+pub struct CreateMessageBody {
+    /// The client instruction for the next indicator revision.
+    pub content: String,
+    /// Optional skill to pin while Bedrock generates the underlying DSL.
+    pub skill_id: Option<String>,
+}
+
+/// A durable workspace message.
+#[derive(Debug, Serialize)]
+pub struct MessageResponse {
+    pub id: String,
+    pub role: String,
+    pub kind: String,
+    pub content: String,
+    pub payload: serde_json::Value,
+    pub created_at: i64,
+}
+
+/// Result of one Bedrock-backed workspace turn.
+#[derive(Debug, Serialize)]
+pub struct WorkspaceTurnResponse {
+    pub user_message: MessageResponse,
+    pub assistant_message: MessageResponse,
+    pub revision: RevisionResponse,
+    pub strategy_id: String,
+}
+
+impl From<db::IndicatorWorkspaceMessageRow> for MessageResponse {
+    fn from(row: db::IndicatorWorkspaceMessageRow) -> Self {
+        Self { id: row.id.to_string(), role: row.role, kind: row.kind, content: row.content, payload: row.payload, created_at: row.created_at }
+    }
+}
+
+/// Body of the alert preference endpoint.
+#[derive(Debug, Deserialize)]
+pub struct SetAlertBody {
+    pub revision_id: Uuid,
+    pub event_name: String,
+    pub enabled: bool,
+    #[serde(default = "default_channels")]
+    pub channels: serde_json::Value,
+}
+
+fn default_channels() -> serde_json::Value { serde_json::json!([]) }
+
+/// Body of the revision-pinned bot draft endpoint.
+#[derive(Debug, Deserialize)]
+pub struct CreateBotDraftBody {
+    pub revision_id: Uuid,
+    pub strategy_id: Uuid,
+    pub backtest_id: Option<Uuid>,
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    pub venue: Option<String>,
+    #[serde(default = "default_risk")]
+    pub risk: serde_json::Value,
+}
+
+fn default_mode() -> String { "paper".to_string() }
+fn default_risk() -> serde_json::Value { serde_json::json!({}) }
+
+/// A revision-pinned bot draft.
+#[derive(Debug, Serialize)]
+pub struct BotDraftResponse {
+    pub id: String,
+    pub revision_id: String,
+    pub strategy_id: String,
+    pub backtest_id: Option<String>,
+    pub mode: String,
+    pub venue: Option<String>,
+    pub risk: serde_json::Value,
+    pub status: String,
+    pub created_at: i64,
+}
+
+impl From<db::IndicatorBotDraftRow> for BotDraftResponse {
+    fn from(row: db::IndicatorBotDraftRow) -> Self {
+        Self { id: row.id.to_string(), revision_id: row.revision_id.to_string(), strategy_id: row.strategy_id.to_string(),
+            backtest_id: row.backtest_id.map(|id| id.to_string()), mode: row.mode, venue: row.venue,
+            risk: row.risk, status: row.status, created_at: row.created_at }
+    }
 }
 
 /// An owned workspace as a client sees it.
@@ -142,4 +229,75 @@ pub async fn create_revision(
         &body.summary, &body.change_summary, &validation, &preview, status,
     ).await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
     Ok(Json(row.into()))
+}
+
+/// `GET /indicator-workspaces/{id}/messages`.
+pub async fn messages(State(state): State<AppState>, user: UserContext, Path(id): Path<Uuid>) -> Result<Json<Vec<MessageResponse>>, ApiError> {
+    let rows = db::list_indicator_workspace_messages(database(&state)?.pool(), user.user_id, id, DEFAULT_LIMIT).await?;
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+/// `POST /indicator-workspaces/{id}/messages`.
+///
+/// Stores the user's instruction before asking Bedrock, so a provider failure is
+/// visible in the durable transcript rather than silently disappearing.
+pub async fn create_message(
+    State(state): State<AppState>, user: UserContext, Path(id): Path<Uuid>, ApiJson(body): ApiJson<CreateMessageBody>,
+) -> Result<(StatusCode, Json<WorkspaceTurnResponse>), ApiError> {
+    if body.content.trim().is_empty() { return Err(ApiError::bad_request("WORKSPACE_MESSAGE_REQUIRED", "message content must not be empty")); }
+    let database = database(&state)?;
+    let workspace = db::get_indicator_workspace(database.pool(), user.user_id, id).await?
+        .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    crate::agent_routes::check_agent_limit(&state, &user)?;
+    let user_message = db::create_indicator_workspace_message(database.pool(), user.user_id, id, "user", "message", body.content.trim(), &serde_json::json!({"skill_id": body.skill_id}))
+        .await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    let agent = state.agent.as_ref().ok_or_else(|| ApiError::unavailable("the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID and AWS credentials"))?;
+    let memory = workspace.memory.to_string();
+    let description = format!("Workspace: {}. Existing compact memory: {memory}. Client request: {}", workspace.name, body.content.trim());
+    let mut request = ai_agent::StrategyRequest::new(description, &workspace.symbol, &workspace.timeframe);
+    request.skill_id = body.skill_id.clone();
+    let generated = agent.generate_strategy(&request).await.map_err(ApiError::from)?;
+    let document = generated.document().clone();
+    let yaml = generated.yaml.clone();
+    let attempts = generated.attempts;
+    let repaired_errors = generated.repaired_errors.clone();
+    let validated = generated.into_validated();
+    Decisions::sandboxed(state.sandbox.as_ref(), &validated).map_err(|err| ApiError::coded(StatusCode::UNPROCESSABLE_ENTITY, "INDICATOR_SANDBOX_REFUSED", err.to_string()))?;
+    let strategy = serde_json::to_value(&document).map_err(|err| ApiError::internal(format!("could not store generated strategy: {err}")))?;
+    let strategy_id = db::create_strategy(database.pool(), user.user_id, &document.name, &document.version, &strategy, "ai_agent").await?;
+    let preview = chart_engine::IndicatorOutput { revision_id: strategy_id.to_string(), evidence: Vec::new(), zones: Vec::new(), markers: Vec::new(), links: Vec::new() };
+    let preview_json = serde_json::to_value(&preview).map_err(|err| ApiError::internal(format!("could not store indicator preview: {err}")))?;
+    let validation = serde_json::json!({"valid": true, "engine": "strategy-dsl-wasm-v1", "strategy_id": strategy_id, "attempts": attempts, "repaired_errors": repaired_errors});
+    let revision = db::create_indicator_revision(database.pool(), user.user_id, id, workspace.active_revision_id, &yaml, &format!("Generated strategy {}", document.name), "Generated from workspace message", &validation, &preview_json, "validated")
+        .await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    let memory = serde_json::json!({"last_request": body.content.trim(), "active_strategy_id": strategy_id, "revision": revision.revision_number});
+    db::update_indicator_workspace_memory(database.pool(), user.user_id, id, &memory).await?;
+    let assistant_text = format!("Generated and sandbox-validated revision {}. It is attached to the chart; create a bot draft only after you have stored a historical backtest.", revision.revision_number);
+    let assistant_message = db::create_indicator_workspace_message(database.pool(), user.user_id, id, "assistant", "revision", &assistant_text, &serde_json::json!({"revision_id": revision.id, "strategy_id": strategy_id}))
+        .await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    Ok((StatusCode::CREATED, Json(WorkspaceTurnResponse { user_message: user_message.into(), assistant_message: assistant_message.into(), revision: revision.into(), strategy_id: strategy_id.to_string() })))
+}
+
+/// `POST /indicator-workspaces/{id}/revisions/{revision_id}/restore`.
+pub async fn restore_revision(State(state): State<AppState>, user: UserContext, Path((id, revision_id)): Path<(Uuid, Uuid)>) -> Result<StatusCode, ApiError> {
+    let restored = db::restore_indicator_revision(database(&state)?.pool(), user.user_id, id, revision_id).await?;
+    if !restored { return Err(ApiError::not_found("validated indicator revision not found")); }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /indicator-workspaces/{id}/alerts`.
+pub async fn set_alert(State(state): State<AppState>, user: UserContext, Path(id): Path<Uuid>, ApiJson(body): ApiJson<SetAlertBody>) -> Result<StatusCode, ApiError> {
+    if body.event_name.trim().is_empty() || !body.channels.is_array() { return Err(ApiError::bad_request("INDICATOR_ALERT_INVALID", "event_name is required and channels must be an array")); }
+    if db::get_indicator_revision(database(&state)?.pool(), user.user_id, id, body.revision_id).await?.is_none() { return Err(ApiError::not_found("indicator revision not found")); }
+    let saved = db::set_indicator_alert_preference(database(&state)?.pool(), user.user_id, id, body.revision_id, body.event_name.trim(), body.enabled, &body.channels).await?;
+    if !saved { return Err(ApiError::not_found("indicator workspace not found")); }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /indicator-workspaces/{id}/bot-drafts`.
+pub async fn create_bot_draft(State(state): State<AppState>, user: UserContext, Path(id): Path<Uuid>, ApiJson(body): ApiJson<CreateBotDraftBody>) -> Result<(StatusCode, Json<BotDraftResponse>), ApiError> {
+    if !matches!(body.mode.as_str(), "paper" | "live") { return Err(ApiError::bad_request("INDICATOR_BOT_MODE_INVALID", "mode must be paper or live")); }
+    let draft = db::create_indicator_bot_draft(database(&state)?.pool(), user.user_id, id, body.revision_id, body.strategy_id, body.backtest_id, &body.mode, body.venue.as_deref(), &body.risk)
+        .await?.ok_or_else(|| ApiError::not_found("workspace revision or strategy not found"))?;
+    Ok((StatusCode::CREATED, Json(draft.into())))
 }

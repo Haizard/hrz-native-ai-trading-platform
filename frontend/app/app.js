@@ -252,6 +252,9 @@ function createChartPane(root, hooks = {}) {
   // changes -- but the page reads the list once, since four panes asking four
   // times is the same answer for four round trips.
   let instruments = [];
+  // The active, server-validated generated revision. It is an opaque market
+  // coordinate payload; only the Rust engine maps it into the scene.
+  let indicator = null;
 
   // ---------------------------------------------------------------------------
   // Drawing
@@ -1065,6 +1068,7 @@ function createChartPane(root, hooks = {}) {
       // -- and short-circuiting on `thesis &&` is exactly what would hide it,
       // because the read that throws is the one after the guard.
       overlays: thesis && thesis.symbol === el("symbol").value ? thesisOverlays(thesis) : [],
+      indicator,
     };
     // Assigned rather than sent as `null`: a null is not a missing field, and the
     // engine's `Viewport` is a struct rather than an option, so `viewport: null`
@@ -2265,6 +2269,14 @@ function createChartPane(root, hooks = {}) {
     /// one answer: whatever the next request will use is what this returns.
     symbol: () => el("symbol").value,
     timeframe: () => el("timeframe").value,
+
+    /// Attach a validated generated indicator to this chart immediately. The
+    /// caller may only pass a preview returned by the workspace revision API;
+    /// source itself never runs in the browser.
+    attachIndicator(output) {
+      indicator = output || null;
+      renderNow();
+    },
 
     /// What the user is looking at, as `POST /agent/ask` accepts it.
     ///

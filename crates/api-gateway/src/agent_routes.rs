@@ -136,7 +136,7 @@ pub struct GenerateStrategyResponse {
 /// `docs/12` asks for per-user limits on `/agent/*` specifically, because these
 /// are the endpoints that cost money per call. The limit is checked before the
 /// agent is even looked at, so a refused request does no work.
-fn check_agent_limit(state: &AppState, user: &UserContext) -> Result<(), ApiError> {
+pub(crate) fn check_agent_limit(state: &AppState, user: &UserContext) -> Result<(), ApiError> {
     state
         .agent_limits
         .check(user.user_id, crate::auth::now_seconds() as f64)
