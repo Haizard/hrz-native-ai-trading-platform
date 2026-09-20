@@ -19,8 +19,8 @@
 //!   the ones that did nothing. `docs/11` asks for both, and they answer
 //!   different questions: the first is P&L, the second is "why".
 
-use db::paper::{AuditEvent, ExecutedTrade};
 use db::Database;
+use db::paper::{AuditEvent, ExecutedTrade};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -316,6 +316,7 @@ pub fn notification_payload(alert: &BotAlert, bot_id: Uuid) -> serde_json::Value
     let kind = match alert {
         BotAlert::Killed { .. } => "killed",
         BotAlert::Clamped { .. } => "clamped",
+        BotAlert::SandboxFailed { .. } => "sandbox_failed",
     };
     let mut payload = json!({
         "bot_id": bot_id,
@@ -329,7 +330,7 @@ pub fn notification_payload(alert: &BotAlert, bot_id: Uuid) -> serde_json::Value
             payload["reason"] = json!(reason);
             payload["positions"] = json!(positions);
         }
-        BotAlert::Clamped { detail } => {
+        BotAlert::Clamped { detail } | BotAlert::SandboxFailed { detail } => {
             payload["detail"] = json!(detail);
         }
     }
@@ -438,10 +439,12 @@ mod tests {
             Uuid::nil(),
         );
         assert_eq!(payload["kind"], "halted");
-        assert!(payload["detail"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("daily"));
+        assert!(
+            payload["detail"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("daily")
+        );
     }
 
     #[test]

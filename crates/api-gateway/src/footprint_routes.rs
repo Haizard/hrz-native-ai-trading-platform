@@ -18,16 +18,16 @@
 //! level of every candle, which is a lot of numbers -- so the window is capped
 //! rather than the response being paginated. A chart shows what is on screen.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::{Deserialize, Serialize};
 
 use analytics_core::types::{Side, Timeframe};
-use analytics_core::{build_footprints, detect_imbalances_with, ImbalanceConfig};
+use analytics_core::{ImbalanceConfig, build_footprints, detect_imbalances_with};
 
+use crate::AppState;
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
-use crate::AppState;
 
 /// Most candles one request may return.
 ///
@@ -285,7 +285,11 @@ pub async fn footprint(
         let gap_end = tape_oldest.min(to_ns);
         let start = from_ns.max(gap_end - MAX_TAPE_GAP_NS);
         if start < gap_end {
-            match state.backfill.fetch_agg_trades(&symbol, start, gap_end).await {
+            match state
+                .backfill
+                .fetch_agg_trades(&symbol, start, gap_end)
+                .await
+            {
                 Ok(older) => {
                     if start > from_ns {
                         note = Some(format!(
@@ -442,9 +446,7 @@ pub async fn footprint(
         trades: trades.len(),
         candles: response,
         note: match (total_levels, note) {
-            (0, _) => {
-                Some("trades fell inside these candles but produced no price levels".into())
-            }
+            (0, _) => Some("trades fell inside these candles but produced no price levels".into()),
             (_, partial) => partial,
         },
     }))

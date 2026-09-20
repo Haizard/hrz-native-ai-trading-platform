@@ -1,15 +1,19 @@
-//! Drive a sandboxed interpreter from the backtester's own replay loop.
+//! Drive a sandboxed interpreter from a caller's own loop.
 //!
 //! [`SandboxedStrategy`] implements [`strategy_runtime::Strategy`], which is the
-//! trait `backtester::replay` already takes. That is the whole integration: a
-//! backtest runs through the sandbox by swapping the strategy, with no change to
-//! the replay loop, the simulator or the report.
+//! trait `backtester::replay` already takes **and** the trait the live bots
+//! (`trading_engine::PaperBot`, `trading_engine::LiveBot`) drive. That is the
+//! whole integration, in both directions: a backtest or a bot runs through the
+//! sandbox by swapping the strategy, with no change to the replay loop, the
+//! simulator, the risk engine or the report.
 //!
 //! It matters that this is the *only* integration point. If the sandbox had its
 //! own replay path, "runs identically natively and in the sandbox" would be a
 //! claim about two implementations agreeing rather than a claim about one
 //! implementation being driven two ways -- and the second kind of claim is the
-//! one that stays true.
+//! one that stays true. The same argument is why the bots take a strategy rather
+//! than branching on "is this one sandboxed": a bot that knew would be a second
+//! implementation of a bot.
 
 use strategy_dsl::ValidatedStrategy;
 use strategy_runtime::context::MarketContext;
@@ -21,6 +25,14 @@ use crate::instance::{ResourceUsage, Sandbox, Session};
 
 /// A strategy whose every decision is made inside the sandbox.
 ///
+/// ## It owns its session, so a long-running bot can own *it*
+///
+/// [`Sandbox::start`] returns a session that borrows nothing, which makes this
+/// type `'static` and therefore storable: a `PaperBot` or `LiveBot` holds one
+/// for as long as the bot runs, instead of a session that had to be recreated --
+/// and so re-initialised, losing the interpreter's own counters -- on every
+/// candle.
+///
 /// ## Failures are recorded, not swallowed
 ///
 /// [`Strategy::on_candle`] returns `Option<Signal>` and has no error channel, so
@@ -28,15 +40,15 @@ use crate::instance::{ResourceUsage, Sandbox, Session};
 /// **essential** to check [`SandboxedStrategy::errors`] after a run: a strategy
 /// that failed on 200 of 10,000 candles produced a valid-looking report over the
 /// other 9,800, and nothing in the numbers would say so.
-pub struct SandboxedStrategy<'a> {
-    session: Session<'a>,
+pub struct SandboxedStrategy {
+    session: Session,
     errors: Vec<SandboxError>,
     denials: Vec<String>,
     evaluations: u64,
     signals: u64,
 }
 
-impl std::fmt::Debug for SandboxedStrategy<'_> {
+impl std::fmt::Debug for SandboxedStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SandboxedStrategy")
             .field("evaluations", &self.evaluations)
@@ -46,13 +58,13 @@ impl std::fmt::Debug for SandboxedStrategy<'_> {
     }
 }
 
-impl<'a> SandboxedStrategy<'a> {
+impl SandboxedStrategy {
     /// Instantiate a sandboxed interpreter for `document`.
     ///
     /// # Errors
     ///
     /// As [`Sandbox::start`].
-    pub fn new(sandbox: &'a Sandbox, document: &ValidatedStrategy) -> Result<Self, SandboxError> {
+    pub fn new(sandbox: &Sandbox, document: &ValidatedStrategy) -> Result<Self, SandboxError> {
         Ok(Self {
             session: sandbox.start(document)?,
             errors: Vec::new(),
@@ -105,7 +117,7 @@ impl<'a> SandboxedStrategy<'a> {
     }
 }
 
-impl Strategy for SandboxedStrategy<'_> {
+impl Strategy for SandboxedStrategy {
     fn on_candle(&mut self, ctx: &MarketContext) -> Option<Signal> {
         self.evaluations += 1;
 

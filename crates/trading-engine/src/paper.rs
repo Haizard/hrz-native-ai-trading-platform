@@ -32,12 +32,15 @@
 //! [`Simulator`]: strategy_runtime::Simulator
 
 use analytics_core::types::{Candle, Timeframe};
+use sandbox::SandboxError;
 use serde::{Deserialize, Serialize};
+use strategy_dsl::ValidatedStrategy;
 use strategy_runtime::{
     EnterSignal, ExitSignal, ExitTrigger, RollingConfig, RollingLadder, Simulator, SimulatorConfig,
     Strategy, StrategyEngine, TradeRecord,
 };
 
+use crate::decisions::{DecisionPath, Decisions, Shape};
 use crate::risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict};
 
 /// What the bot needs to know that the document does not say.
@@ -154,7 +157,10 @@ pub struct PaperBot {
     decision_name: String,
     decision_resolution: Timeframe,
     ladder: RollingLadder,
-    engine: StrategyEngine,
+    /// The thing that decides, which may be native or sandboxed. Named
+    /// `strategy` rather than `decisions` because `decisions` is already the
+    /// audit trail of what it said.
+    strategy: Decisions,
     simulator: Simulator,
     risk: RiskEngine,
     rolling: RollingConfig,
@@ -165,23 +171,51 @@ pub struct PaperBot {
     /// Whether the switch was already engaged last time we looked, so the
     /// alert is raised on the transition rather than on every later bar.
     alerted_halt: bool,
+    /// Whether the sandbox had already failed when the bot last looked, for the
+    /// same reason: a strategy failing 200 times is one notification, not 200.
+    alerted_sandbox_failure: bool,
     /// Set when a configured limit had to be clamped, so it can be logged once.
     clamp_note: Option<String>,
 }
 
 impl PaperBot {
-    /// Start a bot for an already-validated strategy.
+    /// Start a bot for an already-validated strategy, decided in this process.
+    ///
+    /// The reference the sandbox is measured against. **Not the path the
+    /// gateway creates a bot on** -- see [`PaperBot::with_strategy`] and
+    /// principle #6: a document authored by an agent must not execute
+    /// unsandboxed.
     #[must_use]
     pub fn new(engine: StrategyEngine, config: PaperConfig) -> Self {
+        let shape = Shape::of(engine.document());
+        Self::from_shape(Decisions::Native(engine), shape, config)
+    }
+
+    /// Start a bot around a strategy that has already been prepared.
+    ///
+    /// ## Why preparing is a separate step
+    ///
+    /// Preparing a sandboxed strategy can **fail** -- the guest refuses a
+    /// document it cannot run -- and that failure has to be able to happen
+    /// *before* a bot row exists. A refusal that leaves a `running` bot with no
+    /// task behind it is worse than no refusal: the caller gets a 4xx and
+    /// something in the database that says they have a bot.
+    ///
+    /// So the caller does [`Decisions::sandboxed`] first, checks the result, and
+    /// only then creates the row and builds the bot. `PaperBot::sandboxed` used
+    /// to fuse the two and made that ordering impossible.
+    #[must_use]
+    pub fn with_strategy(
+        strategy: Decisions,
+        document: &ValidatedStrategy,
+        config: PaperConfig,
+    ) -> Self {
+        let shape = Shape::of(document.document());
+        Self::from_shape(strategy, shape, config)
+    }
+
+    fn from_shape(strategy: Decisions, shape: Shape, config: PaperConfig) -> Self {
         let (limits, clamp_note) = config.limits.clamped();
-        let ladder = RollingLadder::new(&engine.document().timeframes);
-        let decision_name = engine.decision_timeframe().to_string();
-        let decision_resolution = engine
-            .document()
-            .timeframes
-            .get(&decision_name)
-            .copied()
-            .unwrap_or(Timeframe::M5);
 
         let mut alerts = Vec::new();
         if let Some(detail) = clamp_note.clone() {
@@ -190,10 +224,10 @@ impl PaperBot {
 
         Self {
             symbol: config.symbol,
-            decision_name,
-            decision_resolution,
-            ladder,
-            engine,
+            decision_name: shape.decision_name,
+            decision_resolution: shape.decision_resolution,
+            ladder: shape.ladder,
+            strategy,
             simulator: Simulator::new(config.fills),
             risk: RiskEngine::new(limits),
             rolling: config.rolling,
@@ -202,6 +236,7 @@ impl PaperBot {
             decisions: Vec::new(),
             alerts,
             alerted_halt: false,
+            alerted_sandbox_failure: false,
             clamp_note,
         }
     }
@@ -230,6 +265,54 @@ impl PaperBot {
     #[must_use]
     pub fn ladder(&self) -> &RollingLadder {
         &self.ladder
+    }
+
+    /// Which path this bot decides on: native or sandboxed.
+    ///
+    /// Reported rather than assumed. "Is this bot's logic sandboxed?" is a
+    /// principle-#6 fact about a running system, and a fact nobody can read is a
+    /// fact nobody can check.
+    #[must_use]
+    pub const fn decision_path(&self) -> DecisionPath {
+        self.strategy.path()
+    }
+
+    /// Everything the sandbox recorded a failure for.
+    ///
+    /// Empty for a native bot, which has nowhere to record one -- it takes the
+    /// process down instead, and that is the difference this indirection exists
+    /// to remove.
+    #[must_use]
+    pub fn sandbox_errors(&self) -> &[SandboxError] {
+        self.strategy.sandbox_errors()
+    }
+
+    /// What the sandboxed half of this bot has cost, when there is one.
+    ///
+    /// The evidence that a sandboxed bot is *really* sandboxed: a native bot has
+    /// no fuel figure to report, so a non-zero one cannot be faked by a bot that
+    /// never crossed the boundary.
+    #[must_use]
+    pub fn sandbox_usage(&self) -> Option<sandbox::ResourceUsage> {
+        self.strategy.sandbox_usage()
+    }
+
+    /// Raise one alert the first time the sandbox reports a failure.
+    ///
+    /// On the transition, not per failure: a document that fails on every bar
+    /// would otherwise fill the notification list with the same message, and the
+    /// one fact worth reading -- that this bot's decisions are not its
+    /// document's -- would be buried in it.
+    fn note_sandbox_failure(&mut self) {
+        if self.alerted_sandbox_failure || self.strategy.sandbox_error_count() == 0 {
+            return;
+        }
+        self.alerted_sandbox_failure = true;
+        let detail = self
+            .strategy
+            .last_sandbox_error()
+            .unwrap_or_else(|| "the sandbox reported a failure without a message".to_string());
+        self.alerts.push(BotAlert::SandboxFailed { detail });
     }
 
     /// Completed trades, in closing order.
@@ -378,7 +461,7 @@ impl PaperBot {
         // bar late, because it skipped the bar where the setup first appeared.
         // The replay always asks, so this must too -- `paper-cli run` is what
         // caught it.
-        let signalled = context.map(|context| match self.engine.on_candle(&context) {
+        let signalled = context.map(|context| match self.strategy.on_candle(&context) {
             Some(strategy_runtime::Signal::Enter(enter)) => self.queue_entry(enter, now),
             Some(strategy_runtime::Signal::Exit(exit)) => {
                 let trigger = exit.trigger.name().to_string();
@@ -387,6 +470,13 @@ impl PaperBot {
             }
             None => DecisionOutcome::NoSignal,
         });
+
+        // A sandboxed failure has nowhere to be returned to -- `on_candle`
+        // yields a signal, not a `Result` -- so it is noticed here instead.
+        // Without this, a bot whose strategy fails on every bar looks exactly
+        // like a bot whose strategy never fires, which is the failure mode the
+        // sandbox's own documentation warns about.
+        self.note_sandbox_failure();
 
         // What gets *recorded* is the most consequential thing that happened:
         // a fill, then a close, then whatever the strategy said.
@@ -533,6 +623,16 @@ pub enum BotAlert {
         /// What was clamped and to what.
         detail: String,
     },
+    /// The bot's strategy failed **inside the sandbox**.
+    ///
+    /// The process is fine and the sandbox held -- that is what it is for. But
+    /// the decisions on the candles it failed for are missing, so the bot is not
+    /// doing what its document says, which is a correctness failure rather than
+    /// a warning.
+    SandboxFailed {
+        /// The sandbox's own message for the first failure.
+        detail: String,
+    },
 }
 
 impl BotAlert {
@@ -540,7 +640,7 @@ impl BotAlert {
     #[must_use]
     pub const fn severity(&self) -> &'static str {
         match self {
-            Self::Killed { .. } => "critical",
+            Self::Killed { .. } | Self::SandboxFailed { .. } => "critical",
             Self::Clamped { .. } => "warning",
         }
     }
@@ -551,6 +651,7 @@ impl BotAlert {
         match self {
             Self::Killed { .. } => "Paper bot stopped by the risk engine".into(),
             Self::Clamped { .. } => "Paper bot risk limit was reduced".into(),
+            Self::SandboxFailed { .. } => "The bot's strategy failed inside the sandbox".into(),
         }
     }
 
@@ -559,7 +660,7 @@ impl BotAlert {
     pub fn body(&self) -> &str {
         match self {
             Self::Killed { reason, .. } => reason,
-            Self::Clamped { detail } => detail,
+            Self::Clamped { detail } | Self::SandboxFailed { detail } => detail,
         }
     }
 }

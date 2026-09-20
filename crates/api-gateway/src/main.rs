@@ -13,10 +13,10 @@ use tracing::{error, info, warn};
 use ai_agent::{Agent, AgentConfig, SkillLibrary};
 use api_gateway::bots::{BotSupervisor, FeedMode};
 use api_gateway::rate_limit::{RateLimit, RateLimiter};
-use api_gateway::{build_auth, load_skills, router, AppState};
+use api_gateway::{AppState, build_auth, load_skills, router};
 use db::Database;
-use observability::metrics::Registry;
 use observability::QueueSink;
+use observability::metrics::Registry;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -120,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
         agent_limits,
         metrics: Registry::global_handle(),
         alert_queue: alert_queue.clone(),
+        sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
     };
 
     api_gateway::metrics::spawn_alert_task(state.clone());

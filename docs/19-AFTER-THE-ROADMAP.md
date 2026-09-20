@@ -117,7 +117,6 @@ it that building code cannot answer, because it is a question about elapsed time
 
 | # | Item | Where | The lie | Done when |
 |---|---|---|---|---|
-| 1 | **The paper bot is not sandboxed** | `crates/trading-engine/Cargo.toml` declares `sandbox`; no `sandbox::` call site exists in `crates/trading-engine/src/` or `tools/paper-cli/src/`. `docs/08:236` admits it; `crates/trading-engine/src/lib.rs:5` and `:22` claim the opposite | The doc comment says the strategy runs through "the same `strategy-runtime`/sandbox path the backtester uses". It runs through `strategy-runtime` natively | Principle #6 (AI-authored logic never executes unsandboxed) holds on the paper path: an agent-authored document run by a bot executes inside the sandbox, with an equivalence test proving it matches native |
 | 3 | **No retention or downsampling** | `docs/13:138` requires it; `crates/db/migrations/0001_init.sql:189-190` has it as commented-out Timescale suggestions. Nothing in `crates/` or `tools/` mentions retention | `docs/13`'s own done criteria claim "a documented retention/downsampling job exists and is tested" | A tested job downsamples `trades`/`orderbook_snapshots` past a configured age, verified against a synthetic dataset |
 | 5 | **`strategy-cli` reads the source series twice** | `tools/strategy-cli/src/main.rs` | — | The series is loaded once when source resolution is also declared |
 | 6 | **The Docker image has never been built** | `docs/17:36-59`; guarded only by `crates/api-gateway/tests/packaging.rs` | The Dockerfile looks production-ready. It has never produced a container | A real Linux build starts and answers `/healthz`; the static checks still pass |
@@ -137,6 +136,17 @@ it that building code cannot answer, because it is a question about elapsed time
 the commit rather than strike it through. Numbers are not renumbered, because other
 docs cite "row 10" and "row 1" by number; 2 and 8 are simply gone.
 
+- **Row 1, the paper bot is not sandboxed** — closed 2026-09-20. `sandbox` was
+  declared in `trading-engine/Cargo.toml` and every `sandbox::` occurrence in
+  `trading-engine/src` was a comment. The backtester did not use it either.
+  `Session<'a>` held a borrow of `Sandbox` (for `limits`, which is `Copy`), so a
+  bot could not own a sandboxed strategy. The fix makes `Session` own its limits
+  and drops the lifetime, adds `Decisions` (`Native | Sandboxed`) as the seam
+  both bots drive, routes `POST /bots` through `Decisions::sandboxed`, and
+  records the path in `RunningBot` so the guard
+  `a_bot_created_by_the_route_is_sandboxed` can assert it. `docs/08` admitted
+  the gap and now notes the backtester is native; `trading-engine/src/lib.rs`
+  no longer claims a sandbox path that did not exist.
 - **Row 2, the stale README status block** — closed in `d787695`. It claimed
   "Phases 0–4 complete — `ai-agent` and `trading-engine` are still stubs", which was
   three phases out of date. A doc that *understates* the build is the kind of thing

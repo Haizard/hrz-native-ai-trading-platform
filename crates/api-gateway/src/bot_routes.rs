@@ -28,24 +28,25 @@
 //!
 //! [`BotSupervisor`]: crate::bots::BotSupervisor
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use sandbox::SandboxError;
 use strategy_runtime::{RuntimeConfig, SimulatorConfig, StrategyEngine};
 use trading_engine::{
-    BinanceRest, GateRequirements, GateVerdict, LiveBot, LiveConfig, LiveGate, PaperBot,
+    BinanceRest, Decisions, GateRequirements, GateVerdict, LiveBot, LiveConfig, LiveGate, PaperBot,
     PaperConfig, RiskLimits, TrackRecord,
 };
 
+use crate::AppState;
 use crate::auth::UserContext;
 use crate::bots::BotSupervisor;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::now_ns;
-use crate::AppState;
 
 /// Default page size for the list endpoint.
 const DEFAULT_LIMIT: i64 = 50;
@@ -123,6 +124,20 @@ fn checked_idempotency_key(raw: Option<&str>) -> Result<Option<String>, ApiError
         ));
     }
     Ok(Some(trimmed.to_string()))
+}
+
+/// Turn a sandbox refusal into the 422 the gateway answers.
+///
+/// `Sandbox::start` can refuse for two reasons: the module speaks a different
+/// ABI, or the document is rejected by the guest. Both mean "this document
+/// cannot run", which is the same category as `STRATEGY_NOT_RUNNABLE`, and the
+/// message names which.
+fn sandbox_refusal(err: &SandboxError) -> ApiError {
+    ApiError::coded(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "STRATEGY_NOT_RUNNABLE",
+        err.to_string(),
+    )
 }
 
 fn default_mode() -> String {
@@ -295,7 +310,17 @@ pub async fn create(
         ..RiskLimits::default()
     };
 
-    let engine = StrategyEngine::new(&validated, RuntimeConfig::default()).map_err(|e| {
+    // Built to **refuse**, not to run.
+    //
+    // `StrategyEngine::new` is the only place a document that cannot trade is
+    // rejected -- an `indicator`, one declaring no direction, one with no `risk`
+    // block -- and its message names which. `strategy-dsl`'s validator does not
+    // check this, so dropping the call would turn a 422 into a bot that is
+    // created, runs, and never fires, which is exactly the shape of defect this
+    // repository keeps finding. The bot's actual decisions come from the sandbox
+    // (`PaperBot::with_strategy`), so this engine is dropped once the document has
+    // passed.
+    StrategyEngine::new(&validated, RuntimeConfig::default()).map_err(|e| {
         ApiError::coded(
             StatusCode::UNPROCESSABLE_ENTITY,
             "STRATEGY_NOT_RUNNABLE",
@@ -317,7 +342,7 @@ pub async fn create(
             &user,
             &request,
             strategy.id,
-            engine,
+            &validated,
             symbol,
             limits,
             rolling,
@@ -332,7 +357,7 @@ pub async fn create(
         &user,
         &request,
         strategy.id,
-        engine,
+        &validated,
         symbol,
         limits,
         rolling,
@@ -349,7 +374,7 @@ async fn start_paper(
     user: &UserContext,
     request: &CreateBotRequest,
     strategy_id: Uuid,
-    engine: StrategyEngine,
+    document: &strategy_dsl::ValidatedStrategy,
     symbol: String,
     limits: RiskLimits,
     rolling: strategy_runtime::RollingConfig,
@@ -374,8 +399,17 @@ async fn start_paper(
 
     // Built only once the row is ours. On a retry there is nothing to build --
     // starting a second task here is the exact thing the key exists to stop.
-    let bot = PaperBot::new(
-        engine,
+    //
+    // Sandboxed, because this is where an agent-authored document becomes a
+    // running bot: principle #6 says it must not execute unsandboxed, and this
+    // call is what makes that true rather than aspirational.
+    // MUTATION: make the route build a native engine instead of sandboxed,
+    // so the guard `a_bot_created_by_the_route_is_sandboxed` fails.
+    let strategy =
+        Decisions::sandboxed(state.sandbox.as_ref(), document).map_err(|e| sandbox_refusal(&e))?;
+    let bot = PaperBot::with_strategy(
+        strategy,
+        document,
         PaperConfig {
             symbol: symbol.clone(),
             limits,
@@ -414,7 +448,7 @@ async fn start_live(
     user: &UserContext,
     request: &CreateBotRequest,
     strategy_id: Uuid,
-    engine: StrategyEngine,
+    document: &strategy_dsl::ValidatedStrategy,
     symbol: String,
     limits: RiskLimits,
     rolling: strategy_runtime::RollingConfig,
@@ -500,8 +534,11 @@ async fn start_live(
         return replay(state, database, user.user_id, bot_id).await;
     }
 
-    let bot = LiveBot::new(
-        engine,
+    let strategy =
+        Decisions::sandboxed(state.sandbox.as_ref(), document).map_err(|e| sandbox_refusal(&e))?;
+    let bot = LiveBot::with_strategy(
+        strategy,
+        document,
         adapter,
         LiveConfig {
             symbol: symbol.clone(),
@@ -902,7 +939,7 @@ mod tests {
     /// returning rows whose `title` is the empty string.
     #[test]
     fn the_payload_keys_the_reader_uses_are_the_keys_the_writer_writes() {
-        use trading_engine::{notification_payload, BotAlert};
+        use trading_engine::{BotAlert, notification_payload};
 
         let payload = notification_payload(
             &BotAlert::Killed {

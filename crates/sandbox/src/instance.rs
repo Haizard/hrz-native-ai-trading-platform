@@ -20,8 +20,8 @@
 //! that away and make a sandboxed run disagree with a native one for reasons
 //! that have nothing to do with isolation.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -182,11 +182,16 @@ impl Sandbox {
 
     /// Instantiate the interpreter and load `document` into it.
     ///
+    /// The returned [`Session`] borrows nothing: it is `'static`, so a caller
+    /// may own it for as long as it likes -- which is what lets a long-running
+    /// bot hold one. `&self` is still borrowed for the duration of the call,
+    /// because starting a session reads the compiled module.
+    ///
     /// # Errors
     ///
     /// [`SandboxError::AbiMismatch`] if the module speaks a different protocol,
     /// or [`SandboxError::Guest`] if the document is refused.
-    pub fn start(&self, document: &ValidatedStrategy) -> Result<Session<'_>, SandboxError> {
+    pub fn start(&self, document: &ValidatedStrategy) -> Result<Session, SandboxError> {
         Session::start(self, document)
     }
 
@@ -218,7 +223,7 @@ impl Sandbox {
                     errors: vec![error],
                     resource_usage: ResourceUsage::default(),
                     denials: Vec::new(),
-                }
+                };
             }
         };
 
@@ -240,26 +245,37 @@ impl Sandbox {
 }
 
 /// A live sandboxed interpreter, holding its state across many candles.
-pub struct Session<'a> {
-    sandbox: &'a Sandbox,
+pub struct Session {
+    /// The ceilings this session was started with, **copied out of** the
+    /// [`Sandbox`] rather than borrowed from it.
+    ///
+    /// This one field is the difference between a session that borrows its
+    /// sandbox and one that owns everything it needs, and it is what lets a
+    /// *bot* run sandboxed. A `PaperBot` cannot hold a borrow of a `Sandbox` it
+    /// does not own, and making it own both would be a self-referential struct;
+    /// the alternative would be an `Arc<Sandbox>` per bot and a session that
+    /// still borrowed it. Nothing else here refers to the sandbox -- the
+    /// `Store` holds its own handle to the engine -- so copying the limits
+    /// removes the borrow entirely rather than hiding it.
+    limits: SandboxLimits,
     store: Store<HostState>,
     instance: Instance,
     memory: Memory,
     usage: ResourceUsage,
 }
 
-impl std::fmt::Debug for Session<'_> {
+impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Session")
-            .field("limits", &self.sandbox.limits)
+            .field("limits", &self.limits)
             .field("usage", &self.usage)
             .finish_non_exhaustive()
     }
 }
 
-impl<'a> Session<'a> {
+impl Session {
     /// Instantiate and initialise.
-    fn start(sandbox: &'a Sandbox, document: &ValidatedStrategy) -> Result<Self, SandboxError> {
+    fn start(sandbox: &Sandbox, document: &ValidatedStrategy) -> Result<Self, SandboxError> {
         let mut state = HostState::new(sandbox.limits);
         // The declared set comes from the document, so the host can tell a
         // timeframe that is merely warming up from one that was never declared.
@@ -280,7 +296,7 @@ impl<'a> Session<'a> {
             .ok_or_else(|| SandboxError::MissingExport("memory".into()))?;
 
         let mut session = Self {
-            sandbox,
+            limits: sandbox.limits,
             store,
             instance,
             memory,
@@ -367,7 +383,7 @@ impl<'a> Session<'a> {
     /// sandbox reported an exhausted budget for a document it had not yet read.
     fn arm(&mut self) -> Result<(), SandboxError> {
         self.store
-            .set_fuel(self.sandbox.limits.fuel)
+            .set_fuel(self.limits.fuel)
             .map_err(|error| SandboxError::Instantiation(error.to_string()))?;
         self.store.set_epoch_deadline(self.deadline_ticks());
         Ok(())
@@ -494,7 +510,7 @@ impl<'a> Session<'a> {
         if ptr <= 0 || len <= 0 {
             return None;
         }
-        let ceiling = self.sandbox.limits.max_message_bytes;
+        let ceiling = self.limits.max_message_bytes;
         let len = usize::try_from(len as u32).ok()?.min(ceiling);
         let start = usize::try_from(ptr as u32).ok()?;
         let end = start.checked_add(len)?;
@@ -519,7 +535,7 @@ impl<'a> Session<'a> {
 
         if ptr == 0 {
             return Err(SandboxError::MemoryLimitExceeded {
-                limit: self.sandbox.limits.max_memory_bytes,
+                limit: self.limits.max_memory_bytes,
             });
         }
 
@@ -542,22 +558,22 @@ impl<'a> Session<'a> {
     /// Fold this evaluation's cost into the session totals.
     fn record(&mut self, elapsed: Duration) {
         let remaining = self.store.get_fuel().unwrap_or(0);
-        self.usage.fuel_budget = self.sandbox.limits.fuel;
-        self.usage.fuel_consumed = self.sandbox.limits.fuel.saturating_sub(remaining);
+        self.usage.fuel_budget = self.limits.fuel;
+        self.usage.fuel_consumed = self.limits.fuel.saturating_sub(remaining);
         self.usage.elapsed += elapsed;
         self.usage.memory_bytes = self.memory_bytes();
     }
 
     /// Epoch ticks that add up to the wall-clock ceiling.
     fn deadline_ticks(&self) -> u64 {
-        let millis = u64::try_from(self.sandbox.limits.timeout.as_millis()).unwrap_or(u64::MAX);
+        let millis = u64::try_from(self.limits.timeout.as_millis()).unwrap_or(u64::MAX);
         (millis / TICK_MS).max(1)
     }
 
     fn exhausted(&self) -> SandboxError {
         SandboxError::FuelExhausted {
             used: self.usage.fuel_consumed,
-            budget: self.sandbox.limits.fuel,
+            budget: self.limits.fuel,
         }
     }
 
@@ -571,8 +587,8 @@ impl<'a> Session<'a> {
         if self.store.get_fuel().is_ok_and(|fuel| fuel == 0) {
             return self.exhausted();
         }
-        if elapsed >= self.sandbox.limits.timeout {
-            return SandboxError::Timeout(self.sandbox.limits.timeout);
+        if elapsed >= self.limits.timeout {
+            return SandboxError::Timeout(self.limits.timeout);
         }
         if let Some(trap) = error.downcast_ref::<wasmtime::Trap>() {
             return SandboxError::Trap(trap.to_string());

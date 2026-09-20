@@ -2,17 +2,17 @@
 //!
 //! These are the two endpoints the Phase 5 chart talks to.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::{Deserialize, Serialize};
 
 use ai_agent::{AgentAnswer, AskRequest, StrategyRequest};
 
+use crate::AppState;
 use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::market_data::WindowMarketData;
-use crate::AppState;
 
 /// Body of `POST /agent/ask`.
 #[derive(Debug, Deserialize)]

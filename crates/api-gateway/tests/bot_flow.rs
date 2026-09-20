@@ -578,7 +578,7 @@ async fn another_users_bot_is_absent_not_forbidden() {
 /// rather than producing rows whose title is the empty string.
 #[tokio::test]
 async fn a_notification_written_for_a_bot_is_readable_through_the_route() {
-    use trading_engine::{notification_payload, BotAlert, NOTIFICATION_EVENT};
+    use trading_engine::{BotAlert, NOTIFICATION_EVENT, notification_payload};
 
     let Some(h) = Harness::new().await else {
         return;
@@ -685,7 +685,7 @@ async fn a_bot_with_no_notifications_answers_with_an_empty_list() {
 /// two bots, one notification each, and each route returns only its own.
 #[tokio::test]
 async fn notifications_do_not_leak_between_bots() {
-    use trading_engine::{notification_payload, BotAlert, NOTIFICATION_EVENT};
+    use trading_engine::{BotAlert, NOTIFICATION_EVENT, notification_payload};
 
     let Some(h) = Harness::new().await else {
         return;
@@ -937,6 +937,65 @@ async fn an_empty_idempotency_key_is_refused_not_ignored() {
     );
 
     // The strategy still references the user, so it goes before the account.
+    db::strategies::delete_strategy(h.database.pool(), strategy_id.parse().unwrap())
+        .await
+        .unwrap();
+    user.cleanup(&h.database).await;
+}
+
+/// A bot created by `POST /bots` decides inside the sandbox, not natively.
+///
+/// Principle #6: a document authored by an agent must not execute unsandboxed.
+/// This is the guard that proves the route makes that true rather than
+/// aspirational.
+///
+/// ## Mutation check
+///
+/// Change `start_paper` (and `start_live`) to pass
+/// `Decisions::Native(engine)` to `PaperBot::with_strategy` instead of
+/// `Decisions::sandboxed(...)` -- i.e. make the route build a native engine.
+/// This assertion then fails with `expected Sandboxed, got Native`, which is
+/// the guard doing its job.
+#[tokio::test]
+async fn a_bot_created_by_the_route_is_sandboxed() {
+    use trading_engine::DecisionPath;
+
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let user = h.register().await;
+    let strategy_id = strategy(&h, &user.token).await;
+
+    let (status, body) = h
+        .post(
+            "/bots",
+            json!({ "strategy_id": strategy_id, "mode": "paper" }),
+            Some(&user.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let bot_id: uuid::Uuid = body["id"].as_str().expect("an id").parse().unwrap();
+
+    // Give the supervisor time to spawn the task and insert the RunningBot.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let path = h
+        .supervisor
+        .bot_decision_path(bot_id)
+        .expect("the bot must be running here");
+    assert_eq!(
+        path,
+        DecisionPath::Sandboxed,
+        "a bot created by the route must decide inside the sandbox"
+    );
+
+    assert!(h.supervisor.stop(bot_id).await, "the bot must stop");
+    let (status, _) = h
+        .delete(&format!("/bots/{bot_id}"), Some(&user.token))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
     db::strategies::delete_strategy(h.database.pool(), strategy_id.parse().unwrap())
         .await
         .unwrap();

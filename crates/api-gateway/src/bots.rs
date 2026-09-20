@@ -53,14 +53,14 @@ use std::time::Duration;
 
 use analytics_core::types::{Candle, OrderBookSnapshot};
 use serde::Serialize;
+use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::Notify;
 use tokio::task::{AbortHandle, JoinHandle};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use trading_engine::{BinanceRest, BotSession, LiveBot, LiveSession, PaperBot};
+use trading_engine::{BinanceRest, BotSession, DecisionPath, LiveBot, LiveSession, PaperBot};
 
 use crate::now_ns;
 
@@ -351,6 +351,14 @@ impl BotKind {
         matches!(self, Self::Live(_))
     }
 
+    /// Which path this bot decides on.
+    fn decision_path(&self) -> DecisionPath {
+        match self {
+            Self::Paper(bot) => bot.decision_path(),
+            Self::Live(bot) => bot.decision_path(),
+        }
+    }
+
     /// The venue, for a live bot.
     fn venue(&self) -> Option<&str> {
         match self {
@@ -499,6 +507,9 @@ struct RunningBot {
     /// them, and a question that could not be answered without the answer would
     /// not be a question.
     venue: Option<String>,
+    /// Which path this bot decides on, recorded so a test can assert principle
+    /// #6 without reaching into the task.
+    decision_path: DecisionPath,
 }
 
 /// How long a graceful stop may take before the task is aborted.
@@ -648,6 +659,16 @@ impl BotSupervisor {
             .running
             .lock()
             .is_ok_and(|running| running.contains_key(&bot_id))
+    }
+
+    /// Which path the bot decides on, when it is running here.
+    #[must_use]
+    pub fn bot_decision_path(&self, bot_id: Uuid) -> Option<DecisionPath> {
+        self.inner
+            .running
+            .lock()
+            .ok()
+            .and_then(|running| running.get(&bot_id).map(|b| b.decision_path))
     }
 
     /// Subscribe to closed candles for a symbol.
@@ -1018,6 +1039,7 @@ impl BotSupervisor {
             Arc::clone(&wake),
             Arc::clone(&kill),
         );
+        let decision_path = kind.decision_path();
 
         let handle = tokio::spawn(async move {
             let mut session = match Session::attach(&database, user_id, bot_id, &kind).await {
@@ -1152,6 +1174,7 @@ impl BotSupervisor {
                     paused,
                     kill,
                     venue,
+                    decision_path,
                 },
             );
         }
@@ -1424,9 +1447,7 @@ async fn run_market_feed(
                 let rest_url = rest_url.clone();
                 Box::pin(async move { fetch_binance_depth(&rest_url, &symbol, limit).await })
             });
-            Box::new(
-                Collector::new(codec, config, Arc::clone(&bus)).with_snapshot_fetcher(fetcher),
-            )
+            Box::new(Collector::new(codec, config, Arc::clone(&bus)).with_snapshot_fetcher(fetcher))
         }
         FeedMode::Bybit => {
             let codec = Arc::new(market_data::BybitCodec::spot());
@@ -1854,7 +1875,8 @@ mod tests {
     /// A chart's history starts empty and is filled by the feed, so the registry
     /// has to exist before anything has been collected for it.
     #[test]
-    fn a_fresh_supervisor_has_an_empty_history() {        use analytics_core::Timeframe;
+    fn a_fresh_supervisor_has_an_empty_history() {
+        use analytics_core::Timeframe;
 
         let supervisor = BotSupervisor::new(FeedMode::Off);
         assert_eq!(supervisor.history().series_count(), 0);
@@ -1889,7 +1911,10 @@ mod tests {
         };
 
         history.record_closed(&bar);
-        assert_eq!(history.newest("BTCUSDT", Timeframe::M1), Some(60_000_000_000));
+        assert_eq!(
+            history.newest("BTCUSDT", Timeframe::M1),
+            Some(60_000_000_000)
+        );
         assert_eq!(history.symbols(), vec!["BTCUSDT"]);
         assert_eq!(history.depth().len(), 1);
     }
@@ -1910,19 +1935,14 @@ mod tests {
     /// to act on, which is the path being exercised.
     fn seed_feed(supervisor: &BotSupervisor, symbol: &str, reason: FeedReason, used_at: i64) {
         let handle = tokio::spawn(std::future::pending::<()>()).abort_handle();
-        let previous = supervisor
-            .inner
-            .feeds
-            .lock()
-            .expect("feeds")
-            .insert(
-                symbol.to_string(),
-                Feed {
-                    handle,
-                    reason,
-                    last_used_ns: Arc::new(std::sync::atomic::AtomicI64::new(used_at)),
-                },
-            );
+        let previous = supervisor.inner.feeds.lock().expect("feeds").insert(
+            symbol.to_string(),
+            Feed {
+                handle,
+                reason,
+                last_used_ns: Arc::new(std::sync::atomic::AtomicI64::new(used_at)),
+            },
+        );
         assert!(
             previous.is_none(),
             "{symbol} was seeded twice; the second insert would silently win"
@@ -1988,7 +2008,10 @@ mod tests {
             feeds.contains_key("BTCUSDT"),
             "a bot's feed must survive the sweep however idle it looks"
         );
-        assert!(!feeds.contains_key("SYM1USDT"), "the next-oldest went instead");
+        assert!(
+            !feeds.contains_key("SYM1USDT"),
+            "the next-oldest went instead"
+        );
     }
 
     #[tokio::test]

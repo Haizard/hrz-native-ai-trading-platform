@@ -20,16 +20,16 @@
 //! Argon2 makes the length the only thing that matters much. The check exists
 //! so an empty or one-character password is refused, not to grade the user.
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::AppState;
 use crate::auth::{self, UserContext};
 use crate::error::ApiError;
 use crate::extract::ApiJson;
-use crate::AppState;
 
 /// Shortest password accepted.
 const MIN_PASSWORD_LEN: usize = 8;

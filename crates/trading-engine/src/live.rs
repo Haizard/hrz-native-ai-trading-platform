@@ -25,18 +25,21 @@
 
 use analytics_core::types::{Candle, Timeframe};
 use observability::metrics::{
-    Labels, Registry, KILL_SWITCH, OPEN_POSITIONS, ORDERS_EXECUTED, RECONCILE_MISMATCHES,
-    RISK_BREACHES, SIGNALS_GENERATED,
+    KILL_SWITCH, Labels, OPEN_POSITIONS, ORDERS_EXECUTED, RECONCILE_MISMATCHES, RISK_BREACHES,
+    Registry, SIGNALS_GENERATED,
 };
+use sandbox::SandboxError;
 use serde::Serialize;
+use strategy_dsl::ValidatedStrategy;
 use strategy_runtime::{
     EnterSignal, ExitSignal, ExitTrigger, PositionView, RollingConfig, RollingLadder, Signal,
     Strategy, StrategyEngine,
 };
 
+use crate::decisions::{DecisionPath, Decisions, Shape};
 use crate::error::ExecutionError;
 use crate::execution::{
-    client_order_id, ExchangeAdapter, OrderGateway, OrderRequest, OrderSide, OrderStatus, OrderType,
+    ExchangeAdapter, OrderGateway, OrderRequest, OrderSide, OrderStatus, OrderType, client_order_id,
 };
 use crate::risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict};
 
@@ -212,7 +215,10 @@ pub struct LiveBot<A: ExchangeAdapter> {
     decision_name: String,
     decision_resolution: Timeframe,
     ladder: RollingLadder,
-    engine: StrategyEngine,
+    /// The thing that decides, which may be native or sandboxed -- the same
+    /// seam the paper bot uses, so the two cannot drift about *where* a decision
+    /// comes from any more than they can about what it says.
+    strategy: Decisions,
     risk: RiskEngine,
     rolling: RollingConfig,
     equity: f64,
@@ -222,32 +228,64 @@ pub struct LiveBot<A: ExchangeAdapter> {
     records: Vec<LiveRecord>,
     trades: Vec<LiveTrade>,
     halted_announced: bool,
+    /// Whether the sandbox had already failed when the bot last looked, so the
+    /// first failure is logged once rather than once per candle.
+    noted_sandbox_failure: bool,
 }
 
 impl<A: ExchangeAdapter> LiveBot<A> {
-    /// Start a live bot for an already-validated strategy.
+    /// Start a live bot for an already-validated strategy, decided in this
+    /// process.
+    ///
+    /// The reference the sandbox is measured against. **Not the path the gateway
+    /// creates a bot on** -- see [`LiveBot::with_strategy`] and principle #6.
     ///
     /// The caller is responsible for having passed [`crate::gate::LiveGate`]:
     /// this constructor does not check the venue opt-in, because a bot built in
     /// a test must be buildable without one.
     #[must_use]
     pub fn new(engine: StrategyEngine, adapter: A, config: LiveConfig) -> Self {
-        let ladder = RollingLadder::new(&engine.document().timeframes);
-        let decision_name = engine.decision_timeframe().to_string();
-        let decision_resolution = engine
-            .document()
-            .timeframes
-            .get(&decision_name)
-            .copied()
-            .unwrap_or(Timeframe::M5);
+        let shape = Shape::of(engine.document());
+        Self::from_shape(Decisions::Native(engine), adapter, shape, config)
+    }
 
+    /// Start a live bot around a strategy that has already been prepared.
+    ///
+    /// The same split as [`PaperBot::with_strategy`](crate::paper::PaperBot::with_strategy),
+    /// and it matters more here: preparing a sandboxed strategy can fail, and for
+    /// a live bot the row carries the id every client order id is built from --
+    /// so the failure has to be able to land before the row exists.
+    #[must_use]
+    pub fn with_strategy(
+        strategy: Decisions,
+        document: &ValidatedStrategy,
+        adapter: A,
+        config: LiveConfig,
+    ) -> Self {
+        let shape = Shape::of(document.document());
+        Self::from_shape(strategy, adapter, shape, config)
+    }
+
+    /// Which path this bot decides on: native or sandboxed.
+    #[must_use]
+    pub const fn decision_path(&self) -> DecisionPath {
+        self.strategy.path()
+    }
+
+    /// Everything the sandbox recorded a failure for. Empty for a native bot.
+    #[must_use]
+    pub fn sandbox_errors(&self) -> &[SandboxError] {
+        self.strategy.sandbox_errors()
+    }
+
+    fn from_shape(strategy: Decisions, adapter: A, shape: Shape, config: LiveConfig) -> Self {
         Self {
             symbol: config.symbol,
             bot_id: config.bot_id,
-            decision_name,
-            decision_resolution,
-            ladder,
-            engine,
+            decision_name: shape.decision_name,
+            decision_resolution: shape.decision_resolution,
+            ladder: shape.ladder,
+            strategy,
             risk: RiskEngine::new(config.limits),
             rolling: config.rolling,
             equity: config.equity,
@@ -257,6 +295,7 @@ impl<A: ExchangeAdapter> LiveBot<A> {
             records: Vec::new(),
             trades: Vec::new(),
             halted_announced: false,
+            noted_sandbox_failure: false,
         }
     }
 
@@ -463,13 +502,38 @@ impl<A: ExchangeAdapter> LiveBot<A> {
             self.equity,
         );
 
-        let outcome = match context.and_then(|context| self.engine.on_candle(&context)) {
+        let outcome = match context.and_then(|context| self.strategy.on_candle(&context)) {
             Some(Signal::Enter(enter)) => self.enter(enter, now, candle).await?,
             Some(Signal::Exit(exit)) => self.exit(exit, now, candle).await?,
             None => LiveOutcome::NoSignal,
         };
 
+        // A sandboxed failure has no channel to be returned on -- `on_candle`
+        // yields a signal, not a `Result` -- so it is noticed here, and logged
+        // on the transition only.
+        //
+        // Note what this deliberately does **not** do: halt the bot. Halting a
+        // live bot that holds an open position is a decision about someone's
+        // money, and closing row 1 is not the place to make it. `docs/19` row 26
+        // records that the response to a sandbox failure is still undecided --
+        // an unknown is written down rather than settled by omission.
+        self.note_sandbox_failure();
+
         Ok(self.record(now, price, outcome))
+    }
+
+    /// Log the first sandbox failure, once.
+    fn note_sandbox_failure(&mut self) {
+        if self.noted_sandbox_failure || self.strategy.sandbox_error_count() == 0 {
+            return;
+        }
+        self.noted_sandbox_failure = true;
+        tracing::error!(
+            bot = %self.bot_id,
+            symbol = %self.symbol,
+            detail = self.strategy.last_sandbox_error().unwrap_or_default(),
+            "the bot's strategy failed inside the sandbox; those decisions are missing"
+        );
     }
 
     /// Whether a protective order filled, or has gone missing.
@@ -1091,13 +1155,14 @@ risk:
         assert!(bot.position().is_none());
         assert_eq!(bot.trades().len(), 1);
         assert_eq!(bot.trades()[0].entry_price, entry);
-        assert!(!bot
-            .adapter_for_test()
-            .open
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|r| r.client_order_id == target_id));
+        assert!(
+            !bot.adapter_for_test()
+                .open
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.client_order_id == target_id)
+        );
     }
 
     #[tokio::test]

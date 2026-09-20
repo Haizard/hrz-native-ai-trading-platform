@@ -39,8 +39,8 @@ use tracing::warn;
 
 use ai_agent::{Agent, SkillLibrary};
 use db::Database;
-use observability::metrics::Registry;
 use observability::QueueSink;
+use observability::metrics::Registry;
 
 use crate::auth::AuthConfig;
 
@@ -120,6 +120,15 @@ pub struct AppState {
     /// Where raised alerts are queued for delivery to an external webhook, if
     /// one is configured. `None` means the log and the audit trail only.
     pub alert_queue: Option<Arc<QueueSink>>,
+    /// The sandbox every bot's decisions run inside.
+    ///
+    /// `Phase 6` said "first simulated, later with real orders -- always through
+    /// the same strategy-runtime/sandbox path the backtester uses". The
+    /// backtester never used the sandbox, and trading-engine never called it
+    /// either. This field is what makes that claim true: `POST /bots` builds
+    /// both paper and live bots through [`PaperBot::sandboxed`] and
+    /// [`LiveBot::sandboxed`] rather than through the native constructors.
+    pub sandbox: Arc<sandbox::Sandbox>,
 }
 
 /// The audit event type an alert is written under.

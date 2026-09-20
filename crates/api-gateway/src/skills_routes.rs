@@ -29,17 +29,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::Serialize;
 
 use ai_agent::Skill;
 
+use crate::AppState;
 use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
-use crate::AppState;
 
 /// Summary of a skill, for list views.
 #[derive(Debug, Serialize)]

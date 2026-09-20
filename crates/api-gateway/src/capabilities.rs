@@ -245,11 +245,10 @@ pub fn report(state: &AppState, now_ns: i64) -> CapabilityReport {
     // a day, leaving the platform with no status at all.
     let skills = state.skills.len();
     capabilities.push(match &state.agent {
-        Some(_) if skills == 0 => Capability::ready("agent", "AWS_BEDROCK_* + skills/")
-            .degraded(
-                "the model is configured but the skill library is empty, so every question \
+        Some(_) if skills == 0 => Capability::ready("agent", "AWS_BEDROCK_* + skills/").degraded(
+            "the model is configured but the skill library is empty, so every question \
                  will answer \"no matching skill\". A deployed image must copy skills/.",
-            ),
+        ),
         Some(_) => Capability::ready("agent", "AWS_BEDROCK_* + skills/"),
         None => Capability::absent(
             "agent",
@@ -273,7 +272,8 @@ pub fn report(state: &AppState, now_ns: i64) -> CapabilityReport {
     capabilities.push(Capability::ready("market_data", "the venue's REST API").verified(true));
     let (route_feeds, bot_feeds) = state.bots.feed_counts();
     capabilities.push(
-        Capability::ready("live_feeds", "the venue's websocket").verified(route_feeds + bot_feeds > 0),
+        Capability::ready("live_feeds", "the venue's websocket")
+            .verified(route_feeds + bot_feeds > 0),
     );
 
     // -- Freshness --------------------------------------------------------

@@ -71,10 +71,12 @@ pub fn execute_in_sandbox(
     market_context: &MarketContext,
 ) -> SandboxExecutionResult;
 ```
-Both the backtester and the live/paper trading engine call this same function — there is
-no separate "trusted" fast path for AI-generated strategies vs. developer-authored ones;
-everything not part of the platform's own built-in indicator library goes through the
-sandbox.
+The live/paper trading engine calls this path — there is no separate "trusted" fast path
+for AI-generated strategies vs. developer-authored ones. The backtester does not depend on
+`sandbox` today: it drives `strategy-runtime` natively, and the equivalence test in
+`crates/sandbox/tests/equivalence.rs` proves the two paths agree. A backtester that also
+runs through the sandbox would be a smaller change than this one was, because the seam
+(`SandboxedStrategy` implementing `Strategy`) already exists.
 
 ## Done criteria
 - The Phase 3 sample strategy executes identically (same signals) natively via

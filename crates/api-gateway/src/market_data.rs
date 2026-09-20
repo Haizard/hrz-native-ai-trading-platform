@@ -32,8 +32,8 @@
 
 use std::sync::Arc;
 
-use analytics_core::types::{Candle, Trade};
 use analytics_core::Timeframe;
+use analytics_core::types::{Candle, Trade};
 use async_trait::async_trait;
 
 use market_data::{Window, WindowService};

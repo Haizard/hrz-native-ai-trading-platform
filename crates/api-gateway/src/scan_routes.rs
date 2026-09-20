@@ -40,16 +40,16 @@
 //! no way to tell that from a quiet market. The default universe is the venue's
 //! indexed instruments; `symbols=` narrows it explicitly.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::{Deserialize, Serialize};
 
 use analytics_core::types::Timeframe;
 use market_data::scanner::{self, ScanMetric};
 
+use crate::AppState;
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
-use crate::AppState;
 
 /// Which measurement to rank by, when the caller does not say.
 ///
@@ -292,7 +292,9 @@ async fn resolve_universe(
     // fail because the venue is briefly unreachable.
     state.symbols.refresh_if_stale(&state.backfill).await;
 
-    let take = universe.unwrap_or(DEFAULT_UNIVERSE).clamp(1, MAX_REQUESTED_SYMBOLS);
+    let take = universe
+        .unwrap_or(DEFAULT_UNIVERSE)
+        .clamp(1, MAX_REQUESTED_SYMBOLS);
     let indexed = state.symbols.all();
     let total = indexed.len();
 
@@ -411,7 +413,9 @@ mod tests {
         let response = ScanResponse {
             metric: "rsi".into(),
             timeframe: "1h".into(),
-            rows: vec![row_response(&scanner::ScanRow::measured("BTCUSDT", 71.5, 1, 300))],
+            rows: vec![row_response(&scanner::ScanRow::measured(
+                "BTCUSDT", 71.5, 1, 300,
+            ))],
             failures: vec![],
             skipped: 0,
             requested: 1,
@@ -453,7 +457,11 @@ mod tests {
         // column headed with a word nothing recognises.
         for metric in ScanMetric::ALL {
             let name = metric.name();
-            assert_eq!(name.parse::<ScanMetric>(), Ok(metric), "{name} does not round-trip");
+            assert_eq!(
+                name.parse::<ScanMetric>(),
+                Ok(metric),
+                "{name} does not round-trip"
+            );
         }
     }
 }

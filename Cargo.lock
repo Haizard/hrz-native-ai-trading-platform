@@ -162,6 +162,7 @@ dependencies = [
  "market-data",
  "observability",
  "reqwest",
+ "sandbox",
  "serde",
  "serde_json",
  "sha2",

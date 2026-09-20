@@ -20,12 +20,12 @@ use std::sync::Arc;
 
 use api_gateway::bots::{BotSupervisor, FeedMode};
 use api_gateway::rate_limit::{RateLimit, RateLimiter};
-use api_gateway::{auth::AuthConfig, router, AppState};
+use api_gateway::{AppState, auth::AuthConfig, router};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use observability::metrics::Registry;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 /// The signing secret the tests use. Long enough for `AuthConfig::from_env`'s
@@ -144,6 +144,7 @@ impl Harness {
             agent_limits: Arc::clone(&limits),
             metrics: Arc::clone(&metrics),
             alert_queue: None,
+            sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
         };
         Some(Self {
             app: router(state),
@@ -192,6 +193,7 @@ impl Harness {
             agent_limits: Arc::clone(&limits),
             metrics: Arc::clone(&metrics),
             alert_queue: None,
+            sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
         };
         Some(Self {
             app: router(state),

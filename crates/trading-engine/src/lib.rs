@@ -1,14 +1,23 @@
 //! # `trading-engine`
 //!
 //! Runs an approved `StrategyDocument` continuously against live market data --
-//! first simulated (Phase 6), later with real orders (Phase 8) -- always through
-//! the same `strategy-runtime`/sandbox path the backtester uses.
+//! first simulated (Phase 6), later with real orders (Phase 8) -- driving the
+//! same `strategy-runtime` interpreter the backtester drives.
+//!
+//! **Both bots run that interpreter inside `sandbox`** (`Decisions::Sandboxed`),
+//! under fuel, memory and wall-clock ceilings enforced outside the guest. This
+//! crate used to claim as much while declaring the `sandbox` dependency and
+//! never calling it: every `sandbox` occurrence here was a comment, so the
+//! strategy ran natively and the claim was false. `docs/19` row 1, closed
+//! 2026-09-20. A native path still exists, and deliberately -- it is the
+//! reference the sandbox is measured against -- but it is not one the gateway
+//! creates a bot on.
 //!
 //! ## Phases
 //!
 //! * Phase 6 -- paper trading: subscribe to live `MarketState`, feed closed
-//!   candles into the sandboxed strategy, simulate fills, persist every
-//!   decision (including "no signal") for audit.
+//!   candles into the strategy, simulate fills, persist every decision
+//!   (including "no signal") for audit.
 //! * Phase 8 -- live trading, gated behind a paper track record, explicit
 //!   per-venue opt-in and active risk limits.
 //!
@@ -20,7 +29,9 @@
 //! (`docs/15-RISK-COMPLIANCE.md`).
 //!
 //! Credentials live here, never in the sandbox: order placement happens outside
-//! the sandbox, driven only by the sandbox's `Signal` output.
+//! the sandbox, driven only by the sandbox's `Signal` output. The sandbox has no
+//! import that could reach a credential, so this is enforced by the guest's
+//! import section rather than by this sentence.
 //!
 //! ## Status
 //!
@@ -36,6 +47,7 @@
 
 pub mod binance;
 pub mod credentials;
+pub mod decisions;
 pub mod error;
 pub mod execution;
 pub mod gate;
@@ -47,19 +59,20 @@ pub mod store;
 
 pub use binance::BinanceRest;
 pub use credentials::ExchangeCredentials;
+pub use decisions::{DecisionPath, Decisions};
 pub use error::ExecutionError;
 pub use execution::{
-    client_order_id, ExchangeAdapter, Mismatch, MismatchKind, OrderAck, OrderGateway, OrderRequest,
-    OrderSide, OrderStatus, OrderStatusReport, OrderType, Reconciliation,
+    ExchangeAdapter, Mismatch, MismatchKind, OrderAck, OrderGateway, OrderRequest, OrderSide,
+    OrderStatus, OrderStatusReport, OrderType, Reconciliation, client_order_id,
 };
 pub use gate::{GateRequirements, GateVerdict, LiveGate, TrackRecord};
 pub use live::{LiveBot, LiveConfig, LiveOutcome, LivePosition, LiveRecord, LiveTrade};
 pub use live_store::{
-    live_decision_payload, LiveSession, LIVE_DECISION_EVENT, LIVE_ORDER_EVENT, RECONCILE_EVENT,
+    LIVE_DECISION_EVENT, LIVE_ORDER_EVENT, LiveSession, RECONCILE_EVENT, live_decision_payload,
 };
 pub use paper::{BotAlert, DecisionOutcome, DecisionRecord, PaperBot, PaperConfig};
-pub use risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict, PLATFORM_MAX_RISK_PCT};
+pub use risk::{OnBreach, PLATFORM_MAX_RISK_PCT, RiskEngine, RiskLimits, RiskVerdict};
 pub use store::{
-    decision_payload, notification_payload, BotSession, DECISION_EVENT, NOTIFICATION_EVENT,
-    RISK_EVENT, STARTED_EVENT, STOPPED_EVENT,
+    BotSession, DECISION_EVENT, NOTIFICATION_EVENT, RISK_EVENT, STARTED_EVENT, STOPPED_EVENT,
+    decision_payload, notification_payload,
 };

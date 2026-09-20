@@ -24,13 +24,13 @@ use axum::http::header::CONTENT_TYPE;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use observability::metrics::{
-    Labels, Registry, HTTP_LATENCY, HTTP_REQUESTS, MD_BOOK_AGE, MD_FEED_AGE, MD_HISTORY_BARS,
+    HTTP_LATENCY, HTTP_REQUESTS, Labels, MD_BOOK_AGE, MD_FEED_AGE, MD_HISTORY_BARS, Registry,
 };
 use observability::{AlertSink, QueueSink};
 use tracing::Instrument;
 
-use crate::now_ns;
 use crate::AppState;
+use crate::now_ns;
 
 /// Count and time one request.
 ///
@@ -130,10 +130,7 @@ pub fn publish_history_bars(supervisor: &crate::bots::BotSupervisor, registry: &
         registry.set_gauge(
             MD_HISTORY_BARS,
             "Candles buffered in memory, ready to serve without a venue request",
-            &Labels::new(&[
-                ("symbol", &symbol),
-                ("timeframe", &timeframe.to_string()),
-            ]),
+            &Labels::new(&[("symbol", &symbol), ("timeframe", &timeframe.to_string())]),
             bars as f64,
         );
     }

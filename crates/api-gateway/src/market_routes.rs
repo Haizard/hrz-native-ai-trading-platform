@@ -37,17 +37,17 @@
 //! is the series for this symbol and resolution over this span". What remains
 //! here is the HTTP shape of the answer.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use analytics_core::types::Candle;
 use analytics_core::Timeframe;
+use analytics_core::types::Candle;
 
+use crate::AppState;
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
-use crate::AppState;
 
 /// Query parameters for `GET /candles`.
 #[derive(Debug, Deserialize)]
@@ -173,7 +173,11 @@ pub(crate) async fn candles_in(
     from_ns: i64,
     to_ns: i64,
 ) -> (Vec<Candle>, CandleSourceResponse) {
-    match state.windows.candles(symbol, timeframe, from_ns, to_ns).await {
+    match state
+        .windows
+        .candles(symbol, timeframe, from_ns, to_ns)
+        .await
+    {
         Ok(window) => {
             if window.source.venue > 0 {
                 debug!(provenance = %window.provenance(), "served from the venue");
@@ -200,10 +204,7 @@ pub(crate) async fn candles_in(
                 .series(symbol, timeframe)
                 .range(from_ns, to_ns);
             let memory = candles.len();
-            (
-                candles,
-                CandleSourceResponse { memory, venue: 0 },
-            )
+            (candles, CandleSourceResponse { memory, venue: 0 })
         }
     }
 }
@@ -460,10 +461,9 @@ pub async fn validate_symbol(
                  still chartable; a bot must not be started on it."
             ),
         ),
-        market_data::SymbolCheck::Unknown => (
-            "unknown",
-            format!("the venue does not list {symbol}."),
-        ),
+        market_data::SymbolCheck::Unknown => {
+            ("unknown", format!("the venue does not list {symbol}."))
+        }
         market_data::SymbolCheck::UnknownIndex => (
             "unknown_index",
             format!(

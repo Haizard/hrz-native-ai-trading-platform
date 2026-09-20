@@ -45,8 +45,8 @@ use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
 use observability::metrics::{
-    Labels, Registry, AGENT_LATENCY, AGENT_PROVIDER_ERRORS, AGENT_REQUESTS, AGENT_THESES,
-    AGENT_TOOL_CALLS, WS_CONNECTIONS, WS_DROPS, WS_OPENS,
+    AGENT_LATENCY, AGENT_PROVIDER_ERRORS, AGENT_REQUESTS, AGENT_THESES, AGENT_TOOL_CALLS, Labels,
+    Registry, WS_CONNECTIONS, WS_DROPS, WS_OPENS,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -56,10 +56,10 @@ use uuid::Uuid;
 
 use analytics_core::types::{Candle, OrderBookSnapshot};
 
+use crate::AppState;
 use crate::auth::UserContext;
 use crate::bots::BotEvent;
 use crate::error::ApiError;
-use crate::AppState;
 
 /// How long a connection has been open, and how much it missed.
 ///
@@ -658,7 +658,7 @@ where
                 Err(reason) => {
                     return Some(Frame::Notice {
                         message: format!("{reason} The question was not asked."),
-                    })
+                    });
                 }
             }
         }
