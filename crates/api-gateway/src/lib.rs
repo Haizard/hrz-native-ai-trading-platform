@@ -55,6 +55,7 @@ pub mod drawing_routes;
 pub mod error;
 pub mod extract;
 pub mod footprint_routes;
+pub mod indicator_preview;
 pub mod indicator_workspace_routes;
 pub mod market_data;
 pub mod market_routes;
@@ -245,19 +246,29 @@ pub fn router(state: AppState) -> Router {
             get(indicator_workspace_routes::list).post(indicator_workspace_routes::create),
         )
         .route(
+            "/indicator-workspaces/{id}",
+            get(indicator_workspace_routes::get).delete(indicator_workspace_routes::delete),
+        )
+        .route(
             "/indicator-workspaces/{id}/revisions",
             get(indicator_workspace_routes::revisions).post(indicator_workspace_routes::create_revision),
         )
         .route(
-            "/indicator-workspaces/{id}/messages",
-            get(indicator_workspace_routes::messages).post(indicator_workspace_routes::create_message),
+            "/indicator-workspaces/{id}/revisions/{revision_id}",
+            get(indicator_workspace_routes::get_revision),
         )
         .route(
             "/indicator-workspaces/{id}/revisions/{revision_id}/restore",
             post(indicator_workspace_routes::restore_revision),
         )
-        .route("/indicator-workspaces/{id}/alerts", put(indicator_workspace_routes::set_alert))
-        .route("/indicator-workspaces/{id}/bot-drafts", post(indicator_workspace_routes::create_bot_draft))
+        .route(
+            "/indicator-workspaces/{id}/messages",
+            get(indicator_workspace_routes::messages).post(indicator_workspace_routes::create_message),
+        )
+        .route("/indicator-workspaces/{id}/alerts",
+            get(indicator_workspace_routes::list_alerts).put(indicator_workspace_routes::set_alert))
+        .route("/indicator-workspaces/{id}/bot-drafts",
+            get(indicator_workspace_routes::list_bot_drafts).post(indicator_workspace_routes::create_bot_draft))
         .route("/bots", get(bot_routes::list).post(bot_routes::create))
         .route(
             "/bots/{id}",

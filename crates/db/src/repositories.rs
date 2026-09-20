@@ -248,6 +248,23 @@ pub async fn candles_range(
     Ok(lo.and_then(|l| hi.map(|h| (dt_to_ns(l), dt_to_ns(h)))))
 }
 
+/// Delete every stored candle for a symbol.
+///
+/// Exists for test isolation: a test that seeds candles for a synthetic symbol
+/// must remove exactly those rows, and the `candles` table has no owner to
+/// cascade from. Scoped to one symbol so a shared database cannot lose another
+/// test's data.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] on query failure.
+pub async fn delete_candles_for_symbol(pool: &PgPool, symbol: &str) -> Result<u64, DbError> {
+    let deleted = sqlx::query("DELETE FROM candles WHERE symbol = $1")
+        .bind(symbol)
+        .execute(pool)
+        .await?;
+    Ok(deleted.rows_affected())
+}
+
 /// What trade data exists for a symbol.
 ///
 /// A footprint is the one chart where the window has to be chosen deliberately,

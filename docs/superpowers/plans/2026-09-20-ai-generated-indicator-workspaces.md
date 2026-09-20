@@ -60,15 +60,24 @@ code bypass the existing DSL/WASM sandbox.
 - **Revision-pinned bot drafts.** The schema and authenticated draft endpoint pin a
   draft to a validated workspace revision and a stored strategy, preventing later
   indicator edits from changing that draft.
+- **Generated visual output.** A workspace turn now replays the generated document
+  (sandboxed) over a recent window and translates the signals it actually emitted into
+  the chart's evidence chain: each fired condition is an evidence node linked into the
+  entry marker, the entry-to-stop risk band is a zone whose lifecycle follows the exit,
+  and the exit is its own linked node. The builder lives in `chart-engine`
+  (`IndicatorOutput::from_replay`) and emits only output that passes `validate`, keeping
+  the most recent setups when the primitive cap would otherwise be exceeded. A replay
+  that cannot run (no stored candles, a declared timeframe with no data) records the
+  reason and keeps an honest empty preview rather than failing the revision.
 
 ### Partial
 
-- **Generated visual output.** The current Bedrock path produces and validates the
-  executable Strategy DSL and records an empty safe chart preview. Translating replayed
-  strategy events into evidence-chain zones/markers/links remains to be implemented.
 - **Gateway surface.** Workspace, revision, message, restore, alert-preference, and
-  bot-draft routes exist. Dedicated single-revision source/preview reads and alert
-  delivery/deduplication workers are not yet separate endpoints/services.
+  bot-draft routes exist. Dedicated single-revision source/preview reads now exist
+  (`GET /indicator-workspaces/{id}/revisions/{revision_id}`, `GET /indicator-workspaces/{id}`,
+  `DELETE /indicator-workspaces/{id}`, `GET /indicator-workspaces/{id}/alerts`,
+  `GET /indicator-workspaces/{id}/bot-drafts`). Alert delivery/deduplication workers are
+  not yet a separate background service.
 - **Chart attachment.** The shell has a safe `attachIndicator` hook and rendering support,
   but the workspace panel does not yet call it from the revision API.
 
@@ -78,5 +87,13 @@ code bypass the existing DSL/WASM sandbox.
   alert controls in the application shell.
 - Historical backtest linkage enforcement and the explicit approval endpoint that turns
   an indicator bot draft into a paper/live bot through the existing risk gates.
-- Integration tests for workspace ownership, rollback, alert preference persistence,
-  restore behavior, and bot revision isolation.
+
+### Complete (since 2026-09-20)
+
+- **Gateway surface completion.** Added `GET /{id}`, `DELETE /{id}`, `GET /{id}/revisions/{rid}`,
+  `GET /{id}/alerts`, and `GET /{id}/bot-drafts`. Wired `list_indicator_alert_preferences`
+  and `list_indicator_bot_drafts` through the DB crate and public re-exports.
+- **Integration tests for workspace ownership, rollback, alert preferences, restore,
+  and bot revision isolation.** `indicator_workspace_flow.rs` covers cross-user
+  denial, revision restore, rejected-revision restore refusal, alert upsert
+  deduplication, workspace delete cascade, and single-revision source/preview reads.

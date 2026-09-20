@@ -44,8 +44,10 @@ pub use drawings::{
 pub use error::DbError;
 pub use indicator_workspaces::{
     create_indicator_bot_draft, create_indicator_revision, create_indicator_workspace,
-    create_indicator_workspace_message, get_indicator_bot_draft, get_indicator_revision,
-    get_indicator_workspace, list_indicator_revisions, list_indicator_workspace_messages,
+    create_indicator_workspace_message, delete_indicator_workspace, get_indicator_bot_draft,
+    get_indicator_revision, get_indicator_workspace, list_indicator_alert_preferences,
+    list_indicator_bot_drafts, list_indicator_revisions,
+    list_indicator_workspace_messages,
     list_indicator_workspaces, restore_indicator_revision, set_indicator_alert_preference,
     update_indicator_workspace_memory, IndicatorAlertPreference, IndicatorBotDraftRow,
     IndicatorRevisionRow, IndicatorWorkspaceMessageRow, IndicatorWorkspaceRow,

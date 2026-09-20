@@ -42,6 +42,7 @@ use std::collections::BTreeMap;
 
 use analytics_core::state::MarketStateConfig;
 use analytics_core::types::{Candle, Timeframe};
+use serde::{Deserialize, Serialize};
 use strategy_dsl::StrategyDocument;
 use strategy_runtime::engine::Strategy;
 use strategy_runtime::signal::{EnterSignal, ExitTrigger, Signal};
@@ -144,6 +145,31 @@ pub struct ReplayOutput {
     pub final_r: f64,
     /// Entries the simulator refused, plus orders that never filled.
     pub refusals: Vec<String>,
+    /// Every signal the strategy emitted, in evaluation order.
+    ///
+    /// Recorded **before** the simulator is asked anything, so this is the
+    /// strategy's own decision rather than an order that survived it. It exists
+    /// for the chart's evidence chain: an indicator preview shows what the
+    /// document decided, on the candle it decided it, without claiming a fill.
+    /// A preview and a bot therefore describe the same signals from the same
+    /// interpreter -- the point of reusing this loop instead of writing a
+    /// second one.
+    pub signals: Vec<ReplaySignal>,
+}
+
+/// One strategy decision, with the candle it was made on.
+///
+/// Deliberately not a trade: no fill price, no slippage, no position. A signal
+/// is what the *interpreter* said; everything about whether and where it
+/// executed belongs to the simulator and the broker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplaySignal {
+    /// Close time of the decision candle, unix nanos.
+    pub time: i64,
+    /// The decision candle's close -- the last price the strategy could see.
+    pub price: f64,
+    /// The decision itself.
+    pub signal: Signal,
 }
 
 /// A cursor into one input series.
@@ -262,6 +288,7 @@ pub fn replay<S: Strategy>(
     let mut simulator = Simulator::new(config.simulator);
     let mut pending: Option<Pending> = None;
     let mut refusals: Vec<String> = Vec::new();
+    let mut signals: Vec<ReplaySignal> = Vec::new();
     let mut processed: u64 = 0;
 
     for (index, decision_candle) in decision_candles.iter().enumerate() {
@@ -338,6 +365,11 @@ pub fn replay<S: Strategy>(
             .map_or("unknown", |state| strategy_runtime::trend_name(state.trend));
 
         if let Some(signal) = strategy.on_candle(&context) {
+            signals.push(ReplaySignal {
+                time: now,
+                price: decision_candle_close,
+                signal: signal.clone(),
+            });
             pending = Some(match signal {
                 Signal::Enter(enter) => Pending::Enter {
                     signal: enter,
@@ -383,6 +415,7 @@ pub fn replay<S: Strategy>(
         candles_processed: processed,
         final_r,
         refusals,
+        signals,
     })
 }
 

@@ -101,6 +101,20 @@ fn init_logging() {
 impl Harness {
     /// The app under test, or `None` when there is no database to test against.
     pub async fn new() -> Option<Self> {
+        Self::build(None, Some(SECRET)).await
+    }
+
+    /// The same app, but with a scripted agent installed, so the routes that
+    /// generate a document from a message can be driven end-to-end without a
+    /// live model. `None` still means "no database".
+    pub async fn with_agent(agent: Arc<ai_agent::Agent>) -> Option<Self> {
+        Self::build(Some(agent), Some(SECRET)).await
+    }
+
+    /// Build the harness. One owner of the `AppState` construction, so a field
+    /// added for `new` cannot be forgotten in a variant -- the failure that
+    /// produces is a test passing against a differently-wired app.
+    async fn build(agent: Option<Arc<ai_agent::Agent>>, secret: Option<&str>) -> Option<Self> {
         init_logging();
         let _ = dotenvy::dotenv();
         if std::env::var("DATABASE_URL").is_err() {
@@ -111,7 +125,11 @@ impl Harness {
         // dropped. See `DB_TURN`.
         let turn = DB_TURN.lock().await;
         let database = db::Database::from_env().await.ok()?;
-        database.migrate().await.ok()?;
+        // Migrations are idempotent and only meaningful where a schema is used;
+        // the auth-less harness exists to test the 503 path and never touches it.
+        if secret.is_some() {
+            database.migrate().await.ok()?;
+        }
 
         let supervisor = Arc::new(BotSupervisor::with_flush_interval(
             FeedMode::Off,
@@ -121,9 +139,9 @@ impl Harness {
         let metrics = Arc::new(Registry::new());
         let state = AppState {
             db: Some(Arc::new(database.clone())),
-            agent: None,
+            agent,
             skills: Arc::new(ai_agent::SkillLibrary::new()),
-            auth: Some(Arc::new(AuthConfig::new(SECRET))),
+            auth: secret.map(|secret| Arc::new(AuthConfig::new(secret))),
             bots: Arc::clone(&supervisor),
             // Nothing in a test may reach a venue. Port 1 refuses instantly, so
             // a route that tries to fetch history fails fast rather than
@@ -158,51 +176,7 @@ impl Harness {
 
     /// The same app, but with no signing secret configured.
     pub async fn without_auth() -> Option<Self> {
-        init_logging();
-        let _ = dotenvy::dotenv();
-        if std::env::var("DATABASE_URL").is_err() {
-            return None;
-        }
-        let turn = DB_TURN.lock().await;
-        let database = db::Database::from_env().await.ok()?;
-        let supervisor = Arc::new(BotSupervisor::with_flush_interval(
-            FeedMode::Off,
-            std::time::Duration::from_millis(100),
-        ));
-        let limits = Arc::new(RateLimiter::new(RateLimit::default()));
-        let metrics = Arc::new(Registry::new());
-        let state = AppState {
-            db: Some(Arc::new(database.clone())),
-            agent: None,
-            skills: Arc::new(ai_agent::SkillLibrary::new()),
-            auth: None,
-            bots: Arc::clone(&supervisor),
-            // Nothing in a test may reach a venue. Port 1 refuses instantly, so
-            // a route that tries to fetch history fails fast rather than
-            // hanging -- and `GET /candles` degrades to what RAM can answer.
-            backfill: market_data::BackfillClient::new("http://127.0.0.1:1"),
-            windows: market_data::WindowService::new(
-                supervisor.history(),
-                supervisor.live(),
-                market_data::BackfillClient::new("http://127.0.0.1:1"),
-            ),
-            // Empty and never refreshed: no test may reach a venue. An empty
-            // index is also the *interesting* state, because it is what makes a
-            // lookup say "we do not know" rather than inventing an answer.
-            symbols: market_data::SymbolIndex::new(),
-            agent_limits: Arc::clone(&limits),
-            metrics: Arc::clone(&metrics),
-            alert_queue: None,
-            sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
-        };
-        Some(Self {
-            app: router(state),
-            database: Arc::new(database),
-            supervisor,
-            limits,
-            metrics,
-            _turn: turn,
-        })
+        Self::build(None, None).await
     }
 
     /// Register an account and return it, so the test can delete it later.

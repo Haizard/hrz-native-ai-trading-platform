@@ -369,6 +369,28 @@ pub async fn get_indicator_bot_draft(
     row.as_ref().map(draft_from).transpose().map_err(Into::into)
 }
 
+/// Delete an owned workspace and everything under it.
+///
+/// Revisions, messages, drafts and alert preferences all cascade from the
+/// workspace row, so this leaves nothing orphaned. Ownership is proved first:
+/// a workspace belonging to somebody else is reported as absent rather than
+/// deleted.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] on query failure.
+pub async fn delete_indicator_workspace(
+    pool: &PgPool,
+    user_id: Uuid,
+    id: Uuid,
+) -> Result<bool, DbError> {
+    let deleted = sqlx::query("DELETE FROM indicator_workspaces WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(deleted.rows_affected() > 0)
+}
+
 /// Store one opt-in alert preference after proving the user owns its workspace.
 pub async fn set_indicator_alert_preference(
     pool: &PgPool, user_id: Uuid, workspace_id: Uuid, revision_id: Uuid,
@@ -385,4 +407,57 @@ pub async fn set_indicator_alert_preference(
     ).bind(workspace_id).bind(revision_id).bind(event_name).bind(enabled).bind(channels)
         .execute(pool).await?;
     Ok(true)
+}
+
+/// List all alert preferences for an owned workspace.
+pub async fn list_indicator_alert_preferences(
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    limit: i64,
+) -> Result<Vec<IndicatorAlertPreference>, DbError> {
+    let rows = sqlx::query(
+        "SELECT ap.event_name, ap.enabled, ap.channels \
+         FROM indicator_alert_preferences ap \
+         JOIN indicator_workspaces w ON w.id = ap.workspace_id \
+         WHERE ap.workspace_id = $1 AND w.user_id = $2 \
+         ORDER BY ap.event_name ASC LIMIT $3",
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(IndicatorAlertPreference {
+                event_name: row.try_get("event_name")?,
+                enabled: row.try_get("enabled")?,
+                channels: row.try_get("channels")?,
+            })
+        })
+        .collect::<Result<_, sqlx::Error>>()
+        .map_err(Into::into)
+}
+
+/// List all bot drafts for an owned workspace.
+pub async fn list_indicator_bot_drafts(
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    limit: i64,
+) -> Result<Vec<IndicatorBotDraftRow>, DbError> {
+    let rows = sqlx::query(
+        "SELECT d.id, d.workspace_id, d.revision_id, d.strategy_id, d.backtest_id, d.mode, d.venue, d.risk, d.status, d.approved_at, d.bot_id, d.created_at \
+         FROM indicator_bot_drafts d \
+         JOIN indicator_workspaces w ON w.id = d.workspace_id \
+         WHERE d.workspace_id = $1 AND w.user_id = $2 \
+         ORDER BY d.created_at DESC LIMIT $3",
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(draft_from).collect::<Result<_, _>>().map_err(Into::into)
 }

@@ -71,6 +71,24 @@ impl From<db::IndicatorWorkspaceMessageRow> for MessageResponse {
     }
 }
 
+/// A client-facing alert preference response.
+#[derive(Debug, Serialize)]
+pub struct AlertPreferenceResponse {
+    pub event_name: String,
+    pub enabled: bool,
+    pub channels: serde_json::Value,
+}
+
+impl From<db::IndicatorAlertPreference> for AlertPreferenceResponse {
+    fn from(row: db::IndicatorAlertPreference) -> Self {
+        Self {
+            event_name: row.event_name,
+            enabled: row.enabled,
+            channels: row.channels,
+        }
+    }
+}
+
 /// Body of the alert preference endpoint.
 #[derive(Debug, Deserialize)]
 pub struct SetAlertBody {
@@ -265,14 +283,37 @@ pub async fn create_message(
     Decisions::sandboxed(state.sandbox.as_ref(), &validated).map_err(|err| ApiError::coded(StatusCode::UNPROCESSABLE_ENTITY, "INDICATOR_SANDBOX_REFUSED", err.to_string()))?;
     let strategy = serde_json::to_value(&document).map_err(|err| ApiError::internal(format!("could not store generated strategy: {err}")))?;
     let strategy_id = db::create_strategy(database.pool(), user.user_id, &document.name, &document.version, &strategy, "ai_agent").await?;
-    let preview = chart_engine::IndicatorOutput { revision_id: strategy_id.to_string(), evidence: Vec::new(), zones: Vec::new(), markers: Vec::new(), links: Vec::new() };
+
+    // Replay the document and turn the signals it actually emitted into the
+    // chart's evidence chain. A replay that cannot run (no stored candles, a
+    // declared timeframe with no data) is not a reason to discard a validated
+    // revision, so the failure is recorded and an honest empty preview is kept
+    // rather than a chart that quietly claims evidence it does not have.
+    let revision_tag = strategy_id.to_string();
+    let (preview, preview_note) = match crate::indicator_preview::replay_preview(
+        &state, database, &workspace.symbol, &workspace.timeframe, &document, &validated,
+    ).await {
+        Ok(replayed) => {
+            let mut replayed = replayed;
+            replayed.revision_id = revision_tag.clone();
+            (replayed, serde_json::Value::Null)
+        }
+        Err(reason) => (
+            chart_engine::IndicatorOutput { revision_id: revision_tag.clone(), evidence: Vec::new(), zones: Vec::new(), markers: Vec::new(), links: Vec::new() },
+            serde_json::Value::String(reason),
+        ),
+    };
     let preview_json = serde_json::to_value(&preview).map_err(|err| ApiError::internal(format!("could not store indicator preview: {err}")))?;
-    let validation = serde_json::json!({"valid": true, "engine": "strategy-dsl-wasm-v1", "strategy_id": strategy_id, "attempts": attempts, "repaired_errors": repaired_errors});
+    let validation = serde_json::json!({"valid": true, "engine": "strategy-dsl-wasm-v1", "strategy_id": strategy_id, "attempts": attempts, "repaired_errors": repaired_errors, "preview_note": preview_note, "evidence_nodes": preview.evidence.len()});
     let revision = db::create_indicator_revision(database.pool(), user.user_id, id, workspace.active_revision_id, &yaml, &format!("Generated strategy {}", document.name), "Generated from workspace message", &validation, &preview_json, "validated")
         .await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
     let memory = serde_json::json!({"last_request": body.content.trim(), "active_strategy_id": strategy_id, "revision": revision.revision_number});
     db::update_indicator_workspace_memory(database.pool(), user.user_id, id, &memory).await?;
-    let assistant_text = format!("Generated and sandbox-validated revision {}. It is attached to the chart; create a bot draft only after you have stored a historical backtest.", revision.revision_number);
+    let assistant_text = if preview.evidence.is_empty() {
+        format!("Generated and sandbox-validated revision {}. No setup fired in the preview window, so the chart carries no evidence yet; create a bot draft only after you have stored a historical backtest.", revision.revision_number)
+    } else {
+        format!("Generated and sandbox-validated revision {}. The chart shows {} evidence node(s) from the replayed signals; create a bot draft only after you have stored a historical backtest.", revision.revision_number, preview.evidence.len())
+    };
     let assistant_message = db::create_indicator_workspace_message(database.pool(), user.user_id, id, "assistant", "revision", &assistant_text, &serde_json::json!({"revision_id": revision.id, "strategy_id": strategy_id}))
         .await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
     Ok((StatusCode::CREATED, Json(WorkspaceTurnResponse { user_message: user_message.into(), assistant_message: assistant_message.into(), revision: revision.into(), strategy_id: strategy_id.to_string() })))
@@ -292,6 +333,50 @@ pub async fn set_alert(State(state): State<AppState>, user: UserContext, Path(id
     let saved = db::set_indicator_alert_preference(database(&state)?.pool(), user.user_id, id, body.revision_id, body.event_name.trim(), body.enabled, &body.channels).await?;
     if !saved { return Err(ApiError::not_found("indicator workspace not found")); }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /indicator-workspaces/{id}`.
+pub async fn get(State(state): State<AppState>, user: UserContext, Path(id): Path<Uuid>) -> Result<Json<WorkspaceResponse>, ApiError> {
+    let row = db::get_indicator_workspace(database(&state)?.pool(), user.user_id, id).await?
+        .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    Ok(Json(row.into()))
+}
+
+/// `DELETE /indicator-workspaces/{id}`.
+pub async fn delete(State(state): State<AppState>, user: UserContext, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    let deleted = db::delete_indicator_workspace(database(&state)?.pool(), user.user_id, id).await?;
+    if !deleted { return Err(ApiError::not_found("indicator workspace not found")); }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /indicator-workspaces/{id}/revisions/{revision_id}`.
+///
+/// Dedicated single-revision source/preview read, rather than having the
+/// client paginate the revisions list to find one.
+pub async fn get_revision(State(state): State<AppState>, user: UserContext, Path((id, revision_id)): Path<(Uuid, Uuid)>) -> Result<Json<RevisionResponse>, ApiError> {
+    let row = db::get_indicator_revision(database(&state)?.pool(), user.user_id, id, revision_id).await?
+        .ok_or_else(|| ApiError::not_found("indicator revision not found"))?;
+    Ok(Json(row.into()))
+}
+
+/// `GET /indicator-workspaces/{id}/alerts`.
+pub async fn list_alerts(State(state): State<AppState>, user: UserContext, Path(id): Path<Uuid>) -> Result<Json<Vec<AlertPreferenceResponse>>, ApiError> {
+    let database = database(&state)?;
+    if db::get_indicator_workspace(database.pool(), user.user_id, id).await?.is_none() {
+        return Err(ApiError::not_found("indicator workspace not found"));
+    }
+    let rows = db::list_indicator_alert_preferences(database.pool(), user.user_id, id, DEFAULT_LIMIT).await?;
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+/// `GET /indicator-workspaces/{id}/bot-drafts`.
+pub async fn list_bot_drafts(State(state): State<AppState>, user: UserContext, Path(id): Path<Uuid>) -> Result<Json<Vec<BotDraftResponse>>, ApiError> {
+    let database = database(&state)?;
+    if db::get_indicator_workspace(database.pool(), user.user_id, id).await?.is_none() {
+        return Err(ApiError::not_found("indicator workspace not found"));
+    }
+    let rows = db::list_indicator_bot_drafts(database.pool(), user.user_id, id, DEFAULT_LIMIT).await?;
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
 /// `POST /indicator-workspaces/{id}/bot-drafts`.

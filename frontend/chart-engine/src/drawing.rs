@@ -611,7 +611,10 @@ mod tests {
         assert_eq!(json["y"], 120.5);
         assert_eq!(json["band_y"], 90.0);
         assert_eq!(json["role"], "entry");
-        assert!(json["price"].is_number(), "the price is echoed for the label");
+        assert!(
+            json["price"].is_number(),
+            "the price is echoed for the label"
+        );
     }
 
     fn drawing(kind: DrawingKind, a2: Option<Anchor>) -> Drawing {
@@ -866,7 +869,6 @@ mod tests {
             "a bare fraction must not parse as an anchor: {fraction}"
         );
     }
-
 
     /// Whether a `NaN` price can reach the engine at all.
     ///
