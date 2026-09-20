@@ -513,6 +513,7 @@
       <button role="tab" data-pane="thesis" aria-selected="true">Thesis</button>
       <button role="tab" data-pane="scan" aria-selected="false">Scan</button>
       <button role="tab" data-pane="strategy" aria-selected="false">Strategy</button>
+      <button role="tab" data-pane="indicator" aria-selected="false">Indicator</button>
       <button role="tab" data-pane="bots" aria-selected="false">Bots</button>
       <button role="tab" data-pane="book" aria-selected="false">Book</button>
     </div>
@@ -684,6 +685,48 @@
         liquidates and stops every bot trading there.
       </p>
       <div id="venuesOut"><p class="empty">Loading venues…</p></div>
+    </div>
+
+    <!--
+      AI-generated indicator workspaces. The user creates a workspace,
+      chats with the AI to iterate on a strategy, and sees revision cards
+      with source, diff, and preview. Alerts can be enabled per event.
+    -->
+    <div class="pane" id="pane-indicator" hidden>
+      <h2>Indicator Workspaces</h2>
+      <div class="row">
+        <input id="wsName" placeholder="Workspace name" style="flex:1" />
+        <input id="wsTimeframe" value="5m" style="width:60px" title="Timeframe" />
+        <button id="wsCreate" class="primary">Create</button>
+      </div>
+      <div id="wsList"><p class="empty">No workspaces yet.</p></div>
+
+      <!-- Active workspace -->
+      <div id="wsActive" hidden>
+        <div class="row">
+          <strong id="wsActiveName"></strong>
+          <button id="wsDelete" title="Delete workspace">×</button>
+        </div>
+
+        <!-- Revision list -->
+        <h3 class="section">Revisions</h3>
+        <div id="wsRevisions"><p class="empty">No revisions yet.</p></div>
+
+        <!-- Chat -->
+        <h3 class="section">Chat</h3>
+        <div id="wsChat"></div>
+        <div class="row">
+          <textarea id="wsChatInput" rows="2" placeholder="describe what you want the indicator to detect" style="flex:1"></textarea>
+        </div>
+        <div class="row">
+          <button id="wsChatSend" class="primary">Send</button>
+          <span id="wsChatMsg" class="muted"></span>
+        </div>
+
+        <!-- Alert controls -->
+        <h3 class="section">Alerts</h3>
+        <div id="wsAlerts"><p class="empty">No alert preferences.</p></div>
+      </div>
     </div>
 
     <!--

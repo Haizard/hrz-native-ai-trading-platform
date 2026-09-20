@@ -386,3 +386,98 @@ pub async fn create_bot_draft(State(state): State<AppState>, user: UserContext, 
         .await?.ok_or_else(|| ApiError::not_found("workspace revision or strategy not found"))?;
     Ok((StatusCode::CREATED, Json(draft.into())))
 }
+
+/// Body of the draft approval endpoint.
+#[derive(Debug, Deserialize)]
+pub struct ApproveDraftBody {
+    /// Optional backtest that validates the strategy's historical performance.
+    pub backtest_id: Option<Uuid>,
+}
+
+/// `POST /indicator-workspaces/{id}/bot-drafts/{draft_id}/approve`.
+///
+/// Approves a draft, optionally linking a backtest, then creates a bot from
+/// the pinned strategy. The draft transitions through `approved` → `promoted`.
+/// The bot is started through the same risk-gated path as `POST /bots`.
+pub async fn approve_bot_draft(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path((id, draft_id)): Path<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<ApproveDraftBody>,
+) -> Result<(StatusCode, Json<BotDraftResponse>), ApiError> {
+    let database = database(&state)?;
+    let draft = db::approve_indicator_bot_draft(
+        database.pool(), user.user_id, id, draft_id, body.backtest_id,
+    ).await?.ok_or_else(|| ApiError::bad_request(
+        "INDICATOR_DRAFT_NOT_APPROVABLE",
+        "draft not found, not owned, not in draft status, or backtest constraint failed",
+    ))?;
+
+    // Build the bot through the same risk-gated path as POST /bots.
+    let strategy = db::strategies::get_strategy(database.pool(), user.user_id, draft.strategy_id).await
+        .map_err(|e| ApiError::internal(format!("could not read strategy: {e}")))?
+        .ok_or_else(|| ApiError::internal("strategy referenced by draft does not exist"))?;
+
+    let source = serde_json::to_string(&strategy.document)
+        .map_err(|e| ApiError::internal(format!("the stored document is not readable: {e}")))?;
+    let validated = strategy_dsl::parse_and_validate(&source).map_err(ApiError::from)?;
+    let document = validated.document().clone();
+
+    // Validate the strategy can run (direction, risk block, etc.)
+    strategy_runtime::StrategyEngine::new(&validated, strategy_runtime::RuntimeConfig::default()).map_err(|e| {
+        ApiError::coded(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "STRATEGY_NOT_RUNNABLE",
+            e.to_string(),
+        )
+    })?;
+
+    let mode = draft.mode.as_str();
+    let limits = trading_engine::RiskLimits {
+        max_risk_pct: draft.risk.get("max_risk_pct").and_then(|v| v.as_f64()).unwrap_or(1.0),
+        ..trading_engine::RiskLimits::default()
+    };
+    let rolling = strategy_runtime::RollingConfig::new(
+        strategy_runtime::RuntimeConfig::default().max_history,
+        500,
+        Default::default(),
+    );
+
+    // Sandboxed: principle #6 applies to indicator-generated bots too.
+    let strategy_exec = trading_engine::Decisions::sandboxed(state.sandbox.as_ref(), &validated)
+        .map_err(|e| ApiError::coded(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "STRATEGY_NOT_RUNNABLE",
+            e.to_string(),
+        ))?;
+
+    let bot_config = trading_engine::PaperConfig {
+        symbol: document.market.clone(),
+        limits,
+        fills: strategy_runtime::SimulatorConfig::default(),
+        rolling,
+    };
+    let bot = trading_engine::PaperBot::with_strategy(strategy_exec, &validated, bot_config);
+    if let Some(note) = bot.clamp_note() {
+        tracing::warn!(%note, "the requested risk was clamped");
+    }
+
+    // Create the bot row first, then start the task.
+    let (bot_id, _created) = db::bots::create_bot_with_key(
+        database.pool(), user.user_id, draft.strategy_id, mode,
+        draft.venue.as_deref(), None,
+    ).await?;
+
+    // Link the bot back to the draft.
+    db::set_indicator_bot_draft_bot_id(database.pool(), user.user_id, draft_id, bot_id).await?;
+
+    state.bots.start(bot_id, user.user_id, (**database).clone(), bot);
+
+    // Re-read the draft to return the updated row with bot_id.
+    let updated_draft = db::get_indicator_bot_draft(database.pool(), user.user_id, id, draft_id).await
+        .map_err(|e| ApiError::internal(format!("could not read updated draft: {e}")))?;
+
+    Ok((StatusCode::CREATED, Json(
+        updated_draft.map(BotDraftResponse::from).unwrap_or(draft.into())
+    )))
+}

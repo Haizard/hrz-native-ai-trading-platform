@@ -55,6 +55,7 @@ pub mod drawing_routes;
 pub mod error;
 pub mod extract;
 pub mod footprint_routes;
+pub mod indicator_alerts;
 pub mod indicator_preview;
 pub mod indicator_workspace_routes;
 pub mod market_data;
@@ -269,6 +270,8 @@ pub fn router(state: AppState) -> Router {
             get(indicator_workspace_routes::list_alerts).put(indicator_workspace_routes::set_alert))
         .route("/indicator-workspaces/{id}/bot-drafts",
             get(indicator_workspace_routes::list_bot_drafts).post(indicator_workspace_routes::create_bot_draft))
+        .route("/indicator-workspaces/{id}/bot-drafts/{draft_id}/approve",
+            post(indicator_workspace_routes::approve_bot_draft))
         .route("/bots", get(bot_routes::list).post(bot_routes::create))
         .route(
             "/bots/{id}",

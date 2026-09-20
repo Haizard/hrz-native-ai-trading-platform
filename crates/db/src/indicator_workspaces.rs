@@ -461,3 +461,147 @@ pub async fn list_indicator_bot_drafts(
     .await?;
     rows.iter().map(draft_from).collect::<Result<_, _>>().map_err(Into::into)
 }
+
+/// Approve a draft, optionally linking a backtest, then promote it to a live bot.
+///
+/// The draft must be in `draft` status, its strategy and workspace must belong
+/// to the caller, and when a `backtest_id` is supplied it must reference a
+/// completed backtest owned by the same user and linked to the same strategy.
+///
+/// On success the draft transitions through `approved` → `promoted` and the
+/// `bot_id` column is set. Returns the updated row so the caller can read
+/// back the bot id.
+///
+/// # Errors
+/// Returns `None` when ownership, status, or the backtest constraint fails.
+pub async fn approve_indicator_bot_draft(
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    draft_id: Uuid,
+    backtest_id: Option<Uuid>,
+) -> Result<Option<IndicatorBotDraftRow>, DbError> {
+    let mut tx = pool.begin().await?;
+
+    // Lock the draft and verify ownership + status in one read.
+    let draft_row: Option<sqlx::postgres::PgRow> = sqlx::query(
+        "SELECT d.id, d.workspace_id, d.revision_id, d.strategy_id, d.backtest_id, d.mode, d.venue, d.risk, d.status, d.approved_at, d.bot_id, d.created_at \
+         FROM indicator_bot_drafts d \
+         JOIN indicator_workspaces w ON w.id = d.workspace_id \
+         WHERE d.id = $1 AND d.workspace_id = $2 AND w.user_id = $3 AND d.status = 'draft' \
+         FOR UPDATE",
+    )
+    .bind(draft_id)
+    .bind(workspace_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let draft = match draft_row {
+        Some(row) => draft_from(&row)?,
+        None => {
+            tx.rollback().await.ok();
+            return Ok(None);
+        }
+    };
+
+    // If a backtest was supplied, it must exist, belong to this user, and be
+    // linked to the same strategy the draft references.
+    if let Some(bt_id) = backtest_id {
+        let valid: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM backtests b \
+             JOIN strategies s ON s.id = b.strategy_id \
+             WHERE b.id = $1 AND s.user_id = $2 AND b.strategy_id = $3",
+        )
+        .bind(bt_id)
+        .bind(user_id)
+        .bind(draft.strategy_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if valid.is_none() {
+            tx.rollback().await.ok();
+            return Ok(None);
+        }
+    }
+
+    let now = chrono::Utc::now();
+    sqlx::query(
+        "UPDATE indicator_bot_drafts \
+         SET status = 'promoted', approved_at = $1, backtest_id = COALESCE($2, backtest_id) \
+         WHERE id = $3",
+    )
+    .bind(now)
+    .bind(backtest_id)
+    .bind(draft_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    // Re-read the updated row.
+    let updated = sqlx::query(
+        "SELECT d.id, d.workspace_id, d.revision_id, d.strategy_id, d.backtest_id, d.mode, d.venue, d.risk, d.status, d.approved_at, d.bot_id, d.created_at \
+         FROM indicator_bot_drafts d WHERE d.id = $1",
+    )
+    .bind(draft_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(updated.as_ref().map(draft_from).transpose()?)
+}
+
+/// One enabled alert preference with its workspace and revision ids.
+#[derive(Debug, Clone)]
+pub struct EnabledAlertPreference {
+    /// Workspace that owns the preference.
+    pub workspace_id: Uuid,
+    /// Revision the preference is scoped to.
+    pub revision_id: Uuid,
+    /// Named event to alert on.
+    pub event_name: String,
+    /// Selected delivery channels.
+    pub channels: Value,
+}
+
+/// Fetch all enabled alert preferences across all workspaces.
+///
+/// Used by the indicator alert delivery worker to check whether a fired event
+/// should be delivered to any workspace's webhook.
+pub async fn list_enabled_indicator_alert_preferences(
+    pool: &PgPool,
+) -> Result<Vec<EnabledAlertPreference>, DbError> {
+    let rows = sqlx::query(
+        "SELECT ap.workspace_id, ap.revision_id, ap.event_name, ap.channels \
+         FROM indicator_alert_preferences ap \
+         WHERE ap.enabled = true",
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(EnabledAlertPreference {
+                workspace_id: row.try_get("workspace_id")?,
+                revision_id: row.try_get("revision_id")?,
+                event_name: row.try_get("event_name")?,
+                channels: row.try_get("channels")?,
+            })
+        })
+        .collect::<Result<_, sqlx::Error>>()
+        .map_err(Into::into)
+}
+
+/// Update a promoted draft with the bot id that was created from it.
+pub async fn set_indicator_bot_draft_bot_id(
+    pool: &PgPool,
+    user_id: Uuid,
+    draft_id: Uuid,
+    bot_id: Uuid,
+) -> Result<bool, DbError> {
+    let changed = sqlx::query(
+        "UPDATE indicator_bot_drafts d SET bot_id = $3 \
+         FROM indicator_workspaces w WHERE w.id = d.workspace_id AND d.id = $1 AND w.user_id = $2",
+    )
+    .bind(draft_id)
+    .bind(user_id)
+    .bind(bot_id)
+    .execute(pool)
+    .await?;
+    Ok(changed.rows_affected() > 0)
+}

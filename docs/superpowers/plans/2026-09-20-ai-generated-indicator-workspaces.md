@@ -70,30 +70,27 @@ code bypass the existing DSL/WASM sandbox.
   that cannot run (no stored candles, a declared timeframe with no data) records the
   reason and keeps an honest empty preview rather than failing the revision.
 
-### Partial
+### Complete
 
-- **Gateway surface.** Workspace, revision, message, restore, alert-preference, and
-  bot-draft routes exist. Dedicated single-revision source/preview reads now exist
-  (`GET /indicator-workspaces/{id}/revisions/{revision_id}`, `GET /indicator-workspaces/{id}`,
-  `DELETE /indicator-workspaces/{id}`, `GET /indicator-workspaces/{id}/alerts`,
-  `GET /indicator-workspaces/{id}/bot-drafts`). Alert delivery/deduplication workers are
-  not yet a separate background service.
-- **Chart attachment.** The shell has a safe `attachIndicator` hook and rendering support,
-  but the workspace panel does not yet call it from the revision API.
+- All slices (1–6) are now implemented:
+  - **Slice 1:** Indicator artifact contract and chart renderer.
+  - **Slice 2:** Workspace persistence with user-scoped workspaces, immutable
+    revisions, active revision tracking, previews, validation records, and
+    revision history.
+  - **Slice 3:** AI revision service with Bedrock-backed generation, sandbox
+    validation, replay-based preview generation, and evidence-chain translation.
+  - **Slice 4:** Complete gateway surface: CRUD workspaces, revisions, messages,
+    restore, alert preferences, bot drafts, and bot promotion approval.
+  - **Slice 5:** Workspace chat UI with revision cards, source/preview views,
+    chat panel, and alert controls in the application shell.
+  - **Slice 6:** Bot promotion safety with revision-pinned drafts, backtest
+    linkage validation, and the approval endpoint that creates a sandboxed bot
+    through the existing risk gates.
 
-### Not started
-
-- Workspace chat UI, revision cards, source/diff/history views, restore controls, and
-  alert controls in the application shell.
-- Historical backtest linkage enforcement and the explicit approval endpoint that turns
-  an indicator bot draft into a paper/live bot through the existing risk gates.
-
-### Complete (since 2026-09-20)
-
-- **Gateway surface completion.** Added `GET /{id}`, `DELETE /{id}`, `GET /{id}/revisions/{rid}`,
-  `GET /{id}/alerts`, and `GET /{id}/bot-drafts`. Wired `list_indicator_alert_preferences`
-  and `list_indicator_bot_drafts` through the DB crate and public re-exports.
-- **Integration tests for workspace ownership, rollback, alert preferences, restore,
-  and bot revision isolation.** `indicator_workspace_flow.rs` covers cross-user
-  denial, revision restore, rejected-revision restore refusal, alert upsert
-  deduplication, workspace delete cascade, and single-revision source/preview reads.
+- **Integration tests.** `indicator_workspace_flow.rs` covers cross-user denial,
+  revision restore, rejected-revision restore refusal, alert upsert
+  deduplication, workspace delete cascade, and single-revision source/preview
+  reads.
+- **Alert delivery worker.** Background task monitors bot decisions, matches
+  events against enabled workspace alert preferences, and delivers via webhook
+  with per-(workspace, revision, event) deduplication and cooldown.

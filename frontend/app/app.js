@@ -4585,6 +4585,9 @@ function selectPane(name) {
   // opt-in state is changed from elsewhere (the API, another tab) and a value
   // cached at page load would show a venue as revoked after it was re-enabled.
   if (name === "bots") refreshVenues();
+  // Indicator workspaces are loaded when the tab is opened, because they
+  // can be created or modified from other tabs.
+  if (name === "indicator") loadWorkspaces();
 }
 
 async function main() {
@@ -4593,6 +4596,14 @@ async function main() {
   document.querySelectorAll(".tabs button").forEach((button) =>
     button.addEventListener("click", () => selectPane(button.dataset.pane))
   );
+
+  // Workspace event listeners.
+  el("wsCreate").onclick = createWorkspace;
+  el("wsDelete").onclick = deleteWorkspace;
+  el("wsChatSend").onclick = sendWorkspaceMessage;
+  el("wsChatInput").onkeydown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendWorkspaceMessage(); }
+  };
 
   el("signinToggle").addEventListener("click", () => {
     if (token()) { setToken(""); el("signinMsg").textContent = ""; }
@@ -4750,5 +4761,205 @@ async function main() {
   // depth feed" without the chart looking broken.
   connectBook();
 }
+
+// ---------------------------------------------------------------------------
+// Indicator Workspaces
+// ---------------------------------------------------------------------------
+
+let wsWorkspaces = []; // the user's indicator workspaces
+let wsActiveId = null; // currently selected workspace id
+let wsRevisions = []; // revisions for the active workspace
+let wsMessages = []; // chat messages for the active workspace
+let wsAlerts = []; // alert preferences for the active workspace
+
+async function loadWorkspaces() {
+  const el_ = el("wsList");
+  try {
+    wsWorkspaces = await api("/indicator-workspaces");
+  } catch (e) {
+    el_.innerHTML = `<p class="error">${e.message}</p>`;
+    return;
+  }
+  if (!wsWorkspaces.length) {
+    el_.innerHTML = `<p class="empty">No workspaces yet.</p>`;
+    return;
+  }
+  el_.innerHTML = wsWorkspaces.map(ws => `
+    <div class="ws-item" data-id="${ws.id}" style="padding:6px 0;border-bottom:1px solid var(--line);cursor:pointer">
+      <strong>${escapeHtml(ws.name)}</strong>
+      <span class="muted">${escapeHtml(ws.symbol)} ${escapeHtml(ws.timeframe)}</span>
+      ${ws.active_revision_id ? '<span class="up">●</span>' : ''}
+    </div>
+  `).join("");
+  el_.querySelectorAll(".ws-item").forEach(item => {
+    item.onclick = () => selectWorkspace(item.dataset.id);
+  });
+}
+
+async function selectWorkspace(id) {
+  wsActiveId = id;
+  const ws = wsWorkspaces.find(w => w.id === id);
+  if (!ws) return;
+  el("wsActive").hidden = false;
+  el("wsActiveName").textContent = ws.name;
+  await Promise.all([loadRevisions(id), loadMessages(id), loadAlerts(id)]);
+}
+
+async function loadRevisions(wsId) {
+  const out = el("wsRevisions");
+  try {
+    wsRevisions = await api(`/indicator-workspaces/${wsId}/revisions`);
+  } catch (e) {
+    out.innerHTML = `<p class="error">${e.message}</p>`;
+    return;
+  }
+  if (!wsRevisions.length) {
+    out.innerHTML = `<p class="empty">No revisions yet.</p>`;
+    return;
+  }
+  const ws = wsWorkspaces.find(w => w.id === wsId);
+  const activeId = ws ? ws.active_revision_id : null;
+  out.innerHTML = wsRevisions.map(r => {
+    const isActive = r.id === activeId;
+    const evidence = r.preview && r.preview.evidence ? r.preview.evidence.length : 0;
+    return `
+      <div class="ws-revision" style="padding:6px 0;border-bottom:1px solid var(--line)">
+        <div class="row">
+          <strong>#${r.revision_number}</strong>
+          <span class="muted">${escapeHtml(r.summary)}</span>
+          ${isActive ? '<span class="up">active</span>' : ''}
+          <span class="muted">${evidence} evidence</span>
+        </div>
+        <div class="muted" style="font-size:11px">${escapeHtml(r.change_summary)}</div>
+        <div class="row" style="margin-top:4px">
+          <button onclick="restoreRevision('${wsId}','${r.id}')" title="Set as active">Restore</button>
+          <button onclick="viewRevision('${wsId}','${r.id}')" title="View source and preview">View</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function restoreRevision(wsId, revId) {
+  try {
+    await api(`/indicator-workspaces/${wsId}/revisions/${revId}/restore`, { method: "POST", body: "{}" });
+    await selectWorkspace(wsId);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function viewRevision(wsId, revId) {
+  try {
+    const rev = await api(`/indicator-workspaces/${wsId}/revisions/${revId}`);
+    // Attach the indicator preview to the chart.
+    if (rev.preview && rev.preview.evidence && rev.preview.evidence.length) {
+      attachIndicator(rev.preview);
+    }
+    // Show source in an alert for now; a proper modal would be better.
+    alert(`Source:\n${rev.source}\n\nSummary: ${rev.summary}\nEvidence: ${rev.preview?.evidence?.length || 0} nodes`);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function loadMessages(wsId) {
+  const out = el("wsChat");
+  try {
+    wsMessages = await api(`/indicator-workspaces/${wsId}/messages`);
+  } catch (e) {
+    out.innerHTML = `<p class="error">${e.message}</p>`;
+    return;
+  }
+  if (!wsMessages.length) {
+    out.innerHTML = `<p class="muted">No messages yet. Send one to generate a revision.</p>`;
+    return;
+  }
+  out.innerHTML = wsMessages.map(m => {
+    const isUser = m.role === "user";
+    return `
+      <div style="padding:4px 0;border-bottom:1px solid var(--line)">
+        <span class="muted" style="font-size:11px">${isUser ? 'You' : 'AI'}:</span>
+        <div>${escapeHtml(m.content)}</div>
+      </div>
+    `;
+  }).join("");
+  out.scrollTop = out.scrollHeight;
+}
+
+async function sendWorkspaceMessage() {
+  if (!wsActiveId) return;
+  const input = el("wsChatInput");
+  const content = input.value.trim();
+  if (!content) return;
+  input.value = "";
+  const msg = el("wsChatMsg");
+  msg.textContent = "Generating…";
+  try {
+    await api(`/indicator-workspaces/${wsActiveId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+    await selectWorkspace(wsActiveId);
+    msg.textContent = "Done.";
+  } catch (e) {
+    msg.textContent = e.message;
+  }
+}
+
+async function loadAlerts(wsId) {
+  const out = el("wsAlerts");
+  try {
+    wsAlerts = await api(`/indicator-workspaces/${wsId}/alerts`);
+  } catch (e) {
+    out.innerHTML = `<p class="error">${e.message}</p>`;
+    return;
+  }
+  if (!wsAlerts.length) {
+    out.innerHTML = `<p class="muted">No alert preferences. They are created when the AI generates setups.</p>`;
+    return;
+  }
+  out.innerHTML = wsAlerts.map(a => `
+    <div class="row">
+      <span>${escapeHtml(a.event_name)}</span>
+      <span class="muted">${a.enabled ? 'enabled' : 'disabled'}</span>
+    </div>
+  `).join("");
+}
+
+async function createWorkspace() {
+  const symbol = activePane ? activePane.symbol() : "BTCUSDT";
+  const name = el("wsName").value.trim();
+  const timeframe = el("wsTimeframe").value.trim() || "5m";
+  if (!name) { alert("Name is required"); return; }
+  try {
+    await api("/indicator-workspaces", {
+      method: "POST",
+      body: JSON.stringify({ name, symbol, timeframe }),
+    });
+    el("wsName").value = "";
+    await loadWorkspaces();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function deleteWorkspace() {
+  if (!wsActiveId) return;
+  if (!confirm("Delete this workspace and all its revisions?")) return;
+  try {
+    await api(`/indicator-workspaces/${wsActiveId}`, { method: "DELETE" });
+    wsActiveId = null;
+    el("wsActive").hidden = true;
+    await loadWorkspaces();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// Wire up workspace event listeners in main().
+
+// Refresh workspace list when the indicator tab is opened.
+const origSelectPane = typeof selectPane === 'function' ? selectPane : null;
 
 main();

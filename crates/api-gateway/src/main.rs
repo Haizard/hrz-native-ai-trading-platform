@@ -7,6 +7,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tracing::{error, info, warn};
 
@@ -126,6 +127,26 @@ async fn main() -> anyhow::Result<()> {
     api_gateway::metrics::spawn_alert_task(state.clone());
     if let (Some(queue), Ok(url)) = (alert_queue, std::env::var("ALERT_WEBHOOK_URL")) {
         api_gateway::metrics::spawn_webhook_task(url, queue);
+    }
+
+    // Indicator workspace alert delivery: monitors bot decisions for events
+    // that match enabled alert preferences and delivers via webhook.
+    if let Some(db) = &state.db {
+        let indicator_webhook = std::env::var("INDICATOR_ALERT_WEBHOOK_URL")
+            .ok()
+            .or_else(|| std::env::var("ALERT_WEBHOOK_URL").ok());
+        let indicator_state = api_gateway::indicator_alerts::AlertDeliveryState {
+            db: db.clone(),
+            webhook_url: indicator_webhook,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+        };
+        let events_rx = state.bots.subscribe_events();
+        api_gateway::indicator_alerts::spawn_indicator_alert_delivery(
+            indicator_state, events_rx,
+        );
     }
 
     let app = router(state);
