@@ -83,6 +83,21 @@ const MAX_REQUESTED_SYMBOLS: usize = scanner::MAX_SCAN_SYMBOLS;
 /// scanned against how many exist so a partial universe is never silent.
 const DEFAULT_UNIVERSE: usize = 50;
 
+// The relationship between those two, checked at *compile* time.
+//
+// This was a `#[test]` asserting two constants, which is a guard that cannot
+// fail at run time -- clippy's `assertions_on_constants` is right about that.
+// Moving it here is strictly stronger: a raised default is now a build error on
+// every `cargo build`, not a red test in a suite someone may not run. The two
+// failures it names are real ones -- a default above the ceiling would make the
+// default request a 400, and a ceiling in the thousands would let one scan
+// hammer a venue.
+const _: () = assert!(DEFAULT_UNIVERSE <= MAX_REQUESTED_SYMBOLS);
+const _: () = assert!(
+    MAX_REQUESTED_SYMBOLS <= 500,
+    "the ceiling is meant to bound venue traffic"
+);
+
 /// Query for `GET /scan`.
 #[derive(Debug, Deserialize)]
 pub struct ScanQuery {
@@ -365,14 +380,6 @@ mod tests {
         // listing has the bars to be measured at all.
         assert_eq!(DEFAULT_TIMEFRAME, Timeframe::H1);
         assert_eq!(DEFAULT_TIMEFRAME.nanos() * 300, 300 * 3_600_000_000_000);
-    }
-
-    #[test]
-    fn the_default_universe_is_smaller_than_the_ceiling_it_lives_under() {
-        // Guards against a future edit that raised the default past what one
-        // scan will accept, which would make the default request a 400.
-        assert!(DEFAULT_UNIVERSE <= MAX_REQUESTED_SYMBOLS);
-        assert!(MAX_REQUESTED_SYMBOLS <= 500, "the ceiling is meant to bound venue traffic");
     }
 
     #[test]

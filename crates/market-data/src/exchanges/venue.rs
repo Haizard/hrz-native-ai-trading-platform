@@ -641,7 +641,7 @@ mod tests {
         assert!((row.open - 0.016_347_9).abs() < 1e-12);
         assert_eq!(
             row.taker_buy_base,
-            Some(1756.874_023_97),
+            Some(1_756.874_023_97),
             "Binance supplies the taker-buy column and it must survive"
         );
         assert!(row.has_order_flow_split());
