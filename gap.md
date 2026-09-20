@@ -540,7 +540,7 @@ prices-in / pixels-out contract *by writing the request in the shell's own spell
 (that is the one place a rename is invisible — serde takes a `default`, so a misspelled key
 is a level that never appears, not a compile error); `tools/shell_check.mjs` 132 checks.
 
-## 8. Market-wide scanners and additional exchanges — DONE (REST half)
+## 8. Market-wide scanners and additional exchanges — DONE
 
 ### 8a. `market_data::scanner` + `GET /scan`
 
@@ -607,6 +607,32 @@ of the chart while looking healthy).
 `window.rs::candle_from_kline` was collapsed into `RawKline::to_candle` rather than keeping
 a second copy of the buy/sell arithmetic.
 
+### 8d. The live half: a second `ExchangeCollector` — DONE 2026-09-20
+
+`crates/market-data/src/exchanges/{codec,binance_codec,bybit_codec,collector}.rs` and
+`crates/market-data/tests/bybit_wire.rs` (10 recorded-sample tests).
+
+`docs/19` row 25 deferred this because it "cannot be exercised without a route to the
+venue". That premise was **tested rather than repeated** and it was false — Bybit's REST
+answered in 2.7 s and a hand-rolled WebSocket client captured real frames off
+`stream.bybit.com`. The design is `WireCodec` beside `Venue`: a venue describes its socket
+and decodes its own frames, and **one** `Collector<C>` owns the reconnect/backoff loop, the
+bounded diff buffer, the trade-id gap detector, the candle fanout and `MD_CLOSE_LATENCY`.
+A second `impl ExchangeCollector` would have duplicated every one of those, and each was
+itself a previously-fixed defect.
+
+Three of the four findings came from **capturing frames, not reading documentation**, and
+all three would have passed a test written from the docs: there is no `u == 1` reset on
+`orderbook.*`; a `publicTrade` frame is an array of 8–16 trades, not one; and `S` is the
+*taker* side, so `is_buyer_maker` is an inversion. See `bybit_codec.rs`'s module doc for
+the captured frames themselves.
+
+Bybit carries its book **in-band**, so `subscribe_order_book` makes no REST call for it at
+all — `BookBootstrap::InBand` exists so a venue that can sync on its first frame is not
+made to poll. Witnessed live, both venues through the same collector: Bybit `order book
+synced` after 29 diffs, 560 messages, 0 gaps, **zero REST requests**; Binance unchanged at
+576 messages, 0 gaps, synced after 21 diffs.
+
 ### 8c. Chart screenshot to the AI — DONE
 
 `frontend/app/app.js`: `captureChart()` (downscales to `MAX_SCREENSHOT_EDGE = 1600`, fills
@@ -617,14 +643,20 @@ and the `attachChart` toggle. Sent as a Bedrock Converse image block
 
 ## What is genuinely NOT done
 
-- **A second *live* collector** (`ExchangeCollector` for Bybit). The trait seam exists in
-  `crates/market-data/src/exchanges/mod.rs` and the REST half is now venue-agnostic, but
-  live ingestion is ~700 lines of venue-specific WebSocket protocol, reconnect and wire
-  decoding. It was **not** built because it cannot be exercised without a route to the
-  venue — and `docs/19` row 24 is this repo's own proof of what unverified ingestion code
-  does: the order book was dead for a whole run while 64 unit tests, clippy and the
-  integration suite were green. Shipping an unexercised collector would repeat that
-  deliberately.
+- **A second live collector — built 2026-09-20, and the note that said it was not is left here
+  because it was right for a year and wrong for a day.** It said the collector was not built
+  "because it cannot be exercised without a route to the venue". That premise was *tested* rather
+  than repeated on 2026-09-20: Bybit's REST answered in 2.7 s and a hand-rolled WebSocket client
+  captured real `orderbook` and `publicTrade` frames from `stream.bybit.com`. The premise was
+  false, so the work was done. The seam is `WireCodec` beside `Venue`, one `Collector<C>` holds
+  the loop, and both venues now run through it —
+  `./target/debug/xtask collect --venue bybit --symbol BTCUSDT --no-persist` logs
+  `order book synced` after 29 diffs with zero REST requests. What that run **could not** have
+  told you is the thing worth carrying forward: three of the defects were found by capturing
+  frames, not by reading documentation — Bybit's documented `u == 1` reset boundary does not exist
+  on `orderbook.*` (a fresh subscribe returns a full book at a real id such as `219167606`), a
+  `publicTrade` frame carries 8–16 trades in an array, and `S` is the taker side. All three would
+  have passed every unit test written from the docs.
 - **`exchange_info` and `aggTrades` remain Binance-shaped on purpose.** They feed
   Binance-schema parsers (`SymbolIndex::install`, `AggTrade`), so swapping only the URL
   would hand those parsers a payload they would turn into nonsense. A second venue needs
@@ -638,13 +670,27 @@ and the `attachChart` toggle. Sent as a Bedrock Converse image block
 
 ```
 cargo test --workspace                       # the whole suite
-cargo test -p market-data --lib              # 125 tests, incl. 17 scanner + 14 venue
+cargo test -p market-data --lib              # unit tests, incl. scanner, venue, and the two codecs
+cargo test -p market-data --test bybit_wire  # the Bybit decoder against frames captured off the socket
 cargo test -p api-gateway --test scan_flow   # 8 route tests, needs DATABASE_URL
 cargo test -p chart-engine --lib             # 143 tests
 node tools/wasm_abi_check.mjs                # the wasm boundary
-node tools/shell_check.mjs                   # 132 checks against the real engine in jsdom
+node tools/shell_check.mjs                   # 151 named checks against the real engine in jsdom
 python tools/guard_check.py                  # patches defects one at a time, requires each named check to fail
 ```
+
+**And hit the venue.** Every guard above tests the shape of data; none tests that data arrived.
+`xtask collect` is the only thing that does, and it now takes a venue:
+
+```
+# Bybit carries its book in-band, so this makes no REST request at all.
+NO_PROXY='bybit.com' ./target/debug/xtask collect --venue bybit --symbol BTCUSDT --no-persist
+# Binance, unchanged, for the control.
+NO_PROXY='binance.com' ./target/debug/xtask collect --venue binance --symbol BTCUSDT --no-persist
+```
+
+Both should log `order book synced` within about thirty diffs and then a status line every 30s
+with `connected=true`, `gaps=0`. `--no-persist` keeps it off the 6 GB database.
 
 **Read `tools/guard_check.py` before touching `app.js`.** It restores from its own backup on
 the way out, so anything written while it runs is silently reverted — and the next

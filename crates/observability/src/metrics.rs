@@ -29,6 +29,13 @@ pub const MD_MESSAGES: &str = "market_data_messages_total";
 pub const MD_GAPS: &str = "market_data_gaps_total";
 /// Websocket reconnects, total.
 pub const MD_RECONNECTS: &str = "market_data_reconnects_total";
+/// Frames on a topic we recognise that did not decode, total.
+///
+/// The collector treats these as **non-fatal** -- one bad frame must not end the
+/// pump, for the same reason an unrecognised frame must not -- so a counter is
+/// the only thing that can make a venue slowly drifting away from our model of
+/// it visible. A log line is not an alert.
+pub const MD_DECODE_ERRORS: &str = "market_data_decode_errors_total";
 /// Seconds from candle close to persisted-and-published.
 pub const MD_CLOSE_LATENCY: &str = "market_data_candle_close_latency_seconds";
 /// Seconds since the newest candle was persisted. The stale-feed alert reads

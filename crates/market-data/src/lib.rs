@@ -7,7 +7,7 @@
 //!
 //! | Module | Responsibility |
 //! |---|---|
-//! | [`exchanges`] | `ExchangeCollector` trait + `BinanceCollector` (WebSocket + REST) |
+//! | [`exchanges`] | `WireCodec` + `Collector` (one loop, any venue) and `Venue` (REST) |
 //! | [`orderbook`] | Maintaining a book from a diff stream, incl. snapshot resync |
 //! | [`candle_builder`] | Building OHLCV **from trades** at multiple resolutions |
 //! | [`bus`] | In-process pub/sub, one bus per symbol |
@@ -48,7 +48,12 @@ pub use candle_builder::{
     CandleBuilder, MultiTimeframeCandleBuilder, LIVE_TIMEFRAMES, STANDARD_TIMEFRAMES,
 };
 pub use error::MarketDataError;
-pub use exchanges::binance::{BinanceCollector, BinanceConfig};
+pub use exchanges::binance_codec::{BinanceCodec, BINANCE_WS_URL};
+pub use exchanges::bybit_codec::{
+    BybitCodec, BYBIT_BOOK_DEPTH, BYBIT_INVERSE_WS, BYBIT_LINEAR_WS, BYBIT_REST, BYBIT_SPOT_WS,
+};
+pub use exchanges::codec::{Frame, Incoming, Subscription, WireCodec};
+pub use exchanges::collector::{BookBootstrap, Collector, CollectorConfig, SnapshotFetcher};
 pub use exchanges::wire;
 pub use exchanges::ExchangeCollector;
 pub use health::{

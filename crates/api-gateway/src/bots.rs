@@ -174,7 +174,21 @@ struct Feed {
     last_used_ns: Arc<std::sync::atomic::AtomicI64>,
 }
 
-/// Whether the supervisor opens a market feed of its own.
+/// Whether the supervisor opens a market feed of its own, and from where.
+///
+/// ## It names the venue, not just "yes"
+///
+/// This was `{ Off, Binance }`, and the venue name reached the live path in
+/// exactly one place -- the `!= FeedMode::Binance` guard below. That was fine
+/// while one venue existed and a trap the moment a second did: the guard and the
+/// constructor would have had to agree, in two places, on a decision that is one
+/// decision. It now carries the name and `FeedMode::is_on` answers "any venue",
+/// so the guard cannot drift from the constructor.
+///
+/// Still `Copy`: it is read inside `BotSupervisor`, which is cloned per bot, and
+/// turning it into a `String` would make every one of those clones allocate.
+/// A `&'static str` keeps it `Copy` and keeps the venue list closed at the two
+/// places a venue can actually be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedMode {
     /// No feed. Bots receive whatever is published into the bus by something
@@ -182,6 +196,8 @@ pub enum FeedMode {
     Off,
     /// Open a Binance feed per symbol on demand.
     Binance,
+    /// Open a Bybit feed per symbol on demand.
+    Bybit,
 }
 
 impl FeedMode {
@@ -195,12 +211,23 @@ impl FeedMode {
     pub fn from_env() -> Self {
         match std::env::var("MARKET_FEED").as_deref() {
             Ok("binance") => Self::Binance,
+            Ok("bybit") => Self::Bybit,
             Ok("off") | Err(_) => Self::Off,
             Ok(other) => {
                 warn!("MARKET_FEED=`{other}` is not a known mode; treating it as `off`");
                 Self::Off
             }
         }
+    }
+
+    /// Whether any venue is selected.
+    ///
+    /// The one predicate the supervisor should branch on: a caller that has to
+    /// name the venue to decide *whether* to open a feed would have to be edited
+    /// for every venue added, which is the coupling this type exists to remove.
+    #[must_use]
+    pub const fn is_on(self) -> bool {
+        !matches!(self, Self::Off)
     }
 }
 
@@ -763,10 +790,10 @@ impl BotSupervisor {
     /// case is logged at `warn`, and it is the only case where a chart can ask
     /// for a symbol and not get a feed.
     fn ensure_feed(&self, symbol: &str, reason: FeedReason) {
-        if self.inner.feed != FeedMode::Binance {
+        if !self.inner.feed.is_on() {
             warn!(
                 symbol,
-                "no market feed is configured (MARKET_FEED is not `binance`): this bot is running \
+                "no market feed is configured (MARKET_FEED is not a venue): this bot is running \
                  and will receive no candles until something publishes into the bus"
             );
             return;
@@ -791,11 +818,12 @@ impl BotSupervisor {
 
         let bus = Arc::clone(&self.inner.bus);
         let supervisor = self.clone();
+        let mode = self.inner.feed;
         let last_used_ns = Arc::new(std::sync::atomic::AtomicI64::new(now_ns()));
         let for_task = symbol.clone();
         let task_used = Arc::clone(&last_used_ns);
         let handle = tokio::spawn(async move {
-            if let Err(e) = run_binance_feed(bus, &for_task, supervisor, task_used).await {
+            if let Err(e) = run_market_feed(mode, bus, &for_task, supervisor, task_used).await {
                 warn!(symbol = %for_task, "the market feed stopped: {e}");
             }
         });
@@ -1340,16 +1368,16 @@ async fn write_fatal(
     .await
 }
 
-/// Connect to Binance and keep the feed for one symbol running.
+/// Connect to the configured venue and keep the feed for one symbol running.
 ///
 /// ## It does not build candles, and that is the point
 ///
-/// `BinanceCollector` owns a `MultiTimeframeCandleBuilder` per symbol and
-/// publishes every closed candle into the bus itself
-/// (`market-data/src/exchanges/binance.rs`). This task used to build a *second*
-/// one from the same trades, so every bar was published twice -- identical
-/// values, because both builders were fed the same trades -- and every chart
-/// appended each bar twice. One builder, one publisher.
+/// The collector owns a `MultiTimeframeCandleBuilder` per symbol and publishes
+/// every closed candle into the bus itself
+/// (`market-data/src/exchanges/collector.rs`). This task used to build a
+/// *second* one from the same trades, so every bar was published twice --
+/// identical values, because both builders were fed the same trades -- and every
+/// chart appended each bar twice. One builder, one publisher.
 ///
 /// The one thing it *does* build here is the bar that is still forming. The
 /// collector only publishes closed candles, so without this a chart that
@@ -1357,16 +1385,25 @@ async fn write_fatal(
 /// goes into the RAM history only -- never onto the bus, so nothing can
 /// receive it twice.
 ///
-/// What it does own is the collector: `Drop for BinanceCollector` aborts the
-/// pump, so a task that returned early would stop the market with nothing
-/// anywhere saying so. The `await` at the end is what keeps it alive.
-async fn run_binance_feed(
+/// What it does own is the collector: `Drop for Collector` aborts the pump, so a
+/// task that returned early would stop the market with nothing anywhere saying
+/// so. The `await` at the end is what keeps it alive.
+///
+/// ## Why the venue is a parameter and not a second function
+///
+/// This was `run_binance_feed`, and the only venue-specific thing in it is which
+/// codec to build. A copy for a second venue would duplicate the subscribe
+/// ordering, the `expect_book` clock, the recorder task and the deliberate
+/// trailing `await` -- all four of which are load-bearing and were each a defect
+/// once. The body is identical; only the constructor differs.
+async fn run_market_feed(
+    mode: FeedMode,
     bus: Arc<market_data::MarketBusRegistry>,
     symbol: &str,
     supervisor: BotSupervisor,
     last_used_ns: Arc<std::sync::atomic::AtomicI64>,
 ) -> Result<(), String> {
-    use market_data::{BinanceCollector, ExchangeCollector};
+    use market_data::{BookBootstrap, Collector, CollectorConfig, ExchangeCollector};
 
     // Subscribed **before** the collector connects, for the same reason as the
     // candle watch below: a candle that closes in the gap between connecting and
@@ -1375,7 +1412,40 @@ async fn run_binance_feed(
     let mut candles_rx = symbol_bus.subscribe_candles();
     let mut trades_rx = symbol_bus.subscribe_trades();
 
-    let mut collector = BinanceCollector::with_defaults(Arc::clone(&bus));
+    // One collector, whichever venue `MARKET_FEED` names. The two arms differ in
+    // the codec and in whether the book is bootstrapped over REST -- and nothing
+    // else, which is the point of the codec seam.
+    let mut collector: Box<dyn ExchangeCollector> = match mode {
+        FeedMode::Binance => {
+            let codec = Arc::new(market_data::BinanceCodec::new());
+            let config = CollectorConfig::default();
+            let rest_url = config.rest_url.clone();
+            let fetcher: market_data::SnapshotFetcher = Arc::new(move |_, symbol, limit| {
+                let rest_url = rest_url.clone();
+                Box::pin(async move { fetch_binance_depth(&rest_url, &symbol, limit).await })
+            });
+            Box::new(
+                Collector::new(codec, config, Arc::clone(&bus)).with_snapshot_fetcher(fetcher),
+            )
+        }
+        FeedMode::Bybit => {
+            let codec = Arc::new(market_data::BybitCodec::spot());
+            let config = CollectorConfig {
+                book_bootstrap: BookBootstrap::InBand,
+                rest_url: market_data::BYBIT_REST.to_string(),
+                ..CollectorConfig::default()
+            };
+            Box::new(Collector::new(codec, config, Arc::clone(&bus)))
+        }
+        FeedMode::Off => {
+            // Unreachable in practice: `ensure_feed` is what spawns this task and
+            // it returns early when the mode is `Off`. Refusing rather than
+            // opening a Binance feed for an operator who asked for none, which is
+            // what an `unreachable!()` or a `_` arm would have done.
+            return Err("no venue configured".into());
+        }
+    };
+
     collector.connect().await.map_err(|e| e.to_string())?;
 
     collector
@@ -1470,9 +1540,44 @@ async fn run_binance_feed(
     Ok(())
 }
 
+/// `GET /api/v3/depth`, for the Binance collector's book bootstrap.
+///
+/// ## Why the fetch is a closure and not a method
+///
+/// A collector is generic over its codec and knows nothing about URLs: it is
+/// handed an `Fn` that turns a symbol into a snapshot, so a venue that carries
+/// its book in-band never gets an HTTP path at all. Binance is the venue that
+/// needs one -- it has no in-band reset boundary -- so its HTTP lives here, at
+/// the one call site that builds a Binance collector.
+///
+/// The `rest_url` is taken from the config the collector was given rather than
+/// hard-coded, so a test harness pointing at `127.0.0.1:1` keeps guaranteeing no
+/// network access, exactly as `BackfillClient::new(url)` does for REST history.
+async fn fetch_binance_depth(
+    rest_url: &str,
+    symbol: &str,
+    limit: u16,
+) -> Result<market_data::Incoming, market_data::MarketDataError> {
+    use market_data::MarketDataError;
+
+    let response = reqwest::Client::new()
+        .get(format!("{rest_url}/api/v3/depth"))
+        .query(&[("symbol", symbol), ("limit", &limit.to_string())])
+        .send()
+        .await
+        .map_err(|e| MarketDataError::Transport(format!("depth snapshot request failed: {e}")))?
+        .error_for_status()
+        .map_err(|e| MarketDataError::Transport(format!("depth snapshot HTTP error: {e}")))?
+        .json::<market_data::wire::DepthSnapshotResponse>()
+        .await
+        .map_err(|e| MarketDataError::Normalization(format!("depth snapshot decode: {e}")))?;
+
+    market_data::exchanges::binance_codec::BinanceCodec::snapshot_from_rest(&response, symbol)
+}
+
 /// Age a feed from the candles its collector publishes.
 ///
-/// Split out of [`run_binance_feed`] because the failure it guards is silent:
+/// Split out of [`run_market_feed`] because the failure it guards is silent:
 /// `MD_FEED_AGE` is read by `stale_market_data` and written by nothing else, so
 /// a supervisor that is never told a candle arrived serves a metric that does
 /// not exist and a rule that cannot fire. [`BotSupervisor::feed_candle`] cannot

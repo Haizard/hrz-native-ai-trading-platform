@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use analytics_core::Trade;
-use observability::metrics::{Labels, Registry, MD_CONNECTED, MD_GAPS, MD_MESSAGES, MD_RECONNECTS};
+use observability::metrics::{
+    Labels, Registry, MD_CONNECTED, MD_DECODE_ERRORS, MD_GAPS, MD_MESSAGES, MD_RECONNECTS,
+};
 
 /// Lock-free counters describing one collector's live state.
 #[derive(Debug, Default)]
@@ -18,6 +20,7 @@ pub struct CollectorHealth {
     last_message_ns: AtomicI64,
     messages: AtomicU64,
     reconnects: AtomicU64,
+    decode_errors: AtomicU64,
     gaps: AtomicU64,
     /// What was published last time, so a total can be turned into a delta.
     ///
@@ -35,6 +38,7 @@ struct Published {
     messages: u64,
     reconnects: u64,
     gaps: u64,
+    decode_errors: u64,
 }
 
 impl CollectorHealth {
@@ -63,6 +67,22 @@ impl CollectorHealth {
     /// Record a detected sequence gap.
     pub fn record_gap(&self) {
         self.gaps.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a frame on a known topic that could not be decoded.
+    ///
+    /// Distinct from a message: a decode error is the venue drifting away from
+    /// our model of it, and it is the one failure that the collector
+    /// deliberately *does not* treat as fatal, so without a counter it would be
+    /// visible only in a log line nobody is reading at 3am.
+    pub fn record_decode_error(&self) {
+        self.decode_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Total frames that reached a known topic but did not decode.
+    #[must_use]
+    pub fn decode_errors(&self) -> u64 {
+        self.decode_errors.load(Ordering::Relaxed)
     }
 
     /// Whether the socket is currently connected.
@@ -138,6 +158,7 @@ impl CollectorHealth {
             messages: self.messages(),
             reconnects: self.reconnects(),
             gaps: self.gaps(),
+            decode_errors: self.decode_errors(),
         };
 
         // `saturating_sub` rather than `-`: the atomics are only ever added to,
@@ -164,6 +185,11 @@ impl CollectorHealth {
                 now.gaps.saturating_sub(published.gaps),
                 MD_GAPS,
                 "Trade-id gaps detected",
+            ),
+            (
+                now.decode_errors.saturating_sub(published.decode_errors),
+                MD_DECODE_ERRORS,
+                "Frames on a known topic that did not decode",
             ),
         ] {
             registry.inc_counter(name, help, &labels, delta);

@@ -36,7 +36,7 @@ use backtester::replay::{replay, ReplayConfig, ReplayInput};
 use clap::{Parser, Subcommand};
 use db::Database;
 use market_data::{
-    BinanceCollector, ExchangeCollector, MarketBusRegistry, MultiTimeframeCandleBuilder,
+    Collector, MarketBusRegistry, MultiTimeframeCandleBuilder,
 };
 use strategy_dsl::ValidatedStrategy;
 use strategy_runtime::{ExitTrigger, RuntimeConfig, SimulatorConfig, StrategyEngine};
@@ -694,8 +694,17 @@ async fn live(
     };
 
     // The collector publishes to the bus; the bot consumes closed candles.
+    //
+    // Binance, explicitly: paper trading defaults to the venue whose REST
+    // adapter the live bot is built against (`LiveBot<BinanceRest>`), and a
+    // venue switch here would need that half to move too rather than only this
+    // constructor.
     let registry = Arc::new(MarketBusRegistry::new());
-    let mut collector = BinanceCollector::with_defaults(registry.clone());
+    let mut collector = Collector::new(
+        Arc::new(market_data::BinanceCodec::new()),
+        market_data::CollectorConfig::default(),
+        registry.clone(),
+    );
     collector.connect().await?;
 
     let mut trades_rx = collector

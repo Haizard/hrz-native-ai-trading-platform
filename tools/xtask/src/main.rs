@@ -17,7 +17,7 @@ use db::repositories;
 use db::Database;
 use market_data::backfill::{BackfillClient, BackfillSource};
 use market_data::bus::MarketBusRegistry;
-use market_data::{BinanceCollector, ExchangeCollector};
+use market_data::{ExchangeCollector};
 use tokio::time::interval;
 
 // Batch sizes and the flush interval used to live here. They moved to
@@ -88,10 +88,22 @@ enum Command {
         /// Symbol to collect.
         #[arg(long, default_value = "BTCUSDT")]
         symbol: String,
+        /// Which venue to collect from.
+        #[arg(long, value_enum, default_value_t = VenueArg::Binance)]
+        venue: VenueArg,
         /// Don't touch the database; just stream and count.
         #[arg(long)]
         no_persist: bool,
     },
+}
+
+/// The venue `collect` reads from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum VenueArg {
+    /// Binance spot (`stream.binance.com`), one combined socket.
+    Binance,
+    /// Bybit v5 spot (`stream.bybit.com/v5/public/spot`), one socket per category.
+    Bybit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -148,8 +160,12 @@ async fn main() -> anyhow::Result<()> {
         } => {
             backfill(&symbol, &timeframe, &from, &to, source.into(), dry_run).await?;
         }
-        Command::Collect { symbol, no_persist } => {
-            collect(&symbol, !no_persist).await?;
+        Command::Collect {
+            symbol,
+            venue,
+            no_persist,
+        } => {
+            collect(&symbol, venue, !no_persist).await?;
         }
         Command::BackfillTrades {
             symbol,
@@ -208,7 +224,35 @@ async fn backfill(
     Ok(())
 }
 
-async fn collect(symbol: &str, persist: bool) -> anyhow::Result<()> {
+/// `GET /api/v3/depth` for the Binance collector's book bootstrap.
+///
+/// Lives here rather than in `market-data` because the codec seam deliberately
+/// has no opinion about *when* a snapshot is fetched, and the collector takes it
+/// as a closure. Binance is the only venue that needs one -- Bybit carries its
+/// book in-band.
+async fn fetch_binance_depth(
+    rest_url: &str,
+    symbol: &str,
+    limit: u16,
+) -> Result<market_data::Incoming, market_data::MarketDataError> {
+    use market_data::MarketDataError;
+
+    let response = reqwest::Client::new()
+        .get(format!("{rest_url}/api/v3/depth"))
+        .query(&[("symbol", symbol), ("limit", &limit.to_string())])
+        .send()
+        .await
+        .map_err(|e| MarketDataError::Transport(format!("depth snapshot request failed: {e}")))?
+        .error_for_status()
+        .map_err(|e| MarketDataError::Transport(format!("depth snapshot HTTP error: {e}")))?
+        .json::<market_data::wire::DepthSnapshotResponse>()
+        .await
+        .map_err(|e| MarketDataError::Normalization(format!("depth snapshot decode: {e}")))?;
+
+    market_data::exchanges::binance_codec::BinanceCodec::snapshot_from_rest(&response, symbol)
+}
+
+async fn collect(symbol: &str, venue: VenueArg, persist: bool) -> anyhow::Result<()> {
     let symbol = symbol.to_uppercase();
     let registry = Arc::new(MarketBusRegistry::new());
 
@@ -221,7 +265,44 @@ async fn collect(symbol: &str, persist: bool) -> anyhow::Result<()> {
         None
     };
 
-    let mut collector = BinanceCollector::with_defaults(registry.clone());
+    // ## One collector, two venues
+    //
+    // `collect` used to name `BinanceCollector` directly, which is why a second
+    // venue was a separate body of work rather than a flag. It now builds the
+    // same `Collector` around whichever codec the flag selects, so the
+    // reconnect loop, the diff buffer, the gap detector and the candle fanout
+    // are the code that has already been fixed once.
+    //
+    // For Bybit, `subscribe_order_book` performs **no REST call**: the venue
+    // sends a full book in-band as the first frame after a subscribe, carrying
+    // its own update id. That is why `BookBootstrap::InBand` is set here and why
+    // there is no fetcher -- and why the book cannot be stuck waiting on an
+    // endpoint that never answers.
+    let mut collector: Box<dyn ExchangeCollector> = match venue {
+        VenueArg::Binance => {
+            let codec = Arc::new(market_data::BinanceCodec::new());
+            let config = market_data::CollectorConfig::default();
+            let rest_url = config.rest_url.clone();
+            let fetcher: market_data::SnapshotFetcher = Arc::new(move |_, symbol, limit| {
+                let rest_url = rest_url.clone();
+                Box::pin(async move { fetch_binance_depth(&rest_url, &symbol, limit).await })
+            });
+            Box::new(
+                market_data::Collector::new(codec, config, registry.clone())
+                    .with_snapshot_fetcher(fetcher),
+            )
+        }
+        VenueArg::Bybit => {
+            let codec = Arc::new(market_data::BybitCodec::spot());
+            let config = market_data::CollectorConfig {
+                book_bootstrap: market_data::BookBootstrap::InBand,
+                rest_url: market_data::BYBIT_REST.to_string(),
+                ..market_data::CollectorConfig::default()
+            };
+            Box::new(market_data::Collector::new(codec, config, registry.clone()))
+        }
+    };
+
     collector.connect().await?;
 
     // Subscribe to the buses BEFORE asking the exchange for data, otherwise the

@@ -1,15 +1,39 @@
 //! Exchange collectors.
 //!
+//! ## Two seams, not one
+//!
 //! The [`ExchangeCollector`] trait is the seam that keeps ingestion
 //! exchange-agnostic: adding a second venue means implementing this trait, not
 //! touching the analytics, persistence or agent layers
 //! (`docs/04-MARKET-DATA-ENGINE.md`).
+//!
+//! That sentence was written about **REST** and it is true there -- `venue.rs`
+//! is that seam and it holds. It was **false for live**, and the honest version
+//! is worth writing down because the false version cost a session: the live
+//! path used to name Binance in five places (a two-name `FeedMode`, three
+//! `BinanceCollector::with_defaults` call sites, and a decoder that was
+//! Binance-shaped by its own doc comment), so a second venue could not be added
+//! by implementing a trait.
+//!
+//! The live seam is now [`WireCodec`]: a venue describes its socket and decodes
+//! its own frames, and one generic [`Collector`] holds the reconnect loop, the
+//! diff buffer, the gap detector, the candle fanout and every other thing that
+//! was a fixed defect. See `collector.rs` for why that loop is not duplicated
+//! per venue.
 
-pub mod binance;
+pub mod binance_codec;
+pub mod bybit_codec;
+pub mod codec;
+pub mod collector;
 pub mod venue;
 pub mod wire;
 
-pub use binance::{BinanceCollector, BinanceConfig};
+pub use binance_codec::{BinanceCodec, BINANCE_WS_URL};
+pub use bybit_codec::{
+    BybitCodec, BYBIT_BOOK_DEPTH, BYBIT_INVERSE_WS, BYBIT_LINEAR_WS, BYBIT_REST, BYBIT_SPOT_WS,
+};
+pub use codec::{DepthDiff as CodecDepthDiff, Frame, Incoming, Subscription, WireCodec};
+pub use collector::{BookBootstrap, Collector, CollectorConfig, SnapshotFetcher};
 pub use venue::{BinanceVenue, BybitVenue, Columns, KlinePage, RawKline, Venue};
 
 use analytics_core::{Candle, OrderBookSnapshot, Trade};
@@ -74,4 +98,13 @@ pub trait ExchangeCollector: Send + Sync {
 
     /// Current health of the connection.
     fn health(&self) -> HealthStatus;
+
+    /// The live health counters behind [`Self::health`].
+    ///
+    /// On the trait rather than only on `Collector` because a caller that holds
+    /// a `Box<dyn ExchangeCollector>` -- which is what venue selection produces,
+    /// since two collectors are two different types -- otherwise cannot read the
+    /// counters at all. `xtask collect`'s status line is exactly that caller, and
+    /// without this the venue-aware version could not report gaps or reconnects.
+    fn health_counters(&self) -> std::sync::Arc<crate::health::CollectorHealth>;
 }

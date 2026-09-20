@@ -18,3 +18,8 @@ dotenvy = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The Binance book bootstrap fetches `GET /api/v3/depth`. The collector takes the
+# snapshot as a closure rather than reaching for a URL itself, so the HTTP client
+# for the one venue that needs REST lives at the call site instead of inside
+# `market-data`, where a second venue would have inherited it unused.
+reqwest = { workspace = true }

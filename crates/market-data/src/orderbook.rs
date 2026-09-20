@@ -325,7 +325,16 @@ impl OrderBookSynchronizer {
         self.book.as_ref()
     }
 
-    /// Install a REST snapshot and try to bridge the buffered diffs onto it.
+    /// Install a snapshot and try to bridge the buffered diffs onto it.
+    ///
+    /// The caller owns where the snapshot's id comes from, and the two venues
+    /// answer that question differently. Binance has no in-band boundary, so a
+    /// REST snapshot is fetched and `lastUpdateId` is carried across. Bybit
+    /// marks its own `u == 1` and can be subscribed cold, with **no REST call at
+    /// all**: the codec turns that boundary into `last_update_id = u - 1` so
+    /// that `first_update_id <= last_update_id + 1` holds for the very next diff
+    /// and this method bridges onto it exactly as it bridges onto a REST
+    /// snapshot. Both then replay the retained buffer down the same path.
     ///
     /// ## Why the buffer is kept rather than drained
     ///
@@ -335,6 +344,11 @@ impl OrderBookSynchronizer {
     /// against Binance, `GET /api/v3/depth`'s `lastUpdateId` was **15,748 update
     /// ids behind the diff stream at the same instant** -- roughly three seconds
     /// of updates on BTCUSDT, where one event spans ~530 ids.
+    ///
+    /// (That measurement is Binance's lag, not a property of this code. It is
+    /// recorded here because it is the reason the buffer exists rather than
+    /// being dropped; Bybit, which carries its boundary in the stream, has no
+    /// equivalent gap to measure.)
     ///
     /// The consequence is brutal and silent. The event that would bridge the
     /// snapshot was emitted *before* we subscribed, so it is not in the buffer

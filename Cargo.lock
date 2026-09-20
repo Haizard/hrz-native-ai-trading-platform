@@ -3871,6 +3871,7 @@ dependencies = [
  "db",
  "dotenvy",
  "market-data",
+ "reqwest",
  "tokio",
  "tracing",
  "tracing-subscriber",
