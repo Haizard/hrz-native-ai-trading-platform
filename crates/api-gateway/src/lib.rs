@@ -55,6 +55,7 @@ pub mod drawing_routes;
 pub mod error;
 pub mod extract;
 pub mod footprint_routes;
+pub mod indicator_workspace_routes;
 pub mod market_data;
 pub mod market_routes;
 pub mod metrics;
@@ -239,6 +240,14 @@ pub fn router(state: AppState) -> Router {
             get(strategy_routes::list_backtests),
         )
         .route("/backtests/{id}", get(strategy_routes::get_backtest))
+        .route(
+            "/indicator-workspaces",
+            get(indicator_workspace_routes::list).post(indicator_workspace_routes::create),
+        )
+        .route(
+            "/indicator-workspaces/{id}/revisions",
+            get(indicator_workspace_routes::revisions),
+        )
         .route("/bots", get(bot_routes::list).post(bot_routes::create))
         .route(
             "/bots/{id}",
