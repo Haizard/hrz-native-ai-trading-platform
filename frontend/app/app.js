@@ -4803,6 +4803,17 @@ async function selectWorkspace(id) {
   el("wsActive").hidden = false;
   el("wsActiveName").textContent = ws.name;
   await Promise.all([loadRevisions(id), loadMessages(id), loadAlerts(id)]);
+  // Auto-attach the active revision to the chart if one exists.
+  if (ws.active_revision_id && activePane) {
+    try {
+      const rev = await api(`/indicator-workspaces/${id}/revisions/${ws.active_revision_id}`);
+      if (rev.preview) {
+        activePane.attachIndicator(rev.preview);
+      }
+    } catch (e) {
+      // Non-fatal: the chart just won't show the indicator.
+    }
+  }
 }
 
 async function loadRevisions(wsId) {
@@ -4852,14 +4863,23 @@ async function restoreRevision(wsId, revId) {
 async function viewRevision(wsId, revId) {
   try {
     const rev = await api(`/indicator-workspaces/${wsId}/revisions/${revId}`);
-    // Attach the indicator preview to the chart.
-    if (rev.preview && rev.preview.evidence && rev.preview.evidence.length) {
-      attachIndicator(rev.preview);
+    // Always attach the indicator to the chart — even when no signals
+    // fired the preview still carries zones, markers, and the strategy
+    // document itself.
+    if (rev.preview && activePane) {
+      activePane.attachIndicator(rev.preview);
     }
-    // Show source in an alert for now; a proper modal would be better.
-    alert(`Source:\n${rev.source}\n\nSummary: ${rev.summary}\nEvidence: ${rev.preview?.evidence?.length || 0} nodes`);
+    // Show the source in the strategy editor if available.
+    const src = document.getElementById('strategySource');
+    if (src && rev.source) {
+      src.value = rev.source;
+    }
+    // Show a non-blocking status message in the chart note strip.
+    const noteEl = document.getElementById('chartNote');
+    if (noteEl) noteEl.textContent = `Revision #${rev.revision_number} attached (${rev.preview?.evidence?.length || 0} evidence, ${rev.preview?.zones?.length || 0} zones, ${rev.preview?.markers?.length || 0} markers)`;
   } catch (e) {
-    alert(e.message);
+    const noteEl = document.getElementById('chartNote');
+    if (noteEl) noteEl.textContent = `Failed to attach revision: ${e.message}`;
   }
 }
 
