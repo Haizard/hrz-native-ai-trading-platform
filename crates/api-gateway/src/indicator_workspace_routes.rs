@@ -201,7 +201,7 @@ pub async fn list(State(state): State<AppState>, user: UserContext) -> Result<Js
 }
 
 /// `POST /indicator-workspaces`.
-pub async fn create(State(state): State<AppState>, user: UserContext, ApiJson(body): ApiJson<CreateWorkspaceBody>) -> Result<Json<WorkspaceResponse>, ApiError> {
+pub async fn create(State(state): State<AppState>, user: UserContext, ApiJson(body): ApiJson<CreateWorkspaceBody>) -> Result<(StatusCode, Json<WorkspaceResponse>), ApiError> {
     for (field, value) in [("name", &body.name), ("symbol", &body.symbol), ("timeframe", &body.timeframe)] {
         if value.trim().is_empty() { return Err(ApiError::bad_request("WORKSPACE_FIELD_REQUIRED", format!("{field} must not be empty"))); }
     }
@@ -209,7 +209,7 @@ pub async fn create(State(state): State<AppState>, user: UserContext, ApiJson(bo
     let id = db::create_indicator_workspace(database.pool(), user.user_id, &body.name, &body.symbol.to_uppercase(), &body.timeframe, &serde_json::json!({})).await?;
     let row = db::get_indicator_workspace(database.pool(), user.user_id, id).await?
         .ok_or_else(|| ApiError::internal("new indicator workspace was not readable"))?;
-    Ok(Json(row.into()))
+    Ok((StatusCode::CREATED, Json(row.into())))
 }
 
 /// `GET /indicator-workspaces/{id}/revisions`.

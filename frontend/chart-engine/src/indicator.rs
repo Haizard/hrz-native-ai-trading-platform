@@ -142,6 +142,35 @@ impl IndicatorOutput {
         }
         output
     }
+
+    /// Trim the output to the chart's primitive budget, keeping the newest
+    /// evidence and dropping the oldest.
+    ///
+    /// A detector over a week of bars can match thousands of windows -- more
+    /// than [`MAX_PRIMITIVES`] -- and [`IndicatorOutput::validate`] refuses the
+    /// whole layer past the cap, which renders a full week of detections as
+    /// nothing at all. Culling to the budget keeps the most recent matches (the
+    /// ones a chart is showing) and what remains still passes validate. A no-op
+    /// when the output is already within budget.
+    pub fn cull_to_budget(&mut self) {
+        let total = self.evidence.len() + self.zones.len() + self.markers.len() + self.links.len();
+        if total <= MAX_PRIMITIVES {
+            return;
+        }
+        // Evidence, zones and markers are built one-per-match in the same
+        // order and linked by id, so truncating all three equally keeps the
+        // chain intact: every kept zone and marker cites a kept evidence node.
+        // At 3 primitives per match the budget allows MAX_PRIMITIVES / 3 of
+        // them; a third of the cap leaves headroom for anything the caller
+        // appends after culling.
+        let keep = MAX_PRIMITIVES / 3;
+        self.evidence.drain(..self.evidence.len().saturating_sub(keep));
+        self.zones.drain(..self.zones.len().saturating_sub(keep));
+        self.markers.drain(..self.markers.len().saturating_sub(keep));
+        // Links are dropped wholesale when over budget: a detector layer emits
+        // none, and a strategy replay has `from_replay` for its own culling.
+        self.links.clear();
+    }
 }
 
 /// Which way a replayed setup trades.
@@ -599,5 +628,77 @@ mod tests {
         // The last setup's still-present band proves recency won the budget.
         let newest = 1_700_000_000_000_000_000 + (MAX_PRIMITIVES - 1) as i64;
         assert!(output.zones.iter().any(|zone| zone.start_time == newest));
+    }
+
+    #[test]
+    fn culling_keeps_the_newest_detections_and_a_valid_chain() {
+        // One matched window = one evidence + one zone + one marker, all
+        // sharing a chain of ids. Four times the cap must cull to within it.
+        let count = MAX_PRIMITIVES * 4;
+        let mut output = IndicatorOutput {
+            revision_id: "revision-1".into(),
+            ..IndicatorOutput::default()
+        };
+        for index in 0..count {
+            let id = format!("concept-{index}");
+            output.evidence.push(Evidence {
+                id: id.clone(),
+                event: "bullish_gap".into(),
+                time: 1_700_000_000_000_000_000 + index as i64,
+                price: 100.0,
+                explanation: "detected".into(),
+            });
+            output.zones.push(IndicatorZone {
+                id: id.clone(),
+                start_time: 1_700_000_000_000_000_000 + index as i64,
+                end_time: 1_700_000_000_000_000_000 + index as i64 + 1,
+                price_low: 100.0,
+                price_high: 105.0,
+                label: "fvg".into(),
+                state: ZoneState::Active,
+            });
+            output.markers.push(IndicatorMarker {
+                id: format!("{id}-marker"),
+                evidence_id: id,
+                time: 1_700_000_000_000_000_000 + index as i64,
+                price: 100.0,
+                label: "fvg".into(),
+                kind: MarkerKind::Bullish,
+            });
+        }
+        output.cull_to_budget();
+        output.validate().expect("culled output must still validate");
+        assert_eq!(output.evidence.len(), output.zones.len());
+        assert_eq!(output.evidence.len(), output.markers.len());
+        // The newest match survived; the oldest was dropped.
+        let newest = 1_700_000_000_000_000_000 + (count - 1) as i64;
+        assert!(output.zones.iter().any(|zone| zone.start_time == newest));
+        assert!(!output
+            .zones
+            .iter()
+            .any(|zone| zone.start_time == 1_700_000_000_000_000_000));
+        // Every kept marker still cites a kept evidence node.
+        let ids: Vec<&str> = output.evidence.iter().map(|e| e.id.as_str()).collect();
+        for marker in &output.markers {
+            assert!(ids.contains(&marker.evidence_id.as_str()));
+        }
+    }
+
+    #[test]
+    fn culling_within_budget_is_a_no_op() {
+        let mut output = IndicatorOutput {
+            revision_id: "revision-1".into(),
+            ..IndicatorOutput::default()
+        };
+        output.evidence.push(Evidence {
+            id: "sweep".into(),
+            event: "liquidity_sweep".into(),
+            time: 1_700_000_000_000_000_000,
+            price: 100.0,
+            explanation: "swept".into(),
+        });
+        let before = output.evidence.len();
+        output.cull_to_budget();
+        assert_eq!(output.evidence.len(), before);
     }
 }

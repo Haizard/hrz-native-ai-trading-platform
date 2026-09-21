@@ -261,17 +261,24 @@ pub async fn replay_preview(
     // Indicator documents have no entry/risk blocks by design, so the
     // sandbox and the trading engine rightfully refuse them.  Do not replay
     // them as trading setups.  Instead, evaluate the stored concepts as a
-
     // detector layer over the same backfilled series and return whatever bands
     // the window actually contains -- which may legitimately be none.
     if document.kind == strategy_dsl::DocumentKind::Indicator {
         let concepts: Vec<_> = document.concepts.iter().cloned().collect();
-        return Ok(build_indicator_preview(
+        let mut preview = build_indicator_preview(
             document.name.clone(),
             &concepts,
             &series.get("entry").cloned().unwrap_or_default(),
             Some(source_timeframe),
-        ));
+        );
+        // A week of 5m candles with a loose concept matches thousands of
+        // windows, but the chart's contract caps the layer at
+        // MAX_PRIMITIVES and refuses the whole output past it -- a full
+        // week of detections rendered as nothing at all. Keep the most
+        // recent matches, the ones a chart is showing, the same rule
+        // `IndicatorOutput::from_replay` applies to setups.
+        preview.cull_to_budget();
+        return Ok(preview);
     }
 
     let input = ReplayInput::new(document, series)
