@@ -4798,6 +4798,9 @@ async function loadWorkspaces() {
 
 async function selectWorkspace(id) {
   wsActiveId = id;
+  // Re-fetch workspace list so active_revision_id is current (a new
+  // revision may have been created since the last load).
+  await loadWorkspaces();
   const ws = wsWorkspaces.find(w => w.id === id);
   if (!ws) return;
   el("wsActive").hidden = false;
@@ -4810,8 +4813,12 @@ async function selectWorkspace(id) {
       if (rev.preview) {
         activePane.attachIndicator(rev.preview);
       }
+      // Show what was attached in the chart note strip.
+      const noteEl = document.getElementById('chartNote');
+      if (noteEl) noteEl.textContent = `Attached indicator revision #${rev.revision_number} (${rev.preview?.evidence?.length || 0} evidence, ${rev.preview?.zones?.length || 0} zones)`;
     } catch (e) {
-      // Non-fatal: the chart just won't show the indicator.
+      const noteEl = document.getElementById('chartNote');
+      if (noteEl) noteEl.textContent = `Failed to attach indicator: ${e.message}`;
     }
   }
 }
@@ -4916,11 +4923,15 @@ async function sendWorkspaceMessage() {
   const msg = el("wsChatMsg");
   msg.textContent = "Generating…";
   try {
-    await api(`/indicator-workspaces/${wsActiveId}/messages`, {
+    const resp = await api(`/indicator-workspaces/${wsActiveId}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content }),
     });
+    // Show the revision info from the response before refreshing.
+    if (resp && resp.revision) {
+      msg.textContent = `Revision #${resp.revision.revision_number} created — attaching to chart…`;
+    }
     await selectWorkspace(wsActiveId);
     msg.textContent = "Done.";
   } catch (e) {
