@@ -1021,6 +1021,33 @@ fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Sk
            -- price against price, volume against volume.\n",
     );
 
+    out.push_str("## Type rules for conditions\n");
+    out.push_str(
+        "Every `condition:` must evaluate to **boolean**. The type checker \
+         enforces this strictly. Common mistakes:\n\n\
+         1. **Never use a bare string field as a condition.** Fields like \
+           `trend`, `divergence`, `market_structure.trend`, `market_structure.break`, \
+           `market_structure.break_direction`, and `liquidity_swept` are strings \
+           (e.g. `\"bullish\"`, `\"bos\"`, `\"buy_side\"`). Writing \
+           `condition: \"market_structure.trend\"` is a string, not a boolean. \
+           Always compare: `condition: \"market_structure.trend == \\\"bullish\\\"\"`.\n\
+         2. **String fields must be compared with quoted string literals.** \n           `market_structure.trend == bullish` fails because `bullish` is parsed \
+           as a bool, not a string. The correct form is \
+           `condition: \"market_structure.trend == \\\"bullish\\\"\"`.\n\
+         3. **Bool fields must not be compared with `==`.** Fields like \
+           `absorption_detected`, `absorption_bullish`, `imbalance_detected`, \
+           `imbalance_buy`, `in_position` are already booleans. Write \
+           `condition: \"absorption_detected\"`, not \
+           `condition: \"absorption_detected == true\"`.\n\
+         4. **Functions like `close_below`, `above`, `below`, `crosses_above` \
+           already return booleans.** Write `condition: \"close_below(vwap)\"`, \
+           not `condition: \"close_below(vwap) == true\"`.\n\
+         5. **String-to-bool and bool-to-string comparisons always fail.** You \
+           cannot compare `trend == true` or `absorption_detected == \\\"yes\\\"`.\n\n",
+    );
+    out.push_str("String fields: trend, divergence, market_structure.trend, market_structure.break, market_structure.break_direction, liquidity_swept\n");
+    out.push_str("Bool fields: absorption_detected, absorption_bullish, absorption_bearish, imbalance_detected, imbalance_buy, imbalance_sell, imbalance_stacked, in_position\n\n");
+
     if let Some(skill) = skill {
         out.push_str("\n## Skill to encode\n");
         out.push_str(&skill.render());

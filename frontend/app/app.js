@@ -4842,7 +4842,7 @@ async function loadRevisions(wsId) {
 
 async function restoreRevision(wsId, revId) {
   try {
-    await api(`/indicator-workspaces/${wsId}/revisions/${revId}/restore`, { method: "POST", body: "{}" });
+    await api(`/indicator-workspaces/${wsId}/revisions/${revId}/restore`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     await selectWorkspace(wsId);
   } catch (e) {
     alert(e.message);
@@ -4898,6 +4898,7 @@ async function sendWorkspaceMessage() {
   try {
     await api(`/indicator-workspaces/${wsActiveId}/messages`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ content }),
     });
     await selectWorkspace(wsActiveId);
@@ -4935,6 +4936,7 @@ async function createWorkspace() {
   try {
     await api("/indicator-workspaces", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, symbol, timeframe }),
     });
     el("wsName").value = "";

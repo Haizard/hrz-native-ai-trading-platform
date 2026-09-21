@@ -381,10 +381,16 @@ pub async fn app_index() -> Result<axum::response::Html<String>, StatusCode> {
 /// 404 when the shell is not present beside the binary.
 pub async fn app_js() -> Result<axum::response::Response, StatusCode> {
     Ok((
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/javascript; charset=utf-8",
+            ),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "no-cache",
+            ),
+        ],
         read_frontend("app.js")?,
     )
         .into_response())
@@ -400,10 +406,16 @@ pub async fn app_js() -> Result<axum::response::Response, StatusCode> {
 /// 404 when the shell is not present beside the binary.
 pub async fn builder_js() -> Result<axum::response::Response, StatusCode> {
     Ok((
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/javascript; charset=utf-8",
-        )],
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/javascript; charset=utf-8",
+            ),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "no-cache",
+            ),
+        ],
         read_frontend("builder.js")?,
     )
         .into_response())
