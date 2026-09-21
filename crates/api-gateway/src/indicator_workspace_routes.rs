@@ -318,7 +318,22 @@ pub async fn create_message(
     let memory = serde_json::json!({"last_request": body.content.trim(), "active_strategy_id": strategy_id, "revision": revision.revision_number});
     db::update_indicator_workspace_memory(database.pool(), user.user_id, id, &memory).await?;
     let assistant_text = if document.kind == strategy_dsl::DocumentKind::Indicator {
-        format!("Generated and validated revision {} (kind: indicator). An indicator declares what to compute and plot but has no entry/risk logic, so the replay never fires setups by design -- view the source below and attach it from the revision card. Create a bot draft only after you have stored a historical backtest.", revision.revision_number)
+        let zones = preview.zones.len();
+        let markers = preview.markers.len();
+        let note = if preview.evidence.is_empty() {
+            "no detection bands fired in the backfilled preview window -- on a real but tiny stored window that can mean missing data or a concept that did not match yet, not necessarily a wrong idea.".to_string()
+        } else {
+            format!(
+                "the detector layer found {zones} zone(s) and {markers} marker(s) on the chart over the backfilled window; because this is a kind: indicator with no entry/risk blocks it fires 0 trading setups by design -- a kind: strategy is what produces setups.",
+                zones = zones,
+                markers = markers,
+            )
+        };
+        format!(
+            "Generated and validated revision {} (kind: indicator). This is a detector layer: it marks where the declared concepts match on the chart but has no entry/risk logic, so it produces 0 trading setups by design. {}",
+            revision.revision_number,
+            note,
+        )
     } else if preview.evidence.is_empty() {
         format!("Generated and validated revision {} (kind: strategy). The replay over the past week fired no setups -- the conditions never coincided in that window. The source is shown below and the revision is attached; create a bot draft only after you have stored a historical backtest.", revision.revision_number)
     } else {

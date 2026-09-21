@@ -27,11 +27,15 @@
 //! and the caller stores an honest empty preview plus the reason, rather than a
 //! chart that silently pretends it has evidence.
 
-use analytics_core::types::Timeframe;
+use analytics_core::concepts::{self, detect};
+use analytics_core::regions::Region;
+use analytics_core::types::{self, Timeframe};
 use backtester::replay::{replay, ReplayConfig, ReplayInput, ReplaySignal};
-use chart_engine::{IndicatorOutput, ReplayExit, ReplaySetup, SetupDirection};
+use chart_engine::{self, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind, ReplayExit, ReplaySetup, SetupDirection};
 use strategy_dsl::Direction;
 use strategy_runtime::signal::Signal;
+use crate::AppState;
+use uuid::Uuid;
 
 /// How far back a preview replays.
 ///
@@ -96,13 +100,110 @@ pub fn build_preview(revision_id: &str, signals: &[ReplaySignal]) -> IndicatorOu
     IndicatorOutput::from_replay(revision_id, &setups_from_signals(signals))
 }
 
+/// Build an indicator preview from a detector document's concepts over a loaded
+/// series.
+///
+/// A `kind: indicator` document has no entry/risk logic, so it cannot produce
+/// replay setups. What it *can* produce is detection evidence: one zone per
+/// matched pattern window, plus an evidence node and a marker at the candle where
+/// the pattern fired. This is the detector layer the chart renders, not a trading
+/// plan.
+pub fn build_indicator_preview(
+    revision_id: impl Into<String>,
+    concepts: &[concepts::Concept],
+    series: &[types::Candle],
+    source_timeframe: Option<Timeframe>,
+) -> IndicatorOutput {
+    let mut output = IndicatorOutput {
+        revision_id: revision_id.into(),
+        ..IndicatorOutput::default()
+    };
+
+    let mut next_evidence = 0usize;
+    for concept in concepts {
+        let bands = detect(series, concept);
+        for region in bands {
+            let evidence_id = format!("concept-{next_evidence}");
+            next_evidence += 1;
+
+            let label = concept
+                .label
+                .as_deref()
+                .map_or_else(|| concept.name.as_str(), |l| l);
+
+            output.evidence.push(chart_engine::Evidence {
+                id: evidence_id.clone(),
+                event: concept.name.clone(),
+                time: region.from,
+                price: region.price_low,
+                explanation: format!(
+                    "detected {label} on the {timeframe} chart (band {price_low}..{price_high})",
+                    label = label,
+                    timeframe = source_timeframe
+                        .as_ref()
+                        .map(|tf| tf.as_str())
+                        .unwrap_or_else(|| series.first().map(|c| c.timeframe.as_str()).unwrap_or("?")),
+                    price_low = region.price_low,
+                    price_high = region.price_high,
+                ),
+            });
+
+            output.zones.push(IndicatorZone {
+                id: evidence_id.clone(),
+                start_time: region.from,
+                end_time: region.to,
+                price_low: region.price_low,
+                price_high: region.price_high,
+                label: label.to_string(),
+                state: zone_state(&region),
+            });
+
+            output.markers.push(IndicatorMarker {
+                id: format!("{evidence_id}-marker"),
+                evidence_id: evidence_id.clone(),
+                time: region.from,
+                price: region.price_low,
+                label: label.to_string(),
+                kind: marker_kind(region.side),
+            });
+        }
+    }
+
+    output
+}
+
+/// Map a detected region to a chart lifecycle state.
+///
+/// The chart already draws zones with these states; reuse the same vocabulary so
+/// an indicator band and a built-in zone behave the same way visually.
+fn zone_state(region: &Region) -> chart_engine::ZoneState {
+    let mitigated = region.mitigated;
+    if mitigated <= 0.0 {
+        chart_engine::ZoneState::Active
+    } else if mitigated > 1.0 {
+        chart_engine::ZoneState::Tapped
+    } else if (mitigated - 1.0).abs() < 1e-9 {
+        chart_engine::ZoneState::Mitigated
+    } else {
+        chart_engine::ZoneState::Active
+    }
+}
+
+/// Map a detection side to the marker vocabulary the chart already paints.
+fn marker_kind(side: analytics_core::types::Side) -> MarkerKind {
+    match side {
+        analytics_core::types::Side::Buy => MarkerKind::Bullish,
+        analytics_core::types::Side::Sell => MarkerKind::Bearish,
+    }
+}
+
 /// Replay a generated document over a recent window and describe the result.
 ///
 /// # Errors
 /// Returns a human-readable reason when the candles cannot be loaded or the
 /// replay refuses -- never for a reason the caller should treat as fatal.
 pub async fn replay_preview(
-    state: &crate::AppState,
+    state: &AppState,
     database: &db::Database,
     symbol: &str,
     source_timeframe: &str,
@@ -158,10 +259,19 @@ pub async fn replay_preview(
     .map_err(|error| format!("could not load candles for the preview: {error}"))?;
 
     // Indicator documents have no entry/risk blocks by design, so the
-    // sandbox and the trading engine rightfully refuse them.  Return an
-    // honest empty preview rather than failing the whole generation.
+    // sandbox and the trading engine rightfully refuse them.  Do not replay
+    // them as trading setups.  Instead, evaluate the stored concepts as a
+
+    // detector layer over the same backfilled series and return whatever bands
+    // the window actually contains -- which may legitimately be none.
     if document.kind == strategy_dsl::DocumentKind::Indicator {
-        return Ok(IndicatorOutput::default());
+        let concepts: Vec<_> = document.concepts.iter().cloned().collect();
+        return Ok(build_indicator_preview(
+            document.name.clone(),
+            &concepts,
+            &series.get("entry").cloned().unwrap_or_default(),
+            Some(source_timeframe),
+        ));
     }
 
     let input = ReplayInput::new(document, series)
@@ -242,5 +352,138 @@ mod tests {
         assert!(setups[0].exit.is_none());
         assert_eq!(setups[1].direction, SetupDirection::Short);
         assert_eq!(setups[1].stop_price, 105.0);
+    }
+
+    // --- indicator detector preview -----------------------------------------
+
+    fn indicator_candle(index: i64, open: f64, high: f64, low: f64, close: f64) -> analytics_core::types::Candle {
+        analytics_core::types::Candle {
+            symbol: "BTCUSDT".into(),
+            timeframe: analytics_core::types::Timeframe::M5,
+            open_time: index * analytics_core::types::Timeframe::M5.nanos(),
+            open,
+            high,
+            low,
+            close,
+            volume: 10.0,
+            buy_volume: 6.0,
+            sell_volume: 4.0,
+        }
+    }
+
+    fn bullish_gap_concept() -> concepts::Concept {
+        concepts::Concept {
+            name: "bullish_gap".into(),
+            label: Some("bullish gap".into()),
+            side: types::Side::Buy,
+            window: 3,
+            lower: concepts::Selector::High(0),
+            upper: concepts::Selector::Low(2),
+            require: vec![concepts::Requirement {
+                left: concepts::Selector::High(0),
+                op: concepts::Compare::Below,
+                right: concepts::Selector::Low(2),
+            }],
+            min_band_ratio: None,
+        }
+    }
+
+    fn gap_series() -> Vec<analytics_core::types::Candle> {
+        vec![
+            indicator_candle(0, 100.0, 100.5, 99.5, 100.0),
+            indicator_candle(1, 100.0, 100.5, 99.5, 100.2),
+            indicator_candle(2, 100.2, 101.0, 100.0, 100.5),
+            indicator_candle(3, 100.5, 105.5, 100.5, 104.0),
+            indicator_candle(4, 105.0, 105.6, 105.0, 105.2),
+            indicator_candle(5, 105.2, 105.6, 105.0, 105.4),
+        ]
+    }
+
+    #[test]
+    fn build_indicator_preview_emits_zones_and_markers_for_matched_concepts() {
+        let concepts = vec![bullish_gap_concept()];
+        let series = gap_series();
+        let output = build_indicator_preview(
+            Uuid::new_v4(),
+            &concepts,
+            &series,
+            Some(analytics_core::types::Timeframe::M5),
+        );
+
+        assert!(!output.revision_id.is_empty());
+        assert_eq!(output.zones.len(), 1, "{output:#?}");
+        assert_eq!(output.markers.len(), 1, "{output:#?}");
+        assert_eq!(output.evidence.len(), 1, "{output:#?}");
+
+        let zone = &output.zones[0];
+        assert_eq!(zone.label, "bullish gap");
+        assert_eq!(zone.price_low, 101.0, "{zone:#?}");
+        assert_eq!(zone.price_high, 105.0, "{zone:#?}");
+        assert_eq!(
+            zone.start_time,
+            indicator_candle(2, 0.0, 0.0, 0.0, 0.0).open_time,
+            "the band opens at the first candle of the pattern",
+        );
+
+        let marker = &output.markers[0];
+        assert_eq!(marker.evidence_id, output.evidence[0].id);
+        assert_eq!(marker.label, "bullish gap");
+        assert_eq!(marker.kind, MarkerKind::Bullish);
+
+        assert_eq!(output.evidence[0].event, "bullish_gap");
+        assert!(output.evidence[0].explanation.contains("bullish gap"));
+    }
+
+    #[test]
+    fn build_indicator_preview_is_empty_when_no_concept_matches() {
+        let concepts = vec![bullish_gap_concept()];
+        let short = vec![indicator_candle(0, 100.0, 101.0, 99.0, 100.5)];
+        let output = build_indicator_preview(
+            Uuid::new_v4(),
+            &concepts,
+            &short,
+            Some(analytics_core::types::Timeframe::M5),
+        );
+
+        assert_eq!(output.zones.len(), 0);
+        assert_eq!(output.markers.len(), 0);
+        assert_eq!(output.evidence.len(), 0);
+        assert!(!output.revision_id.is_empty());
+    }
+
+    #[test]
+    fn build_indicator_preview_emits_one_zone_per_matched_window() {
+        let mut candles = gap_series();
+        candles.push(indicator_candle(6, 105.4, 105.6, 105.1, 105.3));
+        candles.push(indicator_candle(7, 105.3, 105.7, 105.2, 105.5));
+
+        let concepts = vec![bullish_gap_concept()];
+        let output = build_indicator_preview(
+            Uuid::new_v4(),
+            &concepts,
+            &candles,
+            Some(analytics_core::types::Timeframe::M5),
+        );
+
+        // The gap rule can fire on overlapping windows; each match is its own
+        // zone/marker/evidence in the indicator output.
+        assert!(output.zones.len() >= 1, "{output:#?}");
+        assert_eq!(output.zones.len(), output.markers.len());
+        assert_eq!(output.zones.len(), output.evidence.len());
+    }
+
+    #[test]
+    fn build_indicator_preview_keeps_indicator_contracted_only() {
+        let concepts = vec![bullish_gap_concept()];
+        let series = gap_series();
+        let output = build_indicator_preview(
+            Uuid::new_v4(),
+            &concepts,
+            &series,
+            Some(analytics_core::types::Timeframe::M5),
+        );
+
+        // An indicator preview must not emit Enter/Exit-style setup primitives.
+        assert!(output.links.is_empty());
     }
 }
