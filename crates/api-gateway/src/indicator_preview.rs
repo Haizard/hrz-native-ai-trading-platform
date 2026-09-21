@@ -118,6 +118,34 @@ pub async fn replay_preview(
         .parse::<Timeframe>()
         .unwrap_or(Timeframe::M1);
 
+    // A fresh deployment has almost nothing stored -- the logs show 10 candles
+    // spanning 0.5% of the window -- so a replay over stored data alone fires
+    // on nothing and the preview is empty. Backfill the window from the venue
+    // first; the upsert makes repeat backfills idempotent.
+    {
+        let backfilled = state
+            .backfill
+            .backfill_candles(
+                symbol,
+                source_timeframe,
+                from_ns,
+                to_ns,
+                market_data::BackfillSource::Klines,
+            )
+            .await;
+        match backfilled {
+            Ok(candles) if !candles.is_empty() => {
+                if let Err(error) = db::repositories::insert_candles(database.pool(), &candles).await {
+                    tracing::warn!(%error, "could not store preview backfill; replaying on what is stored");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "preview backfill from the venue failed; replaying on what is stored");
+            }
+        }
+    }
+
     let series = db::loading::load_timeframe_series(
         database.pool(),
         symbol,

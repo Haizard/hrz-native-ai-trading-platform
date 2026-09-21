@@ -318,9 +318,9 @@ pub async fn create_message(
     let memory = serde_json::json!({"last_request": body.content.trim(), "active_strategy_id": strategy_id, "revision": revision.revision_number});
     db::update_indicator_workspace_memory(database.pool(), user.user_id, id, &memory).await?;
     let assistant_text = if preview.evidence.is_empty() {
-        format!("Generated and sandbox-validated revision {}. No setup fired in the preview window, so the chart carries no evidence yet; create a bot draft only after you have stored a historical backtest.", revision.revision_number)
+        format!("Generated and validated revision {}. The preview window fired no setups, so the chart has the indicator attached but no evidence markers yet. Create a bot draft only after you have stored a historical backtest.", revision.revision_number)
     } else {
-        format!("Generated and sandbox-validated revision {}. The chart shows {} evidence node(s) from the replayed signals; create a bot draft only after you have stored a historical backtest.", revision.revision_number, preview.evidence.len())
+        format!("Generated and validated revision {}. Attached to the chart with {} evidence node(s) from the replayed signals. Create a bot draft only after you have stored a historical backtest.", revision.revision_number, preview.evidence.len())
     };
     let assistant_message = db::create_indicator_workspace_message(database.pool(), user.user_id, id, "assistant", "revision", &assistant_text, &serde_json::json!({"revision_id": revision.id, "strategy_id": strategy_id}))
         .await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
