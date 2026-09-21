@@ -905,6 +905,14 @@ function createChartPane(root, hooks = {}) {
     const response = await api(
       `/candles?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`
     );
+    // Say where the bars came from, so "is this live or a fallback?" is
+    // answered on the page instead of guessed at. memory = the live in-memory
+    // buffer the feed fills; venue = REST-fetched history for this window.
+    const src = response.source;
+    const noteEl = document.getElementById("chartNote");
+    if (noteEl && src) {
+      noteEl.textContent = `candles: ${src.memory} from live buffer, ${src.venue} fetched from venue (${response.candles?.length ?? 0} total)`;
+    }
     return response.candles || [];
   }
 
@@ -4904,10 +4912,20 @@ async function loadMessages(wsId) {
   }
   out.innerHTML = wsMessages.map(m => {
     const isUser = m.role === "user";
+    // Revision messages carry the generated YAML in their payload so the
+    // user can read exactly what was produced instead of trusting a claim.
+    const src = !isUser && m.payload && typeof m.payload.source === "string" ? m.payload.source : null;
+    const srcBlock = src ? `
+      <details style="margin-top:4px">
+        <summary class="muted" style="cursor:pointer;font-size:11px">Generated source (read-only, ${src.split("\n").length} lines)</summary>
+        <pre class="ws-source" style="margin:4px 0;padding:8px;background:var(--bg,#111);border:1px solid var(--line);border-radius:4px;overflow:auto;max-height:240px;font-size:11px;white-space:pre;user-select:text">${escapeHtml(src)}</pre>
+      </details>
+    ` : "";
     return `
       <div style="padding:4px 0;border-bottom:1px solid var(--line)">
         <span class="muted" style="font-size:11px">${isUser ? 'You' : 'AI'}:</span>
         <div>${escapeHtml(m.content)}</div>
+        ${srcBlock}
       </div>
     `;
   }).join("");

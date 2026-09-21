@@ -317,12 +317,24 @@ pub async fn create_message(
         .await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
     let memory = serde_json::json!({"last_request": body.content.trim(), "active_strategy_id": strategy_id, "revision": revision.revision_number});
     db::update_indicator_workspace_memory(database.pool(), user.user_id, id, &memory).await?;
-    let assistant_text = if preview.evidence.is_empty() {
-        format!("Generated and validated revision {}. The preview window fired no setups, so the chart has the indicator attached but no evidence markers yet. Create a bot draft only after you have stored a historical backtest.", revision.revision_number)
+    let assistant_text = if document.kind == strategy_dsl::DocumentKind::Indicator {
+        format!("Generated and validated revision {} (kind: indicator). An indicator declares what to compute and plot but has no entry/risk logic, so the replay never fires setups by design -- view the source below and attach it from the revision card. Create a bot draft only after you have stored a historical backtest.", revision.revision_number)
+    } else if preview.evidence.is_empty() {
+        format!("Generated and validated revision {} (kind: strategy). The replay over the past week fired no setups -- the conditions never coincided in that window. The source is shown below and the revision is attached; create a bot draft only after you have stored a historical backtest.", revision.revision_number)
     } else {
-        format!("Generated and validated revision {}. Attached to the chart with {} evidence node(s) from the replayed signals. Create a bot draft only after you have stored a historical backtest.", revision.revision_number, preview.evidence.len())
+        format!("Generated and validated revision {} (kind: strategy). Attached to the chart with {} evidence node(s) from the replayed signals; source below. Create a bot draft only after you have stored a historical backtest.", revision.revision_number, preview.evidence.len())
     };
-    let assistant_message = db::create_indicator_workspace_message(database.pool(), user.user_id, id, "assistant", "revision", &assistant_text, &serde_json::json!({"revision_id": revision.id, "strategy_id": strategy_id}))
+    let assistant_payload = serde_json::json!({
+        "revision_id": revision.id,
+        "strategy_id": strategy_id,
+        "revision_number": revision.revision_number,
+        "kind": document.kind.to_string(),
+        "source": yaml,
+        "evidence_nodes": preview.evidence.len(),
+        "zones": preview.zones.len(),
+        "markers": preview.markers.len(),
+    });
+    let assistant_message = db::create_indicator_workspace_message(database.pool(), user.user_id, id, "assistant", "revision", &assistant_text, &assistant_payload)
         .await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
     Ok((StatusCode::CREATED, Json(WorkspaceTurnResponse { user_message: user_message.into(), assistant_message: assistant_message.into(), revision: revision.into(), strategy_id: strategy_id.to_string() })))
 }
