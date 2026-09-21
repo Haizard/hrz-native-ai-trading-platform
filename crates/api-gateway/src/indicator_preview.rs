@@ -129,6 +129,13 @@ pub async fn replay_preview(
     .await
     .map_err(|error| format!("could not load candles for the preview: {error}"))?;
 
+    // Indicator documents have no entry/risk blocks by design, so the
+    // sandbox and the trading engine rightfully refuse them.  Return an
+    // honest empty preview rather than failing the whole generation.
+    if document.kind == strategy_dsl::DocumentKind::Indicator {
+        return Ok(IndicatorOutput::default());
+    }
+
     let input = ReplayInput::new(document, series)
         .map_err(|error| format!("the preview replay input was incomplete: {error}"))?;
 

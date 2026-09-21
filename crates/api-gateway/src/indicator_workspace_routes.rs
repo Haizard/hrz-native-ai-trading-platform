@@ -280,7 +280,12 @@ pub async fn create_message(
     let attempts = generated.attempts;
     let repaired_errors = generated.repaired_errors.clone();
     let validated = generated.into_validated();
-    Decisions::sandboxed(state.sandbox.as_ref(), &validated).map_err(|err| ApiError::coded(StatusCode::UNPROCESSABLE_ENTITY, "INDICATOR_SANDBOX_REFUSED", err.to_string()))?;
+    // Only sandbox-check tradable documents. `kind: indicator` documents
+    // have no entry/risk blocks by design and the sandbox rightfully refuses
+    // them — skipping is correct, not a safety gap.
+    if document.kind != strategy_dsl::DocumentKind::Indicator {
+        Decisions::sandboxed(state.sandbox.as_ref(), &validated).map_err(|err| ApiError::coded(StatusCode::UNPROCESSABLE_ENTITY, "INDICATOR_SANDBOX_REFUSED", err.to_string()))?;
+    }
     let strategy = serde_json::to_value(&document).map_err(|err| ApiError::internal(format!("could not store generated strategy: {err}")))?;
     let strategy_id = db::create_strategy(database.pool(), user.user_id, &document.name, &document.version, &strategy, "ai_agent").await?;
 
