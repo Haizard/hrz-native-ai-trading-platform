@@ -271,9 +271,12 @@ pub async fn create_message(
         .await?.ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
     let agent = state.agent.as_ref().ok_or_else(|| ApiError::unavailable("the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID and AWS credentials"))?;
     let memory = workspace.memory.to_string();
-    let description = format!("Workspace: {}. Existing compact memory: {memory}. Client request: {}", workspace.name, body.content.trim());
+    let description = format!("Workspace: {}. Existing compact memory: {memory}. Client request: {}. IMPORTANT: timeframes.entry MUST be exactly `{}` — no other value is acceptable.", workspace.name, body.content.trim(), workspace.timeframe);
     let mut request = ai_agent::StrategyRequest::new(description, &workspace.symbol, &workspace.timeframe);
     request.skill_id = body.skill_id.clone();
+    // Give the model extra retry attempts — it often ignores the entry
+    // timeframe on the first pass and needs the feedback loop to correct.
+    request.max_attempts = Some(5);
     let generated = agent.generate_strategy(&request).await.map_err(ApiError::from)?;
     let document = generated.document().clone();
     let yaml = generated.yaml.clone();
