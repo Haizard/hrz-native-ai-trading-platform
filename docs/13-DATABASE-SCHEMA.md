@@ -136,4 +136,11 @@ CREATE TABLE audit_log (
   patterns each engine doc describes (e.g. `(symbol, timeframe, open_time)` range scans
   for candles).
 - A documented retention/downsampling job exists and is tested against a synthetic
-  dataset.
+  dataset. **Done 2026-09-22** (closing `docs/19` row 3): `crates/db/src/retention.rs`
+  holds the policy (`RETENTION_TRADES_DAYS`, `RETENTION_ORDERBOOK_DAYS`,
+  `RETENTION_INTERVAL_SECS`, with defaults), an age-bounded chunked delete for `trades`
+  and `orderbook_snapshots`, and a per-pass report of what was removed. The gateway
+  spawns it at boot (first pass immediate), and `cargo xtask retention` runs one pass
+  by hand. Candles are deliberately never touched — the chart cannot reconstruct them,
+  and the two tables the job does bound are the ones the footprint/DOM replay reads
+  recent, not old.

@@ -41,6 +41,13 @@ enum Command {
     Migrate,
     /// Print connectivity and applied-migration status.
     DbStatus,
+    /// Run one retention pass over the market tables.
+    ///
+    /// Deletes `trades` and `orderbook_snapshots` older than the policy's
+    /// bounds (and `candles` only when `RETENTION_CANDLES_DAYS` is set), in
+    /// bounded batches. The gateway schedules this itself; this command is
+    /// for running it *now*, e.g. before a soak.
+    Retention,
     /// Backfill historical candles from the exchange REST API.
     Backfill {
         /// Symbol, e.g. BTCUSDT.
@@ -149,6 +156,21 @@ async fn main() -> anyhow::Result<()> {
             db.migrate().await?;
             println!("connected: {}", db.config().redacted_url());
             println!("database: up");
+        }
+        Command::Retention => {
+            let db = Database::from_env().await?;
+            let policy = db::RetentionPolicy::from_env();
+            println!(
+                "retention policy: trades > {}d, orderbook_snapshots > {}d, candles {}",
+                policy.trades_days,
+                policy.orderbook_days,
+                match policy.candles_days {
+                    Some(days) => format!("> {days}d"),
+                    None => "kept".to_string(),
+                }
+            );
+            let report = db::run_retention(db.pool(), &policy).await?;
+            println!("{}", report.summary());
         }
         Command::Backfill {
             symbol,

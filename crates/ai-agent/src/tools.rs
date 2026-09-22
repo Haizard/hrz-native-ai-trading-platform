@@ -16,6 +16,12 @@
 //! are declared here as [`MarketDataSource`] and [`BacktestRunner`] and
 //! implemented one layer up. That keeps the dependency rule intact, and it
 //! makes the whole tool layer testable against a fixture source.
+//!
+//! The same rule puts the user's drawings behind [`UserDrawingsSource`]
+//! (`crate::user_drawings`): the model may *read* what the user drew, through
+//! `get_user_drawings`, and the host decides whose drawings those are.
+//! Read-only is the whole contract -- an agent that could move a level would
+//! be able to edit the analysis it is being asked to reason about.
 
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
@@ -31,6 +37,7 @@ use analytics_core::{
 
 use crate::error::AgentError;
 use crate::llm_client::ToolCall;
+use crate::user_drawings::UserDrawingsSource;
 
 /// Where market data comes from.
 ///
@@ -141,6 +148,14 @@ pub struct ToolContext<'a> {
     /// Upper bound on bars per call, so a model asking for `limit: 100000`
     /// gets a bounded answer instead of a 60-second query.
     pub max_lookback: usize,
+    /// The asking user's drawings, when the host provided them.
+    ///
+    /// `None` is a fact the tool reports ("no drawings source is attached"),
+    /// not a blank chart the model may assume. Read-only by construction:
+    /// [`UserDrawingsSource`] has no write method to call.
+    pub drawings: Option<&'a dyn UserDrawingsSource>,
+    /// Whose drawings [`Self::drawings`] holds, opaque to this crate.
+    pub user_id: Option<&'a str>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -153,7 +168,21 @@ impl<'a> ToolContext<'a> {
             config: MarketStateConfig::default(),
             default_lookback: 300,
             max_lookback: 2000,
+            drawings: None,
+            user_id: None,
         }
+    }
+
+    /// Attach the asking user's drawings, and whose they are.
+    #[must_use]
+    pub fn with_drawings(
+        mut self,
+        drawings: &'a dyn UserDrawingsSource,
+        user_id: &'a str,
+    ) -> Self {
+        self.drawings = Some(drawings);
+        self.user_id = Some(user_id);
+        self
     }
 
     /// Attach a backtest runner.
@@ -274,6 +303,11 @@ impl ToolRegistry {
                     description: BACKTEST_SIMILAR_SETUPS.into(),
                     input_schema: backtest_similar_schema(),
                 },
+                ToolSpec {
+                    name: "get_user_drawings".into(),
+                    description: GET_USER_DRAWINGS.into(),
+                    input_schema: get_user_drawings_schema(),
+                },
             ],
         }
     }
@@ -329,6 +363,7 @@ impl ToolRegistry {
             "detect_market_structure" => detect_market_structure_tool(ctx, &call.input).await,
             "backtest_strategy" => backtest_strategy(ctx, &call.input).await,
             "backtest_similar_setups" => backtest_similar_setups(ctx, &call.input).await,
+            "get_user_drawings" => get_user_drawings(ctx, &call.input).await,
             other => return Err(AgentError::UnknownTool(other.to_string())),
         };
         let elapsed = started.elapsed();
@@ -406,6 +441,16 @@ fn backtest_strategy_schema() -> Value {
             "days": {"type": "integer", "minimum": 1, "description": "Window length in days (default 180)"},
         },
         "required": ["document", "symbol"],
+    })
+}
+
+fn get_user_drawings_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
+        },
+        "required": ["symbol"],
     })
 }
 
@@ -617,6 +662,11 @@ const BACKTEST_STRATEGY: &str = "Backtest a Strategy DSL document over a histori
 const BACKTEST_SIMILAR_SETUPS: &str = "Historical base rate for the setups a skill describes: \
     how often they fired and what they returned in R. Call it once you believe a skill's \
     conditions are satisfied, before finalising the thesis.";
+
+const GET_USER_DRAWINGS: &str = "The levels and shapes the user themselves drew on this symbol, \
+    with their labels and both anchors. Read-only. Call it before answering anything about \
+    'my level', 'my trendline', 'the zone I marked' or whether the user's marks still hold -- \
+    a drawn level is the user's own analysis, and citing it beats rediscovering it.";
 
 /// Absence-of-tick-data message, shared so every affected tool says the same
 /// thing. The model needs to distinguish "no events occurred" from "events
@@ -1109,6 +1159,71 @@ async fn backtest_similar_setups(ctx: &ToolContext<'_>, args: &Value) -> Result<
     Ok(serde_json::to_value(summary)?)
 }
 
+/// `get_user_drawings`: what the user marked on this symbol, read-only.
+///
+/// ## Why a tool and not only the viewport packet
+///
+/// The chart packet carries a flattened one-price-per-drawing summary of
+/// whatever was on screen when the question was typed; it is a *hint* about a
+/// viewport and is clamped hard. This tool is the grounded read: both anchors,
+/// the label, and the current stored state — including drawings made before
+/// this session, which the packet has never carried. It exists so the answer
+/// to "is my level still holding?" can cite the user's own line instead of
+/// rediscovering it and calling it new.
+///
+/// ## The two refusals say different things
+///
+/// "No drawings source" is about the *host* — nothing is attached, so the
+/// honest answer is that the agent cannot see any drawing, not that the chart
+/// is bare. "No drawings" is about the *chart* — storage answered, and this
+/// user has marked nothing on this symbol. Reading the first as the second is
+/// how an agent ends up confidently describing analysis it never saw.
+async fn get_user_drawings(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "get_user_drawings";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+
+    let (Some(source), Some(user_id)) = (ctx.drawings, ctx.user_id) else {
+        return Err(AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason: "no drawings source is attached to this agent, so user \
+                     drawings cannot be read. Say so; do not assume the chart \
+                     is bare."
+                .into(),
+        });
+    };
+
+    let mut drawings = source.drawings(user_id, &symbol).await?;
+    let total = crate::user_drawings::clamp_drawings(
+        &mut drawings,
+        crate::chart_context::MAX_DRAWINGS,
+    );
+    let returned = drawings.len();
+
+    // `price` on each entry is what folds into the grounding range
+    // (`PriceRange` walks `PRICE_KEYS`, and `price` is one), so a level the
+    // user drew is a level the thesis may be built against — which is the
+    // point of the tool.
+    let levels: Vec<Value> = drawings
+        .iter()
+        .map(|d| serde_json::to_value(d).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    let mut out = json!({
+        "symbol": symbol,
+        "read_only": true,
+        "count": returned,
+        "drawings": levels,
+    });
+    if total > returned {
+        out["total"] = json!(total);
+        out["note"] = json!(format!(
+            "showing the {returned} oldest of {total} drawings; the rest were \
+             dropped to keep the answer readable"
+        ));
+    }
+    Ok(out)
+}
+
 /// `[from, to)` covering the last `days` days, ending now.
 fn trailing_days(days: u64) -> (i64, i64) {
     const NS_PER_DAY: i64 = 86_400 * 1_000_000_000;
@@ -1367,6 +1482,10 @@ mod tests {
         }
     }
 
+    fn registry() -> ToolRegistry {
+        ToolRegistry::market_analysis()
+    }
+
     #[tokio::test]
     async fn the_registry_exposes_every_tool_documented_in_docs_09() {
         let registry = ToolRegistry::market_analysis();
@@ -1385,6 +1504,7 @@ mod tests {
             "analyze_multi_timeframe",
             "backtest_strategy",
             "backtest_similar_setups",
+            "get_user_drawings",
         ] {
             assert!(registry.contains(name), "missing tool {name}");
         }
@@ -1819,5 +1939,143 @@ mod tests {
         let calls = message.tool_calls();
         assert_eq!(calls[0].name, "get_vwap");
         assert_eq!(calls[0].id, "abc");
+    }
+
+    // -----------------------------------------------------------------------
+    // get_user_drawings (docs/19 row 19)
+    // -----------------------------------------------------------------------
+
+    /// A drawings source over a fixed list, per user.
+    struct DrawingsFixture(Vec<crate::user_drawings::UserDrawing>);
+
+    #[async_trait]
+    impl crate::user_drawings::UserDrawingsSource for DrawingsFixture {
+        async fn drawings(
+            &self,
+            user_id: &str,
+            _symbol: &str,
+        ) -> Result<Vec<crate::user_drawings::UserDrawing>, AgentError> {
+            // Scoping is the host's job; the fixture only proves the tool
+            // forwards the opaque id it was given.
+            if user_id == "someone-else" {
+                return Ok(Vec::new());
+            }
+            Ok(self.0.clone())
+        }
+    }
+
+    fn hline(price: f64) -> crate::user_drawings::UserDrawing {
+        crate::user_drawings::UserDrawing {
+            kind: "hline".into(),
+            label: Some("the range low".into()),
+            time1_ms: 1_767_225_600_000.0,
+            price1: price,
+            time2_ms: None,
+            price2: None,
+        }
+    }
+
+    fn drawings_ctx<'a>(
+        fixture: &'a Fixture,
+        source: &'a DrawingsFixture,
+        user: &'a str,
+    ) -> ToolContext<'a> {
+        ToolContext::new(fixture).with_drawings(source, user)
+    }
+
+    #[tokio::test]
+    async fn the_drawings_tool_reports_the_users_marks_with_both_anchors() {
+        let fixture = Fixture::rising(10);
+        let source = DrawingsFixture(vec![
+            hline(45_000.0),
+            crate::user_drawings::UserDrawing {
+                kind: "trendline".into(),
+                label: None,
+                time1_ms: 1.0,
+                price1: 44_000.0,
+                time2_ms: Some(2.0),
+                price2: Some(46_000.0),
+            },
+        ]);
+        let ctx = drawings_ctx(&fixture, &source, "user-1");
+
+        let out = registry()
+            .execute(
+                &call("get_user_drawings", json!({"symbol": "BTCUSDT"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["count"], 2);
+        assert_eq!(out["drawings"][0]["kind"], "hline");
+        assert_eq!(out["drawings"][0]["price1"], 45_000.0);
+        // The second anchor survives: which end a trendline points at is the
+        // information a one-price summary throws away.
+        assert_eq!(out["drawings"][1]["price2"], 46_000.0);
+        assert_eq!(out["drawings"][1]["time2_ms"], 2.0);
+        assert_eq!(out["read_only"], true);
+    }
+
+    #[tokio::test]
+    async fn a_missing_drawings_source_is_an_error_not_a_blank_chart() {
+        // The failure mode the tool exists to prevent: a host with no source
+        // read by the model as "the user drew nothing".
+        let fixture = Fixture::rising(10);
+        let ctx = ToolContext::new(&fixture);
+
+        let error = registry()
+            .execute(
+                &call("get_user_drawings", json!({"symbol": "BTCUSDT"})),
+                &ctx,
+            )
+            .await
+            .expect_err("must refuse");
+
+        let AgentError::ToolFailed { tool, reason } = &error else {
+            panic!("expected ToolFailed, got {error:?}");
+        };
+        assert_eq!(tool, "get_user_drawings");
+        assert!(reason.contains("no drawings source"), "{reason}");
+        assert!(reason.contains("do not assume"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn drawings_are_scoped_to_the_user_the_host_named() {
+        let fixture = Fixture::rising(10);
+        let source = DrawingsFixture(vec![hline(45_000.0)]);
+        let ctx = drawings_ctx(&fixture, &source, "someone-else");
+
+        let out = registry()
+            .execute(
+                &call("get_user_drawings", json!({"symbol": "BTCUSDT"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["count"], 0, "another user's drawings are not readable");
+        assert_eq!(out["drawings"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn an_oversize_drawing_list_is_trimmed_and_says_so() {
+        let fixture = Fixture::rising(10);
+        let many: Vec<crate::user_drawings::UserDrawing> =
+            (0..30).map(|i| hline(f64::from(i) + 1.0)).collect();
+        let source = DrawingsFixture(many);
+        let ctx = drawings_ctx(&fixture, &source, "user-1");
+
+        let out = registry()
+            .execute(
+                &call("get_user_drawings", json!({"symbol": "BTCUSDT"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["count"], crate::chart_context::MAX_DRAWINGS);
+        assert_eq!(out["total"], 30);
+        assert!(out["note"].as_str().unwrap().contains("oldest of 30"));
     }
 }

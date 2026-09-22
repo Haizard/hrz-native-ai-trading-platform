@@ -40,11 +40,12 @@ pub mod sigv4;
 pub mod skills;
 pub mod thesis;
 pub mod tools;
+pub mod user_drawings;
 
 pub use agent::draft_strategy_spec;
 pub use agent::{
-    Agent, AgentAnswer, AgentConfig, AskRequest, GeneratedStrategy, StrategyRequest,
-    DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
+    Agent, AgentAnswer, AgentConfig, AskRequest, DrawingsContext, GeneratedStrategy,
+    StrategyRequest, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
 };
 pub use chart_context::{
     ChartContext, ChartScreenshot, DrawnLevel, MAX_DRAWINGS, MAX_SCREENSHOT_BYTES,
@@ -64,3 +65,4 @@ pub use thesis::{Bias, CheckStatus, ConditionCheck, PriceRange, ToolTrace};
 
 pub use thesis::TradeThesis;
 pub use tools::{BacktestRunner, BacktestSummary, MarketDataSource, ToolContext, ToolRegistry};
+pub use user_drawings::{UserDrawing, UserDrawingsSource};

@@ -399,6 +399,286 @@
     return { timeframe: timeframe || "", label: "", joiner: "and", clauses: [newClause()] };
   }
 
+  // -------------------------------------------------------------------------
+  // Concepts: a measurement a client defines, declared as data.
+  //
+  // The vocabulary comes from `GET /strategies/schema` -> `concepts:`, same as
+  // the rest of the form: the selector names, the comparison names, the window
+  // bounds and the per-document cap all come from the Rust enums that enforce
+  // them. A second hand-written list would drift and then offer a concept the
+  // validator rejects -- which is exactly the shape `docs/06` exists to prevent.
+  //
+  // The one thing the builder does here that the server does not is *parse a
+  // concept's selectors into a form the user can fill*, because
+  // `lower: {high: 0}` is not something a dropdown can represent. Anything it
+  // cannot model -- a selector the vocabulary does not name, a comparison the
+  // vocabulary does not have -- comes back as raw text, same as an unknown
+  // condition, so a vocabulary change the builder has not caught up with shows
+  // as text rather than silently editing the definition.
+  // -------------------------------------------------------------------------
+
+  /// One edge of a concept's band, as a form field.
+  ///
+  /// The builder does not have a document's concept vocabulary, and neither does
+  //  the shell UI -- what lives here is the *form* representation, which is the
+  //  same shape as `{{high: 0}}`: a selector name plus a candle index. A future
+  //  vocabulary that adds a labeled selector or a free-form edge would land here
+  //  as a raw field the builder keeps as text rather than silently editing.
+  function selectorFromAst(node) {
+    if (!node || node.t !== "call" || node.name !== "selector") return null;
+    if (node.args.length !== 1) return null;
+    const arg = node.args[0];
+    if (!arg || arg.t !== "lit" || (arg.kind !== "number" && arg.kind !== "string")) return null;
+    return { selector: String(arg.value), index: arg.kind === "number" ? String(arg.value) : "0" };
+  }
+
+  /// A raw selector the builder cannot model, kept as text.
+  function rawSelector(text) {
+    return { raw: String(text || "").trim() };
+  }
+
+  /// Parse one selector from its written form so a concept form can hold it as
+  /// data rather than as prose.
+  function parseSelector(text) {
+    const trimmed = String(text || "").trim();
+    if (!trimmed) return rawSelector("");
+    // Try the grammar the document is authored in: {{kind: index}}.
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      const inner = trimmed.slice(1, -1);
+      const colon = inner.indexOf(":");
+      if (colon >= 0) {
+        const kind = inner.slice(0, colon).trim();
+        const rest = inner.slice(colon + 1).trim();
+        if (kind && /^high|low|open|close|mid|volume$/.test(kind) && /^0*[0-9]+$/.test(rest)) {
+          return { selector: kind, index: String(Number(rest)) };
+        }
+      }
+    }
+    // Anything else -- a bare name, a selector with a label, a future shape --
+    // is kept as raw text. The validator is the word on it; the builder only
+    // refuses to pretend it understood it.
+    return rawSelector(trimmed);
+  }
+
+  /// One selector as it reads back out of the form.
+  ///
+  /// The document model stores a selector as `{selector, index}` in the form,
+  /// and writes it as the text `{high: 0}` that the document grammar expects.
+  /// This is the text form, used both for the form's own rendering and for the
+  /// YAML scalar the server receives.
+  function selectorText(sel) {
+    if (!sel) return "";
+    if (sel.raw !== undefined) return String(sel.raw);
+    if (sel.selector && sel.index !== undefined && sel.index !== null) {
+      return `{${sel.selector}: ${sel.index}}`;
+    }
+    // YAML map form produced by `conceptToValue`: {high: 0} -- one key,
+    // one non-negative integer value. Restated as the text form the grammar
+    // and the parser both expect, so a concept that rode through the emitter
+    // back into the form is not silently reshaped.
+    if (sel && typeof sel === "object") {
+      const keys = Object.keys(sel);
+      if (keys.length === 1) {
+        const name = keys[0];
+        const val = sel[name];
+        if (name && /^(open|high|low|close|mid|volume)$/.test(name) &&
+            typeof val === "number" && Number.isInteger(val) && val >= 0) {
+          return `{${name}: ${val}}`;
+        }
+      }
+    }
+    return "";
+  }
+
+  /// The canonical selector name for a form field, or null when the builder
+  /// cannot represent it.
+  function selectorName(sel) {
+    if (!sel) return null;
+    if (sel.raw !== undefined) return null;
+    const name = sel.selector && String(sel.selector).trim();
+    if (!name) return null;
+    if (!/^open|high|low|close|mid|volume$/.test(name)) return null;
+    return name;
+  }
+
+  /// The parts of the concept language, as the schema serves them.
+  function conceptPartsFromSchema(schema) {
+    const parts = (schema && schema.concepts && schema.concepts.parts) || [];
+    return parts.map((p) => ({
+      name: String(p.name),
+      type: String(p.kind),
+      reads: String(p.reads),
+    }));
+  }
+
+  /// The selectors a band edge may be measured from.
+  function conceptSelectorsFromSchema(schema) {
+    return (schema && schema.concepts && schema.concepts.selectors) || ["high", "low", "open", "close", "mid", "volume"];
+  }
+
+  /// The comparisons a `require` entry may use.
+  function conceptOpsFromSchema(schema) {
+    return (schema && schema.concepts && schema.concepts.ops) || ["below", "above", "below_or_equal", "above_or_equal"];
+  }
+
+  /// The window bounds a concept may span.
+  function conceptWindowFromSchema(schema) {
+    const w = (schema && schema.concepts && schema.concepts.window) || [2, 8];
+    return { min: Number(w[0]) || 2, max: Number(w[1]) || 8 };
+  }
+
+  /// The maximum concepts one document may declare.
+  function conceptMaxFromSchema(schema) {
+    return Number((schema && schema.concepts && schema.concepts.max_concepts)) || 5;
+  }
+
+  /// The sides a concept may expect a reaction from.
+  function conceptSidesFromSchema(schema) {
+    return (schema && schema.concepts && schema.concepts.sides) || ["buy", "sell"];
+  }
+
+  /// One concept as it appears in a form.
+  function newConcept(schema) {
+    const sides = conceptSidesFromSchema(schema);
+    return {
+      name: "",
+      label: "",
+      side: sides[0] || "buy",
+      window: "",
+      lower: { selector: conceptSelectorsFromSchema(schema)[1] || "high", index: "0" },
+      upper: { selector: conceptSelectorsFromSchema(schema)[2] || "low", index: "2" },
+      require: [],
+      min_band_ratio: "",
+    };
+  }
+
+  /// A single requirement line, as a form row.
+  function newRequirement(schema) {
+    const sel = conceptSelectorsFromSchema(schema);
+    const op = conceptOpsFromSchema(schema);
+    return { left: { selector: sel[1] || "high", index: "0" }, op: op[0] || "below", right: { selector: sel[2] || "low", index: "2" } };
+  }
+
+  /// A concept definition the builder cannot model, kept as raw text.
+  function rawConcept(text) {
+    return { raw: String(text || "").trim() };
+  }
+
+  /// A concept as it reads back out of the form, ready for `documentFromForm`.
+  function conceptValue(c) {
+    if (!c) return null;
+    if (c.raw !== undefined) return { raw: c.raw };
+    const name = String(c.name || "").trim();
+    if (!name) return null;
+    const window = Number(String(c.window || "").trim());
+    const lowerSel = c.lower ? parseSelector(selectorText(c.lower)) : null;
+    const upperSel = c.upper ? parseSelector(selectorText(c.upper)) : null;
+    const require = (c.require || [])
+      .map((r) => ({
+        left: parseSelector(selectorText(r.left)),
+        op: String(r.op || "").trim(),
+        right: parseSelector(selectorText(r.right)),
+      }))
+      .filter((r) => r.left && r.right && r.op);
+    const out = {
+      name,
+      side: String(c.side || "").trim(),
+      window,
+    };
+    if (c.label !== undefined && String(c.label || "").trim()) out.label = String(c.label).trim();
+    if (lowerSel && lowerSel.selector && lowerSel.index !== undefined) out.lower = lowerSel;
+    if (upperSel && upperSel.selector && upperSel.index !== undefined) out.upper = upperSel;
+    if (require.length) out.require = require;
+    if (c.min_band_ratio !== undefined && c.min_band_ratio !== "" && /^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/.test(String(c.min_band_ratio).trim())) {
+      const v = Number(String(c.min_band_ratio).trim());
+      if (v > 0 && isFinite(v)) out.min_band_ratio = v;
+    }
+    return Object.keys(out).length ? out : null;
+  }
+
+  /// The form-level concept model.
+  function conceptModelFromSchema(schema) {
+    const max = conceptMaxFromSchema(schema);
+    return {
+      items: Array.from({ length: Math.min(max, 1) }, () => newConcept(schema)),
+      max,
+    };
+  }
+
+  /// Whether a selector reads a price or a volume, for the local concept checks.
+  function selectorKind(sel) {
+    if (!sel || !sel.selector) return null;
+    const n = String(sel.selector).trim();
+    if (!n) return null;
+    return /^(open|high|low|close|mid)$/.test(n) ? "price" : /^(volume)$/.test(n) ? "volume" : null;
+  }
+
+  /// Why a single concept is not yet writable.
+  function conceptIssues(c, schema) {
+    const items = [];
+    if (!c) return items;
+    if (c.raw !== undefined) {
+      if (!c.raw) items.push("a concept is empty");
+      return items;
+    }
+    const name = String(c.name || "").trim();
+    if (!name) items.push("a concept needs a name");
+    else if (!/^[a-z][a-z0-9_]*$/.test(name)) items.push("a concept name must be lowercase letters, digits and underscores, and start with a letter");
+    else if (name.length > 48) items.push("a concept name must be at most 48 characters");
+    if (c.label !== undefined && String(c.label || "").trim().length > 48) items.push("a concept label must be at most 48 characters");
+    if (!c.side || !conceptSidesFromSchema(schema).includes(c.side)) items.push("a concept needs a side: " + conceptSidesFromSchema(schema).join(" or "));
+    const window = parseInt(String(c.window || "").trim(), 10);
+    if (!window || window < 2 || window > 8) items.push("a concept window must be 2..8 candles");
+    if (!c.lower || !c.lower.selector || !c.lower.index) items.push("a concept's cheaper edge is not a valid selector, e.g. {high: 0}");
+    else if (parseInt(c.lower.index, 10) >= (window || 9)) items.push("the cheaper edge's candle index is outside the window");
+    if (!c.upper || !c.upper.selector || !c.upper.index) items.push("a concept's dearer edge is not a valid selector, e.g. {low: 2}");
+    else if (parseInt(c.upper.index, 10) >= (window || 9)) items.push("the dearer edge's candle index is outside the window");
+    if (c.lower && c.upper && !c.lower.raw && !c.upper.raw && c.lower.selector === c.upper.selector && c.lower.index === c.upper.index) {
+      items.push("both band edges are the same selector, so the band has no height");
+    }
+    if (c.require) {
+      for (let i = 0; i < c.require.length; i++) {
+        const r = c.require[i];
+        if (!r.left || !r.right || !r.op) items.push(`requirement ${i + 1} is incomplete`);
+        else if (selectorKind(r.left) !== selectorKind(r.right)) items.push(`requirement ${i + 1} compares different kinds of thing`);
+      }
+    }
+    return items;
+  }
+
+  /// Every concept-level issue in a form.
+  function conceptFormIssues(model, schema) {
+    const issues = [];
+    if (!model) return issues;
+    const declared = [];
+    for (let i = 0; i < model.items.length; i++) {
+      const c = model.items[i];
+      const its = conceptIssues(c, schema);
+      for (const msg of its) issues.push(`concept ${i + 1}: ${msg}`);
+      const v = conceptValue(c);
+      if (v && v.name) declared.push(v.name);
+    }
+    for (let i = 0; i < declared.length; i++) {
+      for (let j = i + 1; j < declared.length; j++) {
+        if (declared[i] === declared[j]) {
+          issues.push(`concept ${j + 1}: the name is used twice`);
+        }
+      }
+    }
+    return issues;
+  }
+
+  /// The full form-level issue list, including concepts.
+  function allFormIssues(form, schema) {
+    const issues = formIssues(form, schema);
+    if (form.concepts) {
+      for (const msg of conceptFormIssues(form.concepts, schema)) {
+        issues.push(msg);
+      }
+    }
+    return issues;
+  }
+
   /// A form with nothing in it. `schema` supplies the first stop rule and
   /// timeframe, so the default is never something the server would reject.
   function emptyForm(schema) {
@@ -421,6 +701,11 @@
       groups: { entryAll: [], entryAny: [], invalidation: [], exitAll: [], exitAny: [] },
       skillRef: "",
       description: "",
+      // No default concept: an empty one would be a permanent "needs a name"
+      // issue on every form, and a concept the user never asked for would be
+      // emitted into documents they did not write one into. The concept editor
+      // creates the model explicitly (`conceptModelFromSchema`), and a document
+      // that already carries concepts gets one in `formFromDocument`.
     };
   }
 
@@ -556,6 +841,30 @@
       }
     }
 
+    if (doc.concepts && Array.isArray(doc.concepts)) {
+      if (!form.concepts) form.concepts = conceptModelFromSchema(schema);
+      form.concepts.items = doc.concepts.map((c) => {
+        if (typeof c === "string") return rawConcept(c);
+        if (c.raw !== undefined) return rawConcept(c.raw);
+        const model = newConcept(schema);
+        model.name = c.name == null ? "" : String(c.name);
+        model.label = c.label == null ? "" : String(c.label);
+        model.side = c.side == null ? "" : String(c.side);
+        model.window = c.window == null ? "" : String(c.window);
+        if (c.lower) model.lower = parseSelector(selectorText(c.lower));
+        if (c.upper) model.upper = parseSelector(selectorText(c.upper));
+        if (c.require && Array.isArray(c.require)) {
+          model.require = c.require.map((r) => ({
+            left: parseSelector(selectorText(r.left)),
+            op: r.op == null ? "" : String(r.op),
+            right: parseSelector(selectorText(r.right)),
+          }));
+        }
+        if (c.min_band_ratio !== undefined && c.min_band_ratio !== null) model.min_band_ratio = String(c.min_band_ratio);
+        return model;
+      });
+    }
+
     const metadata = doc.metadata || {};
     form.skillRef = metadata.skill_ref == null ? "" : String(metadata.skill_ref);
     form.description = metadata.description == null ? "" : String(metadata.description);
@@ -635,10 +944,70 @@
     return issues;
   }
 
-  // -------------------------------------------------------------------------
-  // Writing YAML
-  // -------------------------------------------------------------------------
+  /// One concept as its YAML-ready value.
+  ///
+  /// The selector shape `{high: 0}` in a YAML document is written by the
+  /// `emitValue` path as a nested mapping `high: 0`, because `emitValue`
+  /// recurses into object values. The form's internal `{selector, index}`
+  /// representation is restated here as the object the emitter expects, so the
+  /// YAML the server receives is exactly the grammar's shape.
+  function conceptToValue(c) {
+    if (!c) return null;
+    if (c.raw !== undefined) return c.raw ? String(c.raw) : null;
+    const v = conceptValue(c);
+    if (!v) return null;
+    // Selectors become the mapping form the emitter recurses into.
+    if (v.lower && v.lower.selector && v.lower.index !== undefined) {
+      const k = String(v.lower.selector);
+      const n = Number(v.lower.index);
+      if (Number.isFinite(n) && n >= 0) v.lower = { [k]: n };
+    }
+    if (v.upper && v.upper.selector && v.upper.index !== undefined) {
+      const k = String(v.upper.selector);
+      const n = Number(v.upper.index);
+      if (Number.isFinite(n) && n >= 0) v.upper = { [k]: n };
+    }
+    if (v.require) {
+      v.require = v.require.map((r) => ({
+        left: r.left ? selectorAsMap(r.left) : null,
+        op: r.op,
+        right: r.right ? selectorAsMap(r.right) : null,
+      })).filter((r) => r.left && r.right && r.op);
+      if (!v.require.length) delete v.require;
+    }
+    return v;
+  }
 
+  /// A selector as the mapping form `{high: 0}` the emitter recurses into.
+  function selectorAsMap(sel) {
+    if (!sel) return null;
+    if (sel.raw !== undefined) return { raw: sel.raw };
+    const name = sel.selector && String(sel.selector).trim();
+    const idx = sel.index !== undefined && sel.index !== null ? String(sel.index).trim() : null;
+    if (!name || !idx) return null;
+    const n = Number(idx);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return { [name]: n };
+  }
+
+  /// A document as YAML text.
+  ///
+  /// Empty blocks are omitted rather than written as `[]`, which is what the
+  /// schema's own serializer does -- the document that comes back from the
+  /// server is byte-comparable with the one written here.
+  function toYaml(doc) {
+    const out = [];
+    for (const [key, value] of Object.entries(doc)) {
+      if (value === undefined || value === null) continue;
+      if (Array.isArray(value) && !value.length) continue;
+      if (value && typeof value === "object" && !Array.isArray(value) &&
+          !Object.keys(value).length) {
+        continue;
+      }
+      emitValue(key, value, 0, out);
+    }
+    return `${out.join("\n")}\n`;
+  }
   /// A scalar as YAML reads it back.
   ///
   /// Quoted unless it is unambiguously plain: a value that could be read as a
@@ -682,26 +1051,32 @@
     return key === "condition" ? conditionScalar(String(value)) : scalar(value);
   }
 
-  function emitValue(key, value, indent, out) {
-    const pad = " ".repeat(indent);
+  /// Emit the children of a value, one level deeper than `keyCol` (the column
+  /// where the owning key was written). The caller has already written that key.
+  ///
+  /// Used for both the mapping branch of `emitValue` and for nested object/array
+  /// values that appear inside a list item, which the old emitter refused.
+  function emitValueChildren(value, keyCol, out) {
+    const pad = " ".repeat(keyCol + 2);
 
     if (Array.isArray(value)) {
-      if (!value.length) return;
-      out.push(`${pad}${key}:`);
       for (const item of value) {
         if (item && typeof item === "object") {
           let first = true;
           for (const [k, v] of Object.entries(item)) {
             if (v === undefined || v === null) continue;
+            const prefix = first ? `${pad}- ` : `${pad}  `;
             if (v && typeof v === "object") {
-              throw new Error(`cannot nest an object inside a list item (${key}.${k})`);
+              out.push(`${prefix}${k}:`);
+              emitValueChildren(v, keyCol + 4, out);
+            } else {
+              out.push(`${prefix}${k}: ${scalarFor(k, v)}`);
             }
-            out.push(`${pad}  ${first ? "- " : "  "}${k}: ${scalarFor(k, v)}`);
             first = false;
           }
-          if (first) out.push(`${pad}  - {}`);
+          if (first) out.push(`${pad}- {}`);
         } else {
-          out.push(`${pad}  - ${scalar(item)}`);
+          out.push(`${pad}- ${scalar(item)}`);
         }
       }
       return;
@@ -709,12 +1084,35 @@
 
     if (value && typeof value === "object") {
       if (!Object.keys(value).length) return;
-      out.push(`${pad}${key}:`);
       for (const [k, v] of Object.entries(value)) {
         if (v === undefined || v === null) continue;
-        if (v && typeof v === "object") emitValue(k, v, indent + 2, out);
-        else out.push(`${pad}  ${k}: ${scalarFor(k, v)}`);
+        if (v && typeof v === "object") {
+          out.push(`${pad}${k}:`);
+          emitValueChildren(v, keyCol + 2, out);
+        } else {
+          out.push(`${pad}${k}: ${scalarFor(k, v)}`);
+        }
       }
+      return;
+    }
+
+    out.push(`${pad}${scalarFor("", value)}`);
+  }
+
+  function emitValue(key, value, indent, out) {
+    const pad = " ".repeat(indent);
+
+    if (Array.isArray(value)) {
+      if (!value.length) return;
+      out.push(`${pad}${key}:`);
+      emitValueChildren(value, indent, out);
+      return;
+    }
+
+    if (value && typeof value === "object") {
+      if (!Object.keys(value).length) return;
+      out.push(`${pad}${key}:`);
+      emitValueChildren(value, indent, out);
       return;
     }
 
@@ -740,6 +1138,105 @@
     return `${out.join("\n")}\n`;
   }
 
+  /// A document with its concepts block attached, ready to serialize.
+  ///
+  /// This is the parallel to `documentFromForm` for the concept editor: the
+  /// rest of the document is identical, and the only change is that the
+  /// `concepts:` block is written from the form's concept model rather than
+  /// being absent. A concept the builder could not model is kept as raw text
+  /// (`{raw: "..."}`), which the validator either accepts or rejects -- the
+  /// builder does not pretend it understood a selector the vocabulary does not
+  /// name.
+  function documentFromConceptForm(form, schema) {
+    const doc = documentFromForm(form, schema);
+    if (!form.concepts) return doc;
+    const items = [];
+    for (const c of form.concepts.items || []) {
+      const v = conceptToValue(c);
+      if (v) items.push(v);
+    }
+    if (items.length) {
+      doc.concepts = items;
+    }
+    return doc;
+  }
+
+  /// The issues a document would have, including concepts -- the word the
+  /// validator would give, minus the parts only the server knows.
+  ///
+  /// The server is still the final word (`docs/14`: the builder sandboxes, it
+  /// does not validate). This exists so a half-filled concept says what is wrong
+  /// before a round trip, the same as the rest of `formIssues`.
+  function documentIssues(form, schema) {
+    const issues = allFormIssues(form, schema);
+    if (form.concepts && form.concepts.items) {
+      for (const c of form.concepts.items) {
+        const v = conceptValue(c);
+        if (!v) continue;
+        if (v.raw !== undefined) continue;
+        try {
+          const co = analytics_core_concept_validate(v);
+          if (!co.ok) issues.push(`concept \`${v.name}\`: ${co.error}`);
+        } catch (e) {
+          // The builder's own model disagrees with the grammar -- keep the
+          // pre-validation issues above and skip the server's word here.
+        }
+      }
+    }
+    return issues;
+  }
+
+  // A tiny shim so `documentIssues` can call the validator without pulling the
+  // analytics crate into the browser bundle. The shell replays one concept
+  // through `POST /strategies/validate` before accepting any definition, so this
+  // is only a local sanity check; the real word is the server's. Keep the shim
+  // column-stable with `analytics_core::concepts::validate` so a fix here is a
+  // hint, not a second opinion.
+  function analytics_core_concept_validate(concept) {
+    const name = concept.name && String(concept.name);
+    if (!name) return { ok: false, error: "a name is required" };
+    if (!/^[a-z][a-z0-9_]*$/.test(name)) return { ok: false, error: "a name must be lowercase letters, digits and underscores, starting with a letter" };
+    if (name.length > 48) return { ok: false, error: "a name must be at most 48 characters" };
+    const window = Number(concept.window);
+    if (!window || window < 2 || window > 8) return { ok: false, error: "window must be 2..8 candles" };
+    const sides = ["buy", "sell"];
+    if (!concept.side || !sides.includes(concept.side)) return { ok: false, error: "side must be buy or sell" };
+    const parseSel = (s) => {
+      if (!s) return null;
+      if (s.raw !== undefined) return s;
+      const kind = s.selector && String(s.selector).trim();
+      const raw = s.index !== undefined && s.index !== null ? String(s.index).trim() : "";
+      const idx = raw === "" ? NaN : parseInt(raw, 10);
+      if (!kind || !isFinite(idx) || idx < 0 || idx >= window) return null;
+      return { selector: kind, index: idx };
+    };
+    const kindOf = (sel) => {
+      if (!sel || !sel.selector) return null;
+      const n = String(sel.selector).trim();
+      if (!n) return null;
+      return /^(open|high|low|close|mid)$/.test(n) ? "price" : /^(volume)$/.test(n) ? "volume" : null;
+    };
+    const lower = parseSel(concept.lower);
+    const upper = parseSel(concept.upper);
+    if (!lower || !upper) return { ok: false, error: "both band edges must be valid selectors inside the window" };
+    if (selectorKind(lower) !== "price") return { ok: false, error: "the band's cheaper edge must be a price selector, not volume" };
+    if (selectorKind(upper) !== "price") return { ok: false, error: "the band's dearer edge must be a price selector, not volume" };
+    if (lower.selector === upper.selector && lower.index === upper.index) return { ok: false, error: "both band edges are the same selector, so the band has no height" };
+    if (concept.require) {
+      for (const r of concept.require) {
+        const l = parseSel(r.left);
+        const rt = parseSel(r.right);
+        if (!l || !rt) return { ok: false, error: "every requirement operand must be a valid selector inside the window" };
+        if (selectorKind(l) !== selectorKind(rt)) return { ok: false, error: "a requirement compares different kinds of thing" };
+      }
+    }
+    if (concept.min_band_ratio !== undefined && concept.min_band_ratio !== null) {
+      const r = Number(concept.min_band_ratio);
+      if (!isFinite(r) || r <= 0) return { ok: false, error: "min_band_ratio must be a positive finite number" };
+    }
+    return { ok: true };
+  }
+
   return {
     GROUPS,
     GROUP_KEYS,
@@ -757,5 +1254,24 @@
     rowText,
     stopParams,
     toYaml,
+    documentFromConceptForm,
+    documentIssues,
+    conceptModelFromSchema,
+    conceptValue,
+    conceptToValue,
+    parseSelector,
+    selectorText,
+    rawConcept,
+    newConcept,
+    newRequirement,
+    conceptPartsFromSchema,
+    conceptSelectorsFromSchema,
+    conceptOpsFromSchema,
+    conceptWindowFromSchema,
+    conceptMaxFromSchema,
+    conceptSidesFromSchema,
+    conceptFormIssues,
+    allFormIssues,
+    analytics_core_concept_validate,
   };
 });

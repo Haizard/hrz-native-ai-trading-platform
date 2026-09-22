@@ -2,6 +2,8 @@
 //!
 //! These are the two endpoints the Phase 5 chart talks to.
 
+use std::sync::Arc;
+
 use axum::Json;
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
@@ -201,6 +203,18 @@ pub async fn ask(
             );
             request = request.with_chart(chart);
         }
+    }
+
+    // The user's own drawings, resolved from the authenticated identity — the
+    // same scoping `GET /drawings` answers under. Attached *here* and never
+    // parsed from the body: a client cannot name another user's drawings for
+    // the same reason it cannot name their session. `None` without a database,
+    // so the tool reports the source as absent rather than the chart as bare.
+    if let Some(database) = &state.db {
+        request = request.with_drawings(ai_agent::DrawingsContext::new(
+            Arc::new(crate::market_data::DbUserDrawings::new(Arc::clone(database))),
+            user.user_id.to_string(),
+        ));
     }
 
     let started = std::time::Instant::now();

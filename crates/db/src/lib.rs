@@ -31,6 +31,7 @@ pub mod models;
 pub mod paper;
 pub mod pump;
 pub mod repositories;
+pub mod retention;
 pub mod skills;
 pub mod strategies;
 pub mod users;
@@ -42,6 +43,11 @@ pub use drawings::{
     NewDrawing, KINDS as DRAWING_KINDS,
 };
 pub use error::DbError;
+pub use retention::{
+    delete_older_than as retention_delete_older_than, run as run_retention,
+    spawn_retention_task, Cutoff, RetentionReport, RetentionPolicy, BATCH as RETENTION_BATCH,
+    RETENTION_INTERVAL_SECS, DEFAULT_ORDERBOOK_DAYS, DEFAULT_TRADES_DAYS, Table as RetentionTable,
+};
 pub use indicator_workspaces::{
     approve_indicator_bot_draft, create_indicator_bot_draft, create_indicator_revision,
     create_indicator_workspace, create_indicator_workspace_message, delete_indicator_workspace,

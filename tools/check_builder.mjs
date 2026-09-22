@@ -41,6 +41,26 @@ const outDir = argValue("--out") || join(here, "..", "target", "builder-check");
  * wrong stop parameter fails there, not silently.
  */
 const SCHEMA = {
+  /// The concept language, served by `GET /strategies/schema` and derived from
+  /// `analytics_core::concepts` and `strategy_dsl::expr::ConceptPart` for the
+  /// same reason the rest of this object is derived rather than hand-listed: a
+  /// selector added in Rust has to appear in the builder's concept editor with
+  /// no JS change, and the builder must not be able to offer a concept the
+  /// validator then rejects.
+  concepts: {
+    parts: [
+      { name: "exists", type: "bool", reads: "the concept found a band at all" },
+      { name: "fresh", type: "bool", reads: "the newest band has not been traded back into" },
+      { name: "mitigated", type: "number", reads: "how much of the newest band price has traded back through, 0.0..=1.0" },
+      { name: "top", type: "number", reads: "the newest band's dearer edge" },
+      { name: "bottom", type: "number", reads: "the newest band's cheaper edge" },
+    ],
+    selectors: ["open", "high", "low", "close", "mid", "volume"],
+    ops: ["below", "above", "below_or_equal", "above_or_equal"],
+    window: [2, 8],
+    max_concepts: 5,
+    sides: ["buy", "sell"],
+  },
   stops: [
     { kind: "below_sweep_low", params: [], implies_direction: "long" },
     { kind: "above_sweep_high", params: [], implies_direction: "short" },
@@ -358,6 +378,174 @@ const indicatorYaml = B.toYaml(B.documentFromForm(indicatorForm(), SCHEMA));
 // "entry:" also appears as a timeframe *name*, so these match at the top level.
 ok("an indicator has no entry block", !/\nentry:/.test(indicatorYaml), indicatorYaml);
 ok("an indicator has no risk block", !/\nrisk:/.test(indicatorYaml), indicatorYaml);
+
+// ---------------------------------------------------------------------------
+// Concepts: a measurement a client defines, declared as data.
+// ---------------------------------------------------------------------------
+
+function conceptForm() {
+  const form = B.emptyForm(SCHEMA);
+  form.name = "Fair value gap / reclaim";
+  form.version = "1.0";
+  form.market = "BTCUSDT";
+  form.kind = "strategy";
+  form.timeframes = [{ name: "entry", tf: "5m" }];
+  form.direction = "long";
+  form.groups.entryAll = [
+    {
+      timeframe: "entry",
+      label: "",
+      joiner: "and",
+      clauses: [{ form: "compare", not: false, left: { kind: "field", value: "close" }, op: ">", right: { kind: "field", value: "vwap" }, tunable: false }],
+    },
+  ];
+  form.groups.invalidation = [
+    {
+      timeframe: "entry",
+      label: "",
+      joiner: "and",
+      clauses: [{ form: "call", not: false, func: "close_below", args: [{ kind: "field", value: "stop_price" }] }],
+    },
+  ];
+  form.risk.maxRiskPct = "1.0";
+  form.risk.stop = { kind: "below_sweep_low", params: {} };
+  form.risk.hasTakeProfit = true;
+  form.risk.takeProfit = { type: "risk_multiple", value: "2.0" };
+  form.concepts = {
+    max: B.conceptMaxFromSchema(SCHEMA),
+    items: [
+      {
+        name: "fvg",
+        label: "fvg",
+        side: "buy",
+        window: "3",
+        lower: { selector: "high", index: "0" },
+        upper: { selector: "low", index: "2" },
+        require: [
+          { left: { selector: "high", index: "0" }, op: "below", right: { selector: "low", index: "2" } },
+        ],
+        min_band_ratio: "0.2",
+      },
+    ],
+  };
+  return form;
+}
+
+function conceptWithRawSelector() {
+  const form = B.emptyForm(SCHEMA);
+  form.name = "Concept with a selector shape the builder does not model";
+  form.version = "0.1";
+  form.market = "BTCUSDT";
+  form.kind = "indicator";
+  form.timeframes = [{ name: "entry", tf: "15m" }];
+  form.concepts = {
+    max: B.conceptMaxFromSchema(SCHEMA),
+    items: [
+      {
+        // A future vocabulary might add a labeled or free-form edge. Until it
+        // does, the builder keeps this as raw text and the validator is the
+        // word on whether it is accepted.
+        raw: "{high: 0}",
+      },
+    ],
+  };
+  return form;
+}
+
+const CONCEPT_FIXTURES = [
+  { file: "fvg-concept.yaml", form: conceptForm() },
+  { file: "raw-concept.yaml", form: conceptWithRawSelector() },
+];
+
+for (const fixture of CONCEPT_FIXTURES) {
+  const issues = B.documentIssues(fixture.form, SCHEMA);
+  ok(`${fixture.file}: the form is complete`, issues.length === 0, issues.join("; "));
+
+  const doc = B.documentFromConceptForm(fixture.form, SCHEMA);
+  const yaml = B.toYaml(doc);
+  writeFileSync(join(outDir, fixture.file), yaml);
+
+  // The idempotence property, now including concepts: open it back up, apply
+  // it untouched, and the document must be byte-identical.
+  const reopened = B.formFromDocument(doc, SCHEMA);
+  const again = B.toYaml(B.documentFromConceptForm(reopened, SCHEMA));
+  eq(`${fixture.file}: emit -> parse -> emit is identical`, again, yaml);
+
+  // Nothing a concept declared was silently downgraded to raw text on the way
+  // through -- unless the fixture started that way.
+  if (!fixture.form.concepts.items[0] || !fixture.form.concepts.items[0].raw) {
+    eq(`${fixture.file}: every concept was modelled`, B.rawRowCount(reopened), 0);
+  }
+
+  // And reopening a concept that the builder can model must yield the same
+  // value, so the form the user sees is the document the server receives.
+  const first = B.conceptValue(fixture.form.concepts.items[0]);
+  const reopenedFirst = B.conceptValue(reopened.concepts.items[0]);
+  eq(
+    `${fixture.file}: concept round-trips as data`,
+    JSON.stringify(first),
+    JSON.stringify(reopenedFirst),
+  );
+}
+
+// A concept the builder cannot model must survive as the same text, not as a
+// guess -- the same graceful-degradation guarantee the condition parser already
+// provides. The YAML the server receives is the text the user wrote.
+const rawDoc = B.documentFromConceptForm(conceptWithRawSelector(), SCHEMA);
+ok(
+  "a concept with an unmodelled selector is kept as raw text",
+  B.toYaml(rawDoc).includes("{high: 0}"),
+  B.toYaml(rawDoc),
+);
+
+// A concept whose name is not an identifier is refused locally, before a
+// round trip to the server.
+const badName = conceptForm();
+badName.concepts.items[0].name = "Fair Value Gap";
+ok(
+  "a concept with a non-identifier name is refused",
+  B.documentIssues(badName, SCHEMA).some((i) => i.includes("name")),
+  B.documentIssues(badName, SCHEMA).join("; "),
+);
+
+// A concept whose window is out of range is refused.
+const badWindow = conceptForm();
+badWindow.concepts.items[0].window = "1";
+ok(
+  "a concept with an out-of-range window is refused",
+  B.documentIssues(badWindow, SCHEMA).some((i) => i.includes("window")),
+  B.documentIssues(badWindow, SCHEMA).join("; "),
+);
+
+// A concept whose cheaper edge is a volume selector is refused -- band edges
+// are prices, and a volume would not mean what it looks like it means.
+const volumeEdge = conceptForm();
+volumeEdge.concepts.items[0].lower = { selector: "volume", index: "0" };
+ok(
+  "a concept with a volume cheaper edge is refused",
+  B.documentIssues(volumeEdge, SCHEMA).some((i) => i.includes("price")),
+  B.documentIssues(volumeEdge, SCHEMA).join("; "),
+);
+
+// A requirement that compares a price with a volume is refused.
+const mismatchedReq = conceptForm();
+mismatchedReq.concepts.items[0].require = [
+  { left: { selector: "high", index: "0" }, op: "below", right: { selector: "volume", index: "2" } },
+];
+ok(
+  "a requirement comparing price with volume is refused",
+  B.documentIssues(mismatchedReq, SCHEMA).some((i) => i.includes("different kinds")),
+  B.documentIssues(mismatchedReq, SCHEMA).join("; "),
+);
+
+// Two concepts with the same name are refused.
+const dupName = conceptForm();
+dupName.concepts.items.push({ name: "fvg", side: "buy", window: "3" });
+ok(
+  "two concepts with the same name are refused",
+  B.documentIssues(dupName, SCHEMA).some((i) => i.includes("twice")),
+  B.documentIssues(dupName, SCHEMA).join("; "),
+);
 
 // ---------------------------------------------------------------------------
 // What the form refuses, before a round trip to the server

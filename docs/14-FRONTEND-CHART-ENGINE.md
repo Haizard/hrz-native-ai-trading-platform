@@ -561,9 +561,15 @@ CPU calc   GPU-friendly buffers
   - **No multi-select and no group move.** One drawing is selected at a time, and the keyboard
     is that wide too: `Delete` removes the selected drawing, `Esc` abandons the shape being
     placed and, pressed again, returns to the cursor.
-  - **The AI agent cannot see them.** That is a permission decision rather than a technical
+  - **The AI agent cannot see them.** ~~That is a permission decision rather than a technical
     one, and it is tracked in `docs/19` rather than guessed at here. The storage and the route
-    are already scoped by user, so turning it on is a context change, not a schema change.
+    are already scoped by user, so turning it on is a context change, not a schema change.~~
+    **Resolved 2026-09-22** — `docs/19` row 19 closed by building it: the agent now has a
+    read-only `get_user_drawings(symbol)` tool (`docs/09`), fed by drawings the gateway
+    attaches to the request after authentication. The chart itself still does not push the
+    current viewport's drawings into the agent's context packet — the user can ask the agent
+    to look at their levels rather than the agent seeing them unprompted, which remains the
+    honest boundary until it is a problem.
   - **A drawing is not confined to the window.** Its anchors are mapped absolutely and the
     canvas clips, which is the same arrangement zones use: a trendline drawn last week is
     still a trendline when the window has moved past it.
@@ -911,6 +917,19 @@ CPU calc   GPU-friendly buffers
   `target/builder-check/`, and CI runs `strategy-cli validate` — the real parser — over
   each one. A hand-written YAML emitter in JavaScript is exactly the kind of thing that
   looks right and parses wrong.
+
+  **Added 2026-09-22 (closing `docs/19` row 7): concepts, in the same three rules.** The
+  concept editor is part of this builder rather than a fourth mode — the concepts block is
+  one more section of the same document, driven by the same schema (`concepts.parts`,
+  `concepts.selectors`, `concepts.ops`, `concepts.window`, `concepts.max_concepts`,
+  `concepts.sides` off `GET /strategies/schema`). A selector it cannot model is kept as raw
+  text the same way a condition is, `emit → parse → emit` idempotence covers concepts with
+  the same fixture discipline, and applying the form writes the `concepts:` block through
+  `documentFromConceptForm` — one emitter, one parser, no second execution path. The
+  YAML emitter was generalized for this: a mapping nested inside a list item (a concept's
+  `lower: {high: 0}`, a requirement's operands) is now emitted as a nested block mapping
+  rather than refused, which is what the grammar's hand-written `Selector` serde impls
+  expect.
 
 ## Real-time data handling
 - Subscribe to `/ws/market/{symbol}/{timeframe}` for the active chart; resubscribe on

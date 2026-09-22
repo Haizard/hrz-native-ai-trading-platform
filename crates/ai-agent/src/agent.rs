@@ -15,7 +15,7 @@
 //! * every ladder result seeds the [`PriceRange`], so grounding is guaranteed;
 //! * the common case costs one LLM turn instead of five.
 //!
-//! The model keeps all fourteen analysis tools and can still ask for anything
+//! The model keeps all fifteen analysis tools and can still ask for anything
 //! deeper (footprint, VWAP, a base rate). What it can no longer do is skip the
 //! reading and still hand back a thesis.
 //!
@@ -59,6 +59,59 @@ pub const ANSWER_TURNS: usize = 2;
 /// Default cap on validation-retry attempts when generating a strategy.
 pub const DEFAULT_MAX_ATTEMPTS: usize = 3;
 
+/// The asking user's drawings, attached by the host after authenticating them.
+///
+/// A trait object on a request is unusual, and the reason is ownership: the
+/// *gateway* knows which user is asking, and the user is exactly the fact that
+/// scopes [`crate::user_drawings::UserDrawingsSource`]. The wire types
+/// (`AskBody`, `AgentWsRequest`) never carry this -- it is constructed
+/// server-side from the authenticated identity, so a client cannot name
+/// another user's drawings any more than it could name their session.
+pub struct DrawingsContext {
+    source: Arc<dyn crate::user_drawings::UserDrawingsSource>,
+    user_id: String,
+}
+
+impl DrawingsContext {
+    /// Bind a drawings source to one authenticated user.
+    #[must_use]
+    pub fn new(
+        source: Arc<dyn crate::user_drawings::UserDrawingsSource>,
+        user_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            source,
+            user_id: user_id.into(),
+        }
+    }
+
+    /// The user whose drawings this is, opaque to the agent.
+    #[must_use]
+    pub fn user_id(&self) -> &str {
+        &self.user_id
+    }
+}
+
+impl Clone for DrawingsContext {
+    fn clone(&self) -> Self {
+        Self {
+            source: Arc::clone(&self.source),
+            user_id: self.user_id.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for DrawingsContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The source is a callback into storage; printing it would print an
+        // address. The user id is the fact worth logging -- and no more than
+        // that, because request logs outlive the request.
+        f.debug_struct("DrawingsContext")
+            .field("user_id", &self.user_id)
+            .finish()
+    }
+}
+
 /// A question for the agent.
 #[derive(Debug, Clone)]
 pub struct AskRequest {
@@ -78,6 +131,11 @@ pub struct AskRequest {
     /// it says where to look, and every number in it is subject to the same
     /// grounding rule as a tool result.
     pub chart: Option<crate::chart_context::ChartContext>,
+    /// The asking user's drawings, when the host attached them.
+    ///
+    /// `None` makes `get_user_drawings` report "no drawings source" rather
+    /// than a bare chart -- see the tool for why those must not be confused.
+    pub drawings: Option<DrawingsContext>,
 }
 
 impl AskRequest {
@@ -91,6 +149,7 @@ impl AskRequest {
             skill_id: None,
             lookback: None,
             chart: None,
+            drawings: None,
         }
     }
 
@@ -112,6 +171,17 @@ impl AskRequest {
     #[must_use]
     pub fn with_chart(mut self, chart: crate::chart_context::ChartContext) -> Self {
         self.chart = Some(chart);
+        self
+    }
+
+    /// Attach the asking user's drawings, resolved by the host.
+    ///
+    /// Host-only, by construction: [`DrawingsContext`] is built from the
+    /// authenticated identity one layer up and never parsed from a request
+    /// body.
+    #[must_use]
+    pub fn with_drawings(mut self, drawings: DrawingsContext) -> Self {
+        self.drawings = Some(drawings);
         self
     }
 }
@@ -371,8 +441,13 @@ impl Agent {
 
         // No backtest runner here: `backtest_*` tools stay registered and
         // return a clear "not attached" error, which the model can report
-        // honestly rather than inventing a base rate.
-        let ctx = ToolContext::new(data).with_config(self.config.market_state);
+        // honestly rather than inventing a base rate. The drawings source is
+        // the same shape: absent unless the host attached one, and the tool
+        // says so rather than implying the chart is bare.
+        let mut ctx = ToolContext::new(data).with_config(self.config.market_state);
+        if let Some(drawings) = &request.drawings {
+            ctx = ctx.with_drawings(drawings.source.as_ref(), drawings.user_id());
+        }
 
         let mut usage = Usage {
             input_tokens: None,

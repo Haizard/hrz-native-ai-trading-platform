@@ -142,6 +142,64 @@ impl MarketDataSource for WindowMarketData {
 /// The window service as a shared handle, for the gateway to hold.
 pub type SharedWindowService = Arc<WindowService>;
 
+/// The asking user's drawings, over the same Postgres the drawing routes use.
+///
+/// One adapter, two consumers: `POST /agent/ask` and `/ws/agent` both attach it
+/// to an [`ai_agent::AskRequest`] with the user they authenticated — so the
+/// agent's `get_user_drawings` reads exactly what `GET /drawings` would render,
+/// through the same `db::drawings` functions and the same scoping. There is no
+/// third reading of a drawing to disagree about.
+#[derive(Debug, Clone)]
+pub struct DbUserDrawings {
+    db: Arc<db::Database>,
+}
+
+impl DbUserDrawings {
+    /// Wrap the shared database handle.
+    #[must_use]
+    pub fn new(db: Arc<db::Database>) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl ai_agent::UserDrawingsSource for DbUserDrawings {
+    async fn drawings(
+        &self,
+        user_id: &str,
+        symbol: &str,
+    ) -> Result<Vec<ai_agent::UserDrawing>, AgentError> {
+        // The id arrives as the authenticated identity's string form; a value
+        // that does not parse cannot belong to any user, which is an empty
+        // answer rather than a lookup with a fabricated key.
+        let Ok(id) = uuid::Uuid::parse_str(user_id) else {
+            return Ok(Vec::new());
+        };
+        let symbol = symbol.to_uppercase();
+        let rows = db::drawings::list_drawings(self.db.pool(), id, &symbol)
+            .await
+            .map_err(|e| AgentError::ToolFailed {
+                tool: "get_user_drawings".into(),
+                reason: format!("storage could not answer: {e}"),
+            })?;
+
+        Ok(rows
+            .iter()
+            .map(|row| ai_agent::UserDrawing {
+                kind: row.kind.clone(),
+                label: row.label.clone(),
+                time1_ms: row.a1_time_ms,
+                price1: row.a1_price,
+                // The CHECK keeps the pair whole, so a half-populated one is a
+                // row edited by hand; reporting it as absent is the honest
+                // reading, the same one `drawing_routes::describe` gives it.
+                time2_ms: row.a2_time_ms,
+                price2: row.a2_price,
+            })
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

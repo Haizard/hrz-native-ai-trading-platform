@@ -31,7 +31,13 @@ analyze_multi_timeframe(symbol, timeframes[]) -> per-timeframe MarketState + syn
 backtest_strategy(strategy_doc, symbol, range) -> BacktestReport
 backtest_similar_setups(skill_ref, conditions) -> historical base-rate stats
 create_strategy_document(spec)                 -> validated StrategyDocument (or errors)
+get_user_drawings(symbol)                      -> the user's saved drawings on that symbol
 ```
+
+`get_user_drawings` (added 2026-09-22, closing `docs/19` row 19) is read-only and
+user-scoped: the gateway attaches the caller's drawings to the agent request after
+authentication, so the tool can only ever see the requesting user's own levels. The
+drawings ride on `AskRequest`, never the wire.
 Each tool's implementation is a thin wrapper calling the Rust functions from
 `docs/05-ANALYTICS-ENGINE.md` / `docs/07-BACKTESTING-ENGINE.md` — no logic duplicated in
 the agent layer.

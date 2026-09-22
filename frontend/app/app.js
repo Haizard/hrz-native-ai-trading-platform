@@ -3603,13 +3603,125 @@ function groupCard(key) {
   );
 }
 
+// -- concepts ---------------------------------------------------------------
+// A concept is a measurement a client defines: a window of candles plus a band.
+// The vocabulary (selector names, comparisons, window bounds, per-document cap)
+// comes from `GET /strategies/schema`, same as every other dropdown here. The
+// form model lives in `builder.js`; this only renders it and routes edits back.
+
+function conceptCard(index, c) {
+  const at = `data-con="${index}"`;
+
+  // A concept the builder cannot model stays raw text -- shown, editable as
+  // text, and sent to the validator exactly as written. Saying what it is
+  // beats silently reshaping it into a guess.
+  if (c.raw !== undefined) {
+    return card(
+      `concept ${index + 1} · kept as text`,
+      brow(
+        `<input ${at} data-p="raw" value="${escapeHtml(c.raw)}" title="a shape the builder cannot model -- left exactly as written" />`
+      ) +
+        brow(`<button class="btiny" data-act="del-concept" ${at}>− remove</button>`)
+    );
+  }
+
+  const selectors = StrategyBuilder.conceptSelectorsFromSchema(builderSchema);
+  const ops = StrategyBuilder.conceptOpsFromSchema(builderSchema);
+  const sides = StrategyBuilder.conceptSidesFromSchema(builderSchema);
+  const bounds = StrategyBuilder.conceptWindowFromSchema(builderSchema);
+  const idxValue = (sel) =>
+    escapeHtml(sel && sel.index !== undefined && sel.index !== null ? String(sel.index) : "");
+
+  const reqRows = (c.require || [])
+    .map((r, i) => {
+      const ra = `${at} data-req="${i}"`;
+      return brow(
+        `<select ${ra} data-p="req-left-selector" title="left operand">${options(
+          selectors,
+          r.left && r.left.selector
+        )}</select>` +
+          `<input ${ra} data-p="req-left-index" value="${idxValue(r.left)}" class="bnum" title="candle index, oldest is 0" />` +
+          `<select ${ra} data-p="req-op">${options(ops, r.op)}</select>` +
+          `<select ${ra} data-p="req-right-selector" title="right operand">${options(
+            selectors,
+            r.right && r.right.selector
+          )}</select>` +
+          `<input ${ra} data-p="req-right-index" value="${idxValue(r.right)}" class="bnum" title="candle index, oldest is 0" />` +
+          `<button class="btiny" data-act="del-req" ${ra} title="remove">−</button>`
+      );
+    })
+    .join("");
+
+  return card(
+    `concept ${index + 1}${c.name ? ` · ${escapeHtml(c.name)}` : ""}`,
+    brow(
+      `<input ${at} data-p="name" value="${escapeHtml(
+        c.name
+      )}" placeholder="name (fvg)" title="how a condition references it: concepts.fvg.exists" />` +
+        `<input ${at} data-p="label" value="${escapeHtml(
+          c.label
+        )}" placeholder="chart label" title="how the band reads on a chart; defaults to the name" />`
+    ) +
+      brow(
+        `<select ${at} data-p="side" title="which side is expected to react from a band this finds">${options(
+          sides,
+          c.side
+        )}</select>` +
+          `<label class="bfield">window <input ${at} data-p="window" value="${escapeHtml(
+            c.window
+          )}" class="bnum" /> candles (${bounds.min}..${bounds.max})</label>` +
+          `<input ${at} data-p="min_band_ratio" value="${escapeHtml(
+            c.min_band_ratio
+          )}" placeholder="min band ratio" title="the band must be at least this share of the window's own range; empty draws every match" />`
+      ) +
+      brow(
+        `<label class="bfield">cheaper edge</label>` +
+          `<select ${at} data-p="lower-selector">${options(
+            selectors,
+            c.lower && c.lower.selector
+          )}</select>` +
+          `<input ${at} data-p="lower-index" value="${idxValue(c.lower)}" class="bnum" title="candle index, oldest is 0" />`
+      ) +
+      brow(
+        `<label class="bfield">dearer edge</label>` +
+          `<select ${at} data-p="upper-selector">${options(
+            selectors,
+            c.upper && c.upper.selector
+          )}</select>` +
+          `<input ${at} data-p="upper-index" value="${idxValue(c.upper)}" class="bnum" title="candle index, oldest is 0" />`
+      ) +
+      (reqRows || `<p class="bempty">no requirements -- the band fires whenever it exists</p>`) +
+      brow(`<button class="btiny" data-act="add-req" ${at}>+ requirement</button>`) +
+      brow(`<button class="btiny" data-act="del-concept" ${at}>− remove concept</button>`)
+  );
+}
+
+function conceptsCard() {
+  const model = builderForm.concepts;
+  if (!model) {
+    return card(
+      "Concepts",
+      `<p class="bempty">none declared</p>` +
+        brow(`<button class="btiny" data-act="add-concepts" title="define a measurement the conditions can reference">+ concepts</button>`)
+    );
+  }
+  const max = StrategyBuilder.conceptMaxFromSchema(builderSchema);
+  const body =
+    model.items.map((c, i) => conceptCard(i, c)).join("") +
+    (model.items.length < max
+      ? brow(`<button class="btiny" data-act="add-concept">+ concept</button>`)
+      : `<p class="bempty">at the vocabulary's cap of ${max} concepts per document</p>`);
+  return card("Concepts", body);
+}
+
 function renderBuilderForm() {
   const keys = builderForm.kind === "indicator" ? [] : StrategyBuilder.GROUP_KEYS;
   el("builderForm").innerHTML =
     documentCard() +
     timeframesCard() +
     (builderForm.kind === "indicator" ? "" : riskCard()) +
-    keys.map(groupCard).join("");
+    keys.map(groupCard).join("") +
+    conceptsCard();
   renderBuilderNote();
 }
 
@@ -3620,8 +3732,10 @@ function renderBuilderForm() {
 function renderBuilderNote() {
   // Say what is wrong before the round trip, and be honest about the
   // conditions held as text because the builder cannot model them.
-  const issues = StrategyBuilder.formIssues(builderForm, builderSchema);
+  const issues = StrategyBuilder.allFormIssues(builderForm, builderSchema);
   const raw = StrategyBuilder.rawRowCount(builderForm);
+  const rawConcepts = (builderForm.concepts && builderForm.concepts.items || [])
+    .filter((c) => c.raw !== undefined).length;
   let note = "";
   if (issues.length) {
     note += `<span class="fail">${issues
@@ -3634,6 +3748,11 @@ function renderBuilderNote() {
       (note ? "<br />" : "") +
       `<span class="unknown">${raw} condition(s) are kept as text -- the builder cannot model them, so they are left exactly as written</span>`;
   }
+  if (rawConcepts) {
+    note +=
+      (note ? "<br />" : "") +
+      `<span class="unknown">${rawConcepts} concept(s) are kept as text -- the validator decides whether the selector shape is accepted</span>`;
+  }
   el("builderMsg").innerHTML = note;
 }
 
@@ -3641,7 +3760,7 @@ function renderBuilderNote() {
 function applyBuilderToSource() {
   try {
     const yaml = StrategyBuilder.toYaml(
-      StrategyBuilder.documentFromForm(builderForm, builderSchema)
+      StrategyBuilder.documentFromConceptForm(builderForm, builderSchema)
     );
     el("strategySource").value = yaml;
     builderText = yaml;
@@ -3720,6 +3839,49 @@ function onBuilderInput(event) {
     else if (d.risk === "tpValue") risk.takeProfit.value = kind;
     else if (d.risk === "stopKind") risk.stop = { kind, params: {} };
     else risk[d.risk] = kind;
+  } else if (d.con !== undefined) {
+    const model = builderForm.concepts;
+    if (!model) return;
+    const c = model.items[Number(d.con)];
+    if (!c) return;
+    const r = d.req !== undefined ? (c.require || [])[Number(d.req)] : null;
+    if (r) {
+      // A requirement operand is stored as a selector; editing one piece must
+      // not discard the other, the way changing a clause's kind does not.
+      const sides = {
+        "req-left": r.left,
+        "req-right": r.right,
+      };
+      if (part === "req-left-selector" || part === "req-right-selector") {
+        const target = sides[part.replace("-selector", "")];
+        if (target) target.selector = kind;
+      } else if (part === "req-left-index" || part === "req-right-index") {
+        const target = sides[part.replace("-index", "")];
+        if (target) target.index = kind;
+      } else if (part === "req-op") {
+        r.op = kind;
+      }
+    } else if (part === "raw") {
+      c.raw = kind;
+    } else if (part === "name") {
+      c.name = kind;
+    } else if (part === "label") {
+      c.label = kind;
+    } else if (part === "side") {
+      c.side = kind;
+    } else if (part === "window") {
+      c.window = kind;
+    } else if (part === "min_band_ratio") {
+      c.min_band_ratio = kind;
+    } else if (part === "lower-selector" && c.lower) {
+      c.lower = { selector: kind, index: c.lower.index };
+    } else if (part === "lower-index" && c.lower) {
+      c.lower = { selector: c.lower.selector, index: kind };
+    } else if (part === "upper-selector" && c.upper) {
+      c.upper = { selector: kind, index: c.upper.index };
+    } else if (part === "upper-index" && c.upper) {
+      c.upper = { selector: c.upper.selector, index: kind };
+    }
   }
 
   if (STRUCTURAL.has(part) || STRUCTURAL.has(d.risk)) renderBuilderForm();
@@ -3753,6 +3915,45 @@ function onBuilderClick(event) {
       const clauses = builderForm.groups[d.g][Number(d.r)].clauses;
       clauses.splice(Number(d.c), 1);
       if (!clauses.length) builderForm.groups[d.g].splice(Number(d.r), 1);
+      break;
+    }
+    case "add-concepts":
+      // The model is created on demand, not by `emptyForm`: an empty default
+      // concept would be a permanent issue on forms that never wanted one.
+      builderForm.concepts = StrategyBuilder.conceptModelFromSchema(builderSchema);
+      break;
+    case "add-concept": {
+      const model = builderForm.concepts;
+      if (!model) break;
+      const max = StrategyBuilder.conceptMaxFromSchema(builderSchema);
+      if (model.items.length >= max) break;
+      model.items.push(StrategyBuilder.newConcept(builderSchema));
+      break;
+    }
+    case "del-concept": {
+      const model = builderForm.concepts;
+      if (!model) break;
+      model.items.splice(Number(d.con), 1);
+      // A model with no concepts left is dropped entirely, so the block comes
+      // off the document instead of hanging around as an empty list.
+      if (!model.items.length) delete builderForm.concepts;
+      break;
+    }
+    case "add-req": {
+      const model = builderForm.concepts;
+      if (!model) break;
+      const c = model.items[Number(d.con)];
+      if (!c || c.raw !== undefined) break;
+      if (!c.require) c.require = [];
+      c.require.push(StrategyBuilder.newRequirement(builderSchema));
+      break;
+    }
+    case "del-req": {
+      const model = builderForm.concepts;
+      if (!model) break;
+      const c = model.items[Number(d.con)];
+      if (!c || !c.require) break;
+      c.require.splice(Number(d.req), 1);
       break;
     }
     default:

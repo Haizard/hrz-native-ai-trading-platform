@@ -147,6 +147,19 @@ async fn main() -> anyhow::Result<()> {
         api_gateway::indicator_alerts::spawn_indicator_alert_delivery(
             indicator_state, events_rx,
         );
+
+        // Retention: the market tables have no other bound. `xtask collect`
+        // and the backfills write candles, trades and book snapshots; without
+        // this task the 6 GB database grows until something else is the first
+        // to notice. The policy comes from `RETENTION_*` env vars with
+        // documented defaults, and the first pass runs immediately.
+        db::spawn_retention_task(db.pool().clone());
+        info!(
+            interval_secs = db::RETENTION_INTERVAL_SECS,
+            trades_days = db::DEFAULT_TRADES_DAYS,
+            orderbook_days = db::DEFAULT_ORDERBOOK_DAYS,
+            "retention task scheduled"
+        );
     }
 
     let app = router(state);

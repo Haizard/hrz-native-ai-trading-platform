@@ -556,7 +556,7 @@ async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, sessi
         }
 
         let reply = match serde_json::from_str::<AgentWsRequest>(&text) {
-            Ok(request) => run_agent(&state, request, &mut sink, &state.metrics).await,
+            Ok(request) => run_agent(&state, &user, request, &mut sink, &state.metrics).await,
             Err(e) => Some(Frame::Notice {
                 message: format!("expected {{\"symbol\": \"…\", \"question\": \"…\"}}: {e}"),
             }),
@@ -619,6 +619,7 @@ impl ai_agent::ProgressSink for ProgressToChannel {
 /// used to do.
 async fn run_agent<S>(
     state: &AppState,
+    user: &UserContext,
     request: AgentWsRequest,
     sink: &mut S,
     metrics: &Arc<Registry>,
@@ -666,6 +667,19 @@ where
         if !chart.is_empty() {
             ask = ask.with_chart(chart);
         }
+    }
+
+    // The same attachment `POST /agent/ask` makes, from the same authenticated
+    // identity: a socket is not a way around per-user scoping either. Without a
+    // database the source stays unattached, and the tool reports that rather
+    // than a bare chart.
+    if let Some(database) = &state.db {
+        ask = ask.with_drawings(ai_agent::DrawingsContext::new(
+            std::sync::Arc::new(crate::market_data::DbUserDrawings::new(std::sync::Arc::clone(
+                database,
+            ))),
+            user.user_id.to_string(),
+        ));
     }
 
     // The same claim `POST /agent/ask` makes: asking about a symbol is a reason
