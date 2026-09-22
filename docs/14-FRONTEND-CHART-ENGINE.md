@@ -931,6 +931,19 @@ CPU calc   GPU-friendly buffers
   rather than refused, which is what the grammar's hand-written `Selector` serde impls
   expect.
 
+  **Added 2026-09-22, from "it looks like a rocket remote control — a beginner cannot
+  tell what is going on".** The indicator tab was a stack of headings and raw rows, with the
+  conversation buried under a name field, a revision list, and an alerts list. The chat is
+  the product of that tab, so it now leads: the pane opens on a list of *chats* — a name,
+  a timeframe, and one row per conversation — and picking one opens a single conversation
+  whose message stream scrolls between a pinned header and a pinned composer. Each message
+  is a bubble (yours on the right in the accent, the AI's on the left in the panel tone),
+  the generated source folds into a `<details>` inside its bubble, and revisions and alerts
+  collapse to two thin bars above the stream so the composer keeps the bottom of the pane.
+  One rule is load-bearing and easy to get wrong: an author `display: flex` outranks the
+  `hidden` attribute's UA rule, so every view that is a flex column must also declare
+  `[hidden] { display: none }` or both views render at once.
+
 ## Real-time data handling
 - Subscribe to `/ws/market/{symbol}/{timeframe}` for the active chart; resubscribe on
   symbol/timeframe change; unsubscribe on unmount to avoid leaking server-side fan-out

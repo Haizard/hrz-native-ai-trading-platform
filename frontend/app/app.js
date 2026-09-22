@@ -4809,7 +4809,17 @@ async function main() {
   // Workspace event listeners.
   el("wsCreate").onclick = createWorkspace;
   el("wsDelete").onclick = deleteWorkspace;
+  el("wsBack").onclick = showWorkspaceList;
   el("wsChatSend").onclick = sendWorkspaceMessage;
+  // The composer is one line until it needs more: a growing box keeps the
+  // conversation on screen instead of letting a long prompt push it away, and
+  // the ceiling matches the CSS so the send button never leaves the frame.
+  const growComposer = () => {
+    const t = el("wsChatInput");
+    t.style.height = "auto";
+    t.style.height = Math.min(t.scrollHeight, 120) + "px";
+  };
+  el("wsChatInput").addEventListener("input", growComposer);
   el("wsChatInput").onkeydown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendWorkspaceMessage(); }
   };
@@ -4990,19 +5000,28 @@ async function loadWorkspaces() {
     return;
   }
   if (!wsWorkspaces.length) {
-    el_.innerHTML = `<p class="empty">No workspaces yet.</p>`;
+    el_.innerHTML = `<p class="empty">No chats yet — create one above to start.</p>`;
     return;
   }
   el_.innerHTML = wsWorkspaces.map(ws => `
-    <div class="ws-item" data-id="${ws.id}" style="padding:6px 0;border-bottom:1px solid var(--line);cursor:pointer">
+    <div class="ws-item" data-id="${ws.id}">
       <strong>${escapeHtml(ws.name)}</strong>
       <span class="muted">${escapeHtml(ws.symbol)} ${escapeHtml(ws.timeframe)}</span>
-      ${ws.active_revision_id ? '<span class="up">●</span>' : ''}
+      ${ws.active_revision_id ? '<span class="up" title="Has an active revision">●</span>' : ''}
     </div>
   `).join("");
   el_.querySelectorAll(".ws-item").forEach(item => {
     item.onclick = () => selectWorkspace(item.dataset.id);
   });
+}
+
+// Leaving a conversation returns to the list and forgets the selection, so
+// reopening the tab never lands on a chat the user did not pick.
+function showWorkspaceList() {
+  wsActiveId = null;
+  el("wsActive").hidden = true;
+  el("wsListView").hidden = false;
+  loadWorkspaces();
 }
 
 async function selectWorkspace(id) {
@@ -5012,8 +5031,10 @@ async function selectWorkspace(id) {
   await loadWorkspaces();
   const ws = wsWorkspaces.find(w => w.id === id);
   if (!ws) return;
+  el("wsListView").hidden = true;
   el("wsActive").hidden = false;
   el("wsActiveName").textContent = ws.name;
+  el("wsChatMsg").textContent = "";
   await Promise.all([loadRevisions(id), loadMessages(id), loadAlerts(id)]);
   // Auto-attach the active revision to the chart if one exists.
   if (ws.active_revision_id && activePane) {
@@ -5108,7 +5129,9 @@ async function loadMessages(wsId) {
     return;
   }
   if (!wsMessages.length) {
-    out.innerHTML = `<p class="muted">No messages yet. Send one to generate a revision.</p>`;
+    // An empty stream, not an empty paragraph: the CSS shows the first-prompt
+    // hint only while the element has no children.
+    out.innerHTML = "";
     return;
   }
   out.innerHTML = wsMessages.map(m => {
@@ -5117,16 +5140,19 @@ async function loadMessages(wsId) {
     // user can read exactly what was produced instead of trusting a claim.
     const src = !isUser && m.payload && typeof m.payload.source === "string" ? m.payload.source : null;
     const srcBlock = src ? `
-      <details style="margin-top:4px">
-        <summary class="muted" style="cursor:pointer;font-size:11px">Generated source (read-only, ${src.split("\n").length} lines)</summary>
-        <pre class="ws-source" style="margin:4px 0;padding:8px;background:var(--bg,#111);border:1px solid var(--line);border-radius:4px;overflow:auto;max-height:240px;font-size:11px;white-space:pre;user-select:text">${escapeHtml(src)}</pre>
+      <details>
+        <summary>Generated source (read-only, ${src.split("\n").length} lines)</summary>
+        <pre class="ws-source">${escapeHtml(src)}</pre>
       </details>
     ` : "";
+    const when = m.created_at ? new Date(m.created_at / 1e6).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
     return `
-      <div style="padding:4px 0;border-bottom:1px solid var(--line)">
-        <span class="muted" style="font-size:11px">${isUser ? 'You' : 'AI'}:</span>
-        <div>${escapeHtml(m.content)}</div>
-        ${srcBlock}
+      <div class="msg ${isUser ? "user" : "ai"}">
+        <div class="avatar" aria-hidden="true">${isUser ? "🧑" : "✦"}</div>
+        <div>
+          <div class="bubble">${escapeHtml(m.content)}${srcBlock}</div>
+          <div class="meta">${isUser ? "You" : "AI"}${when ? ` · ${when}` : ""}</div>
+        </div>
       </div>
     `;
   }).join("");
@@ -5139,6 +5165,7 @@ async function sendWorkspaceMessage() {
   const content = input.value.trim();
   if (!content) return;
   input.value = "";
+  input.style.height = "auto";
   const msg = el("wsChatMsg");
   msg.textContent = "Generating…";
   try {
@@ -5184,13 +5211,16 @@ async function createWorkspace() {
   const timeframe = el("wsTimeframe").value.trim() || "5m";
   if (!name) { alert("Name is required"); return; }
   try {
-    await api("/indicator-workspaces", {
+    const created = await api("/indicator-workspaces", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, symbol, timeframe }),
     });
     el("wsName").value = "";
     await loadWorkspaces();
+    // Open the chat that was just created: a beginner types a name and expects
+    // to land in it, not hunt for it in the list.
+    if (created && created.id) await selectWorkspace(created.id);
   } catch (e) {
     alert(e.message);
   }
@@ -5198,12 +5228,10 @@ async function createWorkspace() {
 
 async function deleteWorkspace() {
   if (!wsActiveId) return;
-  if (!confirm("Delete this workspace and all its revisions?")) return;
+  if (!confirm("Delete this chat and all its revisions?")) return;
   try {
     await api(`/indicator-workspaces/${wsActiveId}`, { method: "DELETE" });
-    wsActiveId = null;
-    el("wsActive").hidden = true;
-    await loadWorkspaces();
+    showWorkspaceList();
   } catch (e) {
     alert(e.message);
   }

@@ -180,6 +180,18 @@
   .btiny { padding: 2px 6px; font-size: 10px; }
   .pane { flex: 1; overflow: auto; padding: 10px 12px; }
   .pane[hidden] { display: none; }
+  /*
+    The chat pane is the one pane that must not simply grow: its stream has to
+    scroll inside a fixed frame, so the pane itself becomes a column and the
+    composer stays visible. The other panes keep the growing behaviour.
+  */
+  #pane-indicator { display: flex; flex-direction: column; overflow: hidden; }
+  #pane-indicator[hidden] { display: none; }
+  #wsListView, #wsActive { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+  /* The author's `display: flex` outranks the hidden attribute's UA rule, so
+     each view has to opt out of flex explicitly or both render at once. */
+  #wsListView[hidden], #wsActive[hidden] { display: none; }
+  #wsListView { overflow-y: auto; }
 
   /* The DOM. The bar is drawn behind the numbers rather than beside them, so
      a row stays readable no matter how deep the other side is. */
@@ -229,6 +241,105 @@
 
   .row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
   .row > input { flex: 1; }
+
+  /*
+    The AI chat. The conversation is the product of the indicator tab, so it
+    reads like a messaging app rather than a log: one bubble per message, the
+    user's right and tinted, the AI's left and panel-coloured, timestamps
+    quiet. The stream scrolls between a pinned header and a pinned composer;
+    nothing else in the pane competes with it.
+  */
+  .chat-stream {
+    flex: 1; min-height: 0; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 12px 4px;
+    scroll-behavior: smooth;
+  }
+  .chat-stream:empty::after {
+    content: "Describe what you want to detect — for example “mark SMT divergence between price and my rsi, in blue when bullish”.";
+    color: var(--muted); font-style: italic; font-size: 12px;
+    padding: 24px 8px; text-align: center;
+  }
+  .msg { display: flex; gap: 8px; max-width: 100%; }
+  .msg.user { flex-direction: row-reverse; }
+  .msg .avatar {
+    flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; user-select: none; margin-top: 2px;
+  }
+  .msg.ai .avatar { background: linear-gradient(135deg, #58a6ff, #bc8cff); color: #06121f; }
+  .msg.user .avatar { background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+  .msg .bubble {
+    max-width: min(85%, 46ch); padding: 8px 12px;
+    border-radius: 14px; line-height: 1.55; font-size: 13px;
+    overflow-wrap: anywhere; white-space: pre-wrap;
+  }
+  .msg.user .bubble { background: var(--accent); color: #06121f; border-bottom-right-radius: 4px; font-family: inherit; }
+  .msg.ai .bubble { background: var(--panel-2); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .msg .meta { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .msg.user .meta { text-align: right; }
+  /* The generated source folds away inside the AI bubble, like the rest of
+     the transcript's reference material. */
+  .msg .bubble details { margin-top: 6px; }
+  .msg .bubble summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+  .msg .bubble pre.ws-source {
+    margin: 6px 0 0; padding: 8px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; overflow: auto;
+    max-height: 240px; font-size: 11px; white-space: pre; user-select: text;
+  }
+
+  /* The composer: one growing input with the send button inside its frame,
+     pinned under the stream so the conversation never pushes it off screen. */
+  .chat-composer {
+    display: flex; align-items: flex-end; gap: 6px;
+    padding: 8px; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 12px;
+    margin-top: 8px;
+  }
+  .chat-composer:focus-within { border-color: var(--accent); }
+  .chat-composer textarea {
+    flex: 1; min-height: 22px; max-height: 120px; resize: none;
+    background: transparent; border: 0; padding: 4px 2px;
+    font-family: inherit; font-size: 13px; color: var(--text);
+  }
+  .chat-composer textarea:focus { outline: none; }
+  .chat-send { flex: 0 0 auto; border-radius: 9px; padding: 6px 12px; }
+  /* Wraps rather than clipping when the pane is narrow: the keyboard hint is
+     the one line a beginner needs, so it must never be cut in half. */
+  .chat-hint { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px; font-size: 10px; margin: 4px 2px 8px; }
+  .chat-hint #wsChatMsg:empty { display: none; }
+
+  /* The conversation header: back, name, delete — one quiet row. */
+  .ws-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .ws-head button { padding: 2px 10px; }
+  .ws-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* The new-chat form sits as one soft card on the list view. */
+  .ws-new {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px; margin: 8px 0 4px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .ws-new input { font-family: inherit; font-size: 13px; }
+
+  /* A conversation in the list: a row you click, not a database row. */
+  .ws-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px;
+    margin-bottom: 6px; cursor: pointer; background: var(--panel-2);
+  }
+  .ws-item:hover { border-color: var(--accent); }
+  .ws-item strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-item .up { color: var(--up); }
+
+  /* Collapsible history bars above the stream, so the composer keeps the
+     bottom of the pane to itself. */
+  .ws-extra { border-bottom: 1px solid var(--line); padding: 4px 0; }
+  .ws-extra > summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
+  .ws-extra > summary:hover { color: var(--text); }
+  .ws-extra[open] { padding-bottom: 8px; }
+  .ws-revision { padding: 8px 0; border-bottom: 1px solid var(--line); }
+
   h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
   h2:first-child { margin-top: 0; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-family: var(--mono); font-size: 12px; }
@@ -688,44 +799,68 @@
     </div>
 
     <!--
-      AI-generated indicator workspaces. The user creates a workspace,
-      chats with the AI to iterate on a strategy, and sees revision cards
-      with source, diff, and preview. Alerts can be enabled per event.
+      AI indicator studio. The chat is the product here, so it leads: a list of
+      conversations, then one open conversation with the composer pinned under
+      the stream. Revisions and alerts collapse out of the way — they are the
+      history of what the chat produced, not the thing you came to do.
     -->
     <div class="pane" id="pane-indicator" hidden>
-      <h2>Indicator Workspaces</h2>
-      <div class="row">
-        <input id="wsName" placeholder="Workspace name" style="flex:1" />
-        <input id="wsTimeframe" value="5m" style="width:60px" title="Timeframe" />
-        <button id="wsCreate" class="primary">Create</button>
+      <div id="wsListView">
+        <h2>AI Indicator Studio</h2>
+        <p class="muted">
+          Describe an indicator in plain words — the AI builds it, attaches it
+          to your chart, and you refine it by chatting.
+        </p>
+        <div class="ws-new">
+          <input id="wsName" placeholder="Name this chat, e.g. “SMT divergence”" />
+          <div class="row" style="margin-bottom:0">
+            <select id="wsTimeframe" title="Timeframe the indicator runs on">
+              <option value="1m">1m</option>
+              <option value="5m" selected>5m</option>
+              <option value="15m">15m</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
+            </select>
+            <button id="wsCreate" class="primary">＋ New chat</button>
+          </div>
+        </div>
+        <h3 class="section">Your chats</h3>
+        <div id="wsList"><p class="empty">No chats yet — create one above to start.</p></div>
       </div>
-      <div id="wsList"><p class="empty">No workspaces yet.</p></div>
 
-      <!-- Active workspace -->
+      <!-- One open conversation -->
       <div id="wsActive" hidden>
-        <div class="row">
+        <div class="ws-head">
+          <button id="wsBack" title="Back to all chats">←</button>
           <strong id="wsActiveName"></strong>
-          <button id="wsDelete" title="Delete workspace">×</button>
+          <span class="spacer"></span>
+          <button id="wsDelete" class="danger" title="Delete this chat">×</button>
         </div>
 
-        <!-- Revision list -->
-        <h3 class="section">Revisions</h3>
-        <div id="wsRevisions"><p class="empty">No revisions yet.</p></div>
+        <!--
+          What the chat produced, folded into two thin bars. They sit above the
+          stream rather than under it so the composer can stay pinned as the
+          last thing in the pane, the way a chat window is read.
+        -->
+        <details class="ws-extra">
+          <summary>Revisions</summary>
+          <div id="wsRevisions"><p class="empty">No revisions yet.</p></div>
+        </details>
+        <details class="ws-extra">
+          <summary>Alerts</summary>
+          <div id="wsAlerts"><p class="empty">No alert preferences.</p></div>
+        </details>
 
-        <!-- Chat -->
-        <h3 class="section">Chat</h3>
-        <div id="wsChat"></div>
-        <div class="row">
-          <textarea id="wsChatInput" rows="2" placeholder="describe what you want the indicator to detect" style="flex:1"></textarea>
+        <div id="wsChat" class="chat-stream" aria-live="polite"></div>
+
+        <div class="chat-composer">
+          <textarea id="wsChatInput" rows="1" placeholder="Describe what you want the indicator to detect…"></textarea>
+          <button id="wsChatSend" class="chat-send primary" title="Send (Enter)">➤</button>
         </div>
-        <div class="row">
-          <button id="wsChatSend" class="primary">Send</button>
+        <div class="chat-hint">
           <span id="wsChatMsg" class="muted"></span>
+          <span class="muted">Enter to send · Shift+Enter for a new line</span>
         </div>
-
-        <!-- Alert controls -->
-        <h3 class="section">Alerts</h3>
-        <div id="wsAlerts"><p class="empty">No alert preferences.</p></div>
       </div>
     </div>
 
