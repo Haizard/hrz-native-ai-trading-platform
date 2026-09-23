@@ -306,6 +306,16 @@ pub struct Alerter {
     sinks: Vec<Arc<dyn AlertSink>>,
     /// Rules currently in breach, so a rule is announced once per transition.
     active: HashSet<String>,
+    /// Symbols whose market feed was deliberately closed and must not alert.
+    ///
+    /// Closing a feed does not stop the age gauges that already exist from
+    /// reading as if the symbol's data had *died* -- the gauge freezes at an
+    /// ever-growing age and the rule pages. A reclaimed feed is an operator
+    /// decision, not an outage, so the reaper records the symbol here and the
+    /// stale rules refuse to report it until a feed is opened for it again.
+    /// Cleared by the same writer that opens the feed, so the mask cannot go
+    /// stale in the other direction either.
+    excluded_symbols: HashSet<String>,
     /// Last seen value per counter rule, so "it went up" is detectable without
     /// the caller having to remember anything.
     last: HashMap<String, u64>,
@@ -349,6 +359,7 @@ impl Alerter {
             rules,
             sinks,
             active: HashSet::new(),
+            excluded_symbols: HashSet::new(),
             last: HashMap::new(),
             last_at: HashMap::new(),
             streak: HashMap::new(),
@@ -383,6 +394,7 @@ impl Alerter {
         let mut raised = Vec::new();
 
         for rule in self.rules.clone() {
+            let excluded = |symbol: &str| self.excluded_symbols.contains(symbol);
             let breach = Self::breach(
                 &rule,
                 &samples,
@@ -390,6 +402,7 @@ impl Alerter {
                 &mut self.last_at,
                 &mut self.streak,
                 raised_at,
+                &excluded,
             );
             let name = rule.name().to_string();
 
@@ -439,10 +452,39 @@ impl Alerter {
         raised
     }
 
-    /// Whether a rule is currently in breach.
+    /// Whether this rule is currently in breach.
     #[must_use]
     pub fn is_active(&self, rule: &str) -> bool {
         self.active.contains(rule)
+    }
+
+    /// Stop the market-data rules from reporting `symbol`.
+    ///
+    /// Called when a symbol's feed is closed on purpose (idle reclaim, ceiling
+    /// eviction). If a symbol later gets a feed again, [`Self::watch_symbol`]
+    /// clears the exclusion -- the mask follows the feed, not the config.
+    pub fn exclude_symbol(&mut self, symbol: &str) {
+        self.excluded_symbols.insert(symbol.to_uppercase());
+        // A symbol that just lost its feed cannot still be "in breach": if the
+        // rule was active, the next evaluation's transition logic needs to see
+        // it leave cleanly rather than firing a resolution for a symbol that is
+        // now simply unwatched.
+        for rule in &self.rules {
+            if !rule.is_event() {
+                self.active.remove(rule.name());
+            }
+        }
+    }
+
+    /// Clear a symbol's exclusion, when a feed for it opens again.
+    pub fn watch_symbol(&mut self, symbol: &str) {
+        self.excluded_symbols.remove(&symbol.to_uppercase());
+    }
+
+    /// Whether `symbol` is currently excluded from the market-data rules.
+    #[must_use]
+    pub fn is_excluded(&self, symbol: &str) -> bool {
+        self.excluded_symbols.contains(&symbol.to_uppercase())
     }
 
     /// Evaluate one rule against the current samples.
@@ -453,11 +495,18 @@ impl Alerter {
         last_at: &mut HashMap<String, i64>,
         streak: &mut HashMap<String, u32>,
         now: i64,
+        excluded: &dyn Fn(&str) -> bool,
     ) -> Option<String> {
         match *rule {
             Rule::StaleFeed { max_age_secs } => {
                 let mut worst: Option<(f64, String)> = None;
                 for sample in samples.iter().filter(|s| s.name == MD_FEED_AGE) {
+                    // A symbol whose feed was closed on purpose has an age
+                    // gauge that grows forever; that is the mask's job to name,
+                    // not the rule's to page.
+                    if excluded(&symbol_of(sample)) {
+                        continue;
+                    }
                     if sample.value > max_age_secs
                         && worst
                             .as_ref()
@@ -473,6 +522,9 @@ impl Alerter {
             Rule::StaleBook { max_age_secs } => {
                 let mut worst: Option<(f64, String)> = None;
                 for sample in samples.iter().filter(|s| s.name == MD_BOOK_AGE) {
+                    if excluded(&symbol_of(sample)) {
+                        continue;
+                    }
                     if sample.value > max_age_secs
                         && worst
                             .as_ref()
@@ -604,6 +656,11 @@ fn churn_rate(
     Some((total - previous) as f64 * 60_000.0 / elapsed_ms as f64)
 }
 
+/// A sample's `symbol` label, if any (empty when the metric is not per-symbol).
+fn symbol_of(sample: &crate::metrics::Sample) -> String {
+    label_of(sample, "symbol")
+}
+
 /// Read one label out of a sample, defaulting to an empty string.
 fn label_of(sample: &crate::metrics::Sample, key: &str) -> String {
     sample
@@ -672,6 +729,74 @@ mod tests {
         assert_eq!(cleared[0].detail, "resolved");
         assert!(!alerter.is_active("stale_market_data"));
         assert_eq!(sink.alerts().len(), 2);
+    }
+
+    #[test]
+    fn an_excluded_symbol_never_fires_the_stale_rules() {
+        // The 0GTRY incident: the reaper closed an idle feed, the symbol's age
+        // gauge froze and grew, and a minute later the rule paged on a symbol
+        // nobody was watching. The mask is what makes "closed on purpose"
+        // different from "dead".
+        let registry = Registry::new();
+        let (mut alerter, sink) = alerter(vec![
+            Rule::StaleFeed { max_age_secs: 60.0 },
+            Rule::StaleBook { max_age_secs: 60.0 },
+        ]);
+        registry.set_gauge(
+            MD_FEED_AGE,
+            "age",
+            &Labels::new(&[("symbol", "0GTRY")]),
+            500.0,
+        );
+        registry.set_gauge(
+            MD_BOOK_AGE,
+            "age",
+            &Labels::new(&[("symbol", "0GTRY")]),
+            500.0,
+        );
+
+        alerter.exclude_symbol("0GTRY");
+        assert!(alerter.is_excluded("0GTRY"));
+        assert!(
+            alerter.evaluate(&registry).is_empty(),
+            "a symbol whose feed was closed on purpose must not page"
+        );
+        assert_eq!(sink.alerts().len(), 0);
+
+        // The same gauge value pages the moment a feed opens again.
+        alerter.watch_symbol("0GTRY");
+        assert!(!alerter.is_excluded("0GTRY"));
+        let raised = alerter.evaluate(&registry);
+        assert_eq!(raised.len(), 2, "both stale rules must see the breach again");
+    }
+
+    #[test]
+    fn an_excluded_symbol_does_not_hide_a_genuinely_stale_one() {
+        // The mask skips a symbol; it must not silence the rule. A second,
+        // unwatched symbol that is genuinely stale still has to page.
+        let registry = Registry::new();
+        let (mut alerter, _) = alerter(vec![Rule::StaleFeed { max_age_secs: 60.0 }]);
+        registry.set_gauge(
+            MD_FEED_AGE,
+            "age",
+            &Labels::new(&[("symbol", "RECLAIMED")]),
+            900.0,
+        );
+        registry.set_gauge(
+            MD_FEED_AGE,
+            "age",
+            &Labels::new(&[("symbol", "BTCUSDT")]),
+            200.0,
+        );
+
+        alerter.exclude_symbol("RECLAIMED");
+        let raised = alerter.evaluate(&registry);
+        assert_eq!(raised.len(), 1);
+        assert!(
+            raised[0].detail.contains("BTCUSDT"),
+            "the surviving breach must name the live symbol, not the excluded one: {}",
+            raised[0].detail
+        );
     }
 
     /// A gateway that has just started has opened every socket it will open in

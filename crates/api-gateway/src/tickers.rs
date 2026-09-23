@@ -245,10 +245,22 @@ async fn fetch_tickers(
         .await
         .map_err(|e| format!("request failed: {e}"))?
         .error_for_status()
-        .map_err(|e| format!("venue returned an error: {e}"))?
-        .json::<Value>()
+        .map_err(|e| format!("venue returned an error: {e}"))?;
+
+    // Read the body as text and parse it ourselves rather than letting
+    // reqwest decode straight into the value. When the venue answers something
+    // that is not JSON -- an HTML blocklist page, a proxy error, a rate-limit
+    // prose body -- `decode failed: error decoding response body` says nothing
+    // about *what* came back, and the incident is undiagnosable from the log.
+    // The first bytes of the body name the culprit immediately.
+    let body = response
+        .text()
         .await
-        .map_err(|e| format!("decode failed: {e}"))?;
+        .map_err(|e| format!("reading the response body failed: {e}"))?;
+    let response: Value = serde_json::from_str(&body).map_err(|e| {
+        let snippet: String = body.chars().take(160).collect();
+        format!("decode failed: {e}; body starts with: {snippet:?}")
+    })?;
 
     // Unfiltered answers (and multi-symbol ones) are arrays; a filtered call
     // that named exactly one symbol comes back as one object.
@@ -385,6 +397,51 @@ mod tests {
         .unwrap();
         assert_eq!(response.0.tickers[0].last_price, 60_000.0);
         assert!(!response.0.stale);
+    }
+
+    /// A venue that answers `200 OK` with a body that is not JSON -- an HTML
+    /// blocklist page, a proxy's prose error. This is the shape behind the
+    /// undiagnosable `decode failed: error decoding response body` in the
+    /// logs: the status was fine, the *content* was not.
+    async fn spawn_html_venue() -> String {
+        let app = axum::Router::new().route(
+            "/api/v3/ticker/24hr",
+            get(|| async { axum::response::Html("<html><body>Request blocked by WAF</body></html>") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_non_json_body_is_named_in_the_error() {
+        let venue = spawn_html_venue().await;
+        // No cache at all: with one, the route would correctly fall back to
+        // stale rows and the error would never surface; here the error itself
+        // is the answer, and it must quote the body rather than just say
+        // "decode failed".
+        let state = state_with(&venue, TickerCache::default());
+        let error = tickers(
+            State(state),
+            ApiQuery(TickersQuery {
+                symbols: None,
+                limit: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        let message = error.message().to_string();
+        assert!(
+            message.contains("decode failed"),
+            "the error must still name the failure mode: {message}"
+        );
+        assert!(
+            message.contains("Request blocked"),
+            "the body snippet must be in the error so the log is diagnosable: {message}"
+        );
     }
 
     #[tokio::test]

@@ -565,6 +565,14 @@ struct Inner {
     /// The pub/sub the bots subscribe to and the feed publishes into.
     bus: Arc<market_data::MarketBusRegistry>,
     running: Mutex<HashMap<Uuid, RunningBot>>,
+    /// The alert engine, shared with the task that evaluates it.
+    ///
+    /// The feed lifecycle writes here (`exclude_symbol` when a feed closes on
+    /// purpose, `watch_symbol` when one opens) so the stale rules can tell a
+    /// dead feed from an unwatched symbol. A `Mutex` because the writes come
+    /// from request tasks and the reads from the alert task; nothing holds it
+    /// across an await.
+    alerter: Mutex<observability::Alerter>,
     feed: FeedMode,
     /// Symbols a collector has been started for, so a second bot on the same
     /// symbol does not open a second websocket.
@@ -641,11 +649,25 @@ impl BotSupervisor {
                 history: Arc::new(market_data::HistoryRegistry::new()),
                 live: Arc::new(market_data::LiveRegistry::new()),
                 last_candle_ns: Mutex::new(HashMap::new()),
+                alerter: Mutex::new(observability::Alerter::new(
+                    observability::default_rules(),
+                )),
                 flush_interval,
                 feed_idle: DEFAULT_FEED_IDLE,
                 events: broadcast::channel(EVENT_BUFFER).0,
             }),
         }
+    }
+
+    /// The shared alert engine, for the task that evaluates the rules.
+    ///
+    /// Handed out rather than constructed inside the alert task so the
+    /// evaluate loop and the lifecycle writers see the same instance -- that
+    /// identity is the whole mechanism: an exclusion the reaper writes is what
+    /// the next rule evaluation reads.
+    #[must_use]
+    pub fn alerter(&self) -> &Mutex<observability::Alerter> {
+        &self.inner.alerter
     }
 
     /// The chart's recent history -- what `GET /candles` answers from.
@@ -809,9 +831,29 @@ impl BotSupervisor {
             if let Some(feed) = feeds.remove(symbol) {
                 feed.handle.abort();
                 info!(symbol, "closed an idle market feed");
+                // The symbol is unwatched by choice now. Its age gauges freeze
+                // and grow, so without this the stale rules would page on a
+                // symbol nobody asked for about a minute after the reaper ran.
+                if let Ok(mut alerter) = self.inner.alerter.lock() {
+                    alerter.exclude_symbol(symbol);
+                }
+                self.forget_feed_clocks(symbol);
             }
         }
         stale
+    }
+
+    /// Drop every freshness clock a closed feed left behind.
+    ///
+    /// The exclusion mask stops the rules reading a reclaimed symbol, but the
+    /// gauges themselves would keep growing forever -- and any future rule that
+    /// scans all symbols would inherit the same bug. Removing the entries is
+    /// the honest state: a closed feed has no age, not an infinite one.
+    fn forget_feed_clocks(&self, symbol: &str) {
+        if let Ok(mut ages) = self.inner.last_candle_ns.lock() {
+            ages.remove(&symbol.to_uppercase());
+        }
+        self.inner.live.forget_book(symbol);
     }
 
     /// Drop a bot's claim on its symbol's feed.
@@ -860,6 +902,12 @@ impl BotSupervisor {
         }
 
         let symbol = symbol.to_uppercase();
+        // Watched again. Whatever the reaper or the ceiling said about this
+        // symbol is superseded: a feed is opening, so staleness is a real
+        // condition from here.
+        if let Ok(mut alerter) = self.inner.alerter.lock() {
+            alerter.watch_symbol(&symbol);
+        }
         let Ok(mut feeds) = self.inner.feeds.lock() else {
             return;
         };
@@ -917,6 +965,12 @@ impl BotSupervisor {
             Some(symbol) => {
                 if let Some(feed) = feeds.remove(&symbol) {
                     feed.handle.abort();
+                    // Same reason as `reclaim_idle_feeds`: a deliberately
+                    // closed feed must not read as a dead one to the alerter.
+                    if let Ok(mut alerter) = self.inner.alerter.lock() {
+                        alerter.exclude_symbol(&symbol);
+                    }
+                    self.forget_feed_clocks(&symbol);
                     info!(
                         evicted = %symbol,
                         incoming,
@@ -991,6 +1045,21 @@ impl BotSupervisor {
     pub fn note_candle(&self, candle: &Candle) {
         if let Ok(mut ages) = self.inner.last_candle_ns.lock() {
             ages.insert(candle.symbol.clone(), now_ns());
+        }
+    }
+
+    /// Stamp that `symbol`'s feed just produced a **trade**.
+    ///
+    /// The feed-age clock used to be stamped only by closed candles, and that
+    /// read as an outage that was not one: a thin market can go minutes without
+    /// a 1m candle closing while its trades keep streaming every few seconds --
+    /// `0GTRY` did exactly that, and `stale_market_data` fired at 137s with the
+    /// feed perfectly healthy. A trade arriving is proof the venue connection
+    /// is alive, which is the only thing "stale" is meant to measure, so it
+    /// stamps the same clock.
+    pub fn note_trade(&self, symbol: &str) {
+        if let Ok(mut ages) = self.inner.last_candle_ns.lock() {
+            ages.insert(symbol.to_uppercase(), now_ns());
         }
     }
 
@@ -1621,6 +1690,9 @@ async fn run_market_feed(
     let candles = supervisor.subscribe_candles(symbol);
     let history = supervisor.history();
     let live = supervisor.live();
+    // A second handle for the recorder: it stamps the feed-age clock on every
+    // trade (`note_trade`), and the watcher below takes the original.
+    let stamping = supervisor.clone();
     let watcher = tokio::spawn(watch_feed_candles(
         candles,
         supervisor,
@@ -1667,6 +1739,13 @@ async fn run_market_feed(
                 }
                 Ok(trade) = trades_rx.recv() => {
                     live.record_trade(&trade);
+                    // A trade is proof the venue connection is alive. The age
+                    // clock used to be stamped only by *closed* candles, so a
+                    // thin market that legitimately went minutes between 1m
+                    // closes (0GTRY) read as a dead feed while its trades kept
+                    // flowing. The gauge's meaning stays "seconds since the
+                    // feed last said anything".
+                    stamping.note_trade(&trade.symbol);
                     let _closed = builder.on_trade(&trade);
                     for forming in builder.forming() {
                         history.record_forming(forming);
@@ -2001,6 +2080,27 @@ mod tests {
     }
 
     #[test]
+    fn a_trade_keeps_a_thin_market_off_the_stale_list() {
+        // The 0GTRY incident, reduced: a feed whose last 1m candle closed over
+        // two minutes ago but whose trades are still streaming seconds ago is
+        // *alive*. Only a closed candle used to stamp the age clock, so the
+        // rule read a healthy quiet market as an outage and fired
+        // `stale_market_data` at 137s with the limit at 120s.
+        let supervisor = BotSupervisor::new(FeedMode::Off);
+        supervisor.feed_candle(&test_candle("0GTRY", 0));
+
+        // The candle stamp is immediately superseded by a trade arriving now.
+        supervisor.note_trade("0GTRY");
+        let age = supervisor.feed_ages(now_ns());
+        assert_eq!(age.len(), 1);
+        assert!(
+            age[0].1 < 1.0,
+            "a trade that just arrived must read as a fresh feed, got {:.0}s",
+            age[0].1
+        );
+    }
+
+    #[test]
     fn an_event_always_names_its_bot() {
         // The websocket filters on this. A variant that forgot to report its
         // bot would not be a compile error at the call site if the filter used
@@ -2215,6 +2315,57 @@ mod tests {
             supervisor.feed_symbols(),
             vec!["BOTUSDT".to_string(), "NEWUSDT".to_string()],
             "the fresh route feed stays and the bot's is untouchable"
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaiming_a_feed_masks_and_forgets_its_symbol() {
+        // The 0GTRY / MATICJPY pair from the logs: the reaper closed an idle
+        // feed and a minute later the platform paged about a symbol nobody was
+        // watching -- the alert clocks outlived the feed. Reclaiming must both
+        // mask the symbol at the alerter and drop its freshness clocks.
+        let supervisor = BotSupervisor::new(FeedMode::Binance);
+        let now = 1_000_000_000_000_i64;
+        let idle = i64::try_from(DEFAULT_FEED_IDLE.as_nanos()).expect("fits");
+        seed_feed(&supervisor, "0GTRY", FeedReason::Route, now - idle * 2);
+
+        // Leftover clocks from the feed that ran: a candle age and a book
+        // expectation, both of which would otherwise age forever.
+        supervisor.note_candle(&Candle {
+            symbol: "0GTRY".into(),
+            timeframe: analytics_core::Timeframe::M1,
+            open_time: 0,
+            open: 1.0,
+            high: 1.0,
+            low: 1.0,
+            close: 1.0,
+            volume: 0.0,
+            buy_volume: 0.0,
+            sell_volume: 0.0,
+        });
+        supervisor.live().expect_book("0GTRY", now);
+
+        let closed = supervisor.reclaim_idle_feeds(now);
+        assert_eq!(closed, vec!["0GTRY".to_string()]);
+        assert!(
+            supervisor.alerter().lock().expect("alerter").is_excluded("0GTRY"),
+            "a reclaimed symbol must be masked at the alerter"
+        );
+        assert!(
+            supervisor.feed_ages(now).iter().all(|(s, _)| s != "0GTRY"),
+            "the candle-age clock must be dropped, not left growing"
+        );
+        assert!(
+            supervisor.live().book_ages(now).iter().all(|(s, _)| s != "0GTRY"),
+            "the book-age clock must be dropped, not left growing"
+        );
+
+        // And the mask is not a one-way door: asking for the symbol again
+        // starts a feed and clears the exclusion.
+        supervisor.ensure_feed_for("0GTRY");
+        assert!(
+            !supervisor.alerter().lock().expect("alerter").is_excluded("0GTRY"),
+            "a re-watched symbol must leave the exclusion mask"
         );
     }
 

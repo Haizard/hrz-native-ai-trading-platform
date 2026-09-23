@@ -286,6 +286,18 @@ impl LiveRegistry {
         }
     }
 
+    /// Forget `symbol`'s book-freshness clock entirely.
+    ///
+    /// Called when a symbol's feed is closed on purpose. The exclusion mask in
+    /// the alerter stops the stale rule reading the gauge, but the entry itself
+    /// would keep ageing forever in the registry -- and a symbol re-watched
+    /// later would inherit a stale clock instead of starting fresh.
+    pub fn forget_book(&self, symbol: &str) {
+        if let Ok(mut map) = self.freshness.write() {
+            map.remove(&symbol.to_uppercase());
+        }
+    }
+
     /// How long `symbol` has been without a book, in nanoseconds.
     ///
     /// Measured from the newest book, or from when a book was first expected if

@@ -167,7 +167,11 @@ pub fn publish_book_ages(
 /// so "the kill-switch tripped at 03:00" survives a metrics restart.
 pub fn spawn_alert_task(state: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut alerter = observability::Alerter::new(observability::default_rules());
+        // The *supervisor's* alerter, not a private one. The feed lifecycle
+        // writes exclusions into it -- a symbol whose feed was reclaimed is
+        // unwatched by choice, not dead -- and those writes are only visible
+        // if both sides hold the same instance.
+        let alerter = state.bots.alerter();
         let mut ticker = tokio::time::interval(ALERT_INTERVAL);
         // The first tick completes immediately, which would evaluate a registry
         // that has not recorded anything yet and is therefore fine but useless.
@@ -186,7 +190,7 @@ pub fn spawn_alert_task(state: AppState) -> tokio::task::JoinHandle<()> {
             publish_history_bars(&state.bots, &state.metrics);
             publish_book_ages(&state.bots, &state.metrics, now);
 
-            let alerts = alerter.evaluate(&state.metrics);
+            let alerts = alerter.lock().map(|mut a| a.evaluate(&state.metrics)).unwrap_or_default();
             for alert in &alerts {
                 if let Some(db) = &state.db {
                     let payload = serde_json::json!({
