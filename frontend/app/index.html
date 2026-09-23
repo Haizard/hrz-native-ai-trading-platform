@@ -71,6 +71,13 @@
 
   main { flex: 1; display: flex; min-height: 0; }
   /*
+    Resizable widths. The rail and the aside keep their defaults, but a drag on
+    their splitter rewrites the custom property below, so one rule and one JS
+    writer own each width instead of the media queries fighting a handler.
+  */
+  #sideWatch { width: var(--watch-w, 250px); flex: 0 0 var(--watch-w, 250px); }
+  aside { width: var(--aside-w, 380px); flex: 0 0 var(--aside-w, 380px); }
+  /*
     The chart panes. A row, each pane an equal share, and a floor of zero so a
     pane can be narrower than its content -- without `min-width: 0` a flex item
     refuses to shrink below its content and the row overflows instead.
@@ -79,13 +86,50 @@
     whose last child is the canvas, and a column that cannot shrink pushes the
     canvas off the bottom of the page.
   */
-  #charts { flex: 1; display: flex; min-width: 0; min-height: 0; }
+  /*
+    The charts area. Panes live in **row wrappers** -- each wrapper a 2-column
+    grid holding up to two panes -- so a splitter between rows is an ordinary
+    flex child instead of a fight with grid row templates. Two panes per row:
+    one chart wastes half a wide screen, and four in one line are unreadably
+    thin -- 2x2 keeps every candlestick readable up to the limit of four.
+  */
+  #charts { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .chartRow {
+    flex: 1 1 0; min-height: 120px;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .chartRow:has(> .chartPane:only-child) { grid-template-columns: 1fr; }
+  .chartRow.single { grid-template-columns: 1fr; }
+  /*
+    Splitters. A 6px hit area (3px visible line, 3px invisible breathing room
+    each side -- a 1px handle is a fine motor test), `col-resize`/`row-resize`
+    saying which way a drag goes, and `flex: none` so the layout cannot stretch
+    them. Their drag logic is in `app.js` (`wireSplitters`).
+  */
+  .splitter {
+    flex: none; position: relative; z-index: 5;
+    background: transparent; border: 0; padding: 0; margin: 0;
+    width: 6px; cursor: col-resize; touch-action: none;
+  }
+  .splitter::after {
+    content: ""; position: absolute; inset: 0 2px;
+    background: var(--line);
+  }
+  .splitter:hover::after, .splitter.dragging::after { background: var(--accent); }
+  .splitter.row-splitter {
+    width: auto; height: 6px; cursor: row-resize;
+    background: var(--panel);
+  }
+  .splitter.row-splitter::after { inset: 2px 0; }
   .chartPane {
-    flex: 1 1 0; min-width: 0; min-height: 0;
+    min-width: 0; min-height: 0;
     display: flex; flex-direction: column;
     border-left: 1px solid var(--line);
+    border-top: 1px solid var(--line);
   }
-  .chartPane:first-child { border-left: 0; }
+  /* Row 1 owns the top edge, column 1 owns the left edge. */
+  .chartPane:nth-child(-n+2) { border-top: 0; }
+  .chartPane:nth-child(2n + 1) { border-left: 0; }
   /* The rail's watchlist pane needs none of the aside pane's own padding:
      the rail's rules above own its edges. */
   #pane-watchlist { padding: 8px 0 0; }
@@ -104,8 +148,93 @@
     padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--line);
   }
   .chartBar select, .chartBar button { padding: 3px 6px; font-size: 11px; }
+  /* The bar and the tool row are `display: flex`, which beats the UA's `[hidden]`
+     rule -- without these they would stay on screen after all. */
+  .chartBar[hidden], .tools[hidden] { display: none; }
   .chartPane.active .chartBar { box-shadow: inset 0 2px 0 var(--accent); }
   .chartBar .close { margin-left: auto; padding: 3px 8px; color: var(--muted); }
+  /*
+    The pane's own chrome. One line: what the chart is, then four buttons that
+    belong to the chart itself -- zoom out, zoom in, collapse, expand -- and the
+    close. Everything else the old bar carried moved to the right-click menu;
+    these four are here because they are used constantly and a menu is a
+    journey.
+  */
+  .paneHead {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 8px; background: var(--panel); border-bottom: 1px solid var(--line);
+    font-size: 11px; min-height: 24px;
+  }
+  .chartPane.active .paneHead { box-shadow: inset 0 2px 0 var(--accent); }
+  .paneTitle { color: var(--text); font-family: var(--mono); font-weight: 600; letter-spacing: 0.02em; }
+  .paneBtns { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+  .paneBtns button {
+    padding: 1px 7px; font-size: 12px; line-height: 1.4;
+    color: var(--muted); background: transparent; border-color: transparent;
+  }
+  .paneBtns button:hover { color: var(--text); border-color: var(--line); }
+  /* Collapsed: the canvas hides and the row re-flows to a column -- minimized
+     panes become thin title bars, and the surviving chart takes the rest. */
+  .chartPane.min .chartWrap, .chartPane.min .chartNote, .chartPane.min .footprintStats { display: none; }
+  .chartPane.min .paneBtns .minBtn { opacity: 0.45; }
+  .chartPane:not(.min) .paneBtns .expBtn { opacity: 0.45; }
+  .chartRow:has(> .chartPane.min) { display: flex; flex-direction: column; }
+  .chartRow:has(> .chartPane.min) > .chartPane { flex: 0 0 auto; }
+  .chartRow:has(> .chartPane.min) > .chartPane:not(.min) { flex: 1 1 0; min-height: 120px; }
+  /* Expanded: absolute over `#charts` (the positioned ancestor), covering every
+     row and splitter without touching their layout numbers. */
+  #charts { position: relative; }
+  .chartPane.exp { position: absolute; inset: 0; z-index: 30; }
+  /* `.exp-ing` is belt-and-braces: `#charts` is relative either way, so an
+     expanded pane always has its positioning context even if a future edit
+     moves the base rule. */
+  #charts.exp-ing { position: relative; }
+  /*
+    The right-click chart menu. It is a plain positioned column that *hosts*
+    the pane's real controls while open (see `wireContextMenu`), so there is no
+    second copy of a select to drift out of sync -- only the real one, moved.
+  */
+  #chartMenu {
+    position: fixed; z-index: 60; display: none;
+    flex-direction: column; gap: 4px; align-items: stretch;
+    min-width: 190px; max-height: 80vh; overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  }
+  #chartMenu.open { display: flex; }
+  #chartMenu select, #chartMenu button { width: 100%; padding: 4px 8px; font-size: 12px; }
+  /* The tool row is absolutely positioned inside a pane; hosted here it is a
+     plain wrapping row. Its `hidden` is cleared while hosted. */
+  #chartMenu .tools { position: static; flex-wrap: wrap; }
+  #chartMenu .tools[hidden] { display: flex; }
+  #chartMenu .menuLabel {
+    color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    margin: 4px 0 0; padding: 0 2px;
+  }
+  #chartMenu hr { border: 0; border-top: 1px solid var(--line); margin: 6px 0; width: 100%; }
+  #chartMenu .feedStatus { font-size: 10px; color: var(--muted); }
+  /*
+    Watchlist rail hide/show. The hide button rides the rail's top-right corner;
+    the restore sliver hugs the screen's left edge and exists only while the
+    rail is hidden, so a removed list is never more than one click away.
+  */
+  #sideWatch { position: relative; }
+  /* Room for the hide button beside the search box it floats over. */
+  #sideWatch .pane > .row:first-child { padding-right: 28px; }
+  .railHide {
+    position: absolute; top: 4px; right: 4px; z-index: 5;
+    padding: 0 6px; font-size: 12px; color: var(--muted);
+    background: transparent; border-color: transparent;
+  }
+  .railHide:hover { color: var(--text); border-color: var(--line); }
+  #sideWatch.hideRail, #splitWatch.hideRail { display: none; }
+  #railShow {
+    flex: none; align-self: center; height: 64px; width: 14px; padding: 0;
+    font-size: 10px; color: var(--muted); background: var(--panel);
+    border: 1px solid var(--line); border-left: 0; border-radius: 0 6px 6px 0;
+    cursor: pointer;
+  }
+  #railShow:hover { color: var(--text); border-color: var(--accent); }
   .chartWrap { flex: 1; position: relative; min-width: 0; min-height: 0; }
   /*
     `touch-action: none` so a drag on a touchscreen pans the chart instead of
@@ -146,7 +275,7 @@
     color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 0 20px;
   }
 
-  aside { width: 380px; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  aside { border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
   /*
     The left rail: the watchlist, where a market list belongs -- left of the
     thing you point it at. It is the watchlist pane wholesale (search, count,
@@ -155,7 +284,6 @@
     the shell's rendering code does not know the pane moved.
   */
   #sideWatch {
-    width: 250px; flex: 0 0 250px;
     border-right: 1px solid var(--line); background: var(--panel);
     display: flex; flex-direction: column; min-height: 0; min-width: 0;
   }
@@ -468,7 +596,10 @@
   */
   @media (max-width: 1100px) {
     aside { width: 300px; }
-    #sideWatch { width: 210px; flex-basis: 210px; }
+    /* The media queries set the *defaults* for narrow screens; a drag rewrites
+       the same custom properties, so a resized layout survives a window that
+       crosses 1100px with the narrowed defaults. */
+    :root { --watch-w: 210px; }
   }
 
   @media (max-width: 900px) {
@@ -487,8 +618,10 @@
       below needs a full width as well. Each pane gets its own height instead,
       for the same reason the single chart did.
     */
-    #charts { flex-direction: column; }
-    .chartPane { flex: 0 0 auto; border-left: 0; border-top: 1px solid var(--line); }
+    /* One pane per row on a narrow screen: 450px per column is under the
+       width a candlestick chart stops being readable at. */
+    .chartRow { grid-template-columns: 1fr; }
+    .chartPane { border-left: 0; border-top: 1px solid var(--line); }
     .chartPane:first-child { border-top: 0; }
     .chartWrap { flex: 0 0 auto; height: 60vh; min-height: 260px; }
     aside {
@@ -547,7 +680,13 @@
     that used to show it stays in the aside and shows this pane's content in
     the rail instead, so one list exists and two places cannot disagree about it.
   -->
+  <!-- Width splitter for the watchlist rail; the drag logic is `wireSplitters`. -->
+  <!-- Hide handle for the watchlist rail, and the sliver that brings it back.
+       The sliver sits at the screen's left edge (off-screen when the rail is
+       out), so a removed list is one click from returning. -->
+  <button type="button" class="splitter" id="splitWatch" aria-label="Drag to resize the watchlist rail"></button>
   <section id="sideWatch" aria-label="Watchlist">
+    <button type="button" class="railHide" id="railHide" title="Hide the watchlist rail">×</button>
     <div class="pane" id="pane-watchlist" hidden>
       <div class="row">
         <input id="wlSearch" placeholder="search every Binance symbol (e.g. sol, pepe)" />
@@ -562,6 +701,7 @@
       <p class="empty" id="wlEmpty" hidden></p>
     </div>
   </section>
+  <button type="button" id="railShow" title="Show the watchlist rail" hidden>◀</button>
 
   <!--
     The chart panes. One ships in the markup and the rest are cloned from it, so
@@ -576,7 +716,35 @@
   -->
   <div id="charts">
     <section class="chartPane">
-      <div class="chartBar">
+      <!--
+        The pane's own chrome is deliberately tiny: what this chart is (filled
+        from the controls below by `paintTitle`), the zoom pair, the collapse and
+        expand pair, and the close button. Everything else -- symbol, timeframe,
+        bar limit, chart type, zones, fit, reload, the drawing tools -- lives in
+        the hidden `.chartBar`/`.tools` blocks underneath and reaches the screen
+        only through the right-click menu on the chart (`wireContextMenu` in
+        `app.js`). The menu *moves* those live nodes into itself while open and
+        back on close, so there is one set of controls and one wiring of them,
+        never a second opinion about which symbol a pane is showing.
+      -->
+      <div class="paneHead">
+        <span class="paneTitle" title="This chart's symbol, timeframe and type">…</span>
+        <span class="paneBtns">
+          <button class="zoomOut" title="Zoom out (show more candles)">−</button>
+          <button class="zoomIn" title="Zoom in (fewer candles, more detail)">+</button>
+          <button class="minBtn" title="Collapse this chart to its title bar">▾</button>
+          <button class="expBtn" title="Expand this chart over the others">⤢</button>
+          <!--
+            Shown only when there is more than one pane. Closing the last chart is
+            refused rather than leaving an empty page with no way back, and the honest
+            way to refuse it is to not draw the button.
+          -->
+          <button class="close" title="Close this chart" hidden>×</button>
+        </span>
+      </div>
+
+      <!-- Hidden in the pane; hosted by the right-click chart menu when open. -->
+      <div class="chartBar" hidden>
         <!--
           The series. Both selects are filled from `GET /symbols`, which reports
           the instruments that actually have candles and, per timeframe, how many
@@ -647,12 +815,6 @@
           sentence, and a status is not part of it.
         -->
         <span class="feedStatus" data-state="idle" title="Whether live candles are arriving, and how long ago the last one did">no channel yet</span>
-        <!--
-          Shown only when there is more than one pane. Closing the last chart is
-          refused rather than leaving an empty page with no way back, and the honest
-          way to refuse it is to not draw the button.
-        -->
-        <button class="close" title="Close this chart" hidden>×</button>
       </div>
 
       <div class="chartWrap">
@@ -675,7 +837,8 @@
           version that did this on one click was labelled `Clear` and read as "clear
           what I have selected", and the user only found out afterwards.
         -->
-        <div class="tools" role="toolbar" aria-label="Drawing tools">
+        <!-- Hidden in the pane; hosted by the right-click chart menu when open. -->
+        <div class="tools" role="toolbar" aria-label="Drawing tools" hidden>
           <button data-tool="cursor" aria-pressed="true" title="Select a drawing, move its anchors, or pan the chart">Cursor</button>
           <button data-tool="trendline" aria-pressed="false" title="Drag from one point to another">Trend</button>
           <button data-tool="hline" aria-pressed="false" title="Click a price to mark it across the chart">H-line</button>
@@ -690,7 +853,7 @@
           wheel or a drag would do anything, and an affordance nobody can find is the
           same as no affordance.
         -->
-        <div class="chartHint">wheel zooms · shift+wheel scales the price axis · drag pans · pick a tool to draw · <b>Esc</b> back to the cursor</div>
+        <div class="chartHint">wheel zooms · shift+wheel scales the price axis · drag pans · <b>right-click</b> for chart settings and tools · <b>Esc</b> back to the cursor</div>
         <div class="chartMsg empty">Loading the chart engine…</div>
       </div>
 
@@ -699,10 +862,14 @@
     </section>
   </div>
 
+  <!-- Width splitter for the aside (AI chat / thesis / scan); drag logic in `wireSplitters`. -->
+  <button type="button" class="splitter" id="splitAside" aria-label="Drag to resize the side panel"></button>
   <aside>
     <div class="tabs" role="tablist">
-      <button role="tab" data-pane="watchlist" aria-selected="false">Watchlist</button>
-      <button role="tab" data-pane="watchlist" aria-selected="false">Watchlist</button>
+      <!-- The watchlist has no tab here: it lives in its own rail on the left
+           of the charts, which can be hidden (its `×`) and brought back with
+           the sliver tab stuck to the rail's edge. A tab in both places would
+           make the same list look like two destinations. -->
       <button role="tab" data-pane="thesis" aria-selected="true">Thesis</button>
       <button role="tab" data-pane="scan" aria-selected="false">Scan</button>
       <button role="tab" data-pane="strategy" aria-selected="false">Strategy</button>
@@ -712,9 +879,8 @@
     </div>
 
     <!--
-      The watchlist pane itself moved to the rail left of the charts; its tab
-      remains so the aside can always name it. selectPane shows the pane inside
-      the rail (the rail is always visible; the tab never needs to).
+      The watchlist pane lives in the rail left of the charts, not in this
+      aside, so nothing here selects it.
     -->
     <div class="pane" id="pane-thesis">
       <div class="row">
@@ -730,7 +896,7 @@
       -->
       <div class="row chartAttach">
         <button id="attachChart" aria-pressed="false"
-                title="Send this chart's viewport, your drawings, and a screenshot with each question">
+                title="Send this chart's viewport, your drawings, and screenshots of your open charts of this symbol with each question">
           Attach chart
         </button>
         <span id="attachNote" class="muted"></span>
@@ -962,6 +1128,8 @@
     </div>
   </aside>
 </main>
+
+<div id="chartMenu" aria-label="Chart settings"></div>
 
 <script src="builder.js"></script>
 <script src="app.js"></script>

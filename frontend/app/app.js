@@ -184,6 +184,9 @@ const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartHint", "chartNote",
   "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "fit",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
+  // The pane's own chrome (title, zoom/collapse buttons) and the hidden bar
+  // the right-click menu hosts.
+  "paneTitle", "zoomIn", "zoomOut", "minBtn", "expBtn", "chartBar",
 ]);
 
 /// A timeframe's length in minutes, for ordering the options.
@@ -217,12 +220,31 @@ function frameMinutes(frame) {
 /// its instrument changes: the book is page-level and follows the *active* pane,
 /// so only the page can decide whether a given change matters to it.
 function createChartPane(root, hooks = {}) {
+  // The id this pane stamps the shared context menu with while hosting its
+  // controls. Created per call, so clones never share one.
+  const paneId = nextPaneId++;
+
   // This pane's own controls, under the names the chart code already used.
   // Shadowing one function is the whole of the boundary -- every call site below
   // reads exactly as it did when there was a single chart, and the one line that
   // decides what "the chart" means is here.
-  const el = (name) =>
-    PANE_ELS.has(name) ? root.querySelector(`.${name}`) : document.getElementById(name);
+  //
+  // The one wrinkle: while the shared right-click menu hosts this pane's
+  // controls, they are inside `#chartMenu`, not inside `root` -- so a plain
+  // `root.querySelector` misses them exactly when the user is interacting with
+  // them. If this pane owns the open menu, look in both and prefer the menu.
+  const el = (name) => {
+    if (!PANE_ELS.has(name)) return document.getElementById(name);
+    const hosted = menuHosted && document.getElementById("chartMenu");
+    if (hosted) {
+      const inMenu = hosted.querySelector(`.${name}`);
+      if (inMenu) return inMenu;
+    }
+    return root.querySelector(`.${name}`);
+  };
+  // True while this pane's controls are in the shared menu. Set in `openMenu`,
+  // cleared in `closeMenu`, read by `el`.
+  let menuHosted = false;
 
   // State that used to be module-level. Each of these was a latent bug the moment
   // there could be more than one chart: a shared `viewport` is one chart drawn
@@ -2288,11 +2310,162 @@ function createChartPane(root, hooks = {}) {
     }, 2000 + Math.floor(Math.random() * 3000));
   }
 
+  // ---------------------------------------------------------------------------
+  // The pane's own chrome: title, zoom pair, collapse/expand pair, and the
+  // right-click menu that hosts this pane's real controls.
+  // ---------------------------------------------------------------------------
+
+  /// Paint the title line from the controls the chart actually runs on.
+  ///
+  /// Read from the selects rather than stored, for the same reason `symbol()`
+  /// is: whatever the next request will use is the truth, and a cached string
+  /// would go stale the moment the context menu changed a select behind the
+  /// pane's back. Called after anything that can change those values.
+  function paintTitle() {
+    const symbol = el("symbol").value || "…";
+    const timeframe = el("timeframe").value;
+    const mode = el("mode");
+    const modeLabel = mode.selectedOptions[0] ? mode.selectedOptions[0].textContent : "";
+    el("paneTitle").textContent = `${symbol} · ${timeframe}${modeLabel ? " · " + modeLabel.trim() : ""}`;
+  }
+
+  /// One button press worth of zoom.
+  ///
+  /// The engine owns what zoom means (`zoom_time` about the middle of the plot);
+  /// this only says "the user asked". The factor follows the wheel's convention
+  /// (in `onWheel`: negative deltaY -> factor > 1 -> fewer bars on screen), so
+  /// `zoomIn` sends a factor above one. Anchored to the plot centre rather than
+  /// a pointer position, because a button has no pointer.
+  function zoomStep(zoomIn) {
+    if (!scene) return;
+    const factor = Math.exp((zoomIn ? 1 : -1) * 0.22);
+    applyGesture({ kind: "zoom_time", factor, anchor: 0.5 });
+  }
+
+  /// Collapse to the title bar / back.
+  ///
+  /// A class rather than inline styles, so the CSS owns the layout rule and a
+  /// collapsed pane gives its row share back to its sibling automatically
+  /// (`.chartPane.min` hides the canvas box; flexbox does the rest).
+  function setMin(min) {
+    root.classList.toggle("min", min);
+    el("minBtn").title = min ? "Restore this chart" : "Collapse this chart to its title bar";
+  }
+
+  /// Expand this chart over the whole `#charts` area, and back.
+  ///
+  /// `position: absolute; inset: 0` over a relative container covers every row
+  /// and splitter without touching their layout numbers, so closing the expand
+  /// restores the exact grid the user was looking at. `#charts` gets a class
+  /// while a child is expanded so the rows provide the positioning context.
+  function setExpanded(expanded) {
+    const charts = el("charts");
+    root.classList.toggle("exp", expanded);
+    charts.classList.toggle("exp-ing", expanded);
+    el("expBtn").title = expanded ? "Back to the grid" : "Expand this chart over the others";
+    if (expanded) draw();
+    else for (const pane of panes) pane.redraw();
+  }
+
+  /// Close the context menu, returning the hosted controls to the pane.
+  ///
+  /// The one place that knows how to put them back in order: selects first,
+  /// then the status, then the tool row at the end. A pane whose menu forgot
+  /// where things lived would lose its controls on the first open/close.
+  function closeMenu() {
+    const menu = document.getElementById("chartMenu");
+    // The guard is the whole safety story of a *shared* menu: if another pane's
+    // controls are in there, this pane must not "return" them (it would file
+    // pane B's symbol select into pane A's bar). Hosting clears this flag;
+    // nothing else sets it.
+    if (!menu || menu.dataset.owner !== String(paneId) || !menu.classList.contains("open")) return;
+    // The nodes are captured *before* anything moves. The tool row in
+    // particular is found in the menu it is hosted in, not the pane: while the
+    // menu is open it is outside this pane's subtree, and a lookup from `root`
+    // is null. (Each of these lookups in the wrong place stranded the controls
+    // once already.)
+    const tools = menu.querySelector(".tools") || root.querySelector(".tools");
+    const bar = root.querySelector(".chartBar");
+    menuHosted = false;
+    for (const node of [...menu.querySelectorAll("select, .zones, .fit, .load, .feedStatus")]) {
+      bar.appendChild(node);
+    }
+    // The tool row's home is the chart wrap (it is an overlay on the canvas),
+    // not the bar the selects live in.
+    el("chartWrap").appendChild(tools);
+    bar.hidden = true;
+    tools.hidden = true;
+    menu.classList.remove("open");
+    menu.replaceChildren();
+    delete menu.dataset.owner;
+  }
+
+  /// Open the right-click menu for this pane, at the pointer.
+  ///
+  /// The menu does not copy controls; it *hosts* them. The pane's real selects
+  /// and tool buttons are moved into the menu, their `change`/`click` wiring
+  /// untouched, and moved home on close -- so the menu can never disagree with
+  /// the pane about the series, and there is exactly one wiring of every
+  /// control in the file. Any other pane's open menu closes first.
+  function openMenu(x, y) {
+    for (const other of panes) {
+      if (other !== paneApi) other.closeMenu();
+    }
+    const menu = document.getElementById("chartMenu");
+    menu.dataset.owner = String(paneId);
+    menuHosted = true;
+    // Captured first, for the same reason `closeMenu` does: after these nodes
+    // move into the menu they are outside the pane subtree and `el()` cannot
+    // find them again.
+    const tools = root.querySelector(".tools");
+    menu.replaceChildren(
+      Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Series" }),
+      el("symbol"), el("timeframe"), el("limit"),
+      Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Chart" }),
+      el("mode"), el("zones"), el("fit"), el("load"),
+      el("feedStatus"),
+      document.createElement("hr"),
+      Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Drawing tools" }),
+      tools
+    );
+    // Hosted, the tool row is a plain menu section; it keeps its own tool
+    // wiring either way.
+    tools.hidden = false;
+    menu.classList.add("open");
+    const box = menu.getBoundingClientRect();
+    menu.style.left = `${Math.min(x, window.innerWidth - box.width - 8)}px`;
+    menu.style.top = `${Math.min(y, window.innerHeight - box.height - 8)}px`;
+  }
+
+  /// The listeners for the pane's own chrome. Kept beside `wire()` but separate
+  /// from it: `wire()` is about the chart and its series, this is about the
+  /// pane as a panel.
+  function wireChrome() {
+    el("zoomIn").addEventListener("click", () => zoomStep(true));
+    el("zoomOut").addEventListener("click", () => zoomStep(false));
+    el("minBtn").addEventListener("click", () => setMin(!root.classList.contains("min")));
+    el("expBtn").addEventListener("click", () => setExpanded(!root.classList.contains("exp")));
+    // Right-click on the chart opens the menu; anything else closes it. On the
+    // canvas itself the browser's own menu is ours to take -- the chart is the
+    // one thing on the page with no use for "Save image as".
+    el("chartWrap").addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      setActive(paneApi);
+      openMenu(event.clientX, event.clientY);
+    });
+    // A click on this pane's canvas closes it. Everywhere else is covered once,
+    // at document level in `wireContextMenuDocument` below -- a window-level
+    // listener per pane would close a menu the moment its own controls were
+    // clicked, because the menu is not inside any pane.
+    el("chart").addEventListener("pointerdown", closeMenu);
+  }
+
   /// Attach the listeners that are about *this* pane: its canvas, its tool
   /// buttons, its series selects, its own reload. The two that are not -- the
   /// keyboard and the resize -- stay on the window and are routed to the active
   /// pane, because a keyboard has no way to say which canvas it means.
   function wire() {
+    wireChrome();
     el("load").addEventListener("click", () => {
       resetViewport();
       refresh().then(connectLive);
@@ -2308,13 +2481,14 @@ function createChartPane(root, hooks = {}) {
     // Changing the chart type can change the *window* (a footprint uses the span
     // that has trades), so it refetches rather than just redrawing. The viewport
     // is deliberately kept: the same candles are still on screen.
-    el("mode").addEventListener("change", () => { refresh(); });
+    el("mode").addEventListener("change", () => { refresh(); paintTitle(); });
     // These change the series itself, so the window means nothing afterwards -- a
     // bar index into the old series is not a bar in the new one, and the limit
     // select changes how many exist at all.
     el("timeframe").addEventListener("change", () => {
       resetViewport();
       refresh().then(connectLive);
+      paintTitle();
     });
     el("symbol").addEventListener("change", () => {
       // A different instrument has different timeframes, so the list is rebuilt
@@ -2322,6 +2496,7 @@ function createChartPane(root, hooks = {}) {
       fillTimeframes(el("symbol").value);
       resetViewport();
       refresh().then(connectLive);
+      paintTitle();
       if (hooks.onSymbolChange) hooks.onSymbolChange(paneApi);
     });
     // Fit is also where following resumes: "show the whole series again"
@@ -2510,6 +2685,7 @@ function createChartPane(root, hooks = {}) {
       // teaches the user the page is broken, and the rule that avoids it is
       // derived from the data rather than naming `5m` here.
       else el("timeframe").value = deepestFrame(symbol);
+      paintTitle();
     },
 
     /// Put a freshly cloned pane back to its starting state.
@@ -2520,6 +2696,11 @@ function createChartPane(root, hooks = {}) {
     /// that starts blank, so each of them is cleared rather than inherited.
     reset() {
       root.classList.remove("active");
+      // A clone must not inherit the panel states of the pane it came from: a
+      // copy that opens collapsed or blown up over the grid is a copy that
+      // looks broken.
+      root.classList.remove("min", "exp");
+      el("charts").classList.remove("exp-ing");
       el("chartNote").textContent = "";
       el("footprintStats").hidden = true;
       el("chartMsg").textContent = "";
@@ -2537,6 +2718,9 @@ function createChartPane(root, hooks = {}) {
     /// Handle a key that is about this pane, and say whether it was used.
     key(event) {
       if (event.key === "Escape") {
+        // The menu first: Escape means "back out of what I just opened", and a
+        // menu it opened is ahead of any tool state in that queue.
+        closeMenu();
         if (placing) {
           // The shape, not the tool. Escape mid-drag means "not this one", and
           // having to pick the tool again afterwards would be a second punishment
@@ -2566,12 +2750,23 @@ function createChartPane(root, hooks = {}) {
     applyGesture,
     selectTool,
     deleteSelected,
+    /// The right-click menu is shared, so the page and the other panes can both
+    /// ask this pane to give the controls back (another pane opening the menu,
+    /// a click elsewhere, this pane going away).
+    closeMenu,
+    /// Repaint the title line from the live controls. Cheap; called after any
+    /// change that can move a select.
+    paintTitle,
 
     /// Take this pane off the page. Its own listeners go with its elements; the
     /// four things that outlive them are the channel, a frame waiting for one,
     /// the clock the live badge counts with, and any reconnect the channel had
     /// scheduled.
     destroy() {
+      // A pane that is gone must not be left hosting the shared menu: the next
+      // `closeMenu` from any pane would file this one's controls into a pane
+      // that no longer exists.
+      closeMenu();
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = 0;
@@ -2619,6 +2814,11 @@ const MAX_PANES = 4;
 
 /// The panes, oldest first.
 const panes = [];
+
+/// Ids handed to panes in creation order. The right-click chart menu is one
+/// element shared by every pane, so a pane stamps it with its id while hosting
+/// and refuses to touch it otherwise -- see `openMenu`/`closeMenu`.
+let nextPaneId = 1;
 
 /// The instrument the aside is about, or "" before a pane exists.
 ///
@@ -2695,7 +2895,29 @@ function addPane() {
   // what I am looking at" is the intent, and the chart the user is looking at is
   // the one they just touched.
   const node = activePane.root.cloneNode(true);
-  el("charts").appendChild(node);
+
+  // The pane lands in a **row wrapper** -- two panes per row, a new row (and
+  // its splitter) opened only when the current one is full. The wrapper, not
+  // the page, owns the 2-column layout, so "add chart" never produces a pane
+  // too thin to read and the row splitter always has exactly two things to
+  // split.
+  let row = activePane.root.closest(".chartRow");
+  if (!row || row.querySelectorAll(".chartPane").length >= 2) {
+    const splitter = document.createElement("button");
+    splitter.className = "splitter row-splitter";
+    splitter.type = "button";
+    splitter.setAttribute("aria-label", "Drag to resize the chart rows");
+    el("charts").appendChild(splitter);
+    row = document.createElement("div");
+    row.className = "chartRow";
+    el("charts").appendChild(row);
+  }
+  row.appendChild(node);
+  // Two panes in a row is the grid's whole point, and the bootstrap row ships
+  // with `.single` (one column) -- only this append can end that. Kept as a
+  // class rather than left to `:has()` alone so the column count never depends
+  // on one selector being supported.
+  row.classList.toggle("single", row.querySelectorAll(".chartPane").length < 2);
 
   const pane = createChartPane(node, {
     onSymbolChange: (which) => { if (which === activePane) connectBook(); },
@@ -2729,10 +2951,34 @@ function closePane(pane) {
 
   const at = panes.indexOf(pane);
   if (at < 0) return;
+  const row = pane.root.closest(".chartRow");
   pane.destroy();
   pane.root.remove();
   panes.splice(at, 1);
+  // An emptied row takes its splitter with it, and hands its flex share to the
+  // survivors: a stub row holding only a splitter would be dead space the user
+  // has to drag around.
+  if (row && row.querySelectorAll(".chartPane").length === 0) {
+    // A splitter sits between two rows, so an emptied row strands the one on
+    // either side of it -- the *previous* one when a later row died, the *next*
+    // one when the first row did (there is nothing before it). Leaving either
+    // behind is a leading orphan: a dead handle dragging against nothing.
+    const prev = row.previousElementSibling;
+    if (prev && prev.classList.contains("row-splitter")) prev.remove();
+    else {
+      const next = row.nextElementSibling;
+      if (next && next.classList.contains("row-splitter")) next.remove();
+    }
+    row.remove();
+  }
   refreshCloseButtons();
+  // The survivor of a two-pane row drops back to a single column -- the same
+  // class that made the bootstrap row one pane wide, removed by `addPane`.
+  // Checked on `isConnected`: an emptied row was just removed, and toggling a
+  // detached node is noise.
+  if (row && row.isConnected) {
+    row.classList.toggle("single", row.querySelectorAll(".chartPane").length < 2);
+  }
 
   if (activePane === pane) {
     // The one to its left, or the first if it was leftmost. Whichever it is, the
@@ -2756,13 +3002,153 @@ function refreshCloseButtons() {
 
 /// Build the first pane from the markup, and make it the active one.
 function openFirstPane() {
+  // The markup ships one pane; wrap it in the row structure the rest of the
+  // panes are added to, so every pane's parent is a `.chartRow` from here on.
   const node = el("charts").querySelector(".chartPane");
+  const row = document.createElement("div");
+  row.className = "chartRow single";
+  node.replaceWith(row);
+  row.appendChild(node);
   const pane = createChartPane(node, {
     onSymbolChange: (which) => { if (which === activePane) connectBook(); },
   });
   panes.push(pane);
   setActive(pane);
   return pane;
+}
+
+/*
+  Drag-resizable panels. Three drags, each one writing a single layout number:
+
+  - `#splitWatch`  -> the watchlist rail's width (`--watch-w`)
+  - `#splitAside`  -> the aside's width (`--aside-w`)
+  - `.row-splitter` -> the flex share of the chart row above vs. the row below
+
+  The widths are custom properties on `:root`, so the CSS owns every rule that
+  consumes them (including a future media query) and this code only owns the
+  number. Both width splitters sit to the LEFT of the panel they resize, which
+  fixes the drag direction: moving the handle toward a panel gives it space.
+  Rows split by flex-grow, not pixels, so the split survives a window resize
+  proportionally instead of clipping the bottom row. Every change funnels
+  through `pane.redraw()`, which re-measures the canvas inside the same
+  once-per-frame coalescing a window resize uses.
+*/
+function wireSplitters() {
+  const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
+
+  // The saved widths restore the layout the user dragged to last time. A
+  // missing or corrupt entry just means the CSS defaults stand.
+  try {
+    const saved = JSON.parse(localStorage.getItem("splitterWidths") || "{}");
+    if (Number.isFinite(saved.watch)) document.documentElement.style.setProperty("--watch-w", `${saved.watch}px`);
+    if (Number.isFinite(saved.aside)) document.documentElement.style.setProperty("--aside-w", `${saved.aside}px`);
+  } catch { /* a broken blob is not worth a broken page */ }
+
+  const persist = () => {
+    try {
+      const styles = getComputedStyle(document.documentElement);
+      localStorage.setItem("splitterWidths", JSON.stringify({
+        watch: parseFloat(styles.getPropertyValue("--watch-w")) || undefined,
+        aside: parseFloat(styles.getPropertyValue("--aside-w")) || undefined,
+      }));
+    } catch { /* private mode, quota, whatever -- the drag still worked */ }
+  };
+
+  const repaint = () => { for (const pane of panes) pane.redraw(); };
+
+  // One pointer session per handle: capture the pointer so a drag that strays
+  // off the 6px strip keeps coming here, and end it on pointerup or pointercancel
+  // so a released button never leaves the page half-grabbed.
+  function wireWidth(handle, property, min, max, sign, baseWidth) {
+    handle.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      const startWidth = clamp(baseWidth(), min, max);
+      const startX = event.clientX;
+      handle.setPointerCapture(event.pointerId);
+      handle.classList.add("dragging");
+      const move = (moveEvent) => {
+        const width = clamp(startWidth + sign * (moveEvent.clientX - startX), min, max);
+        document.documentElement.style.setProperty(property, `${Math.round(width)}px`);
+        repaint();
+      };
+      const stop = () => {
+        handle.classList.remove("dragging");
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", stop);
+        handle.removeEventListener("pointercancel", stop);
+        persist();
+        repaint();
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", stop);
+      handle.addEventListener("pointercancel", stop);
+    });
+  }
+
+  // The rail grows rightward; the aside grows leftward (its handle is on its
+  // left edge), hence the opposite signs. The baseline is the panel element's
+  // real width, not the CSS variable: the variable is unset until a first drag
+  // writes it, and reading it there would start every first drag from the
+  // minimum instead of from where the layout actually is.
+  const currentWidth = (panel, property, fallback) => {
+    const fromVar = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(property));
+    return Number.isFinite(fromVar) && fromVar > 0
+      ? fromVar
+      : panel.getBoundingClientRect().width || fallback;
+  };
+  wireWidth(el("splitWatch"), "--watch-w", 180, 460, +1, () => currentWidth(el("sideWatch"), "--watch-w", 250));
+  wireWidth(el("splitAside"), "--aside-w", 280, 640, -1, () => currentWidth(document.querySelector("main > aside"), "--aside-w", 380));
+
+  // Row splitters are created with their row (`addPane`), so they are delegated:
+  // one listener on the container covers every row that ever exists.
+  el("charts").addEventListener("pointerdown", (event) => {
+    const splitter = event.target.closest(".row-splitter");
+    if (!splitter) return;
+    event.preventDefault();
+    const above = splitter.previousElementSibling;
+    const below = splitter.nextElementSibling;
+    if (!above || !below || !above.classList.contains("chartRow") || !below.classList.contains("chartRow")) return;
+
+    // px-per-grow is the exchange rate between pixels dragged and flex-grow:
+    // the free height each `1 1 0` row currently divides. Computed once, at
+    // grab time, from the live layout.
+    const rows = [...el("charts").querySelectorAll(".chartRow")];
+    const grows = rows.map((row) => {
+      const grow = parseFloat(row.style.flexGrow);
+      return Number.isFinite(grow) ? grow : 1;
+    });
+    const totalGrow = grows.reduce((sum, grow) => sum + grow, 0);
+    const splitterPx = [...el("charts").children]
+      .filter((child) => child.classList.contains("row-splitter"))
+      .reduce((sum, child) => sum + child.offsetHeight, 0);
+    const pxPerGrow = (el("charts").clientHeight - splitterPx) / totalGrow;
+    const startAbove = parseFloat(above.style.flexGrow);
+    const startBelow = parseFloat(below.style.flexGrow);
+    const startY = event.clientY;
+
+    splitter.setPointerCapture(event.pointerId);
+    splitter.classList.add("dragging");
+    const move = (moveEvent) => {
+      const delta = (moveEvent.clientY - startY) / pxPerGrow;
+      // 0.2 keeps a sliver of each row on screen; a fully collapsed row is a
+      // splitter pair with nothing between them, which no drag recovers from.
+      const aboveGrow = clamp((Number.isFinite(startAbove) ? startAbove : 1) + delta, 0.2, 8);
+      const belowGrow = clamp((Number.isFinite(startBelow) ? startBelow : 1) - delta, 0.2, 8);
+      above.style.flexGrow = aboveGrow.toFixed(3);
+      below.style.flexGrow = belowGrow.toFixed(3);
+      repaint();
+    };
+    const stop = () => {
+      splitter.classList.remove("dragging");
+      splitter.removeEventListener("pointermove", move);
+      splitter.removeEventListener("pointerup", stop);
+      splitter.removeEventListener("pointercancel", stop);
+      repaint();
+    };
+    splitter.addEventListener("pointermove", move);
+    splitter.addEventListener("pointerup", stop);
+    splitter.addEventListener("pointercancel", stop);
+  });
 }
 
 /// The instruments the platform can chart, read once for every pane.
@@ -3271,21 +3657,31 @@ async function ask() {
       timeframes: [activeTimeframe()],
     };
 
-    // The viewport goes on every question while it is switched on. A screenshot
-    // is captured at send time rather than at attach time: the chart moves
-    // between the two, and an image of where the user *was* would have the agent
-    // reasoning about a view nobody is looking at any more.
+    // The viewport goes on every question while it is switched on. The images
+    // are captured at send time rather than at attach time: the charts move
+    // between the two, and a picture of where the user *was* would have the
+    // agent reasoning about a view nobody is looking at any more.
     if (attachChart && activePane) {
       const packet = activePane.chartPacket();
       if (packet) {
-        const shot = captureChart(activePane.canvas);
-        if (shot) {
-          packet.screenshot = shot;
-        } else {
-          // No silently-dropped image. The viewport still goes, so the agent
-          // still knows where the user is -- but the user is told the picture
-          // did not make it, because "it can see your chart" is exactly the sort
-          // of belief that goes wrong quietly.
+        // The primary image is the chart the user is looking at. The rest of
+        // the ladder -- 1d, 4h, 1h, 5m of the same symbol -- is then captured
+        // automatically: an open pane of the right timeframe is photographed,
+        // and any rung nothing open shows is rendered offscreen from that
+        // timeframe's candle history, so the agent sees the setup across
+        // timeframes whether or not the user opened four charts.
+        const { primary: primaryShot, shots } = await captureLadder(activePane.symbol());
+        if (primaryShot) packet.screenshot = primaryShot;
+        // Timeframes the symbol has no series for are simply not attached:
+        // capturing a chart that does not exist is not an option, the agent
+        // still reads every timeframe through its ladder, and the prompt names
+        // what it got.
+        if (shots.length) packet.screenshots = shots;
+        if (!primaryShot && !shots.length) {
+          // No picture made it at all. The viewport still goes, so the agent
+          // still knows where the user is -- but the user is told, because
+          // "it can see your chart" is exactly the sort of belief that goes
+          // wrong quietly.
           activePane.setMessage(
             "the chart picture could not be captured, so this question went with the " +
               "viewport only -- the agent still knows which symbol, resolution and window " +
@@ -3324,6 +3720,12 @@ const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
 /// `docs/14` uses for presentation, applied to what leaves the page.
 const MAX_SCREENSHOT_EDGE = 1600;
 
+/// The most images one question attaches.
+///
+/// Mirrors the server's `MAX_SCREENSHOTS`: a primary plus a 1d/4h/1h/5m ladder
+/// fills it exactly, and sending more would only have them dropped.
+const MAX_ATTACHED_IMAGES = 3;
+
 /// Capture the chart canvas as a PNG the agent can see.
 ///
 /// ## Why this is `toDataURL` and not `getImageData`
@@ -3336,7 +3738,7 @@ const MAX_SCREENSHOT_EDGE = 1600;
 ///
 /// Returns `null` when a capture is not possible, which the caller reports rather
 /// than sending a question the user believes has a picture attached.
-function captureChart(canvas) {
+function captureChart(canvas, timeframeLabel = "") {
   if (!canvas || !canvas.toDataURL) return null;
   try {
     // A downscale pass. `drawImage` on an offscreen canvas is the only way to
@@ -3344,8 +3746,20 @@ function captureChart(canvas) {
     // chart the model sees is the shape of the chart the user sees.
     const scale = Math.min(1, MAX_SCREENSHOT_EDGE / Math.max(canvas.width, canvas.height));
     if (scale >= 1) {
-      const url = canvas.toDataURL("image/png");
-      return screenshotFromUrl(url);
+      // Background first, even at native size. This used to be the fast path
+      // that skipped it: the chart is drawn on a transparent canvas, so the
+      // PNG carried transparent pixels where the model expects a plot, and a
+      // vision model reads that as "there is no chart here" -- which is the
+      // exact report of the screenshot feature not working. One fillRect is
+      // the whole fix; the encode dominates either way.
+      const opaque = document.createElement("canvas");
+      opaque.width = canvas.width;
+      opaque.height = canvas.height;
+      const octx = opaque.getContext("2d");
+      octx.fillStyle = "#0d1117";
+      octx.fillRect(0, 0, opaque.width, opaque.height);
+      octx.drawImage(canvas, 0, 0);
+      return screenshotFromUrl(opaque.toDataURL("image/png"), timeframeLabel);
     }
 
     const scaled = document.createElement("canvas");
@@ -3358,7 +3772,7 @@ function captureChart(canvas) {
     ctx.fillStyle = "#0d1117";
     ctx.fillRect(0, 0, scaled.width, scaled.height);
     ctx.drawImage(canvas, 0, 0, scaled.width, scaled.height);
-    return screenshotFromUrl(scaled.toDataURL("image/png"));
+    return screenshotFromUrl(scaled.toDataURL("image/png"), timeframeLabel);
   } catch (e) {
     // A tainted canvas, an out-of-memory resize, a browser that refuses. All of
     // them mean no picture, and none of them should stop the question.
@@ -3366,11 +3780,89 @@ function captureChart(canvas) {
   }
 }
 
+/*
+  The auto screenshot ladder.
+
+  One question about one market carries four pictures of it -- 1d, 4h, 1h, 5m,
+  in that order, because that is the order an analysis reads a market in. The
+  active pane's own image goes first as the primary; every other rung is filled
+  from an open pane of the right timeframe, or rendered offscreen from that
+  timeframe's candle history when no pane holds it -- so the ladder does not
+  depend on which charts the user happened to open.
+*/
+const LADDER_TIMEFRAMES = ["1d", "4h", "1h", "5m"];
+
+async function captureLadder(symbol) {
+  const activeTf = activePane ? activePane.timeframe() : "";
+  const primary = activePane ? captureChart(activePane.canvas, activeTf) : null;
+  const shots = [];
+  const taken = new Set(activeTf ? [activeTf] : []);
+
+  for (const tf of LADDER_TIMEFRAMES) {
+    if (taken.has(tf)) continue;
+    // An open pane of this symbol at this timeframe is already showing exactly
+    // this picture -- reuse it rather than re-render a copy.
+    const openPane = panes.find(
+      (pane) => pane !== activePane && pane.symbol() === symbol && pane.timeframe() === tf
+    );
+    if (openPane) {
+      const shot = captureChart(openPane.canvas, tf);
+      if (shot) { shots.push(shot); taken.add(tf); }
+      continue;
+    }
+    // Nothing open shows it. Only render one if the symbol actually has the
+    // series: a blank picture of a timeframe that does not exist would be a lie
+    // dressed as analysis.
+    const entry = coverage.find((instrument) => instrument.symbol === symbol);
+    const frame = entry && entry.timeframes.find((f) => f.timeframe === tf);
+    if (!frame || frame.candles === 0) continue;
+    try {
+      const shot = await renderOffscreen(symbol, tf);
+      if (shot) { shots.push(shot); taken.add(tf); }
+    } catch { /* one missing rung is not a failed ask */ }
+  }
+  // The wire budget: the primary rides `screenshot`, these ride `screenshots`,
+  // and both sides cap the total at MAX_SCREENSHOTS.
+  return { primary, shots: shots.slice(0, MAX_ATTACHED_IMAGES) };
+}
+
+/// Render one chart of a symbol+timeframe no open pane is showing, and capture
+/// it.
+///
+/// The scratch pane is a real pane: same markup, same engine, same drawing code
+/// -- only offscreen and without a live channel, because a capture is a moment,
+/// not a stream. It is removed as soon as the capture is taken.
+async function renderOffscreen(symbol, timeframe) {
+  const template = el("charts").querySelector(".chartPane");
+  if (!template) return null;
+  const holder = document.createElement("div");
+  // Offscreen but laid out: `display:none` would give the canvas a zero box and
+  // nothing to draw into. 1024x700 is a shape a vision model reads comfortably.
+  holder.style.cssText = "position:fixed;left:-99999px;top:0;width:1024px;height:700px;";
+  holder.innerHTML = template.outerHTML;
+  document.body.appendChild(holder);
+  try {
+    const node = holder.querySelector(".chartPane");
+    const pane = createChartPane(node, {});
+    // Fill both selects from the page's coverage and land on the wanted series,
+    // exactly as a visible pane is set up -- one code path, not a second.
+    pane.fillSeries(coverage, symbol, timeframe);
+    if (pane.symbol() !== symbol || pane.timeframe() !== timeframe) return null;
+    // Bars, then one synchronous render+draw. A fresh pane has no viewport, so
+    // the engine fits -- which is the view an analysis wants.
+    await pane.refresh();
+    pane.draw();
+    return captureChart(pane.canvas, timeframe);
+  } finally {
+    holder.remove();
+  }
+}
+
 /// Split a `data:` URL into the media type and payload the API wants.
 ///
 /// Returns `null` for anything the server would refuse, so the shell does not
 /// send a payload it already knows will come back as a 422.
-function screenshotFromUrl(url) {
+function screenshotFromUrl(url, timeframeLabel = "") {
   const match = /^data:([^;,]+);base64,(.+)$/.exec(url || "");
   if (!match) return null;
   const [, media_type, data] = match;
@@ -3379,7 +3871,11 @@ function screenshotFromUrl(url) {
   // budget is in *image* bytes on both sides, which is the mistake that rejects a
   // legal image when it is measured in the wrong unit.
   if ((data.length * 3) / 4 > MAX_SCREENSHOT_BYTES) return null;
-  return { media_type, data };
+  // Labelled with the chart's timeframe when the caller knows it: a question
+  // carrying four images is unreadable to the model without captions, and the
+  // prompt lists them by this label in order.
+  const label = timeframeLabel ? `${timeframeLabel} chart` : null;
+  return label ? { media_type, data, label } : { media_type, data };
 }
 
 /// Turn chart attachment on and off.
@@ -3387,7 +3883,7 @@ function paintAttach() {
   const button = el("attachChart");
   button.setAttribute("aria-pressed", attachChart ? "true" : "false");
   el("attachNote").textContent = attachChart
-    ? "the chart's viewport, your drawings and a picture go with each question"
+    ? "the chart's viewport, drawings and a 1d/4h/1h/5m screenshot ladder of this symbol go with each question"
     : "";
 }
 
@@ -5300,7 +5796,14 @@ async function main() {
   );
 
   wireWatchlist();
-
+  // The watchlist has no aside tab any more (it lives in its own rail), so
+  // nothing else would ever call its pane path -- the rail prices itself here,
+  // once, and the rail's own interactions keep it current after that. The pane
+  // also ships `hidden` in the markup (only a `selectPane` used to clear it),
+  // so the rail's one pane is shown here directly.
+  document.getElementById("pane-watchlist").hidden = false;
+  renderWatchlist();
+  loadWatchlistUniverse();
   // Workspace event listeners.
   el("wsCreate").onclick = createWorkspace;
   el("wsDelete").onclick = deleteWorkspace;
@@ -5350,6 +5853,7 @@ async function main() {
   // failed engine load is something a pane has to be able to say.
   openFirstPane();
   refreshCloseButtons();
+  wireSplitters();
 
   // A pane is marked when it is touched, which is the page's only way of knowing
   // which chart the user means: the aside describes one chart, and neither a
@@ -5401,6 +5905,42 @@ async function main() {
   // same once-per-frame coalescing a wheel or a pan does. The canvas is
   // re-measured inside `draw()`, which is what makes this the resize path at all.
   window.addEventListener("resize", () => {
+    for (const pane of panes) pane.redraw();
+  });
+
+  // The chart menu closes on any press it did not start. The menu itself stops
+  // propagation (its controls must not close it), and a pane's canvas has its
+  // own closer, so this only has to catch the rest of the page.
+  document.getElementById("chartMenu").addEventListener("pointerdown", (e) => e.stopPropagation());
+  document.addEventListener("pointerdown", () => {
+    for (const pane of panes) pane.closeMenu();
+  });
+
+  // The watchlist rail: hide it, and bring it back. The sliver lives at the
+  // screen's left edge only while the rail is gone, so a removed list is one
+  // click from returning and nothing extra is on screen while it is not.
+  const rail = document.getElementById("sideWatch");
+  const railSplit = document.getElementById("splitWatch");
+  const railShow = document.getElementById("railShow");
+  try {
+    if (localStorage.getItem("watchlist.hidden") === "1") {
+      rail.classList.add("hideRail");
+      railSplit.classList.add("hideRail");
+      railShow.hidden = false;
+    }
+  } catch { /* private mode: the rail just starts visible */ }
+  document.getElementById("railHide").addEventListener("click", () => {
+    rail.classList.add("hideRail");
+    railSplit.classList.add("hideRail");
+    railShow.hidden = false;
+    try { localStorage.setItem("watchlist.hidden", "1"); } catch { /* the drag still worked */ }
+    for (const pane of panes) pane.redraw();
+  });
+  railShow.addEventListener("click", () => {
+    rail.classList.remove("hideRail");
+    railSplit.classList.remove("hideRail");
+    railShow.hidden = true;
+    try { localStorage.removeItem("watchlist.hidden"); } catch { /* as above */ }
     for (const pane of panes) pane.redraw();
   });
   el("ask").addEventListener("click", ask);
