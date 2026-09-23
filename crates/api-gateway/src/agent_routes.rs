@@ -176,20 +176,12 @@ pub async fn ask(
         request = request.with_timeframes(frames.clone());
     }
     if let Some(mut chart) = body.chart {
-        // Validated *here*, before the rate limit is spent and before the model
-        // is called. A screenshot the provider cannot decode would otherwise
-        // cost a full paid turn and surface as an opaque upstream error, and a
-        // user has no way to tell that from the model failing to understand.
-        if let Some(screenshot) = chart.screenshot.take() {
-            chart.screenshot = Some(screenshot.validate().map_err(|reason| {
-                ApiError::coded(
-                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
-                    "SCREENSHOT_INVALID",
-                    reason,
-                )
-            })?);
-        }
-        // A busy chart is not an error, so the clamp trims rather than refuses.
+        // A busy chart is not an error, so the clamps trim rather than refuse:
+        // drawings past the cap and images past the four-image budget (or a
+        // capture the shell should never have sent -- an svg, an empty payload)
+        // are dropped here, before the rate limit is spent, with the survivors
+        // validated against the same rules the server would refuse on.
+        chart.clamp_screenshots();
         chart.clamp_drawings();
         if !chart.is_empty() {
             tracing::info!(

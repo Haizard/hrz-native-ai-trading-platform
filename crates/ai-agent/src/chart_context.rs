@@ -86,12 +86,21 @@ pub struct DrawnLevel {
 }
 
 /// A screenshot of the chart canvas, as uploaded by the shell.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChartScreenshot {
     /// Media type, e.g. `image/png`. Must be in [`SCREENSHOT_MEDIA_TYPES`].
     pub media_type: String,
     /// Base64-encoded image data.
     pub data: String,
+    /// What the image shows, in the shell's own words -- e.g. `"4h chart"`.
+    ///
+    /// Optional for compatibility with shells that sent one unnamed capture;
+    /// a multi-image question is unreadable without labels, so the prompt names
+    /// every image by this field and an unnamed one is described generically.
+    /// A label is shell-chosen, never user-typed, so it carries no injection
+    /// surface beyond a phrase the model is told to treat as a caption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl ChartScreenshot {
@@ -169,7 +178,25 @@ pub struct ChartContext {
     pub drawings: Vec<DrawnLevel>,
     /// A capture of the canvas, when the shell produced one.
     pub screenshot: Option<ChartScreenshot>,
+    /// Further captures, when the shell can show more than one chart.
+    ///
+    /// A multi-timeframe question -- "is this holding across the ladder?" --
+    /// is answered by *seeing* the ladder, so a shell with several charts of
+    /// the same symbol sends each one here, labelled. [`Self::screenshot`]
+    /// stays the primary view (the chart the user is looking at); these ride
+    /// behind it. Capped by [`MAX_SCREENSHOTS`] in
+    /// [`Self::clamp_screenshots`] -- every image is paid for in tokens, and
+    /// a fifth chart has never been the difference in a thesis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<ChartScreenshot>,
 }
+
+/// The most images one question may carry.
+///
+/// Four -- one primary plus the 1d/4h/1h/5m ladder a shell can plausibly
+/// chart. Images dominate a request's token cost, and a vision pass over more
+/// than four charts reads none of them well.
+pub const MAX_SCREENSHOTS: usize = 4;
 
 impl ChartContext {
     /// Whether the packet carries nothing worth rendering.
@@ -182,6 +209,7 @@ impl ChartContext {
             && self.price_high.is_none()
             && self.drawings.is_empty()
             && self.screenshot.is_none()
+            && self.screenshots.is_empty()
     }
 
     /// A one-line summary for the trace and the logs.
@@ -206,6 +234,9 @@ impl ChartContext {
         if let Some(screenshot) = &self.screenshot {
             parts.push(screenshot.describe());
         }
+        if !self.screenshots.is_empty() {
+            parts.push(format!("{} further captures", self.screenshots.len()));
+        }
         parts.join(", ")
     }
 
@@ -216,6 +247,55 @@ impl ChartContext {
             (Some(from), Some(to), Some(timeframe)) => Some(visible_bars(from, to, Some(timeframe))),
             _ => None,
         }
+    }
+
+    /// Validate and cap the image set, keeping the primary first.
+    ///
+    /// Runs at the edge (`agent_routes`, the agent socket) before a paid turn:
+    /// the primary goes first, then extras in the order sent, until
+    /// [`MAX_SCREENSHOTS`] images are held. Extras past the cap are dropped
+    /// silently -- a fifth chart is truncated, not refused, because the question
+    /// is still answerable with what remains. Returns how many images were
+    /// dropped, for the trace.
+    pub fn clamp_screenshots(&mut self) -> usize {
+        let mut dropped = 0;
+        if let Some(primary) = self.screenshot.take() {
+            if let Err(reason) = primary.clone().validate() {
+                tracing::warn!(target: "ai_agent", %reason, "dropping the primary chart screenshot");
+                dropped += 1;
+            } else {
+                self.screenshot = Some(primary);
+            }
+        }
+        let mut kept: Vec<ChartScreenshot> = Vec::new();
+        for shot in self.screenshots.drain(..) {
+            let budget = MAX_SCREENSHOTS - usize::from(self.screenshot.is_some());
+            if kept.len() >= budget {
+                dropped += 1;
+                continue;
+            }
+            if let Err(reason) = shot.clone().validate() {
+                tracing::warn!(target: "ai_agent", %reason, "dropping a chart screenshot");
+                dropped += 1;
+                continue;
+            }
+            kept.push(shot);
+        }
+        self.screenshots = kept;
+        dropped
+    }
+
+    /// Every image the packet carries, primary first.
+    ///
+    /// What the orchestrator walks when building the message blocks.
+    #[must_use]
+    pub fn all_screenshots(&self) -> Vec<&ChartScreenshot> {
+        let mut out = Vec::new();
+        if let Some(primary) = &self.screenshot {
+            out.push(primary);
+        }
+        out.extend(self.screenshots.iter());
+        out
     }
 
     /// Drop the drawings past [`MAX_DRAWINGS`], keeping the most recent.
@@ -283,7 +363,8 @@ impl ChartContext {
             }
         }
 
-        if let Some(screenshot) = &self.screenshot {
+        let images = self.all_screenshots();
+        if images.len() == 1 {
             out.push_str(&format!(
                 "\nA {} of the canvas is attached. Use it to see *where* the user is \
                  looking and what they have marked -- the shape of the setup, which \
@@ -291,8 +372,28 @@ impl ChartContext {
                  and do not treat anything you see in it as a measurement: it is an \
                  illustration of a viewport, and every number you cite still has to \
                  come from a tool.\n",
-                screenshot.describe()
+                images[0].describe()
             ));
+        } else if images.len() > 1 {
+            // Named in order, matching the order the images ride in the message
+            // blocks -- the model pairs caption to picture by position, so the
+            // two lists must agree exactly.
+            out.push_str(
+                "\nImages of the user's charts are attached, in this order. Use them to \
+                 see the setup across timeframes -- whether the level they ask about \
+                 holds on the higher frame, where price sits in the range the lower \
+                 frames are drawing. They are illustrations, not data: do not read \
+                 prices off them, and treat every number you cite as coming from a \
+                 tool.\n",
+            );
+            for (index, shot) in images.iter().enumerate() {
+                let name = shot
+                    .label
+                    .as_deref()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| shot.describe());
+                out.push_str(&format!("{}. {}\n", index + 1, name));
+            }
         }
 
         out.push_str(
@@ -471,6 +572,7 @@ mod tests {
             screenshot: Some(ChartScreenshot {
                 media_type: "image/png".into(),
                 data: "A".repeat(4_000),
+            label: None,
             }),
             ..Default::default()
         };
@@ -495,6 +597,7 @@ mod tests {
         let bad = ChartScreenshot {
             media_type: "image/svg+xml".into(),
             data: "AAAA".into(),
+            label: None,
         };
         let error = bad.validate().expect_err("svg is not a raster the model reads");
         assert!(error.contains("cannot read"), "{error}");
@@ -503,12 +606,14 @@ mod tests {
         let empty = ChartScreenshot {
             media_type: "image/png".into(),
             data: String::new(),
+            label: None,
         };
         assert!(empty.validate().is_err(), "an empty payload is not a screenshot");
 
         let good = ChartScreenshot {
             media_type: "image/jpeg".into(),
             data: "A".repeat(1000),
+            label: None,
         };
         assert!(good.validate().is_ok());
     }
@@ -523,6 +628,7 @@ mod tests {
         let screenshot = ChartScreenshot {
             media_type: "image/png".into(),
             data: "A".repeat(encoded_len),
+            label: None,
         };
         assert!(
             screenshot.validate().is_ok(),
@@ -533,6 +639,7 @@ mod tests {
         let over = ChartScreenshot {
             media_type: "image/png".into(),
             data: "A".repeat(MAX_SCREENSHOT_BYTES / 3 * 4 + 4096),
+            label: None,
         };
         assert!(over.validate().is_err());
     }
@@ -635,7 +742,9 @@ mod tests {
             screenshot: Some(ChartScreenshot {
                 media_type: "image/png".into(),
                 data: "AAAA".into(),
+                label: Some("15m chart".into()),
             }),
+            screenshots: Vec::new(),
         };
 
         let json = serde_json::to_value(&context).expect("serializes");
@@ -649,9 +758,83 @@ mod tests {
         assert_eq!(json["drawings"][0]["label"], "marked");
         assert_eq!(json["screenshot"]["media_type"], "image/png");
         assert_eq!(json["screenshot"]["data"], "AAAA");
+        assert_eq!(json["screenshot"]["label"], "15m chart");
+        // An empty extras list is absent on the wire, not an empty array.
+        assert!(json.get("screenshots").is_none());
 
         let back: ChartContext = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, context);
+    }
+
+    #[test]
+    fn multiple_screenshots_are_capped_and_validated_primary_first() {
+        let shot = |label: &str, ok: bool| ChartScreenshot {
+            media_type: "image/png".into(),
+            data: if ok { "AAAA".into() } else { String::new() },
+            label: Some(label.into()),
+        };
+
+        // Primary + four extras: with the primary held, one extra is past the
+        // four-image budget and must be dropped, not refused.
+        let mut context = ChartContext {
+            screenshot: Some(shot("4h chart", true)),
+            screenshots: vec![
+                shot("1d chart", true),
+                shot("1h chart", true),
+                shot("5m chart", true),
+                shot("trailing chart", true),
+            ],
+            ..Default::default()
+        };
+        let dropped = context.clamp_screenshots();
+        assert_eq!(dropped, 1);
+        assert_eq!(context.all_screenshots().len(), MAX_SCREENSHOTS);
+        assert_eq!(context.screenshots[0].label.as_deref(), Some("1d chart"));
+
+        // An invalid image is dropped with the rest surviving, and a dropped
+        // primary frees budget for the extras.
+        let mut context = ChartContext {
+            screenshot: Some(shot("broken primary", false)),
+            screenshots: vec![shot("1d chart", true), shot("1h chart", true), shot("5m chart", true)],
+            ..Default::default()
+        };
+        let dropped = context.clamp_screenshots();
+        assert_eq!(dropped, 1);
+        assert!(context.screenshot.is_none());
+        assert_eq!(context.screenshots.len(), 3);
+
+        // And the whole set answers the is-empty question correctly.
+        let mut bare = ChartContext::default();
+        assert!(bare.is_empty());
+        bare.screenshots = vec![shot("only", true)];
+        assert!(!bare.is_empty());
+    }
+
+    #[test]
+    fn a_multi_image_prompt_lists_every_image_in_order() {
+        let context = ChartContext {
+            screenshot: Some(shot_with_label("primary", Some("4h chart"))),
+            screenshots: vec![
+                shot_with_label("extra1", Some("1d chart")),
+                shot_with_label("extra2", None),
+            ],
+            ..Default::default()
+        };
+
+        let rendered = context.render().expect("multi-image context renders");
+        assert!(rendered.contains("Images of the user's charts are attached"), "{rendered}");
+        let primary_at = rendered.find("1. 4h chart").expect("primary named first");
+        let extra1_at = rendered.find("2. 1d chart").expect("first extra named");
+        let extra2_at = rendered.find("3. ").expect("unlabelled image still listed");
+        assert!(primary_at < extra1_at && extra1_at < extra2_at, "{rendered}");
+    }
+
+    fn shot_with_label(name: &str, label: Option<&str>) -> ChartScreenshot {
+        ChartScreenshot {
+            media_type: "image/png".into(),
+            data: name.into(),
+            label: label.map(str::to_string),
+        }
     }
 
     #[test]

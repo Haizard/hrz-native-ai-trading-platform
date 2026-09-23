@@ -673,14 +673,21 @@ where
         // starts, not discovered by the provider a turn later. On the socket the
         // refusal is a `Notice` frame rather than a 422 -- the client is already
         // connected, so there is no status code to carry it.
-        if let Some(screenshot) = chart.screenshot.take() {
-            match screenshot.validate() {
-                Ok(valid) => chart.screenshot = Some(valid),
-                Err(reason) => {
-                    return Some(Frame::Notice {
-                        message: format!("{reason} The question was not asked."),
-                    });
-                }
+        // The same image clamp `POST /agent/ask` runs: invalid or oversize
+        // captures are dropped (with a note), survivors ride with the question.
+        // On the socket the refusal is a `Notice` frame rather than a 422 --
+        // the client is already connected, so there is no status code to carry it.
+        let dropped = chart.clamp_screenshots();
+        if dropped > 0 {
+            let note = Frame::Notice {
+                message: format!(
+                    "{dropped} chart image{} could not be used (wrong format or oversize) and \
+                     went with the question as text context only.",
+                    if dropped == 1 { "" } else { "s" }
+                ),
+            };
+            if send_text(sink, &note).await.is_err() {
+                return None;
             }
         }
         chart.clamp_drawings();

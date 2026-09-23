@@ -35,7 +35,8 @@ use strategy_dsl::expr::ConceptPart;
 
 use crate::error::AgentError;
 use crate::llm_client::{
-    LlmClient, LlmRequest, Message, ToolCall, ToolChoice, ToolResult, ToolSpec, Usage,
+    ContentBlock, LlmClient, LlmRequest, Message, ToolCall, ToolChoice, ToolResult, ToolSpec,
+    Usage,
 };
 use crate::multi_timeframe::{analyze_ladder, LadderView, TimeframeLadder};
 use crate::progress::{NoProgress, Progress, ProgressSink};
@@ -420,21 +421,29 @@ impl Agent {
             &view,
             request.chart.as_ref(),
         );
-        // The screenshot rides on the first user message. It is attached here
-        // rather than as a separate message because Bedrock requires a `user`
-        // turn to alternate with `assistant`, and an extra image-only message
-        // would consume a turn of the loop's budget for no reasoning.
-        let mut messages = vec![match request
+        // Screenshots ride on the first user message, primary view first. It is
+        // attached here rather than as a separate message because Bedrock
+        // requires a `user` turn to alternate with `assistant`, and an extra
+        // image-only message would consume a turn of the loop's budget for no
+        // reasoning. Multi-chart shells label each capture so the prompt's
+        // image list (from `ChartContext::render`) pairs each caption to the
+        // block at the same position.
+        let shots: Vec<&crate::chart_context::ChartScreenshot> = request
             .chart
             .as_ref()
-            .and_then(|chart| chart.screenshot.as_ref())
-        {
-            Some(screenshot) => Message::user_with_image(
-                &request.question,
-                &screenshot.media_type,
-                &screenshot.data,
-            ),
-            None => Message::user(&request.question),
+            .map(crate::chart_context::ChartContext::all_screenshots)
+            .unwrap_or_default();
+        let mut first_content: Vec<ContentBlock> = Vec::with_capacity(shots.len() + 1);
+        for shot in &shots {
+            first_content.push(ContentBlock::Image {
+                media_type: shot.media_type.clone(),
+                data: shot.data.clone(),
+            });
+        }
+        first_content.push(ContentBlock::Text(request.question.clone()));
+        let mut messages = vec![Message {
+            role: crate::llm_client::Role::User,
+            content: first_content,
         }];
         let mut tools = self.registry.specs();
         tools.push(submit_thesis_spec());
@@ -1468,6 +1477,7 @@ mod tests {
             screenshot: Some(crate::chart_context::ChartScreenshot {
                 media_type: "image/png".into(),
                 data: "iVBORw0KGgo=".into(),
+            label: None,
             }),
             ..Default::default()
         };
