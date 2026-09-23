@@ -1687,6 +1687,18 @@ async fn run_market_feed(
                     for forming in builder.forming() {
                         chart_bus.publish_chart_candle(forming.clone());
                     }
+                    // The 1m forming bar, whether or not a trade has arrived in
+                    // this bucket yet. `forming()` only yields buckets a trade
+                    // has already opened, so a 1m chart watching this feed had
+                    // a newest bar that froze until the minute's first trade --
+                    // and with it the live price level and the bar itself only
+                    // moved when the minute closed. Every frame above already
+                    // duplicates one the builder produced; this one guarantees
+                    // the lane carries the shortest series too, which is the
+                    // one a live chart is most likely watching.
+                    if let Some(current) = builder.current_forming(analytics_core::Timeframe::M1) {
+                        chart_bus.publish_chart_candle(current.clone());
+                    }
                 }
                 else => break,
             }

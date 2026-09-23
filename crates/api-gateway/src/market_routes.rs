@@ -348,7 +348,12 @@ pub struct SearchResponse {
 }
 
 /// Most results a search may return.
-const MAX_SEARCH_LIMIT: usize = 100;
+///
+/// Large on purpose: the watchlist's default view asks for the venue's whole
+/// listing (`q=` empty), so the ceiling is "every instrument a major venue
+/// lists", not "one screen of suggestions". The shell pages nothing and a
+/// truncated default list is the "my watchlist is missing symbols" report.
+const MAX_SEARCH_LIMIT: usize = 2_000;
 
 /// `GET /symbols/search`
 ///

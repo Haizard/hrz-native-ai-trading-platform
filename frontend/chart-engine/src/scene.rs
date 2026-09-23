@@ -243,6 +243,27 @@ pub struct Request {
     /// cannot drift from the chart's own time and price transforms.
     #[serde(default)]
     pub indicator: Option<IndicatorOutput>,
+    /// Whether the window should stay pinned to the series' newest bar.
+    ///
+    /// A live chart appends bars while the user is reading; a window resolved
+    /// against the series it was resolved against keeps showing the bars it was
+    /// resolved against, and the "new candles only appear after a reload"
+    /// failure is exactly that. `true` re-anchors the resolved window to the
+    /// end on every frame, so the newest bar stays on screen -- and stays off
+    /// whenever the user scrolled back, which is the shell's decision to send.
+    /// Count and price zooms survive: only the time anchor moves.
+    #[serde(default)]
+    pub follow: bool,
+    /// The newest price the shell knows about, when it knows one.
+    ///
+    /// Drawn as the last-price line every other platform charts: a horizontal
+    /// rule across the plot at the live price, with its own axis tag. It is a
+    /// request field rather than derived from the last candle's close because
+    /// the forming bar **is** the live price and the shell holds it from the
+    /// feed; `None` -- history only, or no feed yet -- draws nothing, exactly
+    /// as a chart with no live data should.
+    #[serde(default)]
+    pub last_price: Option<f64>,
 }
 
 /// The levels drawn when a request does not say.
@@ -268,6 +289,8 @@ impl Default for Request {
             drawings: Vec::new(),
             overlays: Vec::new(),
             indicator: None,
+            follow: false,
+            last_price: None,
         }
     }
 }
@@ -623,8 +646,31 @@ pub struct Scene {
     /// The attached generated indicator, when its output was valid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indicator: Option<SceneIndicator>,
+    /// The live price, already positioned, with whether it is above the last
+    /// drawn bar's close -- the up/down the tag is coloured by.
+    ///
+    /// `None` when the request carried no live price, or when it sits outside
+    /// the drawn axis: a level the axis does not show is not hidden, it is
+    /// genuinely off this view, and the shell's follow logic is what keeps it
+    /// on screen when the chart is live.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_price: Option<LastPrice>,
     /// A caveat about what is being shown, when there is one.
     pub note: Option<String>,
+}
+
+/// The live price line: the price, where it sits, and which way it last moved.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LastPrice {
+    /// The price itself, for the axis tag.
+    pub price: f64,
+    /// Canvas y of the line.
+    pub y: f64,
+    /// Direction of the last tick: up when the live price is at or above the
+    /// newest visible bar's close, down otherwise. The shell colours the tag
+    /// with the same up/down pair every candle uses, so the chart never says
+    /// green for a fall.
+    pub up: bool,
 }
 
 /// Map a price into canvas y, given the range and the plot.
@@ -707,6 +753,7 @@ pub fn build(request: &Request) -> Scene {
         drawings: Vec::new(),
         overlays: Vec::new(),
         indicator: None,
+        last_price: None,
         note: None,
     };
 
@@ -746,6 +793,12 @@ pub fn build(request: &Request) -> Scene {
         None => request.viewport,
     };
     let window = viewport.resolve(plotted.len());
+    // Follow **after** resolve and **before** the viewport is reported: the
+    // reported viewport is the one that reproduces this frame, so the shell
+    // echoes a re-anchored window and stays pinned while frames keep arriving.
+    // Before the gesture, so a pan that lands on the same frame the shell turns
+    // following on ends where the user dragged rather than where the end was.
+    let window = if request.follow { window.followed() } else { window };
     scene.viewport = window.as_viewport();
 
     let visible = &plotted[window.from..window.end()];
@@ -936,6 +989,20 @@ pub fn build(request: &Request) -> Scene {
     // price scale -- see `Request::overlays` for why that matters.
     let (overlays, refused_overlays) = overlay_parts(&request.overlays, &frame);
     scene.overlays = overlays;
+
+    // The live price, positioned on the same frame everything else uses -- and
+    // gated on the price axis being usable, because a line with no axis is a
+    // division by zero wearing a label.
+    if let Some(price) = request.last_price {
+        if scene.price_max > scene.price_min {
+            let close = visible[visible.len() - 1].close;
+            scene.last_price = Some(LastPrice {
+                price,
+                y: price_to_y(price, scene.price_min, scene.price_max, &plot),
+                up: price >= close,
+            });
+        }
+    }
 
     match request.indicator.as_ref() {
         Some(output) => match indicator_parts(output, &frame) {

@@ -165,6 +165,26 @@ impl Window {
         self.from == 0 && self.count == self.total
     }
 
+    /// The same window, re-anchored to the series' end.
+    ///
+    /// A live chart has to keep the newest bar on screen: frames arrive while
+    /// the user is reading, and a window resolved against the series it was
+    /// resolved against keeps showing the same bars while new ones append off
+    /// the right edge -- the "live candles only appear after a reload" failure.
+    /// Recomputing `from` from the end (rather than shifting it by one) makes
+    /// catching up after any number of missed frames the same operation as
+    /// following one, and cannot walk `from` past zero on a short series.
+    ///
+    /// The count and the price range are untouched: following moves the window
+    /// along the time axis only, and never rewrites a zoom the user chose.
+    #[must_use]
+    pub fn followed(self) -> Self {
+        Self {
+            from: self.total.saturating_sub(self.count),
+            ..self
+        }
+    }
+
     /// This window as the request that would reproduce it.
     ///
     /// The scene reports *this* rather than the window itself, and the difference

@@ -362,12 +362,54 @@ function createChartPane(root, hooks = {}) {
     // where the request is built: the engine has no way to know which instrument
     // a bare price belongs to.
     drawOverlays(ctx, scene);
-    drawIndicatorEvidence(ctx, scene);
-    // The user's own marks, above everything: a drawing that could cover the
+    drawIndicatorEvidence(ctx, scene);    // The user's own marks, above everything: a drawing that could cover the
     // answer's levels, or the price labels, would be an annotation they cannot
     // read.
     drawDrawings(ctx, scene);
+
+    // The live price, topmost of all: it is the one mark on the chart that must
+    // never be hidden, because every other layer describes the market and this
+    // one *is* the market, now.
+    drawLastPrice(ctx, scene);
+
     drawAxis(ctx, scene);
+  }
+
+  /// The last-price line: the horizontal rule other platforms draw at the live
+  /// price, with the price in the axis.
+  ///
+  /// The engine positions the line -- the y comes from the same price scale as
+  /// every candle, so the tag cannot drift from the axis it sits in -- and this
+  /// function paints: the rule across the plot, the tag in the axis gutter, and
+  /// the up/down colour the candles already use. Skipped when the scene carries
+  /// no live price: history-only, no feed yet, or the price outside this view.
+  function drawLastPrice(ctx, scene) {
+    const lp = scene.last_price;
+    if (!lp || !Number.isFinite(lp.y)) return;
+    const colour = lp.up ? COLORS.up : COLORS.down;
+
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(scene.plot.x, Math.round(lp.y) + 0.5);
+    ctx.lineTo(scene.plot.x + scene.plot.w, Math.round(lp.y) + 0.5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // The price marker and the tag it carries. Filled, so it reads over the
+    // axis ticks; the gutter is the engine's own right pad, which is where the
+    // ticks' numbers live too -- this one simply wins, because it is the price.
+    const text = fmtPrice(lp.price);
+    ctx.font = "10px ui-monospace, monospace";
+    const w = ctx.measureText(text).width + 8;
+    const x = scene.plot.x + scene.plot.w + 2;
+    const y = Math.min(Math.max(lp.y, 8), scene.height - 20);
+    ctx.fillStyle = colour;
+    ctx.fillRect(x, y - 8, w, 16);
+    ctx.fillStyle = "#0d1117";
+    ctx.textAlign = "left";
+    ctx.fillText(text, x + 4, y + 3.5);
   }
 
   /// Regions -- the chart's only *area* overlay.
@@ -959,6 +1001,30 @@ function createChartPane(root, hooks = {}) {
   /// badge driven by the connection state would stay green straight through it.
   const live = { state: "idle", at: 0, bar: 0 };
 
+  /// Whether the chart's window stays pinned to the newest bar.
+  ///
+  /// On by default -- a live chart that needs a reload to show the next candle
+  /// is the failure, not the feature -- and switched off by any pan or drag
+  /// along the time axis, because a user who scrolled back to a swing low does
+  /// not want the chart yanked to the right edge under them. The Fit button
+  /// turns it back on: "show everything again" includes what arrives next.
+  let followLive = true;
+
+  /// The newest price this pane knows, from the feed's forming bar.
+  ///
+  /// Kept on the pane rather than read back out of `candles`: the last element
+  /// of a cleared or refetching array is not a live price, and a line drawn
+  /// from it would flicker to nothing between frames for no reason a user
+  /// could see.
+  let lastPrice = null;
+
+  /// The live price as the engine request wants it, or null when there is not
+  /// one. A function rather than a bare read so `render` cannot snapshot a
+  /// stale value into a request built a frame later.
+  function livePrice() {
+    return Number.isFinite(lastPrice) ? lastPrice : null;
+  }
+
   /// The clock the badge counts with. Its own timer rather than a side effect of
   /// `render`, because the reading that matters is the one where nothing redraws.
   let liveTimer = 0;
@@ -1042,6 +1108,16 @@ function createChartPane(root, hooks = {}) {
       // detecting, on the candles this request already carries, so switching this
       // on costs no extra round trip.
       zones: zonesOn(),
+      // Whether the window stays pinned to the newest bar. On while the user has
+      // not scrolled or panned back; any pan or drag along the time axis turns it
+      // off, and the Fit button turns it back on. Without it the engine re-resolves
+      // the same bars every frame while new ones append off-screen -- which is why
+      // live candles used to appear only after a reload.
+      follow: followLive,
+      // The live price, for the last-price line the engine positions and this
+      // shell colours. From the feed's own forming bar -- the live price *is*
+      // that bar's last trade -- and null whenever there is not one yet.
+      last_price: livePrice(),
       footprint: footprint ? footprint.candles : [],
       footprint_trades: footprint ? footprint.trades : 0,
       // The user's drawings, with the one being placed appended. An anchor may be
@@ -1226,6 +1302,9 @@ function createChartPane(root, hooks = {}) {
       // Dragging the chart to the right reveals *older* bars, so the view moves the
       // other way -- the direction a finger moves a sheet of paper. Vertically it
       // is the same way round as the pointer, because price runs up the screen.
+      // Any horizontal drag is the user taking the window back from the live
+      // edge: following stops, and only Fit (or a series change) resumes it.
+      if (dx !== 0) followLive = false;
       applyGesture({ kind: "pan", time: -dx, price: dy });
       return;
     }
@@ -1390,9 +1469,12 @@ function createChartPane(root, hooks = {}) {
   ///
   /// Called when the *series* changes -- a different symbol, timeframe or bar
   /// count. Not on a chart-type change, where the same candles are still on
-  /// screen and the window is still the one the user chose.
+  /// screen and the window is still the one the user chose. Following resets
+  /// with it: a new series has no scroll position to preserve, and a live
+  /// chart starts watching its newest bar, not its oldest.
   function resetViewport() {
     viewport = null;
+    followLive = true;
   }
 
   // ---------------------------------------------------------------------------
@@ -2075,6 +2157,13 @@ function createChartPane(root, hooks = {}) {
     live.state = "connecting";
     live.at = 0;
     live.bar = 0;
+    // Any reconnect this socket had scheduled is its own funeral: the new
+    // connection is the plan now, and a timer left running would close it a
+    // few seconds later for a death that already stopped mattering.
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = 0;
+    }
     refreshLiveBadge();
 
     const ws = new WebSocket(
@@ -2098,11 +2187,15 @@ function createChartPane(root, hooks = {}) {
       if (frame.type === "data") {
         // Replace the last candle if it is the same bucket, append a newer one,
         // and drop an older one. The server publishes forming frames and closes
-        // from one task in order, but this pane also survives reconnects, lag
-        // and a window that was refetched mid-stream -- anywhere the frame
-        // sequence can hiccup. Refusing to move a chart backwards is the
-        // client-side half of that guarantee. This is the only market-data
-        // decision this file makes, and it is about identity, not value.
+        // from one task in order -- a bucket's close, then the next bucket's
+        // forming bar -- but this pane also survives reconnects, lag and a
+        // window that was refetched mid-stream -- anywhere the frame sequence
+        // can hiccup. In-order frames are handled in order, out-of-order ones
+        // refused: the chart never moves backwards. One path for every frame,
+        // because a forming bar and the close that supersedes it are the same
+        // event at two moments, not two kinds of data. This is the only
+        // market-data decision this file makes, and it is about identity, not
+        // value.
         const incoming = frame.payload;
         const last = candles[candles.length - 1];
         if (last && incoming.open_time < last.open_time) {
@@ -2113,6 +2206,10 @@ function createChartPane(root, hooks = {}) {
           candles.push(incoming);
         }
         if (candles.length > Number(el("limit").value) + 50) candles.shift();
+        // The live price is the newest bar's own close -- on a forming frame,
+        // its last trade. Written before the repaint so the price line and the
+        // newest bar move in the same frame rather than one after the other.
+        lastPrice = incoming.close;
         // Stamped on arrival rather than on the bar's own time: a replayed bar
         // arrives now, and "is the feed alive" is a question about arrivals.
         live.at = Date.now();
@@ -2137,8 +2234,11 @@ function createChartPane(root, hooks = {}) {
         el("chartNote").textContent = feedNotice;
         refreshLiveBadge();
       } else if (frame.type === "lagged") {
-        el("chartNote").textContent =
-          `the live feed dropped ${frame.dropped} candles; reload to resynchronise`;
+        // The gap is real: refetch the window and open a fresh channel, rather
+        // than redrawing a chart with a hole in it and a note nobody reads.
+        // The old socket is replaced on purpose; `connectLive` closes it, and
+        // its guards keep a superseded socket from speaking for the pane.
+        refresh().then(connectLive);
       }
     };
     ws.onclose = () => {
@@ -2152,11 +2252,41 @@ function createChartPane(root, hooks = {}) {
       // configured" would be two answers to one question.
       if (live.state !== "nofeed") live.state = "offline";
       refreshLiveBadge();
+      // A closed channel used to stay closed until a reload, which is how a
+      // chart ends up "live" with candles that stopped arriving an hour ago.
+      // The feed dies for ordinary reasons -- a network blip, a deploy -- and
+      // a chart that cannot recover from one is a chart that lies. Reconnect
+      // with backoff; the reset inside `connectLive` clears the stale reading.
+      // `nofeed` is *not* retried: the server has said why nothing will arrive,
+      // and hammering it will not change `MARKET_FEED`.
+      if (live.state !== "nofeed") scheduleReconnect();
     };
   }
   // ---------------------------------------------------------------------------
   // This pane's own listeners
   // ---------------------------------------------------------------------------
+
+  /// The pending reconnect, if there is one. Pane state rather than page state:
+  /// two panes watch two channels, and one dying must not reschedule the other.
+  let reconnectTimer = 0;
+
+  /// Reopen the channel after a close, with backoff.
+  ///
+  /// The feed dies for ordinary reasons -- a network blip, a gateway deploy --
+  /// and a chart that needs a reload to recover is a chart that quietly lies
+  /// for as long as the outage lasts. Backoff rather than an immediate retry,
+  /// because a gateway that is restarting will refuse a burst of reconnects
+  /// just as it refused the first, and capped at five seconds so recovery is
+  /// quick once the endpoint is back.
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = 0;
+      // The pane may have been re-pointed (or closed) while waiting; closing
+      // and re-opening here is what `connectLive` already handles.
+      connectLive();
+    }, 2000 + Math.floor(Math.random() * 3000));
+  }
 
   /// Attach the listeners that are about *this* pane: its canvas, its tool
   /// buttons, its series selects, its own reload. The two that are not -- the
@@ -2194,7 +2324,14 @@ function createChartPane(root, hooks = {}) {
       refresh().then(connectLive);
       if (hooks.onSymbolChange) hooks.onSymbolChange(paneApi);
     });
-    el("fit").addEventListener("click", () => applyGesture({ kind: "fit" }));
+    // Fit is also where following resumes: "show the whole series again"
+    // includes the bars that arrive next, and a button that refits while the
+    // chart stays frozen behind the live edge would have to be pressed every
+    // few seconds to do its one job.
+    el("fit").addEventListener("click", () => {
+      followLive = true;
+      applyGesture({ kind: "fit" });
+    });
     for (const button of root.querySelectorAll(".tools button[data-tool]")) {
       button.addEventListener("click", () => selectTool(button.dataset.tool));
     }
@@ -2431,9 +2568,14 @@ function createChartPane(root, hooks = {}) {
     deleteSelected,
 
     /// Take this pane off the page. Its own listeners go with its elements; the
-    /// three things that outlive them are the channel, a frame waiting for one,
-    /// and the clock the live badge counts with.
+    /// four things that outlive them are the channel, a frame waiting for one,
+    /// the clock the live badge counts with, and any reconnect the channel had
+    /// scheduled.
     destroy() {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = 0;
+      }
       if (socket) socket.close();
       if (gestureFrame) {
         cancelAnimationFrame(gestureFrame);
@@ -4849,6 +4991,21 @@ let watchlistSearch = null;
 /// on its own clock.
 async function fetchWatchlistTickers() {
   const rows = watchlistRows().map((row) => row.symbol);
+  if (rows.length > 500) {
+    // More rows than one venue call can filter for: ask for the venue's most
+    // active markets instead and keep whatever overlaps this list. The named
+    // form caps at 100 symbols server-side, and a multi-thousand-symbol URL
+    // would be a worse request than the summary one.
+    try {
+      const response = await api("/tickers?limit=1000");
+      for (const ticker of response.tickers || []) watchlistTickers.set(ticker.symbol, ticker);
+      watchlistTickersAt = Date.now();
+      renderWatchlist();
+    } catch {
+      // The list keeps its last prices and its age note, as below.
+    }
+    return;
+  }
   const symbols = [...new Set([...rows, activeSymbol()].filter(Boolean))];
   if (!symbols.length) return;
   try {
@@ -4865,22 +5022,48 @@ async function fetchWatchlistTickers() {
 
 /// What the list shows right now.
 ///
-/// A standing search answers with the venue's matches; otherwise favorites
-/// come first and the page's own instruments follow. The same row shape comes
-/// out of both, so painting never learns where a row came from.
+/// A standing search answers with the venue's matches; with no query, the
+/// venue's **whole** listing is the default. The previous default -- favorites
+/// plus the handful of instruments the page had already charted -- read as a
+/// broken watchlist: five rows where the venue trades thousands. `MARKET_SYMBOLS`
+/// warms feeds and seeds this list until the index lands; it is not a permission.
 function watchlistRows() {
   if (watchlistSearch) {
     return watchlistSearch.results.map((r) => ({ symbol: r.symbol, trading: r.trading }));
   }
   const seen = new Set();
   const rows = [];
-  for (const symbol of [...watchlistFavorites(), ...coverage.map((entry) => entry.symbol)]) {
+  for (const symbol of [
+    ...watchlistFavorites(),
+    ...coverage.map((entry) => entry.symbol),
+    ...watchlistUniverse,
+  ]) {
     if (!seen.has(symbol)) {
       seen.add(symbol);
       rows.push({ symbol });
     }
   }
   return rows;
+}
+
+/// Every symbol the venue lists, read once when the index is available.
+/// Fetched independently of a search so the default view is the whole venue
+/// rather than the few instruments this browser has charted so far.
+let watchlistUniverse = [];
+
+async function loadWatchlistUniverse() {
+  if (watchlistUniverse.length) return;
+  try {
+    const response = await api("/symbols/search?q=&limit=2000");
+    watchlistUniverse = (response.results || []).map((r) => r.symbol);
+    renderWatchlist();
+    fetchWatchlistTickers();
+  } catch {
+    // The default rows stay the charted instruments; the pane already says how
+    // many symbols it is showing, and a failed index fetch retries on the next
+    // open. A failure here has a fallback, unlike a failed search, which is why
+    // it stays silent while `runWatchlistSearch` does not.
+  }
 }
 
 async function runWatchlistSearch(query) {
@@ -4918,6 +5101,9 @@ function renderWatchlist() {
   const favorites = watchlistFavorites();
   const favoriteSet = new Set(favorites);
   const rows = watchlistRows();
+  // The clear affordance exists only while a query stands: a button for a
+  // state that cannot happen is noise above the list.
+  el("wlClear").hidden = !watchlistSearch;
 
   // While searching, favorites sit above the results as one-press exits: the
   // search replaced the default list, and this is how the user gets a pinned
@@ -4947,7 +5133,8 @@ function renderWatchlist() {
 
   el("wlCount").textContent = watchlistSearch
     ? `${rows.length} of ${watchlistSearch.indexed} listed symbols`
-    : `${rows.length} instrument${rows.length === 1 ? "" : "s"}`;
+    : `${rows.length} instrument${rows.length === 1 ? "" : "s"}` +
+      (watchlistUniverse.length ? " · whole venue" : "");
   // "Prices 2s ago" -- the age is the honest part. A watchlist whose clock
   // stopped showing an age has silently stopped ticking, and the number going
   // stale is how that is discovered.
@@ -5061,6 +5248,14 @@ function wireWatchlist() {
       runWatchlistSearch("");
     }
   });
+  // The visible way back to the full list. Escape already does it, but only
+  // for a keyboard user who has guessed so; the default view is the venue's
+  // whole listing now, and getting back to it must not be a trick.
+  el("wlClear").addEventListener("click", () => {
+    input.value = "";
+    runWatchlistSearch("");
+    input.focus();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -5071,8 +5266,12 @@ function selectPane(name) {
   for (const button of document.querySelectorAll(".tabs button")) {
     button.setAttribute("aria-selected", String(button.dataset.pane === name));
   }
+  // Every pane lives in its own container; the watchlist pane lives in the
+  // left rail and is the one pane that never hides, because the rail shows it
+  // beside every tab. Hiding it would blank the rail; showing another pane
+  // never touches it.
   for (const pane of document.querySelectorAll(".pane")) {
-    pane.hidden = pane.id !== `pane-${name}`;
+    pane.hidden = pane.id !== `pane-${name}` && pane.id !== "pane-watchlist";
   }
   // The live-trading panel is read when it is opened rather than at startup:
   // opt-in state is changed from elsewhere (the API, another tab) and a value
@@ -5086,6 +5285,7 @@ function selectPane(name) {
   // pane re-prices it immediately anyway.
   if (name === "watchlist") {
     renderWatchlist();
+    loadWatchlistUniverse();
     startWatchlistTicker();
   } else {
     stopWatchlistTicker();
@@ -5267,7 +5467,11 @@ async function main() {
   for (const pane of panes) pane.fillSeries(entries, pane.symbol() || undefined);
   // The watchlist's default rows are exactly this list; repainting it here
   // means the pane is never opened to an empty list after instruments load.
+  // The venue's whole listing follows async, so the default view grows from
+  // "what this page has charted" to "everything the venue trades" without
+  // blocking the first paint on an index fetch.
   renderWatchlist();
+  loadWatchlistUniverse();
 
   if (activePane.symbol()) {
     await activePane.refresh();

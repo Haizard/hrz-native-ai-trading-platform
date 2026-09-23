@@ -56,7 +56,7 @@ pub use indicator::{
     ReplayExit, ReplaySetup, SetupDirection, ZoneState, MAX_PRIMITIVES,
 };
 pub use scene::{
-    build, heikin_ashi, Bar, Level, Mode, Plot, Point, ProfileBar, Request, Scene,
+    build, heikin_ashi, Bar, LastPrice, Level, Mode, Plot, Point, ProfileBar, Request, Scene,
     SceneEvidenceLink, SceneIndicator, SceneIndicatorMarker, SceneIndicatorZone, SceneOrigin,
     SceneRegion, Tick,
 };

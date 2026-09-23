@@ -86,6 +86,11 @@
     border-left: 1px solid var(--line);
   }
   .chartPane:first-child { border-left: 0; }
+  /* The rail's watchlist pane needs none of the aside pane's own padding:
+     the rail's rules above own its edges. */
+  #pane-watchlist { padding: 8px 0 0; }
+  #pane-watchlist .row { padding: 0 10px; }
+  #pane-watchlist .wlHead { padding: 0 10px; }
   /*
     The pane's own controls. They used to be in the header, where they were
     page-level because there was one chart. Now each pane has its own series, so
@@ -142,6 +147,21 @@
   }
 
   aside { width: 380px; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  /*
+    The left rail: the watchlist, where a market list belongs -- left of the
+    thing you point it at. It is the watchlist pane wholesale (search, count,
+    rows), moved out of the aside so it is on screen with every tab, not only
+    while its own tab is selected. The ids inside are the pane's old ones, so
+    the shell's rendering code does not know the pane moved.
+  */
+  #sideWatch {
+    width: 250px; flex: 0 0 250px;
+    border-right: 1px solid var(--line); background: var(--panel);
+    display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  }
+  #sideWatch .wlHead { padding: 0 10px; }
+  #sideWatch .row { padding: 0 10px; }
+  #sideWatch .panePad { padding: 8px 10px 4px; }
   .tabs { display: flex; border-bottom: 1px solid var(--line); }
   .tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 8px; }
   .tabs button[aria-selected="true"] { color: var(--text); border-bottom: 2px solid var(--accent); }
@@ -448,11 +468,19 @@
   */
   @media (max-width: 1100px) {
     aside { width: 300px; }
+    #sideWatch { width: 210px; flex-basis: 210px; }
   }
 
   @media (max-width: 900px) {
     html, body { height: auto; }
     main { flex-direction: column; }
+    /*
+      The rail stacks too, and being first in the row it would land above the
+      charts. Below the point where side-by-side gives up, the default list
+      lives back inside the aside's tab: the rail's pane is hidden there and
+      the pane's original tab shows the same ids in the same code path.
+    */
+    #sideWatch { display: none; }
     /*
       The panes stack too. Side by side at 900px is 450px each, which is under
       the width a candlestick chart stops being readable at -- and the panel
@@ -511,6 +539,30 @@
 </div>
 
 <main>
+  <!--
+    The watchlist, as its own rail to the **left** of the charts: the market
+    list sits beside the thing it points at, on screen with every tab rather
+    than only while its own tab is selected. The pane below is the same one the
+    aside used to hold -- same ids, same rendering code -- relocated; the tab
+    that used to show it stays in the aside and shows this pane's content in
+    the rail instead, so one list exists and two places cannot disagree about it.
+  -->
+  <section id="sideWatch" aria-label="Watchlist">
+    <div class="pane" id="pane-watchlist" hidden>
+      <div class="row">
+        <input id="wlSearch" placeholder="search every Binance symbol (e.g. sol, pepe)" />
+        <button id="wlClear" hidden title="Back to the full list">×</button>
+      </div>
+      <div id="wlTags" class="wlTags" hidden></div>
+      <div class="row wlHead">
+        <span id="wlCount" class="muted"></span>
+        <span id="wlSource" class="muted"></span>
+      </div>
+      <div id="wlRows"></div>
+      <p class="empty" id="wlEmpty" hidden></p>
+    </div>
+  </section>
+
   <!--
     The chart panes. One ships in the markup and the rest are cloned from it, so
     the page has a chart before any script has run and the shape of a pane is
@@ -650,6 +702,7 @@
   <aside>
     <div class="tabs" role="tablist">
       <button role="tab" data-pane="watchlist" aria-selected="false">Watchlist</button>
+      <button role="tab" data-pane="watchlist" aria-selected="false">Watchlist</button>
       <button role="tab" data-pane="thesis" aria-selected="true">Thesis</button>
       <button role="tab" data-pane="scan" aria-selected="false">Scan</button>
       <button role="tab" data-pane="strategy" aria-selected="false">Strategy</button>
@@ -659,30 +712,10 @@
     </div>
 
     <!--
-      The watchlist: which market, before anything about one market.
-
-      Two sources feed one list. Favorites plus the page's own instruments
-      render by default; typing searches the venue's whole listing through
-      `GET /symbols/search`, so a symbol nobody has charted yet is one
-      keystroke away. Prices come from `GET /tickers` on their own clock —
-      the route caches server-side, so polling faster would buy nothing.
-      Clicking a row charts that symbol on the active pane; the star is a
-      separate control, because charting and favoriting are different intents
-      about the same row.
+      The watchlist pane itself moved to the rail left of the charts; its tab
+      remains so the aside can always name it. selectPane shows the pane inside
+      the rail (the rail is always visible; the tab never needs to).
     -->
-    <div class="pane" id="pane-watchlist" hidden>
-      <div class="row">
-        <input id="wlSearch" placeholder="search every Binance symbol (e.g. sol, pepe)" />
-      </div>
-      <div id="wlTags" class="wlTags" hidden></div>
-      <div class="row wlHead">
-        <span id="wlCount" class="muted"></span>
-        <span id="wlSource" class="muted"></span>
-      </div>
-      <div id="wlRows"></div>
-      <p class="empty" id="wlEmpty" hidden></p>
-    </div>
-
     <div class="pane" id="pane-thesis">
       <div class="row">
         <input id="question" placeholder="find me a long setup using my liquidity-sweep skill" />

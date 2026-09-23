@@ -236,6 +236,22 @@ impl MultiTimeframeCandleBuilder {
     pub fn forming(&self) -> impl Iterator<Item = &Candle> {
         self.builders.iter().filter_map(|b| b.current())
     }
+
+    /// The bar currently being built at one resolution, if any.
+    ///
+    /// `forming()` above yields every bucket a trade has already opened; this
+    /// answers about exactly one. A feed opened for a specific resolution -- the
+    /// gateway starts one when a chart connects -- needs to publish that
+    /// resolution's forming bar on its one-second clock even when no trade of
+    /// the current bucket has arrived yet, so the chart's newest bar keeps
+    /// moving between trades.
+    #[must_use]
+    pub fn current_forming(&self, timeframe: Timeframe) -> Option<&Candle> {
+        self.builders
+            .iter()
+            .find(|b| b.timeframe == timeframe)
+            .and_then(|b| b.current())
+    }
 }
 
 #[cfg(test)]
