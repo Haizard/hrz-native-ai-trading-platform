@@ -245,15 +245,17 @@ pub fn report(state: &AppState, now_ns: i64) -> CapabilityReport {
     // a day, leaving the platform with no status at all.
     let skills = state.skills.len();
     capabilities.push(match &state.agent {
-        Some(_) if skills == 0 => Capability::ready("agent", "AWS_BEDROCK_* + skills/").degraded(
+        Some(_) if skills == 0 => Capability::ready("agent", "AI_PROVIDER/AI_MODEL/AI_API_KEY (or AWS_BEDROCK_*) + skills/").degraded(
             "the model is configured but the skill library is empty, so every question \
                  will answer \"no matching skill\". A deployed image must copy skills/.",
         ),
-        Some(_) => Capability::ready("agent", "AWS_BEDROCK_* + skills/"),
+        Some(_) => Capability::ready("agent", "AI_PROVIDER/AI_MODEL/AI_API_KEY (or AWS_BEDROCK_*) + skills/"),
         None => Capability::absent(
             "agent",
-            "AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID, AWS credentials",
-            "the agent is not configured. Charts, market data and rule-based bots still work.",
+            "AI_PROVIDER + AI_MODEL + AI_API_KEY (or the legacy AWS_BEDROCK_* variables); \
+             users can also store their own provider under /agent/provider-config",
+            "no primary AI model is configured. Charts, market data and rule-based bots still \
+             work, and users who store their own provider key still get agent answers.",
         ),
     });
 

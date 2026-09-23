@@ -213,7 +213,9 @@ impl From<AgentError> for ApiError {
     fn from(err: AgentError) -> Self {
         let status = match &err {
             AgentError::NoData { .. } | AgentError::NoMatchingSkill(_) => StatusCode::NOT_FOUND,
-            AgentError::NotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
+            AgentError::NotConfigured(_) | AgentError::ProviderNotConfigured { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             // The conversation was healthy; the model just did not deliver a
             // thesis, or delivered one that contradicts the data it was shown.
             // Both are upstream failures, not bugs in this server.
@@ -228,6 +230,7 @@ impl From<AgentError> for ApiError {
             AgentError::NoData { .. } => "NO_MARKET_DATA",
             AgentError::NoMatchingSkill(_) => "NO_MATCHING_SKILL",
             AgentError::NotConfigured(_) => "AGENT_NOT_CONFIGURED",
+            AgentError::ProviderNotConfigured { .. } => "PROVIDER_NOT_CONFIGURED",
             AgentError::NoThesis { .. } => "AGENT_NO_THESIS",
             AgentError::Ungrounded(_) => "AGENT_UNGROUNDED_THESIS",
             AgentError::InvalidToolArgs { .. } => "AGENT_BAD_TOOL_ARGS",

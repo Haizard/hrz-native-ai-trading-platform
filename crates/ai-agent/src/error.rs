@@ -78,6 +78,22 @@ pub enum AgentError {
     #[error("llm provider is not configured: {0}")]
     NotConfigured(String),
 
+    /// A *named* provider has no usable configuration in this context.
+    ///
+    /// Distinct from [`AgentError::NotConfigured`], which is about the
+    /// deployment's primary model: this is raised when a specific provider
+    /// (usually one a user selected in their own AI settings) cannot be
+    /// driven -- its key is missing, its endpoint is unset, or the stored
+    /// config cannot be opened. The provider name travels so the client can
+    /// say "store your OpenAI key" rather than "something is misconfigured".
+    #[error("the `{provider}` provider is not usable: {detail}")]
+    ProviderNotConfigured {
+        /// Which provider could not be used (its wire name).
+        provider: String,
+        /// What is missing or wrong, in user-facing language.
+        detail: String,
+    },
+
     /// The model looped without producing a thesis.
     ///
     /// Not the same as an LLM failure: the conversation was healthy, the model

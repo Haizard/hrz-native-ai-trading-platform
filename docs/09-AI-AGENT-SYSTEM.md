@@ -53,6 +53,37 @@ Support tool-calling in the request/response shape; implement at least one provi
 first, keep the trait provider-agnostic so others can be added without touching the
 orchestration logic.
 
+## Providers and the primary model (multi-provider)
+
+Two wire formats, one trait:
+
+* **AWS Bedrock (Converse)** — the original provider; `crates/ai-agent/src/providers/bedrock.rs`.
+* **Chat Completions (one adapter, many vendors)** — `crates/ai-agent/src/providers/openai_compat.rs`
+  speaks for OpenAI, Anthropic, OpenRouter, DeepSeek, Grok/xAI, HuggingFace, and any
+  OpenAI-compatible gateway (Codex endpoints, vLLM, LiteLLM, Ollama). Adding a vendor of
+  this family is a `ProviderId` variant plus a base URL — never a second tool-call translation.
+
+**The deployment's primary model** comes from the environment, set once per deployment:
+
+| Variable | Meaning |
+| --- | --- |
+| `AI_PROVIDER` | `bedrock` (default, keeps the `AWS_BEDROCK_*` contract), `openai`, `anthropic`, `openrouter`, `deepseek`, `grok`, `huggingface`, `openai-compat` |
+| `AI_MODEL` | Model id as the provider spells it (required for `openai-compat`) |
+| `AI_API_KEY` | The provider's API key (not needed for `bedrock`) |
+| `AI_BASE_URL` | Endpoint override; required for `openai-compat` |
+| `AI_TIMEOUT_SECS` | Per-request timeout, default 180 |
+
+**Per-user override (bring your own model).** A signed-in user can store their own
+provider, model and API key via `PUT /agent/provider-config`. The key is sealed with the
+platform key-encryption key (`BROKER_KEK` — the same vault that seals exchange API keys,
+scope `(user_id, "ai-provider")`) and is never returned to any client; `GET` answers with
+provider/model/base_url and a `has_key` boolean. Resolution order on every agent path
+(`POST /agent/ask`, `POST /agent/generate-strategy`, `/ws/agent`):
+
+1. the user's stored config, decrypted server-side and built into a client;
+2. the deployment primary (above);
+3. a 503 naming exactly what is missing.
+
 ## Multi-timeframe reasoning pipeline
 1. Determine the timeframe ladder relevant to the user's request (default or from the
    active Skill).

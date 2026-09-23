@@ -503,10 +503,15 @@ pub async fn agent(
     let Ok(user) = crate::auth::authenticate_token(&state, auth.token.as_deref()) else {
         return ApiError::unauthorized("a `?token=` query parameter is required").into_response();
     };
-    if state.agent.is_none() {
+    // Cheap gate only: the real resolution (stored config -> deployment
+    // primary -> refusal) happens per question in `run_agent`, so a socket
+    // opened before the operator sets `AI_*` env vars still works for a user
+    // who later stores their own provider config.
+    if state.agent.is_none() && state.db.is_none() {
         return ApiError::unavailable(
-            "the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID and AWS \
-             credentials",
+            "no AI model is available: the deployment has no primary model (set \
+             AI_PROVIDER/AI_MODEL/AI_API_KEY) and user AI settings cannot be stored without \
+             a database",
         )
         .into_response();
     }
@@ -636,10 +641,16 @@ async fn run_agent<S>(
 where
     S: SinkExt<Message> + Unpin,
 {
-    let Some(agent) = state.agent.as_ref() else {
-        return Some(Frame::Notice {
-            message: "the agent is not configured".into(),
-        });
+    let agent = match crate::provider_routes::resolve_agent(state, user).await {
+        Ok(agent) => agent,
+        Err(e) => {
+            // A socket has no status code to carry, so the refusal is the
+            // same `Notice` frame an unconfigured agent always produced --
+            // but now it names the actual gap (no stored config, an
+            // unopenable key, or no deployment primary) rather than a
+            // Bedrock-specific variable list.
+            return Some(Frame::Notice { message: e.message().to_string() });
+        }
     };
 
     // Timed from here, so the number covers the whole paid run: the market

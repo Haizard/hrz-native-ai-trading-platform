@@ -164,12 +164,9 @@ pub async fn ask(
     ApiJson(body): ApiJson<AskBody>,
 ) -> Result<Json<AskResponse>, ApiError> {
     check_agent_limit(&state, &user)?;
-    let agent = state.agent.as_ref().ok_or_else(|| {
-        ApiError::unavailable(
-            "the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID \
-             and AWS credentials",
-        )
-    })?;
+    // The user's own provider when they stored one, the deployment primary
+    // otherwise -- the precedence lives in [`resolve_agent`], not here.
+    let agent = crate::provider_routes::resolve_agent(&state, &user).await?;
 
     let mut request = AskRequest::new(&body.symbol, &body.question);
     if let Some(id) = &body.skill_id {
@@ -264,12 +261,8 @@ pub async fn generate_strategy(
     ApiJson(body): ApiJson<GenerateStrategyBody>,
 ) -> Result<Json<GenerateStrategyResponse>, ApiError> {
     check_agent_limit(&state, &user)?;
-    let agent = state.agent.as_ref().ok_or_else(|| {
-        ApiError::unavailable(
-            "the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID \
-             and AWS credentials",
-        )
-    })?;
+    // The same funnel `ask` uses: one precedence rule, no per-route spelling.
+    let agent = crate::provider_routes::resolve_agent(&state, &user).await?;
 
     let mut request = StrategyRequest::new(
         &body.description,

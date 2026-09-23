@@ -63,6 +63,7 @@ pub mod market_data;
 pub mod market_routes;
 pub mod metrics;
 pub mod plot;
+pub mod provider_routes;
 pub mod rate_limit;
 pub mod scan_routes;
 pub mod skills_routes;
@@ -347,6 +348,12 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/agent/generate-strategy",
             post(agent_routes::generate_strategy),
+        )
+        .route(
+            "/agent/provider-config",
+            get(provider_routes::get)
+                .put(provider_routes::put)
+                .delete(provider_routes::delete),
         )
         .route(
             "/skills",

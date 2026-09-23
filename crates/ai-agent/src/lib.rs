@@ -59,6 +59,8 @@ pub use llm_client::{
 pub use multi_timeframe::{LadderView, TimeframeLadder};
 pub use progress::{NoProgress, Progress, ProgressSink};
 pub use providers::bedrock::{BedrockClient, BedrockConfig};
+pub use providers::openai_compat::{AuthStyle, OpenAiCompatClient, OpenAiCompatConfig};
+pub use providers::{from_deployment_env, ProviderId};
 pub use skills::{Skill, SkillLibrary, SkillQuery};
 pub use strategy_dsl::StrategyDocument;
 pub use thesis::{Bias, CheckStatus, ConditionCheck, PriceRange, ToolTrace};

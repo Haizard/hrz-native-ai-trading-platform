@@ -30,12 +30,18 @@ pub mod loading;
 pub mod market;
 pub mod models;
 pub mod paper;
+pub mod provider_configs;
 pub mod pump;
 pub mod repositories;
 pub mod retention;
 pub mod skills;
 pub mod strategies;
 pub mod users;
+
+pub use provider_configs::{
+    delete_provider_config, find_provider_config, provider_config_key, upsert_provider_config,
+    NewProviderConfig, ProviderConfigRow, SealedProviderKey,
+};
 
 pub use bots::{create_bot, delete_bot, get_bot, list_bots, set_status, BotRow, STATUSES};
 pub use broker_accounts::{

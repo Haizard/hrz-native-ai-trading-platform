@@ -213,6 +213,7 @@ dependencies = [
  "tracing-subscriber",
  "trading-engine",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

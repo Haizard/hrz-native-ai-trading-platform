@@ -182,24 +182,26 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build the agent if Bedrock is configured, otherwise leave it absent.
+/// Build the deployment's primary agent from the environment, if configured.
+///
+/// The provider is chosen by `AI_PROVIDER` (default `bedrock`, which keeps
+/// the original `AWS_BEDROCK_*` contract intact); the Chat Completions family
+/// reads `AI_MODEL` / `AI_API_KEY` / `AI_BASE_URL`. Users can still bring
+/// their own provider through `/agent/provider-config`, which overrides this
+/// per user -- this is only the default everyone gets.
 fn build_agent(skills: &SkillLibrary) -> Option<Arc<Agent>> {
-    let configured = ai_agent::BedrockConfig::from_env().and_then(|config| {
-        let model = config.model_id.clone();
-        ai_agent::BedrockClient::new(config).map(|client| (client, model))
-    });
-
-    match configured {
+    match ai_agent::from_deployment_env() {
         Ok((client, model)) => {
-            info!(model = %model, "bedrock configured; /agent endpoints enabled");
+            info!(model = %model, provider = client.name(), "primary AI model configured; /agent endpoints enabled");
             Some(Arc::new(Agent::new(
-                Arc::new(client),
+                client,
                 skills.clone(),
                 AgentConfig::default(),
             )))
         }
         Err(e) => {
-            warn!("bedrock not configured; /agent endpoints will return 503: {e}");
+            warn!("no primary AI model; /agent endpoints will 503 unless a user stores their \
+                   own provider config: {e}");
             None
         }
     }
