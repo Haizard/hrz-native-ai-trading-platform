@@ -161,6 +161,19 @@ impl Harness {
             symbols: market_data::SymbolIndex::new(),
             agent_limits: Arc::clone(&limits),
             metrics: Arc::clone(&metrics),
+            // A fixed test key, not `build_vault()`. The value is irrelevant to
+            // the properties under test -- that a credential round-trips, that
+            // one user's ciphertext will not open for another -- and a fixed one
+            // keeps `BROKER_KEK` out of the harness's requirements. A test that
+            // needed the variable would skip on a machine without it, which is
+            // how a security path ends up untested in CI.
+            vault: Some(Arc::new(trading_engine::SecretVault::new([0x42; 32]))),
+            // The same as `backfill` above: port 1 refuses instantly, so a route
+            // that checks a user's exchange credentials fails fast and
+            // deterministically rather than reaching the real venue. That is
+            // also the *interesting* state for this path -- a credential check
+            // that cannot reach the exchange must not read as a valid key.
+            binance_base_url: "http://127.0.0.1:1".to_string(),
             alert_queue: None,
             sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
         };

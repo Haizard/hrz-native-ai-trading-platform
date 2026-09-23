@@ -82,11 +82,14 @@ DSL/runtime/backtester, the WASM sandbox, the AI agent with 13 tools, the paper 
 trading bots, the REST/WebSocket gateway, and the Phase 8 hardening layer — metrics,
 alerts, runbooks, and the exchange execution path.
 
-One exit criterion is deliberately open: **a funded account placing and reconciling a
-real order.** That needs live keys, and the platform will not ask for them. Everything
-up to that point is proved against a venue double that dedups by client id exactly as
-Binance does. See `docs/19-AFTER-THE-ROADMAP.md`, which also lists the debt that is
-still open and the accuracy loop no phase covers.
+One exit criterion is open: **a funded account placing and reconciling a real order.** As of
+migration `0007` the platform has the piece that was missing — a user connects their own
+exchange account at `/brokers`, and the key is sealed at rest rather than coming from the
+deployment's environment — but it is still not *proved* against a funded account, because
+that needs a real key and a real market. Everything up to that point is proved against a
+venue double that dedups by client id exactly as Binance does. See
+`docs/19-AFTER-THE-ROADMAP.md`, which also lists the debt that is still open and the
+accuracy loop no phase covers.
 
 ## 1. Prerequisites
 
@@ -256,7 +259,44 @@ In short:
 | `observability` | 8 | Metrics registry, alert rules, structured logs | **Phase 8 done** |
 | `trading-engine` | 6/8 | Paper + live execution, risk, the exchange adapter | **Phase 6/8 done** |
 | `api-gateway` | 7 | Axum REST + WebSocket | **Phase 7 done** |
-| `db` | 1+ | sqlx models + migrations | done through `0002` |
+| `db` | 1+ | sqlx models + migrations | done through `0007` |
+
+## Trading a user's own account (`/brokers`)
+
+Analysis is public; trading is the user's. A user connects their own exchange account and
+from then on a live bot places **their** orders:
+
+```bash
+# What the platform can connect, and what to tick when creating a key.
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/brokers/available
+
+# Connect one. The key is sealed with AES-256-GCM under BROKER_KEK before it is stored,
+# checked against the venue in the same request, and never returned by any route.
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"venue":"binance","label":"main","api_key":"...","api_secret":"..."}' \
+  http://127.0.0.1:8080/brokers
+
+# Then a live bot names it.
+curl -X POST ... -d '{"strategy_id":"...","mode":"live","venue":"binance","broker_account_id":"..."}' \
+  http://127.0.0.1:8080/bots
+```
+
+Four properties worth knowing before touching this:
+
+- **A key with withdrawal permission is refused.** The platform places orders and never
+  moves funds, so `canWithdraw` is pure downside on a key another system holds. This is
+  the difference between `docs/15`'s "scoped to trading-only permissions" being advice and
+  being enforced.
+- **The stored ciphertext is bound to `(user_id, venue)`** as AES-GCM additional
+  authenticated data, so a row moved to another user fails to decrypt rather than handing
+  over someone else's key. `crates/trading-engine/src/secrets.rs` has the reasoning and
+  the tests that pin it.
+- **`POST /bots` with `mode: live` requires `broker_account_id`** and does not fall back to
+  `BINANCE_API_KEY`. A live bot trading an account its owner did not choose is a different
+  product, not a degraded one.
+- **Disconnecting stops the bots on that account** before removing it, the same way
+  revoking a venue does — a disconnect that only changed what *future* bots may do would
+  leave a running bot spending an account its owner has just withdrawn.
 
 `observability` is a leaf crate for a reason worth knowing: `docs/03` forbids
 `api-gateway` from depending on `trading-engine`, so without it the same metric names
@@ -354,12 +394,13 @@ Northflank auto-detects the root `Dockerfile`, so no build config file is needed
    |---|---|---|
    | `DATABASE_URL` | the Northflank Postgres addon's **internal** connection string | everything |
    | `JWT_SECRET` | `openssl rand -base64 48`; **≥ 32 bytes or startup refuses it** | `/auth/*`, and every route needing a token |
+   | `BROKER_KEK` | `openssl rand -base64 32`; **cannot be regenerated** — it opens the broker keys already stored | users connecting their own exchange accounts (`/brokers`), and therefore every live bot |
    | `MARKET_FEED` | `binance` | bots receiving candles at all |
    | `MARKET_SYMBOLS` | `BTCUSDT` (or `BTCUSDT,ETHUSDT,…`) | which instruments the charts can show; also which feeds start at boot |
    | `AWS_BEDROCK_MODEL_ID` | `qwen.qwen3-coder-next` | `/agent/*` |
    | `AWS_BEDROCK_REGION` | `us-east-1` | `/agent/*` (defaults to this) |
    | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Bedrock credentials | `/agent/*` |
-   | `BINANCE_API_KEY` / `BINANCE_API_SECRET` | exchange credentials | **live trading** — without them a venue opts in but reports `credentials_configured: false` |
+   | `BINANCE_API_KEY` / `BINANCE_API_SECRET` | exchange credentials | the **deployment's own** account, used by `xtask` and the CLIs — **not** by a user's bot, which trades the account its owner connected |
    | `RUST_LOG` | `info` | log verbosity |
    | `RUN_MIGRATIONS` | `true` for the first deploy | the entrypoint applying migrations |
 

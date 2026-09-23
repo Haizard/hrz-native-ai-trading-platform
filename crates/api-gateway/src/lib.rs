@@ -48,6 +48,7 @@ pub mod agent_routes;
 pub mod auth;
 pub mod auth_routes;
 pub mod bot_routes;
+pub mod broker_routes;
 pub mod bots;
 pub mod capabilities;
 pub mod dom;
@@ -123,6 +124,27 @@ pub struct AppState {
     /// Where raised alerts are queued for delivery to an external webhook, if
     /// one is configured. `None` means the log and the audit trail only.
     pub alert_queue: Option<Arc<QueueSink>>,
+    /// Where the live Binance client points.
+    ///
+    /// Read from `BINANCE_BASE_URL` once at startup, rather than per request.
+    /// A process-wide environment lookup inside a handler is a hidden global:
+    /// it made the venue's address something a test could only redirect by
+    /// mutating the process environment, which this repository's own tests
+    /// spell out as unsafe to do while anything else is reading it. As a field
+    /// it is config, and a mock venue can stand in for the real one.
+    pub binance_base_url: String,
+    /// Seals and opens users' own exchange credentials (`docs/15`).
+    ///
+    /// `None` when `BROKER_KEK` is unset, in which case `/brokers` answers 503
+    /// rather than pretending to store anything. That is the same "up but
+    /// degraded" rule as the database and the agent: a deployment without the
+    /// variable still serves charts, and the routes that cannot work say why
+    /// instead of failing anonymously.
+    ///
+    /// The vault is the *only* thing in this process that can turn stored
+    /// ciphertext back into a key, which is why it is held here rather than
+    /// reached for through a global.
+    pub vault: Option<Arc<trading_engine::SecretVault>>,
     /// The sandbox every bot's decisions run inside.
     ///
     /// `Phase 6` said "first simulated, later with real orders -- always through
@@ -281,6 +303,20 @@ pub fn router(state: AppState) -> Router {
         .route("/bots/{id}/resume", post(bot_routes::resume))
         .route("/bots/{id}/kill", post(bot_routes::kill))
         .route("/bots/{id}/notifications", get(bot_routes::notifications))
+        // A user's own broker accounts (`docs/15`). Behind a token like every
+        // other owner-scoped resource, and the only paths that ever handle a
+        // plaintext API key -- for the milliseconds between the request body
+        // and the seal.
+        //
+        // `/brokers/available` is registered before `/brokers/{id}`, or the
+        // literal path would be read as an account id.
+        .route(
+            "/brokers",
+            get(broker_routes::list).post(broker_routes::connect),
+        )
+        .route("/brokers/available", get(broker_routes::available))
+        .route("/brokers/{id}", get(broker_routes::get).delete(broker_routes::disconnect))
+        .route("/brokers/{id}/verify", post(broker_routes::verify))
         .route("/venues", get(venue_routes::list))
         .route("/venues/{venue}/opt-in", post(venue_routes::opt_in))
         .route("/venues/{venue}/revoke", post(venue_routes::revoke))
@@ -518,6 +554,33 @@ pub fn build_auth() -> Option<Arc<AuthConfig>> {
         }
         Err(e) => {
             warn!("{e}");
+            None
+        }
+    }
+}
+
+/// Build the credential vault if `BROKER_KEK` is configured.
+///
+/// # Errors
+/// None — the failure is reported, not raised, for the same reason as
+/// [`build_auth`]: a deployment that has not set the variable should still
+/// serve charts and say which routes cannot work, rather than refuse to boot.
+/// The difference from `build_auth` is what it costs to get wrong later, and
+/// the log line says it: this key cannot be regenerated, because the rows it
+/// sealed can only be opened by this exact value.
+pub fn build_vault() -> Option<Arc<trading_engine::SecretVault>> {
+    match trading_engine::SecretVault::from_env() {
+        Ok(vault) => {
+            tracing::info!(
+                kek_fingerprint = vault.fingerprint(),
+                "BROKER_KEK set; users can connect their own broker accounts"
+            );
+            Some(Arc::new(vault))
+        }
+        Err(e) => {
+            warn!(
+                "{e} /brokers will answer 503, so no user can connect an exchange account."
+            );
             None
         }
     }

@@ -24,6 +24,8 @@
 //! * the secret is only reachable through [`ExchangeCredentials::secret`],
 //!   which exists solely to sign a request.
 
+use zeroize::Zeroizing;
+
 use crate::error::ExecutionError;
 
 /// The environment variables a venue's credentials are read from.
@@ -50,10 +52,17 @@ pub fn var_names(venue: &str) -> (String, String) {
 }
 
 /// A venue's API key and secret.
+///
+/// The key and secret are `Zeroizing`, so the bytes are wiped when the struct
+/// is dropped rather than left in freed memory for the allocator to hand to the
+/// next request. That matters more since `secrets.rs` arrived: a secret now
+/// exists in plaintext for the whole lifetime of a running live bot, not just
+/// for the moments around a signature, so "it will be freed soon" is no longer
+/// the argument it used to be.
 pub struct ExchangeCredentials {
     venue: String,
-    key: String,
-    secret: String,
+    key: Zeroizing<String>,
+    secret: Zeroizing<String>,
 }
 
 impl ExchangeCredentials {
@@ -62,8 +71,8 @@ impl ExchangeCredentials {
     pub fn from_parts(venue: &str, key: &str, secret: &str) -> Self {
         Self {
             venue: venue.to_string(),
-            key: key.to_string(),
-            secret: secret.to_string(),
+            key: Zeroizing::new(key.to_string()),
+            secret: Zeroizing::new(secret.to_string()),
         }
     }
 
@@ -93,8 +102,8 @@ impl ExchangeCredentials {
 
         Ok(Self {
             venue: venue.to_string(),
-            key,
-            secret,
+            key: Zeroizing::new(key),
+            secret: Zeroizing::new(secret),
         })
     }
 

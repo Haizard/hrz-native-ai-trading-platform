@@ -480,6 +480,13 @@ impl Session {
 
 /// A bot that is running in this process.
 struct RunningBot {
+    /// Who owns the bot.
+    ///
+    /// Kept beside `broker_account_id` so that stopping the bots on an account
+    /// filters on *both*. An account id reaches the supervisor from a URL, and
+    /// two ids that must match is the difference between a guess stopping this
+    /// user's bot and stopping everybody's.
+    user_id: Uuid,
     /// The task feeding it candles.
     handle: JoinHandle<()>,
     /// Set to stop it; the task checks this between candles.
@@ -507,6 +514,13 @@ struct RunningBot {
     /// them, and a question that could not be answered without the answer would
     /// not be a question.
     venue: Option<String>,
+    /// The broker account this bot trades, for a live one.
+    ///
+    /// Same reasoning as `venue`, one level finer: revoking a venue stops
+    /// everything on it, while disconnecting one account must stop only the
+    /// bots spending *that* account's money. A user with two Binance accounts
+    /// who disconnects one has not asked for the other to stop.
+    broker_account_id: Option<Uuid>,
     /// Which path this bot decides on, recorded so a test can assert principle
     /// #6 without reaching into the task.
     decision_path: DecisionPath,
@@ -990,7 +1004,13 @@ impl BotSupervisor {
     /// on one bot row would interleave their decisions into the same audit
     /// trail and neither would be the truth.
     pub fn start(&self, bot_id: Uuid, user_id: Uuid, database: db::Database, bot: PaperBot) {
-        self.spawn(bot_id, user_id, database, BotKind::Paper(Box::new(bot)));
+        self.spawn(
+            bot_id,
+            user_id,
+            database,
+            BotKind::Paper(Box::new(bot)),
+            None,
+        );
     }
 
     /// Start running a live bot against a real venue.
@@ -999,18 +1019,36 @@ impl BotSupervisor {
     /// [`trading_engine::LiveGate`] -- this does not re-check it, because the
     /// check is a request-time decision about a *strategy* and by the time a
     /// task exists that decision has been made.
+    /// `broker_account_id` is passed rather than read from the bot row: the
+    /// supervisor must be able to answer "which bots trade this account" without
+    /// a database round trip, because the question is asked *while* taking the
+    /// lock that a disconnection is waiting on.
     pub fn start_live(
         &self,
         bot_id: Uuid,
         user_id: Uuid,
         database: db::Database,
         bot: LiveBot<BinanceRest>,
+        broker_account_id: Option<Uuid>,
     ) {
-        self.spawn(bot_id, user_id, database, BotKind::Live(Box::new(bot)));
+        self.spawn(
+            bot_id,
+            user_id,
+            database,
+            BotKind::Live(Box::new(bot)),
+            broker_account_id,
+        );
     }
 
     /// The one task loop, shared by both bot kinds.
-    fn spawn(&self, bot_id: Uuid, user_id: Uuid, database: db::Database, mut kind: BotKind) {
+    fn spawn(
+        &self,
+        bot_id: Uuid,
+        user_id: Uuid,
+        database: db::Database,
+        mut kind: BotKind,
+        broker_account_id: Option<Uuid>,
+    ) {
         if self.is_running(bot_id) {
             warn!(%bot_id, "bot is already running here; not starting a second task");
             return;
@@ -1168,12 +1206,14 @@ impl BotSupervisor {
             running.insert(
                 bot_id,
                 RunningBot {
+                    user_id,
                     handle,
                     stop,
                     wake,
                     paused,
                     kill,
                     venue,
+                    broker_account_id,
                     decision_path,
                 },
             );
@@ -1249,12 +1289,47 @@ impl BotSupervisor {
     /// tasks; this does not wait for them.
     pub fn kill_venue(&self, venue: &str) -> Vec<Uuid> {
         let venue = venue.to_ascii_lowercase();
+        self.kill_matching(|bot| {
+            bot.venue
+                .as_deref()
+                .is_some_and(|name| name == venue.as_str())
+        })
+    }
+
+    /// Throw the kill switch on every running live bot trading `account_id`.
+    ///
+    /// What makes a disconnect real, and the finer-grained sibling of
+    /// [`kill_venue`](Self::kill_venue): revoking a venue stops everything on
+    /// it, while disconnecting one account must stop only the bots spending
+    /// that account's money. A user with two accounts on one venue who
+    /// disconnects one has not asked for the other to stop.
+    ///
+    /// `user_id` is part of the filter rather than only the account id because
+    /// an account id reaches this from a URL. Two ids that must both match means
+    /// a guess cannot stop somebody else's bot even if the account lookup above
+    /// this were wrong.
+    ///
+    /// # Panics
+    /// Never in practice: see [`kill_matching`](Self::kill_matching).
+    pub fn kill_broker_account(&self, user_id: Uuid, account_id: Uuid) -> Vec<Uuid> {
+        self.kill_matching(|bot| {
+            bot.broker_account_id == Some(account_id) && bot.user_id == user_id
+        })
+    }
+
+    /// Throw the kill switch on every running bot a predicate matches.
+    ///
+    /// One implementation for the two questions above, because the body was
+    /// three lines of subtlety that both callers need to get right: set `kill`
+    /// *and* `stop`, and notify, or the liquidation waits up to a flush tick.
+    /// Written twice, one of the copies would eventually miss the `wake`.
+    fn kill_matching(&self, matches: impl Fn(&RunningBot) -> bool) -> Vec<Uuid> {
         let Ok(running) = self.inner.running.lock() else {
             return Vec::new();
         };
         let mut killed = Vec::new();
         for (bot_id, bot) in running.iter() {
-            if bot.venue.as_deref() == Some(venue.as_str()) {
+            if matches(bot) {
                 bot.kill.store(true, Ordering::Relaxed);
                 bot.stop.store(true, Ordering::Relaxed);
                 bot.wake.notify_one();

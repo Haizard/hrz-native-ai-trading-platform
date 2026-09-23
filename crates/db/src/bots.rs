@@ -37,6 +37,14 @@ pub struct BotRow {
     pub status: String,
     /// Venue, for a bot that trades a real one.
     pub venue: Option<String>,
+    /// The broker account it trades, for a live bot.
+    ///
+    /// `None` for a paper bot, for a live bot created before per-user accounts
+    /// existed, and for a live bot whose account has since been disconnected --
+    /// the column is `ON DELETE SET NULL`, because a disconnect must not be
+    /// blocked by a bot row and must not delete the record of what that bot did
+    /// with real money.
+    pub broker_account_id: Option<Uuid>,
     /// When it was created, unix nanos.
     pub created_at: i64,
 }
@@ -55,6 +63,7 @@ fn from_row(row: &sqlx::postgres::PgRow) -> Result<BotRow, sqlx::Error> {
         mode: row.try_get("mode")?,
         status: row.try_get("status")?,
         venue: row.try_get("venue")?,
+        broker_account_id: row.try_get("broker_account_id")?,
         created_at: dt_to_ns(row.try_get("created_at")?),
     })
 }
@@ -162,7 +171,7 @@ pub async fn create_bot_with_key(
 /// Returns [`DbError::Pool`] if the query fails.
 pub async fn get_bot(pool: &PgPool, user_id: Uuid, id: Uuid) -> Result<Option<BotRow>, DbError> {
     let row = sqlx::query(
-        "SELECT id, user_id, strategy_id, mode, status, venue, created_at \
+        "SELECT id, user_id, strategy_id, mode, status, venue, broker_account_id, created_at \
          FROM bots WHERE id = $1 AND user_id = $2",
     )
     .bind(id)
@@ -178,7 +187,7 @@ pub async fn get_bot(pool: &PgPool, user_id: Uuid, id: Uuid) -> Result<Option<Bo
 /// Returns [`DbError::Pool`] if the query fails.
 pub async fn list_bots(pool: &PgPool, user_id: Uuid, limit: i64) -> Result<Vec<BotRow>, DbError> {
     let rows = sqlx::query(
-        "SELECT id, user_id, strategy_id, mode, status, venue, created_at \
+        "SELECT id, user_id, strategy_id, mode, status, venue, broker_account_id, created_at \
          FROM bots WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
     )
     .bind(user_id)

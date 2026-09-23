@@ -136,6 +136,121 @@ pub fn num(value: f64) -> String {
         .to_string()
 }
 
+/// What a venue says about the key it was just shown.
+///
+/// ## Why this type exists at all
+///
+/// `docs/15` asks for keys "scoped to trading-only permissions". Until users
+/// connected their own accounts that was advice in a document: the platform's
+/// own key was whatever the operator had made. A user pasting a key into a web
+/// form cannot be trusted to have read that sentence, and the platform can ask
+/// the venue rather than assume -- `canWithdraw` on Binance's spot API reports
+/// the *key's* permission, so this is a measurement, not a policy.
+///
+/// ## Why `refusals` is a list
+///
+/// Same reason the live gate names every unmet condition: an operator who is
+/// refused should not need one round trip per problem. And the two problems are
+/// genuinely different -- a key that cannot trade is useless, a key that can
+/// withdraw is dangerous -- so a caller that wants to warn on one and refuse on
+/// the other has both facts rather than a single boolean.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountCheck {
+    /// The venue will accept orders from this key.
+    pub can_trade: bool,
+    /// The key is allowed to move funds out.
+    ///
+    /// The one field this platform never wants to hear `true` about: the
+    /// platform places orders and never withdraws, so withdrawal permission is
+    /// pure downside on a key somebody else's software holds.
+    pub can_withdraw: bool,
+    /// The key can receive funds.
+    pub can_deposit: bool,
+    /// The venue's word for the account, e.g. `SPOT`.
+    pub account_type: Option<String>,
+    /// What the key is permitted to use, e.g. `["SPOT"]`.
+    pub permissions: Vec<String>,
+    /// The venue's id for the account, so an operator can tell two connected
+    /// accounts apart without a second call.
+    pub account_id: Option<String>,
+    /// Commission tier, in the venue's own units.
+    pub maker_commission: Option<f64>,
+    /// Commission tier, in the venue's own units.
+    pub taker_commission: Option<f64>,
+}
+
+impl AccountCheck {
+    /// Parse a `/api/v3/account` body.
+    ///
+    /// ## Why a missing boolean is `false`
+    ///
+    /// Every other field here is an `Option`, because "the venue did not say"
+    /// is a real answer. These three are not: a body that omits `canTrade` is a
+    /// body this build does not understand, and defaulting a *permission* to
+    /// true would grant one nobody stated. Defaulting it to false fails closed,
+    /// which is the only safe direction for a check that gates real money.
+    #[must_use]
+    pub fn from_body(body: &serde_json::Value) -> Self {
+        let flag = |name: &str| {
+            body.get(name)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        };
+        let permissions = body
+            .get("permissions")
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Self {
+            can_trade: flag("canTrade"),
+            can_withdraw: flag("canWithdraw"),
+            can_deposit: flag("canDeposit"),
+            account_type: body
+                .get("accountType")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            permissions,
+            account_id: body
+                .get("uid")
+                .map(|value| as_string(Some(value)))
+                .filter(|value| !value.is_empty()),
+            maker_commission: body.get("makerCommission").and_then(as_f64),
+            taker_commission: body.get("takerCommission").and_then(as_f64),
+        }
+    }
+
+    /// Why this key should not be accepted, if anything.
+    ///
+    /// Empty means "the key can do the job and nothing more".
+    #[must_use]
+    pub fn refusals(&self) -> Vec<String> {
+        let mut refusals = Vec::new();
+        if !self.can_trade {
+            refusals.push(
+                "the key does not have trading enabled, so it cannot place the orders this \
+                 platform exists to place"
+                    .to_string(),
+            );
+        }
+        if self.can_withdraw {
+            refusals.push(
+                "the key has withdrawal permission. This platform only places orders and never \
+                 withdraws, so that permission is pure exposure on a key another system holds. \
+                 Remove it at the exchange and connect again."
+                    .to_string(),
+            );
+        }
+        refusals
+    }
+}
+
 /// A Binance spot REST client for one symbol.
 pub struct BinanceRest {
     base_url: String,
@@ -192,16 +307,71 @@ impl BinanceRest {
         &self.base_url
     }
 
-    /// Build from `BINANCE_API_KEY`, `BINANCE_API_SECRET` and an optional
-    /// `BINANCE_BASE_URL`.
+    /// Build a client for account-level calls, which are not symbol-scoped.
+    ///
+    /// `/api/v3/account` takes no symbol, and checking a key at connect time is
+    /// the case this exists for: there is no bot yet, and therefore no
+    /// instrument. The `symbol` field ends up empty, which is why the order path
+    /// would be refused by the venue rather than placing something unintended --
+    /// this is a named constructor rather than a bare `new("")` so that reading
+    /// the call site says which use it is.
+    #[must_use]
+    pub fn for_account(base_url: &str, credentials: ExchangeCredentials) -> Self {
+        Self::new(base_url, "", credentials)
+    }
+
+    /// Build from `BINANCE_API_KEY` and `BINANCE_API_SECRET`.
+    ///
+    /// **Retained for the operator's own account, not for users.** Since
+    /// `0007_broker_accounts`, a live bot trades the broker account its owner
+    /// connected, and `bot_routes::start_live` refuses to start one without it.
+    /// This path stays because it is the instrument the deployment's own keys
+    /// are still used through -- `xtask`, the CLI tools, and any operator
+    /// script that has no user.
     ///
     /// # Errors
     /// Returns [`ExecutionError::Credentials`] when the key or secret is
     /// absent; it never echoes either.
     pub fn from_env(symbol: &str) -> Result<Self, ExecutionError> {
         let credentials = ExchangeCredentials::from_env("binance")?;
-        let base_url = std::env::var("BINANCE_BASE_URL").unwrap_or_else(|_| MAINNET.to_string());
-        Ok(Self::new(&base_url, symbol, credentials))
+        Ok(Self::new(&base_url_from_env(), symbol, credentials))
+    }
+
+    /// Ask the venue what its key is allowed to do, without placing anything.
+    ///
+    /// `GET /api/v3/account` is the cheapest signed endpoint Binance offers and
+    /// the only one that answers the two questions that matter before a key is
+    /// trusted: *can it trade*, and *can it move funds*. A wrong key, a revoked
+    /// key and a key for the wrong venue all fail here rather than at the first
+    /// order, which is the difference between a message on a settings page and
+    /// a bot that starts, places nothing, and reports a 401 into the log.
+    ///
+    /// # Errors
+    /// Returns [`ExecutionError::Transport`] when the venue cannot be reached --
+    /// the caller must not read that as "the key is bad" -- and
+    /// [`ExecutionError::Exchange`] with the venue's own code when it answers,
+    /// which for a bad key is `-2015`.
+    pub async fn verify_credentials(&self) -> Result<AccountCheck, ExecutionError> {
+        let url = self.url("/api/v3/account", &[]);
+        let response = self
+            .client
+            .get(&url)
+            .header(API_KEY_HEADER, self.credentials.key())
+            .send()
+            .await
+            .map_err(|e| ExecutionError::Transport(e.to_string()))?;
+
+        let status = response.status();
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ExecutionError::Transport(e.to_string()))?;
+
+        if !status.is_success() {
+            return Err(Self::exchange_error(status, &body));
+        }
+
+        Ok(AccountCheck::from_body(&body))
     }
 
     /// Append `signature` to a fully assembled query string.
@@ -239,6 +409,17 @@ impl BinanceRest {
         }
         ExecutionError::Exchange { code, message }
     }
+}
+
+/// The base URL to talk to, from `BINANCE_BASE_URL` or the venue's mainnet.
+///
+/// One reader for a variable that two constructors need. Formatted in both
+/// places instead, a deployment pointing at testnet would get `from_env` on
+/// testnet and a user-connected account on mainnet -- and the first live order
+/// would be a real one.
+#[must_use]
+pub fn base_url_from_env() -> String {
+    std::env::var("BINANCE_BASE_URL").unwrap_or_else(|_| MAINNET.to_string())
 }
 
 /// Now, in unix milliseconds.
@@ -514,11 +695,35 @@ mod tests {
             .into_response()
         }
 
+        /// What `GET /api/v3/account` answers: a key that can trade spot and
+        /// cannot move funds. The shape is copied from Binance's own response,
+        /// including `uid` arriving as a *number*, because that is the field
+        /// this build has to coerce and a mock that sent a string would test a
+        /// case the venue never produces.
+        async fn account(State(seen): State<Seen>, request: Request) -> axum::response::Response {
+            seen.queries
+                .lock()
+                .unwrap()
+                .push(request.uri().query().unwrap_or_default().to_string());
+            axum::Json(serde_json::json!({
+                "makerCommission": 10,
+                "takerCommission": 10,
+                "canTrade": true,
+                "canWithdraw": false,
+                "canDeposit": true,
+                "accountType": "SPOT",
+                "uid": 1234567,
+                "permissions": ["SPOT"],
+            }))
+            .into_response()
+        }
+
         use axum::response::IntoResponse;
 
         let app = Router::new()
             .route("/api/v3/order", post(place).delete(cancel))
             .route("/api/v3/openOrders", get(open))
+            .route("/api/v3/account", get(account))
             .with_state(seen.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -550,6 +755,55 @@ mod tests {
         assert_eq!(
             digest,
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    /// The credential check is a *signed* request, and the mock proves it.
+    ///
+    /// The failure this prevents is subtle and expensive: an account check built
+    /// without the signature would be answered by Binance with `-2014` (API-key
+    /// format invalid) for every key, so every user would be told their correct
+    /// key is wrong and the real cause -- our request -- would never appear.
+    #[tokio::test]
+    async fn verify_credentials_signs_the_request_and_parses_the_answer() {
+        let (base, seen) = mock().await;
+        let client = BinanceRest::for_account(&base, credentials());
+
+        let check = client
+            .verify_credentials()
+            .await
+            .expect("the venue answers");
+
+        assert!(check.can_trade);
+        assert!(!check.can_withdraw);
+        assert_eq!(check.account_type.as_deref(), Some("SPOT"));
+        assert_eq!(check.permissions, vec!["SPOT".to_string()]);
+        // The venue sends `uid` as a number, and it has to survive as text.
+        assert_eq!(check.account_id.as_deref(), Some("1234567"));
+        assert!(check.refusals().is_empty(), "{:?}", check.refusals());
+
+        let queries = seen.queries.lock().unwrap().clone();
+        let query = queries.last().expect("the account endpoint was called");
+        let (signed, signature) = split_signature(query);
+        assert!(signed.contains("timestamp="), "{signed}");
+        assert!(signed.contains("recvWindow="), "{signed}");
+        assert_eq!(sign(SECRET, &signed), signature);
+    }
+
+    #[tokio::test]
+    async fn a_venue_that_refuses_the_key_is_an_exchange_error_not_a_transport_one() {
+        // The distinction the caller depends on: `broker_routes` records the
+        // venue's own words as `last_error`, and reports a transport failure
+        // differently -- because "your key is wrong" and "we could not reach
+        // Binance" demand opposite responses from the user.
+        let unreachable = BinanceRest::for_account("http://127.0.0.1:1", credentials());
+        let error = unreachable
+            .verify_credentials()
+            .await
+            .expect_err("port 1 refuses");
+        assert!(
+            matches!(error, ExecutionError::Transport(_)),
+            "an unreachable venue must not read as a bad key: {error:?}"
         );
     }
 

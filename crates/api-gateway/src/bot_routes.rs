@@ -44,6 +44,7 @@ use trading_engine::{
 use crate::AppState;
 use crate::auth::UserContext;
 use crate::bots::BotSupervisor;
+use crate::broker_routes;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::now_ns;
@@ -70,6 +71,15 @@ pub struct CreateBotRequest {
     pub mode: String,
     /// Venue. Required for `live`, since the opt-in is per venue.
     pub venue: Option<String>,
+    /// The user's own broker account to trade. Required for `live`.
+    ///
+    /// This is the field that makes the platform a platform rather than a
+    /// demo: before it, every live bot traded whichever account the deployment's
+    /// `BINANCE_API_KEY` belonged to. There is deliberately no fallback to that
+    /// variable -- a user asking for a live bot and silently getting one that
+    /// spends the operator's money is not a degradation, it is a different
+    /// product.
+    pub broker_account_id: Option<String>,
     /// Per-trade risk cap, in percent of equity. Clamped to the platform
     /// ceiling by the risk engine.
     pub max_risk_pct: Option<f64>,
@@ -157,6 +167,13 @@ pub struct BotResponse {
     pub status: String,
     /// Venue, when it trades a real one.
     pub venue: Option<String>,
+    /// The broker account it trades, when it trades a real one.
+    ///
+    /// Sent so a bot list can say *whose* account a live bot is spending, which
+    /// is the first thing anyone asks about a live bot that is doing something
+    /// unexpected. `null` for a paper bot, and for a live bot whose account has
+    /// since been disconnected.
+    pub broker_account_id: Option<String>,
     /// When it was created, unix nanos.
     pub created_at: i64,
     /// Whether a task for it is live in *this* process.
@@ -433,6 +450,9 @@ async fn start_paper(
             mode: "paper".into(),
             status: "running".into(),
             venue: request.venue.clone(),
+            // A paper bot trades no account, and echoing the request's field
+            // here would claim it does.
+            broker_account_id: None,
             created_at: now_ns(),
             supervised_here: true,
             activity: None,
@@ -469,6 +489,25 @@ async fn start_live(
     };
     let venue = venue.to_ascii_lowercase();
 
+    // Resolved *before* the gate, and its problems reported *with* the gate's.
+    //
+    // `docs/12` and this module's own note ask for a refusal that names every
+    // unmet condition rather than the first, and a user starting a live bot
+    // faces two independent setups: a paper track record, and a broker account
+    // that has passed a venue check. Reporting the track record alone sends
+    // them back to a settings page they have not been to yet, and the reason
+    // the account is wrong (often a transport failure during connect) is
+    // exactly what they need to read.
+    //
+    // Two answers stay immediate and do not fold into the gate message: an
+    // account id that is not the caller's is a 404, because confirming that a
+    // guessed id exists is a fact nobody is entitled to, and a malformed one is
+    // a 422, because the request itself is wrong.
+    let account =
+        resolve_broker_account(database, user.user_id, request.broker_account_id.as_deref())
+            .await?;
+    let account_problems = account.problems(&venue);
+
     // The opt-in list is the durable half of the gate; the track record comes
     // from the paper bots this strategy has already run.
     let mut gate = LiveGate::new(GateRequirements::default());
@@ -488,7 +527,13 @@ async fn start_live(
         &limits,
     );
 
-    if let GateVerdict::Refused { reasons } = verdict {
+    let mut reasons = match verdict {
+        GateVerdict::Refused { reasons } => reasons,
+        GateVerdict::Allowed => Vec::new(),
+    };
+    reasons.extend(account_problems);
+
+    if !reasons.is_empty() {
         return Err(ApiError::coded(
             StatusCode::FORBIDDEN,
             "LIVE_GATE_REFUSED",
@@ -499,20 +544,14 @@ async fn start_live(
         ));
     }
 
-    // Credentials are read from the environment and never stored. A missing key
-    // is a 503 rather than a 403: nothing about the *request* is wrong, the
-    // deployment is not configured.
-    let adapter = BinanceRest::from_env(&symbol).map_err(|e| {
-        ApiError::coded(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "EXCHANGE_CREDENTIALS_MISSING",
-            format!(
-                "no {venue} credentials are configured, so a live bot cannot be started: {e}. \
-                 Set the key and secret in the environment of the API process; they are never \
-                 stored in the database."
-            ),
-        )
-    })?;
+    // The account is usable, so it is the one this bot trades. Taken from the
+    // resolution above rather than re-read, so the row the checks were made
+    // against is the row the adapter is built from.
+    let resolved = account
+        .row()
+        .ok_or_else(|| ApiError::internal("the broker account resolved to nothing"))?;
+    let account_id = resolved.id;
+    let adapter = live_adapter(state, database, user, resolved, &symbol).await?;
 
     // The row first, so the bot's client order ids can carry its own id -- two
     // bots on one account must not be able to generate the same order id.
@@ -557,9 +596,31 @@ async fn start_live(
         "starting a LIVE bot: orders placed by this bot spend real money"
     );
 
-    state
-        .bots
-        .start_live(bot_id, user.user_id, database.clone(), bot);
+    // Recorded on the row before the task starts, so the link from a live bot to
+    // the account it spends is durable and not merely in this process's memory.
+    if !db::broker_accounts::set_bot_broker_account(
+        database.pool(),
+        user.user_id,
+        bot_id,
+        account_id,
+    )
+    .await?
+    {
+        // The row was created above and belongs to this user, so this is
+        // unreachable; an error rather than a panic because the alternative is
+        // starting a bot whose account the trail does not name.
+        return Err(ApiError::internal(
+            "the bot was created but its broker account could not be recorded",
+        ));
+    }
+
+    state.bots.start_live(
+        bot_id,
+        user.user_id,
+        database.clone(),
+        bot,
+        Some(account_id),
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -569,10 +630,173 @@ async fn start_live(
             mode: "live".into(),
             status: "running".into(),
             venue: Some(venue),
+            broker_account_id: Some(account_id.to_string()),
             created_at: now_ns(),
             supervised_here: true,
             activity: None,
         }),
+    ))
+}
+
+/// What a live-bot request resolved its broker account to.
+///
+/// Three states, because they are genuinely different and the refusal messages
+/// differ: nothing named, a row that is the user's but unusable, and a row the
+/// checks passed. Collapsing the first two into `Option` would make "you did not
+/// send one" and "the one you sent is broken" the same sentence.
+enum ResolvedAccount {
+    /// No account was named. `broker_account_id` is required for a live bot.
+    Unnamed,
+    /// The user's account, whatever state it is in. The problems are computed
+    /// against the requested venue by [`ResolvedAccount::problems`].
+    Named(Box<db::broker_accounts::BrokerAccountRow>),
+}
+
+impl ResolvedAccount {
+    /// The row, once every check has passed.
+    fn row(&self) -> Option<&db::broker_accounts::BrokerAccountRow> {
+        match self {
+            Self::Unnamed => None,
+            Self::Named(row) => Some(row),
+        }
+    }
+
+    /// Why this account cannot trade `venue`, as sentences for a refusal.
+    ///
+    /// Empty means it can. The messages name the fix, because the two problems
+    /// have fixes on different pages: one is "connect an account", the other is
+    /// "the venue check failed, here is what it said".
+    fn problems(&self, venue: &str) -> Vec<String> {
+        match self {
+            Self::Unnamed => vec![
+                "no broker account was named. A live bot trades its owner's own account, so send \
+                 `broker_account_id` -- connect one at POST /brokers and wait for `verified`"
+                    .to_string(),
+            ],
+            Self::Named(row) => {
+                let mut problems = Vec::new();
+                if row.venue != venue {
+                    problems.push(format!(
+                        "its broker account is on `{}`, not `{venue}`",
+                        row.venue
+                    ));
+                }
+                if !broker_routes::may_trade(&row.status) {
+                    problems.push(format!(
+                        "its broker account is `{}` rather than `verified`, so the venue has not \
+                         accepted the key{}; re-check it at POST /brokers/{}/verify",
+                        row.status,
+                        row.last_error
+                            .as_deref()
+                            .map(|error| format!(" ({error})"))
+                            .unwrap_or_default(),
+                        row.id
+                    ));
+                }
+                problems
+            }
+        }
+    }
+}
+
+/// Find the broker account a live bot will trade.
+///
+/// # Errors
+/// 404 when the account is not the caller's, and deliberately the same answer
+/// as "does not exist" -- confirming that an id exists is a fact a caller has
+/// no business learning by guessing. 422 for an id that is not a uuid, because
+/// the request itself is malformed rather than the account being unusable.
+///
+/// Everything else that can be wrong with an account is deliberately *not* an
+/// error here: it becomes a reason in the refusal [`start_live`] builds, so one
+/// round trip reports it alongside any gate problem.
+async fn resolve_broker_account(
+    database: &db::Database,
+    user_id: Uuid,
+    raw: Option<&str>,
+) -> Result<ResolvedAccount, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(ResolvedAccount::Unnamed);
+    };
+
+    let id = Uuid::parse_str(raw).map_err(|_| {
+        ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "BROKER_ACCOUNT_INVALID",
+            format!("`{raw}` is not a broker account id"),
+        )
+    })?;
+
+    let row = db::broker_accounts::get_broker_account(database.pool(), user_id, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("no such broker account"))?;
+    Ok(ResolvedAccount::Named(Box::new(row)))
+}
+
+/// Build the adapter for a user's own account, opening the stored credential.
+///
+/// Reached only once [`ResolvedAccount::problems`] has returned empty, so the
+/// two things left that can go wrong are the deployment's rather than the
+/// caller's: no vault configured, or a ciphertext that will not open (a rotated
+/// `BROKER_KEK`, or a tampered row). Both are 503, and neither is a refusal the
+/// user can act on except by reconnecting the account.
+///
+/// The plaintext key is opened here and lives only in the returned adapter. It
+/// is never logged, never returned, and never written to the row the bot asked
+/// for.
+async fn live_adapter(
+    state: &AppState,
+    database: &db::Database,
+    user: &UserContext,
+    resolved: &db::broker_accounts::BrokerAccountRow,
+    symbol: &str,
+) -> Result<BinanceRest, ApiError> {
+    let vault = state.vault.as_ref().ok_or_else(|| {
+        ApiError::unavailable(
+            "BROKER_KEK is not set in this deployment, so no stored broker credential can be \
+             opened. A live bot cannot be started without it.",
+        )
+    })?;
+
+    let account_id = resolved.id;
+    let stored =
+        db::broker_accounts::broker_account_secrets(database.pool(), user.user_id, account_id)
+            .await?
+            .ok_or_else(|| ApiError::not_found("no such broker account"))?;
+
+    // The scope is built from the *stored* venue, not from the request: sealing
+    // is bound to what is in the row, and a differently-spelled venue here would
+    // fail to decrypt with an error that looks like a corrupt key.
+    let scope = trading_engine::SecretScope::new(user.user_id, &stored.venue);
+    let credentials = vault
+        .open_credentials(
+            &scope,
+            &trading_engine::SealedCredentials {
+                key_ciphertext: stored.key_ciphertext,
+                secret_ciphertext: stored.secret_ciphertext,
+                kek_fingerprint: stored.kek_fingerprint,
+            },
+        )
+        .map_err(|e| {
+            // A failure here is either a rotated KEK or a tampered row, and both
+            // are operator problems rather than the caller's. It is logged with
+            // the account id and no part of the credential.
+            tracing::error!(%account_id, "a stored broker credential could not be opened: {e}");
+            ApiError::coded(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "BROKER_CREDENTIAL_UNREADABLE",
+                format!(
+                    "the stored credential for this broker account could not be opened: {e}. \
+                     An operator has usually rotated BROKER_KEK; disconnect and reconnect the \
+                     account."
+                ),
+            )
+        })?;
+
+    Ok(BinanceRest::new(
+        &state.binance_base_url,
+        symbol,
+        credentials,
     ))
 }
 
@@ -823,6 +1047,7 @@ fn respond(
         mode: row.mode,
         status: row.status,
         venue: row.venue,
+        broker_account_id: row.broker_account_id.map(|id| id.to_string()),
         created_at: row.created_at,
         activity: activity.map(|summary| ActivityResponse {
             trades: summary.trades,
@@ -877,6 +1102,7 @@ mod tests {
             mode: "live".into(),
             status: "killed".into(),
             venue: Some("binance".into()),
+            broker_account_id: Some("7c9e6679-7425-40de-944b-e07fc1f90ae7".into()),
             created_at: 0,
             supervised_here: true,
             activity: Some(ActivityResponse {
@@ -893,6 +1119,10 @@ mod tests {
         assert_eq!(body["mode"], "live");
         assert_eq!(body["status"], "killed");
         assert_eq!(body["venue"], "binance");
+        assert_eq!(
+            body["broker_account_id"],
+            "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        );
         assert_eq!(body["supervised_here"], true);
         assert_eq!(body["activity"]["trades"], 3);
         assert_eq!(body["activity"]["cumulative_r"], 2.5);

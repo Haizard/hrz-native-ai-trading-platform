@@ -55,9 +55,10 @@ pub mod live;
 pub mod live_store;
 pub mod paper;
 pub mod risk;
+pub mod secrets;
 pub mod store;
 
-pub use binance::BinanceRest;
+pub use binance::{AccountCheck, BinanceRest, base_url_from_env as binance_base_url};
 pub use credentials::ExchangeCredentials;
 pub use decisions::{DecisionPath, Decisions};
 pub use error::ExecutionError;
@@ -72,6 +73,7 @@ pub use live_store::{
 };
 pub use paper::{BotAlert, DecisionOutcome, DecisionRecord, PaperBot, PaperConfig};
 pub use risk::{OnBreach, PLATFORM_MAX_RISK_PCT, RiskEngine, RiskLimits, RiskVerdict};
+pub use secrets::{KEK_VAR, SealedCredentials, SecretScope, SecretVault};
 pub use store::{
     BotSession, DECISION_EVENT, NOTIFICATION_EVENT, RISK_EVENT, STARTED_EVENT, STOPPED_EVENT,
     decision_payload, notification_payload,

@@ -124,6 +124,14 @@ base64 = "0.22"
 hmac = "0.12"
 sha2 = "0.10"
 subtle = "2"
+# Envelope encryption for the per-user exchange credentials (`docs/15`).
+# AES-256-GCM is the RustCrypto AEAD, and it is a library for the same reason
+# Argon2 is: the primitive is the part that must not be hand-rolled. What is
+# written here is only the frame around it (nonce management, AAD, versioning).
+aes-gcm = "0.10"
+# Wipes key material on drop. A `Vec<u8>` that held an API secret is otherwise
+# left in freed memory for the allocator to hand to the next request.
+zeroize = "1"
 reqwest           = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # TLS is NOT on by default: without it `connect_async("wss://...")` fails at
 # runtime with "URL error: TLS support not compiled in". rustls + webpki-roots

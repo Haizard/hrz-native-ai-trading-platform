@@ -20,6 +20,7 @@
 #![deny(missing_docs)]
 
 pub mod bots;
+pub mod broker_accounts;
 pub mod config;
 pub mod drawings;
 pub mod error;
@@ -37,6 +38,12 @@ pub mod strategies;
 pub mod users;
 
 pub use bots::{create_bot, delete_bot, get_bot, list_bots, set_status, BotRow, STATUSES};
+pub use broker_accounts::{
+    broker_account_for_bot, broker_account_secrets, count_bots_for_broker_account,
+    create_broker_account, delete_broker_account, get_broker_account, list_broker_accounts,
+    set_bot_broker_account, set_broker_account_status, BrokerAccountRow, NewBrokerAccount,
+    SealedKeyMaterial, STATUSES as BROKER_ACCOUNT_STATUSES,
+};
 pub use config::DatabaseConfig;
 pub use drawings::{
     create_drawing, delete_drawing, list_drawings, needs_second_anchor, update_drawing, DrawingRow,

@@ -54,6 +54,15 @@ pub enum ExecutionError {
         hint: String,
     },
 
+    /// A stored credential could not be sealed, opened or parsed.
+    ///
+    /// Carries no part of any key or secret: this error reaches a log line, and
+    /// the audit trail `docs/15` requires must never contain a credential. The
+    /// message names the *variable* or the *scope* at fault instead, which is
+    /// what an operator can actually act on.
+    #[error("credential vault: {0}")]
+    Vault(String),
+
     /// Live trading was refused by the gate (`docs/15`).
     #[error("live trading refused: {0}")]
     NotAllowed(String),

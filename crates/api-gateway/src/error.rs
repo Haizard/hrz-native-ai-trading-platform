@@ -164,6 +164,17 @@ impl ApiError {
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    /// The structured detail, if there is any.
+    ///
+    /// A reader rather than a field, because the two things that need it are a
+    /// test asserting what a 422 carries and a future route that forwards the
+    /// detail into its own envelope -- and both should go through the same
+    /// accessor rather than each matching on the private field.
+    #[must_use]
+    pub const fn details(&self) -> Option<&serde_json::Value> {
+        self.details.as_ref()
+    }
 }
 
 /// Turn a strategy-document failure into a response the editor can act on.

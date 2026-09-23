@@ -107,8 +107,9 @@ checking deliberately rather than inferring from a healthy container.
 | `AWS_SECRET_ACCESS_KEY` | the AI agent | as above |
 | `AWS_BEDROCK_REGION` | the AI agent | defaults to `us-east-1` |
 | `AWS_SESSION_TOKEN` | the AI agent | optional; only for temporary credentials |
-| `BINANCE_API_KEY` | **live trading** | the venue still opts in, but `GET /venues` reports `credentials_configured: false` and an order is refused. |
-| `BINANCE_API_SECRET` | **live trading** | as above |
+| `BROKER_KEK` | **users trading their own accounts** | 32 random bytes, base64 (`openssl rand -base64 32`). `/brokers` answers 503, no user can connect an exchange account, and `POST /bots` refuses a live bot — because a live bot trades its owner's account and the deployment's own keys are no longer used for it. Charts, analytics and the agent are unaffected. **It cannot be regenerated**: it is the only value that opens the rows already stored, so back it up with `JWT_SECRET` — losing it means every user re-enters their keys. |
+| `BINANCE_API_KEY` | the deployment's own account — `xtask`, the CLI tools | the venue still opts in, but `GET /venues` reports `credentials_configured: false`. Since `0007` this is **not** what a user's bot trades. |
+| `BINANCE_API_SECRET` | as above | as above |
 | `MARKET_FEED` | live bots | defaults to `off`. Bots start and receive nothing, and say so — a bot that is `running` with no feed looks identical to one that is running and finding no setups. Set to `binance`. |
 | `MARKET_SYMBOLS` | what the charts can show | comma-separated, defaults to `BTCUSDT`. This is the watchlist `GET /symbols` reports and the set of feeds started at boot. Because market data is **not persisted**, the buffer is empty on a cold start — so a route that listed only what it had buffered would answer `[]`, and a page with no instruments could never ask for the one that fills it. Add every symbol you want charted; each one costs a socket and ~7 MB of RAM (a candle buffer plus a trade tape), not disk. |
 | `MARKET_REST_URL` | chart history older than the buffer | defaults to `https://api.binance.com`. Only used to fetch windows the in-memory buffer does not cover. |
@@ -118,9 +119,27 @@ upper-cased — `binance` → `BINANCE_API_KEY`. The list of venues is closed
 (`venue_routes::KNOWN_VENUES`), so a typo in the prefix produces a venue that is opted in
 and can never trade, rather than an error.
 
-`credentials_configured` is reported **separately** from `opted_in` because the two
-failures look identical from outside — "I opted in and it still refused" — and only one of
-them is fixable from a browser.
+### Two credential stores, and why there are two
+
+Since migration `0007` there are two, serving different callers:
+
+- **`BROKER_KEK`** wraps **each user's own** key, sealed at rest in
+  `broker_accounts`. This is what a live bot trades with. One row per connected account,
+  one owner each, and the AAD binding means a row moved between users will not decrypt.
+- **`BINANCE_API_KEY` / `BINANCE_API_SECRET`** are the **deployment's** account, read
+  from the environment and never stored. `xtask`, `strategy-cli` and `paper-cli` use them,
+  and nothing a user does touches them.
+
+`POST /bots` with `mode: live` requires `broker_account_id` and never falls back to the
+environment variables. That is a deliberate breaking change: a user who asked for a live
+bot and silently got one spending the operator's account has been told something false
+about whose money is at risk.
+
+`credentials_configured` therefore reports the *deployment's* keys only. The user-level
+answer is `your_accounts` (how many verified accounts the caller has on that venue) and
+`you_can_trade` (whether both the opt-in and an account are in place). All three are
+reported separately because the failures look identical from outside — "I opted in and it
+still refused" — and each has its fix on a different page.
 
 ### Optional
 

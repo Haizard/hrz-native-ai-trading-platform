@@ -14,7 +14,7 @@ use tracing::{error, info, warn};
 use ai_agent::{Agent, AgentConfig, SkillLibrary};
 use api_gateway::bots::{BotSupervisor, FeedMode};
 use api_gateway::rate_limit::{RateLimit, RateLimiter};
-use api_gateway::{AppState, build_auth, load_skills, router};
+use api_gateway::{AppState, build_auth, build_vault, load_skills, router};
 use db::Database;
 use observability::QueueSink;
 use observability::metrics::Registry;
@@ -47,6 +47,10 @@ async fn main() -> anyhow::Result<()> {
     let skills = load_skills();
     let agent = build_agent(&skills);
     let auth = build_auth();
+    // Users' own exchange credentials (`0007`). Optional like every other
+    // dependency: without it the platform still analyses, and `/brokers` says
+    // what is missing rather than failing anonymously.
+    let vault = build_vault();
 
     let feed = FeedMode::from_env();
     if feed == FeedMode::Off {
@@ -120,6 +124,8 @@ async fn main() -> anyhow::Result<()> {
         symbols,
         agent_limits,
         metrics: Registry::global_handle(),
+        binance_base_url: trading_engine::binance_base_url(),
+        vault,
         alert_queue: alert_queue.clone(),
         sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
     };
