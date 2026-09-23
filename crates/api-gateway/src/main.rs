@@ -14,6 +14,7 @@ use tracing::{error, info, warn};
 use ai_agent::{Agent, AgentConfig, SkillLibrary};
 use api_gateway::bots::{BotSupervisor, FeedMode};
 use api_gateway::rate_limit::{RateLimit, RateLimiter};
+use api_gateway::tickers;
 use api_gateway::{AppState, build_auth, build_vault, load_skills, router};
 use db::Database;
 use observability::QueueSink;
@@ -128,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
         vault,
         alert_queue: alert_queue.clone(),
         sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
+        tickers: Arc::new(tickers::TickerCache::new()),
     };
 
     api_gateway::metrics::spawn_alert_task(state.clone());

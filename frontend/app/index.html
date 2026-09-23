@@ -145,6 +145,34 @@
   .tabs { display: flex; border-bottom: 1px solid var(--line); }
   .tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 8px; }
   .tabs button[aria-selected="true"] { color: var(--text); border-bottom: 2px solid var(--accent); }
+
+  /*
+    The watchlist. Rows are the platform's answer to "which market" — a search
+    over everything the venue lists, favorites the user stars, and live prices
+    that tick without the chart's own feed. A row is a chart command: clicking
+    it shows that symbol on the active chart. Prices inherit the up/down
+    colors the rest of the page already uses, so green and red mean the same
+    thing everywhere on this screen.
+  */
+  .wlTags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .wlTag {
+    padding: 2px 8px; font-size: 11px; color: var(--muted);
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px;
+  }
+  .wlHead { justify-content: space-between; font-size: 11px; margin-bottom: 4px; }
+  #wlRows { flex: 1; overflow: auto; min-height: 0; }
+  .watchRow {
+    display: flex; align-items: center; gap: 8px; padding: 5px 6px;
+    border-bottom: 1px solid var(--line); cursor: pointer;
+  }
+  .watchRow:hover { background: var(--panel-2); }
+  .watchRow .star { flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); padding: 0 2px; }
+  .watchRow .star[aria-pressed="true"] { color: var(--warn); }
+  .wlSym { flex: 1 1 auto; font-family: var(--mono); font-size: 12px; color: var(--text); }
+  .wlPrice, .wlChange { flex: 0 0 auto; font-family: var(--mono); font-size: 12px; text-align: right; }
+  .wlChange { width: 64px; }
+  .up { color: var(--up); }
+  .down { color: var(--down); }
   .modes { display: flex; gap: 4px; margin-bottom: 8px; }
   .modes button { flex: 0 1 auto; padding: 4px 10px; font-size: 11px; color: var(--muted); }
   .modes button[aria-selected="true"] { color: var(--text); border-color: var(--accent); }
@@ -621,12 +649,38 @@
 
   <aside>
     <div class="tabs" role="tablist">
+      <button role="tab" data-pane="watchlist" aria-selected="false">Watchlist</button>
       <button role="tab" data-pane="thesis" aria-selected="true">Thesis</button>
       <button role="tab" data-pane="scan" aria-selected="false">Scan</button>
       <button role="tab" data-pane="strategy" aria-selected="false">Strategy</button>
       <button role="tab" data-pane="indicator" aria-selected="false">Indicator</button>
       <button role="tab" data-pane="bots" aria-selected="false">Bots</button>
       <button role="tab" data-pane="book" aria-selected="false">Book</button>
+    </div>
+
+    <!--
+      The watchlist: which market, before anything about one market.
+
+      Two sources feed one list. Favorites plus the page's own instruments
+      render by default; typing searches the venue's whole listing through
+      `GET /symbols/search`, so a symbol nobody has charted yet is one
+      keystroke away. Prices come from `GET /tickers` on their own clock —
+      the route caches server-side, so polling faster would buy nothing.
+      Clicking a row charts that symbol on the active pane; the star is a
+      separate control, because charting and favoriting are different intents
+      about the same row.
+    -->
+    <div class="pane" id="pane-watchlist" hidden>
+      <div class="row">
+        <input id="wlSearch" placeholder="search every Binance symbol (e.g. sol, pepe)" />
+      </div>
+      <div id="wlTags" class="wlTags" hidden></div>
+      <div class="row wlHead">
+        <span id="wlCount" class="muted"></span>
+        <span id="wlSource" class="muted"></span>
+      </div>
+      <div id="wlRows"></div>
+      <p class="empty" id="wlEmpty" hidden></p>
     </div>
 
     <div class="pane" id="pane-thesis">

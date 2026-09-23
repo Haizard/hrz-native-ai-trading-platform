@@ -2096,13 +2096,22 @@ function createChartPane(root, hooks = {}) {
       } catch { return; }
 
       if (frame.type === "data") {
-        // Replace the last candle if it is the same bucket, else append. This is
-        // the only market-data decision this file makes, and it is about
-        // identity, not value.
+        // Replace the last candle if it is the same bucket, append a newer one,
+        // and drop an older one. The server publishes forming frames and closes
+        // from one task in order, but this pane also survives reconnects, lag
+        // and a window that was refetched mid-stream -- anywhere the frame
+        // sequence can hiccup. Refusing to move a chart backwards is the
+        // client-side half of that guarantee. This is the only market-data
+        // decision this file makes, and it is about identity, not value.
         const incoming = frame.payload;
         const last = candles[candles.length - 1];
-        if (last && last.open_time === incoming.open_time) candles[candles.length - 1] = incoming;
-        else candles.push(incoming);
+        if (last && incoming.open_time < last.open_time) {
+          // stale frame for a bucket already superseded
+        } else if (last && last.open_time === incoming.open_time) {
+          candles[candles.length - 1] = incoming;
+        } else {
+          candles.push(incoming);
+        }
         if (candles.length > Number(el("limit").value) + 50) candles.shift();
         // Stamped on arrival rather than on the bar's own time: a replayed bar
         // arrives now, and "is the feed alive" is a question about arrivals.
@@ -4780,6 +4789,281 @@ async function botAction(id, act) {
 }
 
 // ---------------------------------------------------------------------------
+// The watchlist
+//
+// Which market, before anything about one market: every other panel answers
+// about the symbol the active chart is showing, and this is the one that
+// chooses it. Two sources fill the same list -- the page's instruments plus
+// the user's favorites by default, the venue's whole listing under a search --
+// and prices tick from `GET /tickers`, whose server-side cache makes polling
+// it every few seconds cheap enough to leave running while the pane is open.
+// ---------------------------------------------------------------------------
+
+const WATCHLIST_FAVORITES_KEY = "watchlist.favorites";
+/// How often the pane re-reads `GET /tickers`. The route caches server-side
+/// for five, so asking faster buys nothing; asking slower makes the prices
+/// read as stale while the rows are on screen.
+const WATCHLIST_TICK_MS = 5000;
+
+/// Favorites, persisted in this browser.
+///
+/// `localStorage` and not the database, deliberately, for the same reason the
+/// rest of the shell keeps its own view state locally: a favorite is a
+/// preference about this workstation, not data another user of the account
+/// needs to agree on. The page already treats reload-persistence as local
+/// (`agentSession` does the same).
+function watchlistFavorites() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(WATCHLIST_FAVORITES_KEY) || "[]");
+    return Array.isArray(raw) ? raw.filter((s) => typeof s === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function toggleFavorite(symbol) {
+  const favorites = new Set(watchlistFavorites());
+  if (favorites.has(symbol)) favorites.delete(symbol);
+  else favorites.add(symbol);
+  try {
+    localStorage.setItem(WATCHLIST_FAVORITES_KEY, JSON.stringify([...favorites]));
+  } catch {
+    // A full or blocked store drops the preference rather than the click.
+  }
+  return favorites.has(symbol);
+}
+
+/// The last ticker row per symbol, and when the batch that filled it landed.
+const watchlistTickers = new Map();
+let watchlistTickersAt = 0;
+let watchlistTickTimer = 0;
+
+/// The search result, held so typing does not fight the render loop: rows come
+/// from here while a query stands, and from the page's instruments when it
+/// does not. `null` means no search is on screen.
+let watchlistSearch = null;
+
+/// Prices for everything the list is currently showing. One request covers
+/// favorites, search results and the active symbol, because the route takes a
+/// symbol list; the server caches the venue answer, so this is cheap to run
+/// on its own clock.
+async function fetchWatchlistTickers() {
+  const rows = watchlistRows().map((row) => row.symbol);
+  const symbols = [...new Set([...rows, activeSymbol()].filter(Boolean))];
+  if (!symbols.length) return;
+  try {
+    const response = await api(`/tickers?symbols=${encodeURIComponent(symbols.join(","))}`);
+    for (const ticker of response.tickers || []) watchlistTickers.set(ticker.symbol, ticker);
+    watchlistTickersAt = Date.now();
+    renderWatchlist();
+  } catch {
+    // The list keeps its last prices and its age note. A watchlist that
+    // quietly stops ticking is exactly what `wlSource` exists to name, so
+    // the failure says nothing here and lets the age grow.
+  }
+}
+
+/// What the list shows right now.
+///
+/// A standing search answers with the venue's matches; otherwise favorites
+/// come first and the page's own instruments follow. The same row shape comes
+/// out of both, so painting never learns where a row came from.
+function watchlistRows() {
+  if (watchlistSearch) {
+    return watchlistSearch.results.map((r) => ({ symbol: r.symbol, trading: r.trading }));
+  }
+  const seen = new Set();
+  const rows = [];
+  for (const symbol of [...watchlistFavorites(), ...coverage.map((entry) => entry.symbol)]) {
+    if (!seen.has(symbol)) {
+      seen.add(symbol);
+      rows.push({ symbol });
+    }
+  }
+  return rows;
+}
+
+async function runWatchlistSearch(query) {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    watchlistSearch = null;
+    renderWatchlist();
+    return;
+  }
+  try {
+    const response = await api(`/symbols/search?q=${encodeURIComponent(trimmed)}&limit=25`);
+    // The user may have kept typing while this was in flight; an answer to a
+    // question they already revised would flash the wrong rows.
+    if (el("wlSearch").value.trim() !== trimmed) return;
+    watchlistSearch = response;
+    renderWatchlist();
+    fetchWatchlistTickers();
+  } catch (e) {
+    el("wlSource").textContent = `search failed: ${e.message}`;
+  }
+}
+
+/// Price text, at whatever precision the magnitude actually has.
+function fmtPrice(value) {
+  if (!Number.isFinite(value)) return "—";
+  if (value >= 1000) return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (value >= 1) return value.toFixed(value >= 100 ? 2 : 4);
+  return value.toPrecision(4);
+}
+
+function renderWatchlist() {
+  const rowsEl = el("wlRows");
+  const empty = el("wlEmpty");
+  const tags = el("wlTags");
+  const favorites = watchlistFavorites();
+  const favoriteSet = new Set(favorites);
+  const rows = watchlistRows();
+
+  // While searching, favorites sit above the results as one-press exits: the
+  // search replaced the default list, and this is how the user gets a pinned
+  // symbol back without clearing the query.
+  if (watchlistSearch) {
+    tags.hidden = false;
+    tags.innerHTML = "";
+    for (const symbol of favorites) {
+      const chip = document.createElement("button");
+      chip.className = "wlTag";
+      chip.textContent = `★ ${symbol}`;
+      chip.onclick = () => chartFromWatchlist(symbol);
+      tags.appendChild(chip);
+    }
+  } else {
+    tags.hidden = true;
+    tags.innerHTML = "";
+  }
+
+  rowsEl.innerHTML = "";
+  empty.hidden = rows.length > 0;
+  if (!rows.length) {
+    empty.textContent = watchlistSearch
+      ? `nothing on the venue matches "${watchlistSearch.query}".`
+      : "star a row to pin it here, or search every symbol the venue lists.";
+  }
+
+  el("wlCount").textContent = watchlistSearch
+    ? `${rows.length} of ${watchlistSearch.indexed} listed symbols`
+    : `${rows.length} instrument${rows.length === 1 ? "" : "s"}`;
+  // "Prices 2s ago" -- the age is the honest part. A watchlist whose clock
+  // stopped showing an age has silently stopped ticking, and the number going
+  // stale is how that is discovered.
+  el("wlSource").textContent = watchlistTickersAt
+    ? `prices ${Math.max(0, Math.round((Date.now() - watchlistTickersAt) / 1000))}s ago`
+    : "";
+
+  for (const row of rows) {
+    const ticker = watchlistTickers.get(row.symbol);
+    const line = document.createElement("div");
+    line.className = "watchRow";
+
+    const star = document.createElement("button");
+    star.className = "star";
+    star.setAttribute("aria-pressed", String(favoriteSet.has(row.symbol)));
+    star.textContent = favoriteSet.has(row.symbol) ? "★" : "☆";
+    star.title = favoriteSet.has(row.symbol) ? "remove from favorites" : "add to favorites";
+    // Not a click on the row: charting and favoriting are different intents
+    // about the same row, so one must not trigger the other.
+    star.onclick = (event) => {
+      event.stopPropagation();
+      toggleFavorite(row.symbol);
+      renderWatchlist();
+    };
+
+    const sym = document.createElement("span");
+    sym.className = "wlSym";
+    sym.textContent = row.symbol;
+    if (row.trading === false) sym.title = "the venue is not currently accepting orders for this symbol";
+
+    const price = document.createElement("span");
+    price.className = "wlPrice";
+    price.textContent = ticker ? fmtPrice(ticker.last_price) : "—";
+
+    const change = document.createElement("span");
+    if (ticker) {
+      const up = ticker.price_change_percent >= 0;
+      change.className = `wlChange ${up ? "up" : "down"}`;
+      change.textContent = `${up ? "+" : ""}${ticker.price_change_percent.toFixed(2)}%`;
+    } else {
+      change.className = "wlChange";
+    }
+
+    line.onclick = () => chartFromWatchlist(row.symbol);
+    line.append(star, sym, price, change);
+    rowsEl.appendChild(line);
+  }
+}
+
+/// Chart a watchlist row on the active pane.
+///
+/// The one piece that has to be careful: a searched symbol may not be in the
+/// pane's series list yet (the list is built from what the platform has
+/// charted). It is appended with a full, zero-coverage timeframe ladder --
+/// `/candles` fetches history on demand, so coverage is not a permission --
+/// and the selects are rebuilt before the fetch that reads them.
+function chartFromWatchlist(symbol) {
+  if (!activePane) return;
+  const known = coverage.some((entry) => entry.symbol === symbol);
+  if (!known) {
+    coverage = [
+      ...coverage,
+      {
+        symbol,
+        timeframes: ["1m", "5m", "15m", "1h", "4h", "1d", "1w"].map((t) => ({
+          timeframe: t,
+          candles: 0,
+          first: 0,
+          last: 0,
+        })),
+      },
+    ];
+    // Every pane shares the page's instrument list; adding to it rebuilds
+    // each pane's options so the new symbol is not a one-pane fiction.
+    for (const pane of panes) pane.fillSeries(coverage, pane.symbol() || undefined);
+    activePane.fillSeries(coverage, symbol, "15m");
+  } else {
+    activePane.fillSeries(coverage, symbol);
+  }
+  setActive(activePane);
+  activePane.refresh().then(() => activePane.connectLive());
+}
+
+function startWatchlistTicker() {
+  if (watchlistTickTimer) return;
+  fetchWatchlistTickers();
+  watchlistTickTimer = setInterval(fetchWatchlistTickers, WATCHLIST_TICK_MS);
+}
+
+function stopWatchlistTicker() {
+  if (watchlistTickTimer) {
+    clearInterval(watchlistTickTimer);
+    watchlistTickTimer = 0;
+  }
+}
+
+function wireWatchlist() {
+  const input = el("wlSearch");
+  let debounce = 0;
+  input.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => runWatchlistSearch(input.value), 250);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      clearTimeout(debounce);
+      runWatchlistSearch(input.value);
+    }
+    if (event.key === "Escape") {
+      input.value = "";
+      runWatchlistSearch("");
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
 
@@ -4797,6 +5081,15 @@ function selectPane(name) {
   // Indicator workspaces are loaded when the tab is opened, because they
   // can be created or modified from other tabs.
   if (name === "indicator") loadWorkspaces();
+  // The watchlist ticks only while it is on screen: a hidden pane's prices
+  // nobody can see are five-second requests for nothing, and reopening the
+  // pane re-prices it immediately anyway.
+  if (name === "watchlist") {
+    renderWatchlist();
+    startWatchlistTicker();
+  } else {
+    stopWatchlistTicker();
+  }
 }
 
 async function main() {
@@ -4805,6 +5098,8 @@ async function main() {
   document.querySelectorAll(".tabs button").forEach((button) =>
     button.addEventListener("click", () => selectPane(button.dataset.pane))
   );
+
+  wireWatchlist();
 
   // Workspace event listeners.
   el("wsCreate").onclick = createWorkspace;
@@ -4970,6 +5265,9 @@ async function main() {
   // from its own select, and an empty select would ask for `symbol=`.
   const entries = await loadCoverage();
   for (const pane of panes) pane.fillSeries(entries, pane.symbol() || undefined);
+  // The watchlist's default rows are exactly this list; repainting it here
+  // means the pane is never opened to an empty list after instruments load.
+  renderWatchlist();
 
   if (activePane.symbol()) {
     await activePane.refresh();

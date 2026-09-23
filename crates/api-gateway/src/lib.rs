@@ -67,6 +67,7 @@ pub mod rate_limit;
 pub mod scan_routes;
 pub mod skills_routes;
 pub mod strategy_routes;
+pub mod tickers;
 pub mod venue_routes;
 pub mod ws;
 
@@ -133,6 +134,15 @@ pub struct AppState {
     /// spell out as unsafe to do while anything else is reading it. As a field
     /// it is config, and a mock venue can stand in for the real one.
     pub binance_base_url: String,
+    /// Venue 24-hour statistics for the watchlist, behind a short cache.
+    ///
+    /// Shared through the state rather than built per request for the same
+    /// reason the rate limiter is: the cache is the feature. A per-call cache
+    /// would turn every connected watchlist into its own venue poller, which
+    /// is the load this exists to absorb. Behind an `Arc` because
+    /// [`AppState`] is `Clone` per request and the cache is shared mutable
+    /// state -- a clone of it would be a second cache, i.e. no cache.
+    pub tickers: Arc<tickers::TickerCache>,
     /// Seals and opens users' own exchange credentials (`docs/15`).
     ///
     /// `None` when `BROKER_KEK` is unset, in which case `/brokers` answers 503
@@ -231,6 +241,7 @@ pub fn router(state: AppState) -> Router {
         // wildcard, or they would be read as a symbol named "search".
         .route("/symbols/search", get(market_routes::search_symbols))
         .route("/symbols/validate", get(market_routes::validate_symbol))
+        .route("/tickers", get(tickers::tickers))
         // The question that comes *before* a chart: which symbol. One route,
         // because a scan is one measurement over many instruments -- see the
         // module doc for why it is not a `/candles` parameter.

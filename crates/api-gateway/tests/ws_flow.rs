@@ -442,3 +442,54 @@ async fn a_closed_socket_returns_the_gauge_but_not_the_counter() {
         "the open outlives the close: that gap is what makes churn visible"
     );
 }
+
+/// The whole point of the chart lane: a bar that is still forming reaches a
+/// subscribed chart without waiting for its bucket to close.
+///
+/// Written against the defect this lane exists to fix -- before it, the market
+/// channel forwarded only closed candles, so a `1d` chart received one frame
+/// per day and sat frozen the rest of the time, reading as a broken feed.
+/// `feed_forming_candle` is the recorder's once-a-second snapshot path; a bot
+/// never takes it, because bots subscribe the closed lane.
+#[tokio::test]
+async fn the_market_channel_forwards_a_forming_candle_to_the_chart() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let base = h.serve().await;
+    let mut socket = connect(&base, "/ws/market/BTCUSDT/1d").await;
+    read_until(&mut socket, |v| v["type"] == "subscribed").await;
+
+    // Today's bar, still open: published straight onto the chart lane, the
+    // same publish the recorder's one-second tick makes.
+    h.supervisor
+        .feed_forming_candle(&candle(4_000_000, 105.5, Timeframe::D1));
+
+    let data = read_until(&mut socket, |v| v["type"] == "data")
+        .await
+        .expect("the forming candle must reach the chart");
+    assert_eq!(data["payload"]["close"], 105.5);
+    assert_eq!(data["payload"]["timeframe"], "1d");
+}
+
+/// A forming bar must never reach a *bot*: strategies subscribe the closed
+/// lane, and a decision on a bar that has not closed would trade a price that
+/// never existed as a close.
+#[tokio::test]
+async fn a_forming_candle_stays_off_the_lane_bots_subscribe() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let mut closed = h.supervisor.subscribe_candles("BTCUSDT");
+
+    h.supervisor
+        .feed_forming_candle(&candle(5_000_000, 106.0, Timeframe::M5));
+
+    // The forming frame has had every chance to arrive (the publish is
+    // synchronous); an empty lane is the assertion.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        closed.try_recv().is_err(),
+        "a forming candle reached the closed-candle lane"
+    );
+}

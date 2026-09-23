@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use api_gateway::bots::{BotSupervisor, FeedMode};
 use api_gateway::rate_limit::{RateLimit, RateLimiter};
+use api_gateway::tickers;
 use api_gateway::{AppState, auth::AuthConfig, router};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -174,6 +175,11 @@ impl Harness {
             // also the *interesting* state for this path -- a credential check
             // that cannot reach the exchange must not read as a valid key.
             binance_base_url: "http://127.0.0.1:1".to_string(),
+            // Fresh and empty: port 1 refuses instantly, so a tickers request
+            // answers 503 fast instead of hanging on the venue. Tests that
+            // need rows seed their own cache (see `TickerCache::seeded`),
+            // which also keeps this path off the network entirely.
+            tickers: Arc::new(tickers::TickerCache::new()),
             alert_queue: None,
             sandbox: Arc::new(sandbox::Sandbox::new().expect("the embedded guest module compiles")),
         };

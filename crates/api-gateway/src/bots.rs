@@ -546,6 +546,15 @@ struct RunningBot {
 /// a slow one.
 const STOP_GRACE: Duration = Duration::from_secs(30);
 
+/// How often the feed recorder snapshots forming bars onto the chart lane.
+///
+/// One second, which is the cadence a chart can use: faster only multiplies
+/// WebSocket frames for a repaint nobody perceives, slower and a `1d` bar
+/// looks frozen between prints. Closed candles are never delayed by this --
+/// they publish the moment the collector closes them -- and the tick only
+/// throttles the *forming* snapshots.
+const FORMING_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Owns every running bot and the feed they share.
 #[derive(Clone)]
 pub struct BotSupervisor {
@@ -696,6 +705,22 @@ impl BotSupervisor {
         symbol: &str,
     ) -> broadcast::Receiver<analytics_core::types::Candle> {
         self.inner.bus.bus(symbol).subscribe_candles()
+    }
+
+    /// Subscribe to the **chart lane**: closed candles and forming ones,
+    /// interleaved in publication order.
+    ///
+    /// This is what a chart wants and a bot must never get: the forming frame
+    /// moves the newest bar once a second, so a `1d` chart ticks live instead
+    /// of looking frozen until midnight, while strategies keep consuming the
+    /// closed-candle lane and can never fire on a bar that does not exist yet.
+    /// See [`market_data::MarketEventBus::publish_chart_candle`] for the
+    /// ordering contract the single publisher gives this lane.
+    pub fn subscribe_chart_candles(
+        &self,
+        symbol: &str,
+    ) -> broadcast::Receiver<analytics_core::types::Candle> {
+        self.inner.bus.bus(symbol).subscribe_chart_candles()
     }
 
     /// Ensure a feed exists for a symbol, for a caller that only wants to watch.
@@ -930,10 +955,25 @@ impl BotSupervisor {
     /// every bar being published twice.
     pub fn feed_candle(&self, candle: &Candle) {
         self.note_candle(candle);
+        let bus = self.inner.bus.bus(&candle.symbol);
+        bus.publish_candle(candle.clone());
+        // The chart lane mirrors every closed candle: its subscribers render
+        // frames in arrival order, so a close must be visible there too or a
+        // chart could keep showing the forming bar of a bucket that ended.
+        bus.publish_chart_candle(candle.clone());
+    }
+
+    /// Publish a **forming** candle onto the chart lane only.
+    ///
+    /// A forming bar is not a candle yet: it has no close that any strategy
+    /// document could mean, so it never touches the closed lane the bots read
+    /// and never counts as feed activity (the trade that produced it already
+    /// did). Charts subscribe through [`Self::subscribe_chart_candles`].
+    pub fn feed_forming_candle(&self, candle: &Candle) {
         self.inner
             .bus
             .bus(&candle.symbol)
-            .publish_candle(candle.clone());
+            .publish_chart_candle(candle.clone());
     }
 
     /// Record that a candle arrived for its symbol, without publishing it.
@@ -1605,11 +1645,26 @@ async fn run_market_feed(
     // trades exist.
     let owned = symbol.to_string();
     let mut books_rx = symbol_bus.subscribe_orderbook();
+    // The chart lane's only live publisher is this recorder, which is what
+    // gives the lane its ordering contract (see
+    // `MarketEventBus::publish_chart_candle`): closed candles land on it in the
+    // order they closed, interleaved with at most one forming snapshot per
+    // resolution per [`FORMING_PUBLISH_INTERVAL`].
+    let chart_bus = Arc::clone(&symbol_bus);
     let recorder = tokio::spawn(async move {
         let mut builder = market_data::MultiTimeframeCandleBuilder::standard(&owned);
+        // Forming bars are published on a clock rather than per trade: a busy
+        // symbol prints hundreds of trades a second, and a chart that repaints
+        // per trade costs sockets for a visual difference nobody can see. One
+        // snapshot per second per resolution is what makes a `1d` bar visibly
+        // alive while costing a handful of frames.
+        let mut form_tick = tokio::time::interval(FORMING_PUBLISH_INTERVAL);
         loop {
             tokio::select! {
-                Ok(candle) = candles_rx.recv() => history.record_closed(&candle),
+                Ok(candle) = candles_rx.recv() => {
+                    history.record_closed(&candle);
+                    chart_bus.publish_chart_candle(candle);
+                }
                 Ok(trade) = trades_rx.recv() => {
                     live.record_trade(&trade);
                     let _closed = builder.on_trade(&trade);
@@ -1618,6 +1673,21 @@ async fn run_market_feed(
                     }
                 }
                 Ok(book) = books_rx.recv() => live.record_book(&book),
+                _ = form_tick.tick() => {
+                    // Closed candles queued ahead of this tick publish first.
+                    // The select picks between ready branches arbitrarily, so
+                    // without this drain a chart could receive the *next*
+                    // bucket's forming frame before the previous bucket's
+                    // close -- and a replace-or-append chart would then draw a
+                    // stale bar after the one it is on.
+                    while let Ok(candle) = candles_rx.try_recv() {
+                        history.record_closed(&candle);
+                        chart_bus.publish_chart_candle(candle);
+                    }
+                    for forming in builder.forming() {
+                        chart_bus.publish_chart_candle(forming.clone());
+                    }
+                }
                 else => break,
             }
         }

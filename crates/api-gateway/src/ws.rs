@@ -223,7 +223,14 @@ pub async fn market(
     // A chart should start the feed, not wait for a bot to happen to. Otherwise
     // "the chart is empty" has two possible causes again.
     state.bots.ensure_feed_for(&symbol);
-    let candles = state.bots.subscribe_candles(&symbol);
+    // The **chart** lane, not the closed-candle lane the bots read: it carries
+    // closed candles plus a once-a-second snapshot of each forming bar, which
+    // is what makes the newest bar move between closes -- a `1d` chart that
+    // only ever heard about closes would sit frozen for hours at a time and
+    // look broken. Bots deliberately never see this lane; see
+    // `MarketEventBus::publish_chart_candle` for the split and its ordering
+    // contract.
+    let candles = state.bots.subscribe_chart_candles(&symbol);
 
     let channel = format!("/ws/market/{symbol}/{timeframe}");
     let metrics = Arc::clone(&state.metrics);
@@ -300,7 +307,9 @@ async fn market_loop(
             received = candles.recv() => match received {
                 Ok(candle) => {
                     // Only this resolution: the feed builds several, and a
-                    // 5m chart has no use for the 1h series.
+                    // 5m chart has no use for the 1h series. Forming frames
+                    // are filtered by the same rule -- a forming `1h` bar on a
+                    // `5m` chart is exactly as useless as a closed one.
                     if candle.timeframe.to_string() != timeframe {
                         continue;
                     }
