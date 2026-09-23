@@ -69,7 +69,11 @@
   #signin[hidden] { display: none; }
   #signinMsg { color: var(--muted); font-size: 11px; }
 
+  /* `display: flex` would outrank the UA's `[hidden]` rule and leave the
+     workstation rendering under the home page -- the same specificity trap
+     the pane bars hit. Explicit wins. */
   main { flex: 1; display: flex; min-height: 0; }
+  main[hidden] { display: none; }
   /*
     Resizable widths. The rail and the aside keep their defaults, but a drag on
     their splitter rewrites the custom property below, so one rule and one JS
@@ -644,7 +648,65 @@
     /* Two fields and a button in one unwrapped row overflow a phone. */
     #signin { flex-wrap: wrap; }
     #signin input { flex: 1 1 140px; min-width: 0; }
+    .homeInner { padding: 24px 16px; }
+    .marketGrid { grid-template-columns: 1fr; }
+    .homeHero h1 { font-size: 26px; }
   }
+
+  /* =========================================================================
+     The home page. Static marketing + one auth card; hidden by app.js the
+     moment a token exists, at which point `main` un-hides.
+     ========================================================================= */
+  #home { overflow-y: auto; flex: 1; }
+  #home[hidden] { display: none; }
+  .homeInner {
+    max-width: 1060px; margin: 0 auto; padding: 56px 24px 48px;
+    display: flex; flex-direction: column; gap: 48px;
+  }
+  .homeHero h1 {
+    margin: 0 0 10px; font-size: 38px; line-height: 1.15; letter-spacing: -0.5px;
+  }
+  .homeHero .lede { margin: 0 0 24px; color: var(--muted); font-size: 16px; max-width: 560px; }
+  .homeAuth {
+    display: flex; flex-direction: column; gap: 8px; max-width: 380px;
+    padding: 18px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--panel);
+  }
+  .homeAuth input {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text); padding: 9px 10px; font: inherit;
+  }
+  .homeAuthBtns { display: flex; gap: 8px; }
+  .homeAuthBtns button { flex: 1; padding: 9px 0; }
+  .homeMarket h2 { margin: 0 0 16px; font-size: 20px; }
+  .marketGrid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+  }
+  .marketCard {
+    border: 1px solid var(--line); border-radius: 10px; padding: 16px;
+    background: var(--panel);
+  }
+  .marketCard h3 { margin: 8px 0 6px; font-size: 15px; }
+  .marketCard p { margin: 0; color: var(--muted); font-size: 12.5px; }
+  .marketIcon { font-size: 22px; }
+
+  /* Settings panes (Brokers, AI Model) share the form rhythm the other
+     asides already use. */
+  #pane-brokers h2, #pane-aimodel h2 { margin: 4px 0 6px; font-size: 16px; }
+  #brokerGuidance { font-size: 12px; margin: 2px 0 8px; }
+  .brokerRow {
+    display: flex; gap: 8px; align-items: center; padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .brokerRow .venue { font-weight: 600; }
+  .brokerRow .status-verified { color: var(--up); }
+  .brokerRow .status-pending { color: var(--warn); }
+  .brokerRow .status-invalid { color: var(--down); }
+  .aiCurrent {
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    margin-bottom: 10px; background: var(--panel-2);
+  }
+  .aiCurrent .muted { display: block; font-size: 11.5px; }
 </style>
 </head>
 <body>
@@ -663,15 +725,81 @@
   <button id="signinToggle">Sign in</button>
 </header>
 
-<div id="signin" hidden>
-  <input id="email" type="email" placeholder="you@example.com" autocomplete="username" />
-  <input id="password" type="password" placeholder="password (8+ characters)" autocomplete="current-password" />
-  <button id="signinGo" class="primary">Sign in</button>
-  <button id="registerGo">Register</button>
-  <span id="signinMsg"></span>
-</div>
+<!--
+  The old inline sign-in strip is gone: the home page's auth card is the one
+  door now. A signed-out visit lands there; a signed-in one never needs the
+  fields, and the header toggle signs out (or focuses the card, signed out).
+-->
 
-<main>
+<!--
+  ============================================================================
+  The home page: what a first visit sees.
+
+  The workstation is a tool behind a door, and this is the door. It carries the
+  marketing surface (the marketplace of what the platform does) and the single
+  auth card, and it hides the moment a token exists -- so a signed-in user
+  lands straight on the dashboard and a signed-out one never sees live
+  internals. Everything here is static; the market data stays inside `main`.
+  ============================================================================
+-->
+<section id="home" aria-label="Welcome">
+  <div class="homeInner">
+    <div class="homeHero">
+      <h1>Trade with an analyst,<br />not just a chart.</h1>
+      <p class="lede">
+        Live charts, an AI agent that reads them, and bots that trade your
+        strategy — connected to your own exchange account.
+      </p>
+      <div class="homeAuth">
+        <input id="homeEmail" type="email" placeholder="you@example.com" autocomplete="username" />
+        <input id="homePassword" type="password" placeholder="password (8+ characters)" autocomplete="current-password" />
+        <div class="homeAuthBtns">
+          <button id="homeSignIn" class="primary">Sign in</button>
+          <button id="homeRegister">Create account</button>
+        </div>
+        <span id="homeMsg" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="homeMarket">
+      <h2>What's inside</h2>
+      <div class="marketGrid">
+        <article class="marketCard">
+          <span class="marketIcon">📈</span>
+          <h3>Live charts</h3>
+          <p>Real-time candles with a 1-second forming bar, multi-timeframe grids, depth of market and footprint.</p>
+        </article>
+        <article class="marketCard">
+          <span class="marketIcon">🤖</span>
+          <h3>AI analyst</h3>
+          <p>Ask about any setup — the agent reads your charts across timeframes, your drawings and your strategy notes.</p>
+        </article>
+        <article class="marketCard">
+          <span class="marketIcon">⚡</span>
+          <h3>Strategy bots</h3>
+          <p>Backtest on live-shaped data, then launch paper or live bots with a kill switch you can reach.</p>
+        </article>
+        <article class="marketCard">
+          <span class="marketIcon">🧩</span>
+          <h3>Indicator studio</h3>
+          <p>Describe an indicator in plain words. The AI builds it, plots it and refines it by chat.</p>
+        </article>
+        <article class="marketCard">
+          <span class="marketIcon">🏦</span>
+          <h3>Your broker</h3>
+          <p>Connect your own exchange keys. They are encrypted at rest and verified against the venue.</p>
+        </article>
+        <article class="marketCard">
+          <span class="marketIcon">🧠</span>
+          <h3>Bring your own model</h3>
+          <p>OpenAI, Claude, Grok, DeepSeek, OpenRouter and more — or let the platform's primary model run it.</p>
+        </article>
+      </div>
+    </div>
+  </div>
+</section>
+
+<main hidden>
   <!--
     The watchlist, as its own rail to the **left** of the charts: the market
     list sits beside the thing it points at, on screen with every tab rather
@@ -876,6 +1004,8 @@
       <button role="tab" data-pane="indicator" aria-selected="false">Indicator</button>
       <button role="tab" data-pane="bots" aria-selected="false">Bots</button>
       <button role="tab" data-pane="book" aria-selected="false">Book</button>
+      <button role="tab" data-pane="brokers" aria-selected="false">Brokers</button>
+      <button role="tab" data-pane="aimodel" aria-selected="false">AI Model</button>
     </div>
 
     <!--
@@ -1125,6 +1255,74 @@
     <div class="pane" id="pane-book" hidden>
       <div id="bookMsg" class="muted">Connecting…</div>
       <div id="bookLadder"></div>
+    </div>
+
+    <!--
+      Broker connections (docs/15). The user's own exchange accounts: list,
+      connect form, verify, disconnect. The API never returns a key, so the
+      form is write-only by construction.
+    -->
+    <div class="pane" id="pane-brokers" hidden>
+      <h2>Broker connections</h2>
+      <p class="muted">
+        Connect your exchange API keys. They are sealed with the platform's
+        key-encryption key before storage and never shown again — the venue
+        itself is asked to verify them.
+      </p>
+      <div id="brokerList"><p class="empty">Sign in to see your connected accounts.</p></div>
+
+      <h3 class="section">Connect an account</h3>
+      <div class="row">
+        <select id="brokerVenue" title="Which exchange"></select>
+      </div>
+      <div id="brokerGuidance" class="muted"></div>
+      <div class="row">
+        <input id="brokerLabel" placeholder="Account name, e.g. main" />
+      </div>
+      <div class="row">
+        <input id="brokerKey" type="password" placeholder="API key" autocomplete="off" />
+      </div>
+      <div class="row">
+        <input id="brokerSecret" type="password" placeholder="API secret" autocomplete="off" />
+      </div>
+      <div class="row">
+        <button id="brokerConnect" class="primary">Connect</button>
+        <span id="brokerMsg" class="muted"></span>
+      </div>
+    </div>
+
+    <!--
+      AI model settings. The deployment's primary model is set in its
+      environment (AI_PROVIDER / AI_MODEL / AI_API_KEY); this panel stores the
+      *user's own* provider, which then serves every /agent call they make.
+      The key is write-only: GET answers whether one is stored, never what it
+      is.
+    -->
+    <div class="pane" id="pane-aimodel" hidden>
+      <h2>AI model</h2>
+      <p class="muted" id="aiPrimaryNote">
+        The platform runs on its primary model until you store your own.
+      </p>
+      <div id="aiCurrent"><p class="empty">Sign in to see your model settings.</p></div>
+
+      <h3 class="section">Your own model</h3>
+      <div class="row">
+        <select id="aiProvider" title="Provider"></select>
+      </div>
+      <div class="row">
+        <input id="aiModelId" placeholder="Model id, e.g. gpt-4o, deepseek-chat" />
+      </div>
+      <div class="row" id="aiBaseUrlRow">
+        <input id="aiBaseUrl" placeholder="Base URL override (optional)" />
+      </div>
+      <div class="row">
+        <input id="aiKey" type="password" placeholder="API key" autocomplete="off" />
+      </div>
+      <div class="row">
+        <button id="aiSave" class="primary">Save model</button>
+        <button id="aiClear" class="danger" title="Remove your model and return to the platform's primary">Use platform model</button>
+        <span id="aiMsg" class="muted"></span>
+      </div>
     </div>
   </aside>
 </main>

@@ -73,8 +73,53 @@ function setToken(value) {
 function paintSession() {
   const value = token();
   el("session").textContent = value ? "signed in" : "not signed in";
-  el("signin").hidden = Boolean(value);
   el("signinToggle").textContent = value ? "Sign out" : "Sign in";
+  applyAuthGate();
+}
+
+/// The home page is the door; the workstation is the room. A token opens it:
+/// home hides, `main` un-hides. Everything else on the page lives inside
+/// `main`, so this one toggle is the whole gate.
+function applyAuthGate() {
+  const signedIn = Boolean(token());
+  const home = document.getElementById("home");
+  const workspace = document.querySelector("main");
+  if (home) home.hidden = signedIn;
+  if (workspace) {
+    const wasHidden = workspace.hidden;
+    workspace.hidden = !signedIn;
+    // Charts measure their canvas while `main` is hidden read zero, and a
+    // zero-sized canvas paints nothing when the room is finally shown. Any
+    // pane that already exists re-measures and redraws now that it has size.
+    if (wasHidden && signedIn) {
+      for (const pane of panes) pane.redraw();
+    }
+  }
+}
+
+/// One authenticate used by both doors: the home page's card and the
+/// workstation's inline strip. `register` only changes the endpoint; after
+/// either succeeds the same token gates the same UI.
+async function authenticate(register, emailId, passwordId, msgId) {
+  const email = el(emailId).value.trim();
+  const password = el(passwordId).value;
+  const msg = el(msgId);
+  if (!email || !password) { msg.textContent = "email and password, please"; return; }
+  msg.textContent = register ? "Registering…" : "Signing in…";
+  try {
+    const res = await api(register ? "/auth/register" : "/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    setToken(res.token);
+    msg.textContent = `signed in as ${res.user.email}`;
+    // The drawings belong to the account, so they arrive with it. Everything
+    // else on the page is public market data and was already there.
+    refresh();
+  } catch (e) {
+    msg.textContent = e.message;
+  }
 }
 
 async function api(path, options = {}) {
@@ -100,26 +145,10 @@ async function api(path, options = {}) {
   return body;
 }
 
-async function signIn(register) {
-  const email = el("email").value.trim();
-  const password = el("password").value;
-  const msg = el("signinMsg");
-  if (!email || !password) { msg.textContent = "email and password, please"; return; }
-  msg.textContent = register ? "Registering…" : "Signing in…";
-  try {
-    const res = await api(register ? "/auth/register" : "/auth/login", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    setToken(res.token);
-    msg.textContent = `signed in as ${res.user.email}`;
-    // The drawings belong to the account, so they arrive with it. Everything
-    // else on the page is public market data and was already there.
-    refresh();
-  } catch (e) {
-    msg.textContent = e.message;
-  }
+// The home page's card is the one auth surface now; the workstation's old
+// inline strip is gone from the markup.
+function homeAuth(register) {
+  return authenticate(register, "homeEmail", "homePassword", "homeMsg");
 }
 
 // ---------------------------------------------------------------------------
@@ -5755,6 +5784,279 @@ function wireWatchlist() {
 }
 
 // ---------------------------------------------------------------------------
+// Broker connections (`/brokers`) -- the user's own exchange accounts.
+//
+// The API is shaped so the client cannot leak a credential: `POST` sends it
+// once and every response omits it, so the form is write-only by construction
+// and re-displaying nothing is not a discipline the shell has to keep.
+// ---------------------------------------------------------------------------
+
+let brokerCatalog = [];
+
+async function loadBrokerCatalog() {
+  const select = el("brokerVenue");
+  if (!brokerCatalog.length) {
+    try {
+      brokerCatalog = await api("/brokers/available");
+    } catch (e) {
+      el("brokerGuidance").textContent =
+        `the venue list is unavailable on this deployment (${e.message})`;
+      return;
+    }
+  }
+  select.innerHTML = "";
+  for (const venue of brokerCatalog) {
+    select.append(
+      Object.assign(document.createElement("option"), {
+        value: venue.venue,
+        textContent: venue.name,
+      })
+    );
+  }
+  paintBrokerGuidance();
+}
+
+function paintBrokerGuidance() {
+  const venue = brokerCatalog.find((v) => v.venue === el("brokerVenue").value);
+  const guidance = el("brokerGuidance");
+  if (!venue) { guidance.textContent = ""; return; }
+  guidance.innerHTML = "";
+  const link = Object.assign(document.createElement("a"), {
+    href: venue.keys_url,
+    target: "_blank",
+    rel: "noreferrer",
+    textContent: `create a key on ${venue.name} ↗`,
+  });
+  guidance.append(link, document.createTextNode(` — ${venue.guidance}`));
+}
+
+async function refreshBrokers() {
+  const out = el("brokerList");
+  if (!token()) {
+    out.innerHTML = '<p class="empty">Sign in to see your connected accounts.</p>';
+    return;
+  }
+  out.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const accounts = await api("/brokers");
+    if (!accounts.length) {
+      out.innerHTML = '<p class="empty">No exchange accounts connected yet.</p>';
+      return;
+    }
+    out.innerHTML = "";
+    for (const account of accounts) {
+      const row = Object.assign(document.createElement("div"), { className: "brokerRow" });
+      const status = Object.assign(document.createElement("span"), {
+        className: `status-${account.status}`,
+        textContent: account.status,
+        title: account.last_error || "",
+      });
+      const label = Object.assign(document.createElement("span"), {
+        className: "venue",
+        textContent: `${account.venue} · ${account.label}`,
+      });
+      const spacer = Object.assign(document.createElement("span"), { className: "spacer" });
+      const verify = Object.assign(document.createElement("button"), {
+        textContent: "Verify",
+        title: "Ask the venue to check this key now",
+      });
+      verify.onclick = () => verifyBroker(account.id, verify);
+      const remove = Object.assign(document.createElement("button"), {
+        className: "danger",
+        textContent: "Disconnect",
+      });
+      remove.onclick = async () => {
+        remove.disabled = true;
+        try {
+          await api(`/brokers/${account.id}`, { method: "DELETE" });
+          refreshBrokers();
+        } catch (e) {
+          remove.disabled = false;
+          alert(e.message);
+        }
+      };
+      row.append(label, status, spacer, verify, remove);
+      out.append(row);
+    }
+  } catch (e) {
+    out.innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function verifyBroker(id, button) {
+  button.disabled = true;
+  try {
+    await api(`/brokers/${id}/verify`, { method: "POST" });
+  } catch (e) {
+    alert(e.message);
+  }
+  refreshBrokers();
+}
+
+async function connectBroker() {
+  const msg = el("brokerMsg");
+  const venue = el("brokerVenue").value;
+  const label = el("brokerLabel").value.trim();
+  const apiKey = el("brokerKey").value.trim();
+  const apiSecret = el("brokerSecret").value.trim();
+  if (!venue || !label || !apiKey || !apiSecret) {
+    msg.textContent = "pick a venue, name the account, and paste both key and secret";
+    return;
+  }
+  msg.textContent = "connecting…";
+  try {
+    await api("/brokers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ venue, label, api_key: apiKey, api_secret: apiSecret }),
+    });
+    el("brokerKey").value = "";
+    el("brokerSecret").value = "";
+    msg.textContent = "connected — verify it to enable live trading";
+    refreshBrokers();
+  } catch (e) {
+    msg.textContent = e.message;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// AI model settings (`/agent/provider-config`) -- the user's own provider.
+//
+// The deployment's primary model is set once in its environment; a user who
+// stores a config here overrides it for every /agent call they make. The key
+// is write-only: GET answers *whether* one is stored, never what it is.
+// ---------------------------------------------------------------------------
+
+const AI_PROVIDERS = [
+  { id: "", name: "— platform primary model —", needsKey: false },
+  { id: "openai", name: "OpenAI", base: "https://api.openai.com/v1", models: ["gpt-4o", "gpt-4o-mini", "o3"] },
+  { id: "anthropic", name: "Anthropic (Claude)", base: "https://api.anthropic.com/v1", models: ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"] },
+  { id: "openrouter", name: "OpenRouter", base: "https://openrouter.ai/api/v1", models: ["openai/gpt-4o", "anthropic/claude-sonnet-4.5", "deepseek/deepseek-chat"] },
+  { id: "deepseek", name: "DeepSeek", base: "https://api.deepseek.com/v1", models: ["deepseek-chat", "deepseek-reasoner"] },
+  { id: "grok", name: "xAI (Grok)", base: "https://api.x.ai/v1", models: ["grok-3", "grok-3-mini"] },
+  { id: "huggingface", name: "HuggingFace", base: "https://router.huggingface.co/v1", models: ["meta-llama/Llama-3.3-70B-Instruct"] },
+  { id: "openai-compat", name: "Custom (OpenAI-compatible)", base: "", models: [] },
+];
+
+function paintAiProviderOptions(selected) {
+  const select = el("aiProvider");
+  select.innerHTML = "";
+  for (const provider of AI_PROVIDERS) {
+    select.append(
+      Object.assign(document.createElement("option"), {
+        value: provider.id,
+        textContent: provider.name,
+      })
+    );
+  }
+  select.value = selected || "";
+}
+
+function paintAiModelHints() {
+  const provider = AI_PROVIDERS.find((p) => p.id === el("aiProvider").value);
+  const model = el("aiModelId");
+  model.setAttribute("list", "aiModelList");
+  let datalist = document.getElementById("aiModelList");
+  if (!datalist) {
+    datalist = Object.assign(document.createElement("datalist"), { id: "aiModelList" });
+    document.body.append(datalist);
+  }
+  datalist.innerHTML = "";
+  for (const id of provider && provider.models ? provider.models : []) {
+    datalist.append(Object.assign(document.createElement("option"), { value: id }));
+  }
+  // A placeholder suggestion, never a silent override: the field keeps
+  // whatever the user typed.
+  if (!model.value && provider && provider.models && provider.models.length) {
+    model.placeholder = `e.g. ${provider.models[0]}`;
+  }
+  // Bedrock is not reachable per-user (it authenticates with the deployment's
+  // AWS credentials), and a custom endpoint is the one row that needs a URL.
+  el("aiBaseUrlRow").hidden = !(provider && provider.id === "openai-compat");
+}
+
+async function refreshAiModel() {
+  const out = el("aiCurrent");
+  if (!token()) {
+    out.innerHTML = '<p class="empty">Sign in to see your model settings.</p>';
+    return;
+  }
+  try {
+    const config = await api("/agent/provider-config");
+    const provider = AI_PROVIDERS.find((p) => p.id === config.provider);
+    out.innerHTML = "";
+    const card = Object.assign(document.createElement("div"), { className: "aiCurrent" });
+    card.innerHTML =
+      `<strong>${escapeHtml(provider ? provider.name : config.provider)}</strong>` +
+      ` · ${escapeHtml(config.model_id)}` +
+      `<span class="muted">key stored: ${config.has_key ? "yes" : "no"}` +
+      `${config.base_url ? ` · endpoint: ${escapeHtml(config.base_url)}` : ""}</span>`;
+    out.append(card);
+    paintAiProviderOptions(config.provider);
+    el("aiModelId").value = config.model_id;
+    el("aiBaseUrl").value = config.base_url || "";
+  } catch (e) {
+    if (e.code === "NO_PROVIDER_CONFIG") {
+      out.innerHTML =
+        '<p class="empty">You are using the platform\'s primary model. Store your own below to override it.</p>';
+      paintAiProviderOptions("");
+      el("aiModelId").value = "";
+    } else {
+      out.innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
+    }
+  }
+}
+
+async function saveAiModel() {
+  const msg = el("aiMsg");
+  const provider = el("aiProvider").value;
+  if (!provider) {
+    msg.textContent = "pick a provider, or press “Use platform model” to remove yours";
+    return;
+  }
+  const modelId = el("aiModelId").value.trim();
+  const apiKey = el("aiKey").value.trim();
+  if (!modelId) { msg.textContent = "which model id?"; return; }
+  msg.textContent = "saving…";
+  try {
+    await api("/agent/provider-config", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider,
+        model_id: modelId,
+        api_key: apiKey || null,
+        base_url: el("aiBaseUrl").value.trim() || null,
+        extra_headers: {},
+      }),
+    });
+    el("aiKey").value = "";
+    msg.textContent = "saved — your model now answers your questions";
+    refreshAiModel();
+  } catch (e) {
+    msg.textContent = e.message;
+  }
+}
+
+async function clearAiModel() {
+  const msg = el("aiMsg");
+  msg.textContent = "removing…";
+  try {
+    await api("/agent/provider-config", { method: "DELETE" });
+    msg.textContent = "the platform's primary model applies again";
+    el("aiModelId").value = "";
+    el("aiBaseUrl").value = "";
+    refreshAiModel();
+  } catch (e) {
+    if (e.code === "NO_PROVIDER_CONFIG") {
+      msg.textContent = "you had no model stored";
+    } else {
+      msg.textContent = e.message;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
 
@@ -5776,6 +6078,10 @@ function selectPane(name) {
   // Indicator workspaces are loaded when the tab is opened, because they
   // can be created or modified from other tabs.
   if (name === "indicator") loadWorkspaces();
+  // Settings panels read on open for the same reason: a config changed in
+  // another tab (or by the API) must not be shown stale by a cached copy.
+  if (name === "brokers") { refreshBrokers(); loadBrokerCatalog(); }
+  if (name === "aimodel") refreshAiModel();
   // The watchlist ticks only while it is on screen: a hidden pane's prices
   // nobody can see are five-second requests for nothing, and reopening the
   // pane re-prices it immediately anyway.
@@ -5823,12 +6129,29 @@ async function main() {
   };
 
   el("signinToggle").addEventListener("click", () => {
-    if (token()) { setToken(""); el("signinMsg").textContent = ""; }
-    else { el("signin").hidden = false; el("email").focus(); }
+    if (token()) {
+      setToken("");
+    } else {
+      // Signed out: the home page is already in front (the gate shows it),
+      // so hand the user to its card.
+      el("homeEmail").focus();
+    }
   });
-  el("signinGo").addEventListener("click", () => signIn(false));
-  el("registerGo").addEventListener("click", () => signIn(true));
-  el("password").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(false); });
+  // The home page's door. Same authenticate; signing out from the header puts
+  // the home page back in front.
+  el("homeSignIn").addEventListener("click", () => homeAuth(false));
+  el("homeRegister").addEventListener("click", () => homeAuth(true));
+  el("homePassword").addEventListener("keydown", (e) => { if (e.key === "Enter") homeAuth(false); });
+
+  // Broker + AI model settings.
+  el("brokerVenue").addEventListener("change", paintBrokerGuidance);
+  el("brokerConnect").addEventListener("click", connectBroker);
+  el("aiProvider").addEventListener("change", paintAiModelHints);
+  el("aiSave").addEventListener("click", saveAiModel);
+  el("aiClear").addEventListener("click", clearAiModel);
+  // Seed both selects once so the panes are ready before they are ever opened.
+  paintAiProviderOptions("");
+  paintAiModelHints();
 
   // The scanner. Run on the button, and on Enter in the symbols box, because a
   // field with one box beside it has to answer to Enter -- a user who types three
