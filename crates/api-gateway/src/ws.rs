@@ -45,8 +45,8 @@ use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
 use observability::metrics::{
-    AGENT_LATENCY, AGENT_PROVIDER_ERRORS, AGENT_REQUESTS, AGENT_THESES, AGENT_TOOL_CALLS, Labels,
-    Registry, WS_CONNECTIONS, WS_DROPS, WS_OPENS,
+    Labels, Registry, AGENT_LATENCY, AGENT_PROVIDER_ERRORS, AGENT_REQUESTS, AGENT_THESES,
+    AGENT_TOOL_CALLS, WS_CONNECTIONS, WS_DROPS, WS_OPENS,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -56,10 +56,10 @@ use uuid::Uuid;
 
 use analytics_core::types::{Candle, OrderBookSnapshot};
 
-use crate::AppState;
 use crate::auth::UserContext;
 use crate::bots::BotEvent;
 use crate::error::ApiError;
+use crate::AppState;
 
 /// How long a connection has been open, and how much it missed.
 ///
@@ -649,7 +649,9 @@ where
             // but now it names the actual gap (no stored config, an
             // unopenable key, or no deployment primary) rather than a
             // Bedrock-specific variable list.
-            return Some(Frame::Notice { message: e.message().to_string() });
+            return Some(Frame::Notice {
+                message: e.message().to_string(),
+            });
         }
     };
 
@@ -699,14 +701,19 @@ where
     // The same attachment `POST /agent/ask` makes, from the same authenticated
     // identity: a socket is not a way around per-user scoping either. Without a
     // database the source stays unattached, and the tool reports that rather
-    // than a bare chart.
+    // than a bare chart. The writer rides the same grant, as on the HTTP path.
     if let Some(database) = &state.db {
-        ask = ask.with_drawings(ai_agent::DrawingsContext::new(
-            std::sync::Arc::new(crate::market_data::DbUserDrawings::new(std::sync::Arc::clone(
-                database,
-            ))),
-            user.user_id.to_string(),
-        ));
+        ask = ask.with_drawings(
+            ai_agent::DrawingsContext::new(
+                std::sync::Arc::new(crate::market_data::DbUserDrawings::new(
+                    std::sync::Arc::clone(database),
+                )),
+                user.user_id.to_string(),
+            )
+            .with_writer(std::sync::Arc::new(
+                crate::market_data::DbDrawingWriter::new(std::sync::Arc::clone(database)),
+            )),
+        );
     }
 
     // The same claim `POST /agent/ask` makes: asking about a symbol is a reason

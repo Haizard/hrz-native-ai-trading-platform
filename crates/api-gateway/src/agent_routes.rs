@@ -4,17 +4,17 @@
 
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use ai_agent::{AgentAnswer, AskRequest, StrategyRequest};
 
-use crate::AppState;
 use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::market_data::WindowMarketData;
+use crate::AppState;
 
 /// Body of `POST /agent/ask`.
 #[derive(Debug, Deserialize)]
@@ -199,11 +199,21 @@ pub async fn ask(
     // parsed from the body: a client cannot name another user's drawings for
     // the same reason it cannot name their session. `None` without a database,
     // so the tool reports the source as absent rather than the chart as bare.
+    // The writer rides the same grant: the agent may put its own objects on
+    // this chart, stamped as AI-created (`docs/21`), and may never touch
+    // another user's.
     if let Some(database) = &state.db {
-        request = request.with_drawings(ai_agent::DrawingsContext::new(
-            Arc::new(crate::market_data::DbUserDrawings::new(Arc::clone(database))),
-            user.user_id.to_string(),
-        ));
+        request = request.with_drawings(
+            ai_agent::DrawingsContext::new(
+                Arc::new(crate::market_data::DbUserDrawings::new(Arc::clone(
+                    database,
+                ))),
+                user.user_id.to_string(),
+            )
+            .with_writer(Arc::new(crate::market_data::DbDrawingWriter::new(
+                Arc::clone(database),
+            ))),
+        );
     }
 
     let started = std::time::Instant::now();

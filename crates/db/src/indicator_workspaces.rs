@@ -145,20 +145,32 @@ fn revision_from(row: &sqlx::postgres::PgRow) -> Result<IndicatorRevisionRow, sq
 
 fn message_from(row: &sqlx::postgres::PgRow) -> Result<IndicatorWorkspaceMessageRow, sqlx::Error> {
     Ok(IndicatorWorkspaceMessageRow {
-        id: row.try_get("id")?, workspace_id: row.try_get("workspace_id")?,
-        role: row.try_get("role")?, kind: row.try_get("kind")?, content: row.try_get("content")?,
-        payload: row.try_get("payload")?, created_at: dt_to_ns(row.try_get("created_at")?),
+        id: row.try_get("id")?,
+        workspace_id: row.try_get("workspace_id")?,
+        role: row.try_get("role")?,
+        kind: row.try_get("kind")?,
+        content: row.try_get("content")?,
+        payload: row.try_get("payload")?,
+        created_at: dt_to_ns(row.try_get("created_at")?),
     })
 }
 
 fn draft_from(row: &sqlx::postgres::PgRow) -> Result<IndicatorBotDraftRow, sqlx::Error> {
     Ok(IndicatorBotDraftRow {
-        id: row.try_get("id")?, workspace_id: row.try_get("workspace_id")?,
-        revision_id: row.try_get("revision_id")?, strategy_id: row.try_get("strategy_id")?,
-        backtest_id: row.try_get("backtest_id")?, mode: row.try_get("mode")?, venue: row.try_get("venue")?,
-        risk: row.try_get("risk")?, status: row.try_get("status")?,
-        approved_at: row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("approved_at")?.map(dt_to_ns),
-        bot_id: row.try_get("bot_id")?, created_at: dt_to_ns(row.try_get("created_at")?),
+        id: row.try_get("id")?,
+        workspace_id: row.try_get("workspace_id")?,
+        revision_id: row.try_get("revision_id")?,
+        strategy_id: row.try_get("strategy_id")?,
+        backtest_id: row.try_get("backtest_id")?,
+        mode: row.try_get("mode")?,
+        venue: row.try_get("venue")?,
+        risk: row.try_get("risk")?,
+        status: row.try_get("status")?,
+        approved_at: row
+            .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("approved_at")?
+            .map(dt_to_ns),
+        bot_id: row.try_get("bot_id")?,
+        created_at: dt_to_ns(row.try_get("created_at")?),
     })
 }
 
@@ -198,7 +210,10 @@ pub async fn get_indicator_workspace(
     .bind(user_id)
     .fetch_optional(pool)
     .await?;
-    row.as_ref().map(workspace_from).transpose().map_err(Into::into)
+    row.as_ref()
+        .map(workspace_from)
+        .transpose()
+        .map_err(Into::into)
 }
 
 /// List a client's workspaces, newest activity first.
@@ -215,7 +230,10 @@ pub async fn list_indicator_workspaces(
     .bind(limit)
     .fetch_all(pool)
     .await?;
-    rows.iter().map(workspace_from).collect::<Result<_, _>>().map_err(Into::into)
+    rows.iter()
+        .map(workspace_from)
+        .collect::<Result<_, _>>()
+        .map_err(Into::into)
 }
 
 /// Append a generated revision. Only a validated revision becomes active.
@@ -278,24 +296,36 @@ pub async fn list_indicator_revisions(
          FROM indicator_revisions r JOIN indicator_workspaces w ON w.id = r.workspace_id \
          WHERE r.workspace_id = $1 AND w.user_id = $2 ORDER BY r.revision_number DESC LIMIT $3",
     ).bind(workspace_id).bind(user_id).bind(limit).fetch_all(pool).await?;
-    rows.iter().map(revision_from).collect::<Result<_, _>>().map_err(Into::into)
+    rows.iter()
+        .map(revision_from)
+        .collect::<Result<_, _>>()
+        .map_err(Into::into)
 }
 
 /// Read one immutable revision when its workspace belongs to the user.
 pub async fn get_indicator_revision(
-    pool: &PgPool, user_id: Uuid, workspace_id: Uuid, revision_id: Uuid,
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    revision_id: Uuid,
 ) -> Result<Option<IndicatorRevisionRow>, DbError> {
     let row = sqlx::query(
         "SELECT r.id, r.workspace_id, r.parent_revision_id, r.revision_number, r.source, r.summary, r.change_summary, r.validation, r.preview, r.status, r.created_at \
          FROM indicator_revisions r JOIN indicator_workspaces w ON w.id = r.workspace_id \
          WHERE r.id = $1 AND r.workspace_id = $2 AND w.user_id = $3",
     ).bind(revision_id).bind(workspace_id).bind(user_id).fetch_optional(pool).await?;
-    row.as_ref().map(revision_from).transpose().map_err(Into::into)
+    row.as_ref()
+        .map(revision_from)
+        .transpose()
+        .map_err(Into::into)
 }
 
 /// Restore an owned, validated revision as the chart's active revision.
 pub async fn restore_indicator_revision(
-    pool: &PgPool, user_id: Uuid, workspace_id: Uuid, revision_id: Uuid,
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    revision_id: Uuid,
 ) -> Result<bool, DbError> {
     let changed = sqlx::query(
         "UPDATE indicator_workspaces w SET active_revision_id = $3, updated_at = now() \
@@ -306,34 +336,64 @@ pub async fn restore_indicator_revision(
 
 /// Append an owned workspace conversation message.
 pub async fn create_indicator_workspace_message(
-    pool: &PgPool, user_id: Uuid, workspace_id: Uuid, role: &str, kind: &str, content: &str, payload: &Value,
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    role: &str,
+    kind: &str,
+    content: &str,
+    payload: &Value,
 ) -> Result<Option<IndicatorWorkspaceMessageRow>, DbError> {
     let row = sqlx::query(
         "INSERT INTO indicator_workspace_messages (workspace_id, role, kind, content, payload) \
          SELECT id, $3, $4, $5, $6 FROM indicator_workspaces WHERE id = $1 AND user_id = $2 \
          RETURNING id, workspace_id, role, kind, content, payload, created_at",
-    ).bind(workspace_id).bind(user_id).bind(role).bind(kind).bind(content).bind(payload)
-        .fetch_optional(pool).await?;
-    row.as_ref().map(message_from).transpose().map_err(Into::into)
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .bind(role)
+    .bind(kind)
+    .bind(content)
+    .bind(payload)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref()
+        .map(message_from)
+        .transpose()
+        .map_err(Into::into)
 }
 
 /// List the newest owned messages in chronological order.
 pub async fn list_indicator_workspace_messages(
-    pool: &PgPool, user_id: Uuid, workspace_id: Uuid, limit: i64,
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    limit: i64,
 ) -> Result<Vec<IndicatorWorkspaceMessageRow>, DbError> {
     let rows = sqlx::query(
         "SELECT m.id, m.workspace_id, m.role, m.kind, m.content, m.payload, m.created_at \
          FROM indicator_workspace_messages m JOIN indicator_workspaces w ON w.id = m.workspace_id \
          WHERE m.workspace_id = $1 AND w.user_id = $2 ORDER BY m.created_at DESC LIMIT $3",
-    ).bind(workspace_id).bind(user_id).bind(limit).fetch_all(pool).await?;
-    let mut messages = rows.iter().map(message_from).collect::<Result<Vec<_>, _>>()?;
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    let mut messages = rows
+        .iter()
+        .map(message_from)
+        .collect::<Result<Vec<_>, _>>()?;
     messages.reverse();
     Ok(messages)
 }
 
 /// Update compact workspace memory after a successful generation turn.
 pub async fn update_indicator_workspace_memory(
-    pool: &PgPool, user_id: Uuid, workspace_id: Uuid, memory: &Value,
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    memory: &Value,
 ) -> Result<bool, DbError> {
     let changed = sqlx::query("UPDATE indicator_workspaces SET memory = $3, updated_at = now() WHERE id = $1 AND user_id = $2")
         .bind(workspace_id).bind(user_id).bind(memory).execute(pool).await?;
@@ -342,8 +402,15 @@ pub async fn update_indicator_workspace_memory(
 
 /// Create a revision-pinned bot draft after verifying all referenced records are owned.
 pub async fn create_indicator_bot_draft(
-    pool: &PgPool, user_id: Uuid, workspace_id: Uuid, revision_id: Uuid, strategy_id: Uuid,
-    backtest_id: Option<Uuid>, mode: &str, venue: Option<&str>, risk: &Value,
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    revision_id: Uuid,
+    strategy_id: Uuid,
+    backtest_id: Option<Uuid>,
+    mode: &str,
+    venue: Option<&str>,
+    risk: &Value,
 ) -> Result<Option<IndicatorBotDraftRow>, DbError> {
     let row = sqlx::query(
         "INSERT INTO indicator_bot_drafts (workspace_id, revision_id, strategy_id, backtest_id, mode, venue, risk) \
@@ -359,7 +426,10 @@ pub async fn create_indicator_bot_draft(
 
 /// Read an owned bot draft.
 pub async fn get_indicator_bot_draft(
-    pool: &PgPool, user_id: Uuid, workspace_id: Uuid, draft_id: Uuid,
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    draft_id: Uuid,
 ) -> Result<Option<IndicatorBotDraftRow>, DbError> {
     let row = sqlx::query(
         "SELECT d.id, d.workspace_id, d.revision_id, d.strategy_id, d.backtest_id, d.mode, d.venue, d.risk, d.status, d.approved_at, d.bot_id, d.created_at \
@@ -393,13 +463,23 @@ pub async fn delete_indicator_workspace(
 
 /// Store one opt-in alert preference after proving the user owns its workspace.
 pub async fn set_indicator_alert_preference(
-    pool: &PgPool, user_id: Uuid, workspace_id: Uuid, revision_id: Uuid,
-    event_name: &str, enabled: bool, channels: &Value,
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    revision_id: Uuid,
+    event_name: &str,
+    enabled: bool,
+    channels: &Value,
 ) -> Result<bool, DbError> {
-    let owned: Option<i32> = sqlx::query_scalar(
-        "SELECT 1 FROM indicator_workspaces WHERE id = $1 AND user_id = $2",
-    ).bind(workspace_id).bind(user_id).fetch_optional(pool).await?;
-    if owned.is_none() { return Ok(false); }
+    let owned: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM indicator_workspaces WHERE id = $1 AND user_id = $2")
+            .bind(workspace_id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    if owned.is_none() {
+        return Ok(false);
+    }
     sqlx::query(
         "INSERT INTO indicator_alert_preferences (workspace_id, revision_id, event_name, enabled, channels) \
          VALUES ($1,$2,$3,$4,$5) ON CONFLICT (workspace_id, revision_id, event_name) \
@@ -459,7 +539,10 @@ pub async fn list_indicator_bot_drafts(
     .bind(limit)
     .fetch_all(pool)
     .await?;
-    rows.iter().map(draft_from).collect::<Result<_, _>>().map_err(Into::into)
+    rows.iter()
+        .map(draft_from)
+        .collect::<Result<_, _>>()
+        .map_err(Into::into)
 }
 
 /// Approve a draft, optionally linking a backtest, then promote it to a live bot.

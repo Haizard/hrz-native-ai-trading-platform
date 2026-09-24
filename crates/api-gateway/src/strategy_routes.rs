@@ -30,23 +30,23 @@
 //! confirm that the id exists, which is a fact a caller has no business
 //! learning by guessing.
 
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use analytics_core::types::Timeframe;
-use backtester::replay::{ReplayConfig, ReplayInput, run_backtest};
+use backtester::replay::{run_backtest, ReplayConfig, ReplayInput};
 use strategy_runtime::{RuntimeConfig, StrategyEngine};
 
-use crate::AppState;
 use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::{ApiJson, ApiQuery};
 use crate::now_ns;
 use crate::plot::Plot;
+use crate::AppState;
 
 /// Default page size for list endpoints.
 const DEFAULT_LIMIT: i64 = 50;
@@ -893,8 +893,8 @@ pub struct SchemaResponse {
 /// Unauthenticated: it is a description of the schema, derived entirely from
 /// `strategy-dsl`, and it names nothing about any user.
 pub async fn schema() -> Json<SchemaResponse> {
-    use strategy_dsl::expr::{ALL_FIELDS, ALL_FUNCS, CompareOp};
-    use strategy_dsl::schema::{ALL_STOP_KINDS, Direction, DocumentKind, TakeProfitKind};
+    use strategy_dsl::expr::{CompareOp, ALL_FIELDS, ALL_FUNCS};
+    use strategy_dsl::schema::{Direction, DocumentKind, TakeProfitKind, ALL_STOP_KINDS};
 
     Json(SchemaResponse {
         fields: ALL_FIELDS

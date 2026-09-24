@@ -1118,3 +1118,13 @@ hides production's defects**, which is the second time this project has paid for
   price levels highlighted on the chart — all without a full page reload.
 - The chosen hosting architecture (pure Rust/WASM vs. React shell + WASM chart module)
   is documented here as an explicit decision with the date and rationale it was made.
+
+## DECISION — 2026-09-24: chart object engine (`docs/21`)
+The drawing system is now a subsystem, not a list of buttons: kinds + tool
+registry live in `chart-engine::drawing` (the one place a tool is declared),
+the toolbar is built from the registry over the ABI, the magnet snaps
+engine-side from OHLC + volume-profile levels, and undo/redo operates on
+guarded commands found by shape rather than id. Eight kinds ship
+(trendline, hline, vline, ray, extended, rect, fib, measure) in three groups.
+Protocol, invariants, and the phase-2 roadmap (fib family, channels,
+positions, AI analysis layers) are in **`docs/21-CHART-OBJECT-ENGINE.md`**.

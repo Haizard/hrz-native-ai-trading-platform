@@ -1,0 +1,159 @@
+# 21 — Chart Object Engine
+
+The drawing system as a subsystem, not a pile of buttons. Every visual thing on
+the chart is a structured object with a machine-readable representation, so the
+same vocabulary serves the user's toolbar, the storage layer, and the AI —
+instead of three lists that drift.
+
+## The rule
+
+> **Every visual thing on the chart has a structured representation.**
+
+A trendline is not pixels; it is `{ kind: "trendline", a1: {time, price},
+a2: {time, price} }`. The canvas is a *projection* of that object, never the
+object itself. Consequences:
+
+- The shell never converts a pixel into a price. A placement or drag writes a
+  `fraction` anchor into the engine request; the engine's scene answers with
+  the same drawing in absolute terms, and *that* is what gets stored. There is
+  one implementation of "which price is under the pointer", in Rust.
+- The toolbar is **built from** the engine's registry over the ABI, not from a
+  second list typed into the markup. A tool the engine cannot draw is a button
+  the shell cannot grow, and vice versa.
+- The AI's drawing vocabulary is the registry. Adding a tool is adding one
+  enum variant, one `shapes` arm, and one registry row — every consumer
+  follows by construction.
+
+## What shipped (phase 1)
+
+### Object model — `chart-engine::drawing`
+
+- `DrawingKind`: `trendline, hline, vline, ray, extended, rect, fib, measure`.
+  Eight kinds, two anchors each (`hline`/`vline` need only one).
+- `Anchor`: `absolute {time, price}` (what is stored) or `fraction {x, y}`
+  (what a pointer gives). `Absolute` uses milliseconds — f64 is exact there and
+  loses precision past 2^53, so epoch-ms is the boundary unit everywhere.
+- `ToolGroup`: `lines, shapes, measurement` — a vocabulary, not free text.
+- `ToolSpec` / `REGISTRY`: the one declaration of each tool — kind, label,
+  tooltip, group, group label, anchor count.
+- The storage rule (`db::drawings::KINDS` + `needs_second_anchor`) is pinned
+  against `DrawingKind::ALL` by a test, so engine and database cannot disagree
+  silently.
+
+### Tool registry over the ABI — `chart-engine::lib`
+
+`tool_registry() -> i32` serialises `REGISTRY` into the scene result buffer
+(read via `scene_ptr`/`scene_len`). The shell calls it once at engine load and
+rebuilds every pane's toolbar. `wasm_abi_check.mjs` covers it.
+
+### Geometry & rendering — `chart-engine::scene`
+
+One `Frame` (price↔y, time↔x, `bar_nanos` for real bar counts) drives every
+kind's `shapes` arm. The engine emits `handle` parts at every movable anchor;
+the shell's hit-testing looks for targets *the engine put there*.
+
+### Snap engine (magnet)
+
+`request.snap` asks the engine for candidate points: the visible candles'
+OHLC plus volume-profile VAH/VAL/POC. `snap_anchor` pulls a fraction anchor
+to the nearest candidate within `SNAP_PX` canvas pixels — zoom-independent by
+construction, because the tolerance is in pixels and the comparison happens
+after projection. The shell keeps no snap logic; it only sets the flag.
+
+### Command history (undo/redo) — `app.js`
+
+Commands, not snapshots: `{ label, do(), undo() }` on two stacks
+(Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y). Each direction re-issues its own API write,
+so a reload agrees with the screen either way. Two invariants the tests pin:
+
+1. **Record after settle.** A command is pushed only after its network write
+   resolved (`finishPlacing` awaits the save; `finishMoving` awaits the PUT;
+   `clearDrawings` awaits the deletes). An undo racing its own write would
+   re-create rows the write was removing.
+2. **Find by shape, not id.** A save replaces the shell's `new-N` id with the
+   server's UUID, so the reconciliation helpers (`byShapeId`, `shapeKey`)
+   locate a drawing by kind+anchors+label. Guarded do-halves keep a fresh
+   edit from double-saving: they act only when the world is not already in
+   the commanded state, which is exactly the redo-after-undo case.
+
+### Toolbar from the registry — `app.js` / `index.html`
+
+The markup ships a flat five-button fallback so the toolbar exists before the
+engine loads; on load it is replaced by registry-driven groups (one labelled
+flyout per `ToolGroup`, cursor first, magnet/undo/redo/delete/clear as
+controls). `selectTool` relabels the group trigger ("Lines · Ray") so the
+closed toolbar says what is armed. `shell_check.mjs` asserts the generated
+set, flyout behaviour, magnet, and history buttons.
+
+## Out of scope for phase 1 (deliberately)
+
+In registry order, the natural next kinds — each is one variant + one `shapes`
+arm + one row:
+
+- **Fibonacci family**: extension, fan, arcs, time zones (retracement shipped).
+- **Channels & pitchforks**: parallel channel, regression, Schiff family.
+- **Positions**: long/short with entry/stop/target — this wants a third
+  anchor-class (levels as fractions of the risk distance), so design the
+  object first.
+- **AI analysis layers**: AI-drawn objects as a *separate, toggleable layer*
+  with provenance (`createdBy, agent, confidence, reason`) and an
+  accept/reject session, per the original architecture brief.
+- **AI write path**: shipped — see below.
+
+## What shipped (phase 2): the AI write path
+
+The agent can now **create, move and delete** chart objects — through the same
+storage, the same validation, and the same scoping as the user's own hand.
+
+### The capability, split the way the postures differ
+
+- `UserDrawingsSource` (read) stays what it was: the agent may always *see*
+  the user's marks.
+- `DrawingWriter` (write) is a separate trait in `ai-agent::user_drawings`,
+  with `create` / `update` / `delete`. A host that attaches no writer gets a
+  read-only agent, and the write tools say so honestly ("present the analysis
+  as text instead; do not pretend the object was drawn").
+- `DrawingsContext` carries both under **one identity**: `with_writer` takes
+  no user id of its own, so the write identity cannot diverge from the read
+  identity even by a confused host.
+
+### Tools, schemas, and provenance
+
+- `create_drawing`, `update_drawing`, `delete_drawing` are registered in
+  `ToolRegistry::market_analysis()` beside the read tool.
+- `kind` is a free string, **not** a schema enum: an unknown kind gets a
+  correctable error naming the valid ones (the same lesson `timeframe_arg`
+  records), and the storage vocabulary stays the single source of truth.
+- `confidence` (clamped to 0..=1) and `reason` travel as provenance and are
+  stored in the new `created_by` / `agent` / `confidence` / `reason` columns
+  (`0009_drawing_provenance.sql`). `NULL` provenance means *human* — every
+  pre-existing row keeps its meaning, and the agent's adapter stamps
+  `created_by = "ai"` unconditionally, so there is no path by which a model
+  writes a row that pretends a person drew it.
+- Update does not touch provenance: a drag on an AI-drawn level is still an
+  AI-proposed level the user moved.
+
+### Validation: one rule, two doors
+
+The HTTP route and the agent's `DbDrawingWriter` both validate with the
+**engine's own** `Drawing::validate_anchors` and the same kind list. A second
+copy of the rule would eventually disagree, and the disagreement would be a
+drawing the agent believes exists and the chart refuses to draw.
+
+### Where the shell fits (next)
+
+The chart already renders any stored drawing; an AI-created one needs only the
+layer toggle and its provenance badge (`docs/21` phase 3). The objects arrive
+as ordinary rows, so no shell change is required to *see* them.
+
+### Out of scope for phase 2 (deliberately)
+
+## Testing map
+
+| Layer | Test |
+| --- | --- |
+| Engine kinds/registry | `cargo test -p chart-engine` |
+| Storage rule pinned to engine | `cargo test -p db` (`drawings`) |
+| Route validation | `cargo test -p api-gateway --lib drawing_routes` |
+| ABI export | `tools/wasm_abi_check.mjs` |
+| Shell gestures (place/move/delete/clear/undo/redo/magnet/flyouts) | `node tools/shell_check.mjs` |

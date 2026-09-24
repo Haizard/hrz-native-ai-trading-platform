@@ -383,9 +383,18 @@ mod tests {
     #[test]
     fn timestamps_are_read_as_nanoseconds() {
         // The fields are nanoseconds; the report is milliseconds.
-        assert_eq!(candle(1_700_000_000_000_000_000).at_ns() / 1_000_000, 1_700_000_000_000);
-        assert_eq!(trade(1_700_000_000_000_000_000).at_ns() / 1_000_000, 1_700_000_000_000);
-        assert_eq!(book(1_700_000_000_000_000_000).at_ns() / 1_000_000, 1_700_000_000_000);
+        assert_eq!(
+            candle(1_700_000_000_000_000_000).at_ns() / 1_000_000,
+            1_700_000_000_000
+        );
+        assert_eq!(
+            trade(1_700_000_000_000_000_000).at_ns() / 1_000_000,
+            1_700_000_000_000
+        );
+        assert_eq!(
+            book(1_700_000_000_000_000_000).at_ns() / 1_000_000,
+            1_700_000_000_000
+        );
         assert!(matches!(trade(0).side(), Side::Buy));
     }
 
@@ -417,7 +426,11 @@ mod tests {
         .await;
 
         assert_eq!(taken, 3, "everything published must be taken off the bus");
-        assert_eq!(report.written(), 3, "drained with no database is still counted");
+        assert_eq!(
+            report.written(),
+            3,
+            "drained with no database is still counted"
+        );
         assert_eq!(
             report.newest_ms(),
             0,

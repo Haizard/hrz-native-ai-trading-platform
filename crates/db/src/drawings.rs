@@ -48,11 +48,20 @@ use crate::repositories::dt_to_ns;
 ///
 /// Adding one is a variant in `chart_engine::drawing::DrawingKind` plus an arm
 /// in its `parts` -- no migration, because every kind is two anchors.
-pub const KINDS: [&str; 4] = ["trendline", "hline", "rect", "fib"];
+pub const KINDS: [&str; 8] = [
+    "trendline",
+    "hline",
+    "vline",
+    "ray",
+    "extended",
+    "rect",
+    "fib",
+    "measure",
+];
 
 /// Whether a kind needs its second anchor.
 ///
-/// The one rule with four cases. It is here rather than in SQL because the
+/// The one rule with eight cases. It is here rather than in SQL because the
 /// database can express "the pair is whole" (`drawings_anchor_pair_is_whole`)
 /// but not "this kind needs one and that kind needs two", and it is here rather
 /// than in the route because the route's job is the status code, not the
@@ -63,7 +72,7 @@ pub const KINDS: [&str; 4] = ["trendline", "hline", "rect", "fib"];
 /// be wrong.
 #[must_use]
 pub fn needs_second_anchor(kind: &str) -> bool {
-    kind != "hline"
+    !matches!(kind, "hline" | "vline")
 }
 
 /// A stored drawing, with its anchors in **milliseconds**.
@@ -85,6 +94,15 @@ pub struct DrawingRow {
     pub a2_price: Option<f64>,
     /// What the user called it, if anything.
     pub label: Option<String>,
+    /// Who is accountable for this row: `None` is a hand-drawn one, and
+    /// `Some("ai")` says the agent created it (`0009_drawing_provenance.sql`).
+    pub created_by: Option<String>,
+    /// Which agent drew it, when [`DrawingRow::created_by`] says one did.
+    pub agent: Option<String>,
+    /// The model's own confidence, 0..1, when the agent stated one.
+    pub confidence: Option<f64>,
+    /// The agent's stated reason, when it gave one.
+    pub reason: Option<String>,
     /// When it was first stored, unix nanoseconds.
     pub created_at: i64,
     /// When it was last moved, unix nanoseconds.
@@ -116,6 +134,29 @@ pub struct NewDrawing {
     pub a2_price: Option<f64>,
     /// What the user called it, if anything.
     pub label: Option<String>,
+    /// Provenance (`0009_drawing_provenance.sql`): who is accountable, which
+    /// agent, its stated confidence and reason. `None` provenance is a
+    /// hand-drawn object, which is what every writer before the AI path wrote.
+    pub provenance: Option<Provenance>,
+}
+
+/// Who is accountable for a drawing, and what the model said about it.
+///
+/// A small struct rather than four loose `Option`s on [`NewDrawing`] because
+/// the four travel together or not at all: `agent`/`confidence`/`reason`
+/// without `created_by = "ai"` would be provenance nobody owns, and the
+/// construction sites are few enough to keep honest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Provenance {
+    /// `"ai"` for agent-created rows. A vocabulary, not free text, so a filter
+    /// can match it exactly.
+    pub created_by: String,
+    /// The agent's name, e.g. `market-structure`.
+    pub agent: Option<String>,
+    /// The model's stated confidence, 0..1.
+    pub confidence: Option<f64>,
+    /// The model's stated reason, in its own words.
+    pub reason: Option<String>,
 }
 
 /// Convert milliseconds to a UTC timestamp.
@@ -154,6 +195,10 @@ fn row_to_drawing(row: &sqlx::postgres::PgRow) -> Result<DrawingRow, DbError> {
         a2_time_ms: a2_time.map(dt_to_ms),
         a2_price,
         label: row.try_get("label")?,
+        created_by: row.try_get("created_by")?,
+        agent: row.try_get("agent")?,
+        confidence: row.try_get("confidence")?,
+        reason: row.try_get("reason")?,
         created_at: dt_to_ns(row.try_get("created_at")?),
         updated_at: dt_to_ns(row.try_get("updated_at")?),
     })
@@ -174,7 +219,7 @@ pub async fn list_drawings(
 ) -> Result<Vec<DrawingRow>, DbError> {
     let rows = sqlx::query(
         "SELECT id, symbol, kind, a1_time, a1_price, a2_time, a2_price, label, \
-         created_at, updated_at \
+         created_by, agent, confidence, reason, created_at, updated_at \
          FROM drawings WHERE user_id = $1 AND symbol = $2 ORDER BY created_at, id",
     )
     .bind(user_id)
@@ -200,8 +245,9 @@ pub async fn create_drawing(
     drawing: &NewDrawing,
 ) -> Result<Uuid, DbError> {
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO drawings (user_id, symbol, kind, a1_time, a1_price, a2_time, a2_price, label) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+        "INSERT INTO drawings (user_id, symbol, kind, a1_time, a1_price, a2_time, a2_price, label, \
+         created_by, agent, confidence, reason) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id",
     )
     .bind(user_id)
     .bind(symbol)
@@ -211,6 +257,10 @@ pub async fn create_drawing(
     .bind(drawing.a2_time_ms.map(ms_to_dt))
     .bind(drawing.a2_price)
     .bind(drawing.label.as_deref())
+    .bind(drawing.provenance.as_ref().map(|p| p.created_by.as_str()))
+    .bind(drawing.provenance.as_ref().and_then(|p| p.agent.as_deref()))
+    .bind(drawing.provenance.as_ref().and_then(|p| p.confidence))
+    .bind(drawing.provenance.as_ref().and_then(|p| p.reason.as_deref()))
     .fetch_one(pool)
     .await?;
     Ok(id)
@@ -230,6 +280,12 @@ pub async fn create_drawing(
 /// not an edit to it, it is a different drawing -- and a route that accepted one
 /// would let a client rewrite an analysis of `BTCUSDT` into one of something
 /// else while keeping its id.
+///
+/// Provenance is deliberately not updatable either. An edit does not change who
+/// is accountable for the object: a drag on an AI-drawn level is still a level
+/// the AI proposed and the user moved, and rewriting `created_by` on edit would
+/// launder an AI object into a human one (or the reverse) by touching its
+/// geometry.
 ///
 /// # Errors
 /// Returns [`DbError::Pool`] if the update fails.
@@ -281,9 +337,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_horizontal_line_has_one_anchor() {
+    fn only_a_horizontal_or_vertical_line_has_one_anchor() {
         assert!(!needs_second_anchor("hline"));
-        for kind in ["trendline", "rect", "fib"] {
+        assert!(!needs_second_anchor("vline"));
+        for kind in ["trendline", "ray", "extended", "rect", "fib", "measure"] {
             assert!(needs_second_anchor(kind), "{kind} needs two anchors");
         }
     }

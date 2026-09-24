@@ -264,6 +264,16 @@ pub struct Request {
     /// as a chart with no live data should.
     #[serde(default)]
     pub last_price: Option<f64>,
+    /// Whether fraction anchors snap to the window's own prices.
+    ///
+    /// The magnet. `true` and every `fraction` anchor a placement or a drag
+    /// sends is pulled to the nearest open, high, low, close or value-area
+    /// centre within [`SNAP_RADIUS_PX`] -- **in the engine**, so the shell
+    /// still performs no arithmetic over market data: it sends where the
+    /// pointer is, and the engine answers with what that is. Absolute anchors
+    /// never snap: a stored drawing already means exactly what it says.
+    #[serde(default)]
+    pub snap: bool,
 }
 
 /// The levels drawn when a request does not say.
@@ -291,6 +301,7 @@ impl Default for Request {
             indicator: None,
             follow: false,
             last_price: None,
+            snap: false,
         }
     }
 }
@@ -655,6 +666,15 @@ pub struct Scene {
     /// on screen when the chart is live.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_price: Option<LastPrice>,
+    /// The points a magnet can snap to, when snapping is on.
+    ///
+    /// Reported rather than kept private so the shell can show the snap
+    /// affordance while a tool is active, and so an AI reading the scene can
+    /// cite *which* price an anchor landed on -- "the 108,200 low", not "a
+    /// fraction of the plot". Empty whenever the request did not ask, which
+    /// is also how an older shell sees no change at all.
+    #[serde(default)]
+    pub snap_points: Vec<SnapPoint>,
     /// A caveat about what is being shown, when there is one.
     pub note: Option<String>,
 }
@@ -671,6 +691,101 @@ pub struct LastPrice {
     /// with the same up/down pair every candle uses, so the chart never says
     /// green for a fall.
     pub up: bool,
+}
+
+/// How near, in canvas pixels, a pointer must be for the magnet to take it.
+///
+/// In pixels rather than in prices because "near" is what the user can aim
+/// at, and the same ten pixels mean different prices at different zooms --
+/// which is correct: zoomed out, levels sit closer together, and the magnet
+/// should still mean what it says.
+const SNAP_RADIUS_PX: f64 = 12.0;
+
+/// One price the magnet can pull an anchor to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SnapPoint {
+    /// Canvas y of the price.
+    pub y: f64,
+    /// The price itself, absolute.
+    pub price: f64,
+    /// What it is: `open`, `high`, `low`, `close`, or `value`.
+    pub role: String,
+    /// Which candle it came from, by index in the visible window.
+    pub bar: usize,
+}
+
+/// The snap candidate list for the current frame.
+///
+/// OHLC of every visible candle, plus the value-area centre. Built here rather
+/// than in the shell for the same reason every mapping is: the shell sends a
+/// pointer position, and the meaning of that position is market arithmetic
+/// `docs/14` keeps in Rust.
+fn snap_points(candles: &[Candle], frame: &Frame, profile: &VolumeProfile) -> Vec<SnapPoint> {
+    if frame.price_max <= frame.price_min {
+        return Vec::new();
+    }
+    let scale = frame.plot.h / (frame.price_max - frame.price_min);
+    let mut points = Vec::new();
+    for (bar, candle) in candles.iter().enumerate() {
+        for (role, price) in [
+            ("open", candle.open),
+            ("high", candle.high),
+            ("low", candle.low),
+            ("close", candle.close),
+        ] {
+            if !price.is_finite() {
+                continue;
+            }
+            points.push(SnapPoint {
+                y: frame.y_at(price),
+                price,
+                role: role.into(),
+                bar,
+            });
+        }
+    }
+    if profile.poc.is_finite() && profile.poc > 0.0 {
+        points.push(SnapPoint {
+            y: frame.y_at(profile.poc),
+            price: profile.poc,
+            role: "value".into(),
+            bar: usize::MAX,
+        });
+    }
+    let _ = scale;
+    points
+}
+
+/// Pull a fraction anchor to the nearest snap candidate, when one is in reach.
+///
+/// The y is what snaps; the x stays where the pointer was, because time has no
+/// local vocabulary the way price does. The comparison happens in canvas
+/// pixels -- the unit "near" is honest in -- by carrying the pointer fraction
+/// up to pixels with the plot the candidates were measured against, and the
+/// winner back down to a fraction with the same mapping.
+fn snap_anchor(anchor: Anchor, plot: &Plot, points: &[SnapPoint]) -> Anchor {
+    let Anchor::Fraction { x, y } = anchor else {
+        return anchor;
+    };
+    let pointer_y = plot.y + y * plot.h;
+    // Search linearly: the candidate list is four per candle plus one, and the
+    // windows here are hundreds of candles -- a sorted search costs more than
+    // it returns at build-scene rates.
+    let mut best: Option<(f64, &SnapPoint)> = None;
+    for point in points {
+        let distance = (point.y - pointer_y).abs();
+        if distance <= SNAP_RADIUS_PX && best.is_none_or(|(d, _)| distance < d) {
+            best = Some((distance, point));
+        }
+    }
+    match best {
+        Some((_, point)) => Anchor::Fraction {
+            x,
+            // Back to the fraction the snapped price sits at -- in Rust, once.
+            y: (point.y - plot.y) / plot.h,
+        },
+        None => anchor,
+    }
 }
 
 /// Map a price into canvas y, given the range and the plot.
@@ -754,6 +869,7 @@ pub fn build(request: &Request) -> Scene {
         overlays: Vec::new(),
         indicator: None,
         last_price: None,
+        snap_points: Vec::new(),
         note: None,
     };
 
@@ -798,7 +914,11 @@ pub fn build(request: &Request) -> Scene {
     // echoes a re-anchored window and stays pinned while frames keep arriving.
     // Before the gesture, so a pan that lands on the same frame the shell turns
     // following on ends where the user dragged rather than where the end was.
-    let window = if request.follow { window.followed() } else { window };
+    let window = if request.follow {
+        window.followed()
+    } else {
+        window
+    };
     scene.viewport = window.as_viewport();
 
     let visible = &plotted[window.from..window.end()];
@@ -971,9 +1091,24 @@ pub fn build(request: &Request) -> Scene {
         to: scene.to,
         price_min: scene.price_min,
         price_max: scene.price_max,
+        // The drawn series' own candle width, so a measurement's bar count is
+        // the bars its span actually covers. `first` is the window's oldest
+        // candle, and a `Candle` carries its timeframe.
+        bar_nanos: first.timeframe.nanos(),
     };
     scene.regions = region_rects(request.zones, &concepts, &request.candles, &frame);
     scene.ticks = ticks(&plot, scene.price_min, scene.price_max);
+
+    // The magnet's candidates, when the request asked. Built from the visible
+    // **real** candles -- the same slice everything measured on screen uses --
+    // because snapping to a Heikin-Ashi average would be snapping to a price
+    // nobody traded at.
+    let snap_points = if request.snap {
+        snap_points(visible_real, &frame, &profile)
+    } else {
+        Vec::new()
+    };
+    scene.snap_points = snap_points.clone();
 
     // Drawings last, and positioned last, because they are the user's own
     // annotation: one that a zone or the profile could cover is one they cannot
@@ -981,7 +1116,7 @@ pub fn build(request: &Request) -> Scene {
     // and the whole price range -- a trendline drawn last week is still a
     // trendline when the window has moved past it, so the anchors are mapped
     // absolutely and the canvas clips, exactly as a zone's band is.
-    let (drawings, unplaceable) = drawing_parts(&request.drawings, &frame);
+    let (drawings, unplaceable) = drawing_parts(&request.drawings, &frame, plot, &snap_points);
     scene.drawings = drawings;
 
     // The answer's levels, between the derived geometry and the user's own
@@ -1004,15 +1139,14 @@ pub fn build(request: &Request) -> Scene {
         }
     }
 
-    match request.indicator.as_ref() {
-        Some(output) => match indicator_parts(output, &frame) {
+    if let Some(output) = request.indicator.as_ref() {
+        match indicator_parts(output, &frame) {
             Ok(indicator) => scene.indicator = Some(indicator),
             Err(reason) => add_note(
                 &mut scene.note,
                 format!("generated indicator is not drawn: {reason}"),
             ),
-        },
-        None => {}
+        }
     }
 
     if !refused.is_empty() {
@@ -1418,6 +1552,9 @@ struct Frame {
     price_min: f64,
     /// The top.
     price_max: f64,
+    /// One candle's width, in nanoseconds: the series' own timeframe, so a
+    /// measurement's bar count is the bars it spans and not a guess.
+    bar_nanos: i64,
 }
 
 impl Frame {
@@ -1605,12 +1742,17 @@ fn region_label(name: &str, mitigated: f64) -> String {
 /// the arrangement a refused concept document already gets, and for the same
 /// reason: half a shape is worse than none, and a silent refusal teaches whoever
 /// drew it nothing.
-fn drawing_parts(drawings: &[Drawing], frame: &Frame) -> (Vec<SceneDrawing>, Vec<String>) {
+fn drawing_parts(
+    drawings: &[Drawing],
+    frame: &Frame,
+    plot: Plot,
+    snap_points: &[SnapPoint],
+) -> (Vec<SceneDrawing>, Vec<String>) {
     let mut placed = Vec::with_capacity(drawings.len());
     let mut refused = Vec::new();
 
     for drawing in drawings {
-        match place(drawing, frame) {
+        match place(drawing, frame, plot, snap_points) {
             Ok(scene_drawing) => placed.push(scene_drawing),
             Err(reason) => refused.push(format!("`{}`: {reason}", drawing.id)),
         }
@@ -1619,7 +1761,12 @@ fn drawing_parts(drawings: &[Drawing], frame: &Frame) -> (Vec<SceneDrawing>, Vec
 }
 
 /// Resolve one drawing's anchors and build its shapes.
-fn place(drawing: &Drawing, frame: &Frame) -> Result<SceneDrawing, String> {
+fn place(
+    drawing: &Drawing,
+    frame: &Frame,
+    plot: Plot,
+    snap_points: &[SnapPoint],
+) -> Result<SceneDrawing, String> {
     drawing.validate_anchors()?;
     // The id is required *here* rather than in `validate_anchors`, because this
     // is the only caller that needs one: it is how a refusal names the drawing
@@ -1629,8 +1776,12 @@ fn place(drawing: &Drawing, frame: &Frame) -> Result<SceneDrawing, String> {
         return Err("it has no id, so nothing can refer to it".into());
     }
 
-    let a1 = resolve(drawing.a1, frame);
-    let a2 = drawing.a2.map(|anchor| resolve(anchor, frame));
+    // The magnet. Only a placement's *fraction* anchors snap, and only when the
+    // request asked; an absolute anchor already means exactly what it says, and
+    // snapping to it would be the engine quietly moving a stored drawing.
+    let snap = |anchor: Anchor| snap_anchor(anchor, &plot, snap_points);
+    let a1 = resolve(snap(drawing.a1), frame);
+    let a2 = drawing.a2.map(|anchor| resolve(snap(anchor), frame));
 
     // A click with no drag, on a tool that needs two points. Both anchors are the
     // same point, so the shape has no extent: nothing visible is drawn, and yet
@@ -1723,6 +1874,87 @@ fn shapes(
                 });
             }
         }
+        DrawingKind::Ray => {
+            // From the first anchor through the second, onward to the plot's
+            // edge. A ray that stopped at the second anchor is a trendline with
+            // another name; the point of the tool is that the claim -- "this
+            // direction continues" -- is drawn all the way out.
+            if let Some((t2, p2)) = a2 {
+                let (x2, y2) = (frame.x_at_ms(t2), frame.y_at(p2));
+                let dx = x2 - x1;
+                let dy = y2 - y1;
+                // The drag direction decides which edge the ray runs to; a zero
+                // drag was refused upstream by the same-point rule, so one of
+                // the deltas is never zero here.
+                let mut k = f64::INFINITY;
+                if dx != 0.0 {
+                    let edge = if dx > 0.0 {
+                        frame.plot.x + frame.plot.w
+                    } else {
+                        frame.plot.x
+                    };
+                    k = k.min((edge - x1) / dx);
+                }
+                if dy != 0.0 {
+                    let edge = if dy > 0.0 {
+                        frame.plot.y + frame.plot.h
+                    } else {
+                        frame.plot.y
+                    };
+                    k = k.min((edge - y1) / dy);
+                }
+                if !k.is_finite() {
+                    // Should be unreachable: both deltas zero is the same-point
+                    // case. Guarded anyway, because a `NaN` from `0/0` is a
+                    // canvas that silently drops the shape.
+                    k = 1.0;
+                }
+                parts.push(DrawingPart::Segment {
+                    x1,
+                    y1,
+                    x2: x1 + dx * k,
+                    y2: y1 + dy * k,
+                    dashed: false,
+                });
+                // The second handle stays where the user dragged, so the ray can
+                // be re-aimed by its point rather than by its off-screen end.
+            }
+        }
+        DrawingKind::Extended => {
+            // Both directions, past both plot edges. The intersections are
+            // computed rather than capped so the segment the shell strokes is
+            // exactly the visible span of the infinite line.
+            if let Some((t2, p2)) = a2 {
+                let (x2, y2) = (frame.x_at_ms(t2), frame.y_at(p2));
+                let dx = x2 - x1;
+                let dy = y2 - y1;
+                let mut k_low = f64::NEG_INFINITY;
+                let mut k_high = f64::INFINITY;
+                if dx != 0.0 {
+                    let k_left = (frame.plot.x - x1) / dx;
+                    let k_right = (frame.plot.x + frame.plot.w - x1) / dx;
+                    k_low = k_low.max(k_left.min(k_right));
+                    k_high = k_high.min(k_left.max(k_right));
+                }
+                if dy != 0.0 {
+                    let k_top = (frame.plot.y - y1) / dy;
+                    let k_bottom = (frame.plot.y + frame.plot.h - y1) / dy;
+                    k_low = k_low.max(k_top.min(k_bottom));
+                    k_high = k_high.min(k_top.max(k_bottom));
+                }
+                if !(k_low.is_finite() && k_high.is_finite()) {
+                    k_low = 0.0;
+                    k_high = 1.0;
+                }
+                parts.push(DrawingPart::Segment {
+                    x1: x1 + dx * k_low,
+                    y1: y1 + dy * k_low,
+                    x2: x1 + dx * k_high,
+                    y2: y1 + dy * k_high,
+                    dashed: false,
+                });
+            }
+        }
         DrawingKind::Hline => {
             // Across the whole plot, because a horizontal level is a price
             // rather than a segment, and one that stopped at the right edge of
@@ -1740,6 +1972,17 @@ fn shapes(
                 text: format!("{p1:.2}"),
             });
         }
+        DrawingKind::Vline => {
+            // Down the whole plot, at the anchor's time -- the mirror of the
+            // horizontal line, and the same argument for spanning the plot.
+            parts.push(DrawingPart::Segment {
+                x1,
+                y1: frame.plot.y,
+                x2: x1,
+                y2: frame.plot.y + frame.plot.h,
+                dashed: false,
+            });
+        }
         DrawingKind::Rect => {
             if let Some((t2, p2)) = a2 {
                 let x2 = frame.x_at_ms(t2);
@@ -1750,6 +1993,48 @@ fn shapes(
                     w: (x2 - x1).abs(),
                     h: (y2 - y1).abs(),
                     filled: true,
+                });
+            }
+        }
+        DrawingKind::Measure => {
+            if let Some((t2, p2)) = a2 {
+                let x2 = frame.x_at_ms(t2);
+                let y2 = frame.y_at(p2);
+                // The box, unfilled: it is a measurement, and a filled one would
+                // read as a zone the user placed.
+                parts.push(DrawingPart::Rect {
+                    x: x1.min(x2),
+                    y: y1.min(y2),
+                    w: (x2 - x1).abs(),
+                    h: (y2 - y1).abs(),
+                    filled: false,
+                });
+                // Dashed guides to both axes, so which two things are being
+                // compared is on the chart rather than implied.
+                parts.push(DrawingPart::Segment {
+                    x1: x2,
+                    y1: y2,
+                    x2,
+                    y2: y1,
+                    dashed: true,
+                });
+                parts.push(DrawingPart::Segment {
+                    x1: x2,
+                    y1: y2,
+                    x2: x1,
+                    y2,
+                    dashed: true,
+                });
+                // The deltas, formatted here: a percentage and a bar count are
+                // arithmetic, and `docs/14` keeps arithmetic out of JavaScript.
+                // The bar count is measured against the series' own timeframe,
+                // which the frame carries, rather than guessed.
+                let bars = ((t2 - t1).abs() * 1_000_000.0 / frame.bar_nanos as f64).round() as i64;
+                let change = (p2 - p1).abs() / p1.abs().max(f64::EPSILON) * 100.0;
+                parts.push(DrawingPart::Text {
+                    x: x1.max(x2) + 6.0,
+                    y: y1.min(y2) + 10.0,
+                    text: format!("{:.2} ({change:.1}%) {bars} bars", (p2 - p1).abs()),
                 });
             }
         }
@@ -3889,6 +4174,8 @@ mod tests {
             to: scene.to,
             price_min: scene.price_min,
             price_max: scene.price_max,
+            // Timeframe::M5 is what the test series itself carries.
+            bar_nanos: analytics_core::types::Timeframe::M5.nanos(),
         };
         for placed in &scene.overlays {
             assert!(

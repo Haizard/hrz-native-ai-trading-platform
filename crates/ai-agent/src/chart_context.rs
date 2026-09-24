@@ -226,7 +226,10 @@ impl ChartContext {
             parts.push(format!("{timeframe} chart"));
         }
         if let (Some(from), Some(to)) = (self.visible_from_ns, self.visible_to_ns) {
-            parts.push(format!("{} visible bars", visible_bars(from, to, self.timeframe)));
+            parts.push(format!(
+                "{} visible bars",
+                visible_bars(from, to, self.timeframe)
+            ));
         }
         if !self.drawings.is_empty() {
             parts.push(format!("{} drawings", self.drawings.len()));
@@ -244,7 +247,9 @@ impl ChartContext {
     #[must_use]
     pub fn visible_bars(&self) -> Option<i64> {
         match (self.visible_from_ns, self.visible_to_ns, self.timeframe) {
-            (Some(from), Some(to), Some(timeframe)) => Some(visible_bars(from, to, Some(timeframe))),
+            (Some(from), Some(to), Some(timeframe)) => {
+                Some(visible_bars(from, to, Some(timeframe)))
+            }
             _ => None,
         }
     }
@@ -341,9 +346,7 @@ impl ChartContext {
             ));
         }
         if let (Some(low), Some(high)) = (self.price_low, self.price_high) {
-            out.push_str(&format!(
-                "- Visible price axis: {low:.4} to {high:.4}\n"
-            ));
+            out.push_str(&format!("- Visible price axis: {low:.4} to {high:.4}\n"));
         }
 
         if !self.drawings.is_empty() {
@@ -524,7 +527,10 @@ mod tests {
         assert!(rendered.contains("2026-09-07T00:00:00Z"), "{rendered}");
         assert!(rendered.contains("2026-09-07T11:00:00Z"), "{rendered}");
         assert!(rendered.contains("(12 bars)"), "{rendered}");
-        assert!(rendered.contains("110000.0000 to 118500.0000"), "{rendered}");
+        assert!(
+            rendered.contains("110000.0000 to 118500.0000"),
+            "{rendered}"
+        );
         assert_eq!(context.visible_bars(), Some(12));
     }
 
@@ -572,7 +578,7 @@ mod tests {
             screenshot: Some(ChartScreenshot {
                 media_type: "image/png".into(),
                 data: "A".repeat(4_000),
-            label: None,
+                label: None,
             }),
             ..Default::default()
         };
@@ -599,16 +605,24 @@ mod tests {
             data: "AAAA".into(),
             label: None,
         };
-        let error = bad.validate().expect_err("svg is not a raster the model reads");
+        let error = bad
+            .validate()
+            .expect_err("svg is not a raster the model reads");
         assert!(error.contains("cannot read"), "{error}");
-        assert!(error.contains("image/png"), "the error lists what *is* accepted: {error}");
+        assert!(
+            error.contains("image/png"),
+            "the error lists what *is* accepted: {error}"
+        );
 
         let empty = ChartScreenshot {
             media_type: "image/png".into(),
             data: String::new(),
             label: None,
         };
-        assert!(empty.validate().is_err(), "an empty payload is not a screenshot");
+        assert!(
+            empty.validate().is_err(),
+            "an empty payload is not a screenshot"
+        );
 
         let good = ChartScreenshot {
             media_type: "image/jpeg".into(),
@@ -648,7 +662,9 @@ mod tests {
     fn drawings_are_clamped_to_the_newest_rather_than_rejected() {
         let mut context = ChartContext::default();
         for i in 0..(MAX_DRAWINGS + 10) {
-            context.drawings.push(level(100.0 + i as f64, &format!("L{i}")));
+            context
+                .drawings
+                .push(level(100.0 + i as f64, &format!("L{i}")));
         }
         context.clamp_drawings();
 
@@ -656,11 +672,21 @@ mod tests {
         // The tail is what survives: a user asking about a chart is asking about
         // what they drew most recently.
         assert_eq!(
-            context.drawings.last().expect("a last drawing").label.as_deref(),
+            context
+                .drawings
+                .last()
+                .expect("a last drawing")
+                .label
+                .as_deref(),
             Some("L33")
         );
         assert_eq!(
-            context.drawings.first().expect("a first drawing").label.as_deref(),
+            context
+                .drawings
+                .first()
+                .expect("a first drawing")
+                .label
+                .as_deref(),
             Some("L10")
         );
     }
@@ -711,7 +737,7 @@ mod tests {
         // Sub-second precision is dropped, not rounded into the next second.
         assert_eq!(format_ns(999_999_999), "1970-01-01T00:00:00Z");
         // Before the epoch still works, via `div_euclid` rather than `/`.
-        assert_eq!(format_ns(-1) , "1969-12-31T23:59:59Z");
+        assert_eq!(format_ns(-1), "1969-12-31T23:59:59Z");
     }
 
     #[test]
@@ -748,7 +774,10 @@ mod tests {
         };
 
         let json = serde_json::to_value(&context).expect("serializes");
-        assert_eq!(json["timeframe"], "15m", "the wire format is lowercase: {json}");
+        assert_eq!(
+            json["timeframe"], "15m",
+            "the wire format is lowercase: {json}"
+        );
         assert_eq!(json["visible_from_ns"], 1_789_056_000_000_000_000i64);
         assert_eq!(json["visible_to_ns"], 1_789_059_600_000_000_000i64);
         assert_eq!(json["price_low"], 1.0);
@@ -795,7 +824,11 @@ mod tests {
         // primary frees budget for the extras.
         let mut context = ChartContext {
             screenshot: Some(shot("broken primary", false)),
-            screenshots: vec![shot("1d chart", true), shot("1h chart", true), shot("5m chart", true)],
+            screenshots: vec![
+                shot("1d chart", true),
+                shot("1h chart", true),
+                shot("5m chart", true),
+            ],
             ..Default::default()
         };
         let dropped = context.clamp_screenshots();
@@ -822,11 +855,17 @@ mod tests {
         };
 
         let rendered = context.render().expect("multi-image context renders");
-        assert!(rendered.contains("Images of the user's charts are attached"), "{rendered}");
+        assert!(
+            rendered.contains("Images of the user's charts are attached"),
+            "{rendered}"
+        );
         let primary_at = rendered.find("1. 4h chart").expect("primary named first");
         let extra1_at = rendered.find("2. 1d chart").expect("first extra named");
         let extra2_at = rendered.find("3. ").expect("unlabelled image still listed");
-        assert!(primary_at < extra1_at && extra1_at < extra2_at, "{rendered}");
+        assert!(
+            primary_at < extra1_at && extra1_at < extra2_at,
+            "{rendered}"
+        );
     }
 
     fn shot_with_label(name: &str, label: Option<&str>) -> ChartScreenshot {

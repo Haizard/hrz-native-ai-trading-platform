@@ -947,14 +947,33 @@ check(
 );
 check(
   "the drawing toolbar is on the page",
-  paneNode().querySelectorAll(".tools button[data-tool]").length === 5,
+  paneNode().querySelectorAll(".tools button[data-tool]").length >= 5,
   `${paneNode().querySelectorAll(".tools button[data-tool]").length} tools`
 );
 check(
-  "every tool the engine knows has a button",
-  ["cursor", "trendline", "hline", "rect", "fib"].every((name) =>
-    paneNode().querySelector(`.tools button[data-tool="${name}"]`)
+  "every tool the engine's registry declares has a button",
+  (() => {
+    const toolbar = paneNode().querySelector(".tools");
+    const names = [...toolbar.querySelectorAll("button[data-tool]")].map((b) => b.dataset.tool);
+    const expected = ["cursor", "trendline", "hline", "vline", "ray", "extended", "rect", "fib", "measure"];
+    return expected.every((name) => names.includes(name)) && `${names.join(",")}`;
+  })()
+);
+check(
+  "the tools are grouped into the registry's flyouts",
+  paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length === 8,
+  `${paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length} flyout tools`
+);
+check(
+  "the magnet, undo and redo controls are on the toolbar",
+  ["[data-magnet]", "[data-undo]", "[data-redo]"].every((sel) =>
+    paneNode().querySelector(`.tools ${sel}`)
   )
+);
+check(
+  "undo starts disabled and enables once a drawing is commanded",
+  paneNode().querySelector(".tools [data-undo]").disabled === true,
+  `disabled=${paneNode().querySelector(".tools [data-undo]")?.disabled}`
 );
 
 // The series a chart opens on comes from `GET /symbols`, and the fixture lists
@@ -1035,9 +1054,9 @@ check(
 );
 check(
   "and the panes stack, so two charts are not two 450px charts",
-  /flex-direction:\s*column/.test(ruleIn(narrowBlock, "#charts")) &&
-    /flex:\s*0 0 auto/.test(ruleIn(narrowBlock, ".chartPane")),
-  ruleIn(narrowBlock, "#charts").trim() || "(no #charts rule)"
+  /grid-template-columns:\s*1fr/.test(ruleIn(narrowBlock, ".chartRow")) &&
+    /border-left:\s*0/.test(ruleIn(narrowBlock, ".chartPane")),
+  ruleIn(narrowBlock, ".chartRow").trim() || "(no .chartRow rule)"
 );
 check(
   "and the panel is full width with its border moved to the seam",

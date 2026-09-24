@@ -18,16 +18,16 @@
 //! level of every candle, which is a lot of numbers -- so the window is capped
 //! rather than the response being paginated. A chart shows what is on screen.
 
-use axum::Json;
 use axum::extract::State;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use analytics_core::types::{Side, Timeframe};
-use analytics_core::{ImbalanceConfig, build_footprints, detect_imbalances_with};
+use analytics_core::{build_footprints, detect_imbalances_with, ImbalanceConfig};
 
-use crate::AppState;
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
+use crate::AppState;
 
 /// Most candles one request may return.
 ///

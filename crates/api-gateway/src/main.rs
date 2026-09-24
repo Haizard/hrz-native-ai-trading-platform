@@ -15,10 +15,10 @@ use ai_agent::{Agent, AgentConfig, SkillLibrary};
 use api_gateway::bots::{BotSupervisor, FeedMode};
 use api_gateway::rate_limit::{RateLimit, RateLimiter};
 use api_gateway::tickers;
-use api_gateway::{AppState, build_auth, build_vault, load_skills, router};
+use api_gateway::{build_auth, build_vault, load_skills, router, AppState};
 use db::Database;
-use observability::QueueSink;
 use observability::metrics::Registry;
+use observability::QueueSink;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -152,9 +152,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| reqwest::Client::new()),
         };
         let events_rx = state.bots.subscribe_events();
-        api_gateway::indicator_alerts::spawn_indicator_alert_delivery(
-            indicator_state, events_rx,
-        );
+        api_gateway::indicator_alerts::spawn_indicator_alert_delivery(indicator_state, events_rx);
 
         // Retention: the market tables have no other bound. `xtask collect`
         // and the backfills write candles, trades and book snapshots; without
@@ -200,8 +198,10 @@ fn build_agent(skills: &SkillLibrary) -> Option<Arc<Agent>> {
             )))
         }
         Err(e) => {
-            warn!("no primary AI model; /agent endpoints will 503 unless a user stores their \
-                   own provider config: {e}");
+            warn!(
+                "no primary AI model; /agent endpoints will 503 unless a user stores their \
+                   own provider config: {e}"
+            );
             None
         }
     }

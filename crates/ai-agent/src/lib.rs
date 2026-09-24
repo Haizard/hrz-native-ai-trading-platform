@@ -67,4 +67,7 @@ pub use thesis::{Bias, CheckStatus, ConditionCheck, PriceRange, ToolTrace};
 
 pub use thesis::TradeThesis;
 pub use tools::{BacktestRunner, BacktestSummary, MarketDataSource, ToolContext, ToolRegistry};
-pub use user_drawings::{UserDrawing, UserDrawingsSource};
+pub use user_drawings::{
+    DrawingProvenance, DrawingWriter, NewAgentDrawing, StoredDrawing, UserDrawing,
+    UserDrawingsSource,
+};

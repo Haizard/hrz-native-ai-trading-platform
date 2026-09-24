@@ -111,7 +111,10 @@ async fn the_scan_route_answers_and_ranks_what_was_named() {
 
     let top = rows[0]["value"].as_f64().expect("a number");
     let bottom = rows[1]["value"].as_f64().expect("a number");
-    assert!(top > bottom, "a rising series must outrank a falling one: {body}");
+    assert!(
+        top > bottom,
+        "a rising series must outrank a falling one: {body}"
+    );
     assert!(top > 50.0, "an unbroken rise is overbought: {body}");
     assert!(bottom < 50.0, "an unbroken fall is oversold: {body}");
 }
@@ -202,10 +205,7 @@ async fn the_scan_ranks_by_change_percent_when_asked() {
         rows[0]["value"].as_f64().expect("a number") > 0.0,
         "the metric is echoed but a rising series must score positive: {body}"
     );
-    assert!(
-        rows[1]["value"].as_f64().expect("a number") < 0.0,
-        "{body}"
-    );
+    assert!(rows[1]["value"].as_f64().expect("a number") < 0.0, "{body}");
 }
 
 #[tokio::test]

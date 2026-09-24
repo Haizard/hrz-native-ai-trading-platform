@@ -37,7 +37,7 @@ use analytics_core::{
 
 use crate::error::AgentError;
 use crate::llm_client::ToolCall;
-use crate::user_drawings::UserDrawingsSource;
+use crate::user_drawings::{DrawingWriter, NewAgentDrawing, UserDrawingsSource};
 
 /// Where market data comes from.
 ///
@@ -156,6 +156,14 @@ pub struct ToolContext<'a> {
     pub drawings: Option<&'a dyn UserDrawingsSource>,
     /// Whose drawings [`Self::drawings`] holds, opaque to this crate.
     pub user_id: Option<&'a str>,
+    /// Where the agent may put its own objects, when the host allows writes.
+    ///
+    /// A separate capability from [`Self::drawings`], and `None` by default:
+    /// a host that attaches only a reader gets a read-only agent, and the
+    /// write tools report the absence rather than pretending. Wired by
+    /// `with_drawing_writer` alongside the reader, under the same
+    /// authenticated identity.
+    pub drawing_writer: Option<&'a dyn DrawingWriter>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -170,17 +178,26 @@ impl<'a> ToolContext<'a> {
             max_lookback: 2000,
             drawings: None,
             user_id: None,
+            drawing_writer: None,
         }
     }
 
     /// Attach the asking user's drawings, and whose they are.
     #[must_use]
-    pub fn with_drawings(
-        mut self,
-        drawings: &'a dyn UserDrawingsSource,
-        user_id: &'a str,
-    ) -> Self {
+    pub fn with_drawings(mut self, drawings: &'a dyn UserDrawingsSource, user_id: &'a str) -> Self {
         self.drawings = Some(drawings);
+        self.user_id = Some(user_id);
+        self
+    }
+
+    /// Allow the agent to write chart objects, as this user.
+    ///
+    /// Both the reader and the writer take the same opaque id: a host that
+    /// wires one without the other gets exactly the posture it asked for,
+    /// and there is no path by which the two identities can diverge.
+    #[must_use]
+    pub fn with_drawing_writer(mut self, writer: &'a dyn DrawingWriter, user_id: &'a str) -> Self {
+        self.drawing_writer = Some(writer);
         self.user_id = Some(user_id);
         self
     }
@@ -308,6 +325,21 @@ impl ToolRegistry {
                     description: GET_USER_DRAWINGS.into(),
                     input_schema: get_user_drawings_schema(),
                 },
+                ToolSpec {
+                    name: "create_drawing".into(),
+                    description: CREATE_DRAWING.into(),
+                    input_schema: drawing_write_schema(false),
+                },
+                ToolSpec {
+                    name: "update_drawing".into(),
+                    description: UPDATE_DRAWING.into(),
+                    input_schema: drawing_write_schema(true),
+                },
+                ToolSpec {
+                    name: "delete_drawing".into(),
+                    description: DELETE_DRAWING.into(),
+                    input_schema: drawing_delete_schema(),
+                },
             ],
         }
     }
@@ -364,6 +396,9 @@ impl ToolRegistry {
             "backtest_strategy" => backtest_strategy(ctx, &call.input).await,
             "backtest_similar_setups" => backtest_similar_setups(ctx, &call.input).await,
             "get_user_drawings" => get_user_drawings(ctx, &call.input).await,
+            "create_drawing" => create_drawing(ctx, &call.input).await,
+            "update_drawing" => update_drawing(ctx, &call.input).await,
+            "delete_drawing" => delete_drawing(ctx, &call.input).await,
             other => return Err(AgentError::UnknownTool(other.to_string())),
         };
         let elapsed = started.elapsed();
@@ -451,6 +486,55 @@ fn get_user_drawings_schema() -> Value {
             "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
         },
         "required": ["symbol"],
+    })
+}
+
+/// The write tools' schema. `kind` is deliberately a free string, **not** an
+/// enum: the storage's vocabulary is the source of truth, an unknown kind
+/// gets a correctable error naming the valid ones, and a stale schema enum
+/// would read to the model as "this kind is unsupported" (the same lesson
+/// `timeframe_arg` records for the same reason). `with_id` is the update
+/// form, which names an existing drawing rather than describing a new one.
+fn drawing_write_schema(with_id: bool) -> Value {
+    let mut properties = json!({
+        "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
+        "kind": {
+            "type": "string",
+            "description": "What to draw: trendline, hline, vline, ray, extended, rect, fib or measure",
+        },
+        "time1_ms": {"type": "number", "description": "First anchor, milliseconds since the epoch"},
+        "price1": {"type": "number", "description": "First anchor's price"},
+        "time2_ms": {"type": "number", "description": "Second anchor's time, for kinds that need two anchors"},
+        "price2": {"type": "number", "description": "Second anchor's price"},
+        "label": {"type": "string", "description": "A short name the user will read on the chart"},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "How confident you are in this object, 0-1. Optional."},
+        "reason": {"type": "string", "description": "Why this object belongs on the chart, in one or two sentences. Shown to the user."},
+    });
+    if with_id {
+        properties["id"] = json!({
+            "type": "string",
+            "description": "The drawing's id, from get_user_drawings or a create_drawing answer",
+        });
+    }
+    let mut required = vec!["symbol", "kind", "time1_ms", "price1"];
+    if with_id {
+        required.push("id");
+    }
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    })
+}
+
+fn drawing_delete_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
+            "id": {"type": "string", "description": "The drawing's id, from get_user_drawings"},
+        },
+        "required": ["symbol", "id"],
     })
 }
 
@@ -667,6 +751,23 @@ const GET_USER_DRAWINGS: &str = "The levels and shapes the user themselves drew 
     with their labels and both anchors. Read-only. Call it before answering anything about \
     'my level', 'my trendline', 'the zone I marked' or whether the user's marks still hold -- \
     a drawn level is the user's own analysis, and citing it beats rediscovering it.";
+
+const CREATE_DRAWING: &str = "Draw an object on the user's chart -- a level, a zone, a trendline, \
+    a Fibonacci retracement. Use it when the analysis produced something worth seeing: a \
+    resistance zone, a fair-value gap, the entry and stop of a setup. Anchors are absolute \
+    (epoch milliseconds and price), which you can get from get_candles. Always give a reason: \
+    it is stored with the object and the user can read it. Mark created objects are recorded \
+    as yours, and the user can hide or delete them like any other drawing.";
+
+const UPDATE_DRAWING: &str = "Move, resize or relabel one drawing you or the user placed, by id. \
+    Use it to tighten an object to the data -- 'make the zone cover the whole rejection area' -- \
+    rather than deleting and redrawing, which loses the object's id and history. Pass only the \
+    anchors you want after the move; the full shape is replaced.";
+
+const DELETE_DRAWING: &str = "Remove one drawing, by id, when the analysis says it no longer \
+    holds or the user asked for its removal. Prefer update_drawing when the object is only \
+    misplaced. There is no undo for the agent: if the drawing was the user's own work, say so \
+    and prefer to leave it.";
 
 /// Absence-of-tick-data message, shared so every affected tool says the same
 /// thing. The model needs to distinguish "no events occurred" from "events
@@ -1193,10 +1294,8 @@ async fn get_user_drawings(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
     };
 
     let mut drawings = source.drawings(user_id, &symbol).await?;
-    let total = crate::user_drawings::clamp_drawings(
-        &mut drawings,
-        crate::chart_context::MAX_DRAWINGS,
-    );
+    let total =
+        crate::user_drawings::clamp_drawings(&mut drawings, crate::chart_context::MAX_DRAWINGS);
     let returned = drawings.len();
 
     // `price` on each entry is what folds into the grounding range
@@ -1222,6 +1321,182 @@ async fn get_user_drawings(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
         ));
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// The write path (docs/21). Three tools, one reader, one writer, one rule:
+// the host decides whether writes exist at all, and a host that said no gets
+// told the truth rather than worked around.
+// ---------------------------------------------------------------------------
+
+/// The writer and the identity to write as, or the message a write tool
+/// reports when the host attached none.
+fn drawing_writer<'a>(
+    ctx: &'a ToolContext<'_>,
+    tool: &str,
+) -> Result<(&'a dyn DrawingWriter, &'a str), AgentError> {
+    let (Some(writer), Some(user_id)) = (ctx.drawing_writer, ctx.user_id) else {
+        return Err(AgentError::ToolFailed {
+            tool: tool.into(),
+            reason: "no drawing writer is attached to this agent, so the chart \
+                     cannot be changed from here. Present the analysis as text \
+                     instead; do not pretend the object was drawn."
+                .into(),
+        });
+    };
+    Ok((writer, user_id))
+}
+
+/// A `NewAgentDrawing` from the model's arguments, or a correctable error.
+///
+/// The anchor checks mirror what storage will refuse, stated here because the
+/// failure message is the model's only feedback: "a2 needs both time and
+/// price" is actionable, a storage-layer `CHECK` violation is not.
+fn new_drawing_args(args: &Value, tool: &str) -> Result<NewAgentDrawing, AgentError> {
+    let kind = string_arg(args, "kind", tool)?;
+    let symbol_independent_label = args
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let num = |key: &str| -> Result<f64, AgentError> {
+        args.get(key)
+            .and_then(Value::as_f64)
+            .ok_or_else(|| AgentError::InvalidToolArgs {
+                tool: tool.into(),
+                reason: format!("`{key}` is required and must be a number"),
+            })
+    };
+    let opt_num = |key: &str| -> Result<Option<f64>, AgentError> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v
+                .as_f64()
+                .map(Some)
+                .ok_or_else(|| AgentError::InvalidToolArgs {
+                    tool: tool.into(),
+                    reason: format!("`{key}` must be a number when given"),
+                }),
+        }
+    };
+
+    let time1_ms = num("time1_ms")?;
+    let price1 = num("price1")?;
+    let time2_ms = opt_num("time2_ms")?;
+    let price2 = opt_num("price2")?;
+    if (time2_ms.is_some()) != (price2.is_some()) {
+        return Err(AgentError::InvalidToolArgs {
+            tool: tool.into(),
+            reason: "a second anchor needs both `time2_ms` and `price2`, or neither -- \
+                     a half-drawn anchor has no meaning"
+                .into(),
+        });
+    }
+    for (name, value) in [
+        ("time1_ms", time1_ms),
+        ("price1", price1),
+        ("time2_ms", time2_ms.unwrap_or_default()),
+        ("price2", price2.unwrap_or_default()),
+    ] {
+        if value.is_finite() {
+            continue;
+        }
+        return Err(AgentError::InvalidToolArgs {
+            tool: tool.into(),
+            reason: format!("`{name}` must be a finite number"),
+        });
+    }
+    // A confidence the model invented at 1.4 is a claim nobody can read; clamp
+    // the schema's own range here so the stored number is always 0..=1.
+    let confidence = args
+        .get("confidence")
+        .and_then(Value::as_f64)
+        .map(|c| c.clamp(0.0, 1.0));
+    let reason = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let provenance = if confidence.is_some() || reason.is_some() {
+        Some(crate::user_drawings::DrawingProvenance { confidence, reason })
+    } else {
+        None
+    };
+
+    Ok(NewAgentDrawing {
+        kind,
+        label: symbol_independent_label,
+        time1_ms,
+        price1,
+        time2_ms,
+        price2,
+        provenance,
+    })
+}
+
+/// The answer a successful create returns, shaped for the model.
+fn created_answer(stored: &crate::user_drawings::StoredDrawing) -> Value {
+    json!({
+        "created": true,
+        "id": stored.id,
+        "symbol": stored.symbol,
+        "kind": stored.kind,
+        "note": "the object is on the user's chart and recorded as drawn by you. \
+                 Quote this id if you later move or remove it.",
+    })
+}
+
+async fn create_drawing(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "create_drawing";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let drawing = new_drawing_args(args, TOOL)?;
+    let (writer, user_id) = drawing_writer(ctx, TOOL)?;
+    let stored = writer.create(user_id, &symbol, &drawing).await?;
+    Ok(created_answer(&stored))
+}
+
+async fn update_drawing(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "update_drawing";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let id = string_arg(args, "id", TOOL)?;
+    let drawing = new_drawing_args(args, TOOL)?;
+    let (writer, user_id) = drawing_writer(ctx, TOOL)?;
+    let updated = writer.update(user_id, &symbol, &id, &drawing).await?;
+    if updated {
+        Ok(json!({
+            "updated": true,
+            "id": id,
+            "note": "the drawing now has the anchors you sent",
+        }))
+    } else {
+        Ok(json!({
+            "updated": false,
+            "id": id,
+            "note": "no drawing with that id on this symbol for this user. Call \
+                     get_user_drawings for the current list -- the id may be stale.",
+        }))
+    }
+}
+
+async fn delete_drawing(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "delete_drawing";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let id = string_arg(args, "id", TOOL)?;
+    let (writer, user_id) = drawing_writer(ctx, TOOL)?;
+    let deleted = writer.delete(user_id, &symbol, &id).await?;
+    if deleted {
+        Ok(json!({"deleted": true, "id": id}))
+    } else {
+        Ok(json!({
+            "deleted": false,
+            "id": id,
+            "note": "nothing to delete: there is no drawing with that id on this \
+                     symbol for this user. If it was already gone, the requested \
+                     state is already true."
+        }))
+    }
 }
 
 /// `[from, to)` covering the last `days` days, ending now.
@@ -2077,5 +2352,280 @@ mod tests {
         assert_eq!(out["count"], crate::chart_context::MAX_DRAWINGS);
         assert_eq!(out["total"], 30);
         assert!(out["note"].as_str().unwrap().contains("oldest of 30"));
+    }
+
+    // -----------------------------------------------------------------------
+    // The write path (docs/21)
+    // -----------------------------------------------------------------------
+
+    /// A writer over an in-memory list, recording what it was asked to store.
+    /// Proves the tool forwards the right arguments and the identity it was
+    /// given; the *validation* is the host adapter's job and is tested there.
+    struct WriterFixture {
+        created: std::sync::Mutex<Vec<(String, String, crate::user_drawings::NewAgentDrawing)>>,
+        deleted: std::sync::Mutex<Vec<(String, String, String)>>,
+        next_id: std::sync::atomic::AtomicUsize,
+    }
+
+    impl WriterFixture {
+        fn new() -> Self {
+            Self {
+                created: std::sync::Mutex::new(Vec::new()),
+                deleted: std::sync::Mutex::new(Vec::new()),
+                next_id: std::sync::atomic::AtomicUsize::new(1),
+            }
+        }
+
+        fn created_count(&self) -> usize {
+            self.created.lock().expect("lock").len()
+        }
+    }
+
+    #[async_trait]
+    impl crate::user_drawings::DrawingWriter for WriterFixture {
+        async fn create(
+            &self,
+            user_id: &str,
+            symbol: &str,
+            drawing: &crate::user_drawings::NewAgentDrawing,
+        ) -> Result<crate::user_drawings::StoredDrawing, AgentError> {
+            self.created.lock().expect("lock").push((
+                user_id.to_string(),
+                symbol.to_string(),
+                drawing.clone(),
+            ));
+            let n = self
+                .next_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(crate::user_drawings::StoredDrawing {
+                id: format!("stored-{n}"),
+                symbol: symbol.to_uppercase(),
+                kind: drawing.kind.clone(),
+            })
+        }
+
+        async fn update(
+            &self,
+            _user_id: &str,
+            _symbol: &str,
+            _id: &str,
+            _drawing: &crate::user_drawings::NewAgentDrawing,
+        ) -> Result<bool, AgentError> {
+            Ok(true)
+        }
+
+        async fn delete(&self, user_id: &str, _symbol: &str, id: &str) -> Result<bool, AgentError> {
+            self.deleted.lock().expect("lock").push((
+                user_id.to_string(),
+                id.to_string(),
+                String::new(),
+            ));
+            // "stored-*" exists in this fixture's memory; anything else is a
+            // stale id, which storage reports as `false` -- the neutral fact
+            // the tool is meant to relay.
+            Ok(id.starts_with("stored-"))
+        }
+    }
+
+    fn write_ctx<'a>(
+        fixture: &'a Fixture,
+        source: &'a DrawingsFixture,
+        writer: &'a WriterFixture,
+        user: &'a str,
+    ) -> ToolContext<'a> {
+        ToolContext::new(fixture)
+            .with_drawings(source, user)
+            .with_drawing_writer(writer, user)
+    }
+
+    #[tokio::test]
+    async fn a_created_drawing_carries_the_provenance_the_model_stated() {
+        let fixture = Fixture::rising(10);
+        let source = DrawingsFixture(Vec::new());
+        let writer = WriterFixture::new();
+        let ctx = write_ctx(&fixture, &source, &writer, "user-1");
+
+        let out = registry()
+            .execute(
+                &call(
+                    "create_drawing",
+                    json!({
+                        "symbol": "BTCUSDT",
+                        "kind": "hline",
+                        "time1_ms": 1_767_225_600_000.0_f64,
+                        "price1": 45_000.0,
+                        "label": "AI resistance",
+                        "confidence": 0.87,
+                        "reason": "three rejections in the last 80 bars",
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["created"], true);
+        assert_eq!(out["id"], "stored-1");
+        let (user, symbol, drawing) = &writer.created.lock().expect("lock")[0];
+        assert_eq!(user, "user-1", "the write goes out as the asking user");
+        assert_eq!(symbol, "BTCUSDT");
+        assert_eq!(drawing.kind, "hline");
+        let provenance = drawing.provenance.as_ref().expect("stated provenance");
+        assert_eq!(provenance.confidence, Some(0.87));
+        assert_eq!(
+            provenance.reason.as_deref(),
+            Some("three rejections in the last 80 bars")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_drawing_without_stated_provenance_still_stores() {
+        // The schema marks confidence and reason optional: forcing the model to
+        // invent a number would be worse than an unstated one.
+        let fixture = Fixture::rising(10);
+        let source = DrawingsFixture(Vec::new());
+        let writer = WriterFixture::new();
+        let ctx = write_ctx(&fixture, &source, &writer, "user-1");
+
+        let out = registry()
+            .execute(
+                &call(
+                    "create_drawing",
+                    json!({
+                        "symbol": "BTCUSDT",
+                        "kind": "trendline",
+                        "time1_ms": 1.0,
+                        "price1": 44_000.0,
+                        "time2_ms": 2.0,
+                        "price2": 46_000.0,
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["created"], true);
+        let (_, _, drawing) = &writer.created.lock().expect("lock")[0];
+        assert!(drawing.provenance.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_half_second_anchor_is_refused_with_an_actionable_message() {
+        let fixture = Fixture::rising(10);
+        let source = DrawingsFixture(Vec::new());
+        let writer = WriterFixture::new();
+        let ctx = write_ctx(&fixture, &source, &writer, "user-1");
+
+        let err = registry()
+            .execute(
+                &call(
+                    "create_drawing",
+                    json!({
+                        "symbol": "BTCUSDT",
+                        "kind": "trendline",
+                        "time1_ms": 1.0,
+                        "price1": 44_000.0,
+                        "time2_ms": 2.0,
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AgentError::InvalidToolArgs { .. }),
+            "got {err}"
+        );
+        assert_eq!(writer.created_count(), 0, "nothing stored on refusal");
+    }
+
+    #[tokio::test]
+    async fn an_invented_confidence_is_clamped_into_the_stated_range() {
+        let fixture = Fixture::rising(10);
+        let source = DrawingsFixture(Vec::new());
+        let writer = WriterFixture::new();
+        let ctx = write_ctx(&fixture, &source, &writer, "user-1");
+
+        registry()
+            .execute(
+                &call(
+                    "create_drawing",
+                    json!({
+                        "symbol": "BTCUSDT",
+                        "kind": "hline",
+                        "time1_ms": 1.0,
+                        "price1": 45_000.0,
+                        "confidence": 1.4,
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let (_, _, drawing) = &writer.created.lock().expect("lock")[0];
+        assert_eq!(
+            drawing.provenance.as_ref().and_then(|p| p.confidence),
+            Some(1.0),
+            "confidence above 1 is clamped, not stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_write_tools_say_so_when_no_writer_is_attached() {
+        // A read-only deployment must stay read-only, and the model must be
+        // able to tell the user that rather than claim a drawing happened.
+        let fixture = Fixture::rising(10);
+        let source = DrawingsFixture(Vec::new());
+        let ctx = ToolContext::new(&fixture).with_drawings(&source, "user-1");
+
+        let err = registry()
+            .execute(
+                &call(
+                    "create_drawing",
+                    json!({"symbol": "BTCUSDT", "kind": "hline", "time1_ms": 1.0, "price1": 1.0}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AgentError::ToolFailed { .. }), "got {err}");
+        let message = err.to_string();
+        assert!(
+            message.contains("no drawing writer"),
+            "the refusal names the missing capability: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delete_of_something_already_gone_reports_neutrally() {
+        let fixture = Fixture::rising(10);
+        let source = DrawingsFixture(Vec::new());
+        let writer = WriterFixture::new();
+        let ctx = write_ctx(&fixture, &source, &writer, "user-1");
+
+        let out = registry()
+            .execute(
+                &call(
+                    "delete_drawing",
+                    json!({"symbol": "BTCUSDT", "id": "not-stored"}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            out["deleted"], false,
+            "nothing deleted is a fact, not an error"
+        );
+        assert!(out["note"].as_str().unwrap().contains("already gone"));
+    }
+
+    #[tokio::test]
+    async fn the_registry_advertises_the_write_tools() {
+        let reg = registry();
+        let names = reg.names();
+        for tool in ["create_drawing", "update_drawing", "delete_drawing"] {
+            assert!(names.contains(&tool), "{tool} is registered");
+        }
     }
 }

@@ -204,6 +204,15 @@ function homeAuth(register) {
 
 const ENGINE_URL = "/chart_engine.wasm";
 
+// The engine's tool registry, read once at startup over its own ABI.
+//
+// `docs/21`: the registry is the one place a tool is declared. The toolbar is
+// **built from this list**, not from the markup's fallback buttons, so a tool
+// the engine learns is a button every pane grows and a kind the shell cannot
+// draw is not a button at all. `null` until the engine has loaded, and the
+// markup's own five buttons carry the toolbar until then.
+let toolRegistry = null;
+
 async function loadEngine() {
   const response = await fetch(ENGINE_URL);
   if (!response.ok) {
@@ -215,7 +224,23 @@ async function loadEngine() {
   // No wasm-bindgen: the module exports plain functions, so a plain
   // instantiation is the whole glue.
   const { instance } = await WebAssembly.instantiate(bytes, {});
-  return instance.exports;
+  const exports = instance.exports;
+  if (exports.tool_registry) {
+    // The same buffer convention as a scene: the export fills the engine's
+    // result buffer, and the shell copies it out.
+    if (exports.tool_registry() === 0) {
+      const start = exports.scene_ptr();
+      const length = exports.scene_len();
+      try {
+        toolRegistry = JSON.parse(
+          new TextDecoder().decode(new Uint8Array(exports.memory.buffer, start, length).slice())
+        );
+      } catch {
+        toolRegistry = null;
+      }
+    }
+  }
+  return exports;
 }
 
 /// Ask the engine for a scene.
@@ -260,6 +285,7 @@ const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartHint", "chartNote",
   "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "fit",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
+  "magnet", "undo", "redo",
   // The pane's own chrome (title, zoom/collapse buttons) and the hidden bar
   // the right-click menu hosts.
   "paneTitle", "zoomIn", "zoomOut", "minBtn", "expBtn", "chartBar",
@@ -336,6 +362,16 @@ function createChartPane(root, hooks = {}) {
   let drawings = [];
   // The active drawing tool, or `"cursor"`.
   let tool = "cursor";
+  // The magnet. On, every fraction anchor a placement sends is snapped by the
+  // **engine** to the nearest open/high/low/close/value price within its
+  // radius -- the shell sends where the pointer is and never computes a price.
+  let magnet = false;
+  // Undo/redo, as command pairs. A command is one reversible edit to this
+  // pane's drawing document: `{ do(), undo(), label }`. Two stacks, and they
+  // are the whole mechanism (`docs/21`): an undo is `undo()` plus a push to
+  // the redo stack, not a snapshot to replay.
+  let undoStack = [];
+  let redoStack = [];
   // The id of the selected drawing, or null. Sent to the engine, which decides
   // which handles exist -- so a drawing cannot look selected here while offering
   // nothing to grab.
@@ -392,6 +428,13 @@ function createChartPane(root, hooks = {}) {
     hline: "#e3b341",
     rect: "#9564e2",
     fib: "#4caf8e",
+    // The kinds the registry added. Distinct hues, one per kind, so a ray and
+    // a trendline on the same chart are told apart by what they are; the
+    // ruler is the value-area blue because it measures, like the fib.
+    vline: "#d1d4dc",
+    ray: "#e3b341",
+    extended: "#787b86",
+    measure: "#2962ff",
     // The footprint ladder. Buy-aggressed volume is the ask side winning and
     // sell-aggressed is the bid side winning, which is the same convention the
     // level colours above already follow -- a level drawn green means the same
@@ -1237,6 +1280,9 @@ function createChartPane(root, hooks = {}) {
         ...drawing,
         selected: drawing.id === selectedDrawing,
       })),
+      // The magnet. Engine-side, like every mapping: the shell says whether
+      // snapping is wanted and the engine decides what the pointer hit.
+      snap: magnet,
       // The answer's levels, as **prices**. Mapped to pixels by the engine, not
       // here: this pane has no price scale, and the copy of one it used to carry
       // (`drawThesis`'s own `y =`) drifted from the engine's on every resize and
@@ -1366,6 +1412,11 @@ function createChartPane(root, hooks = {}) {
       // follows the grab rather than a separate click, because on a chart the two
       // are one intent and asking for both is one gesture too many.
       select(hit.drawing);
+      // The engine's absolute anchors at grab time. The drag itself writes
+      // fractions into the list, so by the time the pointer comes up the "before"
+      // state exists only here -- capturing it in `finishMoving` would capture
+      // fractions and an undo would PUT them, which the storage rightly refuses.
+      const grabbed = resolvedDrawing(hit.drawing);
       drag = {
         mode: "move",
         target: hit,
@@ -1376,6 +1427,12 @@ function createChartPane(root, hooks = {}) {
         // it asks; a body drag moves both, which means it needs the starting point
         // in a unit it can add to.
         base: hit.anchor === null ? fractionsOf(hit.drawing) : null,
+        movedFrom: grabbed
+          ? {
+              a1: { ...grabbed.a1 },
+              a2: grabbed.a2 ? { ...grabbed.a2 } : null,
+            }
+          : null,
       };
       // `moving`, not `dragging`: the cursor should say which of the two drags
       // this is, and only one of them moves the view.
@@ -1480,7 +1537,7 @@ function createChartPane(root, hooks = {}) {
     }
 
     if (finished.mode === "place") finishPlacing();
-    else if (finished.mode === "move") finishMoving(finished.target.drawing);
+    else if (finished.mode === "move") finishMoving(finished.target.drawing, finished.movedFrom);
   }
 
   /// A pointer the browser took away -- a touch that became a scroll, a window
@@ -1582,6 +1639,61 @@ function createChartPane(root, hooks = {}) {
   // ---------------------------------------------------------------------------
   // Chart drawings: placing, moving, storing
   //
+  // Undo/redo operates on **commands**, not on snapshots (`docs/21`): one edit
+  // is one object with the two directions of the edit in it, and the stacks
+  // hold the history. The capture closures are written at the edit sites, where
+  // the before-state is in hand -- which is the only place it exists, and the
+  // reason this is a function rather than a diff recorder. The network save
+  // that follows a drawing command is deliberately *not* the command: undo and
+  // redo are a local navigation of what is on screen, and each direction
+  // re-issues the API write for its own end state, so a reload agrees with the
+  // screen either way.
+  function runCommand(label, doFn, undoFn) {
+    doFn();
+    undoStack.push({ label, do: doFn, undo: undoFn });
+    if (undoStack.length > 100) undoStack.shift();
+    redoStack = [];
+    refreshHistoryButtons();
+  }
+
+  /// Undo the last command, onto the redo stack.
+  function undo() {
+    const command = undoStack.pop();
+    if (!command) return;
+    command.undo();
+    redoStack.push(command);
+    refreshHistoryButtons();
+  }
+
+  /// Redo the last undone command, back onto the undo stack.
+  function redo() {
+    const command = redoStack.pop();
+    if (!command) return;
+    command.do();
+    undoStack.push(command);
+    refreshHistoryButtons();
+  }
+
+  /// Say which of the two history buttons can do anything. Disabled rather
+  /// than inert, for the same reason Delete is: a button that looks pressable
+  /// and does nothing is a lie in a smaller size.
+  function refreshHistoryButtons() {
+    const up = el("undo");
+    const down = el("redo");
+    if (up) up.disabled = undoStack.length === 0;
+    if (down) down.disabled = redoStack.length === 0;
+  }
+
+  /// Which tool, of a group's flyout buttons, is the pressed one -- the trigger
+  /// reads it, so "Lines · Trend" says what is active without opening it.
+  function groupPressedLabel(groupName) {
+    if (tool === "cursor") return null;
+    const entry = toolRegistry && toolRegistry.find(
+      (t) => t.kind === tool && t.group === groupName,
+    );
+    return entry ? entry.label : null;
+  }
+
   // The shell's part is to say *where on the screen*; the engine's is to say what
   // that is. Nothing here converts a pixel into a price -- a placement or a drag
   // writes a `fraction` anchor into the request, and the scene answers with the
@@ -1750,7 +1862,7 @@ function createChartPane(root, hooks = {}) {
   }
 
   /// Store the drawing that was just placed.
-  function finishPlacing() {
+  async function finishPlacing() {
     const pending = placing;
     if (!pending) return;
 
@@ -1772,11 +1884,52 @@ function createChartPane(root, hooks = {}) {
       return;
     }
     selectedDrawing = resolved.id;
-    void createDrawing(resolved);
+    // One command for the whole placement, and the save is **awaited** before
+    // the command is recorded: `createDrawing` replaces the shell's `new-N` id
+    // with the server's row id, and a command recorded before that swap would
+    // undo by an id that no longer exists. `byShape` is the reconciliation
+    // both directions use -- after a save, after a delete, after a redo, the
+    // drawing is found by what it *is*, not by which id it carries today.
+    // Errors surface here rather than vanishing into a floating promise, the
+    // way `void createDrawing(...)` would hide them.
+    const shape = shapeKey(resolved);
+    const byShape = () => drawings.find((d) => shapeKey(d) === shape);
+    try {
+      await createDrawing(resolved);
+    } catch (e) {
+      note(`the drawing was not saved: ${e.message}`);
+      return;
+    }
+    runCommand(
+      "draw",
+      // The do-half is what redo runs. The fresh draw's save has already
+      // happened above, so this acts only when the shape is actually absent --
+      // which is exactly what redo-after-undo is. Unguarded, a fresh draw would
+      // save twice: once awaited for its error handling, once from here.
+      () => {
+        if (byShape()) return;
+        void createDrawing(resolved);
+      },
+      () => {
+        const target = byShape();
+        if (!target) return;
+        drawings = drawings.filter((d) => d !== target && d.id !== target.id);
+        if (selectedDrawing === target.id) selectedDrawing = null;
+        renderNow();
+        void api(`/drawings/${target.id}`, { method: "DELETE" }).catch(() => {});
+      },
+    );
   }
 
   /// Store a drawing the user has just moved.
-  function finishMoving(id) {
+  ///
+  /// `movedFrom` is the engine's absolute anchors as the scene reported them when
+  /// the grab began -- captured there because the drag overwrites the list with
+  /// fractions, and an undo that reinstated fractions would be refused by the
+  /// storage. Async because the command is recorded **after** the PUT settles:
+  /// the move's undo must restore the anchors the server actually accepted, and
+  /// a record-before-settle would let a failed PUT undo into an error.
+  async function finishMoving(id, movedFrom) {
     renderNow();
     const resolved = resolvedDrawing(id);
     const stored = drawings.find((d) => d.id === id);
@@ -1784,9 +1937,58 @@ function createChartPane(root, hooks = {}) {
 
     // The list takes the engine's numbers, so what is on screen and what is about
     // to be stored are the same two points rather than two roundings of one.
-    stored.a1 = resolved.a1;
-    stored.a2 = resolved.a2;
-    void putDrawing(stored);
+    const before = movedFrom ?? { a1: stored.a1, a2: stored.a2 };
+    const after = { a1: resolved.a1, a2: resolved.a2 };
+    // Applied optimistically -- the shape follows the pointer's release, which
+    // is what "released" means -- and reconciled after the PUT like any save.
+    stored.a1 = after.a1;
+    stored.a2 = after.a2;
+    renderNow();
+    try {
+      await api(`/drawings/${id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(drawingBody(stored)),
+      });
+    } catch (e) {
+      note(`the drawing was moved but not saved: ${e.message}`);
+      return;
+    }
+    // "Already at the after-anchors" is the guard the do-half needs: the fresh
+    // move applied them above, so only a redo-after-undo finds them behind.
+    const sameAnchor = (a, b) =>
+      (!a && !b) || Boolean(a && b && a.time === b.time && a.price === b.price);
+    const isAfter = (d) =>
+      sameAnchor(d.a1, after.a1) && sameAnchor(d.a2, after.a2);
+    runCommand(
+      "move",
+      () => {
+        const target = byShapeId(stored, id);
+        if (!target || isAfter(target)) return;
+        target.a1 = after.a1;
+        target.a2 = after.a2;
+        if (selectedDrawing && selectedDrawing !== target.id) selectedDrawing = target.id;
+        renderNow();
+        void putDrawing(target);
+      },
+      () => {
+        // By the time this runs the drawing's id may have changed (a later
+        // undo/redo cycle through a delete), so it is found by shape.
+        const target = byShapeId(stored, id);
+        if (!target) return;
+        target.a1 = before.a1;
+        target.a2 = before.a2;
+        if (selectedDrawing && selectedDrawing !== target.id) selectedDrawing = target.id;
+        renderNow();
+        void putDrawing(target);
+      },
+    );
+  }
+
+  /// The stored drawing that *is* `hint`, matching first by id and then by
+  /// shape -- see `shapeKey` for why the second half exists.
+  function byShapeId(hint, fallbackId) {
+    return drawings.find((d) => d.id === (hint && hint.id)) || drawings.find((d) => d.id === fallbackId) || drawings.find((d) => shapeKey(d) === shapeKey(hint));
   }
 
   /// The API's body for one drawing.
@@ -1802,6 +2004,22 @@ function createChartPane(root, hooks = {}) {
       label: drawing.label ?? null,
     };
   }
+
+  /// Whether two drawing objects are the *same shape*, ignoring their ids.
+  ///
+  /// Undo has to find a drawing again after its id has changed underneath it:
+  /// a save replaces the shell's `new-N` with the server's UUID, and a redo
+  /// creates the shape a second time under a third id. The shape -- kind,
+  /// anchors, label -- is what survives all of that, and the engine has
+  /// already resolved both anchors to absolute numbers, so the comparison is
+  /// exact equality rather than a tolerance.
+  const shapeKey = (d) =>
+    [
+      d.kind,
+      d.a1 && d.a1.time, d.a1 && d.a1.price,
+      d.a2 && d.a2.time, d.a2 && d.a2.price,
+      d.label ?? "",
+    ].join("|");
 
   async function createDrawing(drawing) {
     // On the chart first and in the database second. The managed instance costs
@@ -1898,6 +2116,7 @@ function createChartPane(root, hooks = {}) {
     // Off the chart first and out of the database second. The managed instance
     // costs about a second a statement, and a delete button that does nothing for
     // a second reads as broken.
+    const removed = drawings.find((d) => d.id === id);
     selectedDrawing = null;
     drawings = drawings.filter((d) => d.id !== id);
     renderNow();
@@ -1905,6 +2124,27 @@ function createChartPane(root, hooks = {}) {
       await api(`/drawings/${id}`, { method: "DELETE" });
     } catch (e) {
       note(`the drawing left the chart but not the database: ${e.message}`);
+    }
+    if (removed) {
+      // The removal itself is the command's do-half; the undo-half puts it back
+      // and saves it. New id from the server on the way back, like any create.
+      // The do-half is guarded the same way the draw and move commands are: the
+      // fresh delete has already run above, so it only removes again when the
+      // drawing is actually present -- which is what redo-after-undo is.
+      runCommand(
+        "delete",
+        () => {
+          const target =
+            drawings.find((d) => d.id === removed.id) ||
+            drawings.find((d) => shapeKey(d) === shapeKey(removed));
+          if (!target) return;
+          drawings = drawings.filter((d) => d !== target && d.id !== target.id);
+          if (selectedDrawing === target.id) selectedDrawing = null;
+          renderNow();
+          void api(`/drawings/${target.id}`, { method: "DELETE" }).catch(() => {});
+        },
+        () => void createDrawing(removed),
+      );
     }
   }
 
@@ -1938,13 +2178,17 @@ function createChartPane(root, hooks = {}) {
 
     const ids = drawings.map((d) => d.id);
     if (!ids.length) return;
+    const removedAll = drawings;
     selectedDrawing = null;
     placing = null;
     drawings = [];
     renderNow();
     // One at a time. A burst of concurrent deletes over a ten-connection pool is
     // how a request path starts failing for somebody else, and nothing here is in
-    // a hurry.
+    // a hurry. The command is recorded **after** the deletes settle, like every
+    // other command in this file: an undo that ran while the deletes were still
+    // in flight would re-create rows the deletes were about to (or had just)
+    // removed, and the "clear" would end as a duplicate.
     for (const id of ids) {
       try {
         await api(`/drawings/${id}`, { method: "DELETE" });
@@ -1953,6 +2197,29 @@ function createChartPane(root, hooks = {}) {
         return;
       }
     }
+    runCommand(
+      "clear",
+      // Guarded like every do-half here: the fresh clear removed everything
+      // above, so this only acts when shapes are actually present -- which is
+      // what redo-after-undo is.
+      () => {
+        const remaining = drawings.filter((d) =>
+          removedAll.some((r) => shapeKey(d) === shapeKey(r))
+        );
+        if (!remaining.length) return;
+        for (const d of remaining) {
+          void api(`/drawings/${d.id}`, { method: "DELETE" }).catch(() => {});
+        }
+        drawings = drawings.filter((d) => !remaining.includes(d));
+        if (selectedDrawing && remaining.some((d) => d.id === selectedDrawing)) {
+          selectedDrawing = null;
+        }
+        renderNow();
+      },
+      () => {
+        for (const drawing of removedAll) void createDrawing(drawing);
+      },
+    );
   }
 
   /// Select one drawing, or none.
@@ -1977,6 +2244,141 @@ function createChartPane(root, hooks = {}) {
     for (const button of root.querySelectorAll(".tools button[data-tool]")) {
       button.setAttribute("aria-pressed", String(button.dataset.tool === name));
     }
+    // A group's trigger labels itself with the tool the user picked, so the
+    // closed toolbar still says what is armed -- "Lines" reads "Lines · Ray".
+    refreshGroupTriggers();
+  }
+
+  /// Update every group trigger's word from the pressed tool.
+  ///
+  /// The trigger's resting label is the group's own; while one of its tools is
+  /// active the label gains that tool, and the `data-` attributes are where the
+  /// resting label and group name survive the update. No-op on a fallback
+  /// toolbar that has no groups yet.
+  function refreshGroupTriggers() {
+    for (const trigger of root.querySelectorAll(".toolGroupTrigger")) {
+      const base = trigger.dataset.groupLabel;
+      if (!base) continue;
+      const pressed = groupPressedLabel(trigger.dataset.group);
+      trigger.textContent = pressed ? `${base} · ${pressed}` : base;
+      trigger.title = pressed ? `${base}: ${pressed} is armed` : trigger.title;
+    }
+  }
+
+  /// Toggle the magnet. `aria-pressed` is the state, exactly as a tool's is.
+  function toggleMagnet() {
+    magnet = !magnet;
+    const button = el("magnet");
+    if (button) button.setAttribute("aria-pressed", String(magnet));
+    scheduleRender();
+  }
+
+  /// Rebuild this pane's tool buttons from the engine's registry, grouped into
+  /// labelled flyouts (`docs/21`).
+  ///
+  /// The markup ships a flat fallback of five buttons so the toolbar exists
+  /// before the engine loads; this replaces them with the registry's own set.
+  /// A button is *generated*, not stored: the click handler is rebound below,
+  /// and the pressed state is re-derived by `selectTool` from `tool`, so there
+  /// is no per-button state to carry across. Kept as the pane's last child so
+  /// the right-click menu hosting and the harness selectors both keep working.
+  function buildToolbarFromRegistry() {
+    if (!toolRegistry || !toolRegistry.length) return;
+    const toolbar = root.querySelector(".tools") || document.querySelector(".tools");
+    if (!toolbar) return;
+
+    // The controls that are not tools: they sit after the groups, in this order.
+    const controls = [
+      ...toolbar.querySelectorAll("button[data-magnet], button[data-undo], button[data-redo], .deleteDrawing, .clearDrawings"),
+    ];
+
+    // One flyout per group, in the engine's order. The trigger carries the
+    // group's label; the flyout is a plain list of buttons, so the harness's
+    // `button[data-tool="…"]` selectors keep working against the generated set.
+    const groups = [];
+    for (const entry of toolRegistry) {
+      let group = groups.find((g) => g.name === entry.group);
+      if (!group) {
+        // The trigger's word is the engine's own `group_label`; a registry row
+        // from an older engine without one falls back to the wire name.
+        const label = entry.group_label || entry.group;
+        group = { name: entry.group, label, tools: [] };
+        groups.push(group);
+      }
+      group.tools.push(entry);
+    }
+
+    const frag = document.createDocumentFragment();
+    // The cursor is not a registry entry -- it is the shell's selection state,
+    // not an object the engine draws -- so it stays the first, hand-written one.
+    const cursor = document.createElement("button");
+    cursor.dataset.tool = "cursor";
+    cursor.textContent = "Cursor";
+    cursor.title = "Select a drawing, move its anchors, or pan the chart";
+    cursor.setAttribute("aria-pressed", String(tool === "cursor"));
+    frag.appendChild(cursor);
+
+    for (const group of groups) {
+      const wrap = document.createElement("div");
+      wrap.className = "toolGroup";
+      const trigger = document.createElement("button");
+      trigger.className = "toolGroupTrigger";
+      trigger.textContent = group.label;
+      trigger.title = group.tools.map((t) => t.label).join(", ");
+      // What `refreshGroupTriggers` needs to relabel the trigger later: which
+      // group it opens, and what its resting word is.
+      trigger.dataset.group = group.name;
+      trigger.dataset.groupLabel = group.label;
+      trigger.setAttribute("aria-haspopup", "true");
+      trigger.setAttribute("aria-expanded", "false");
+      const flyout = document.createElement("div");
+      flyout.className = "toolFlyout";
+      flyout.hidden = true;
+      for (const entry of group.tools) {
+        const button = document.createElement("button");
+        button.dataset.tool = entry.kind;
+        button.textContent = entry.label;
+        button.title = entry.title || entry.label;
+        button.setAttribute("aria-pressed", String(tool === entry.kind));
+        flyout.appendChild(button);
+      }
+      // Open on the trigger, close on any pick inside the same click.
+      trigger.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const open = !flyout.hidden;
+        for (const other of toolbar.querySelectorAll(".toolFlyout")) other.hidden = true;
+        flyout.hidden = open;
+        trigger.setAttribute("aria-expanded", String(!flyout.hidden));
+      });
+      flyout.addEventListener("click", () => {
+        flyout.hidden = true;
+        trigger.setAttribute("aria-expanded", "false");
+      });
+      wrap.appendChild(trigger);
+      wrap.appendChild(flyout);
+      frag.appendChild(wrap);
+    }
+    for (const control of controls) frag.appendChild(control);
+
+    toolbar.replaceChildren(frag);
+    // The generated buttons get the same listener the fallback had.
+    for (const button of toolbar.querySelectorAll("button[data-tool]")) {
+      button.addEventListener("click", () => selectTool(button.dataset.tool));
+    }
+    // And the pane's own wiring for the controls it kept. `data-wired` makes
+    // the whole rebuild idempotent: it runs once from `wire` and again when the
+    // page's post-load loop rebuilds every pane, and a control wired twice
+    // would toggle twice per click -- which is a magnet that does nothing.
+    const wire = (selector, handler) => {
+      const button = toolbar.querySelector(selector);
+      if (button && !button.dataset.wired) {
+        button.dataset.wired = "1";
+        button.addEventListener("click", handler);
+      }
+    };
+    wire("button[data-magnet]", toggleMagnet);
+    wire("button[data-undo]", undo);
+    wire("button[data-redo]", redo);
   }
 
   /// This symbol's drawings.
@@ -2590,6 +2992,10 @@ function createChartPane(root, hooks = {}) {
     for (const button of root.querySelectorAll(".tools button[data-tool]")) {
       button.addEventListener("click", () => selectTool(button.dataset.tool));
     }
+    // The registry may already be here -- a pane cloned after the engine loaded
+    // gets the full set immediately. Before it loads this is a no-op, and the
+    // page's post-load loop rebuilds every pane once the engine arrives.
+    buildToolbarFromRegistry();
     // Two destructive controls rather than one ambiguous one: this deletes the
     // selection, the other deletes everything and asks first. The `title` on each
     // is the only place either behaviour is stated, so they have to be exact.
@@ -2830,6 +3236,16 @@ function createChartPane(root, hooks = {}) {
     applyGesture,
     selectTool,
     deleteSelected,
+    /// Undo/redo for the page's Ctrl+Z / Ctrl+Y routing. Takes the direction
+    /// as a string because the router has no reason to hold two references.
+    history(direction) {
+      if (direction === "redo") redo();
+      else undo();
+    },
+    toggleMagnet,
+    /// Swap this pane's fallback buttons for the registry's set. Called by the
+    /// page once the engine has loaded; a no-op before that.
+    rebuildToolbar: buildToolbarFromRegistry,
     /// The right-click menu is shared, so the page and the other panes can both
     /// ask this pane to give the controls back (another pane opening the menu,
     /// a click elsewhere, this pane going away).
@@ -6306,16 +6722,27 @@ async function main() {
   });
 
   // Delete removes the active pane's selected drawing; Escape cancels -- a
-  // drawing in progress first, and the tool after that. Bound to the window
-  // rather than to a canvas, because a canvas is not focusable: a keyboard user
-  // would have to click it first, and a click on the chart is already a
-  // selection. Routed to the *active* pane for the same reason a keyboard has no
-  // way to say which canvas it means -- which is why touching a pane marks it.
+  // drawing in progress first, and the tool after that; Ctrl+Z / Ctrl+Y (and
+  // Ctrl+Shift+Z) walk the command history. Bound to the window rather than to a
+  // canvas, because a canvas is not focusable: a keyboard user would have to
+  // click it first, and a click on the chart is already a selection. Routed to
+  // the *active* pane for the same reason a keyboard has no way to say which
+  // canvas it means -- which is why touching a pane marks it.
   window.addEventListener("keydown", (event) => {
     // Not while the user is typing. The strategy editor and the question box are
     // on the same page, and a Backspace in a textarea has to delete a character.
     const tag = document.activeElement && document.activeElement.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA") return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (activePane) activePane.history(event.shiftKey ? "redo" : "undo");
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+      event.preventDefault();
+      if (activePane) activePane.history("redo");
+      return;
+    }
     if (activePane) activePane.key(event);
   });
 
@@ -6330,10 +6757,19 @@ async function main() {
 
   // The chart menu closes on any press it did not start. The menu itself stops
   // propagation (its controls must not close it), and a pane's canvas has its
-  // own closer, so this only has to catch the rest of the page.
+  // own closer, so this only has to catch the rest of the page. A tool flyout
+  // closes with it: an open flyout is a menu, and it stops its own trigger's
+  // click but not this one.
   document.getElementById("chartMenu").addEventListener("pointerdown", (e) => e.stopPropagation());
   document.addEventListener("pointerdown", () => {
     for (const pane of panes) pane.closeMenu();
+    // A tool flyout closes with any press it did not start. Its trigger stops
+    // the click that opened it; it does not stop this one.
+    for (const flyout of document.querySelectorAll(".toolFlyout")) {
+      flyout.hidden = true;
+      const trigger = flyout.parentElement && flyout.parentElement.querySelector(".toolGroupTrigger");
+      if (trigger) trigger.setAttribute("aria-expanded", "false");
+    }
   });
 
   // The watchlist rail: hide it, and bring it back. The sliver lives at the
@@ -6412,6 +6848,11 @@ async function main() {
     return;
   }
   for (const pane of panes) pane.setMessage("");
+  // The toolbar is built from the engine's registry (`docs/21`), so it is
+  // swapped in the moment the engine arrives -- a pane wired before this point
+  // carries the markup's fallback set until now. Called after the message
+  // clear, because `buildToolbarFromRegistry` is a no-op while null.
+  for (const pane of panes) pane.rebuildToolbar();
 
   // The editor is never empty: a saved strategy if there is one, otherwise the
   // reference document. An empty box makes Validate and Save look broken when

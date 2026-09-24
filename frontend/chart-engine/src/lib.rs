@@ -48,7 +48,7 @@ pub mod viewport;
 
 pub use drawing::{
     Anchor, Drawing, DrawingKind, DrawingPart, Fraction, Overlay, OverlayRole, SceneDrawing,
-    SceneOverlay, FIB_LEVELS,
+    SceneOverlay, ToolGroup, ToolSpec, FIB_LEVELS, REGISTRY,
 };
 pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
 pub use indicator::{
@@ -157,6 +157,24 @@ mod abi {
     #[no_mangle]
     pub extern "C" fn last_error_len() -> usize {
         ERROR.with(|slot| slot.borrow().len())
+    }
+
+    /// The tool registry, as JSON, read through the scene's buffer accessors.
+    ///
+    /// Called once, at startup, so the toolbar is **built from the engine's own
+    /// vocabulary** rather than from a second list typed into the markup. A
+    /// tool the engine learns is a button the shell grows; a kind the shell and
+    /// the engine disagree about is impossible by construction rather than a
+    /// button that draws nothing. The result is a constant, so this cannot fail.
+    #[no_mangle]
+    pub extern "C" fn tool_registry() -> i32 {
+        match serde_json::to_vec(&super::drawing::REGISTRY) {
+            Ok(bytes) => {
+                RESULT.with(|slot| *slot.borrow_mut() = bytes);
+                0
+            }
+            Err(_) => 1,
+        }
     }
 
     fn fail(message: &str) -> i32 {

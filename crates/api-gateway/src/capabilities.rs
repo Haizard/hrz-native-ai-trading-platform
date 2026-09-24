@@ -245,11 +245,18 @@ pub fn report(state: &AppState, now_ns: i64) -> CapabilityReport {
     // a day, leaving the platform with no status at all.
     let skills = state.skills.len();
     capabilities.push(match &state.agent {
-        Some(_) if skills == 0 => Capability::ready("agent", "AI_PROVIDER/AI_MODEL/AI_API_KEY (or AWS_BEDROCK_*) + skills/").degraded(
+        Some(_) if skills == 0 => Capability::ready(
+            "agent",
+            "AI_PROVIDER/AI_MODEL/AI_API_KEY (or AWS_BEDROCK_*) + skills/",
+        )
+        .degraded(
             "the model is configured but the skill library is empty, so every question \
                  will answer \"no matching skill\". A deployed image must copy skills/.",
         ),
-        Some(_) => Capability::ready("agent", "AI_PROVIDER/AI_MODEL/AI_API_KEY (or AWS_BEDROCK_*) + skills/"),
+        Some(_) => Capability::ready(
+            "agent",
+            "AI_PROVIDER/AI_MODEL/AI_API_KEY (or AWS_BEDROCK_*) + skills/",
+        ),
         None => Capability::absent(
             "agent",
             "AI_PROVIDER + AI_MODEL + AI_API_KEY (or the legacy AWS_BEDROCK_* variables); \

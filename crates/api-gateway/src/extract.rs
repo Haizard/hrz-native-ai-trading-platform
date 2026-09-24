@@ -19,10 +19,10 @@
 //! mistake becomes "used the wrong type in the signature", which the compiler
 //! catches, rather than "forgot a line", which nothing does.
 
-use axum::Json;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Query, Request};
 use axum::http::request::Parts;
+use axum::Json;
 use serde::de::DeserializeOwned;
 
 use crate::error::ApiError;

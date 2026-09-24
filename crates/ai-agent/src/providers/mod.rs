@@ -165,8 +165,8 @@ pub const ENV_TIMEOUT_SECS: &str = "AI_TIMEOUT_SECS";
 /// message names the exact variable or variables to set. Bedrock keeps its
 /// own environment contract (`AWS_BEDROCK_*` + AWS credentials), so an
 /// existing deployment that never sets `AI_PROVIDER` boots exactly as before.
-pub fn from_deployment_env() -> Result<(std::sync::Arc<dyn crate::llm_client::LlmClient>, String), AgentError>
-{
+pub fn from_deployment_env(
+) -> Result<(std::sync::Arc<dyn crate::llm_client::LlmClient>, String), AgentError> {
     let requested = std::env::var(ENV_PROVIDER).ok();
     let provider = match requested.as_deref().map(str::trim) {
         // Unset or blank: Bedrock, the original provider. Preserving this
@@ -208,9 +208,7 @@ pub fn from_deployment_env() -> Result<(std::sync::Arc<dyn crate::llm_client::Ll
             let provider = provider;
             let model = match std::env::var(ENV_MODEL) {
                 Ok(model) if !model.trim().is_empty() => model.trim().to_string(),
-                _ => provider
-                    .default_model()
-                    .to_string(),
+                _ => provider.default_model().to_string(),
             };
             if model.is_empty() {
                 return Err(AgentError::NotConfigured(format!(
@@ -251,8 +249,8 @@ pub fn from_deployment_env() -> Result<(std::sync::Arc<dyn crate::llm_client::Ll
             }
 
             let model = config.model_id.clone();
-            let client =
-                OpenAiCompatClient::new(config).map_err(|e| AgentError::NotConfigured(e.to_string()))?;
+            let client = OpenAiCompatClient::new(config)
+                .map_err(|e| AgentError::NotConfigured(e.to_string()))?;
             Ok((std::sync::Arc::new(client), model))
         }
     }
@@ -284,7 +282,10 @@ mod tests {
         assert_eq!(ProviderId::from_name("X.AI"), Some(ProviderId::Grok));
         assert_eq!(ProviderId::from_name("Claude"), Some(ProviderId::Anthropic));
         assert_eq!(ProviderId::from_name("  OpenAI "), Some(ProviderId::OpenAi));
-        assert_eq!(ProviderId::from_name("custom"), Some(ProviderId::OpenAiCompat));
+        assert_eq!(
+            ProviderId::from_name("custom"),
+            Some(ProviderId::OpenAiCompat)
+        );
         assert_eq!(ProviderId::from_name("nope"), None);
     }
 
@@ -367,7 +368,9 @@ mod tests {
     fn env_serial() -> std::sync::MutexGuard<'static, ()> {
         use std::sync::{Mutex, OnceLock};
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Serialises the env-var tests: they mutate process state that the rest

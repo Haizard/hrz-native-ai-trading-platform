@@ -39,8 +39,8 @@ use tracing::warn;
 
 use ai_agent::{Agent, SkillLibrary};
 use db::Database;
-use observability::QueueSink;
 use observability::metrics::Registry;
+use observability::QueueSink;
 
 use crate::auth::AuthConfig;
 
@@ -48,8 +48,8 @@ pub mod agent_routes;
 pub mod auth;
 pub mod auth_routes;
 pub mod bot_routes;
-pub mod broker_routes;
 pub mod bots;
+pub mod broker_routes;
 pub mod capabilities;
 pub mod dom;
 pub mod drawing_routes;
@@ -286,7 +286,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/indicator-workspaces/{id}/revisions",
-            get(indicator_workspace_routes::revisions).post(indicator_workspace_routes::create_revision),
+            get(indicator_workspace_routes::revisions)
+                .post(indicator_workspace_routes::create_revision),
         )
         .route(
             "/indicator-workspaces/{id}/revisions/{revision_id}",
@@ -298,14 +299,22 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/indicator-workspaces/{id}/messages",
-            get(indicator_workspace_routes::messages).post(indicator_workspace_routes::create_message),
+            get(indicator_workspace_routes::messages)
+                .post(indicator_workspace_routes::create_message),
         )
-        .route("/indicator-workspaces/{id}/alerts",
-            get(indicator_workspace_routes::list_alerts).put(indicator_workspace_routes::set_alert))
-        .route("/indicator-workspaces/{id}/bot-drafts",
-            get(indicator_workspace_routes::list_bot_drafts).post(indicator_workspace_routes::create_bot_draft))
-        .route("/indicator-workspaces/{id}/bot-drafts/{draft_id}/approve",
-            post(indicator_workspace_routes::approve_bot_draft))
+        .route(
+            "/indicator-workspaces/{id}/alerts",
+            get(indicator_workspace_routes::list_alerts).put(indicator_workspace_routes::set_alert),
+        )
+        .route(
+            "/indicator-workspaces/{id}/bot-drafts",
+            get(indicator_workspace_routes::list_bot_drafts)
+                .post(indicator_workspace_routes::create_bot_draft),
+        )
+        .route(
+            "/indicator-workspaces/{id}/bot-drafts/{draft_id}/approve",
+            post(indicator_workspace_routes::approve_bot_draft),
+        )
         .route("/bots", get(bot_routes::list).post(bot_routes::create))
         .route(
             "/bots/{id}",
@@ -327,7 +336,10 @@ pub fn router(state: AppState) -> Router {
             get(broker_routes::list).post(broker_routes::connect),
         )
         .route("/brokers/available", get(broker_routes::available))
-        .route("/brokers/{id}", get(broker_routes::get).delete(broker_routes::disconnect))
+        .route(
+            "/brokers/{id}",
+            get(broker_routes::get).delete(broker_routes::disconnect),
+        )
         .route("/brokers/{id}/verify", post(broker_routes::verify))
         .route("/venues", get(venue_routes::list))
         .route("/venues/{venue}/opt-in", post(venue_routes::opt_in))
@@ -440,10 +452,7 @@ pub async fn app_js() -> Result<axum::response::Response, StatusCode> {
                 axum::http::header::CONTENT_TYPE,
                 "text/javascript; charset=utf-8",
             ),
-            (
-                axum::http::header::CACHE_CONTROL,
-                "no-cache",
-            ),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
         ],
         read_frontend("app.js")?,
     )
@@ -465,10 +474,7 @@ pub async fn builder_js() -> Result<axum::response::Response, StatusCode> {
                 axum::http::header::CONTENT_TYPE,
                 "text/javascript; charset=utf-8",
             ),
-            (
-                axum::http::header::CACHE_CONTROL,
-                "no-cache",
-            ),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
         ],
         read_frontend("builder.js")?,
     )
@@ -596,9 +602,7 @@ pub fn build_vault() -> Option<Arc<trading_engine::SecretVault>> {
             Some(Arc::new(vault))
         }
         Err(e) => {
-            warn!(
-                "{e} /brokers will answer 503, so no user can connect an exchange account."
-            );
+            warn!("{e} /brokers will answer 503, so no user can connect an exchange account.");
             None
         }
     }

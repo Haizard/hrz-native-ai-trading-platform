@@ -25,19 +25,19 @@
 
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use ai_agent::{Agent, OpenAiCompatConfig, ProviderId};
 
-use crate::AppState;
 use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
+use crate::AppState;
 
 /// The AAD scope name a stored key is sealed under.
 ///
@@ -184,7 +184,10 @@ pub async fn put(
         .ok_or_else(|| {
             ApiError::bad_request(
                 "API_KEY_REQUIRED",
-                format!("`api_key` is required for the `{}` provider", provider.wire_name()),
+                format!(
+                    "`api_key` is required for the `{}` provider",
+                    provider.wire_name()
+                ),
             )
         })?;
 
@@ -203,7 +206,11 @@ pub async fn put(
             provider: provider.wire_name(),
             model_id: &model_id,
             api_key_ciphertext: ciphertext,
-            base_url: body.base_url.as_deref().map(str::trim).filter(|b| !b.is_empty()),
+            base_url: body
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|b| !b.is_empty()),
             extra_headers: &body.extra_headers,
             kek_fingerprint: vault.fingerprint(),
         },
@@ -221,7 +228,12 @@ pub async fn put(
     Ok(Json(ProviderConfigView {
         provider: provider.wire_name().to_string(),
         model_id,
-        base_url: body.base_url.as_deref().map(str::trim).filter(|b| !b.is_empty()).map(str::to_string),
+        base_url: body
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .map(str::to_string),
         has_key: true,
         updated_at: crate::now_ns(),
     }))
@@ -284,25 +296,25 @@ pub(crate) async fn decrypted_config(
     };
 
     let scope = trading_engine::SecretScope::new(user_id, SCOPE);
-    let opened = vault.open(&scope, &sealed.api_key_ciphertext).map_err(|_| {
-        // The vault's message names the failure modes; none of them is
-        // safe to repeat to the client. "Re-save it" covers every one.
-        ApiError::coded(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "PROVIDER_NOT_USABLE",
-            "the stored API key could not be opened (it was sealed with a different \
-             key-encryption key, or the row was altered); re-save it in AI settings",
-        )
-    })?;
-    let api_key = Zeroizing::new(
-        String::from_utf8((*opened).to_vec()).map_err(|_| {
+    let opened = vault
+        .open(&scope, &sealed.api_key_ciphertext)
+        .map_err(|_| {
+            // The vault's message names the failure modes; none of them is
+            // safe to repeat to the client. "Re-save it" covers every one.
             ApiError::coded(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "PROVIDER_NOT_USABLE",
-                "the stored API key is not valid text; re-save it in AI settings",
+                "the stored API key could not be opened (it was sealed with a different \
+             key-encryption key, or the row was altered); re-save it in AI settings",
             )
-        })?,
-    );
+        })?;
+    let api_key = Zeroizing::new(String::from_utf8((*opened).to_vec()).map_err(|_| {
+        ApiError::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "PROVIDER_NOT_USABLE",
+            "the stored API key is not valid text; re-save it in AI settings",
+        )
+    })?);
 
     let provider = ProviderId::from_name(&row.provider).ok_or_else(|| {
         ApiError::coded(
@@ -339,8 +351,11 @@ pub(crate) async fn resolve_agent(
 ) -> Result<Arc<Agent>, ApiError> {
     match decrypted_config(state, user.user_id).await? {
         Some(config) => {
-            let mut llm_config =
-                OpenAiCompatConfig::for_provider(config.provider, &config.model_id, &config.api_key);
+            let mut llm_config = OpenAiCompatConfig::for_provider(
+                config.provider,
+                &config.model_id,
+                &config.api_key,
+            );
             if let Some(base_url) = &config.base_url {
                 llm_config.base_url = base_url.clone();
             }
@@ -380,9 +395,7 @@ pub(crate) async fn resolve_agent(
 /// The vault, or the 503 that says what to set.
 fn vault(state: &AppState) -> Result<&Arc<trading_engine::SecretVault>, ApiError> {
     state.vault.as_ref().ok_or_else(|| {
-        ApiError::unavailable(
-            "API keys cannot be stored: BROKER_KEK is not set on this deployment",
-        )
+        ApiError::unavailable("API keys cannot be stored: BROKER_KEK is not set on this deployment")
     })
 }
 

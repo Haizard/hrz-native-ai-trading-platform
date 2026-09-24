@@ -578,7 +578,7 @@ async fn another_users_bot_is_absent_not_forbidden() {
 /// rather than producing rows whose title is the empty string.
 #[tokio::test]
 async fn a_notification_written_for_a_bot_is_readable_through_the_route() {
-    use trading_engine::{BotAlert, NOTIFICATION_EVENT, notification_payload};
+    use trading_engine::{notification_payload, BotAlert, NOTIFICATION_EVENT};
 
     let Some(h) = Harness::new().await else {
         return;
@@ -685,7 +685,7 @@ async fn a_bot_with_no_notifications_answers_with_an_empty_list() {
 /// two bots, one notification each, and each route returns only its own.
 #[tokio::test]
 async fn notifications_do_not_leak_between_bots() {
-    use trading_engine::{BotAlert, NOTIFICATION_EVENT, notification_payload};
+    use trading_engine::{notification_payload, BotAlert, NOTIFICATION_EVENT};
 
     let Some(h) = Harness::new().await else {
         return;

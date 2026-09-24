@@ -19,15 +19,15 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use axum::Json;
 use axum::extract::State;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::AppState;
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
+use crate::AppState;
 
 /// How long one venue answer is reused before the next request re-fetches.
 ///
@@ -406,7 +406,9 @@ mod tests {
     async fn spawn_html_venue() -> String {
         let app = axum::Router::new().route(
             "/api/v3/ticker/24hr",
-            get(|| async { axum::response::Html("<html><body>Request blocked by WAF</body></html>") }),
+            get(|| async {
+                axum::response::Html("<html><body>Request blocked by WAF</body></html>")
+            }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

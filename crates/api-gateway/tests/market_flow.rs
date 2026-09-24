@@ -64,7 +64,11 @@ async fn the_inventory_reports_what_the_buffer_holds() {
     // end-to-end. This assertion is the only place the *route's* view of the
     // ladder is checked, and a unit test over `STANDARD_TIMEFRAMES` would not
     // have caught a route that kept sending the old list.
-    assert_eq!(timeframes.len(), 7, "seven standard resolutions: {timeframes:?}");
+    assert_eq!(
+        timeframes.len(),
+        7,
+        "seven standard resolutions: {timeframes:?}"
+    );
     let offered: Vec<&str> = timeframes
         .iter()
         .filter_map(|tf| tf["timeframe"].as_str())
@@ -144,18 +148,20 @@ async fn a_cold_start_with_a_forming_bar_still_says_the_symbol_is_chartable() {
         return;
     };
 
-    h.supervisor.history().record_forming(&analytics_core::Candle {
-        symbol: "BTCUSDT".into(),
-        timeframe: "1m".parse().expect("a known resolution"),
-        open_time: 1_700_000_000_000_000_000,
-        open: 1.0,
-        high: 2.0,
-        low: 0.5,
-        close: 1.5,
-        volume: 10.0,
-        buy_volume: 6.0,
-        sell_volume: 4.0,
-    });
+    h.supervisor
+        .history()
+        .record_forming(&analytics_core::Candle {
+            symbol: "BTCUSDT".into(),
+            timeframe: "1m".parse().expect("a known resolution"),
+            open_time: 1_700_000_000_000_000_000,
+            open: 1.0,
+            high: 2.0,
+            low: 0.5,
+            close: 1.5,
+            volume: 10.0,
+            buy_volume: 6.0,
+            sell_volume: 4.0,
+        });
 
     let (status, body) = h.get("/symbols", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -200,7 +206,10 @@ async fn a_window_the_buffer_covers_costs_nothing_to_serve() {
     seed(&h, "BTCUSDT", "1m", 20, 60_000_000_000);
 
     let (status, body) = h
-        .get("/candles?symbol=BTCUSDT&timeframe=1m&from=0&to=1200000000000", None)
+        .get(
+            "/candles?symbol=BTCUSDT&timeframe=1m&from=0&to=1200000000000",
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
@@ -275,18 +284,20 @@ async fn a_book_that_arrived_is_served_without_touching_the_database() {
     let Some(h) = Harness::new().await else {
         return;
     };
-    h.supervisor.live().record_book(&analytics_core::OrderBookSnapshot {
-        symbol: "BTCUSDT".into(),
-        timestamp: 1_700_000_000_000_000_000,
-        bids: vec![analytics_core::OrderBookLevel {
-            price: 100.0,
-            quantity: 1.0,
-        }],
-        asks: vec![analytics_core::OrderBookLevel {
-            price: 101.0,
-            quantity: 2.0,
-        }],
-    });
+    h.supervisor
+        .live()
+        .record_book(&analytics_core::OrderBookSnapshot {
+            symbol: "BTCUSDT".into(),
+            timestamp: 1_700_000_000_000_000_000,
+            bids: vec![analytics_core::OrderBookLevel {
+                price: 100.0,
+                quantity: 1.0,
+            }],
+            asks: vec![analytics_core::OrderBookLevel {
+                price: 101.0,
+                quantity: 2.0,
+            }],
+        });
 
     let (status, body) = h.get("/orderbook?symbol=BTCUSDT", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -317,12 +328,14 @@ async fn a_book_that_never_arrived_is_a_number_a_rule_can_fire_on() {
     );
 
     // Once one does arrive the age drops, so the rule clears.
-    h.supervisor.live().record_book(&analytics_core::OrderBookSnapshot {
-        symbol: "BTCUSDT".into(),
-        timestamp: 90_000_000_000,
-        bids: vec![],
-        asks: vec![],
-    });
+    h.supervisor
+        .live()
+        .record_book(&analytics_core::OrderBookSnapshot {
+            symbol: "BTCUSDT".into(),
+            timestamp: 90_000_000_000,
+            bids: vec![],
+            asks: vec![],
+        });
     api_gateway::metrics::publish_book_ages(&h.supervisor, &h.metrics, 95_000_000_000);
     assert!(
         h.metrics
@@ -610,14 +623,17 @@ async fn the_capability_report_says_what_is_configured_without_claiming_proof() 
     // read as proven working, and this endpoint is what people check before
     // trusting the rest.
     assert_eq!(
-        named("agent")["verified"], false,
+        named("agent")["verified"],
+        false,
         "a configured-but-untested capability must not claim proof: {body}"
     );
     // Market data is exercised by definition -- the platform read RAM to answer.
     assert_eq!(named("market_data")["verified"], true, "{body}");
 
     // And the warning is written for a user, naming what they cannot do.
-    let warning = body["warning"].as_str().expect("a missing agent is worth saying");
+    let warning = body["warning"]
+        .as_str()
+        .expect("a missing agent is worth saying");
     assert!(warning.contains("asking the AI analyst"), "{warning}");
     assert!(
         !warning.contains("AWS_BEDROCK"),

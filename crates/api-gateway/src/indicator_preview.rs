@@ -27,15 +27,17 @@
 //! and the caller stores an honest empty preview plus the reason, rather than a
 //! chart that silently pretends it has evidence.
 
+use crate::AppState;
 use analytics_core::concepts::{self, detect};
 use analytics_core::regions::Region;
 use analytics_core::types::{self, Timeframe};
 use backtester::replay::{replay, ReplayConfig, ReplayInput, ReplaySignal};
-use chart_engine::{self, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind, ReplayExit, ReplaySetup, SetupDirection};
+use chart_engine::{
+    self, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind, ReplayExit, ReplaySetup,
+    SetupDirection,
+};
 use strategy_dsl::Direction;
 use strategy_runtime::signal::Signal;
-use crate::AppState;
-use uuid::Uuid;
 
 /// How far back a preview replays.
 ///
@@ -142,7 +144,10 @@ pub fn build_indicator_preview(
                     timeframe = source_timeframe
                         .as_ref()
                         .map(|tf| tf.as_str())
-                        .unwrap_or_else(|| series.first().map(|c| c.timeframe.as_str()).unwrap_or("?")),
+                        .unwrap_or_else(|| series
+                            .first()
+                            .map(|c| c.timeframe.as_str())
+                            .unwrap_or("?")),
                     price_low = region.price_low,
                     price_high = region.price_high,
                 ),
@@ -236,7 +241,9 @@ pub async fn replay_preview(
             .await;
         match backfilled {
             Ok(candles) if !candles.is_empty() => {
-                if let Err(error) = db::repositories::insert_candles(database.pool(), &candles).await {
+                if let Err(error) =
+                    db::repositories::insert_candles(database.pool(), &candles).await
+                {
                     tracing::warn!(%error, "could not store preview backfill; replaying on what is stored");
                 }
             }
@@ -264,7 +271,7 @@ pub async fn replay_preview(
     // detector layer over the same backfilled series and return whatever bands
     // the window actually contains -- which may legitimately be none.
     if document.kind == strategy_dsl::DocumentKind::Indicator {
-        let concepts: Vec<_> = document.concepts.iter().cloned().collect();
+        let concepts: Vec<_> = document.concepts.clone();
         let mut preview = build_indicator_preview(
             document.name.clone(),
             &concepts,
@@ -301,6 +308,9 @@ pub async fn replay_preview(
 
     Ok(build_preview("", &output.signals))
 }
+
+#[cfg(test)]
+use uuid::Uuid;
 
 #[cfg(test)]
 mod tests {
@@ -363,7 +373,13 @@ mod tests {
 
     // --- indicator detector preview -----------------------------------------
 
-    fn indicator_candle(index: i64, open: f64, high: f64, low: f64, close: f64) -> analytics_core::types::Candle {
+    fn indicator_candle(
+        index: i64,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
+    ) -> analytics_core::types::Candle {
         analytics_core::types::Candle {
             symbol: "BTCUSDT".into(),
             timeframe: analytics_core::types::Timeframe::M5,

@@ -35,8 +35,7 @@ use strategy_dsl::expr::ConceptPart;
 
 use crate::error::AgentError;
 use crate::llm_client::{
-    ContentBlock, LlmClient, LlmRequest, Message, ToolCall, ToolChoice, ToolResult, ToolSpec,
-    Usage,
+    ContentBlock, LlmClient, LlmRequest, Message, ToolCall, ToolChoice, ToolResult, ToolSpec, Usage,
 };
 use crate::multi_timeframe::{analyze_ladder, LadderView, TimeframeLadder};
 use crate::progress::{NoProgress, Progress, ProgressSink};
@@ -70,6 +69,13 @@ pub const DEFAULT_MAX_ATTEMPTS: usize = 3;
 /// another user's drawings any more than it could name their session.
 pub struct DrawingsContext {
     source: Arc<dyn crate::user_drawings::UserDrawingsSource>,
+    /// Where the agent's own objects go, when the host allows writes.
+    ///
+    /// Inside the same context as the reader, not a parallel one, because the
+    /// two are one capability granted to one identity: a host that wires the
+    /// reader without the writer gets a read-only agent, and there is no path
+    /// by which the write identity could diverge from the read identity.
+    writer: Option<Arc<dyn crate::user_drawings::DrawingWriter>>,
     user_id: String,
 }
 
@@ -82,8 +88,26 @@ impl DrawingsContext {
     ) -> Self {
         Self {
             source,
+            writer: None,
             user_id: user_id.into(),
         }
+    }
+
+    /// Also allow the agent to write chart objects, as the same user.
+    ///
+    /// The write identity **is** the read identity by construction: this
+    /// method takes no id of its own, so the two cannot be pointed at
+    /// different users even by a confused host.
+    #[must_use]
+    pub fn with_writer(mut self, writer: Arc<dyn crate::user_drawings::DrawingWriter>) -> Self {
+        self.writer = Some(writer);
+        self
+    }
+
+    /// The writer, for the tools, when the host granted writes.
+    #[must_use]
+    pub fn writer(&self) -> Option<&Arc<dyn crate::user_drawings::DrawingWriter>> {
+        self.writer.as_ref()
     }
 
     /// The user whose drawings this is, opaque to the agent.
@@ -97,6 +121,7 @@ impl Clone for DrawingsContext {
     fn clone(&self) -> Self {
         Self {
             source: Arc::clone(&self.source),
+            writer: self.writer.clone(),
             user_id: self.user_id.clone(),
         }
     }
@@ -456,6 +481,11 @@ impl Agent {
         let mut ctx = ToolContext::new(data).with_config(self.config.market_state);
         if let Some(drawings) = &request.drawings {
             ctx = ctx.with_drawings(drawings.source.as_ref(), drawings.user_id());
+            // Writes ride the same grant: no writer attached means the write
+            // tools report their absence, exactly like the read tool.
+            if let Some(writer) = drawings.writer() {
+                ctx = ctx.with_drawing_writer(writer.as_ref(), drawings.user_id());
+            }
         }
 
         let mut usage = Usage {
@@ -1352,11 +1382,7 @@ mod tests {
         let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
             100_100.0, 100_000.0, 100_400.0,
         )]));
-        let agent = Agent::new(
-            llm.clone(),
-            SkillLibrary::new(),
-            AgentConfig::default(),
-        );
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
 
         let chart = crate::chart_context::ChartContext {
             // Not in the default 1D/4H/1H/5M ladder.
@@ -1477,7 +1503,7 @@ mod tests {
             screenshot: Some(crate::chart_context::ChartScreenshot {
                 media_type: "image/png".into(),
                 data: "iVBORw0KGgo=".into(),
-            label: None,
+                label: None,
             }),
             ..Default::default()
         };

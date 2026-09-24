@@ -311,9 +311,8 @@ pub const RETENTION_INTERVAL_SECS: u64 = 6 * 60 * 60;
 /// over-budget database should not wait six hours to begin fixing it.
 pub fn spawn_retention_task(pool: sqlx::PgPool) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
-            RETENTION_INTERVAL_SECS,
-        ));
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(RETENTION_INTERVAL_SECS));
         // The first tick completes immediately; without consuming it, the
         // first *real* pass would be six hours in, and the "run now" above
         // would be a lie.
@@ -450,7 +449,10 @@ mod tests {
                 Table::OrderbookSnapshots => "DELETE FROM orderbook_snapshots WHERE (symbol, ts) IN (SELECT symbol, ts FROM orderbook_snapshots WHERE ts < $1 ORDER BY ts, symbol LIMIT $2)",
                 Table::Candles => "DELETE FROM candles WHERE (symbol, timeframe, open_time) IN (SELECT symbol, timeframe, open_time FROM candles WHERE open_time < $1 ORDER BY open_time, symbol, timeframe LIMIT $2)",
             };
-            assert!(sql.starts_with(&format!("DELETE FROM {target} ")), "{table:?}");
+            assert!(
+                sql.starts_with(&format!("DELETE FROM {target} ")),
+                "{table:?}"
+            );
             assert!(sql.contains(&format!("{time_column} < $1")), "{sql}");
             assert!(sql.contains(&format!("{key} IN")), "{sql}");
             assert!(

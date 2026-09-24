@@ -164,9 +164,11 @@ impl IndicatorOutput {
         // them; a third of the cap leaves headroom for anything the caller
         // appends after culling.
         let keep = MAX_PRIMITIVES / 3;
-        self.evidence.drain(..self.evidence.len().saturating_sub(keep));
+        self.evidence
+            .drain(..self.evidence.len().saturating_sub(keep));
         self.zones.drain(..self.zones.len().saturating_sub(keep));
-        self.markers.drain(..self.markers.len().saturating_sub(keep));
+        self.markers
+            .drain(..self.markers.len().saturating_sub(keep));
         // Links are dropped wholesale when over budget: a detector layer emits
         // none, and a strategy replay has `from_replay` for its own culling.
         self.links.clear();
@@ -667,7 +669,9 @@ mod tests {
             });
         }
         output.cull_to_budget();
-        output.validate().expect("culled output must still validate");
+        output
+            .validate()
+            .expect("culled output must still validate");
         assert_eq!(output.evidence.len(), output.zones.len());
         assert_eq!(output.evidence.len(), output.markers.len());
         // The newest match survived; the oldest was dropped.

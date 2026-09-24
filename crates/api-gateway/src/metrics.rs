@@ -24,13 +24,13 @@ use axum::http::header::CONTENT_TYPE;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use observability::metrics::{
-    HTTP_LATENCY, HTTP_REQUESTS, Labels, MD_BOOK_AGE, MD_FEED_AGE, MD_HISTORY_BARS, Registry,
+    Labels, Registry, HTTP_LATENCY, HTTP_REQUESTS, MD_BOOK_AGE, MD_FEED_AGE, MD_HISTORY_BARS,
 };
 use observability::{AlertSink, QueueSink};
 use tracing::Instrument;
 
-use crate::AppState;
 use crate::now_ns;
+use crate::AppState;
 
 /// Count and time one request.
 ///
@@ -190,7 +190,10 @@ pub fn spawn_alert_task(state: AppState) -> tokio::task::JoinHandle<()> {
             publish_history_bars(&state.bots, &state.metrics);
             publish_book_ages(&state.bots, &state.metrics, now);
 
-            let alerts = alerter.lock().map(|mut a| a.evaluate(&state.metrics)).unwrap_or_default();
+            let alerts = alerter
+                .lock()
+                .map(|mut a| a.evaluate(&state.metrics))
+                .unwrap_or_default();
             for alert in &alerts {
                 if let Some(db) = &state.db {
                     let payload = serde_json::json!({

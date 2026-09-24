@@ -32,13 +32,17 @@
 
 use std::sync::Arc;
 
-use analytics_core::Timeframe;
 use analytics_core::types::{Candle, Trade};
+use analytics_core::Timeframe;
 use async_trait::async_trait;
 
 use market_data::{Window, WindowService};
 
 use ai_agent::{AgentError, MarketDataSource};
+
+// The engine's own vocabulary and anchor rule, shared with `drawing_routes`:
+// both doors into the drawings table validate the same way.
+use chart_engine::{Anchor, Drawing, DrawingKind};
 
 /// Reads market data for the agent from RAM plus the venue.
 #[derive(Debug, Clone)]
@@ -197,6 +201,179 @@ impl ai_agent::UserDrawingsSource for DbUserDrawings {
                 price2: row.a2_price,
             })
             .collect())
+    }
+}
+
+/// The [`DrawingKind`] a stored name refers to — the route's own mapping,
+/// reused rather than copied.
+fn kind_from_name(name: &str) -> Option<DrawingKind> {
+    DrawingKind::ALL
+        .into_iter()
+        .find(|kind| kind.name() == name)
+}
+
+/// The agent's write path, over the same Postgres the drawing routes use.
+///
+/// ## Why the engine's validator runs here
+///
+/// The HTTP route validates an incoming drawing with
+/// `chart_engine::Drawing::validate_anchors` before storing it, and this
+/// adapter is a **second door into the same table**. A door that skipped the
+/// check would let the model store a shape the chart refuses to draw, and
+/// the disagreement would surface as a drawing the user cannot see but the
+/// agent believes exists. So the same enum's own rule is applied here, not a
+/// copy of it — one vocabulary, one anchor rule, two callers.
+///
+/// Provenance is stamped `created_by = "ai"` unconditionally: this adapter
+/// exists only for the agent, so a caller cannot forge human provenance by
+/// going through it (`0009_drawing_provenance.sql`).
+#[derive(Debug, Clone)]
+pub struct DbDrawingWriter {
+    db: Arc<db::Database>,
+}
+
+impl DbDrawingWriter {
+    /// Wrap the shared database handle.
+    #[must_use]
+    pub fn new(db: Arc<db::Database>) -> Self {
+        Self { db }
+    }
+
+    /// The kinds the storage accepts, for an error the model can act on.
+    fn valid_kinds() -> String {
+        db::drawings::KINDS.join(", ")
+    }
+
+    /// The engine's anchor rule, applied to what the model sent.
+    fn validate(drawing: &ai_agent::NewAgentDrawing) -> Result<(), AgentError> {
+        const TOOL: &str = "create_drawing";
+        let unknown = || AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: format!(
+                "`{}` is not a drawing kind. The kinds are: {}.",
+                drawing.kind,
+                Self::valid_kinds()
+            ),
+        };
+        if !db::drawings::KINDS.contains(&drawing.kind.as_str()) {
+            return Err(unknown());
+        }
+        let second = match (drawing.time2_ms, drawing.price2) {
+            (Some(time), Some(price)) => Some(Anchor::Absolute { time, price }),
+            (None, None) => None,
+            // `new_drawing_args` already refuses the half pair; this is the
+            // same rule stated where the write happens, because the adapter
+            // is a public door and not every caller goes through the tool.
+            _ => {
+                return Err(AgentError::InvalidToolArgs {
+                    tool: TOOL.into(),
+                    reason: "a second anchor needs both time and price".into(),
+                })
+            }
+        };
+        let check = Drawing {
+            id: String::new(),
+            kind: kind_from_name(&drawing.kind).ok_or_else(unknown)?,
+            a1: Anchor::Absolute {
+                time: drawing.time1_ms,
+                price: drawing.price1,
+            },
+            a2: second,
+            label: drawing.label.clone(),
+            selected: false,
+        };
+        check
+            .validate_anchors()
+            .map_err(|reason| AgentError::InvalidToolArgs {
+                tool: TOOL.into(),
+                reason,
+            })
+    }
+
+    /// The storage row from what the model sent, provenance stamped.
+    fn to_new(drawing: &ai_agent::NewAgentDrawing) -> db::drawings::NewDrawing {
+        db::drawings::NewDrawing {
+            kind: drawing.kind.clone(),
+            a1_time_ms: drawing.time1_ms,
+            a1_price: drawing.price1,
+            a2_time_ms: drawing.time2_ms,
+            a2_price: drawing.price2,
+            label: drawing.label.clone(),
+            provenance: Some(db::drawings::Provenance {
+                created_by: "ai".into(),
+                agent: Some("agent".into()),
+                confidence: drawing.provenance.as_ref().and_then(|p| p.confidence),
+                reason: drawing.provenance.as_ref().and_then(|p| p.reason.clone()),
+            }),
+        }
+    }
+}
+
+#[async_trait]
+impl ai_agent::DrawingWriter for DbDrawingWriter {
+    async fn create(
+        &self,
+        user_id: &str,
+        symbol: &str,
+        drawing: &ai_agent::NewAgentDrawing,
+    ) -> Result<ai_agent::StoredDrawing, AgentError> {
+        const TOOL: &str = "create_drawing";
+        Self::validate(drawing)?;
+        let Ok(id) = uuid::Uuid::parse_str(user_id) else {
+            return Err(AgentError::ToolFailed {
+                tool: TOOL.into(),
+                reason: "the request identity does not name a user".into(),
+            });
+        };
+        let stored_id =
+            db::drawings::create_drawing(self.db.pool(), id, symbol, &Self::to_new(drawing))
+                .await
+                .map_err(|e| AgentError::ToolFailed {
+                    tool: TOOL.into(),
+                    reason: format!("storage refused the drawing: {e}"),
+                })?;
+        Ok(ai_agent::StoredDrawing {
+            id: stored_id.to_string(),
+            symbol: symbol.to_uppercase(),
+            kind: drawing.kind.clone(),
+        })
+    }
+
+    async fn update(
+        &self,
+        user_id: &str,
+        _symbol: &str,
+        id: &str,
+        drawing: &ai_agent::NewAgentDrawing,
+    ) -> Result<bool, AgentError> {
+        Self::validate(drawing)?;
+        let (Some(uid), Some(row_id)) = (
+            uuid::Uuid::parse_str(user_id).ok(),
+            uuid::Uuid::parse_str(id).ok(),
+        ) else {
+            return Ok(false);
+        };
+        db::drawings::update_drawing(self.db.pool(), uid, row_id, &Self::to_new(drawing))
+            .await
+            .map_err(|e| AgentError::ToolFailed {
+                tool: "update_drawing".into(),
+                reason: format!("storage could not update the drawing: {e}"),
+            })
+    }
+
+    async fn delete(&self, user_id: &str, _symbol: &str, id: &str) -> Result<bool, AgentError> {
+        let (Some(uid), Some(row_id)) = (
+            uuid::Uuid::parse_str(user_id).ok(),
+            uuid::Uuid::parse_str(id).ok(),
+        ) else {
+            return Ok(false);
+        };
+        db::drawings::delete_drawing(self.db.pool(), uid, row_id)
+            .await
+            .map_err(|e| AgentError::ToolFailed {
+                tool: "delete_drawing".into(),
+                reason: format!("storage could not delete the drawing: {e}"),
+            })
     }
 }
 

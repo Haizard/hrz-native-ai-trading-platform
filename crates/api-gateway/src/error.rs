@@ -29,9 +29,9 @@
 //! missing skill is a 404 too -- the client asked for something that is not
 //! there and can retry differently.
 
-use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde_json::json;
 
 use ai_agent::AgentError;

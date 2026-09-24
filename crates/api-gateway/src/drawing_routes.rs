@@ -39,18 +39,18 @@
 //! asked for it to be gone and it is gone; a 404 on the second attempt would make
 //! a "remove" button report a failure for having worked.
 
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use chart_engine::{Anchor, Drawing, DrawingKind};
 
-use crate::AppState;
 use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::{ApiJson, ApiQuery};
+use crate::AppState;
 
 /// `GET /drawings?symbol=...`
 #[derive(Debug, Deserialize)]
@@ -280,6 +280,10 @@ fn prepare(body: &DrawingBody) -> Result<db::NewDrawing, ApiError> {
         a2_time_ms: second.map(|(time, _)| time),
         a2_price: second.map(|(_, price)| price),
         label: body.label.clone(),
+        // A drawing that arrives over the HTTP route is the user's own work,
+        // however it was produced: provenance is the *agent's* door's stamp,
+        // and this is not that door.
+        provenance: None,
     })
 }
 
@@ -518,6 +522,11 @@ mod tests {
             a2_time_ms: Some(1_767_229_200_000.0),
             a2_price: Some(45_500.0),
             label: Some("the range I keep watching".into()),
+            // A hand-drawn fixture: no provenance, which is what `None` means.
+            created_by: None,
+            agent: None,
+            confidence: None,
+            reason: None,
             created_at: 0,
             updated_at: 0,
         };
@@ -551,6 +560,10 @@ mod tests {
             a2_time_ms: None,
             a2_price: None,
             label: None,
+            created_by: None,
+            agent: None,
+            confidence: None,
+            reason: None,
             created_at: 0,
             updated_at: 0,
         };

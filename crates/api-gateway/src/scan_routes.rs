@@ -40,16 +40,16 @@
 //! no way to tell that from a quiet market. The default universe is the venue's
 //! indexed instruments; `symbols=` narrows it explicitly.
 
-use axum::Json;
 use axum::extract::State;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use analytics_core::types::Timeframe;
 use market_data::scanner::{self, ScanMetric};
 
-use crate::AppState;
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
+use crate::AppState;
 
 /// Which measurement to rank by, when the caller does not say.
 ///

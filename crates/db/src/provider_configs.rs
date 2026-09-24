@@ -76,9 +76,7 @@ pub struct NewProviderConfig<'a> {
     pub kek_fingerprint: &'a str,
 }
 
-fn row_from(
-    row: &sqlx::postgres::PgRow,
-) -> Result<ProviderConfigRow, sqlx::Error> {
+fn row_from(row: &sqlx::postgres::PgRow) -> Result<ProviderConfigRow, sqlx::Error> {
     Ok(ProviderConfigRow {
         user_id: row.try_get("user_id")?,
         provider: row.try_get("provider")?,

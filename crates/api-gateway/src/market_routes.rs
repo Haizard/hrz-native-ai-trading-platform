@@ -37,17 +37,17 @@
 //! is the series for this symbol and resolution over this span". What remains
 //! here is the HTTP shape of the answer.
 
-use axum::Json;
 use axum::extract::State;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use analytics_core::Timeframe;
 use analytics_core::types::Candle;
+use analytics_core::Timeframe;
 
-use crate::AppState;
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
+use crate::AppState;
 
 /// Query parameters for `GET /candles`.
 #[derive(Debug, Deserialize)]

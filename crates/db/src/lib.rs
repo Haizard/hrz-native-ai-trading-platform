@@ -56,20 +56,15 @@ pub use drawings::{
     NewDrawing, KINDS as DRAWING_KINDS,
 };
 pub use error::DbError;
-pub use retention::{
-    delete_older_than as retention_delete_older_than, run as run_retention,
-    spawn_retention_task, Cutoff, RetentionReport, RetentionPolicy, BATCH as RETENTION_BATCH,
-    RETENTION_INTERVAL_SECS, DEFAULT_ORDERBOOK_DAYS, DEFAULT_TRADES_DAYS, Table as RetentionTable,
-};
 pub use indicator_workspaces::{
     approve_indicator_bot_draft, create_indicator_bot_draft, create_indicator_revision,
     create_indicator_workspace, create_indicator_workspace_message, delete_indicator_workspace,
     get_indicator_bot_draft, get_indicator_revision, get_indicator_workspace,
-    list_indicator_alert_preferences,    list_enabled_indicator_alert_preferences, list_indicator_bot_drafts, list_indicator_revisions,
-    list_indicator_workspace_messages,
+    list_enabled_indicator_alert_preferences, list_indicator_alert_preferences,
+    list_indicator_bot_drafts, list_indicator_revisions, list_indicator_workspace_messages,
     list_indicator_workspaces, restore_indicator_revision, set_indicator_alert_preference,
-    set_indicator_bot_draft_bot_id, update_indicator_workspace_memory,
-    EnabledAlertPreference, IndicatorAlertPreference, IndicatorBotDraftRow, IndicatorRevisionRow,
+    set_indicator_bot_draft_bot_id, update_indicator_workspace_memory, EnabledAlertPreference,
+    IndicatorAlertPreference, IndicatorBotDraftRow, IndicatorRevisionRow,
     IndicatorWorkspaceMessageRow, IndicatorWorkspaceRow,
 };
 pub use live::{
@@ -91,6 +86,11 @@ pub use paper::{
 };
 pub use repositories::TradeCoverage;
 pub use repositories::{dt_to_ns, ns_to_dt};
+pub use retention::{
+    delete_older_than as retention_delete_older_than, run as run_retention, spawn_retention_task,
+    Cutoff, RetentionPolicy, RetentionReport, Table as RetentionTable, BATCH as RETENTION_BATCH,
+    DEFAULT_ORDERBOOK_DAYS, DEFAULT_TRADES_DAYS, RETENTION_INTERVAL_SECS,
+};
 pub use skills::{
     create_skill, delete_skill, list_skills, skill_version_exists, SkillRow, MAX_SKILLS,
 };

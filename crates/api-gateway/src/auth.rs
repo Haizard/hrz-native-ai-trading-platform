@@ -35,13 +35,13 @@
 
 use std::sync::Arc;
 
-use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
+use argon2::Argon2;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -416,10 +416,9 @@ mod tests {
         // And one second before expiry it is still good, so the boundary is
         // where the claim says it is rather than off by one.
         assert!(auth.verify(&token, 1_000 + TOKEN_LIFETIME_SECONDS).is_err());
-        assert!(
-            auth.verify(&token, 1_000 + TOKEN_LIFETIME_SECONDS - 1)
-                .is_ok()
-        );
+        assert!(auth
+            .verify(&token, 1_000 + TOKEN_LIFETIME_SECONDS - 1)
+            .is_ok());
     }
 
     #[test]

@@ -94,6 +94,125 @@ pub trait UserDrawingsSource: Send + Sync {
     ) -> Result<Vec<UserDrawing>, crate::AgentError>;
 }
 
+/// What the agent states about an object it wants to put on the chart.
+///
+/// Provenance (`docs/21`) is the difference between an annotation and an
+/// intrusion: the user must be able to ask "why is this here?" and get the
+/// model's own answer, and to filter AI-drawn objects out of the view without
+/// hunting them one by one. The fields mirror the storage columns of
+/// `0009_drawing_provenance.sql` one for one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DrawingProvenance {
+    /// The agent's stated confidence in the object, 0..1. Optional because a
+    /// rough sketch needs no number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    /// Why the object is being drawn, in the model's own words. This is what
+    /// "why did you draw this?" reads before anything is re-asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// One drawing the agent wants on the chart.
+///
+/// The wire shape of a `create_drawing` call. Absolute anchors only: a
+/// fraction is a position on a plot and means nothing without the window it
+/// was measured in, which is the same rule the HTTP route enforces — the agent
+/// gets no shortcut around it because it is a model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewAgentDrawing {
+    /// The kind to draw. Free text here, **validated against the storage's
+    /// vocabulary one layer up** — the model must be able to try a kind and
+    /// get "that kind does not exist; the kinds are …" back rather than have
+    /// a schema enum lie to it about what the deployment can draw.
+    pub kind: String,
+    /// What to call it. A label the user can read on the chart and in the
+    /// object list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// First anchor: milliseconds since the epoch, and the price.
+    pub time1_ms: f64,
+    /// First anchor's price.
+    pub price1: f64,
+    /// Second anchor, for the kinds that need two.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time2_ms: Option<f64>,
+    /// Second anchor's price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price2: Option<f64>,
+    /// The model's confidence and stated reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<DrawingProvenance>,
+}
+
+/// A drawing after storage accepted it.
+///
+/// The id is what `update_drawing` / `delete_drawing` take, and what the
+/// model must quote when it wants to move or remove the object it just drew.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredDrawing {
+    /// The storage's id for the row.
+    pub id: String,
+    /// The symbol it landed on, uppercased by storage.
+    pub symbol: String,
+    /// The kind as stored, echoed so the model can confirm what it drew.
+    pub kind: String,
+}
+
+/// Where the agent's drawings go, when the host allows writes at all.
+///
+/// A **separate trait** from [`UserDrawingsSource`], deliberately: read-only
+/// is the default posture (`tools.rs`'s header says why), and a host that
+/// never attaches a writer makes every write tool report its absence —
+/// the same honest-answer rule the read tool follows. Implemented one layer
+/// up, against `db::drawings`, with the authenticated user as the opaque key;
+/// the agent cannot write into anyone's chart but the asker's.
+#[async_trait]
+pub trait DrawingWriter: Send + Sync {
+    /// Store a new drawing for this user on this symbol.
+    ///
+    /// # Errors
+    /// Any [`crate::AgentError`] when storage refuses — an unknown kind, a
+    /// half-populated anchor pair, a non-finite number. The message goes back
+    /// to the model, which can correct and retry.
+    async fn create(
+        &self,
+        user_id: &str,
+        symbol: &str,
+        drawing: &NewAgentDrawing,
+    ) -> Result<StoredDrawing, crate::AgentError>;
+
+    /// Move or relabel one of this user's drawings.
+    ///
+    /// `Ok(false)` means no such drawing for this user — reported as the
+    /// neutral fact it is, not an error: the model may be working from a
+    /// stale list.
+    ///
+    /// # Errors
+    /// Any [`crate::AgentError`] when storage cannot answer.
+    async fn update(
+        &self,
+        user_id: &str,
+        symbol: &str,
+        id: &str,
+        drawing: &NewAgentDrawing,
+    ) -> Result<bool, crate::AgentError>;
+
+    /// Remove one of this user's drawings.
+    ///
+    /// `Ok(false)` is likewise not an error: deleting twice leaves the chart
+    /// in the state the user asked for.
+    ///
+    /// # Errors
+    /// Any [`crate::AgentError`] when storage cannot answer.
+    async fn delete(
+        &self,
+        user_id: &str,
+        symbol: &str,
+        id: &str,
+    ) -> Result<bool, crate::AgentError>;
+}
+
 /// Cap how many drawings one tool answer carries, reporting what was dropped.
 ///
 /// [`crate::chart_context::MAX_DRAWINGS`] is the viewport packet's bound for

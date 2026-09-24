@@ -210,9 +210,7 @@ async fn revision_restore_sets_active_revision() {
     // Restore rev1.
     let (status, _) = h
         .post(
-            &format!(
-                "/indicator-workspaces/{workspace_id}/revisions/{rev1_id}/restore"
-            ),
+            &format!("/indicator-workspaces/{workspace_id}/revisions/{rev1_id}/restore"),
             json!({}),
             Some(&user.token),
         )
@@ -283,9 +281,7 @@ async fn restoring_a_rejected_revision_fails() {
     // Restore should fail for a rejected revision.
     let (status, _) = h
         .post(
-            &format!(
-                "/indicator-workspaces/{workspace_id}/revisions/{rejected_id}/restore"
-            ),
+            &format!("/indicator-workspaces/{workspace_id}/revisions/{rejected_id}/restore"),
             json!({}),
             Some(&user.token),
         )

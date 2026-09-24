@@ -138,7 +138,10 @@ impl OpenAiCompatConfig {
             super::ProviderId::OpenRouter => (
                 AuthStyle::Bearer,
                 vec![
-                    ("HTTP-Referer".to_string(), "https://freebuff.local".to_string()),
+                    (
+                        "HTTP-Referer".to_string(),
+                        "https://freebuff.local".to_string(),
+                    ),
                     ("X-Title".to_string(), "Freebuff".to_string()),
                 ],
             ),
@@ -219,20 +222,18 @@ pub fn chat_body(request: &LlmRequest, model: &str) -> Value {
         }
     }
     if !request.tools.is_empty() {
-        body["tools"] = json!(
-            request
-                .tools
-                .iter()
-                .map(|tool| json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.input_schema,
-                    }
-                }))
-                .collect::<Vec<_>>()
-        );
+        body["tools"] = json!(request
+            .tools
+            .iter()
+            .map(|tool| json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
+                }
+            }))
+            .collect::<Vec<_>>());
     }
     if let Some(choice) = &request.tool_choice {
         body["tool_choice"] = match choice {
@@ -271,7 +272,11 @@ fn message_to_wire(message: &Message) -> Vec<Value> {
                 "type": "function",
                 "function": { "name": name, "arguments": input.to_string() }
             })),
-            ContentBlock::ToolResult { tool_use_id, content, .. } => {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
                 pending_results.push(json!({
                     "role": "tool",
                     "tool_call_id": tool_use_id,
@@ -689,4 +694,3 @@ mod tests {
         assert!(sent.contains("/v1/chat/completions"), "{sent}");
     }
 }
-

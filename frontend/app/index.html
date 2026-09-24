@@ -310,6 +310,22 @@
   .tools button { padding: 2px 8px; font-size: 11px; color: var(--muted); }
   .tools button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
   .tools .clearDrawings { margin-left: 8px; }
+  /* A tool group: the trigger plus its flyout. The flyout is positioned
+     rather than laid out, so opening one never shifts the row. */
+  .toolGroup { position: relative; display: inline-flex; }
+  .toolFlyout {
+    position: absolute; top: 100%; left: 0; z-index: 3;
+    display: flex; flex-direction: column; gap: 2px;
+    min-width: 90px; padding: 4px; margin-top: 2px;
+    background: var(--panel, #171b26); border: 1px solid var(--line, #262b3a); border-radius: 6px;
+  }
+  /* `display: flex` above would beat the UA's `[hidden] { display: none }` --
+     the same trap `.tools[hidden]` handles at the top of this sheet -- and
+     every flyout would render open. */
+  .toolFlyout[hidden] { display: none; }
+  .toolFlyout button { text-align: left; white-space: nowrap; }
+  .toolFlyout button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  .tools button[data-magnet][aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
   .chartHint {
     position: absolute; left: 12px; bottom: 8px; pointer-events: none;
     color: var(--muted); font-family: var(--mono); font-size: 10px; opacity: 0.75;
@@ -1039,12 +1055,23 @@
           what I have selected", and the user only found out afterwards.
         -->
         <!-- Hidden in the pane; hosted by the right-click chart menu when open. -->
+        <!--
+          The drawing tools. The five `data-tool` buttons below are a **fallback**:
+          once the engine has loaded, the shell replaces them with the tool
+          registry's own set (`docs/21-CHART-OBJECT-ENGINE.md`) — the engine is
+          the one place a tool is declared, so the toolbar cannot drift from
+          what it can actually draw. Delete / Clear all / Magnet / Undo / Redo
+          are controls, not tools, and stay here.
+        -->
         <div class="tools" role="toolbar" aria-label="Drawing tools" hidden>
           <button data-tool="cursor" aria-pressed="true" title="Select a drawing, move its anchors, or pan the chart">Cursor</button>
           <button data-tool="trendline" aria-pressed="false" title="Drag from one point to another">Trend</button>
           <button data-tool="hline" aria-pressed="false" title="Click a price to mark it across the chart">H-line</button>
           <button data-tool="rect" aria-pressed="false" title="Drag out a rectangle">Rect</button>
           <button data-tool="fib" aria-pressed="false" title="Drag from one swing to another">Fib</button>
+          <button data-magnet class="magnet" aria-pressed="false" title="Snap new drawings to nearby open, high, low, close and value-area prices">Magnet</button>
+          <button data-undo class="undo" title="Undo the last drawing change (Ctrl+Z)" disabled>Undo</button>
+          <button data-redo class="redo" title="Redo an undone drawing change (Ctrl+Y)" disabled>Redo</button>
           <button class="deleteDrawing danger" title="Delete the selected drawing" disabled>Delete</button>
           <button class="clearDrawings danger" aria-pressed="false" title="Delete every drawing on this symbol — click twice to confirm">Clear all</button>
         </div>

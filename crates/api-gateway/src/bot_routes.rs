@@ -28,9 +28,9 @@
 //!
 //! [`BotSupervisor`]: crate::bots::BotSupervisor
 
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -41,13 +41,13 @@ use trading_engine::{
     PaperConfig, RiskLimits, TrackRecord,
 };
 
-use crate::AppState;
 use crate::auth::UserContext;
 use crate::bots::BotSupervisor;
 use crate::broker_routes;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::now_ns;
+use crate::AppState;
 
 /// Default page size for the list endpoint.
 const DEFAULT_LIMIT: i64 = 50;
@@ -1169,7 +1169,7 @@ mod tests {
     /// returning rows whose `title` is the empty string.
     #[test]
     fn the_payload_keys_the_reader_uses_are_the_keys_the_writer_writes() {
-        use trading_engine::{BotAlert, notification_payload};
+        use trading_engine::{notification_payload, BotAlert};
 
         let payload = notification_payload(
             &BotAlert::Killed {

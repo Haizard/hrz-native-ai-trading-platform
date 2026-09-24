@@ -21,12 +21,12 @@ use std::sync::Arc;
 use api_gateway::bots::{BotSupervisor, FeedMode};
 use api_gateway::rate_limit::{RateLimit, RateLimiter};
 use api_gateway::tickers;
-use api_gateway::{AppState, auth::AuthConfig, router};
+use api_gateway::{auth::AuthConfig, router, AppState};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use observability::metrics::Registry;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tower::ServiceExt;
 
 /// The signing secret the tests use. Long enough for `AuthConfig::from_env`'s

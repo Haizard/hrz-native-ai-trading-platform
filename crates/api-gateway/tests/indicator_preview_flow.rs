@@ -208,9 +208,12 @@ async fn a_generation_turn_stores_a_non_empty_validated_preview() {
     db::delete_indicator_workspace(h.database.pool(), user.id, workspace_id.parse().unwrap())
         .await
         .expect("workspace cleanup");
-    db::strategies::delete_strategy(h.database.pool(), body["strategy_id"].as_str().unwrap().parse().unwrap())
-        .await
-        .expect("strategy cleanup");
+    db::strategies::delete_strategy(
+        h.database.pool(),
+        body["strategy_id"].as_str().unwrap().parse().unwrap(),
+    )
+    .await
+    .expect("strategy cleanup");
     db::repositories::delete_candles_for_symbol(h.database.pool(), &symbol)
         .await
         .expect("candle cleanup");

@@ -30,20 +30,20 @@
 //! repeat is simply false. Both the decision and the lock that makes it hold
 //! under concurrent requests live in [`db::live::record_venue_opt_in`].
 
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use trading_engine::GateRequirements;
 use trading_engine::credentials::var_names;
+use trading_engine::GateRequirements;
 
-use crate::AppState;
 use crate::auth::UserContext;
 use crate::broker_routes;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
+use crate::AppState;
 
 /// Venues the platform can actually trade.
 ///

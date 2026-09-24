@@ -44,20 +44,20 @@
 //! leave a live bot trading an account its owner has just withdrawn consent
 //! for, with real orders, which is the failure this endpoint exists to prevent.
 
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::Json;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use trading_engine::{AccountCheck, BinanceRest, SealedCredentials, SecretScope};
 
-use crate::AppState;
 use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::venue_routes::KNOWN_VENUES;
+use crate::AppState;
 
 /// The longest label a user may give an account.
 ///
@@ -97,7 +97,8 @@ const SUPPORTED: [BrokerDescription; 1] = [BrokerDescription {
     venue: "binance",
     name: "Binance",
     keys_url: "https://www.binance.com/en/my/settings/api-management",
-    guidance: "Create an API key with **Enable Reading** and **Enable Spot & Margin Trading** only. \
+    guidance:
+        "Create an API key with **Enable Reading** and **Enable Spot & Margin Trading** only. \
                Leave **Enable Withdrawals** off -- this platform places orders and never moves \
                funds, and a key that can withdraw is refused here.",
 }];

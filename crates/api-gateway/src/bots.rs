@@ -53,9 +53,9 @@ use std::time::Duration;
 
 use analytics_core::types::{Candle, OrderBookSnapshot};
 use serde::Serialize;
-use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::Notify;
 use tokio::task::{AbortHandle, JoinHandle};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -649,9 +649,7 @@ impl BotSupervisor {
                 history: Arc::new(market_data::HistoryRegistry::new()),
                 live: Arc::new(market_data::LiveRegistry::new()),
                 last_candle_ns: Mutex::new(HashMap::new()),
-                alerter: Mutex::new(observability::Alerter::new(
-                    observability::default_rules(),
-                )),
+                alerter: Mutex::new(observability::Alerter::new(observability::default_rules())),
                 flush_interval,
                 feed_idle: DEFAULT_FEED_IDLE,
                 events: broadcast::channel(EVENT_BUFFER).0,
@@ -2348,7 +2346,11 @@ mod tests {
         let closed = supervisor.reclaim_idle_feeds(now);
         assert_eq!(closed, vec!["0GTRY".to_string()]);
         assert!(
-            supervisor.alerter().lock().expect("alerter").is_excluded("0GTRY"),
+            supervisor
+                .alerter()
+                .lock()
+                .expect("alerter")
+                .is_excluded("0GTRY"),
             "a reclaimed symbol must be masked at the alerter"
         );
         assert!(
@@ -2356,7 +2358,11 @@ mod tests {
             "the candle-age clock must be dropped, not left growing"
         );
         assert!(
-            supervisor.live().book_ages(now).iter().all(|(s, _)| s != "0GTRY"),
+            supervisor
+                .live()
+                .book_ages(now)
+                .iter()
+                .all(|(s, _)| s != "0GTRY"),
             "the book-age clock must be dropped, not left growing"
         );
 
@@ -2364,7 +2370,11 @@ mod tests {
         // starts a feed and clears the exclusion.
         supervisor.ensure_feed_for("0GTRY");
         assert!(
-            !supervisor.alerter().lock().expect("alerter").is_excluded("0GTRY"),
+            !supervisor
+                .alerter()
+                .lock()
+                .expect("alerter")
+                .is_excluded("0GTRY"),
             "a re-watched symbol must leave the exclusion mask"
         );
     }

@@ -44,6 +44,11 @@
 use serde::{Deserialize, Serialize};
 
 /// The kinds this engine can draw.
+///
+/// This is the **object vocabulary** of the chart (`docs/21-CHART-OBJECT-ENGINE.md`):
+/// every kind is a structured object -- two anchors and a rule for what goes
+/// between them -- that the AI can read, the storage can persist, and the
+/// toolbar can be *built from*, rather than a button someone typed twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DrawingKind {
@@ -51,15 +56,34 @@ pub enum DrawingKind {
     Trendline,
     /// A horizontal line across the plot, at the first anchor's price.
     Hline,
+    /// A vertical line across the plot, at the first anchor's time.
+    Vline,
+    /// The segment from the first anchor **through** the second, extended to
+    /// the plot's edge in the direction of the drag.
+    Ray,
+    /// The line through both anchors, extended in **both** directions.
+    Extended,
     /// The rectangle the two anchors span.
     Rect,
     /// Fibonacci retracement levels between the two anchors.
     Fib,
+    /// The price/time delta between the two anchors: a box, dashed guides to
+    /// both axes, and the delta as a label.
+    Measure,
 }
 
 impl DrawingKind {
     /// Every kind, for a client that wants to build a toolbar.
-    pub const ALL: [Self; 4] = [Self::Trendline, Self::Hline, Self::Rect, Self::Fib];
+    pub const ALL: [Self; 8] = [
+        Self::Trendline,
+        Self::Hline,
+        Self::Vline,
+        Self::Ray,
+        Self::Extended,
+        Self::Rect,
+        Self::Fib,
+        Self::Measure,
+    ];
 
     /// The wire name, which is also the storage's value and the shell's colour
     /// key.
@@ -68,21 +92,162 @@ impl DrawingKind {
         match self {
             Self::Trendline => "trendline",
             Self::Hline => "hline",
+            Self::Vline => "vline",
+            Self::Ray => "ray",
+            Self::Extended => "extended",
             Self::Rect => "rect",
             Self::Fib => "fib",
+            Self::Measure => "measure",
         }
     }
 
     /// Whether this kind needs its second anchor.
     ///
-    /// The one rule with four cases. It lives beside the enum so it cannot drift
+    /// The one rule with eight cases. It lives beside the enum so it cannot drift
     /// from the list of kinds -- and `db::drawings::needs_second_anchor` is the
     /// same rule on the storage side, pinned against this one by a test.
     #[must_use]
     pub const fn needs_second_anchor(self) -> bool {
-        !matches!(self, Self::Hline)
+        !matches!(self, Self::Hline | Self::Vline)
     }
 }
+
+/// The group a tool sits in, which is how the toolbar is organised.
+///
+/// A vocabulary, not free text: the shell renders one flyout per group in this
+/// order, and a tool the shell has never heard of still lands in a flyout it
+/// can draw rather than in an unlabeled pile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolGroup {
+    /// Lines: trendlines, rays, horizontals, verticals.
+    Lines,
+    /// Shapes: rectangles and anything with an area.
+    Shapes,
+    /// Measurement: Fibonacci and the price/time ruler.
+    Measurement,
+}
+
+impl ToolGroup {
+    /// Every group, in toolbar order.
+    pub const ALL: [Self; 3] = [Self::Lines, Self::Shapes, Self::Measurement];
+
+    /// The wire name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Lines => "lines",
+            Self::Shapes => "shapes",
+            Self::Measurement => "measurement",
+        }
+    }
+
+    /// What the toolbar calls it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Lines => "Lines",
+            Self::Shapes => "Shapes",
+            Self::Measurement => "Measure",
+        }
+    }
+}
+
+/// One tool the engine can draw, as the toolbar and the AI both read it.
+///
+/// The point of the registry (`docs/21`) is that this is **the only place a
+/// tool is declared**. The shell builds its buttons from it over the ABI, the
+/// storage's kind list is pinned against [`DrawingKind::ALL`] by a test, and
+/// the AI's drawing vocabulary is this list -- so adding a tool is adding one
+/// variant, one `shapes` arm, and one row here, and every consumer follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolSpec {
+    /// What the tool draws, which is also the wire name.
+    pub kind: DrawingKind,
+    /// The short label on the button.
+    pub label: &'static str,
+    /// The tooltip: what a drag with this tool does.
+    pub title: &'static str,
+    /// Which flyout it sits in.
+    pub group: ToolGroup,
+    /// What the group's trigger reads. Carried on the row rather than derived
+    /// by the shell, so the engine decides every word on the toolbar.
+    pub group_label: &'static str,
+    /// How many anchors placing it takes: `1` for a click, `2` for a drag.
+    pub anchors: u8,
+}
+
+/// The tools this engine can draw, in toolbar order.
+///
+/// The cursor is deliberately absent: it is not an object the engine can draw,
+/// it is the shell's "select and pan" state, and a registry of *objects*
+/// pretending to contain it would be one more thing to filter out.
+pub const REGISTRY: [ToolSpec; 8] = [
+    ToolSpec {
+        kind: DrawingKind::Trendline,
+        label: "Trend",
+        title: "Drag from one point to another",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: 2,
+    },
+    ToolSpec {
+        kind: DrawingKind::Ray,
+        label: "Ray",
+        title: "Drag, and the line extends through the second point to the edge",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: 2,
+    },
+    ToolSpec {
+        kind: DrawingKind::Extended,
+        label: "Ext line",
+        title: "Drag; the line runs through both points in both directions",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: 2,
+    },
+    ToolSpec {
+        kind: DrawingKind::Hline,
+        label: "H-line",
+        title: "Click a price to mark it across the chart",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: 1,
+    },
+    ToolSpec {
+        kind: DrawingKind::Vline,
+        label: "V-line",
+        title: "Click a time to mark it down the chart",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: 1,
+    },
+    ToolSpec {
+        kind: DrawingKind::Rect,
+        label: "Rect",
+        title: "Drag out a rectangle",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: 2,
+    },
+    ToolSpec {
+        kind: DrawingKind::Fib,
+        label: "Fib",
+        title: "Drag from one swing to another",
+        group: ToolGroup::Measurement,
+        group_label: "Measure",
+        anchors: 2,
+    },
+    ToolSpec {
+        kind: DrawingKind::Measure,
+        label: "Ruler",
+        title: "Drag to measure the price and time delta",
+        group: ToolGroup::Measurement,
+        group_label: "Measure",
+        anchors: 2,
+    },
+];
 
 /// Where one end of a drawing is, and in what unit.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -639,9 +804,17 @@ mod tests {
     }
 
     #[test]
-    fn only_a_horizontal_line_has_one_anchor() {
+    fn only_a_horizontal_or_vertical_line_has_one_anchor() {
         assert!(!DrawingKind::Hline.needs_second_anchor());
-        for kind in [DrawingKind::Trendline, DrawingKind::Rect, DrawingKind::Fib] {
+        assert!(!DrawingKind::Vline.needs_second_anchor());
+        for kind in [
+            DrawingKind::Trendline,
+            DrawingKind::Ray,
+            DrawingKind::Extended,
+            DrawingKind::Rect,
+            DrawingKind::Fib,
+            DrawingKind::Measure,
+        ] {
             assert!(kind.needs_second_anchor(), "{kind:?} needs two anchors");
         }
     }
@@ -652,7 +825,14 @@ mod tests {
         // levels to compute and a `rect` has no area, and either would appear on
         // the chart as nothing at all -- which reads as "the drawing was lost"
         // rather than as "this request was wrong".
-        for kind in [DrawingKind::Trendline, DrawingKind::Rect, DrawingKind::Fib] {
+        for kind in [
+            DrawingKind::Trendline,
+            DrawingKind::Ray,
+            DrawingKind::Extended,
+            DrawingKind::Rect,
+            DrawingKind::Fib,
+            DrawingKind::Measure,
+        ] {
             let error = drawing(kind, None)
                 .validate_anchors()
                 .expect_err("must refuse");
@@ -796,6 +976,65 @@ mod tests {
         for kind in DrawingKind::ALL {
             let json = serde_json::to_value(kind).expect("serializes");
             assert_eq!(json, kind.name(), "{kind:?} renamed on the wire");
+        }
+    }
+
+    /// The registry is the one list of tools, and these pin its invariants.
+    mod registry {
+        use super::*;
+
+        #[test]
+        fn every_kind_has_exactly_one_tool() {
+            // A kind without a row is a drawing nothing can place; a kind with
+            // two rows is a button that lies about which one it is.
+            assert_eq!(REGISTRY.len(), DrawingKind::ALL.len());
+            for kind in DrawingKind::ALL {
+                let rows = REGISTRY.iter().filter(|t| t.kind == kind).count();
+                assert_eq!(rows, 1, "{kind:?} appears {rows} times");
+            }
+        }
+
+        #[test]
+        fn every_anchor_count_agrees_with_the_kind_rule() {
+            // Two sources of one truth is how a button that places one anchor
+            // for a two-anchor tool ships. The registry is the toolbar's
+            // vocabulary, `needs_second_anchor` is the engine's rule, and this
+            // is the pin between them.
+            for tool in REGISTRY {
+                let expected = if tool.kind.needs_second_anchor() {
+                    2
+                } else {
+                    1
+                };
+                assert_eq!(tool.anchors, expected, "{}", tool.kind.name());
+            }
+        }
+
+        #[test]
+        fn every_kind_appears_in_exactly_one_group() {
+            for kind in DrawingKind::ALL {
+                let groups = REGISTRY.iter().filter(|t| t.kind == kind).count();
+                assert_eq!(groups, 1, "{kind:?} sits in {groups} groups");
+            }
+            for group in ToolGroup::ALL {
+                assert!(
+                    REGISTRY.iter().any(|t| t.group == group),
+                    "{group:?} has no tools"
+                );
+            }
+        }
+
+        #[test]
+        fn the_registry_serializes_what_the_shell_reads() {
+            // The shell builds its flyouts from this JSON over the ABI, so the
+            // field names are wire, not internal.
+            let json = serde_json::to_value(REGISTRY).expect("serializes");
+            assert_eq!(json[0]["kind"], "trendline");
+            assert_eq!(json[0]["label"], "Trend");
+            assert_eq!(json[0]["group"], "lines");
+            assert_eq!(json[0]["anchors"], 2);
+            assert_eq!(json[3]["kind"], "hline");
+            assert_eq!(json[3]["anchors"], 1);
         }
     }
 
