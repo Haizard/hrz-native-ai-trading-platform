@@ -84,7 +84,11 @@ function applyAuthGate() {
   const signedIn = Boolean(token());
   const home = document.getElementById("home");
   const workspace = document.querySelector("main");
+  const statusbar = document.getElementById("statusbar");
   if (home) home.hidden = signedIn;
+  // The status bar belongs to the workstation -- it counts charts and ticks
+  // the market's clock, both of which are dashboard furniture.
+  if (statusbar) statusbar.hidden = !signedIn;
   if (workspace) {
     const wasHidden = workspace.hidden;
     workspace.hidden = !signedIn;
@@ -95,7 +99,50 @@ function applyAuthGate() {
       for (const pane of panes) pane.redraw();
     }
   }
+  // The chat hero greets the account by name; the composer chip names the
+  // model that will answer. Both are account-level, so both repaint here.
+  paintAiHero();
+  paintModelChip();
 }
+
+/// The greeting at the top of the AI pane, and the two prompt chips under it.
+/// The name comes from the signed-in email -- the handle the platform knows --
+/// with the part before the @ as the friendly form.
+function paintAiHero() {
+  const greeting = document.getElementById("aiGreeting");
+  if (!greeting) return;
+  const value = token();
+  if (!value) { greeting.textContent = "Welcome"; return; }
+  try {
+    const payload = JSON.parse(atob(value.split(".")[1] || ""));
+    const email = payload.sub || payload.email || "";
+    const name = email.includes("@") ? email.split("@")[0] : email;
+    greeting.textContent = name ? `Welcome back, ${name}` : "Welcome back";
+  } catch {
+    greeting.textContent = "Welcome back";
+  }
+}
+
+/// The composer's model chip: which provider answers this user's chats. The
+/// same source of truth as the AI Model tab -- the stored config when there
+/// is one, the platform primary otherwise.
+function paintModelChip() {
+  const chip = document.getElementById("aiModelChip");
+  if (!chip) return;
+  const custom = localStorage.getItem("atp.modelChip");
+  chip.textContent = custom ? `◇ ${custom}` : "◇ Platform model";
+}
+
+/// The bottom bar's clock. Markets run on UTC, so the clock is UTC and says
+/// so -- a local wall time with no name would read as an exchange time.
+function tickUtcClock() {
+  const clock = document.getElementById("utcClock");
+  if (!clock || document.getElementById("statusbar")?.hidden) return;
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  clock.textContent = `${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())} UTC`;
+}
+setInterval(tickUtcClock, 1000);
 
 /// One authenticate used by both doors: the home page's card and the
 /// workstation's inline strip. `register` only changes the endpoint; after
@@ -313,52 +360,56 @@ function createChartPane(root, hooks = {}) {
   // Every coordinate below comes from the scene. The only arithmetic is the
   // device-pixel-ratio scale, which is a display concern rather than a market one.
   // ---------------------------------------------------------------------------
+  // The canvas palette, matched to the LuxAlgo-grade shell in index.html:
+  // TV-standard candle colours, a #131722 plot on #171b26 panels, and the
+  // same blue accent the chrome uses -- the chart and its frame are one
+  // product, not two palettes that happen to share a screen.
   const COLORS = {
-    up: "#26a69a",
-    down: "#ef5350",
-    wick: "#8b949e",
-    profile: "#30363d",
-    value: "#58a6ff",
-    grid: "#21262d",
-    text: "#8b949e",
-    vwap: "#d29922",
-    poc: "#e6edf3",
-    vah: "#8b949e",
-    val: "#8b949e",
-    entry: "#58a6ff",
-    stop: "#ef5350",
-    target: "#26a69a",
+    up: "#089981",
+    down: "#f23645",
+    wick: "#6b7280",
+    profile: "#2a2e39",
+    value: "#2962ff",
+    grid: "#1e222d",
+    text: "#787b86",
+    vwap: "#e3b341",
+    poc: "#d1d4dc",
+    vah: "#787b86",
+    val: "#787b86",
+    entry: "#2962ff",
+    stop: "#f23645",
+    target: "#089981",
     // The rest of the engine's overlay vocabulary. A level an answer *cited*
     // rather than one of the three trade prices is deliberately the quiet
     // grey-blue the other reference levels use -- it is context, not a plan --
     // and `other` is the text colour so a role the palette does not cover draws
     // as an annotation rather than as something with a meaning it does not have.
-    level: "#8b949e",
-    other: "#8b949e",
+    level: "#787b86",
+    other: "#787b86",
     // The drawing tools, one colour per kind so two shapes on the same chart are
     // told apart by what they are rather than by which was drawn first.
-    trendline: "#4aa3ff",
-    hline: "#d29922",
-    rect: "#a371f7",
-    fib: "#3fb950",
+    trendline: "#2962ff",
+    hline: "#e3b341",
+    rect: "#9564e2",
+    fib: "#4caf8e",
     // The footprint ladder. Buy-aggressed volume is the ask side winning and
     // sell-aggressed is the bid side winning, which is the same convention the
     // level colours above already follow -- a level drawn green means the same
     // thing in both panels. `footValue` is the value area, and is the profile
     // blue rather than a new colour, because it is the same concept.
-    footBuy: "#a371f7",
-    footSell: "#4aa3ff",
-    footValue: "#58a6ff",
+    footBuy: "#9564e2",
+    footSell: "#2962ff",
+    footValue: "#2962ff",
     // The two bands the engine ships with. A concept a client defined has no
     // entry here -- it cannot, we have never heard of it -- which is what the
     // side fallback below is for.
-    demand: "#26a69a",
-    supply: "#ef5350",
+    demand: "#089981",
+    supply: "#f23645",
     // Keyed by the region's `side`, the direction expected to react from the
     // band. Every region carries one, so an unfamiliar band reads as a direction
     // instead of as grey.
-    buy: "#26a69a",
-    sell: "#ef5350",
+    buy: "#089981",
+    sell: "#f23645",
   };
 
   function draw() {
@@ -458,7 +509,7 @@ function createChartPane(root, hooks = {}) {
     const y = Math.min(Math.max(lp.y, 8), scene.height - 20);
     ctx.fillStyle = colour;
     ctx.fillRect(x, y - 8, w, 16);
-    ctx.fillStyle = "#0d1117";
+    ctx.fillStyle = "#131722";
     ctx.textAlign = "left";
     ctx.fillText(text, x + 4, y + 3.5);
   }
@@ -566,7 +617,7 @@ function createChartPane(root, hooks = {}) {
       ctx.beginPath();
       ctx.arc(marker.x, marker.y, marker.kind === "signal" ? 5 : 3.5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = "#e2e8f0";
+      ctx.fillStyle = "#d1d4dc";
       ctx.fillText(marker.label, marker.x + 7, marker.y - 7);
     }
   }
@@ -635,7 +686,7 @@ function createChartPane(root, hooks = {}) {
       // candle traded nothing is the same colour as the space outside the grid,
       // and a sparse ladder stops reading as columns at all -- which is what the
       // reference chart's tinted columns are for.
-      ctx.fillStyle = "#12171f";
+      ctx.fillStyle = "#1a1e29";
       ctx.fillRect(column.x, scene.plot.y, column.w, scene.plot.h);
       ctx.strokeStyle = COLORS.grid;
       ctx.lineWidth = 1;
@@ -692,20 +743,20 @@ function createChartPane(root, hooks = {}) {
         // One colour for the pair. The tint already says which side won, and
         // splitting the pair into a bright half and a dim half cost three text
         // measurements per cell on every frame of a pan.
-        ctx.fillStyle = "#e6edf3";
+        ctx.fillStyle = "#d1d4dc";
         ctx.fillText(pair, cell.x + cell.w / 2, cell.y + cell.h / 2);
       }
 
       // The candle's own totals, in its own column, under its own ladder.
       const summary = column.summary;
-      ctx.fillStyle = "#161b22";
+      ctx.fillStyle = "#1e222d";
       ctx.fillRect(summary.x + 1, summary.y, summary.w - 2, summary.h);
       ctx.strokeStyle = COLORS.grid;
       ctx.lineWidth = 1;
       ctx.strokeRect(summary.x + 0.5, summary.y + 0.5, summary.w - 1, summary.h - 1);
       if (showText) {
         ctx.textAlign = "center";
-        ctx.fillStyle = "#e6edf3";
+        ctx.fillStyle = "#d1d4dc";
         ctx.fillText(summary.volume_text, summary.x + summary.w / 2, summary.y + font * 0.95);
         ctx.fillStyle = summary.delta_positive ? COLORS.up : COLORS.down;
         ctx.fillText(summary.delta_text, summary.x + summary.w / 2, summary.y + summary.h - font * 0.75);
@@ -3027,6 +3078,10 @@ function refreshCloseButtons() {
     pane.root.querySelector(".close").hidden = panes.length < 2;
   }
   el("split").disabled = panes.length >= MAX_PANES;
+  // The status bar counts the panes on screen, so "how much am I looking at"
+  // is answered without counting title bars.
+  const count = document.getElementById("sbCharts");
+  if (count) count.textContent = `${panes.length} chart${panes.length === 1 ? "" : "s"}`;
 }
 
 /// Build the first pane from the markup, and make it the active one.
@@ -3785,7 +3840,7 @@ function captureChart(canvas, timeframeLabel = "") {
       opaque.width = canvas.width;
       opaque.height = canvas.height;
       const octx = opaque.getContext("2d");
-      octx.fillStyle = "#0d1117";
+      octx.fillStyle = "#131722";
       octx.fillRect(0, 0, opaque.width, opaque.height);
       octx.drawImage(canvas, 0, 0);
       return screenshotFromUrl(opaque.toDataURL("image/png"), timeframeLabel);
@@ -3798,7 +3853,7 @@ function captureChart(canvas, timeframeLabel = "") {
     // A chart is drawn on a transparent background, so without this the PNG has
     // transparent pixels where the model expects a plot. A screenshot that looks
     // like a dark void reads to a vision model as "there is no chart here".
-    ctx.fillStyle = "#0d1117";
+    ctx.fillStyle = "#131722";
     ctx.fillRect(0, 0, scaled.width, scaled.height);
     ctx.drawImage(canvas, 0, 0, scaled.width, scaled.height);
     return screenshotFromUrl(scaled.toDataURL("image/png"), timeframeLabel);
@@ -5984,6 +6039,12 @@ async function refreshAiModel() {
   try {
     const config = await api("/agent/provider-config");
     const provider = AI_PROVIDERS.find((p) => p.id === config.provider);
+    // The composer's chip mirrors the stored config, so the input always
+    // names what will answer it.
+    try {
+      localStorage.setItem("atp.modelChip", `${provider ? provider.name : config.provider} · ${config.model_id}`);
+    } catch {}
+    paintModelChip();
     out.innerHTML = "";
     const card = Object.assign(document.createElement("div"), { className: "aiCurrent" });
     card.innerHTML =
@@ -6005,6 +6066,34 @@ async function refreshAiModel() {
       out.innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
     }
   }
+}
+
+/// The AI pane's prompt chips. They are preset prompts: clicking one opens the
+/// composer of a chat (creating one when there is none -- a chip that answers
+/// "no chats yet" with silence is a dead button) and sends its text.
+async function runAiChip(promptText) {
+  if (!wsActiveId) {
+    const name = promptText.split(/[.\u2014]/)[0].slice(0, 40).trim() || "Chip chat";
+    try {
+      const symbol = activePane ? activePane.symbol() : "BTCUSDT";
+      const created = await api("/indicator-workspaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, symbol, timeframe: el("wsTimeframe").value.trim() || "5m" }),
+      });
+      await loadWorkspaces();
+      // Through the same opener a manual create uses, so the name, the
+      // message list and the revision state are all set, not just the id.
+      if (created && created.id) await selectWorkspace(created.id);
+    } catch (e) {
+      el("wsChatMsg").textContent = e.message;
+      return;
+    }
+  }
+  if (!wsActiveId) return;
+  const input = el("wsChatInput");
+  input.value = promptText;
+  sendWorkspaceMessage();
 }
 
 async function saveAiModel() {
@@ -6046,6 +6135,8 @@ async function clearAiModel() {
     msg.textContent = "the platform's primary model applies again";
     el("aiModelId").value = "";
     el("aiBaseUrl").value = "";
+    try { localStorage.removeItem("atp.modelChip"); } catch {}
+    paintModelChip();
     refreshAiModel();
   } catch (e) {
     if (e.code === "NO_PROVIDER_CONFIG") {
@@ -6112,6 +6203,12 @@ async function main() {
   loadWatchlistUniverse();
   // Workspace event listeners.
   el("wsCreate").onclick = createWorkspace;
+  document.querySelectorAll("[data-ai-chip]").forEach((chip) =>
+    chip.addEventListener("click", () => runAiChip(chip.dataset.aiChip))
+  );
+  // The model chip is a shortcut to the AI Model tab, where the choice lives.
+  const modelChip = document.getElementById("aiModelChip");
+  if (modelChip) modelChip.addEventListener("click", () => selectPane("aimodel"));
   el("wsDelete").onclick = deleteWorkspace;
   el("wsBack").onclick = showWorkspaceList;
   el("wsChatSend").onclick = sendWorkspaceMessage;

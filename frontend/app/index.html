@@ -17,17 +17,23 @@
   engine, where it is unit-tested natively.
 -->
 <style>
+  /*
+    The LuxAlgo-grade palette: a near-black blue-charcoal page, panels a step
+    lighter, hairlines barely there, and a saturated flag-blue accent. The
+    candle greens and reds are the TV-standard #089981/#f23645 -- the same ones
+    the canvas palette in app.js uses, so the chart and its chrome agree.
+  */
   :root {
-    --bg: #0d1117;
-    --panel: #161b22;
-    --panel-2: #1c2129;
-    --line: #2a313c;
-    --text: #e6edf3;
-    --muted: #8b949e;
-    --up: #26a69a;
-    --down: #ef5350;
-    --accent: #58a6ff;
-    --warn: #d29922;
+    --bg: #131722;
+    --panel: #171b26;
+    --panel-2: #1e222d;
+    --line: #262b36;
+    --text: #d1d4dc;
+    --muted: #7a7f8a;
+    --up: #089981;
+    --down: #f23645;
+    --accent: #2962ff;
+    --warn: #e3b341;
     --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -39,31 +45,50 @@
   }
   header {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 7px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
   }
-  h1 { font-size: 13px; font-weight: 600; margin: 0 8px 0 0; letter-spacing: .02em; }
+  h1 { font-size: 13px; font-weight: 700; margin: 0 8px 0 0; letter-spacing: .02em; display: flex; align-items: center; gap: 7px; }
+  /* The little brand mark: a filled diamond, the way the reference product
+     pairs a glyph with its name. Pure CSS, so nothing extra to load. */
+  h1::before {
+    content: ""; width: 14px; height: 14px; flex: 0 0 auto;
+    background: linear-gradient(135deg, var(--accent), #6d8cff);
+    border-radius: 4px;
+    clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  }
   h1 span { color: var(--muted); font-weight: 400; }
   select, input, button, textarea {
     background: var(--panel-2); color: var(--text);
-    border: 1px solid var(--line); border-radius: 6px;
+    border: 1px solid transparent; border-radius: 6px;
     padding: 5px 8px; font: inherit;
   }
+  select:hover, input:hover, button:hover, textarea:hover { border-color: var(--line); }
+  select:focus-visible, input:focus-visible, button:focus-visible, textarea:focus-visible {
+    outline: none; border-color: var(--accent);
+  }
   input, textarea { font-family: var(--mono); font-size: 12px; }
-  button { cursor: pointer; }
-  button:hover { border-color: var(--accent); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #06121f; font-weight: 600; }
+  button { cursor: pointer; font-size: 12px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.1); border-color: var(--accent); }
   /*
     The kill switch and a venue revoke. Both move money-relevant state and both
     are irreversible from this panel, so they read as destructive rather than as
     one more button in the row -- a control that closes a position should not
     look like "Refresh".
   */
-  button.danger { border-color: var(--down); color: var(--down); }
-  button.danger:hover { background: var(--down); border-color: var(--down); color: #06121f; }
+  button.danger { border-color: var(--down); color: var(--down); background: transparent; }
+  button.danger:hover { background: var(--down); border-color: var(--down); color: #fff; }
   button:disabled { opacity: .5; cursor: default; }
-  h3.section { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  h3.section { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
   .spacer { flex: 1; }
   #session { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+
+  /* Slim dark scrollbars everywhere -- chunky light-grey system bars are the
+     loudest thing on an otherwise quiet dark screen. */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2a2e39; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #363b47; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
 
   #signin { display: flex; gap: 6px; align-items: center; padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
   #signin[hidden] { display: none; }
@@ -166,17 +191,22 @@
   */
   .paneHead {
     display: flex; align-items: center; gap: 6px;
-    padding: 3px 8px; background: var(--panel); border-bottom: 1px solid var(--line);
-    font-size: 11px; min-height: 24px;
+    padding: 2px 10px; background: var(--panel); border-bottom: 1px solid var(--line);
+    font-size: 11px; min-height: 28px;
   }
   .chartPane.active .paneHead { box-shadow: inset 0 2px 0 var(--accent); }
-  .paneTitle { color: var(--text); font-family: var(--mono); font-weight: 600; letter-spacing: 0.02em; }
-  .paneBtns { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+  .paneTitle {
+    color: var(--text); font-family: var(--mono); font-weight: 700; letter-spacing: 0.03em; font-size: 12px;
+    /* A narrow pane must truncate its name, never wrap: a two-line title bar
+       would shove every chart's plot down mid-grid. */
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0;
+  }
+  .paneBtns { margin-left: auto; display: flex; align-items: center; gap: 2px; }
   .paneBtns button {
-    padding: 1px 7px; font-size: 12px; line-height: 1.4;
+    padding: 2px 8px; font-size: 12px; line-height: 1.4; border-radius: 5px;
     color: var(--muted); background: transparent; border-color: transparent;
   }
-  .paneBtns button:hover { color: var(--text); border-color: var(--line); }
+  .paneBtns button:hover { color: var(--text); background: var(--panel-2); border-color: transparent; }
   /* Collapsed: the canvas hides and the row re-flows to a column -- minimized
      panes become thin title bars, and the surviving chart takes the rest. */
   .chartPane.min .chartWrap, .chartPane.min .chartNote, .chartPane.min .footprintStats { display: none; }
@@ -201,12 +231,12 @@
   #chartMenu {
     position: fixed; z-index: 60; display: none;
     flex-direction: column; gap: 4px; align-items: stretch;
-    min-width: 190px; max-height: 80vh; overflow: auto;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
-    padding: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    min-width: 210px; max-height: 80vh; overflow: auto;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
   }
   #chartMenu.open { display: flex; }
-  #chartMenu select, #chartMenu button { width: 100%; padding: 4px 8px; font-size: 12px; }
+  #chartMenu select, #chartMenu button { width: 100%; padding: 5px 8px; font-size: 12px; }
   /* The tool row is absolutely positioned inside a pane; hosted here it is a
      plain wrapping row. Its `hidden` is cleared while hosted. */
   #chartMenu .tools { position: static; flex-wrap: wrap; }
@@ -217,6 +247,17 @@
   }
   #chartMenu hr { border: 0; border-top: 1px solid var(--line); margin: 6px 0; width: 100%; }
   #chartMenu .feedStatus { font-size: 10px; color: var(--muted); }
+
+  /* The bottom status bar: one quiet line, hairline on top, mono clock. */
+  #statusbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 12px; background: var(--panel); border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--muted); flex: none;
+  }
+  #statusbar[hidden] { display: none; }
+  #sbCharts { color: var(--text); font-family: var(--mono); }
+  .sbSep { opacity: 0.6; }
+  #utcClock { font-family: var(--mono); font-size: 11px; color: var(--text); }
   /*
     Watchlist rail hide/show. The hide button rides the rail's top-right corner;
     the restore sliver hugs the screen's left edge and exists only while the
@@ -294,9 +335,13 @@
   #sideWatch .wlHead { padding: 0 10px; }
   #sideWatch .row { padding: 0 10px; }
   #sideWatch .panePad { padding: 8px 10px 4px; }
-  .tabs { display: flex; border-bottom: 1px solid var(--line); }
-  .tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 8px; }
-  .tabs button[aria-selected="true"] { color: var(--text); border-bottom: 2px solid var(--accent); }
+  /* Eight tabs will not fit a narrowed aside in one line -- without `wrap`
+     the last two simply overflow the panel and a drag-narrowed pane loses
+     destinations. Wrapping keeps every tab reachable at any width. */
+  .tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .tabs button { flex: 1 1 auto; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 9px 8px; font-size: 12px; white-space: nowrap; }
+  .tabs button:hover { color: var(--text); }
+  .tabs button[aria-selected="true"] { color: var(--text); border-bottom: 2px solid var(--accent); background: var(--panel-2); }
 
   /*
     The watchlist. Rows are the platform's answer to "which market" — a search
@@ -469,21 +514,41 @@
   }
 
   /* The composer: one growing input with the send button inside its frame,
-     pinned under the stream so the conversation never pushes it off screen. */
+     pinned under the stream so the conversation never pushes it off screen.
+     The model chip sits inside the frame as the quiet first element -- what
+     answers this chat is one click from the input, the way the reference
+     product puts its model picker under the prompt box. */
   .chat-composer {
     display: flex; align-items: flex-end; gap: 6px;
     padding: 8px; background: var(--panel-2);
     border: 1px solid var(--line); border-radius: 12px;
-    margin-top: 8px;
+    margin-top: 8px; flex-wrap: wrap;
   }
   .chat-composer:focus-within { border-color: var(--accent); }
   .chat-composer textarea {
-    flex: 1; min-height: 22px; max-height: 120px; resize: none;
+    flex: 1 1 140px; min-height: 22px; max-height: 120px; resize: none;
     background: transparent; border: 0; padding: 4px 2px;
     font-family: inherit; font-size: 13px; color: var(--text);
   }
-  .chat-composer textarea:focus { outline: none; }
+  .chat-composer textarea:focus { outline: none; border-color: transparent; }
+  .chat-composer textarea:hover { border-color: transparent; }
   .chat-send { flex: 0 0 auto; border-radius: 9px; padding: 6px 12px; }
+
+  /* The AI pane's greeting hero and its two prompt chips. */
+  .aiHero { margin: 4px 0 14px; }
+  .aiHero h2 { font-size: 20px; letter-spacing: -0.2px; text-transform: none; margin: 0 0 10px; }
+  .aiChips { display: flex; flex-direction: column; gap: 6px; }
+  .aiChip {
+    text-align: left; padding: 9px 12px; border-radius: 10px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--text); font-size: 12.5px;
+  }
+  .aiChip:hover { border-color: var(--accent); background: var(--panel-2); }
+  .modelChip {
+    flex: 0 0 auto; padding: 4px 9px; font-size: 11px; border-radius: 8px;
+    color: var(--muted); white-space: nowrap;
+  }
+  .modelChip:hover { color: var(--text); }
   /* Wraps rather than clipping when the pane is narrow: the keyboard hint is
      the one line a beginner needs, so it must never be cut in half. */
   .chat-hint { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px; font-size: 10px; margin: 4px 2px 8px; }
@@ -568,11 +633,11 @@
     border: 1px solid var(--line); border-radius: 4px;
     color: var(--muted); white-space: nowrap;
   }
-  .feedStatus[data-state="live"] { color: #26a69a; border-color: #26a69a; }
+  .feedStatus[data-state="live"] { color: #089981; border-color: #089981; }
   .feedStatus[data-state="stale"],
   .feedStatus[data-state="behind"],
-  .feedStatus[data-state="nofeed"] { color: #d29922; border-color: #d29922; }
-  .feedStatus[data-state="offline"] { color: #ef5350; border-color: #ef5350; }
+  .feedStatus[data-state="nofeed"] { color: #e3b341; border-color: #e3b341; }
+  .feedStatus[data-state="offline"] { color: #f23645; border-color: #f23645; }
 
   /*
     Responsive layout.
@@ -666,14 +731,16 @@
   .homeHero h1 {
     margin: 0 0 10px; font-size: 38px; line-height: 1.15; letter-spacing: -0.5px;
   }
+  .homeHero h1::before { display: none; }
   .homeHero .lede { margin: 0 0 24px; color: var(--muted); font-size: 16px; max-width: 560px; }
   .homeAuth {
     display: flex; flex-direction: column; gap: 8px; max-width: 380px;
-    padding: 18px; border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px; border: 1px solid var(--line); border-radius: 12px;
     background: var(--panel);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
   }
   .homeAuth input {
-    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    background: var(--panel-2); border: 1px solid transparent; border-radius: 6px;
     color: var(--text); padding: 9px 10px; font: inherit;
   }
   .homeAuthBtns { display: flex; gap: 8px; }
@@ -683,12 +750,18 @@
     display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
   }
   .marketCard {
-    border: 1px solid var(--line); border-radius: 10px; padding: 16px;
-    background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; padding: 18px;
+    background: linear-gradient(180deg, var(--panel), rgba(23, 27, 38, 0.6));
+    transition: border-color 0.15s ease, transform 0.15s ease;
   }
+  .marketCard:hover { border-color: #39415a; transform: translateY(-2px); }
   .marketCard h3 { margin: 8px 0 6px; font-size: 15px; }
   .marketCard p { margin: 0; color: var(--muted); font-size: 12.5px; }
-  .marketIcon { font-size: 22px; }
+  .marketIcon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; border-radius: 9px; font-size: 18px;
+    background: rgba(41, 98, 255, 0.12); border: 1px solid rgba(41, 98, 255, 0.25);
+  }
 
   /* Settings panes (Brokers, AI Model) share the form rhythm the other
      asides already use. */
@@ -712,17 +785,17 @@
 <body>
 
 <header>
-  <h1>Order-flow workstation <span>· chart by <code>chart-engine</code> (Rust/WASM)</span></h1>
+  <h1>Quant Workstation</h1>
   <!--
     Add a chart. The one chart control the header keeps, and it is here because it
     is about the *page*: it makes another pane rather than changing the one that is
     already there. Everything that describes a series -- symbol, timeframe, bar
     count, chart type, zones, Fit -- belongs to a pane and lives in its bar.
   -->
-  <button id="split" title="Add a second chart beside this one">Add chart</button>
+  <button id="split" title="Add a second chart beside this one">＋ Panels</button>
   <span class="spacer"></span>
   <span id="session">not signed in</span>
-  <button id="signinToggle">Sign in</button>
+  <button id="signinToggle" class="primary">Sign in</button>
 </header>
 
 <!--
@@ -1189,11 +1262,17 @@
     -->
     <div class="pane" id="pane-indicator" hidden>
       <div id="wsListView">
-        <h2>AI Indicator Studio</h2>
-        <p class="muted">
-          Describe an indicator in plain words — the AI builds it, attaches it
-          to your chart, and you refine it by chatting.
-        </p>
+        <div class="aiHero">
+          <h2 id="aiGreeting">Welcome back</h2>
+          <div class="aiChips">
+            <button type="button" class="aiChip" data-ai-chip="Generate a volatility indicator from my attached chart and mark breakouts">
+              ✨ Generate From Chart
+            </button>
+            <button type="button" class="aiChip" data-ai-chip="Brainstorm indicator ideas that fit a ranging market and rank them by edge">
+              ◈ Brainstorm Ideas
+            </button>
+          </div>
+        </div>
         <div class="ws-new">
           <input id="wsName" placeholder="Name this chat, e.g. “SMT divergence”" />
           <div class="row" style="margin-bottom:0">
@@ -1237,7 +1316,8 @@
         <div id="wsChat" class="chat-stream" aria-live="polite"></div>
 
         <div class="chat-composer">
-          <textarea id="wsChatInput" rows="1" placeholder="Describe what you want the indicator to detect…"></textarea>
+          <button type="button" id="aiModelChip" class="aiChip modelChip" title="Which AI model answers your chats — change it in the AI Model tab">◇ Platform model</button>
+          <textarea id="wsChatInput" rows="1" placeholder="Ask for an indicator…"></textarea>
           <button id="wsChatSend" class="chat-send primary" title="Send (Enter)">➤</button>
         </div>
         <div class="chat-hint">
@@ -1326,6 +1406,20 @@
     </div>
   </aside>
 </main>
+
+<!--
+  The status bar: the thin bottom strip the reference product keeps -- what
+  this workspace is on the left, and a live UTC clock on the right. Markets
+  speak UTC, so the clock is UTC and labelled as such rather than the
+  viewer's local time with no name.
+-->
+<footer id="statusbar" hidden>
+  <span id="sbCharts">1 chart</span>
+  <span class="sbSep">·</span>
+  <span>My workspace</span>
+  <span class="spacer"></span>
+  <span id="utcClock">--:--:-- UTC</span>
+</footer>
 
 <div id="chartMenu" aria-label="Chart settings"></div>
 
