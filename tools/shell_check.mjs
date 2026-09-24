@@ -390,6 +390,10 @@ const deliver = (socket, frame) => {
 // `createDrawing` replace the local drawing with the stored one.
 
 const backend = {
+  // The AI-drawn row (`docs/21` phase 3) is injected later, just before the
+  // symbol round-trip returns to BTCUSDT -- injecting it here would inflate
+  // every storage-count check between this point and the clear-all, and the
+  // clear-all itself would delete it before the layer section could use it.
   drawings: [],
   nextId: 1,
   requests: [],
@@ -965,8 +969,8 @@ check(
   `${paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length} flyout tools`
 );
 check(
-  "the magnet, undo and redo controls are on the toolbar",
-  ["[data-magnet]", "[data-undo]", "[data-redo]"].every((sel) =>
+  "the magnet, AI layer, undo and redo controls are on the toolbar",
+  ["[data-magnet]", "[data-ai-layer]", "[data-undo]", "[data-redo]"].every((sel) =>
     paneNode().querySelector(`.tools ${sel}`)
   )
 );
@@ -1860,6 +1864,8 @@ check(
 );
 check(
   "and the other instrument's shape is not drawn on this chart",
+  // Zero of *this symbol's user rows*: the AI row is BTCUSDT's, so its absence
+  // here is the assertion, and the layer filter is irrelevant at count zero.
   lastScene().drawings.length === 0,
   `${lastScene().drawings.length} drawings`
 );
@@ -1869,6 +1875,24 @@ check(
   `${backend.drawings.length} stored`
 );
 
+// The agent has drawn, before the user looked again: an AI-created row lands in
+// storage the same way a hand-drawn one does (`docs/21` phase 2), and the next
+// load is what brings it onto the chart. Injected here rather than seeded at
+// the top so every count above stays about the harness's own gestures. The
+// price is inside the fixture candles' range (BTCUSDT hashes to 827), so the
+// engine actually places the line on the plot.
+backend.drawings.push({
+  id: "ai-seeded-1",
+  symbol: "BTCUSDT",
+  kind: "hline",
+  a1: { unit: "absolute", time: FIXTURE_NOW_MS - 600_000, price: 830 },
+  a2: null,
+  label: "AI resistance",
+  created_by: "ai",
+  confidence: 0.87,
+  reason: "three rejections in the last 80 bars",
+});
+
 symbolSelect.value = "BTCUSDT";
 change(symbolSelect);
 await settle();
@@ -1877,8 +1901,101 @@ await settle();
 
 check(
   "and it comes back on the symbol it belongs to",
+  // The user's trendline, and only that: the AI row is in storage but the layer
+  // is off, so the scene shows one row. That is exactly the default the layer
+  // section below asserts on.
   lastScene().drawings.length === 1,
   `${lastScene().drawings.length} drawings`
+);
+
+// --- the AI analysis layer (`docs/21` phase 3) --------------------------------
+//
+// The agent can draw (`create_drawing`), and what it draws lands in the same
+// table with `created_by: "ai"`. Presentation is the shell's half of the deal:
+// the layer is OFF by default -- an annotation the agent inserted between the
+// user's marks and the candles is a claim that needs opting into -- and the
+// filter is presentation only, because undo and delete must not care what is
+// being shown. The seeded backend row is what makes every check below a
+// statement about a real object rather than about an empty list.
+
+console.log("\nthe AI analysis layer");
+
+const aiLayerButton = () => paneNode().querySelector(".tools [data-ai-layer]");
+const aiRowCount = (scene) => scene.drawings.filter((d) => d.id === "ai-seeded-1").length;
+
+check(
+  "the AI layer toggle is on the toolbar",
+  Boolean(aiLayerButton()),
+  aiLayerButton()?.textContent
+);
+check(
+  "it starts off",
+  aiLayerButton().getAttribute("aria-pressed") === "false",
+  aiLayerButton().getAttribute("aria-pressed")
+);
+check(
+  "and the seeded AI drawing is hidden while it is off",
+  aiRowCount(lastScene()) === 0,
+  `${aiRowCount(lastScene())} AI rows in the scene`
+);
+
+aiLayerButton().click();
+await settle();
+
+check(
+  "turning it on reports the layer as on",
+  aiLayerButton().getAttribute("aria-pressed") === "true",
+  aiLayerButton().getAttribute("aria-pressed")
+);
+check(
+  "and the AI drawing appears",
+  aiRowCount(lastScene()) === 1,
+  `${aiRowCount(lastScene())} AI rows in the scene`
+);
+check(
+  "and the user's own drawings were not filtered out with it",
+  lastScene().drawings.length >= 1,
+  `${lastScene().drawings.length} rows total`
+);
+
+// Selecting the AI drawing says why it is there -- the reason the agent stated
+// at draw time, from storage, without re-asking the model. An unselected drawing
+// emits no handles, so the grab is on the hline's *body*: its segment spans the
+// whole plot at one y, and clicking anywhere on it selects the drawing.
+const aiSegment = lastScene()
+  .drawings.find((d) => d.id === "ai-seeded-1")
+  ?.parts.find((part) => part.shape === "segment");
+if (aiSegment) {
+  pickTool("cursor");
+  const midX = (aiSegment.x1 + aiSegment.x2) / 2;
+  const midY = (aiSegment.y1 + aiSegment.y2) / 2;
+  pointer("pointerdown", midX, midY);
+  await settle();
+  pointer("pointerup", midX, midY);
+  await settle();
+  await settle();
+  check(
+    "selecting the AI drawing surfaces its stored reason",
+    note().includes("three rejections"),
+    note() || "(empty)"
+  );
+} else {
+  check("selecting the AI drawing surfaces its stored reason", false, "the AI drawing offered no segment");
+}
+
+aiLayerButton().click();
+await settle();
+check(
+  "turning it off hides the AI drawing again",
+  aiRowCount(lastScene()) === 0,
+  `${aiRowCount(lastScene())} AI rows in the scene`
+);
+// Presentation only: the row is in storage and in the shell's list, hidden not
+// gone. A filter that deleted what it hid would make the toggle destructive.
+check(
+  "hiding did not delete it",
+  backend.drawings.some((d) => d.id === "ai-seeded-1"),
+  `${backend.drawings.length} stored`
 );
 
 // --- a resize ----------------------------------------------------------------

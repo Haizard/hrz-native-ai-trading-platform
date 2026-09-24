@@ -143,8 +143,37 @@ drawing the agent believes exists and the chart refuses to draw.
 ### Where the shell fits (next)
 
 The chart already renders any stored drawing; an AI-created one needs only the
-layer toggle and its provenance badge (`docs/21` phase 3). The objects arrive
-as ordinary rows, so no shell change is required to *see* them.
+layer toggle and its provenance badge — phase 3, below.
+
+## What shipped (phase 3): the AI analysis layer
+
+The shell's half of the deal. An AI-created object is on the chart only when
+the user asks for it, and says why it is there when selected.
+
+- **The `AI` toggle**, beside the magnet, off by default. An annotation the
+  agent inserted between the user's marks and the candles is a claim that
+  needs opting into, not wallpaper. The button's tooltip carries a live count
+  ("3 AI-drawn objects hidden"), so a closed toolbar answers "is there
+  anything to see?" without a click.
+- **The filter is presentation only.** It withholds `created_by: "ai"` rows
+  from the *engine request* — the engine draws what it is sent, and the shell
+  is what decides what was sent. The rows stay in `drawings`, so undo, delete,
+  and every storage count are unaffected by what is being shown. Hiding is
+  not deleting.
+- **The provenance badge is the note strip's third author.** Priority order:
+  the feed's notice, the engine's build note, then — only when an AI drawing
+  is selected — `AI: <reason> (confidence N%)`, read from storage. Derived in
+  `render`, not written by `select`: render owns the strip, and a note written
+  before the frame it belongs to is wiped by it. That was the save-failure bug
+  one layer down, back again; the rule generalises — **whoever owns the strip
+  writes it last**.
+- **Provenance survives the round trip**: `GET /drawings` reports
+  `created_by`/`confidence`/`reason` (absent for human rows), `fromServer`
+  carries them beside `label`, and the update path never rewrites them.
+
+`shell_check.mjs` covers the whole layer: hidden by default, appearing on
+toggle, the user's rows unaffected, the reason surfacing on selection, and a
+re-hide that leaves the row in storage.
 
 ### Out of scope for phase 2 (deliberately)
 

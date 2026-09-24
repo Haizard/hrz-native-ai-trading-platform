@@ -326,6 +326,9 @@
   .toolFlyout button { text-align: left; white-space: nowrap; }
   .toolFlyout button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
   .tools button[data-magnet][aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  /* The AI layer toggle shares the magnet's pressed language: one style for
+     "this toolbar state is on", whatever the control (`docs/21` phase 3). */
+  .tools button[data-ai-layer][aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
   .chartHint {
     position: absolute; left: 12px; bottom: 8px; pointer-events: none;
     color: var(--muted); font-family: var(--mono); font-size: 10px; opacity: 0.75;
@@ -1070,6 +1073,9 @@
           <button data-tool="rect" aria-pressed="false" title="Drag out a rectangle">Rect</button>
           <button data-tool="fib" aria-pressed="false" title="Drag from one swing to another">Fib</button>
           <button data-magnet class="magnet" aria-pressed="false" title="Snap new drawings to nearby open, high, low, close and value-area prices">Magnet</button>
+          <!-- The AI analysis layer (`docs/21` phase 3): off by default, because
+               annotations the agent drew are a claim that needs opting into. -->
+          <button data-ai-layer class="aiLayer" aria-pressed="false" title="Show objects the AI agent drew on this chart, with the reason it gave for each">AI</button>
           <button data-undo class="undo" title="Undo the last drawing change (Ctrl+Z)" disabled>Undo</button>
           <button data-redo class="redo" title="Redo an undone drawing change (Ctrl+Y)" disabled>Redo</button>
           <button class="deleteDrawing danger" title="Delete the selected drawing" disabled>Delete</button>

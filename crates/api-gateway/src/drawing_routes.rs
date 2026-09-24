@@ -103,6 +103,18 @@ pub struct DrawingResponse {
     pub a2: Option<Anchor>,
     /// What the user called it.
     pub label: Option<String>,
+    /// Who drew it: `"ai"` for agent-created objects, absent for a human's.
+    /// The shell's layer filter reads this — it is a *fact about the row*,
+    /// reported verbatim, and the shell derives its own layer from it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// The drawing agent's stated confidence, when it stated one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    /// Why the agent drew it, in its own words. This is what "why is this
+    /// here?" reads; the shell surfaces it as a badge, no re-ask needed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// `GET /drawings`
@@ -240,6 +252,13 @@ fn response(id: Uuid, body: &DrawingBody) -> DrawingResponse {
         a1: body.a1,
         a2: body.a2,
         label: body.label.clone(),
+        // A write that arrived over the HTTP route is the user's own work, and
+        // the provenance fields are facts about the *stored row*, which this
+        // response has not read. Absent until the next list; the shell needs
+        // them for the layer filter, not for the shape it just drew.
+        created_by: None,
+        confidence: None,
+        reason: None,
     }
 }
 
@@ -329,6 +348,9 @@ fn describe(row: &db::DrawingRow) -> Option<DrawingResponse> {
             _ => None,
         },
         label: row.label.clone(),
+        created_by: row.created_by.clone(),
+        confidence: row.confidence,
+        reason: row.reason.clone(),
     })
 }
 
@@ -596,12 +618,19 @@ mod tests {
             a1: absolute(1.0, 2.0),
             a2: Some(absolute(3.0, 4.0)),
             label: Some("watch this".into()),
+            created_by: Some("ai".into()),
+            confidence: Some(0.82),
+            reason: Some("three rejections".into()),
         })
         .expect("serializes");
 
         assert_eq!(body["id"], "8f3a");
         assert_eq!(body["kind"], "trendline");
         assert_eq!(body["label"], "watch this");
+        // The provenance keys the shell's layer filter reads.
+        assert_eq!(body["created_by"], "ai");
+        assert_eq!(body["confidence"], 0.82);
+        assert_eq!(body["reason"], "three rejections");
         for anchor in ["a1", "a2"] {
             assert_eq!(body[anchor]["unit"], "absolute", "{anchor}");
             assert!(body[anchor]["time"].is_number(), "{anchor}");

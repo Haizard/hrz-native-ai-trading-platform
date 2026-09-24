@@ -285,7 +285,7 @@ const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartHint", "chartNote",
   "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "fit",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
-  "magnet", "undo", "redo",
+  "magnet", "aiLayer", "undo", "redo",
   // The pane's own chrome (title, zoom/collapse buttons) and the hidden bar
   // the right-click menu hosts.
   "paneTitle", "zoomIn", "zoomOut", "minBtn", "expBtn", "chartBar",
@@ -360,6 +360,12 @@ function createChartPane(root, hooks = {}) {
   // a symbol change and never derived from the canvas: they are the user's
   // analysis, and the shell is a viewer of them rather than their author.
   let drawings = [];
+  // Whether the AI analysis layer is shown. OFF by default, and the default is
+  // the honest one: an annotation the agent drew between the user's marks and
+  // the candles is a claim that needs opting into, not wallpaper (`docs/21`).
+  // The filter is *presentation only* — the rows stay in `drawings`, so undo,
+  // deletion, and the object count are unaffected by what is being shown.
+  let aiLayerOn = false;
   // The active drawing tool, or `"cursor"`.
   let tool = "cursor";
   // The magnet. On, every fraction anchor a placement sends is snapped by the
@@ -1184,6 +1190,9 @@ function createChartPane(root, hooks = {}) {
     // in rather than appearing a beat later. They belong to the symbol, so this is
     // also where a symbol change picks up the new one's.
     await loadDrawings();
+    // The AI layer's badge count is per-symbol, so the toggle's title is
+    // re-derived after every load (`docs/21` phase 3).
+    refreshAiLayerButton();
 
     if (el("mode").value === "footprint") {
       // A footprint is built from trades, not candles, so it comes from its own
@@ -1276,10 +1285,17 @@ function createChartPane(root, hooks = {}) {
       // that had just been saved came back from `fromServer` unselected and offered
       // no handles, so the shape the user had this second finished drawing could
       // not be grabbed.
-      drawings: (placing ? [...drawings, placing] : drawings).map((drawing) => ({
-        ...drawing,
-        selected: drawing.id === selectedDrawing,
-      })),
+      // The layer filter (`docs/21` phase 3): with the AI layer off, rows the
+      // agent created are withheld from the *request*, which is the only place
+      // a filter can live — the engine draws what it is sent, and the shell is
+      // what decides what was sent. `placing` is never filtered: it is the
+      // shape under the user's own pointer right now.
+      drawings: (placing ? [...drawings, placing] : drawings)
+        .filter((drawing) => aiLayerOn || drawing.created_by !== "ai")
+        .map((drawing) => ({
+          ...drawing,
+          selected: drawing.id === selectedDrawing,
+        })),
       // The magnet. Engine-side, like every mapping: the shell says whether
       // snapping is wanted and the engine decides what the pointer hit.
       snap: magnet,
@@ -1319,7 +1335,23 @@ function createChartPane(root, hooks = {}) {
     if (scene.footprint && scene.footprint.min_cell_px > 0) {
       footCellPx = Math.ceil(scene.footprint.min_cell_px);
     }
-    el("chartNote").textContent = feedNotice || scene.note || "";
+    // The note strip has three authors, in priority order: the feed's own
+    // notice, the engine's note about the last build, and -- provenance
+    // (`docs/21` phase 3) -- why the *selected* AI drawing is there. Derived
+    // here rather than written by `select`, because render owns this strip and
+    // a note written before the frame it belongs to is wiped by it: that was
+    // the save-failure bug one layer down, back again.
+    const selectedAi = drawings.find(
+      (d) => d.id === selectedDrawing && d.created_by === "ai" && d.reason
+    );
+    const aiReason = selectedAi
+      ? `AI: ${selectedAi.reason}${
+          selectedAi.confidence != null
+            ? ` (confidence ${Math.round(selectedAi.confidence * 100)}%)`
+            : ""
+        }`
+      : "";
+    el("chartNote").textContent = feedNotice || scene.note || aiReason;
     renderFootprintStats(scene.footprint);
     // The toolbar is about the *selection*, and the selection changes from the
     // chart as well as from the toolbar -- a click on a shape, an `Esc`, a drop.
@@ -2273,6 +2305,33 @@ function createChartPane(root, hooks = {}) {
     scheduleRender();
   }
 
+  /// Say on the AI layer's button what the layer holds and whether it is on.
+  ///
+  /// The closed toolbar has to answer "is there anything to see?" without a
+  /// click: a toggle that reveals nothing when switched on reads as broken
+  /// rather than empty. Derived, never stored -- `drawings` is the one list.
+  function refreshAiLayerButton() {
+    const button = el("aiLayer");
+    if (!button) return;
+    const count = drawings.filter((d) => d.created_by === "ai").length;
+    button.title = count
+      ? `${count} AI-drawn object${count === 1 ? "" : "s"} ${aiLayerOn ? "shown" : "hidden"}`
+      : "Show objects the AI agent drew on this chart -- none exist yet";
+  }
+
+  /// Toggle the AI analysis layer (`docs/21` phase 3).
+  ///
+  /// Presentation only, which is why it schedules a render and nothing else:
+  /// the rows stay in `drawings`, so undo, delete and the counts do not care
+  /// what is being shown.
+  function toggleAiLayer() {
+    aiLayerOn = !aiLayerOn;
+    const button = el("aiLayer");
+    if (button) button.setAttribute("aria-pressed", String(aiLayerOn));
+    refreshAiLayerButton();
+    scheduleRender();
+  }
+
   /// Rebuild this pane's tool buttons from the engine's registry, grouped into
   /// labelled flyouts (`docs/21`).
   ///
@@ -2289,7 +2348,7 @@ function createChartPane(root, hooks = {}) {
 
     // The controls that are not tools: they sit after the groups, in this order.
     const controls = [
-      ...toolbar.querySelectorAll("button[data-magnet], button[data-undo], button[data-redo], .deleteDrawing, .clearDrawings"),
+      ...toolbar.querySelectorAll("button[data-magnet], button[data-ai-layer], button[data-undo], button[data-redo], .deleteDrawing, .clearDrawings"),
     ];
 
     // One flyout per group, in the engine's order. The trigger carries the
@@ -2377,6 +2436,7 @@ function createChartPane(root, hooks = {}) {
       }
     };
     wire("button[data-magnet]", toggleMagnet);
+    wire("button[data-ai-layer]", toggleAiLayer);
     wire("button[data-undo]", undo);
     wire("button[data-redo]", redo);
   }
@@ -2412,14 +2472,24 @@ function createChartPane(root, hooks = {}) {
   /// Four fields, and `selected` is deliberately not one of them: the API has no
   /// opinion about which drawing this tab is looking at, and `render` derives it
   /// from `selectedDrawing`. Carrying it here would be a field nothing reads.
+  /// The provenance trio (`docs/21`) is carried the same way `label` is — a
+  /// fact about the row that travels with it — and `created_by: "ai"` is what
+  /// the AI layer filter keys on. Absent for a human-drawn row, which is most
+  /// rows, so the fields are dropped rather than carried as nulls.
   function fromServer(drawing) {
-    return {
+    const out = {
       id: drawing.id,
       kind: drawing.kind,
       a1: drawing.a1,
       a2: drawing.a2 ?? null,
       label: drawing.label ?? null,
     };
+    if (drawing.created_by) {
+      out.created_by = drawing.created_by;
+      if (drawing.confidence != null) out.confidence = drawing.confidence;
+      if (drawing.reason) out.reason = drawing.reason;
+    }
+    return out;
   }
 
   /// Say something about the chart, in the strip the engine's own notes use.
