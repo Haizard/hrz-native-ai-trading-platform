@@ -50,6 +50,7 @@ pub mod concepts;
 pub mod cvd;
 pub mod delta;
 pub mod error;
+pub mod events;
 pub mod footprint;
 pub mod imbalance;
 pub mod indicators;

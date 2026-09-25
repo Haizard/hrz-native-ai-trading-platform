@@ -54,6 +54,7 @@ pub mod capabilities;
 pub mod dom;
 pub mod drawing_routes;
 pub mod error;
+pub mod event_engine;
 pub mod extract;
 pub mod footprint_routes;
 pub mod indicator_alerts;
@@ -86,6 +87,12 @@ pub struct AppState {
     pub auth: Option<Arc<AuthConfig>>,
     /// Owns the running bots and the market feed they share.
     pub bots: Arc<bots::BotSupervisor>,
+    /// Derived market events (sweeps, structure breaks, gaps), produced by the
+    /// feed watchers and read by the shell and the agent.
+    ///
+    /// Shared at the top level so the REST and socket routes read the *same*
+    /// lanes the watchers write, exactly as `bots` is shared for the raw lanes.
+    pub events: Arc<event_engine::EventEngine>,
     /// REST client for the history the in-memory buffer does not cover.
     ///
     /// Chart history is **not** persisted -- the database is a free tier with
@@ -356,6 +363,8 @@ pub fn router(state: AppState) -> Router {
             "/drawings/{id}",
             put(drawing_routes::update).delete(drawing_routes::remove),
         )
+        .route("/events", get(event_engine::events))
+        .route("/ws/events/{symbol}", get(event_engine::stream))
         .route("/agent/ask", post(agent_routes::ask))
         .route(
             "/agent/generate-strategy",

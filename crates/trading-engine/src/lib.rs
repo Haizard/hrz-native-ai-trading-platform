@@ -58,23 +58,23 @@ pub mod risk;
 pub mod secrets;
 pub mod store;
 
-pub use binance::{AccountCheck, BinanceRest, base_url_from_env as binance_base_url};
+pub use binance::{base_url_from_env as binance_base_url, AccountCheck, BinanceRest};
 pub use credentials::ExchangeCredentials;
 pub use decisions::{DecisionPath, Decisions};
 pub use error::ExecutionError;
 pub use execution::{
-    ExchangeAdapter, Mismatch, MismatchKind, OrderAck, OrderGateway, OrderRequest, OrderSide,
-    OrderStatus, OrderStatusReport, OrderType, Reconciliation, client_order_id,
+    client_order_id, ExchangeAdapter, Mismatch, MismatchKind, OrderAck, OrderGateway, OrderRequest,
+    OrderSide, OrderStatus, OrderStatusReport, OrderType, Reconciliation,
 };
 pub use gate::{GateRequirements, GateVerdict, LiveGate, TrackRecord};
 pub use live::{LiveBot, LiveConfig, LiveOutcome, LivePosition, LiveRecord, LiveTrade};
 pub use live_store::{
-    LIVE_DECISION_EVENT, LIVE_ORDER_EVENT, LiveSession, RECONCILE_EVENT, live_decision_payload,
+    live_decision_payload, LiveSession, LIVE_DECISION_EVENT, LIVE_ORDER_EVENT, RECONCILE_EVENT,
 };
 pub use paper::{BotAlert, DecisionOutcome, DecisionRecord, PaperBot, PaperConfig};
-pub use risk::{OnBreach, PLATFORM_MAX_RISK_PCT, RiskEngine, RiskLimits, RiskVerdict};
-pub use secrets::{KEK_VAR, SealedCredentials, SecretScope, SecretVault};
+pub use risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict, PLATFORM_MAX_RISK_PCT};
+pub use secrets::{SealedCredentials, SecretScope, SecretVault, KEK_VAR};
 pub use store::{
-    BotSession, DECISION_EVENT, NOTIFICATION_EVENT, RISK_EVENT, STARTED_EVENT, STOPPED_EVENT,
-    decision_payload, notification_payload,
+    decision_payload, notification_payload, BotSession, DECISION_EVENT, NOTIFICATION_EVENT,
+    RISK_EVENT, STARTED_EVENT, STOPPED_EVENT,
 };

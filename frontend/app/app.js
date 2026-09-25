@@ -441,6 +441,17 @@ function createChartPane(root, hooks = {}) {
     ray: "#e3b341",
     extended: "#787b86",
     measure: "#2962ff",
+    // The 2026-09 parity kinds. Distinct hues again, one per kind; the
+    // position boxes take the entry/stop/target vocabulary above because
+    // that is what they *are* drawn from.
+    channel: "#4caf8e",
+    angle: "#d1d4dc",
+    arc: "#e3b341",
+    circle: "#9564e2",
+    triangle: "#f59e0b",
+    position_long: "#089981",
+    position_short: "#f23645",
+    dateprice_range: "#2962ff",
     // The footprint ladder. Buy-aggressed volume is the ask side winning and
     // sell-aggressed is the bid side winning, which is the same convention the
     // level colours above already follow -- a level drawn green means the same
@@ -996,6 +1007,39 @@ function createChartPane(root, hooks = {}) {
             ctx.strokeRect(part.x + 0.5, part.y + 0.5, part.w - 1, part.h - 1);
             break;
 
+          case "ellipse":
+            // The engine's circle and arc arrive here: a full ellipse is a
+            // circle, `half` clips to the upper arc. Centred with
+            // `ctx.arc`-style parameters so the maths stays in Rust.
+            ctx.beginPath();
+            ctx.ellipse(part.cx, part.cy, part.rx, part.ry, 0, 0, Math.PI * 2);
+            if (part.filled) {
+              ctx.save();
+              ctx.clip();
+              if (part.half) {
+                // Only the upper arc is stroked: clip to the centre line.
+                ctx.clearRect(part.cx - part.rx - 1, part.cy, part.rx * 2 + 2, part.ry + 1);
+              }
+              ctx.restore();
+            }
+            ctx.stroke();
+            break;
+
+          case "polygon":
+            ctx.beginPath();
+            ctx.moveTo(part.points[0][0], part.points[0][1]);
+            for (let i = 1; i < part.points.length; i += 1) {
+              ctx.lineTo(part.points[i][0], part.points[i][1]);
+            }
+            ctx.closePath();
+            if (part.filled) {
+              ctx.globalAlpha = drawing.selected ? 0.18 : 0.1;
+              ctx.fill();
+              ctx.globalAlpha = 1;
+            }
+            ctx.stroke();
+            break;
+
           case "text":
             ctx.fillText(part.text, part.x, part.y);
             break;
@@ -1456,13 +1500,14 @@ function createChartPane(root, hooks = {}) {
         startY: event.clientY,
         // Only a body grab needs these. A handle drag writes the pointer's own
         // position into one anchor, so where the anchors started is not a question
-        // it asks; a body drag moves both, which means it needs the starting point
-        // in a unit it can add to.
+        // it asks; a body drag moves the whole shape, which means it needs the
+        // starting point in a unit it can add to.
         base: hit.anchor === null ? fractionsOf(hit.drawing) : null,
         movedFrom: grabbed
           ? {
               a1: { ...grabbed.a1 },
               a2: grabbed.a2 ? { ...grabbed.a2 } : null,
+              a3: grabbed.a3 ? { ...grabbed.a3 } : null,
             }
           : null,
       };
@@ -1479,7 +1524,22 @@ function createChartPane(root, hooks = {}) {
   }
 
   function onPointerMove(event) {
-    if (!scene || !drag) return;
+    if (!scene) return;
+    // A click-click-click placement is alive *between* clicks too: with no
+    // button held there is no `drag`, but the pending anchor still has to
+    // follow the pointer or the user draws blind -- the shape would sit frozen
+    // at the last click until the next one. Hover tracking is the difference
+    // between a placement the user can aim and one they cannot.
+    if (!drag && placing && placing.pending) {
+      const at = plotFraction(event);
+      if (!at) return;
+      const anchor = { unit: "fraction", x: at.x, y: at.y };
+      if (placing.pending === 2) placing.a2 = anchor;
+      else if (placing.pending === 3) placing.a3 = anchor;
+      scheduleRender();
+      return;
+    }
+    if (!drag) return;
 
     if (drag.mode === "pan") {
       // Measured from the last *applied* position rather than the last event, so a
@@ -1512,10 +1572,13 @@ function createChartPane(root, hooks = {}) {
     if (drag.mode === "place") {
       const at = plotFraction(event);
       if (!at) return;
-      // The second anchor follows the pointer; the first stays where the drag
-      // began. A horizontal line has no second anchor to move.
-      if (placing && placing.kind !== "hline") {
+      // Mid-placement the *pending* anchor follows the pointer and the ones
+      // already fixed stay where they were put. Which anchor is pending is a
+      // field on the placement (see `startPlacing`), not something inferred.
+      if (placing && placing.pending === 2) {
         placing.a2 = { unit: "fraction", x: at.x, y: at.y };
+      } else if (placing && placing.pending === 3) {
+        placing.a3 = { unit: "fraction", x: at.x, y: at.y };
       }
       scheduleRender();
       return;
@@ -1538,7 +1601,7 @@ function createChartPane(root, hooks = {}) {
       return;
     }
 
-    // The body: the whole drawing moves, so both anchors take the *same* delta.
+    // The body: the whole drawing moves, so every anchor takes the *same* delta.
     // Dragging one of them to the pointer instead -- which is what this branch did
     // before it had `drag.base` -- moves an endpoint rather than the shape, and a
     // rectangle dragged by its middle collapses to a corner.
@@ -1553,6 +1616,9 @@ function createChartPane(root, hooks = {}) {
     const dy = (event.clientY - drag.startY) / scene.plot.h;
     moving.a1 = shifted(drag.base.a1, dx, dy);
     if (drag.base.a2) moving.a2 = shifted(drag.base.a2, dx, dy);
+    // The third anchor moves with the shape or a channel keeps its line while
+    // its width runs away -- which reads as the channel having moved.
+    if (drag.base.a3) moving.a3 = shifted(drag.base.a3, dx, dy);
     scheduleRender();
   }
 
@@ -1568,8 +1634,17 @@ function createChartPane(root, hooks = {}) {
       el("chart").releasePointerCapture(event.pointerId);
     }
 
-    if (finished.mode === "place") finishPlacing();
-    else if (finished.mode === "move") finishMoving(finished.target.drawing, finished.movedFrom);
+    if (finished.mode === "place") {
+      // A click-click-click tool is only *finished* by its last click. Every
+      // earlier release just fixes the current anchor and leaves `placing`
+      // armed -- the pointer keeps drawing the next anchor, and the placement
+      // survives the capture being released because the next click re-captures.
+      const needed = anchorsNeeded();
+      if (placing && needed > 2 && placing.clicks < needed) return;
+      finishPlacing();
+    } else if (finished.mode === "move") {
+      finishMoving(finished.target.drawing, finished.movedFrom);
+    }
   }
 
   /// A pointer the browser took away -- a touch that became a scroll, a window
@@ -1714,6 +1789,12 @@ function createChartPane(root, hooks = {}) {
     const down = el("redo");
     if (up) up.disabled = undoStack.length === 0;
     if (down) down.disabled = redoStack.length === 0;
+    // The global row's undo/redo mirror this pane's stacks. Guarded: it is
+    // built only once the engine has loaded, and only when this pane is the
+    // one the global buttons act on does its state belong on them.
+    if (typeof refreshGlobalTools === "function" && globalTools.built && activePane === paneApi) {
+      refreshGlobalTools();
+    }
   }
 
   /// Which tool, of a group's flyout buttons, is the pressed one -- the trigger
@@ -1776,6 +1857,11 @@ function createChartPane(root, hooks = {}) {
         if (part.shape === "rect" && insideRect(at, part)) {
           return { drawing: drawing.id, anchor: null };
         }
+        // A polygon's body is its inside, not a line: a triangle grabbed by
+        // its middle must move, the same rule a rectangle follows.
+        if (part.shape === "polygon" && insidePolygon(at, part.points)) {
+          return { drawing: drawing.id, anchor: null };
+        }
       }
     }
     return null;
@@ -1807,6 +1893,27 @@ function createChartPane(root, hooks = {}) {
     );
   }
 
+  /// Whether a point is inside a polygon, by the ray-crossing test.
+  ///
+  /// The same rule `insideRect` applies to a rectangle, generalised: cast a
+  /// ray from the point and count the edges it crosses -- odd is inside. Only
+  /// used for grabbing a drawn triangle by its body, so it runs on a
+  /// three-vertex list once per pointerdown, never in the render loop.
+  function insidePolygon(point, points) {
+    if (!points || points.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i += 1) {
+      const [xi, yi] = points[i];
+      const [xj, yj] = points[j];
+      const crosses = yi > point.y !== yj > point.y;
+      if (crosses) {
+        const xAtY = ((xj - xi) * (point.y - yi)) / (yj - yi) + xi;
+        if (point.x < xAtY) inside = !inside;
+      }
+    }
+    return inside;
+  }
+
   // How many drawings this tab has started, for naming one before the server has.
   let drawingCounter = 0;
 
@@ -1817,16 +1924,55 @@ function createChartPane(root, hooks = {}) {
   /// moves, and -- the part that is easy to leave out -- `onPointerUp` needs it to
   /// reach `finishPlacing` at all: without it every handler returns early and the
   /// shape appears under the press and then simply sits there, unstored.
+  /// How many anchors the armed tool places: 1 a click, 2 a drag, 3 a
+  /// click-click-click (channel, arc, triangle). Read from the engine's own
+  /// registry, with the same unknown-tool fallback `needs_second_anchor` has:
+  /// demanding more rather than less of an unrecognised kind is the safe way
+  /// to be wrong, and an unknown kind fails the click through to a drag.
+  function anchorsNeeded() {
+    if (tool === "hline" || tool === "vline") return 1;
+    if (tool === "channel" || tool === "arc" || tool === "triangle") return 3;
+    if (tool === "cursor") return 0;
+    return 2;
+  }
+
   function startPlacing(event) {
     const at = plotFraction(event);
     if (!at) return;
+    const needed = anchorsNeeded();
+    // A click-click-click tool in flight: this pointerdown is its next click,
+    // which *fixes* the pending anchor and opens the following one. The first
+    // click must have armed `placing` already, so falling through here without
+    // it would be a second gesture on a tool that has none.
+    if (placing && placing.clicks < needed) {
+      placing.clicks += 1;
+      // The click that fixes a2 is the one that opens a3. The last click
+      // opens nothing -- its release finishes the shape.
+      placing.pending = placing.clicks < needed ? placing.clicks + 1 : 0;
+      drag = { mode: "place", appliedX: event.clientX, appliedY: event.clientY };
+      el("chart").setPointerCapture(event.pointerId);
+      scheduleRender();
+      return;
+    }
     placing = {
       id: `new-${(drawingCounter += 1)}`,
       kind: tool,
       a1: { unit: "fraction", x: at.x, y: at.y },
-      // Two separate objects even when they start in the same place: `a2` follows
-      // the pointer and `a1` does not, and one shared object would move both.
-      a2: tool === "hline" ? null : { unit: "fraction", x: at.x, y: at.y },
+      // Two separate objects even when they start in the same place: the next
+      // anchor follows the pointer and the placed ones do not, and one shared
+      // object would move both.
+      //
+      // `clicks` counts the anchors the user has *fixed*, and `pending` is the
+      // anchor the pointer is drawing: 2 after the first click of any
+      // multi-anchor tool, 3 once a three-anchor tool's second click has fixed
+      // a2, and 0 when nothing is pending. Explicit rather than inferred from
+      // null-vs-undefined because the engine refuses an `a3` on a kind that
+      // does not take one -- a mis-encoded 2-anchor drag would store its
+      // second anchor into `a3` and the shape would vanish with a note.
+      clicks: 1,
+      pending: needed >= 2 ? 2 : 0,
+      a2: needed >= 2 ? { unit: "fraction", x: at.x, y: at.y } : null,
+      a3: null,
       label: null,
     };
     drag = { mode: "place", appliedX: event.clientX, appliedY: event.clientY };
@@ -1880,7 +2026,11 @@ function createChartPane(root, hooks = {}) {
   function fractionsOf(id) {
     const drawing = resolvedDrawing(id);
     if (!drawing) return null;
-    return { a1: drawing.a1_fraction, a2: drawing.a2_fraction ?? null };
+    return {
+      a1: drawing.a1_fraction,
+      a2: drawing.a2_fraction ?? null,
+      a3: drawing.a3_fraction ?? null,
+    };
   }
 
   /// A plot fraction moved by a fraction of the plot.
@@ -1897,6 +2047,11 @@ function createChartPane(root, hooks = {}) {
   async function finishPlacing() {
     const pending = placing;
     if (!pending) return;
+    // Callers gate this on the placement actually being complete --
+    // `onPointerUp` fires it only on the finishing release, and a cancelled
+    // pointer abandons the placement rather than completing it. So there is
+    // deliberately no re-check here: a second one would have to restate the
+    // anchor-count rule, and a restated rule is a rule that drifts.
 
     // Render synchronously first: the coalesced frame may not have run -- a click
     // is a down and an up with no frame between them -- and the engine's answer is
@@ -1969,12 +2124,13 @@ function createChartPane(root, hooks = {}) {
 
     // The list takes the engine's numbers, so what is on screen and what is about
     // to be stored are the same two points rather than two roundings of one.
-    const before = movedFrom ?? { a1: stored.a1, a2: stored.a2 };
-    const after = { a1: resolved.a1, a2: resolved.a2 };
+    const before = movedFrom ?? { a1: stored.a1, a2: stored.a2, a3: stored.a3 ?? null };
+    const after = { a1: resolved.a1, a2: resolved.a2, a3: resolved.a3 ?? null };
     // Applied optimistically -- the shape follows the pointer's release, which
     // is what "released" means -- and reconciled after the PUT like any save.
     stored.a1 = after.a1;
     stored.a2 = after.a2;
+    stored.a3 = after.a3;
     renderNow();
     try {
       await api(`/drawings/${id}`, {
@@ -1991,7 +2147,9 @@ function createChartPane(root, hooks = {}) {
     const sameAnchor = (a, b) =>
       (!a && !b) || Boolean(a && b && a.time === b.time && a.price === b.price);
     const isAfter = (d) =>
-      sameAnchor(d.a1, after.a1) && sameAnchor(d.a2, after.a2);
+      sameAnchor(d.a1, after.a1) &&
+      sameAnchor(d.a2, after.a2) &&
+      sameAnchor(d.a3 ?? null, after.a3);
     runCommand(
       "move",
       () => {
@@ -1999,6 +2157,7 @@ function createChartPane(root, hooks = {}) {
         if (!target || isAfter(target)) return;
         target.a1 = after.a1;
         target.a2 = after.a2;
+        target.a3 = after.a3;
         if (selectedDrawing && selectedDrawing !== target.id) selectedDrawing = target.id;
         renderNow();
         void putDrawing(target);
@@ -2010,6 +2169,7 @@ function createChartPane(root, hooks = {}) {
         if (!target) return;
         target.a1 = before.a1;
         target.a2 = before.a2;
+        target.a3 = before.a3;
         if (selectedDrawing && selectedDrawing !== target.id) selectedDrawing = target.id;
         renderNow();
         void putDrawing(target);
@@ -2033,6 +2193,7 @@ function createChartPane(root, hooks = {}) {
       kind: drawing.kind,
       a1: drawing.a1,
       a2: drawing.a2 ?? null,
+      a3: drawing.a3 ?? null,
       label: drawing.label ?? null,
     };
   }
@@ -2050,6 +2211,7 @@ function createChartPane(root, hooks = {}) {
       d.kind,
       d.a1 && d.a1.time, d.a1 && d.a1.price,
       d.a2 && d.a2.time, d.a2 && d.a2.price,
+      d.a3 && d.a3.time, d.a3 && d.a3.price,
       d.label ?? "",
     ].join("|");
 
@@ -2279,6 +2441,9 @@ function createChartPane(root, hooks = {}) {
     // A group's trigger labels itself with the tool the user picked, so the
     // closed toolbar still says what is armed -- "Lines" reads "Lines · Ray".
     refreshGroupTriggers();
+    // The global toolbar mirrors the armed tool, whichever surface picked it.
+    // Guarded because it may not exist yet (no engine, no build).
+    if (typeof refreshGlobalTools === "function" && globalTools.built) refreshGlobalTools();
   }
 
   /// Update every group trigger's word from the pressed tool.
@@ -2482,6 +2647,10 @@ function createChartPane(root, hooks = {}) {
       kind: drawing.kind,
       a1: drawing.a1,
       a2: drawing.a2 ?? null,
+      // The third anchor rides the same rule as the second: absent when the
+      // row has none, absolute when it does. A channel that lost its width on
+      // reload would be a stored shape that restores as a different shape.
+      a3: drawing.a3 ?? null,
       label: drawing.label ?? null,
     };
     if (drawing.created_by) {
@@ -3305,14 +3474,24 @@ function createChartPane(root, hooks = {}) {
     resetViewport,
     applyGesture,
     selectTool,
+    /// Read-only state getters for the global toolbar, which derives every
+    /// button's pressed state from the active pane rather than keeping its
+    /// own copy of any of it.
+    currentTool: () => tool,
+    magnetOn: () => magnet,
+    aiLayerOn: () => aiLayerOn,
+    canUndo: () => undoStack.length > 0,
+    canRedo: () => redoStack.length > 0,
     deleteSelected,
     /// Undo/redo for the page's Ctrl+Z / Ctrl+Y routing. Takes the direction
     /// as a string because the router has no reason to hold two references.
     history(direction) {
       if (direction === "redo") redo();
       else undo();
+      refreshGlobalTools();
     },
     toggleMagnet,
+    toggleAiLayer,
     /// Swap this pane's fallback buttons for the registry's set. Called by the
     /// page once the engine has loaded; a no-op before that.
     rebuildToolbar: buildToolbarFromRegistry,
@@ -3425,6 +3604,194 @@ function setActive(pane) {
   activePane = pane;
   for (const other of panes) other.root.classList.toggle("active", other === pane);
   if (moved) connectBook();
+  // The global toolbar follows activation: it is bound to whichever chart the
+  // user last touched, so an activation that changes nothing else may still
+  // change what the toolbar's buttons would act on.
+  refreshGlobalTools();
+}
+
+/// The global drawing toolbar: the standalone twin of the right-click menu's
+/// hosted one (`docs/21`).
+///
+/// ## Why it is bound, not hosted
+///
+/// The right-click menu *hosts* a pane's own toolbar -- the real buttons move
+/// into the menu and back, so there is exactly one wiring of each control. The
+/// global toolbar cannot use that trick: it must survive the pane it was built
+/// for being closed, and its buttons must not move out of it while a menu is
+/// open. So it is the inverse arrangement: the toolbar is one permanent row of
+/// buttons owned by the page, and every interaction is **delegated** to the
+/// active pane through its existing API. Two toolbars, one state -- each button
+/// here acts on the same `tool`/`selectedDrawing`/undo stacks the hosted one
+/// does, because they are the same functions.
+///
+/// ## Why it only works on the active pane
+///
+/// A drawing tool aimed at "some chart" is aimed at none: the user must know
+/// which canvas the next click lands on. Activation is the same gesture the
+/// aside already follows -- press anything on a chart and it becomes the one
+/// the controls mean -- and the toolbar's label names the chart it will draw
+/// on, so the binding is stated where the click happens.
+const globalTools = {
+  node: null,
+  built: false,
+
+  /// Build the row once, from the same registry the pane toolbars use. The
+  /// buttons are *labels*, not per-pane state: their pressed state is set by
+  /// `refreshGlobalTools` from the active pane's tool, so a toolbar can never
+  /// disagree with the chart it acts on.
+  build() {
+    if (this.built || !toolRegistry || !toolRegistry.length) return;
+    const node = document.getElementById("globalTools");
+    if (!node) return;
+    this.node = node;
+    const frag = document.createDocumentFragment();
+    const which = document.createElement("span");
+    which.className = "globalToolsWhich";
+    which.id = "globalToolsWhich";
+    frag.appendChild(which);
+
+    const cursor = document.createElement("button");
+    cursor.dataset.tool = "cursor";
+    cursor.textContent = "Cursor";
+    cursor.title = "Select a drawing, move its anchors, or pan the chart";
+    frag.appendChild(cursor);
+
+    // The same grouping `buildToolbarFromRegistry` renders, so the two
+    // toolbars read identically -- same groups, same order, same labels.
+    const groups = [];
+    for (const entry of toolRegistry) {
+      let group = groups.find((g) => g.name === entry.group);
+      if (!group) {
+        group = { name: entry.group, label: entry.group_label || entry.group, tools: [] };
+        groups.push(group);
+      }
+      group.tools.push(entry);
+    }
+    for (const group of groups) {
+      const wrap = document.createElement("div");
+      wrap.className = "toolGroup";
+      const trigger = document.createElement("button");
+      trigger.className = "toolGroupTrigger";
+      trigger.textContent = group.label;
+      trigger.title = group.tools.map((t) => t.label).join(", ");
+      trigger.dataset.group = group.name;
+      trigger.dataset.groupLabel = group.label;
+      trigger.setAttribute("aria-haspopup", "true");
+      trigger.setAttribute("aria-expanded", "false");
+      const flyout = document.createElement("div");
+      flyout.className = "toolFlyout";
+      flyout.hidden = true;
+      for (const entry of group.tools) {
+        const button = document.createElement("button");
+        button.dataset.tool = entry.kind;
+        button.textContent = entry.label;
+        button.title = entry.title || entry.label;
+        flyout.appendChild(button);
+      }
+      trigger.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const open = !flyout.hidden;
+        for (const other of node.querySelectorAll(".toolFlyout")) other.hidden = true;
+        flyout.hidden = open;
+        trigger.setAttribute("aria-expanded", String(!flyout.hidden));
+      });
+      flyout.addEventListener("click", () => {
+        flyout.hidden = true;
+        trigger.setAttribute("aria-expanded", "false");
+      });
+      wrap.appendChild(trigger);
+      wrap.appendChild(flyout);
+      frag.appendChild(wrap);
+    }
+
+    // The page-level controls. Delegated, like the tools: the active pane's
+    // own undo stack, magnet and AI layer are the ones that move, because
+    // drawings are per pane and a global toggle over "all panes" would be a
+    // different feature.
+    const controls = [
+      ["button[data-magnet]", "Magnet", "Snap new drawings to nearby open, high, low, close and value-area prices", "magnet"],
+      ["button[data-ai-layer]", "AI", "Show objects the AI agent drew on the active chart, with the reason it gave for each", "aiLayer"],
+      ["button[data-undo]", "Undo", "Undo the last drawing change on the active chart (Ctrl+Z)", "undo"],
+      ["button[data-redo]", "Redo", "Redo an undone drawing change on the active chart (Ctrl+Y)", "redo"],
+    ];
+    for (const [attr, label, title] of controls) {
+      const button = document.createElement("button");
+      button.setAttribute(attr.match(/data-[a-z-]+/)[0], "");
+      button.textContent = label;
+      button.title = title;
+      frag.appendChild(button);
+    }
+
+    node.replaceChildren(frag);
+    // One delegated listener for the whole row, at the row: buttons are
+    // generated, so binding each would be a rebuild away from drifting.
+    node.addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button || !activePane) return;
+      if (button.dataset.tool) {
+        activePane.selectTool(button.dataset.tool);
+        refreshGlobalTools();
+      } else if (button.hasAttribute("data-magnet")) {
+        activePane.toggleMagnet();
+        refreshGlobalTools();
+      } else if (button.hasAttribute("data-ai-layer")) {
+        activePane.toggleAiLayer();
+        refreshGlobalTools();
+      } else if (button.hasAttribute("data-undo")) {
+        activePane.history("undo");
+      } else if (button.hasAttribute("data-redo")) {
+        activePane.history("redo");
+      }
+    });
+    this.built = true;
+    refreshGlobalTools();
+  },
+
+  /// Hide when there is no pane to act on. Shown the moment one exists.
+  setHidden(hidden) {
+    if (this.node) this.node.hidden = hidden;
+  },
+};
+
+/// Re-derive every global button's state from the active pane. Derived,
+/// never stored -- the same rule the pane toolbars follow for `aria-pressed`.
+function refreshGlobalTools() {
+  const node = globalTools.node;
+  // No pane, no binding: the row hides rather than aiming at nothing.
+  if (!node) return;
+  if (!activePane) {
+    node.hidden = true;
+    return;
+  }
+  node.hidden = false;
+  const which = document.getElementById("globalToolsWhich");
+  if (which) {
+    which.textContent = `${activePane.symbol() || "—"} · ${activePane.timeframe() || "—"}`;
+  }
+  const tool = activePane.currentTool();
+  for (const button of node.querySelectorAll("button[data-tool]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.tool === tool));
+  }
+  // Group triggers relabel themselves with the armed tool, as the pane
+  // toolbars' `refreshGroupTriggers` does: the trigger carries its group's
+  // name, and the armed tool belongs to at most one group.
+  for (const trigger of node.querySelectorAll(".toolGroupTrigger")) {
+    const base = trigger.dataset.groupLabel;
+    if (!base) continue;
+    const armed = toolRegistry.some(
+      (entry) => entry.group === trigger.dataset.group && entry.kind === tool
+    );
+    trigger.textContent = armed ? `${base} · ${tool}` : base;
+  }
+  const magnet = node.querySelector("[data-magnet]");
+  if (magnet) magnet.setAttribute("aria-pressed", String(activePane.magnetOn()));
+  const ai = node.querySelector("[data-ai-layer]");
+  if (ai) ai.setAttribute("aria-pressed", String(activePane.aiLayerOn()));
+  const undo = node.querySelector("[data-undo]");
+  if (undo) undo.disabled = !activePane.canUndo();
+  const redo = node.querySelector("[data-redo]");
+  if (redo) redo.disabled = !activePane.canRedo();
 }
 
 /// What a new pane should open on: the next timeframe up that can fill a chart.
@@ -6923,6 +7290,9 @@ async function main() {
   // carries the markup's fallback set until now. Called after the message
   // clear, because `buildToolbarFromRegistry` is a no-op while null.
   for (const pane of panes) pane.rebuildToolbar();
+  // The global toolbar is built from the same registry, once, at the same
+  // moment: before the engine there is nothing to build it from.
+  globalTools.build();
 
   // The editor is never empty: a saved strategy if there is one, otherwise the
   // reference document. An empty box makes Validate and Save look broken when

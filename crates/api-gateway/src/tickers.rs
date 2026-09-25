@@ -341,6 +341,7 @@ mod tests {
             skills: Arc::new(ai_agent::SkillLibrary::new()),
             auth: None,
             bots: Arc::clone(&supervisor),
+            events: supervisor.events(),
             backfill: market_data::BackfillClient::new("http://127.0.0.1:1"),
             windows: market_data::WindowService::new(
                 supervisor.history(),

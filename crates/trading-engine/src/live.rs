@@ -25,8 +25,8 @@
 
 use analytics_core::types::{Candle, Timeframe};
 use observability::metrics::{
-    KILL_SWITCH, Labels, OPEN_POSITIONS, ORDERS_EXECUTED, RECONCILE_MISMATCHES, RISK_BREACHES,
-    Registry, SIGNALS_GENERATED,
+    Labels, Registry, KILL_SWITCH, OPEN_POSITIONS, ORDERS_EXECUTED, RECONCILE_MISMATCHES,
+    RISK_BREACHES, SIGNALS_GENERATED,
 };
 use sandbox::SandboxError;
 use serde::Serialize;
@@ -39,7 +39,7 @@ use strategy_runtime::{
 use crate::decisions::{DecisionPath, Decisions, Shape};
 use crate::error::ExecutionError;
 use crate::execution::{
-    ExchangeAdapter, OrderGateway, OrderRequest, OrderSide, OrderStatus, OrderType, client_order_id,
+    client_order_id, ExchangeAdapter, OrderGateway, OrderRequest, OrderSide, OrderStatus, OrderType,
 };
 use crate::risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict};
 
@@ -1155,14 +1155,13 @@ risk:
         assert!(bot.position().is_none());
         assert_eq!(bot.trades().len(), 1);
         assert_eq!(bot.trades()[0].entry_price, entry);
-        assert!(
-            !bot.adapter_for_test()
-                .open
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|r| r.client_order_id == target_id)
-        );
+        assert!(!bot
+            .adapter_for_test()
+            .open
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.client_order_id == target_id));
     }
 
     #[tokio::test]

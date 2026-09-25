@@ -493,3 +493,98 @@ async fn a_forming_candle_stays_off_the_lane_bots_subscribe() {
         "a forming candle reached the closed-candle lane"
     );
 }
+
+/// The equal-highs-then-rejection shape, bar by bar: eight bars building two
+/// touches at 12 (each confirmed by three quiet bars), then a bar that wicks
+/// to 14 and closes back at 11 -- the sweep the detector exists to name.
+const SWEEP_BARS: [(f64, f64, f64); 12] = [
+    (10.0, 8.0, 9.0),
+    (10.5, 9.0, 9.5),
+    (10.0, 9.0, 9.5),
+    (12.0, 9.0, 11.0),
+    (10.5, 9.0, 9.5),
+    (10.0, 9.0, 9.5),
+    (10.5, 9.0, 9.5),
+    (12.0, 9.0, 11.5),
+    (10.5, 9.0, 9.5),
+    (10.0, 9.0, 9.5),
+    (10.5, 9.0, 9.5),
+    (14.0, 10.8, 11.0),
+];
+
+/// Record the sweep shape into the chart's history buffer.
+///
+/// `record_closed` is the production write path -- the feed's recorder calls
+/// exactly this with exactly these bars -- so the watcher under test reads the
+/// same bytes it would read live. `feed_candle` alone would not do: it
+/// publishes to the bus, and the watcher deliberately reads history, not the
+/// bus, so that replays and backfills produce events through one path.
+fn record_sweep_bars(h: &Harness, base_time: i64) {
+    for (i, (high, low, close)) in SWEEP_BARS.iter().enumerate() {
+        h.supervisor.history().record_closed(&Candle {
+            open_time: base_time + (i as i64) * 60_000_000_000,
+            high: *high,
+            low: *low,
+            close: *close,
+            open: *close,
+            ..candle(0, *close, Timeframe::M5)
+        });
+    }
+}
+
+/// The derived-event channel: a closed bar whose shape trips a detector
+/// reaches the socket as an event, named by kind and carrying the level.
+#[tokio::test]
+async fn the_events_channel_forwards_a_derived_event_for_a_closed_bar() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    let base = h.serve().await;
+    // Bars before the connect, so the watcher's immediate first tick already
+    // sees them -- the assertion below then never races a 5s recheck.
+    record_sweep_bars(&h, 1_000_000);
+
+    let mut socket = connect(&base, "/ws/events/BTCUSDT").await;
+    read_until(&mut socket, |v| v["type"] == "subscribed").await;
+
+    let data = read_until(&mut socket, |v| v["type"] == "data")
+        .await
+        .expect("the sweep must reach the events socket");
+    assert_eq!(data["payload"]["kind"], "liquidity_sweep");
+    assert_eq!(data["payload"]["price"], 12.0);
+    assert_eq!(data["payload"]["symbol"], "BTCUSDT");
+}
+
+/// The REST read answers what the watcher recorded, so a tab that slept can
+/// catch up over HTTP without a socket.
+#[tokio::test]
+async fn the_events_route_answers_what_the_watcher_recorded() {
+    let Some(h) = Harness::new().await else {
+        return;
+    };
+    record_sweep_bars(&h, 2_000_000);
+
+    // The first GET starts the watcher; its immediate first tick may or may
+    // not have landed before the response is built, so poll: the answer is
+    // allowed to arrive on a later read, and the deadline covers one recheck
+    // interval in the worst case.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let (status, body) = h.get("/events?symbol=BTCUSDT&since=0", None).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        let found = body["events"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .any(|e| e["kind"] == "liquidity_sweep" && e["price"] == 12.0);
+        if found {
+            assert_eq!(body["symbol"], "BTCUSDT");
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the sweep never reached the buffer: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}

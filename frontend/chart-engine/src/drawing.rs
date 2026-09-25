@@ -1,18 +1,20 @@
 //! The shapes a user draws on the chart (`docs/14-FRONTEND-CHART-ENGINE.md`).
 //!
-//! ## Two anchors and a kind
+//! ## Two anchors -- sometimes three -- and a kind
 //!
-//! Every shape a trader draws is a pair of points and a rule for what goes
-//! between them, so that is the whole vocabulary: a [`DrawingKind`] and up to two
-//! [`Anchor`]s. A trendline is the segment, a rectangle is the area, a Fibonacci
-//! is the levels, and a horizontal line is the degenerate case that needs one
-//! anchor.
+//! Every shape a trader draws is a set of points and a rule for what goes
+//! between them, so that is the whole vocabulary: a [`DrawingKind`], up to two
+//! [`Anchor`]s -- plus a third for the parity kinds. A trendline is the segment,
+//! a rectangle is the area, a Fibonacci is the levels, a horizontal line is the
+//! degenerate case that needs one anchor, and a parallel channel is two points
+//! for the line plus one for its width.
 //!
 //! The kinds are an enum rather than free text because a kind nobody can draw
 //! must be **refused**, not stored: a drawing that saves and then never appears
-//! is worse than one that will not save. `ray`, `channel` and a measured move are
-//! the obvious next ones, and each is a variant plus an arm in the scene's
-//! `drawing_parts` -- no new storage, because they are all two anchors.
+//! is worse than one that will not save. The 2026-09 parity extension added the
+//! TradingView staples (channel, angle, arc, circle, triangle, long/short
+//! position boxes, date/price range); each was one variant plus an arm in the
+//! scene's `drawing_parts`.
 //!
 //! ## The shell says where on the screen, the engine says what that is
 //!
@@ -70,11 +72,35 @@ pub enum DrawingKind {
     /// The price/time delta between the two anchors: a box, dashed guides to
     /// both axes, and the delta as a label.
     Measure,
+    /// The line through the first two anchors, offset by the third: a parallel
+    /// channel. Three anchors.
+    Channel,
+    /// A straight line through the first anchor at an arbitrary angle; the
+    /// second anchor sets the slope and the line extends from the first anchor
+    /// through it. Two anchors, but unlike a ray it has no fixed endpoints rule.
+    Angle,
+    /// A half ellipse: the first anchor is the centre, the second sets the
+    /// horizontal radius, the third the vertical. Three anchors.
+    Arc,
+    /// A filled circle: the first anchor is the centre, the second sits on the
+    /// radius. Two anchors.
+    Circle,
+    /// The triangle through the three anchors. Three anchors.
+    Triangle,
+    /// A long position: an entry line at the first anchor's price with a
+    /// profit band above and a stop band below, the second anchor setting the
+    /// extent along time.
+    PositionLong,
+    /// The short counterpart: profit band below, stop band above.
+    PositionShort,
+    /// The price and time range between two anchors, drawn as the measure's
+    /// box with the range written as a percentage as well as a delta.
+    DatepriceRange,
 }
 
 impl DrawingKind {
     /// Every kind, for a client that wants to build a toolbar.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 16] = [
         Self::Trendline,
         Self::Hline,
         Self::Vline,
@@ -83,6 +109,14 @@ impl DrawingKind {
         Self::Rect,
         Self::Fib,
         Self::Measure,
+        Self::Channel,
+        Self::Angle,
+        Self::Arc,
+        Self::Circle,
+        Self::Triangle,
+        Self::PositionLong,
+        Self::PositionShort,
+        Self::DatepriceRange,
     ];
 
     /// The wire name, which is also the storage's value and the shell's colour
@@ -98,17 +132,37 @@ impl DrawingKind {
             Self::Rect => "rect",
             Self::Fib => "fib",
             Self::Measure => "measure",
+            Self::Channel => "channel",
+            Self::Angle => "angle",
+            Self::Arc => "arc",
+            Self::Circle => "circle",
+            Self::Triangle => "triangle",
+            Self::PositionLong => "position_long",
+            Self::PositionShort => "position_short",
+            Self::DatepriceRange => "dateprice_range",
         }
     }
 
     /// Whether this kind needs its second anchor.
     ///
-    /// The one rule with eight cases. It lives beside the enum so it cannot drift
-    /// from the list of kinds -- and `db::drawings::needs_second_anchor` is the
-    /// same rule on the storage side, pinned against this one by a test.
+    /// The one rule with sixteen cases. It lives beside the enum so it cannot
+    /// drift from the list of kinds -- and `db::drawings::needs_second_anchor`
+    /// is the same rule on the storage side, pinned against this one by a test.
     #[must_use]
     pub const fn needs_second_anchor(self) -> bool {
         !matches!(self, Self::Hline | Self::Vline)
+    }
+
+    /// Whether this kind needs its third anchor.
+    ///
+    /// The parity vocabulary's additions: a channel is two points for the line
+    /// and one for its width; an arc is a centre plus two radii points; a
+    /// triangle is one anchor per vertex. A circle stays at two (centre plus a
+    /// point on the radius). `db::drawings::needs_third_anchor` is the same
+    /// rule on the storage side, pinned against this one by a test.
+    #[must_use]
+    pub const fn needs_third_anchor(self) -> bool {
+        matches!(self, Self::Channel | Self::Arc | Self::Triangle)
     }
 }
 
@@ -126,11 +180,18 @@ pub enum ToolGroup {
     Shapes,
     /// Measurement: Fibonacci and the price/time ruler.
     Measurement,
+    /// Positions: the long/short risk boxes a trade plan draws.
+    Positions,
 }
 
 impl ToolGroup {
     /// Every group, in toolbar order.
-    pub const ALL: [Self; 3] = [Self::Lines, Self::Shapes, Self::Measurement];
+    pub const ALL: [Self; 4] = [
+        Self::Lines,
+        Self::Shapes,
+        Self::Measurement,
+        Self::Positions,
+    ];
 
     /// The wire name.
     #[must_use]
@@ -139,6 +200,7 @@ impl ToolGroup {
             Self::Lines => "lines",
             Self::Shapes => "shapes",
             Self::Measurement => "measurement",
+            Self::Positions => "positions",
         }
     }
 
@@ -149,6 +211,7 @@ impl ToolGroup {
             Self::Lines => "Lines",
             Self::Shapes => "Shapes",
             Self::Measurement => "Measure",
+            Self::Positions => "Positions",
         }
     }
 }
@@ -182,7 +245,7 @@ pub struct ToolSpec {
 /// The cursor is deliberately absent: it is not an object the engine can draw,
 /// it is the shell's "select and pan" state, and a registry of *objects*
 /// pretending to contain it would be one more thing to filter out.
-pub const REGISTRY: [ToolSpec; 8] = [
+pub const REGISTRY: [ToolSpec; 16] = [
     ToolSpec {
         kind: DrawingKind::Trendline,
         label: "Trend",
@@ -247,6 +310,70 @@ pub const REGISTRY: [ToolSpec; 8] = [
         group_label: "Measure",
         anchors: 2,
     },
+    ToolSpec {
+        kind: DrawingKind::Channel,
+        label: "Channel",
+        title: "Drag the line, then click where the parallel runs",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: 3,
+    },
+    ToolSpec {
+        kind: DrawingKind::Angle,
+        label: "Angle",
+        title: "Click the origin, then drag to set the slope",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: 2,
+    },
+    ToolSpec {
+        kind: DrawingKind::Arc,
+        label: "Arc",
+        title: "Click the centre, then set the horizontal and vertical radii",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: 3,
+    },
+    ToolSpec {
+        kind: DrawingKind::Circle,
+        label: "Circle",
+        title: "Click the centre, then drag the radius",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: 2,
+    },
+    ToolSpec {
+        kind: DrawingKind::Triangle,
+        label: "Triangle",
+        title: "Click each of the three corners",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: 3,
+    },
+    ToolSpec {
+        kind: DrawingKind::PositionLong,
+        label: "Long",
+        title: "Click the entry, then drag the target extent upward",
+        group: ToolGroup::Positions,
+        group_label: "Positions",
+        anchors: 2,
+    },
+    ToolSpec {
+        kind: DrawingKind::PositionShort,
+        label: "Short",
+        title: "Click the entry, then drag the target extent downward",
+        group: ToolGroup::Positions,
+        group_label: "Positions",
+        anchors: 2,
+    },
+    ToolSpec {
+        kind: DrawingKind::DatepriceRange,
+        label: "Range",
+        title: "Drag to measure the price and time range as a percentage",
+        group: ToolGroup::Measurement,
+        group_label: "Measure",
+        anchors: 2,
+    },
 ];
 
 /// Where one end of a drawing is, and in what unit.
@@ -301,6 +428,9 @@ pub struct Drawing {
     /// The second, for the kinds that have one.
     #[serde(default)]
     pub a2: Option<Anchor>,
+    /// The third, for the parity kinds that need one.
+    #[serde(default)]
+    pub a3: Option<Anchor>,
     /// What the user called it, if anything.
     #[serde(default)]
     pub label: Option<String>,
@@ -333,7 +463,17 @@ impl Drawing {
                 self.kind.name()
             ));
         }
-        for (which, anchor) in [("first", Some(self.a1)), ("second", self.a2)] {
+        if self.kind.needs_third_anchor() && self.a3.is_none() {
+            return Err(format!(
+                "a {} needs three anchors and has two",
+                self.kind.name()
+            ));
+        }
+        for (which, anchor) in [
+            ("first", Some(self.a1)),
+            ("second", self.a2),
+            ("third", self.a3),
+        ] {
             let Some(anchor) = anchor else { continue };
             let ok = match anchor {
                 // `is_finite` is false for both `NaN` and the infinities, which
@@ -424,8 +564,38 @@ pub enum DrawingPart {
         x: f64,
         /// Down.
         y: f64,
-        /// Which anchor: `0` or `1`.
+        /// Which anchor: `0`, `1` or `2`.
         anchor: u8,
+    },
+    /// An axis-aligned ellipse: a circle when the radii are equal, a half
+    /// ellipse when `half` is set (the upper arc only).
+    ///
+    /// The parity vocabulary's arc and circle are the emitters. A `Segment`
+    /// polyline approximating an ellipse would put the curve's arithmetic in
+    /// the shell, which is exactly what the scene exists to keep out.
+    Ellipse {
+        /// Centre, across.
+        cx: f64,
+        /// Centre, down.
+        cy: f64,
+        /// Horizontal radius.
+        rx: f64,
+        /// Vertical radius.
+        ry: f64,
+        /// Draw only the upper arc rather than the whole ellipse.
+        half: bool,
+        /// Whether to fill it as well as outline it.
+        filled: bool,
+    },
+    /// A closed polygon through three or more points, in order.
+    ///
+    /// The triangle is the emitter today. Points are `(x, y)` pairs in canvas
+    /// pixels, already ordered the way they should be stroked.
+    Polygon {
+        /// The vertices, in stroke order.
+        points: Vec<(f64, f64)>,
+        /// Whether to fill it as well as outline it.
+        filled: bool,
     },
 }
 
@@ -466,6 +636,8 @@ pub struct SceneDrawing {
     pub a1: Anchor,
     /// The second, always absolute, for the kinds that have one.
     pub a2: Option<Anchor>,
+    /// The third, always absolute, for the parity kinds that need one.
+    pub a3: Option<Anchor>,
     /// Where the first anchor sits in plot fractions.
     ///
     /// Reported so a *body* drag can be a screen-space delta. Moving a whole
@@ -477,6 +649,9 @@ pub struct SceneDrawing {
     pub a1_fraction: Fraction,
     /// The second, for the kinds that have one.
     pub a2_fraction: Option<Fraction>,
+    /// The third, for the parity kinds that need one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub a3_fraction: Option<Fraction>,
     /// The shapes to draw, in order.
     pub parts: Vec<DrawingPart>,
 }
@@ -791,6 +966,7 @@ mod tests {
                 price: 45_000.0,
             },
             a2,
+            a3: None,
             label: None,
             selected: false,
         }
@@ -800,6 +976,15 @@ mod tests {
         Some(Anchor::Absolute {
             time: 1_767_229_200_000.0,
             price: 45_500.0,
+        })
+    }
+
+    fn third() -> Option<Anchor> {
+        // A third anchor distinct from the first two so a misplaced offset
+        // (channel ray, arc ry) cannot pass a test by coincidence.
+        Some(Anchor::Absolute {
+            time: 1_767_232_800_000.0,
+            price: 46_000.0,
         })
     }
 
@@ -849,7 +1034,14 @@ mod tests {
             } else {
                 None
             };
-            assert_eq!(drawing(kind, a2).validate_anchors(), Ok(()), "{kind:?}");
+            let mut d = drawing(kind, a2);
+            // Three-anchor tools (channel, arc, triangle) must see their
+            // third anchor in the same sweep, or `validate_anchors` rejects
+            // them for a reason the test itself created.
+            if kind.needs_third_anchor() {
+                d.a3 = third();
+            }
+            assert_eq!(d.validate_anchors(), Ok(()), "{kind:?}");
         }
     }
 
@@ -998,10 +1190,12 @@ mod tests {
         fn every_anchor_count_agrees_with_the_kind_rule() {
             // Two sources of one truth is how a button that places one anchor
             // for a two-anchor tool ships. The registry is the toolbar's
-            // vocabulary, `needs_second_anchor` is the engine's rule, and this
-            // is the pin between them.
+            // vocabulary, `needs_second_anchor`/`needs_third_anchor` are the
+            // engine's rule, and this is the pin between them.
             for tool in REGISTRY {
-                let expected = if tool.kind.needs_second_anchor() {
+                let expected = if tool.kind.needs_third_anchor() {
+                    3
+                } else if tool.kind.needs_second_anchor() {
                     2
                 } else {
                     1

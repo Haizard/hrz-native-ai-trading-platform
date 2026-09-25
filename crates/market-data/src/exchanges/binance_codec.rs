@@ -242,10 +242,7 @@ mod tests {
     #[test]
     fn a_recognised_topic_that_does_not_decode_is_malformed() {
         let broken = DEPTH_FRAME.replace("\"0.0024\"", "\"not-a-price\"");
-        assert!(matches!(
-            codec().parse_frame(&broken),
-            Frame::Malformed(_)
-        ));
+        assert!(matches!(codec().parse_frame(&broken), Frame::Malformed(_)));
     }
 
     /// An envelope for a stream we never asked for is not an error.

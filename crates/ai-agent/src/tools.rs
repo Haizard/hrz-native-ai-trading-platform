@@ -39,6 +39,8 @@ use crate::error::AgentError;
 use crate::llm_client::ToolCall;
 use crate::user_drawings::{DrawingWriter, NewAgentDrawing, UserDrawingsSource};
 
+use crate::agent_memory::{MemorySource, MemoryWriter, NewMemory};
+
 /// Where market data comes from.
 ///
 /// Implemented by the binary (against `db`) rather than by this crate, so the
@@ -164,6 +166,21 @@ pub struct ToolContext<'a> {
     /// `with_drawing_writer` alongside the reader, under the same
     /// authenticated identity.
     pub drawing_writer: Option<&'a dyn DrawingWriter>,
+    /// The asking user's memory, when the host provided it.
+    ///
+    /// The same posture as the drawings: `None` is a fact the tools report,
+    /// not an empty memory the model may assume. The writer is a separate
+    /// `Option` so a host can grant read-only memory, mirroring the drawing
+    /// reader/writer split.
+    pub memory: Option<&'a dyn MemorySource>,
+    /// Where the agent may store facts, when the host allows writes.
+    pub memory_writer: Option<&'a dyn MemoryWriter>,
+    /// A separate copy of the user id for the memory tools.
+    ///
+    /// Deliberately the *same* value as [`Self::user_id`] whenever either is
+    /// set (the builders enforce it); a distinct field keeps each capability's
+    /// builder signature self-contained the way `with_drawing_writer` does.
+    pub memory_user_id: Option<&'a str>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -179,7 +196,24 @@ impl<'a> ToolContext<'a> {
             drawings: None,
             user_id: None,
             drawing_writer: None,
+            memory: None,
+            memory_writer: None,
+            memory_user_id: None,
         }
+    }
+
+    /// Attach the asking user's memory, and whose it is.
+    #[must_use]
+    pub fn with_memory(
+        mut self,
+        source: &'a dyn MemorySource,
+        writer: Option<&'a dyn MemoryWriter>,
+        user_id: &'a str,
+    ) -> Self {
+        self.memory = Some(source);
+        self.memory_writer = writer;
+        self.memory_user_id = Some(user_id);
+        self
     }
 
     /// Attach the asking user's drawings, and whose they are.
@@ -340,6 +374,21 @@ impl ToolRegistry {
                     description: DELETE_DRAWING.into(),
                     input_schema: drawing_delete_schema(),
                 },
+                ToolSpec {
+                    name: "remember".into(),
+                    description: REMEMBER.into(),
+                    input_schema: remember_schema(),
+                },
+                ToolSpec {
+                    name: "recall_memories".into(),
+                    description: RECALL_MEMORIES.into(),
+                    input_schema: recall_memories_schema(),
+                },
+                ToolSpec {
+                    name: "forget_memory".into(),
+                    description: FORGET_MEMORY.into(),
+                    input_schema: forget_memory_schema(),
+                },
             ],
         }
     }
@@ -399,6 +448,9 @@ impl ToolRegistry {
             "create_drawing" => create_drawing(ctx, &call.input).await,
             "update_drawing" => update_drawing(ctx, &call.input).await,
             "delete_drawing" => delete_drawing(ctx, &call.input).await,
+            "remember" => remember(ctx, &call.input).await,
+            "recall_memories" => recall_memories(ctx, &call.input).await,
+            "forget_memory" => forget_memory(ctx, &call.input).await,
             other => return Err(AgentError::UnknownTool(other.to_string())),
         };
         let elapsed = started.elapsed();
@@ -417,6 +469,35 @@ impl ToolRegistry {
 // Schemas
 // ---------------------------------------------------------------------------
 
+/// The timeframe choices the schemas advertise, finest first.
+///
+/// Built from [`Timeframe::all`] rather than typed out, for the same reason
+/// `timeframe_arg`'s error message is: the schema the model reads and the
+/// parser the tools run must accept the same set. This enum was hand-written
+/// once and `1w` was added to the engine without it, so the model was being
+/// told weekly did not exist while the rest of the platform charted it -- and
+/// a model that obeys its schema will never try what the schema forbids.
+fn timeframe_choices() -> Vec<&'static str> {
+    Timeframe::all()
+        .iter()
+        .rev()
+        .map(|tf| tf.as_str())
+        .collect()
+}
+
+/// The schema `enum` for a timeframe, from [`timeframe_choices`].
+fn timeframe_enum() -> Vec<Value> {
+    timeframe_choices().into_iter().map(Value::from).collect()
+}
+
+/// The schema `description` for a timeframe, from [`timeframe_choices`], so
+/// the prose and the enum cannot disagree.
+fn timeframe_description() -> String {
+    let choices = timeframe_choices();
+    let (last, rest) = choices.split_last().expect("Timeframe::all is non-empty");
+    format!("Bar size: {} or {last}", rest.join(", "))
+}
+
 fn symbol_timeframe_schema(extra: Option<&str>) -> Value {
     let mut properties = Map::new();
     properties.insert(
@@ -427,8 +508,8 @@ fn symbol_timeframe_schema(extra: Option<&str>) -> Value {
         "timeframe".into(),
         json!({
             "type": "string",
-            "description": "Bar size: 1m, 5m, 15m, 1h, 4h or 1d",
-            "enum": ["1m", "5m", "15m", "1h", "4h", "1d"],
+            "description": timeframe_description(),
+            "enum": timeframe_enum(),
         }),
     );
     if let Some(name) = extra {
@@ -455,7 +536,7 @@ fn multi_timeframe_schema() -> Value {
             "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
             "timeframes": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["1m", "5m", "15m", "1h", "4h", "1d"]},
+                "items": {"type": "string", "enum": timeframe_enum()},
                 "description": "Timeframes to read, e.g. [\"4h\", \"1h\", \"5m\"]",
             },
             "lookback": {"type": "integer", "minimum": 1, "description": "Bars per timeframe"},
@@ -500,12 +581,14 @@ fn drawing_write_schema(with_id: bool) -> Value {
         "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
         "kind": {
             "type": "string",
-            "description": "What to draw: trendline, hline, vline, ray, extended, rect, fib or measure",
+            "description": "What to draw. Kinds: trendline, hline, vline, ray, extended, rect, fib, measure, channel (3 anchors), angle, arc (3 anchors), circle, triangle (3 anchors), position_long, position_short, dateprice_range",
         },
         "time1_ms": {"type": "number", "description": "First anchor, milliseconds since the epoch"},
         "price1": {"type": "number", "description": "First anchor's price"},
         "time2_ms": {"type": "number", "description": "Second anchor's time, for kinds that need two anchors"},
         "price2": {"type": "number", "description": "Second anchor's price"},
+        "time3_ms": {"type": "number", "description": "Third anchor's time, only for channel, arc and triangle"},
+        "price3": {"type": "number", "description": "Third anchor's price, only for channel, arc and triangle"},
         "label": {"type": "string", "description": "A short name the user will read on the chart"},
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "How confident you are in this object, 0-1. Optional."},
         "reason": {"type": "string", "description": "Why this object belongs on the chart, in one or two sentences. Shown to the user."},
@@ -535,6 +618,41 @@ fn drawing_delete_schema() -> Value {
             "id": {"type": "string", "description": "The drawing's id, from get_user_drawings"},
         },
         "required": ["symbol", "id"],
+    })
+}
+
+fn remember_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "scope": {"type": "string", "enum": ["symbol", "global"], "description": "`symbol` for a fact about this market, `global` for a preference about this user"},
+            "symbol": {"type": "string", "description": "The symbol, required exactly when scope is `symbol`"},
+            "key": {"type": "string", "description": "Short slug for the fact, e.g. 4h_resistance or risk_style. Stating the same key again replaces the earlier fact"},
+            "content": {"type": "string", "description": "The fact, one or two sentences, in numbers where possible"},
+        },
+        "required": ["scope", "key", "content"],
+    })
+}
+
+fn recall_memories_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "How many facts to read (default 24)"},
+        },
+        "required": ["symbol"],
+    })
+}
+
+fn forget_memory_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "The symbol of a symbol-scoped fact; omit for a global preference"},
+            "key": {"type": "string", "description": "The key of the fact to drop, e.g. 4h_resistance"},
+        },
+        "required": ["key"],
     })
 }
 
@@ -768,6 +886,21 @@ const DELETE_DRAWING: &str = "Remove one drawing, by id, when the analysis says 
     holds or the user asked for its removal. Prefer update_drawing when the object is only \
     misplaced. There is no undo for the agent: if the drawing was the user's own work, say so \
     and prefer to leave it.";
+
+const REMEMBER: &str = "Store a fact about this user or market so you still know it next \
+    conversation: a level that mattered and why, the user's risk preferences, their plan. \
+    Stating the same key again replaces what you said before -- memory is what you currently \
+    stand behind, not a chat log. You do not need this for the thesis levels themselves; \
+    those are kept automatically. Use it for what would not otherwise be written down.";
+
+const RECALL_MEMORIES: &str = "Re-read what you know about this user and symbol. Your newest \
+    memories are already placed in your context before the first turn; call this when you \
+    suspect something relevant was stored beyond what is shown there, or after storing \
+    several facts and wanting to see the current set.";
+
+const FORGET_MEMORY: &str = "Drop one stored fact, by key, when you can see it is no longer \
+    true -- a level that was broken and confirmed, a preference the user has revised. \
+    Forgetting a stale fact is better than contradicting it every session.";
 
 /// Absence-of-tick-data message, shared so every affected tool says the same
 /// thing. The model needs to distinguish "no events occurred" from "events
@@ -1393,11 +1526,24 @@ fn new_drawing_args(args: &Value, tool: &str) -> Result<NewAgentDrawing, AgentEr
                 .into(),
         });
     }
+    let time3_ms = opt_num("time3_ms")?;
+    let price3 = opt_num("price3")?;
+    // The third anchor obeys the same whole-or-absent rule. The *which kinds*
+    // half is the engine's `validate_anchors` one layer up; refusing a broken
+    // pair here keeps the message about the shape rather than the rule.
+    if (time3_ms.is_some()) != (price3.is_some()) {
+        return Err(AgentError::InvalidToolArgs {
+            tool: tool.into(),
+            reason: "a third anchor needs both `time3_ms` and `price3`, or neither".into(),
+        });
+    }
     for (name, value) in [
         ("time1_ms", time1_ms),
         ("price1", price1),
         ("time2_ms", time2_ms.unwrap_or_default()),
         ("price2", price2.unwrap_or_default()),
+        ("time3_ms", time3_ms.unwrap_or_default()),
+        ("price3", price3.unwrap_or_default()),
     ] {
         if value.is_finite() {
             continue;
@@ -1432,6 +1578,8 @@ fn new_drawing_args(args: &Value, tool: &str) -> Result<NewAgentDrawing, AgentEr
         price1,
         time2_ms,
         price2,
+        time3_ms,
+        price3,
         provenance,
     })
 }
@@ -1495,6 +1643,150 @@ async fn delete_drawing(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
             "note": "nothing to delete: there is no drawing with that id on this \
                      symbol for this user. If it was already gone, the requested \
                      state is already true."
+        }))
+    }
+}
+
+/// What the memory tools need from the context: a source, optionally a
+/// writer, and whose memory it is.
+type MemoryParts<'a> = (&'a dyn MemorySource, Option<&'a dyn MemoryWriter>, &'a str);
+
+/// The memory tools' shared refusal. Same posture as the drawings tools: a
+/// missing source is a *host* fact, reported so the model can say the feature
+/// is unavailable here rather than reading silence as an empty memory.
+fn memory_parts<'a>(ctx: &'a ToolContext<'_>, tool: &str) -> Result<MemoryParts<'a>, AgentError> {
+    match (ctx.memory, ctx.memory_writer, ctx.memory_user_id) {
+        (Some(source), writer, Some(user_id)) => Ok((source, writer, user_id)),
+        _ => Err(AgentError::InvalidToolArgs {
+            tool: tool.into(),
+            reason: "no memory source is attached to this agent, so facts cannot \
+                     be stored or read. Say so; do not pretend to remember."
+                .into(),
+        }),
+    }
+}
+
+/// `remember`: store one fact under this user's name, newest-wins by key.
+async fn remember(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "remember";
+    let scope = string_arg(args, "scope", TOOL)?;
+    let key = string_arg(args, "key", TOOL)?;
+    let content = string_arg(args, "content", TOOL)?;
+    let symbol = match args.get("symbol") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_uppercase()),
+        Some(_) => {
+            return Err(AgentError::InvalidToolArgs {
+                tool: TOOL.into(),
+                reason: "`symbol` must be a non-empty string when given".into(),
+            })
+        }
+    };
+    // The scope shape is checked *here*, in the model's vocabulary, before the
+    // builder's identical check -- so a wrong shape returns a message about
+    // scopes rather than one about symbols.
+    if scope == "symbol" && symbol.is_none() {
+        return Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: "a symbol-scoped fact needs `symbol`; use scope `global` for \
+                     preferences about this user"
+                .into(),
+        });
+    }
+    if scope == "global" && symbol.is_some() {
+        return Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: "a global fact does not carry a symbol; put the fact's market \
+                     in the content if it has one"
+                .into(),
+        });
+    }
+    if scope != "symbol" && scope != "global" {
+        return Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: "`scope` must be `symbol` or `global`".into(),
+        });
+    }
+    let (_source, Some(writer), user_id) = memory_parts(ctx, TOOL)? else {
+        return Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: "this agent can read memories but not store them: no memory \
+                     writer is attached. Say so rather than implying the fact \
+                     was kept."
+                .into(),
+        });
+    };
+    let fact = NewMemory::checked_for_tool(TOOL, &scope, symbol, key, content)?;
+    writer.remember(user_id, &fact).await?;
+    Ok(json!({
+        "stored": true,
+        "scope": fact.scope,
+        "key": fact.key,
+        "note": "the fact is stored under this user's name and will be recalled \
+                 in future conversations on this symbol (and every symbol, for \
+                 global facts)."
+    }))
+}
+
+/// `recall_memories`: the user's newest facts, newest first.
+async fn recall_memories(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "recall_memories";
+    let symbol = string_arg(args, "symbol", TOOL)?.to_uppercase();
+    let limit = optional_u64(args, "limit", TOOL)?
+        .unwrap_or(crate::agent_memory::RECALL_LIMIT as u64) as usize;
+    let (source, _writer, user_id) = memory_parts(ctx, TOOL)?;
+    let rows = source.recall(user_id, &symbol, limit).await?;
+    let facts: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "scope": row.scope,
+                "symbol": row.symbol,
+                "key": row.key,
+                "content": row.content,
+                "updated_at_ns": row.updated_at,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "count": facts.len(),
+        "memories": facts,
+        "note": "newest first. These are claims from earlier conversations -- \
+                 re-derive levels from tools before acting on them."
+    }))
+}
+
+/// `forget_memory`: drop one fact by key, honestly reporting a miss.
+async fn forget_memory(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "forget_memory";
+    let key = string_arg(args, "key", TOOL)?;
+    let symbol = match args.get("symbol") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_uppercase()),
+        Some(_) => {
+            return Err(AgentError::InvalidToolArgs {
+                tool: TOOL.into(),
+                reason: "`symbol` must be a non-empty string when given".into(),
+            })
+        }
+    };
+    let (_source, Some(writer), user_id) = memory_parts(ctx, TOOL)? else {
+        return Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: "this agent can read memories but not drop them: no memory \
+                     writer is attached."
+                .into(),
+        });
+    };
+    let deleted = writer.forget(user_id, symbol.as_deref(), &key).await?;
+    if deleted {
+        Ok(json!({"forgotten": true, "key": key}))
+    } else {
+        Ok(json!({
+            "forgotten": false,
+            "key": key,
+            "note": "no fact under that key for this scope. If it was already \
+                     gone, the requested state is already true."
         }))
     }
 }
@@ -1820,6 +2112,69 @@ mod tests {
                 spec.name
             );
         }
+    }
+
+    #[test]
+    fn every_schema_advertises_every_timeframe_the_engine_accepts() {
+        // The schema is the model's only idea of what exists. A hand-written
+        // enum here once lagged the engine by a whole resolution: `1w` was
+        // charted end to end while the model was still being told weekly did
+        // not exist, and a model that obeys its schema never tries what the
+        // schema forbids. So the enums are built from `Timeframe::all()` --
+        // and this test pins the invariant directly by walking every schema's
+        // JSON tree and comparing each timeframe enum against the engine's own
+        // list. A timeframe enum is recognised by shape (it carries the `1m`
+        // and `4h` rungs), not by tool name, so the check cannot go stale when
+        // a tool is added.
+        // Fine-to-coarse, the order a model reads a ladder in and the order the
+        // schemas have always advertised. Derived from the type, not from the
+        // schema helpers, so the comparison is not the function checking itself.
+        let expected: Vec<Value> = Timeframe::all()
+            .iter()
+            .rev()
+            .map(|tf| Value::from(tf.as_str()))
+            .collect();
+
+        fn collect_enums(value: &Value, out: &mut Vec<Vec<Value>>) {
+            match value {
+                Value::Object(map) => {
+                    if let Some(Value::Array(items)) = map.get("enum") {
+                        out.push(items.clone());
+                    }
+                    for v in map.values() {
+                        collect_enums(v, out);
+                    }
+                }
+                Value::Array(items) => {
+                    for v in items {
+                        collect_enums(v, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut saw_timeframe_enum = false;
+        for spec in ToolRegistry::market_analysis().specs() {
+            let mut found = Vec::new();
+            collect_enums(&spec.input_schema, &mut found);
+            for items in &found {
+                let is_timeframe_enum =
+                    items.contains(&Value::from("1m")) && items.contains(&Value::from("4h"));
+                if is_timeframe_enum {
+                    saw_timeframe_enum = true;
+                    assert_eq!(
+                        items, &expected,
+                        "{} schema's timeframe enum drifted from `Timeframe::all()`",
+                        spec.name
+                    );
+                }
+            }
+        }
+        assert!(
+            saw_timeframe_enum,
+            "no schema advertises timeframes any more; the check has gone blind"
+        );
     }
 
     #[tokio::test]
@@ -2247,6 +2602,8 @@ mod tests {
             price1: price,
             time2_ms: None,
             price2: None,
+            time3_ms: None,
+            price3: None,
         }
     }
 
@@ -2270,6 +2627,8 @@ mod tests {
                 price1: 44_000.0,
                 time2_ms: Some(2.0),
                 price2: Some(46_000.0),
+                time3_ms: None,
+                price3: None,
             },
         ]);
         let ctx = drawings_ctx(&fixture, &source, "user-1");
@@ -2627,5 +2986,216 @@ mod tests {
         for tool in ["create_drawing", "update_drawing", "delete_drawing"] {
             assert!(names.contains(&tool), "{tool} is registered");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Memory tools. The fixtures mirror the drawings ones: a source, a
+    // writer, and the tool's own vocabulary exercised against both.
+    // -----------------------------------------------------------------------
+
+    struct MemoryFixture {
+        rows: std::sync::Mutex<Vec<crate::agent_memory::MemoryRow>>,
+        stored: std::sync::Mutex<Vec<(String, crate::agent_memory::NewMemory)>>,
+        forgotten: std::sync::Mutex<Vec<(String, Option<String>, String)>>,
+        next_ns: std::sync::atomic::AtomicI64,
+    }
+
+    impl MemoryFixture {
+        fn new() -> Self {
+            Self {
+                rows: std::sync::Mutex::new(Vec::new()),
+                stored: std::sync::Mutex::new(Vec::new()),
+                forgotten: std::sync::Mutex::new(Vec::new()),
+                next_ns: std::sync::atomic::AtomicI64::new(1),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl crate::agent_memory::MemorySource for MemoryFixture {
+        async fn recall(
+            &self,
+            user_id: &str,
+            symbol: &str,
+            limit: usize,
+        ) -> Result<Vec<crate::agent_memory::MemoryRow>, AgentError> {
+            let rows = self.rows.lock().expect("lock").clone();
+            Ok(rows
+                .into_iter()
+                .filter(|row| row.symbol.as_deref() == Some(symbol) || row.scope == "global")
+                .filter(|_| user_id != "someone-else")
+                .take(limit)
+                .collect())
+        }
+    }
+
+    #[async_trait]
+    impl crate::agent_memory::MemoryWriter for MemoryFixture {
+        async fn remember(
+            &self,
+            user_id: &str,
+            memory: &crate::agent_memory::NewMemory,
+        ) -> Result<(), AgentError> {
+            self.stored
+                .lock()
+                .expect("lock")
+                .push((user_id.to_string(), memory.clone()));
+            let ns = self
+                .next_ns
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.rows
+                .lock()
+                .expect("lock")
+                .push(crate::agent_memory::MemoryRow {
+                    scope: memory.scope.clone(),
+                    symbol: memory.symbol.clone(),
+                    key: memory.key.clone(),
+                    content: memory.content.clone(),
+                    updated_at: ns,
+                });
+            Ok(())
+        }
+
+        async fn forget(
+            &self,
+            user_id: &str,
+            symbol: Option<&str>,
+            key: &str,
+        ) -> Result<bool, AgentError> {
+            self.forgotten.lock().expect("lock").push((
+                user_id.to_string(),
+                symbol.map(str::to_string),
+                key.to_string(),
+            ));
+            let mut rows = self.rows.lock().expect("lock");
+            let before = rows.len();
+            rows.retain(|row| !(row.key == key && row.symbol.as_deref() == symbol));
+            Ok(rows.len() < before)
+        }
+    }
+
+    fn memory_ctx<'a>(
+        fixture: &'a Fixture,
+        memory: &'a MemoryFixture,
+        user: &'a str,
+    ) -> ToolContext<'a> {
+        ToolContext::new(fixture).with_memory(memory, Some(memory), user)
+    }
+
+    #[tokio::test]
+    async fn a_remembered_fact_is_stored_under_the_asking_user() {
+        let fixture = Fixture::rising(10);
+        let memory = MemoryFixture::new();
+        let ctx = memory_ctx(&fixture, &memory, "user-1");
+
+        let out = registry()
+            .execute(
+                &call(
+                    "remember",
+                    json!({
+                        "scope": "symbol",
+                        "symbol": "btcusdt",
+                        "key": "4h_resistance",
+                        "content": "108,500 rejected price twice this week",
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["stored"], true);
+        let (user, fact) = &memory.stored.lock().expect("lock")[0];
+        assert_eq!(user, "user-1", "the write goes out as the asking user");
+        assert_eq!(fact.symbol.as_deref(), Some("BTCUSDT"), "symbols normalise");
+        assert_eq!(fact.key, "4h_resistance");
+    }
+
+    #[tokio::test]
+    async fn a_global_fact_cannot_smuggle_a_symbol() {
+        let fixture = Fixture::rising(10);
+        let memory = MemoryFixture::new();
+        let ctx = memory_ctx(&fixture, &memory, "user-1");
+
+        let err = registry()
+            .execute(
+                &call(
+                    "remember",
+                    json!({
+                        "scope": "global",
+                        "symbol": "BTCUSDT",
+                        "key": "risk_style",
+                        "content": "risks 0.5R",
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .expect_err("must refuse");
+        assert!(matches!(err, AgentError::InvalidToolArgs { .. }));
+        assert!(memory.stored.lock().expect("lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn recall_reports_what_is_stored_with_the_scoping_kept() {
+        let fixture = Fixture::rising(10);
+        let memory = MemoryFixture::new();
+        memory
+            .rows
+            .lock()
+            .expect("lock")
+            .push(crate::agent_memory::MemoryRow {
+                scope: "global".into(),
+                symbol: None,
+                key: "risk_style".into(),
+                content: "risks 0.5R".into(),
+                updated_at: 1,
+            });
+        let ctx = memory_ctx(&fixture, &memory, "user-1");
+
+        let out = registry()
+            .execute(&call("recall_memories", json!({"symbol": "BTCUSDT"})), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out["count"], 1);
+        assert_eq!(out["memories"][0]["key"], "risk_style");
+        assert_eq!(
+            out["read_only"],
+            json!(null),
+            "recall is read-only, and says nothing about being otherwise"
+        );
+    }
+
+    #[tokio::test]
+    async fn forgetting_reports_a_miss_honestly() {
+        let fixture = Fixture::rising(10);
+        let memory = MemoryFixture::new();
+        let ctx = memory_ctx(&fixture, &memory, "user-1");
+
+        let out = registry()
+            .execute(
+                &call(
+                    "forget_memory",
+                    json!({"symbol": "BTCUSDT", "key": "4h_resistance"}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["forgotten"], false, "nothing was there to drop");
+    }
+
+    #[tokio::test]
+    async fn a_missing_memory_source_is_an_error_not_an_empty_memory() {
+        // The failure mode the tool exists to prevent, same as the drawings
+        // one: a host with no source, read by the model as "nothing stored".
+        let fixture = Fixture::rising(10);
+        let ctx = ToolContext::new(&fixture);
+
+        let err = registry()
+            .execute(&call("recall_memories", json!({"symbol": "BTCUSDT"})), &ctx)
+            .await
+            .expect_err("must refuse");
+        assert!(matches!(err, AgentError::InvalidToolArgs { .. }));
     }
 }

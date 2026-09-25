@@ -39,6 +39,7 @@ use async_trait::async_trait;
 use market_data::{Window, WindowService};
 
 use ai_agent::{AgentError, MarketDataSource};
+use uuid::Uuid;
 
 // The engine's own vocabulary and anchor rule, shared with `drawing_routes`:
 // both doors into the drawings table validate the same way.
@@ -199,6 +200,9 @@ impl ai_agent::UserDrawingsSource for DbUserDrawings {
                 // reading, the same one `drawing_routes::describe` gives it.
                 time2_ms: row.a2_time_ms,
                 price2: row.a2_price,
+                // The third anchor obeys the same whole-or-absent CHECK (`0011`).
+                time3_ms: row.a3_time_ms,
+                price3: row.a3_price,
             })
             .collect())
     }
@@ -271,6 +275,19 @@ impl DbDrawingWriter {
                 })
             }
         };
+        // The third anchor gets the same treatment: a broken pair refused at
+        // the door with a message about the shape, the engine's
+        // `validate_anchors` deciding *which kinds* need one.
+        let third = match (drawing.time3_ms, drawing.price3) {
+            (Some(time), Some(price)) => Some(Anchor::Absolute { time, price }),
+            (None, None) => None,
+            _ => {
+                return Err(AgentError::InvalidToolArgs {
+                    tool: TOOL.into(),
+                    reason: "a third anchor needs both time and price".into(),
+                })
+            }
+        };
         let check = Drawing {
             id: String::new(),
             kind: kind_from_name(&drawing.kind).ok_or_else(unknown)?,
@@ -279,6 +296,7 @@ impl DbDrawingWriter {
                 price: drawing.price1,
             },
             a2: second,
+            a3: third,
             label: drawing.label.clone(),
             selected: false,
         };
@@ -298,6 +316,8 @@ impl DbDrawingWriter {
             a1_price: drawing.price1,
             a2_time_ms: drawing.time2_ms,
             a2_price: drawing.price2,
+            a3_time_ms: drawing.time3_ms,
+            a3_price: drawing.price3,
             label: drawing.label.clone(),
             provenance: Some(db::drawings::Provenance {
                 created_by: "ai".into(),
@@ -375,6 +395,106 @@ impl ai_agent::DrawingWriter for DbDrawingWriter {
                 reason: format!("storage could not delete the drawing: {e}"),
             })
     }
+}
+
+/// The agent's memory door, over the same Postgres the drawing doors use.
+///
+/// One adapter for both traits, because the reader and the writer are one
+/// grant to one identity (see `ai_agent::MemoryContext`): a host that wires
+/// this adapter gets recall and store together, and the user id is resolved
+/// by the caller exactly once.
+#[derive(Debug, Clone)]
+pub struct DbAgentMemory {
+    db: Arc<db::Database>,
+}
+
+impl DbAgentMemory {
+    /// Wrap the shared database handle.
+    #[must_use]
+    pub fn new(db: Arc<db::Database>) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl ai_agent::MemorySource for DbAgentMemory {
+    async fn recall(
+        &self,
+        user_id: &str,
+        symbol: &str,
+        limit: usize,
+    ) -> Result<Vec<ai_agent::MemoryRow>, AgentError> {
+        let user_id = parse_user(user_id)?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = db::agent_memory::recall(self.db.pool(), user_id, symbol, limit)
+            .await
+            .map_err(|e| AgentError::ToolFailed {
+                tool: "recall_memories".into(),
+                reason: format!("storage could not answer: {e}"),
+            })?;
+        Ok(rows
+            .into_iter()
+            .map(|row| ai_agent::MemoryRow {
+                scope: row.scope,
+                symbol: row.symbol,
+                key: row.key,
+                content: row.content,
+                updated_at: row.updated_at,
+            })
+            .collect())
+    }
+}
+
+#[async_trait]
+impl ai_agent::MemoryWriter for DbAgentMemory {
+    async fn remember(
+        &self,
+        user_id: &str,
+        memory: &ai_agent::NewMemory,
+    ) -> Result<(), AgentError> {
+        let user_id = parse_user(user_id)?;
+        db::agent_memory::remember(
+            self.db.pool(),
+            user_id,
+            &db::agent_memory::NewMemory {
+                scope: memory.scope.clone(),
+                symbol: memory.symbol.clone(),
+                key: memory.key.clone(),
+                content: memory.content.clone(),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| AgentError::ToolFailed {
+            tool: "remember".into(),
+            reason: format!("storage refused the write: {e}"),
+        })
+    }
+
+    async fn forget(
+        &self,
+        user_id: &str,
+        symbol: Option<&str>,
+        key: &str,
+    ) -> Result<bool, AgentError> {
+        let user_id = parse_user(user_id)?;
+        db::agent_memory::forget_by_key(self.db.pool(), user_id, symbol, key)
+            .await
+            .map_err(|e| AgentError::ToolFailed {
+                tool: "forget_memory".into(),
+                reason: format!("storage could not answer: {e}"),
+            })
+    }
+}
+
+/// Parse the opaque user id the agent carries. Storage keys on `Uuid`; the
+/// agent's id is a string because identity is not this crate's business --
+/// so the boundary parses once, here, where every door shares it.
+fn parse_user(user_id: &str) -> Result<Uuid, AgentError> {
+    Uuid::parse_str(user_id).map_err(|_| AgentError::ToolFailed {
+        tool: "memory".into(),
+        reason: "the user id attached to this request is not a valid identity".into(),
+    })
 }
 
 #[cfg(test)]

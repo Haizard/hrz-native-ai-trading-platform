@@ -490,7 +490,7 @@ mod tests {
 
         // The gap rule can fire on overlapping windows; each match is its own
         // zone/marker/evidence in the indicator output.
-        assert!(output.zones.len() >= 1, "{output:#?}");
+        assert!(!output.zones.is_empty(), "{output:#?}");
         assert_eq!(output.zones.len(), output.markers.len());
         assert_eq!(output.zones.len(), output.evidence.len());
     }

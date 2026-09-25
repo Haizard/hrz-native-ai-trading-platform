@@ -489,7 +489,11 @@ mod tests {
         // Sunday belongs to the week that started six days earlier, and the
         // next Monday opens a new one.
         let sunday = bucket + 6 * NS_PER_DAY;
-        assert_eq!(Timeframe::W1.bucket_of(sunday), bucket, "Sunday closes the week");
+        assert_eq!(
+            Timeframe::W1.bucket_of(sunday),
+            bucket,
+            "Sunday closes the week"
+        );
         let next_monday = bucket + week;
         assert_eq!(
             Timeframe::W1.bucket_of(next_monday),

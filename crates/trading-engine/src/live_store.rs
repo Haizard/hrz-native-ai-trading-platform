@@ -29,8 +29,8 @@
 
 use std::collections::HashMap;
 
-use db::Database;
 use db::paper::{AuditEvent, ExecutedTrade};
+use db::Database;
 use serde_json::json;
 use uuid::Uuid;
 

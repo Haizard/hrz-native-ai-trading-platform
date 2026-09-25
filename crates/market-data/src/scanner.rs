@@ -264,7 +264,11 @@ impl ScanResult {
                 unmeasured, self.requested
             ));
             if !self.skipped.is_empty() {
-                out.push_str(&format!(" ({} over the {} symbol ceiling)", self.skipped.len(), MAX_SCAN_SYMBOLS));
+                out.push_str(&format!(
+                    " ({} over the {} symbol ceiling)",
+                    self.skipped.len(),
+                    MAX_SCAN_SYMBOLS
+                ));
             }
             if !self.failures.is_empty() {
                 out.push_str(" (see the failures for why)");
@@ -306,7 +310,15 @@ pub async fn scan(
     metric: ScanMetric,
     now_ns: i64,
 ) -> ScanResult {
-    scan_with_concurrency(windows, symbols, timeframe, metric, now_ns, DEFAULT_CONCURRENCY).await
+    scan_with_concurrency(
+        windows,
+        symbols,
+        timeframe,
+        metric,
+        now_ns,
+        DEFAULT_CONCURRENCY,
+    )
+    .await
 }
 
 /// [`scan`] with an explicit concurrency, so a test can prove the permit logic
@@ -465,7 +477,10 @@ fn measure(candles: &[analytics_core::Candle], metric: ScanMetric) -> Option<f64
             // `atr_percent` rather than dividing `atr` by the close here: the
             // library already owns that conversion, and a second copy of it is a
             // second definition of the metric.
-            atr_percent(candles, INDICATOR_PERIOD).last().copied().flatten()
+            atr_percent(candles, INDICATOR_PERIOD)
+                .last()
+                .copied()
+                .flatten()
         }
         ScanMetric::ChangePercent => {
             let first = candles.first()?;
@@ -492,7 +507,13 @@ mod tests {
     /// fraction of price, so two series at different price levels are the same
     /// shape and can be compared like for like.
     fn candles_scaled(count: usize, start: f64) -> Vec<analytics_core::Candle> {
-        candle_series(count, start, start * 0.00001, start * 0.00002, start * 0.00001)
+        candle_series(
+            count,
+            start,
+            start * 0.00001,
+            start * 0.00002,
+            start * 0.00001,
+        )
     }
 
     fn candle_series(
@@ -568,9 +589,15 @@ mod tests {
     #[test]
     fn a_metric_spelled_with_a_dash_or_a_space_still_parses() {
         // A query string is written by hand before it is written by the shell.
-        assert_eq!("atr-percent".parse::<ScanMetric>(), Ok(ScanMetric::AtrPercent));
+        assert_eq!(
+            "atr-percent".parse::<ScanMetric>(),
+            Ok(ScanMetric::AtrPercent)
+        );
         assert_eq!(" ATR ".parse::<ScanMetric>(), Ok(ScanMetric::AtrPercent));
-        assert_eq!("CHANGE".parse::<ScanMetric>(), Ok(ScanMetric::ChangePercent));
+        assert_eq!(
+            "CHANGE".parse::<ScanMetric>(),
+            Ok(ScanMetric::ChangePercent)
+        );
     }
 
     #[test]
@@ -677,7 +704,10 @@ mod tests {
     #[test]
     fn a_failed_row_is_named_not_dropped() {
         let row = ScanRow::failed("ethusdt", "the venue did not answer");
-        assert_eq!(row.symbol, "ETHUSDT", "symbols are normalised like the rest");
+        assert_eq!(
+            row.symbol, "ETHUSDT",
+            "symbols are normalised like the rest"
+        );
         assert!(!row.is_measured());
         assert_eq!(row.value, None);
         assert!(row.error.is_some());
@@ -713,9 +743,18 @@ mod tests {
         let scan = result(40, 5, 5);
         assert!(!scan.is_complete());
         let summary = scan.summary();
-        assert!(summary.starts_with("40 symbols ranked by RSI on 1h"), "{summary}");
-        assert!(summary.contains("10 of 50 could not be measured"), "{summary}");
-        assert!(summary.contains("5 over the 200 symbol ceiling"), "{summary}");
+        assert!(
+            summary.starts_with("40 symbols ranked by RSI on 1h"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("10 of 50 could not be measured"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("5 over the 200 symbol ceiling"),
+            "{summary}"
+        );
         assert!(summary.contains("see the failures for why"), "{summary}");
     }
 
@@ -725,13 +764,25 @@ mod tests {
         // fixes, so a summary that mentioned both when only one applied would
         // send the reader looking at the wrong limit.
         let only_failures = result(40, 10, 0).summary();
-        assert!(only_failures.contains("10 of 50 could not be measured"), "{only_failures}");
-        assert!(only_failures.contains("see the failures for why"), "{only_failures}");
+        assert!(
+            only_failures.contains("10 of 50 could not be measured"),
+            "{only_failures}"
+        );
+        assert!(
+            only_failures.contains("see the failures for why"),
+            "{only_failures}"
+        );
         assert!(!only_failures.contains("ceiling"), "{only_failures}");
 
         let only_skipped = result(40, 0, 10).summary();
-        assert!(only_skipped.contains("10 of 50 could not be measured"), "{only_skipped}");
-        assert!(only_skipped.contains("10 over the 200 symbol ceiling"), "{only_skipped}");
+        assert!(
+            only_skipped.contains("10 of 50 could not be measured"),
+            "{only_skipped}"
+        );
+        assert!(
+            only_skipped.contains("10 over the 200 symbol ceiling"),
+            "{only_skipped}"
+        );
         assert!(!only_skipped.contains("failures for why"), "{only_skipped}");
     }
 
@@ -744,8 +795,8 @@ mod tests {
     fn the_scan_result_wire_shape_is_pinned() {
         // Three consumers: the route, the shell's table, and the AI's tool
         // result. A rename here is a column that renders blank.
-        let json = serde_json::to_value(ScanRow::measured("BTCUSDT", 71.5, 123, 300))
-            .expect("serializes");
+        let json =
+            serde_json::to_value(ScanRow::measured("BTCUSDT", 71.5, 123, 300)).expect("serializes");
         assert_eq!(json["symbol"], "BTCUSDT");
         assert_eq!(json["value"], 71.5);
         assert_eq!(json["as_of_ns"], 123);

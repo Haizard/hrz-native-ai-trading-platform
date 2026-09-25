@@ -134,9 +134,7 @@ pub type SnapshotFetcher = Arc<
 
 #[derive(Debug)]
 enum CollectorCommand {
-    Subscribe {
-        subs: Vec<Subscription>,
-    },
+    Subscribe { subs: Vec<Subscription> },
     Install(Incoming),
 }
 
@@ -330,7 +328,10 @@ impl<C: WireCodec + 'static> Collector<C> {
 
     /// Subscribe to the order-book stream for `symbol`, if it has one.
     #[must_use]
-    pub fn order_book_stream(&self, symbol: &str) -> Option<broadcast::Receiver<OrderBookSnapshot>> {
+    pub fn order_book_stream(
+        &self,
+        symbol: &str,
+    ) -> Option<broadcast::Receiver<OrderBookSnapshot>> {
         let bus = self.buses.bus(&symbol.to_uppercase());
         Some(bus.subscribe_orderbook())
     }
@@ -498,7 +499,13 @@ async fn resync_unsynced_books<C: WireCodec + 'static>(
         .collect();
 
     for symbol in unsynced {
-        match fetcher(config.rest_url.clone(), symbol.clone(), config.snapshot_limit).await {
+        match fetcher(
+            config.rest_url.clone(),
+            symbol.clone(),
+            config.snapshot_limit,
+        )
+        .await
+        {
             Ok(Incoming::BookSnapshot {
                 symbol: canonical,
                 bids,
@@ -513,9 +520,14 @@ async fn resync_unsynced_books<C: WireCodec + 'static>(
                     .set_snapshot(&bids, &asks, last_update_id, now_ns());
             }
             Ok(_) => {
-                warn!(venue = codec.name(), symbol, "snapshot fetch returned non-snapshot data");
+                warn!(
+                    venue = codec.name(),
+                    symbol, "snapshot fetch returned non-snapshot data"
+                );
             }
-            Err(e) => warn!(venue = codec.name(), symbol, error = %e, "depth snapshot refetch failed"),
+            Err(e) => {
+                warn!(venue = codec.name(), symbol, error = %e, "depth snapshot refetch failed")
+            }
         }
     }
 }
@@ -733,7 +745,8 @@ fn publish_book_if_due(
     buses: &Arc<MarketBusRegistry>,
     symbol: &str,
 ) {
-    let due = state.last_book_publish.elapsed() >= Duration::from_millis(config.orderbook_publish_ms);
+    let due =
+        state.last_book_publish.elapsed() >= Duration::from_millis(config.orderbook_publish_ms);
     if !due {
         return;
     }

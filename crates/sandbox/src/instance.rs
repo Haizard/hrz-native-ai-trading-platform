@@ -20,8 +20,8 @@
 //! that away and make a sandboxed run disagree with a native one for reasons
 //! that have nothing to do with isolation.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 

@@ -237,6 +237,7 @@ pub async fn list_indicator_workspaces(
 }
 
 /// Append a generated revision. Only a validated revision becomes active.
+#[allow(clippy::too_many_arguments)] // the row's columns, in order; an argument struct would not change the SQL
 pub async fn create_indicator_revision(
     pool: &PgPool,
     user_id: Uuid,
@@ -401,6 +402,7 @@ pub async fn update_indicator_workspace_memory(
 }
 
 /// Create a revision-pinned bot draft after verifying all referenced records are owned.
+#[allow(clippy::too_many_arguments)] // the row's columns, in order; an argument struct would not change the SQL
 pub async fn create_indicator_bot_draft(
     pool: &PgPool,
     user_id: Uuid,

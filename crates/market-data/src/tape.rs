@@ -267,9 +267,11 @@ impl LiveRegistry {
                     expected_ns: snapshot.timestamp,
                     newest_ns: None,
                 });
-            entry.newest_ns = Some(entry.newest_ns.map_or(snapshot.timestamp, |prev| {
-                prev.max(snapshot.timestamp)
-            }));
+            entry.newest_ns = Some(
+                entry
+                    .newest_ns
+                    .map_or(snapshot.timestamp, |prev| prev.max(snapshot.timestamp)),
+            );
         }
     }
 
@@ -407,7 +409,11 @@ mod tests {
         registry.record_trade(&trade_at(SECOND, 1.0));
 
         assert_eq!(registry.tape("BTCUSDT").len(), 1);
-        assert_eq!(registry.dropped(), 1, "an out-of-order trade must be visible");
+        assert_eq!(
+            registry.dropped(),
+            1,
+            "an out-of-order trade must be visible"
+        );
     }
 
     #[test]
@@ -524,7 +530,10 @@ mod tests {
         let registry = LiveRegistry::new();
         registry.record_book(&book_at("ETHUSDT", SECOND));
 
-        assert_eq!(registry.book_ages(10 * SECOND), vec![("ETHUSDT".to_string(), 9 * SECOND)]);
+        assert_eq!(
+            registry.book_ages(10 * SECOND),
+            vec![("ETHUSDT".to_string(), 9 * SECOND)]
+        );
         assert_eq!(registry.book_ages(10 * SECOND).len(), 1);
     }
 
@@ -535,6 +544,9 @@ mod tests {
         let registry = LiveRegistry::new();
 
         assert_eq!(registry.book_age_ns("BTCUSDT", 50 * SECOND), Some(0));
-        assert_eq!(registry.book_ages(60 * SECOND), vec![("BTCUSDT".to_string(), 10 * SECOND)]);
+        assert_eq!(
+            registry.book_ages(60 * SECOND),
+            vec![("BTCUSDT".to_string(), 10 * SECOND)]
+        );
     }
 }

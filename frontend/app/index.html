@@ -307,6 +307,33 @@
     position: absolute; top: 8px; left: 12px; z-index: 2;
     display: flex; align-items: center; gap: 4px;
   }
+  /* The global toolbar restates the pane row's look rather than sharing its
+     class -- it is a *layout* element above the chart grid, not an overlay
+     on a canvas, and sharing a class would make every pane-scoped `.tools`
+     lookup ambiguous. */
+  .globalTools {
+    display: flex; align-items: center; gap: 4px;
+    flex-wrap: wrap;
+    padding: 4px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel, #171b26);
+  }
+  .globalTools[hidden] { display: none; }
+  .globalTools button { padding: 2px 8px; font-size: 11px; color: var(--muted); }
+  .globalTools button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  .globalTools .globalToolsWhich {
+    font-size: 11px; color: var(--accent); margin-right: 8px;
+    white-space: nowrap;
+  }
+  .globalTools .toolFlyout {
+    position: absolute; top: 100%; left: 0; z-index: 3;
+    display: flex; flex-direction: column; gap: 2px;
+    min-width: 90px; padding: 4px; margin-top: 2px;
+    background: var(--panel, #171b26); border: 1px solid var(--line, #262b3a); border-radius: 6px;
+  }
+  .globalTools .toolFlyout[hidden] { display: none; }
+  .globalTools .toolGroup { position: relative; display: inline-flex; }
+  .globalTools .toolFlyout button { text-align: left; white-space: nowrap; }
   .tools button { padding: 2px 8px; font-size: 11px; color: var(--muted); }
   .tools button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
   .tools .clearDrawings { margin-left: 8px; }
@@ -934,6 +961,18 @@
     footprint stats and the toolbar are per-pane for the same reason -- a refusal
     on one chart must not read as a refusal on both.
   -->
+  <!--
+    The **global** drawing toolbar, the standalone twin of the right-click
+    menu's hosted one (`docs/21`). It lives outside every pane and works on
+    whichever chart the user last touched: the pane is the *active* one, and
+    activation is the same gesture the aside already follows -- press anything
+    on a chart and it becomes the one the tools mean. The buttons are built
+    from the engine's registry once it loads, and every click is delegated to
+    the active pane, so there is still exactly one wiring of each control.
+  -->
+  <!-- Deliberately *not* class="tools": every pane-scoped lookup of `.tools`
+       must resolve to a pane's own row, never to this one. -->
+  <div id="globalTools" class="globalTools" role="toolbar" aria-label="Drawing tools for the active chart" hidden></div>
   <div id="charts">
     <section class="chartPane">
       <!--

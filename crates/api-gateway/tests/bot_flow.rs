@@ -270,7 +270,7 @@ async fn a_paused_bot_stops_deciding_and_resuming_restarts_it() {
     // passed only because its "before" count was stale -- the decisions it read
     // as new were the first batch still arriving.
     let series = candles(&h, 180).await;
-    assert!(series.len() >= 180, "expected three batches of candles");
+    assert!(series.len() >= 180, "expected three batches of candles"); // >= is a threshold, not an emptiness check
 
     // Batch one: decided and flushed before anything is paused. Capturing a
     // partial count here is what made this test intermittent, because the rest

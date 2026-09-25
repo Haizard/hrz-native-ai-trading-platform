@@ -61,6 +61,13 @@ pub struct UserDrawing {
     /// The second anchor's price.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub price2: Option<f64>,
+    /// The third anchor's time, for the parity kinds that need one (channel,
+    /// arc, triangle). Absent for everything else, same wire rule as `a2`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time3_ms: Option<f64>,
+    /// The third anchor's price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price3: Option<f64>,
 }
 
 impl UserDrawing {
@@ -140,6 +147,14 @@ pub struct NewAgentDrawing {
     /// Second anchor's price.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub price2: Option<f64>,
+    /// Third anchor, for the parity kinds that need three (channel, arc,
+    /// triangle). The engine's `validate_anchors` is the rule; this struct
+    /// only carries what it asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time3_ms: Option<f64>,
+    /// Third anchor's price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price3: Option<f64>,
     /// The model's confidence and stated reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provenance: Option<DrawingProvenance>,
@@ -240,6 +255,8 @@ mod tests {
             price1,
             time2_ms: price2.map(|_| 1_767_229_200_000.0),
             price2,
+            time3_ms: None,
+            price3: None,
         }
     }
 

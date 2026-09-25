@@ -586,8 +586,8 @@ pub fn reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     /// An exchange we control: it counts what it was asked to do and can be
     /// told to fail on demand.

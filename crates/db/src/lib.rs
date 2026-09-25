@@ -19,6 +19,7 @@
 
 #![deny(missing_docs)]
 
+pub mod agent_memory;
 pub mod bots;
 pub mod broker_accounts;
 pub mod config;
@@ -38,6 +39,10 @@ pub mod skills;
 pub mod strategies;
 pub mod users;
 
+pub use agent_memory::{
+    forget as forget_memory, recall as recall_memories, remember, MemoryRow, NewMemory,
+    MAX_MEMORIES as AGENT_MEMORY_CAP,
+};
 pub use provider_configs::{
     delete_provider_config, find_provider_config, provider_config_key, upsert_provider_config,
     NewProviderConfig, ProviderConfigRow, SealedProviderKey,
@@ -52,8 +57,8 @@ pub use broker_accounts::{
 };
 pub use config::DatabaseConfig;
 pub use drawings::{
-    create_drawing, delete_drawing, list_drawings, needs_second_anchor, update_drawing, DrawingRow,
-    NewDrawing, KINDS as DRAWING_KINDS,
+    create_drawing, delete_drawing, list_drawings, needs_second_anchor, needs_third_anchor,
+    update_drawing, DrawingRow, NewDrawing, KINDS as DRAWING_KINDS,
 };
 pub use error::DbError;
 pub use indicator_workspaces::{

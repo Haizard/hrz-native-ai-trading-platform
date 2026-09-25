@@ -214,6 +214,18 @@ pub async fn ask(
                 Arc::clone(database),
             ))),
         );
+        // Memory rides the same database and the same identity. Reader and
+        // writer are one adapter because they are one grant: the agent that
+        // may recall a user's facts is the agent that may add to them.
+        request = request.with_memory(
+            ai_agent::MemoryContext::new(
+                Arc::new(crate::market_data::DbAgentMemory::new(Arc::clone(database))),
+                user.user_id.to_string(),
+            )
+            .with_writer(Arc::new(crate::market_data::DbAgentMemory::new(
+                Arc::clone(database),
+            ))),
+        );
     }
 
     let started = std::time::Instant::now();

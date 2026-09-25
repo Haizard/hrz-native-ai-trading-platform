@@ -114,12 +114,18 @@ async fn main() -> anyhow::Result<()> {
     // to send. See `MAX_ACTIVE_FEEDS`.
     bots.spawn_reaper();
 
+    // One handle, taken before the watchlist's feeds open: `ensure_feed_for`
+    // reaches the engine through the supervisor itself, so the state only has
+    // to share what the routes read.
+    let bots_events = bots.events();
+
     let state = AppState {
         db,
         agent,
         skills: Arc::new(skills),
         auth,
         bots,
+        events: Arc::clone(&bots_events),
         backfill,
         windows,
         symbols,

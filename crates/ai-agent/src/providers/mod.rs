@@ -204,8 +204,8 @@ pub fn from_deployment_env(
         | ProviderId::Grok
         | ProviderId::HuggingFace
         | ProviderId::OpenAiCompat) => {
-            // Used below for the default-model fallback and error messages.
-            let provider = provider;
+            // `provider` already carries the matched id here -- a shadowing
+            // re-bind would be a no-op, and current clippy flags exactly that.
             let model = match std::env::var(ENV_MODEL) {
                 Ok(model) if !model.trim().is_empty() => model.trim().to_string(),
                 _ => provider.default_model().to_string(),

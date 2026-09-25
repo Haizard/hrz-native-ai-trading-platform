@@ -17,7 +17,7 @@ use db::repositories;
 use db::Database;
 use market_data::backfill::{BackfillClient, BackfillSource};
 use market_data::bus::MarketBusRegistry;
-use market_data::{ExchangeCollector};
+use market_data::ExchangeCollector;
 use tokio::time::interval;
 
 // Batch sizes and the flush interval used to live here. They moved to

@@ -247,7 +247,11 @@ impl WindowService {
             .history
             .series(&symbol, timeframe)
             .forming()
-            .is_some_and(|bar| buffered.last().is_some_and(|last| last.open_time == bar.open_time));
+            .is_some_and(|bar| {
+                buffered
+                    .last()
+                    .is_some_and(|last| last.open_time == bar.open_time)
+            });
 
         // Only the part the buffer cannot reach. Re-fetching the whole window
         // would throw away the one thing the buffer buys, which is not paying
@@ -578,7 +582,10 @@ mod tests {
         assert!((candle.buy_volume + candle.sell_volume - 10.0).abs() < 1e-9);
         // Direction-attributed, so at least it agrees with the candle's own
         // reading rather than contradicting it.
-        assert!((candle.buy_volume - 10.0).abs() < 1e-9, "an up candle attributes volume to buyers");
+        assert!(
+            (candle.buy_volume - 10.0).abs() < 1e-9,
+            "an up candle attributes volume to buyers"
+        );
 
         // And it is *knowable* that this split is not a measurement -- the whole
         // reason the field is optional.

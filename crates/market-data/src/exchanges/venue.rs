@@ -349,7 +349,10 @@ pub trait Venue: Send + Sync + std::fmt::Debug {
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             let values = row.as_array().ok_or_else(|| {
-                MarketDataError::Normalization(format!("{}: a kline row is not an array", self.name()))
+                MarketDataError::Normalization(format!(
+                    "{}: a kline row is not an array",
+                    self.name()
+                ))
             })?;
             out.push(RawKline::parse(values, self.columns())?);
         }
@@ -373,9 +376,9 @@ fn json_f64(value: &serde_json::Value, what: &str) -> Result<f64, MarketDataErro
         return Ok(number);
     }
     if let Some(text) = value.as_str() {
-        return text
-            .parse::<f64>()
-            .map_err(|_| MarketDataError::Normalization(format!("{what}: `{text}` is not a number")));
+        return text.parse::<f64>().map_err(|_| {
+            MarketDataError::Normalization(format!("{what}: `{text}` is not a number"))
+        });
     }
     Err(MarketDataError::Normalization(format!(
         "{what}: expected a number or a numeric string, got {value}"
@@ -392,9 +395,9 @@ fn json_i64(value: &serde_json::Value, what: &str) -> Result<i64, MarketDataErro
         return Ok(number);
     }
     if let Some(text) = value.as_str() {
-        return text
-            .parse::<i64>()
-            .map_err(|_| MarketDataError::Normalization(format!("{what}: `{text}` is not an integer")));
+        return text.parse::<i64>().map_err(|_| {
+            MarketDataError::Normalization(format!("{what}: `{text}` is not an integer"))
+        });
     }
     Err(MarketDataError::Normalization(format!(
         "{what}: expected an integer or a numeric string, got {value}"
@@ -632,9 +635,7 @@ mod tests {
     #[test]
     fn binance_klines_parse_with_their_order_flow_split() {
         let venue = BinanceVenue::new();
-        let rows = venue
-            .parse_klines(&json!([binance_row()]))
-            .expect("parses");
+        let rows = venue.parse_klines(&json!([binance_row()])).expect("parses");
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         assert_eq!(row.open_time_ms, 1_499_040_000_000);
@@ -703,9 +704,7 @@ mod tests {
         let mut second = binance_row();
         second[0] = json!(2000);
 
-        let rows = venue
-            .parse_klines(&json!([first, second]))
-            .expect("parses");
+        let rows = venue.parse_klines(&json!([first, second])).expect("parses");
         let times: Vec<i64> = rows.iter().map(|r| r.open_time_ms).collect();
         assert_eq!(times, vec![1000, 2000]);
     }

@@ -237,7 +237,14 @@ impl BackfillClient {
             let newest = page.iter().map(|k| k.open_time_ms).max();
             out.extend(page);
 
-            debug!(symbol, interval, received, total = out.len(), venue = self.venue.name(), "klines page");
+            debug!(
+                symbol,
+                interval,
+                received,
+                total = out.len(),
+                venue = self.venue.name(),
+                "klines page"
+            );
 
             if received == 0 {
                 break;

@@ -13,6 +13,7 @@
 //! are already true, so the model's contribution is synthesis rather than
 //! arithmetic.
 
+use analytics_core::market_structure::Trend;
 use analytics_core::types::Timeframe;
 use analytics_core::{build_market_state, MarketState, MarketStateConfig};
 use serde::{Deserialize, Serialize};
@@ -112,11 +113,342 @@ pub struct LadderView {
     pub frames: Vec<FrameView>,
 }
 
+/// One line of the confluence read: a factor, its direction and its points.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfluenceFactor {
+    /// What the factor reads, e.g. `trend alignment`.
+    pub name: String,
+    /// `bullish`, `bearish` or `neutral`.
+    pub direction: String,
+    /// Points earned, out of [`Confluence::MAX_POINTS_PER_FACTOR`]-style
+    /// weights that sum to 100.
+    pub points: f64,
+    /// The arithmetic behind it, citable verbatim.
+    pub note: String,
+}
+
+/// The ladder's confluence, computed in Rust so the model never has to.
+///
+/// ## Why this exists in the engine and not in the prompt
+///
+/// "Are the timeframes agreeing?" is arithmetic over facts the engine already
+/// holds: each frame's trend, value-area position, VWAP side, CVD and delta.
+/// Left to the model, it is the single most error-prone mental step in the
+/// thesis -- five frames times five readings, summed under attention pressure.
+/// Computed here, it is one more block of statements that are already true,
+/// and the model's contribution narrows to what only it can do: judgement.
+///
+/// Every factor is signed evidence: it earns points for bullish **or** for
+/// bearish, never both. The bias is whichever side holds more of the 100
+/// available points, with a 25% margin required to call it -- a 46/38 split is
+/// *mixed*, not a faint bull, because a thesis built on a coin flip is worse
+/// than a stand-aside.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Confluence {
+    /// Points on the bullish side, 0..=100.
+    pub bullish: f64,
+    /// Points on the bearish side, 0..=100.
+    pub bearish: f64,
+    /// `bullish`, `bearish` or `mixed`, by the margin rule above.
+    pub bias: String,
+    /// The dominant side's share of all awarded points, percent.
+    pub agreement_pct: f64,
+    /// The factors, in the order a reader should weigh them.
+    pub factors: Vec<ConfluenceFactor>,
+}
+
+impl Confluence {
+    /// The margin (as a fraction of the losing side) required to name a side.
+    const MARGIN: f64 = 0.25;
+
+    fn neutral_factors() -> Vec<ConfluenceFactor> {
+        Vec::new()
+    }
+
+    /// A confluence over no readable frames: nothing is claimed.
+    fn empty() -> Self {
+        Self {
+            bullish: 0.0,
+            bearish: 0.0,
+            bias: "mixed".into(),
+            agreement_pct: 0.0,
+            factors: Self::neutral_factors(),
+        }
+    }
+}
+
+/// Majority helper shared by the count-based factors: returns the winning
+/// side and how many of `total` readings it holds, or neutral on a tie.
+fn lean(bulls: usize, bears: usize, total: usize) -> (&'static str, f64, f64) {
+    let total_f = total as f64;
+    if total == 0 || bulls == bears {
+        return ("neutral", 0.0, total_f);
+    }
+    if bulls > bears {
+        ("bullish", bulls as f64 / total_f, total_f)
+    } else {
+        ("bearish", bears as f64 / total_f, total_f)
+    }
+}
+
 impl LadderView {
     /// The coarsest frame -- macro context.
     #[must_use]
     pub fn highest(&self) -> Option<&FrameView> {
         self.frames.first()
+    }
+
+    /// The ladder's confluence, computed from the frames it already holds.
+    ///
+    /// Deterministic: the same frames always produce the same score, so a
+    /// thesis citing "confluence: bullish (64%)" can be checked by rerunning
+    /// the read.
+    #[must_use]
+    pub fn confluence(&self) -> Confluence {
+        if self.frames.is_empty() {
+            return Confluence::empty();
+        }
+        let mut factors = Vec::new();
+        let mut bullish = 0.0;
+        let mut bearish = 0.0;
+
+        // Trend alignment, 25 points. Only frames that *report* a trend vote;
+        // a Ranging frame is an absence of structure, not a third opinion.
+        let reporting: Vec<&Trend> = self
+            .frames
+            .iter()
+            .map(|f| &f.state.trend)
+            .filter(|t| **t != Trend::Ranging)
+            .collect();
+        let bulls = reporting.iter().filter(|t| ***t == Trend::Bullish).count();
+        let bears = reporting.iter().filter(|t| ***t == Trend::Bearish).count();
+        let (direction, share, total) = lean(bulls, bears, reporting.len());
+        let points = 25.0 * share;
+        match direction {
+            "bullish" => bullish += points,
+            "bearish" => bearish += points,
+            _ => {}
+        }
+        factors.push(ConfluenceFactor {
+            name: "trend alignment".into(),
+            direction: direction.into(),
+            points,
+            note: if reporting.is_empty() {
+                "no frame reports a trend".into()
+            } else {
+                format!("{bulls} of {total} reporting frames bullish, {bears} bearish")
+            },
+        });
+
+        // Value-area position, 20 points. Acceptance above value (or below)
+        // per frame; frames sitting inside value abstain.
+        let above = self
+            .frames
+            .iter()
+            .filter(|f| f.state.price > f.state.vah)
+            .count();
+        let below = self
+            .frames
+            .iter()
+            .filter(|f| f.state.price < f.state.val)
+            .count();
+        let (direction, share, _total) = lean(above, below, self.frames.len());
+        let points = 20.0 * share;
+        match direction {
+            "bullish" => bullish += points,
+            "bearish" => bearish += points,
+            _ => {}
+        }
+        factors.push(ConfluenceFactor {
+            name: "value-area lean".into(),
+            direction: direction.into(),
+            points,
+            note: format!(
+                "{above} of {} frames accepted above value, {below} below",
+                self.frames.len()
+            ),
+        });
+
+        // VWAP side, 15 points, only where VWAP exists.
+        let with_vwap: Vec<bool> = self
+            .frames
+            .iter()
+            .filter_map(|f| f.state.above_vwap())
+            .collect();
+        let above = with_vwap.iter().filter(|a| **a).count();
+        let (direction, share, total) = lean(above, with_vwap.len() - above, with_vwap.len());
+        let points = 15.0 * share;
+        match direction {
+            "bullish" => bullish += points,
+            "bearish" => bearish += points,
+            _ => {}
+        }
+        factors.push(ConfluenceFactor {
+            name: "vwap side".into(),
+            direction: direction.into(),
+            points,
+            note: format!("{above} of {total} frames with a VWAP are above it"),
+        });
+
+        // CVD sign, 15 points: whether aggression agrees with the story.
+        let pos = self.frames.iter().filter(|f| f.state.cvd > 0.0).count();
+        let neg = self.frames.iter().filter(|f| f.state.cvd < 0.0).count();
+        let (direction, share, _total) = lean(pos, neg, self.frames.len());
+        let points = 15.0 * share;
+        match direction {
+            "bullish" => bullish += points,
+            "bearish" => bearish += points,
+            _ => {}
+        }
+        factors.push(ConfluenceFactor {
+            name: "cvd sign".into(),
+            direction: direction.into(),
+            points,
+            note: format!(
+                "{pos} of {} frames carry positive CVD, {neg} negative",
+                self.frames.len()
+            ),
+        });
+
+        // Divergence, 10 points: a warning factor, weighted to be a tiebreak
+        // rather than a verdict.
+        let bull_div = self
+            .frames
+            .iter()
+            .filter(|f| f.state.divergence == analytics_core::CvdDivergence::Bullish)
+            .count();
+        let bear_div = self
+            .frames
+            .iter()
+            .filter(|f| f.state.divergence == analytics_core::CvdDivergence::Bearish)
+            .count();
+        let (direction, share, total) = lean(bull_div, bear_div, self.frames.len());
+        let points = 10.0 * share;
+        match direction {
+            "bullish" => bullish += points,
+            "bearish" => bearish += points,
+            _ => {}
+        }
+        factors.push(ConfluenceFactor {
+            name: "cvd divergence".into(),
+            direction: direction.into(),
+            points,
+            note: format!(
+                "{bull_div} bullish divergences, {bear_div} bearish across {total} frames"
+            ),
+        });
+
+        // Decision-timeframe delta, 5 points: the trigger frame's own aggression.
+        if let Some(lowest) = self.lowest() {
+            let direction = if lowest.state.delta > 0.0 {
+                "bullish"
+            } else if lowest.state.delta < 0.0 {
+                "bearish"
+            } else {
+                "neutral"
+            };
+            let points = if direction == "neutral" { 0.0 } else { 5.0 };
+            match direction {
+                "bullish" => bullish += points,
+                "bearish" => bearish += points,
+                _ => {}
+            }
+            factors.push(ConfluenceFactor {
+                name: "decision-timeframe delta".into(),
+                direction: direction.into(),
+                points,
+                note: format!("{} delta {:+.2}", lowest.timeframe, lowest.state.delta),
+            });
+        }
+
+        // Liquidity proximity, 10 points: which unswept pool the price would
+        // reach first -- stop runs travel toward the nearer pool.
+        if let Some(lowest) = self.lowest() {
+            let above = lowest
+                .state
+                .nearest_liquidity_above()
+                .filter(|l| !l.swept)
+                .map(|l| l.price);
+            let below = lowest
+                .state
+                .nearest_liquidity_below()
+                .filter(|l| !l.swept)
+                .map(|l| l.price);
+            let (direction, points, note) = match (above, below) {
+                (Some(above), Some(below)) if above - below > f64::EPSILON => {
+                    let nearer_above = above - lowest.state.price;
+                    let nearer_below = lowest.state.price - below;
+                    if nearer_above < nearer_below {
+                        (
+                            "bearish",
+                            10.0,
+                            format!(
+                                "unswept highs at {above:.4} are nearer than lows at {below:.4}"
+                            ),
+                        )
+                    } else if nearer_below < nearer_above {
+                        (
+                            "bullish",
+                            10.0,
+                            format!(
+                                "unswept lows at {below:.4} are nearer than highs at {above:.4}"
+                            ),
+                        )
+                    } else {
+                        (
+                            "neutral",
+                            0.0,
+                            format!("pools at {above:.4} and {below:.4} are equally near"),
+                        )
+                    }
+                }
+                (Some(above), _) => (
+                    "bearish",
+                    10.0,
+                    format!("only unswept pool is the highs at {above:.4}"),
+                ),
+                (_, Some(below)) => (
+                    "bullish",
+                    10.0,
+                    format!("only unswept pool is the lows at {below:.4}"),
+                ),
+                (None, None) => ("neutral", 0.0, "no unswept pools detected".into()),
+            };
+            match direction {
+                "bullish" => bullish += points,
+                "bearish" => bearish += points,
+                _ => {}
+            }
+            factors.push(ConfluenceFactor {
+                name: "liquidity proximity".into(),
+                direction: direction.into(),
+                points,
+                note,
+            });
+        }
+
+        let (bias, agreement_pct) = if bullish > bearish * (1.0 + Confluence::MARGIN) {
+            ("bullish", bullish / (bullish + bearish) * 100.0)
+        } else if bearish > bullish * (1.0 + Confluence::MARGIN) {
+            ("bearish", bearish / (bullish + bearish) * 100.0)
+        } else {
+            // No side cleared the margin: mixed, and the agreement reported is
+            // the larger share anyway, so a 46/38 split does not read as 50/50.
+            let total = bullish + bearish;
+            let share = if total > 0.0 {
+                bullish.max(bearish) / total * 100.0
+            } else {
+                0.0
+            };
+            ("mixed", share)
+        };
+        Confluence {
+            bullish,
+            bearish,
+            bias: bias.into(),
+            agreement_pct,
+            factors,
+        }
     }
 
     /// The finest frame -- where an entry trigger would come from.
@@ -192,6 +524,21 @@ impl LadderView {
                 "mixed"
             }
         ));
+
+        // The confluence block is the digest's verdict line: computed in Rust
+        // (see `confluence`), stated here so the model cites it rather than
+        // recomputes it. Every factor's note is arithmetic already done.
+        let confluence = self.confluence();
+        out.push_str(&format!(
+            "\n  confluence: {} ({:.0}% agreement, {:.0} bull vs {:.0} bear points)\n",
+            confluence.bias, confluence.agreement_pct, confluence.bullish, confluence.bearish
+        ));
+        for factor in &confluence.factors {
+            out.push_str(&format!(
+                "    - {} [{}]: {:.0} pts -- {}\n",
+                factor.name, factor.direction, factor.points, factor.note
+            ));
+        }
         out
     }
 }
@@ -476,5 +823,191 @@ mod tests {
         assert_eq!(view.trends_aligned(), distinct == 1);
         assert!(view.highest().is_some());
         assert!(view.lowest().is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // The confluence read. Built from hand-made `MarketState`s rather than
+    // the fixture ladder: the factors must be tested against *known* readings,
+    // and the fixture's zig-zag candles would make every expected number here
+    // another copy of the arithmetic under test.
+    // -----------------------------------------------------------------------
+
+    use analytics_core::cvd::CvdDivergence;
+
+    fn frame(timeframe: Timeframe, trend: Trend) -> FrameView {
+        frame_with(timeframe, trend, 0.0, 0.0)
+    }
+
+    /// A frame centred in its value area at `price`, with VWAP pinned to the
+    /// price (so `above_vwap` is a decision the test makes per-frame by
+    /// passing a `vwap` offset), POC at the price, and no liquidity.
+    fn frame_with(timeframe: Timeframe, trend: Trend, cvd: f64, delta: f64) -> FrameView {
+        frame_full(timeframe, trend, cvd, delta, 0.0, None, Vec::new())
+    }
+
+    fn frame_full(
+        timeframe: Timeframe,
+        trend: Trend,
+        cvd: f64,
+        delta: f64,
+        vwap_offset: f64,
+        divergence: Option<CvdDivergence>,
+        liquidity: Vec<analytics_core::LiquidityLevel>,
+    ) -> FrameView {
+        let price = 100.0;
+        FrameView {
+            timeframe,
+            state: MarketState {
+                symbol: "BTCUSDT".into(),
+                timeframe: timeframe.to_string(),
+                timestamp: 0,
+                price,
+                delta,
+                cvd,
+                vwap: if vwap_offset == 0.0 {
+                    None
+                } else {
+                    Some(price + vwap_offset)
+                },
+                poc: price,
+                vah: price + 5.0,
+                val: price - 5.0,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+                divergence: divergence.unwrap_or(CvdDivergence::None),
+                trend,
+                imbalances: Vec::new(),
+                absorption: Vec::new(),
+                liquidity,
+                swing_highs: Vec::new(),
+                swing_lows: Vec::new(),
+                breaks: Vec::new(),
+                bars_since_break: None,
+            },
+        }
+    }
+
+    #[test]
+    fn a_unanimously_bullish_ladder_scores_bullish_with_the_arithmetic_shown() {
+        let view = LadderView {
+            symbol: "BTCUSDT".into(),
+            frames: vec![
+                frame_with(Timeframe::D1, Trend::Bullish, 1.0, 1.0),
+                frame_with(Timeframe::H4, Trend::Bullish, 1.0, 1.0),
+                frame_with(Timeframe::H1, Trend::Bullish, 1.0, 1.0),
+            ],
+        };
+        let c = view.confluence();
+        assert_eq!(c.bias, "bullish");
+        // Trend 25 (3/3) + CVD 15 (3/3 positive) + decision delta 5 = 45.
+        // Value-area abstains (the fixture sits centred *inside* value, which
+        // is a non-vote, not a bullish one), VWAP abstains (no VWAP in the
+        // fixture), divergence and liquidity abstain (nothing detected) --
+        // absence is not a vote, which is the point of the factor design.
+        assert_eq!(c.bullish, 45.0);
+        assert_eq!(c.bearish, 0.0);
+        assert_eq!(c.agreement_pct, 100.0);
+    }
+
+    #[test]
+    fn a_split_ladder_without_a_margin_is_mixed_not_a_faint_side() {
+        let view = LadderView {
+            symbol: "BTCUSDT".into(),
+            frames: vec![
+                frame(Timeframe::D1, Trend::Bullish),
+                frame(Timeframe::H4, Trend::Bearish),
+            ],
+        };
+        let c = view.confluence();
+        assert_eq!(c.bias, "mixed");
+        // 2 reporting frames split 1-1: the trend factor abstains entirely
+        // (ties lean neutral), and the two frames' CVD/VA/delta votes cancel.
+        assert_eq!(c.bullish, c.bearish);
+    }
+
+    #[test]
+    fn a_ranging_frame_abstains_rather_than_voting_neutral() {
+        // 2 bullish frames + 1 ranging: the trend factor is 25 * (2/2) = 25,
+        // not 25 * (2/3) -- a frame with no structure said nothing, and saying
+        // so twice would halve the evidence the two frames actually gave.
+        let view = LadderView {
+            symbol: "BTCUSDT".into(),
+            frames: vec![
+                frame(Timeframe::D1, Trend::Bullish),
+                frame(Timeframe::H4, Trend::Bullish),
+                frame(Timeframe::H1, Trend::Ranging),
+            ],
+        };
+        let c = view.confluence();
+        let trend = c
+            .factors
+            .iter()
+            .find(|f| f.name == "trend alignment")
+            .expect("the trend factor is always present");
+        assert_eq!(trend.points, 25.0);
+        assert!(trend.note.contains("2 of 2"));
+    }
+
+    #[test]
+    fn divergence_and_liquidity_are_tiebreaks_with_signed_evidence() {
+        let view = LadderView {
+            symbol: "BTCUSDT".into(),
+            frames: vec![frame_full(
+                Timeframe::H1,
+                Trend::Ranging,
+                0.0,
+                // The trigger frame's own aggression is bearish, which is what
+                // lets the warning factors outvote the bullish pool magnet.
+                -1.0,
+                0.0,
+                Some(CvdDivergence::Bearish),
+                vec![analytics_core::LiquidityLevel {
+                    price: 98.0,
+                    kind: analytics_core::LiquidityKind::EqualLows,
+                    touches: 2,
+                    swept: false,
+                    formed_at: 0,
+                    last_index: 0,
+                }],
+            )],
+        };
+        let c = view.confluence();
+        assert_eq!(c.bias, "bearish");
+        // A ladder that reports *no* structure can still lean: divergence 10
+        // + trigger delta 5 = 15 bearish, against 10 bullish from the pool
+        // below. Signed factors are allowed to disagree -- that is what makes
+        // them evidence rather than a verdict -- and the margin rule decides.
+        assert_eq!(c.bearish, 15.0);
+        assert_eq!(c.bullish, 10.0);
+        let proximity = c
+            .factors
+            .iter()
+            .find(|f| f.name == "liquidity proximity")
+            .expect("the liquidity factor is present when pools exist");
+        assert_eq!(proximity.direction, "bullish");
+        assert!(proximity.note.contains("98.0000"), "{}", proximity.note);
+    }
+
+    #[test]
+    fn an_empty_ladder_claims_nothing() {
+        let view = LadderView {
+            symbol: "BTCUSDT".into(),
+            frames: Vec::new(),
+        };
+        let c = view.confluence();
+        assert_eq!(c.bias, "mixed");
+        assert_eq!(c.bullish + c.bearish, 0.0);
+    }
+
+    #[test]
+    fn the_digest_states_the_confluence_verdict_rather_than_the_arithmetic() {
+        let view = LadderView {
+            symbol: "BTCUSDT".into(),
+            frames: vec![frame(Timeframe::H1, Trend::Bullish)],
+        };
+        let digest = view.digest();
+        assert!(digest.contains("confluence: bullish"), "{digest}");
+        assert!(digest.contains("trend alignment [bullish]"), "{digest}");
     }
 }

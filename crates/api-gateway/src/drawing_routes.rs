@@ -69,6 +69,9 @@ pub struct DrawingBody {
     /// The second, for the kinds that have one.
     #[serde(default)]
     pub a2: Option<Anchor>,
+    /// The third, for the parity kinds that need one (channel, arc, triangle).
+    #[serde(default)]
+    pub a3: Option<Anchor>,
     /// What the user called it.
     #[serde(default)]
     pub label: Option<String>,
@@ -101,6 +104,9 @@ pub struct DrawingResponse {
     pub a1: Anchor,
     /// The second, always absolute, for the kinds that have one.
     pub a2: Option<Anchor>,
+    /// The third, always absolute, for the parity kinds that need one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub a3: Option<Anchor>,
     /// What the user called it.
     pub label: Option<String>,
     /// Who drew it: `"ai"` for agent-created objects, absent for a human's.
@@ -251,6 +257,7 @@ fn response(id: Uuid, body: &DrawingBody) -> DrawingResponse {
         kind: body.kind,
         a1: body.a1,
         a2: body.a2,
+        a3: body.a3,
         label: body.label.clone(),
         // A write that arrived over the HTTP route is the user's own work, and
         // the provenance fields are facts about the *stored row*, which this
@@ -281,6 +288,7 @@ fn prepare(body: &DrawingBody) -> Result<db::NewDrawing, ApiError> {
         kind: body.kind,
         a1: body.a1,
         a2: body.a2,
+        a3: body.a3,
         label: body.label.clone(),
         selected: false,
     };
@@ -291,6 +299,10 @@ fn prepare(body: &DrawingBody) -> Result<db::NewDrawing, ApiError> {
         Some(anchor) => Some(absolute(anchor)?),
         None => None,
     };
+    let third = match body.a3 {
+        Some(anchor) => Some(absolute(anchor)?),
+        None => None,
+    };
 
     Ok(db::NewDrawing {
         kind: body.kind.name().to_string(),
@@ -298,6 +310,8 @@ fn prepare(body: &DrawingBody) -> Result<db::NewDrawing, ApiError> {
         a1_price,
         a2_time_ms: second.map(|(time, _)| time),
         a2_price: second.map(|(_, price)| price),
+        a3_time_ms: third.map(|(time, _)| time),
+        a3_price: third.map(|(_, price)| price),
         label: body.label.clone(),
         // A drawing that arrives over the HTTP route is the user's own work,
         // however it was produced: provenance is the *agent's* door's stamp,
@@ -344,6 +358,12 @@ fn describe(row: &db::DrawingRow) -> Option<DrawingResponse> {
         // table has been edited by hand. Reported as absent, which is the honest
         // reading of it, rather than paired with a zero.
         a2: match (row.a2_time_ms, row.a2_price) {
+            (Some(time), Some(price)) => Some(Anchor::Absolute { time, price }),
+            _ => None,
+        },
+        // The third anchor obeys the same whole-or-absent CHECK (`0011`), so
+        // the same honest reading applies to it.
+        a3: match (row.a3_time_ms, row.a3_price) {
             (Some(time), Some(price)) => Some(Anchor::Absolute { time, price }),
             _ => None,
         },
@@ -405,8 +425,13 @@ mod tests {
             kind,
             a1,
             a2,
+            a3: None,
             label: None,
         }
+    }
+
+    fn third() -> Anchor {
+        absolute(1_767_232_800_000.0, 46_000.0)
     }
 
     /// The two lists of kinds, and the rule about anchors, kept in step.
@@ -432,6 +457,15 @@ mod tests {
                 kind.needs_second_anchor(),
                 db::drawings::needs_second_anchor(kind.name()),
                 "the engine and the storage disagree about `{}`",
+                kind.name()
+            );
+            // The parity rule gets the same pin: a `channel` the storage
+            // believes stops at two anchors is a channel the chart cannot
+            // restore.
+            assert_eq!(
+                kind.needs_third_anchor(),
+                db::drawings::needs_third_anchor(kind.name()),
+                "the engine and the storage disagree about the third anchor of `{}`",
                 kind.name()
             );
         }
@@ -509,6 +543,94 @@ mod tests {
     }
 
     #[test]
+    fn a_three_anchor_kind_is_stored_with_its_third_anchor() {
+        // The parity round trip: the body's `a3` becomes the row's third pair
+        // in milliseconds, the same conversion the first two anchors get. A
+        // route that dropped it would store channels, arcs and triangles that
+        // restore as two-point shapes.
+        let mut body = body(
+            DrawingKind::Channel,
+            absolute(1_767_225_600_000.0, 45_000.0),
+            Some(absolute(1_767_229_200_000.0, 45_500.0)),
+        );
+        body.a3 = Some(third());
+        let prepared = prepare(&body).expect("must accept");
+
+        assert_eq!(prepared.a3_time_ms, Some(1_767_232_800_000.0));
+        assert_eq!(prepared.a3_price, Some(46_000.0));
+    }
+
+    #[test]
+    fn a_three_anchor_kind_without_its_third_anchor_is_refused() {
+        // `validate_anchors` already refuses a two-anchored channel; this is
+        // the route's proof that the refusal survives the new field.
+        let error = prepare(&body(
+            DrawingKind::Triangle,
+            absolute(1.0, 2.0),
+            Some(absolute(3.0, 4.0)),
+        ))
+        .expect_err("must refuse");
+        assert_eq!(error.code(), "DRAWING_INVALID");
+        assert!(
+            error.message().contains("three anchors"),
+            "{}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn a_fraction_third_anchor_is_refused_like_the_others() {
+        // `absolute` refuses a fraction because its meaning depends on the
+        // window it was measured in; the third anchor gets no exemption just
+        // because it arrived in a newer field.
+        let mut body = body(
+            DrawingKind::Channel,
+            absolute(1.0, 2.0),
+            Some(absolute(3.0, 4.0)),
+        );
+        body.a3 = Some(Anchor::Fraction { x: 0.5, y: 0.5 });
+        let error = prepare(&body).expect_err("must refuse");
+        assert_eq!(error.code(), "DRAWING_INVALID");
+    }
+
+    #[test]
+    fn the_wire_pins_the_third_anchor_key() {
+        // The shell reads `a3` by name when it restores a stored channel. A
+        // rename here is a compile error nowhere and a silent shape change
+        // on every reload.
+        let wire = serde_json::to_value(DrawingResponse {
+            id: "8f3a".into(),
+            kind: DrawingKind::Channel,
+            a1: absolute(1.0, 2.0),
+            a2: Some(absolute(3.0, 4.0)),
+            a3: Some(third()),
+            label: None,
+            created_by: None,
+            confidence: None,
+            reason: None,
+        })
+        .expect("serializes");
+        assert_eq!(wire["a3"]["unit"], "absolute");
+        assert_eq!(wire["a3"]["price"], 46_000.0);
+
+        // And the absent case serializes to nothing, so an old shell reading a
+        // two-anchor response is unaffected by the field existing.
+        let two = serde_json::to_value(DrawingResponse {
+            id: "8f3a".into(),
+            kind: DrawingKind::Trendline,
+            a1: absolute(1.0, 2.0),
+            a2: Some(absolute(3.0, 4.0)),
+            a3: None,
+            label: None,
+            created_by: None,
+            confidence: None,
+            reason: None,
+        })
+        .expect("serializes");
+        assert!(two.get("a3").is_none());
+    }
+
+    #[test]
     fn a_horizontal_line_is_accepted_with_one_anchor() {
         let prepared = prepare(&body(
             DrawingKind::Hline,
@@ -543,6 +665,8 @@ mod tests {
             a1_price: 45_000.0,
             a2_time_ms: Some(1_767_229_200_000.0),
             a2_price: Some(45_500.0),
+            a3_time_ms: None,
+            a3_price: None,
             label: Some("the range I keep watching".into()),
             // A hand-drawn fixture: no provenance, which is what `None` means.
             created_by: None,
@@ -573,14 +697,18 @@ mod tests {
         // A row written by a newer engine and then rolled back, or edited by
         // hand. One unreadable drawing must not take the other nine off the
         // chart, and the route warns with the row's id so the cause is findable.
+        // (`channel` used to be the unknown kind here; it is a real kind now,
+        // so the fixture uses a name no build has ever drawn.)
         let row = db::DrawingRow {
             id: Uuid::nil(),
             symbol: "BTCUSDT".into(),
-            kind: "channel".into(),
+            kind: "gann_square".into(),
             a1_time_ms: 0.0,
             a1_price: 1.0,
             a2_time_ms: None,
             a2_price: None,
+            a3_time_ms: None,
+            a3_price: None,
             label: None,
             created_by: None,
             agent: None,
@@ -617,6 +745,7 @@ mod tests {
             kind: DrawingKind::Trendline,
             a1: absolute(1.0, 2.0),
             a2: Some(absolute(3.0, 4.0)),
+            a3: None,
             label: Some("watch this".into()),
             created_by: Some("ai".into()),
             confidence: Some(0.82),

@@ -163,7 +163,9 @@ impl SymbolIndex {
         };
         match cached.fetched_at {
             None => true,
-            Some(at) => now.saturating_sub(at) > i64::try_from(INDEX_TTL.as_nanos()).unwrap_or(i64::MAX),
+            Some(at) => {
+                now.saturating_sub(at) > i64::try_from(INDEX_TTL.as_nanos()).unwrap_or(i64::MAX)
+            }
         }
     }
 
@@ -206,9 +208,7 @@ impl SymbolIndex {
         let mut hits: Vec<(u8, &Instrument)> = cached
             .instruments
             .values()
-            .filter_map(|instrument| {
-                rank(instrument, &query).map(|rank| (rank, instrument))
-            })
+            .filter_map(|instrument| rank(instrument, &query).map(|rank| (rank, instrument)))
             .collect();
 
         // By rank, then alphabetically, so the answer is stable between calls.
@@ -293,7 +293,10 @@ impl SymbolIndex {
     /// Transport failures, malformed payloads, and an empty listing -- see
     /// [`Self::install`]. A caller that gets an error still has whatever the
     /// index held before, which is the point of caching it.
-    pub async fn refresh(&self, client: &crate::backfill::BackfillClient) -> Result<usize, MarketDataError> {
+    pub async fn refresh(
+        &self,
+        client: &crate::backfill::BackfillClient,
+    ) -> Result<usize, MarketDataError> {
         let body = client.exchange_info().await?;
         let count = self.install(&body, now_ns())?;
         info!(count, "symbol index refreshed");
@@ -504,7 +507,10 @@ mod tests {
             Some(&"BTCUSDT"),
             "an exact symbol match must lead: {symbols:?}"
         );
-        assert!(symbols.contains(&"WBTCUSDT"), "the wrapped token still matches");
+        assert!(
+            symbols.contains(&"WBTCUSDT"),
+            "the wrapped token still matches"
+        );
         assert!(
             symbols.contains(&"SOLBTC"),
             "a quote-asset match still counts: {symbols:?}"
@@ -559,7 +565,11 @@ mod tests {
 
         // And the previous data must survive the refusal.
         assert_eq!(index.lookup("BTCUSDT"), SymbolCheck::Tradable);
-        assert_eq!(index.fetched_at(), Some(1_000), "the timestamp must not move");
+        assert_eq!(
+            index.fetched_at(),
+            Some(1_000),
+            "the timestamp must not move"
+        );
     }
 
     #[test]
@@ -576,7 +586,10 @@ mod tests {
         let ttl = i64::try_from(INDEX_TTL.as_nanos()).expect("fits");
 
         assert!(!index.is_stale(fetched));
-        assert!(!index.is_stale(fetched + ttl), "exactly at the TTL is not yet stale");
+        assert!(
+            !index.is_stale(fetched + ttl),
+            "exactly at the TTL is not yet stale"
+        );
         assert!(index.is_stale(fetched + ttl + 1));
     }
 
@@ -621,10 +634,20 @@ mod tests {
         index.install(body, 1).expect("installs");
 
         let eth = index.all().into_iter().next().expect("one instrument");
-        assert_eq!(eth.base, "ETH", "baseAsset must be read from the venue's key");
-        assert_eq!(eth.quote, "BTC", "quoteAsset must be read from the venue's key");
+        assert_eq!(
+            eth.base, "ETH",
+            "baseAsset must be read from the venue's key"
+        );
+        assert_eq!(
+            eth.quote, "BTC",
+            "quoteAsset must be read from the venue's key"
+        );
         // And the end-to-end consequence: search by asset now works.
         assert_eq!(index.search("eth", 10).len(), 1);
-        assert_eq!(index.search("btc", 10).len(), 1, "matched on the quote asset");
+        assert_eq!(
+            index.search("btc", 10).len(),
+            1,
+            "matched on the quote asset"
+        );
     }
 }

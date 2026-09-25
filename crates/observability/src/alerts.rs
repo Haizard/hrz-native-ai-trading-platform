@@ -237,7 +237,9 @@ impl Rule {
     #[must_use]
     pub const fn severity(&self) -> Severity {
         match self {
-            Self::StaleFeed { .. } | Self::StaleBook { .. } | Self::ErrorRate { .. }
+            Self::StaleFeed { .. }
+            | Self::StaleBook { .. }
+            | Self::ErrorRate { .. }
             | Self::SocketChurn { .. } => Severity::Warning,
             Self::KillSwitch | Self::RiskBreach | Self::ReconcileMismatch => Severity::Critical,
         }
@@ -271,9 +273,7 @@ pub fn default_rules() -> Vec<Rule> {
         // stopped, or one that never bridged at all. The 2s resync means a
         // book that *can* recover does so well inside this window, so the rule
         // fires on the ones that cannot.
-        Rule::StaleBook {
-            max_age_secs: 60.0,
-        },
+        Rule::StaleBook { max_age_secs: 60.0 },
         Rule::ErrorRate {
             min_requests: 50,
             max_ratio: 0.05,
@@ -767,7 +767,11 @@ mod tests {
         alerter.watch_symbol("0GTRY");
         assert!(!alerter.is_excluded("0GTRY"));
         let raised = alerter.evaluate(&registry);
-        assert_eq!(raised.len(), 2, "both stale rules must see the breach again");
+        assert_eq!(
+            raised.len(),
+            2,
+            "both stale rules must see the breach again"
+        );
     }
 
     #[test]
@@ -808,7 +812,12 @@ mod tests {
             max_opens_per_min: 20.0,
             sustained_rounds: 2,
         }]);
-        registry.inc_counter(WS_OPENS, "opens", &Labels::new(&[("channel", "market")]), 500);
+        registry.inc_counter(
+            WS_OPENS,
+            "opens",
+            &Labels::new(&[("channel", "market")]),
+            500,
+        );
 
         assert!(
             alerter.evaluate_at(&registry, 1_000).is_empty(),

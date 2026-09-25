@@ -1782,6 +1782,7 @@ fn place(
     let snap = |anchor: Anchor| snap_anchor(anchor, &plot, snap_points);
     let a1 = resolve(snap(drawing.a1), frame);
     let a2 = drawing.a2.map(|anchor| resolve(snap(anchor), frame));
+    let a3 = drawing.a3.map(|anchor| resolve(snap(anchor), frame));
 
     // A click with no drag, on a tool that needs two points. Both anchors are the
     // same point, so the shape has no extent: nothing visible is drawn, and yet
@@ -1799,7 +1800,7 @@ fn place(
         return Err("it has two anchors at the same point, so it has no extent".into());
     }
 
-    let parts = shapes(drawing.kind, drawing.selected, a1, a2, frame);
+    let parts = shapes(drawing.kind, drawing.selected, a1, a2, a3, frame);
     Ok(SceneDrawing {
         id: drawing.id.clone(),
         kind: drawing.kind,
@@ -1810,6 +1811,7 @@ fn place(
             price: a1.1,
         },
         a2: a2.map(|(time, price)| Anchor::Absolute { time, price }),
+        a3: a3.map(|(time, price)| Anchor::Absolute { time, price }),
         // The fractions are derived from the resolved numbers rather than passed
         // down from the request, so an anchor that arrived absolute and one that
         // arrived as a fraction report the same thing. That is what makes the
@@ -1821,6 +1823,10 @@ fn place(
             y: frame.fraction_at_price(a1.1),
         },
         a2_fraction: a2.map(|(time, price)| Fraction {
+            x: frame.fraction_at_ms(time),
+            y: frame.fraction_at_price(price),
+        }),
+        a3_fraction: a3.map(|(time, price)| Fraction {
             x: frame.fraction_at_ms(time),
             y: frame.fraction_at_price(price),
         }),
@@ -1855,6 +1861,7 @@ fn shapes(
     selected: bool,
     a1: (f64, f64),
     a2: Option<(f64, f64)>,
+    a3: Option<(f64, f64)>,
     frame: &Frame,
 ) -> Vec<DrawingPart> {
     let (t1, p1) = a1;
@@ -2038,6 +2045,215 @@ fn shapes(
                 });
             }
         }
+        DrawingKind::Channel => {
+            // The line through the first two anchors, plus its parallel offset
+            // by the third -- the width the third click sets. Both lines span
+            // the plot horizontally, because a channel is a *band* claim.
+            if let (Some((t2, p2)), Some((t3, p3))) = (a2, a3) {
+                let (x2, y2) = (frame.x_at_ms(t2), frame.y_at(p2));
+                let (_x3, y3) = (frame.x_at_ms(t3), frame.y_at(p3));
+                // The offset is measured on the price axis only: a channel's
+                // width is a price distance, whatever the third click's time.
+                let offset = y3 - (y1 + y2) / 2.0;
+                parts.push(DrawingPart::Segment {
+                    x1: frame.plot.x,
+                    y1: y1 + (y2 - y1) * ((frame.plot.x - x1) / (x2 - x1).max(f64::EPSILON)),
+                    x2: frame.plot.x + frame.plot.w,
+                    y2: y1
+                        + (y2 - y1)
+                            * ((frame.plot.x + frame.plot.w - x1) / (x2 - x1).max(f64::EPSILON)),
+                    dashed: false,
+                });
+                parts.push(DrawingPart::Segment {
+                    x1: frame.plot.x,
+                    y1: frame.y_at(p1) + offset,
+                    x2: frame.plot.x + frame.plot.w,
+                    y2: frame.y_at(p2) + offset,
+                    dashed: false,
+                });
+                // The third handle rides at the offset line's midpoint anchor.
+                let _ = y3;
+            }
+        }
+        DrawingKind::Angle => {
+            // A line from the first anchor through the second, as drawn -- the
+            // user's claim is the slope from where they clicked, so it does not
+            // extend beyond the second point the way a ray does.
+            if let Some((t2, p2)) = a2 {
+                parts.push(DrawingPart::Segment {
+                    x1,
+                    y1,
+                    x2: frame.x_at_ms(t2),
+                    y2: frame.y_at(p2),
+                    dashed: false,
+                });
+            }
+        }
+        DrawingKind::Arc => {
+            // Centre at the first anchor; the second sets the horizontal
+            // radius and the third the vertical. Half: the upper arc only,
+            // because an "arc" tool that drew a full ellipse is a circle.
+            if let (Some((t2, p2)), Some((_t3, p3))) = (a2, a3) {
+                let rx = (frame.x_at_ms(t2) - x1).abs();
+                let ry = (frame.y_at(p3) - y1).abs();
+                let _ = p2;
+                parts.push(DrawingPart::Ellipse {
+                    cx: x1,
+                    cy: y1,
+                    rx: rx.max(1.0),
+                    ry: ry.max(1.0),
+                    half: true,
+                    filled: false,
+                });
+            }
+        }
+        DrawingKind::Circle => {
+            // Centre plus a point on the radius: the radius is the *distance*
+            // in canvas pixels, so the shape is a circle whatever the drag
+            // direction -- which is the whole difference from a rectangle.
+            if let Some((t2, p2)) = a2 {
+                let dx = frame.x_at_ms(t2) - x1;
+                let dy = frame.y_at(p2) - y1;
+                let r = (dx * dx + dy * dy).sqrt().max(1.0);
+                parts.push(DrawingPart::Ellipse {
+                    cx: x1,
+                    cy: y1,
+                    rx: r,
+                    ry: r,
+                    half: false,
+                    filled: true,
+                });
+            }
+        }
+        DrawingKind::Triangle => {
+            if let (Some((t2, p2)), Some((t3, p3))) = (a2, a3) {
+                parts.push(DrawingPart::Polygon {
+                    points: vec![
+                        (x1, y1),
+                        (frame.x_at_ms(t2), frame.y_at(p2)),
+                        (frame.x_at_ms(t3), frame.y_at(p3)),
+                    ],
+                    filled: true,
+                });
+            }
+        }
+        DrawingKind::PositionLong => {
+            // Entry at the first anchor's price; the second anchor's price
+            // above is the target, and by symmetry below is the stop -- the
+            // 1:1 default a risk box needs before the user has said more.
+            if let Some((t2, p2)) = a2 {
+                let x2 = frame.x_at_ms(t2);
+                let y2 = frame.y_at(p2);
+                let risk = (y1 - y2).abs();
+                parts.push(DrawingPart::Segment {
+                    x1: x1.min(x2),
+                    y1,
+                    x2: x1.max(x2),
+                    y2: y1,
+                    dashed: false,
+                });
+                // Profit band above (entry to target), stop band below.
+                parts.push(DrawingPart::Rect {
+                    x: x1.min(x2),
+                    y: y2,
+                    w: (x2 - x1).abs(),
+                    h: risk,
+                    filled: true,
+                });
+                parts.push(DrawingPart::Rect {
+                    x: x1.min(x2),
+                    y: y1,
+                    w: (x2 - x1).abs(),
+                    h: risk,
+                    filled: false,
+                });
+                parts.push(DrawingPart::Text {
+                    x: x1.max(x2) + 6.0,
+                    y: y2 + 10.0,
+                    text: format!("target {p2:.2}"),
+                });
+                parts.push(DrawingPart::Text {
+                    x: x1.max(x2) + 6.0,
+                    y: y1 + risk + 10.0,
+                    text: format!("stop {:.2}", p1 - (p2 - p1).abs()),
+                });
+            }
+        }
+        DrawingKind::PositionShort => {
+            // The mirror: profit below, stop above, same 1:1 default.
+            if let Some((t2, p2)) = a2 {
+                let x2 = frame.x_at_ms(t2);
+                let y2 = frame.y_at(p2);
+                let risk = (y2 - y1).abs();
+                parts.push(DrawingPart::Segment {
+                    x1: x1.min(x2),
+                    y1,
+                    x2: x1.max(x2),
+                    y2: y1,
+                    dashed: false,
+                });
+                parts.push(DrawingPart::Rect {
+                    x: x1.min(x2),
+                    y: y2,
+                    w: (x2 - x1).abs(),
+                    h: risk,
+                    filled: true,
+                });
+                parts.push(DrawingPart::Rect {
+                    x: x1.min(x2),
+                    y: y1 - risk,
+                    w: (x2 - x1).abs(),
+                    h: risk,
+                    filled: false,
+                });
+                parts.push(DrawingPart::Text {
+                    x: x1.max(x2) + 6.0,
+                    y: y2 + 10.0,
+                    text: format!("target {p2:.2}"),
+                });
+                parts.push(DrawingPart::Text {
+                    x: x1.max(x2) + 6.0,
+                    y: y1 - risk + 10.0,
+                    text: format!("stop {:.2}", p1 + (p1 - p2).abs()),
+                });
+            }
+        }
+        DrawingKind::DatepriceRange => {
+            // The measure's box and guides, plus the range as a percentage of
+            // price rather than a delta: the parity tool's whole addition.
+            if let Some((t2, p2)) = a2 {
+                let x2 = frame.x_at_ms(t2);
+                let y2 = frame.y_at(p2);
+                parts.push(DrawingPart::Rect {
+                    x: x1.min(x2),
+                    y: y1.min(y2),
+                    w: (x2 - x1).abs(),
+                    h: (y2 - y1).abs(),
+                    filled: false,
+                });
+                parts.push(DrawingPart::Segment {
+                    x1: x2,
+                    y1: y2,
+                    x2,
+                    y2: y1,
+                    dashed: true,
+                });
+                parts.push(DrawingPart::Segment {
+                    x1: x2,
+                    y1: y2,
+                    x2: x1,
+                    y2,
+                    dashed: true,
+                });
+                let change = (p2 - p1) / p1.abs().max(f64::EPSILON) * 100.0;
+                let bars = ((t2 - t1).abs() * 1_000_000.0 / frame.bar_nanos as f64).round() as i64;
+                parts.push(DrawingPart::Text {
+                    x: x1.max(x2) + 6.0,
+                    y: y1.min(y2) + 10.0,
+                    text: format!("{change:+.2}% {bars} bars"),
+                });
+            }
+        }
         DrawingKind::Fib => {
             if let Some((t2, p2)) = a2 {
                 // Between the two anchors, not across the plot: the levels are a
@@ -2087,6 +2303,15 @@ fn shapes(
                     x: frame.x_at_ms(t2),
                     y: frame.y_at(p2),
                     anchor: 1,
+                });
+            }
+        }
+        if kind.needs_third_anchor() {
+            if let Some((t3, p3)) = a3 {
+                parts.push(DrawingPart::Handle {
+                    x: frame.x_at_ms(t3),
+                    y: frame.y_at(p3),
+                    anchor: 2,
                 });
             }
         }
@@ -3432,6 +3657,7 @@ mod tests {
             kind: DrawingKind::Trendline,
             a1,
             a2: Some(a2),
+            a3: None,
             label: None,
             selected: false,
         }
@@ -3587,6 +3813,7 @@ mod tests {
             kind: DrawingKind::Hline,
             a1: absolute(6_000_000.0, 110.0),
             a2: None,
+            a3: None,
             label: None,
             selected: false,
         }]));
@@ -3615,6 +3842,7 @@ mod tests {
             kind: DrawingKind::Fib,
             a1: absolute(3_000_000.0, 100.0),
             a2: Some(absolute(15_000_000.0, 150.0)),
+            a3: None,
             label: None,
             selected: false,
         }]));
@@ -3696,6 +3924,7 @@ mod tests {
             kind: DrawingKind::Hline,
             a1: fraction(0.5, 0.4),
             a2: Some(fraction(0.9, 0.9)),
+            a3: None,
             label: None,
             selected: true,
         }]));
@@ -3791,6 +4020,7 @@ mod tests {
             kind: DrawingKind::Trendline,
             a1: absolute(3_000_000.0, 110.0),
             a2: Some(absolute(12_000_000.0, 130.0)),
+            a3: None,
             label: Some("the one I keep watching".into()),
             selected: true,
         }]));
@@ -3920,6 +4150,7 @@ mod tests {
             kind: DrawingKind::Rect,
             a1,
             a2: Some(a2),
+            a3: None,
             label: None,
             selected: false,
         }
@@ -4051,6 +4282,7 @@ mod tests {
             kind: DrawingKind::Hline,
             a1: fraction(0.3, 0.4),
             a2: None,
+            a3: None,
             label: None,
             selected: false,
         }]));
@@ -4061,6 +4293,7 @@ mod tests {
             kind: DrawingKind::Hline,
             a1: moved(start.a1_fraction, 0.25, 0.1),
             a2: None,
+            a3: None,
             label: None,
             selected: false,
         }]));
@@ -4126,6 +4359,7 @@ mod tests {
             kind: DrawingKind::Hline,
             a1: fraction(0.3, 0.4),
             a2: None,
+            a3: None,
             label: None,
             selected: false,
         }]));

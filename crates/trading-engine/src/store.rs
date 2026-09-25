@@ -19,8 +19,8 @@
 //!   the ones that did nothing. `docs/11` asks for both, and they answer
 //!   different questions: the first is P&L, the second is "why".
 
-use db::Database;
 use db::paper::{AuditEvent, ExecutedTrade};
+use db::Database;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -439,12 +439,10 @@ mod tests {
             Uuid::nil(),
         );
         assert_eq!(payload["kind"], "halted");
-        assert!(
-            payload["detail"]["reason"]
-                .as_str()
-                .unwrap()
-                .contains("daily")
-        );
+        assert!(payload["detail"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("daily"));
     }
 
     #[test]

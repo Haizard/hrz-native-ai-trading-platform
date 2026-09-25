@@ -498,7 +498,10 @@ async fn single_revision_read_returns_source_and_preview() {
     assert_eq!(body["source"], "name: my_indicator\nversion: '1'");
     assert_eq!(body["summary"], "A test indicator");
     assert_eq!(body["status"], "validated");
-    assert!(body["preview"]["evidence"].as_array().unwrap().len() > 0);
+    assert!(!body["preview"]["evidence"]
+        .as_array()
+        .expect("evidence is an array")
+        .is_empty());
 
     let user_id = user.id;
     db::delete_indicator_workspace(h.database.pool(), user_id, workspace_id.parse().unwrap())

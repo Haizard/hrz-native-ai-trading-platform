@@ -162,6 +162,9 @@ struct Feed {
     /// is exactly the kind of thing that quietly is not done. An `AbortHandle`
     /// is `Send + Sync`, cloneable, and constructible without spawning -- so
     /// the eviction rule can be tested without a runtime and without a socket.
+    /// The derived-event watcher is deliberately *not* here: it belongs to the
+    /// engine and lives per symbol for the process's life, because candles can
+    /// reach a symbol's history from paths that outlive any one feed.
     handle: AbortHandle,
     /// What asked for it, which bounds whether it may be reclaimed.
     reason: FeedReason,
@@ -596,6 +599,12 @@ struct Inner {
     /// market data and the database cannot hold them. See
     /// [`market_data::tape`] for what that costs and what it limits.
     live: Arc<market_data::LiveRegistry>,
+    /// The derived-event engine the feed watchers write into.
+    ///
+    /// Lives beside the feeds rather than inside them so a reconnecting client
+    /// can still read what a closed feed saw (see `event_engine::EventEngine`).
+    /// Named apart from `events` above, which is the *bot* broadcast.
+    market_events: Arc<crate::event_engine::EventEngine>,
     /// Wall-clock time (unix nanos) of the most recent candle published for a
     /// symbol.
     ///
@@ -648,6 +657,7 @@ impl BotSupervisor {
                 feeds: Mutex::new(HashMap::new()),
                 history: Arc::new(market_data::HistoryRegistry::new()),
                 live: Arc::new(market_data::LiveRegistry::new()),
+                market_events: Arc::new(crate::event_engine::EventEngine::new()),
                 last_candle_ns: Mutex::new(HashMap::new()),
                 alerter: Mutex::new(observability::Alerter::new(observability::default_rules())),
                 flush_interval,
@@ -933,6 +943,12 @@ impl BotSupervisor {
                 warn!(symbol = %for_task, "the market feed stopped: {e}");
             }
         });
+        // A feed opening is a symbol becoming live, so its event watcher is
+        // ensured here rather than waiting for the first reader to ask: events
+        // start flowing with the first closed candle, not with the first
+        // consumer. `ensure_watcher` is idempotent per symbol, so a feed and a
+        // socket arriving in either order land on one watcher.
+        self.events().watch(&symbol, self.history());
         feeds.insert(
             symbol,
             Feed {
@@ -995,6 +1011,12 @@ impl BotSupervisor {
     #[must_use]
     pub fn subscribe_events(&self) -> broadcast::Receiver<BotEvent> {
         self.inner.events.subscribe()
+    }
+
+    /// The derived-event engine the feed watchers feed.
+    #[must_use]
+    pub fn events(&self) -> Arc<crate::event_engine::EventEngine> {
+        Arc::clone(&self.inner.market_events)
     }
 
     /// Publish a closed candle into the bus, and age the feed with it.

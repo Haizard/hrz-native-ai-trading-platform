@@ -190,10 +190,9 @@ mod tests {
     fn everything_satisfied_is_allowed() {
         let mut gate = LiveGate::new(GateRequirements::default());
         gate.opt_in("binance");
-        assert!(
-            gate.check("binance", record(), &RiskLimits::default())
-                .is_allowed()
-        );
+        assert!(gate
+            .check("binance", record(), &RiskLimits::default())
+            .is_allowed());
     }
 
     #[test]

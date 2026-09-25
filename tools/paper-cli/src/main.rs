@@ -35,9 +35,7 @@ use anyhow::{bail, Context, Result};
 use backtester::replay::{replay, ReplayConfig, ReplayInput};
 use clap::{Parser, Subcommand};
 use db::Database;
-use market_data::{
-    Collector, MarketBusRegistry, MultiTimeframeCandleBuilder,
-};
+use market_data::{Collector, MarketBusRegistry, MultiTimeframeCandleBuilder};
 use strategy_dsl::ValidatedStrategy;
 use strategy_runtime::{ExitTrigger, RuntimeConfig, SimulatorConfig, StrategyEngine};
 use trading_engine::{BotSession, PaperBot, PaperConfig, RiskLimits};

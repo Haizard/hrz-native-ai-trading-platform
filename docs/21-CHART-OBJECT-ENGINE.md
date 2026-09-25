@@ -186,3 +186,54 @@ re-hide that leaves the row in storage.
 | Route validation | `cargo test -p api-gateway --lib drawing_routes` |
 | ABI export | `tools/wasm_abi_check.mjs` |
 | Shell gestures (place/move/delete/clear/undo/redo/magnet/flyouts) | `node tools/shell_check.mjs` |
+
+## What shipped (2026-09): TradingView tool parity
+
+### The registry grew to sixteen kinds, and one rule grew with it
+
+The 2026-09 parity extension added the TradingView staples: `channel` (two
+points for the line, one for its width), `angle`, `arc` (centre, horizontal
+radius, vertical radius), `circle` (centre plus one radius point), `triangle`
+(one anchor per vertex), `position_long`/`position_short` (entry plus a 1:1
+profit/stop band), and `dateprice_range` (a measure box that also counts bars).
+Each is one `DrawingKind` variant, one `shapes` arm, one registry row, one
+`KINDS` entry — the same one-each arithmetic phase 1 recorded, still holding.
+
+- **Three anchors, named `a3`, whole or absent.** `0011_drawing_third_anchor.sql`
+  adds `a3_time`/`a3_price` behind the same whole-or-absent CHECK the second
+  pair has. `needs_third_anchor` exists in both the engine (`DrawingKind`) and
+  storage (`db::drawings`), and a gateway test pins the two to each other —
+  the same cross-crate pin `needs_second_anchor` has, because a `channel` the
+  route believes stops at two is a channel the chart cannot restore. A circle
+  is centre + radius, deliberately **two** anchors: the radius is the distance
+  between them, and a third would be a second way to say it that could
+  disagree with the first.
+- **The gesture grew a third click.** Placing a channel, arc or triangle is
+  click, move, click, move, click — between clicks the pending anchor follows
+  the pointer on *hover* (no button held), because a placement the user cannot
+  aim is not a placement. The pending anchor is an explicit field
+  (`placing.pending`), not inferred from `null` vs `undefined`: the engine
+  refuses an `a3` on a kind that does not take one, so a mis-encoded drag
+  would store its second anchor into `a3` and the shape would vanish with a
+  note. Storage, the routes, the agent's drawing tools and the wire all carry
+  `a3` the way they carry `a2`.
+- **Two new part shapes, and the shell paints them.** `DrawingPart::Ellipse`
+  (`cx/cy/rx/ry`, `half` for the upper arc, `filled`) and
+  `DrawingPart::Polygon` (`points`, `filled`) join Segment/Rect/Text/Handle.
+  A triangle is grabbable by its body — `insidePolygon`, the ray-crossing
+  test — the same rule a rectangle follows; a circle's radius is computed in
+  canvas pixels so it stays a circle whatever the drag direction.
+- **The dual toolbar.** The right-click menu still *hosts* the pane's own
+  tool row — the buttons move into the menu and back, one wiring. The new
+  global toolbar (`#globalTools`) is the inverse arrangement: one permanent
+  row owned by the page, built from the same registry, and every interaction
+  **delegated** to the active pane through its existing API. Two toolbars,
+  one state. It binds to whichever chart the user last touched (the same
+  activation gesture the aside follows), names that chart in its label, hides
+  when no pane exists, and follows the survivor when one is closed. It is
+  deliberately *not* class `tools`: every pane-scoped lookup of `.tools` must
+  resolve to a pane's own row, never to the page-level one.
+
+`shell_check.mjs` covers both toolbars agreeing, the three-click gesture
+storing one drawing with three absolute anchors, and a two-anchor drag
+sending no third anchor at all.

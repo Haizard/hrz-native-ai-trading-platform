@@ -33,10 +33,10 @@
 
 use std::collections::BTreeMap;
 
-use analytics_core::state::{MarketStateConfig, build_market_state};
+use analytics_core::state::{build_market_state, MarketStateConfig};
 use analytics_core::types::{Candle, Timeframe};
 use sandbox::{Sandbox, SandboxError, SandboxLimits};
-use strategy_dsl::{MAX_DOCUMENT_BYTES, parse_and_validate};
+use strategy_dsl::{parse_and_validate, MAX_DOCUMENT_BYTES};
 use strategy_runtime::context::MarketContext;
 
 /// The smallest module that satisfies the ABI and does nothing.
@@ -160,7 +160,7 @@ fn context() -> MarketContext {
 // ---------------------------------------------------------------------------
 
 mod forbidden_imports {
-    use super::{SandboxError, importing, parse_and_validate, refusal};
+    use super::{importing, parse_and_validate, refusal, SandboxError};
 
     /// Every one of these is a capability the spec's deny list names.
     const FORBIDDEN: &[(&str, &str, &str)] = &[
@@ -441,7 +441,7 @@ fn a_module_that_exports_an_allowlisted_name_as_a_global_is_refused() {
 // ---------------------------------------------------------------------------
 
 mod rejected_before_the_sandbox {
-    use super::{DOCUMENT, MAX_DOCUMENT_BYTES, parse_and_validate};
+    use super::{parse_and_validate, DOCUMENT, MAX_DOCUMENT_BYTES};
 
     #[test]
     fn an_oversized_document_is_refused_by_size() {

@@ -113,6 +113,10 @@ impl std::fmt::Display for DecisionPath {
 /// Not a trait object, deliberately: the two variants are known at the call
 /// site, and an enum keeps [`Decisions::path`] answerable without a downcast.
 #[derive(Debug)]
+// The size gap is structural, not a bug: `Native` holds the whole engine while
+// `Sandboxed` holds one boxed handle. Boxing the larger variant would put an
+// indirection on the hot path for zero benefit.
+#[allow(clippy::large_enum_variant)]
 pub enum Decisions {
     /// The interpreter runs in this process.
     Native(StrategyEngine),

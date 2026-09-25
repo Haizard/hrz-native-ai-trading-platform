@@ -127,6 +127,66 @@ impl Clone for DrawingsContext {
     }
 }
 
+/// The asking user's memory, attached by the host after authenticating them.
+///
+/// The same ownership argument as [`DrawingsContext`], and the same shape:
+/// reader and writer ride together because a memory the agent cannot recall
+/// and one it cannot store are the same capability seen from two sides, and
+/// the user id never crosses the wire — it is resolved from the authenticated
+/// identity one layer up.
+pub struct MemoryContext {
+    source: Arc<dyn crate::agent_memory::MemorySource>,
+    writer: Option<Arc<dyn crate::agent_memory::MemoryWriter>>,
+    user_id: String,
+}
+
+impl MemoryContext {
+    /// Bind a memory source to one authenticated user.
+    #[must_use]
+    pub fn new(
+        source: Arc<dyn crate::agent_memory::MemorySource>,
+        user_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            source,
+            writer: None,
+            user_id: user_id.into(),
+        }
+    }
+
+    /// Also allow the agent to store facts, as the same user.
+    #[must_use]
+    pub fn with_writer(mut self, writer: Arc<dyn crate::agent_memory::MemoryWriter>) -> Self {
+        self.writer = Some(writer);
+        self
+    }
+
+    /// The user whose memory this is, opaque to the agent.
+    #[must_use]
+    pub fn user_id(&self) -> &str {
+        &self.user_id
+    }
+}
+
+impl Clone for MemoryContext {
+    fn clone(&self) -> Self {
+        Self {
+            source: Arc::clone(&self.source),
+            writer: self.writer.clone(),
+            user_id: self.user_id.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for MemoryContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Same rule as `DrawingsContext`: log the identity, never the source.
+        f.debug_struct("MemoryContext")
+            .field("user_id", &self.user_id)
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for DrawingsContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The source is a callback into storage; printing it would print an
@@ -162,6 +222,12 @@ pub struct AskRequest {
     /// `None` makes `get_user_drawings` report "no drawings source" rather
     /// than a bare chart -- see the tool for why those must not be confused.
     pub drawings: Option<DrawingsContext>,
+    /// The asking user's memory, when the host attached it.
+    ///
+    /// `None` is a deployment without memory, which the prompt simply omits —
+    /// the model is never told "you have no memory", because that reads as
+    /// an apology rather than a configuration fact.
+    pub memory: Option<MemoryContext>,
 }
 
 impl AskRequest {
@@ -176,6 +242,7 @@ impl AskRequest {
             lookback: None,
             chart: None,
             drawings: None,
+            memory: None,
         }
     }
 
@@ -208,6 +275,16 @@ impl AskRequest {
     #[must_use]
     pub fn with_drawings(mut self, drawings: DrawingsContext) -> Self {
         self.drawings = Some(drawings);
+        self
+    }
+
+    /// Attach the asking user's memory, resolved by the host.
+    ///
+    /// Host-only for the same reason the drawings are: the id is a fact about
+    /// *who is asking*, which no request body may state.
+    #[must_use]
+    pub fn with_memory(mut self, memory: MemoryContext) -> Self {
+        self.memory = Some(memory);
         self
     }
 }
@@ -416,6 +493,30 @@ impl Agent {
             symbol: request.symbol.clone(),
             timeframes: ladder.len(),
         });
+
+        // Memory is read **before** the prompt is built, in parallel with the
+        // ladder reading: the recall section must be in the system prompt from
+        // turn one, because a memory the model has to ask for is one it will
+        // not use. A storage failure degrades to "no memories" rather than
+        // failing the question — amnesia must not take the analysis down.
+        let memories = match &request.memory {
+            Some(memory) => match memory
+                .source
+                .recall(
+                    memory.user_id(),
+                    &request.symbol,
+                    crate::agent_memory::RECALL_LIMIT,
+                )
+                .await
+            {
+                Ok(rows) => Some(rows),
+                Err(err) => {
+                    tracing::warn!(target: "ai_agent", %err, "memory recall failed; continuing without it");
+                    None
+                }
+            },
+            None => None,
+        };
         let view = analyze_ladder(
             data,
             &request.symbol,
@@ -445,6 +546,7 @@ impl Agent {
             skill.as_ref(),
             &view,
             request.chart.as_ref(),
+            memories.as_deref(),
         );
         // Screenshots ride on the first user message, primary view first. It is
         // attached here rather than as a separate message because Bedrock
@@ -479,6 +581,16 @@ impl Agent {
         // the same shape: absent unless the host attached one, and the tool
         // says so rather than implying the chart is bare.
         let mut ctx = ToolContext::new(data).with_config(self.config.market_state);
+        // The memory tools get the same grant the loop already holds, so the
+        // model's explicit `remember` cannot write where the auto-store could
+        // not: one identity, one door.
+        if let Some(memory) = &request.memory {
+            ctx = ctx.with_memory(
+                memory.source.as_ref(),
+                memory.writer.as_deref(),
+                memory.user_id(),
+            );
+        }
         if let Some(drawings) = &request.drawings {
             ctx = ctx.with_drawings(drawings.source.as_ref(), drawings.user_id());
             // Writes ride the same grant: no writer attached means the write
@@ -640,6 +752,27 @@ impl Agent {
                 if thesis.narrative.trim().is_empty() {
                     thesis.narrative = thesis.fallback_narrative();
                 }
+
+                // Auto-store, after the thesis is final: the levels it just
+                // stood behind are the facts most worth carrying into the
+                // next conversation. Best-effort and logged — a failed write
+                // must not undo a delivered answer, but a silent one could
+                // never be diagnosed.
+                if let Some(memory) = &request.memory {
+                    if let Some(writer) = memory.writer.as_ref() {
+                        for fact in crate::agent_memory::facts_from_thesis(&thesis) {
+                            if let Err(err) = writer.remember(memory.user_id(), &fact).await {
+                                tracing::warn!(
+                                    target: "ai_agent",
+                                    %err,
+                                    key = %fact.key,
+                                    "auto-store of a thesis fact failed"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 return Ok(AgentAnswer {
                     thesis,
                     skill: skill.as_ref().map(|s| s.id()),
@@ -860,6 +993,7 @@ fn ask_system_prompt(
     skill: Option<&Skill>,
     ladder: &LadderView,
     chart: Option<&crate::chart_context::ChartContext>,
+    memories: Option<&[crate::agent_memory::MemoryRow]>,
 ) -> String {
     let mut out = String::new();
     out.push_str("You are the market analyst for an order-flow trading terminal.\n\n");
@@ -900,6 +1034,14 @@ fn ask_system_prompt(
     out.push_str("These were computed in Rust from real candles. They are facts.\n\n");
     out.push_str(&ladder.digest());
     out.push('\n');
+
+    // After the ladder: remembered facts are context the model reads before
+    // the question, but the market read is the primary fact source and must
+    // come first so memory is interpreted *against* it, not instead of it.
+    if let Some(memories) = memories {
+        out.push_str(&crate::agent_memory::render_recall(memories));
+        out.push('\n');
+    }
 
     // Placed after the ladder so the model reads the facts first and the
     // viewport second: the viewport says where to look, and must not be

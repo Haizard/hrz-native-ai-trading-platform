@@ -50,7 +50,8 @@ const BOOK_DELTA: &str = r#"{"topic":"orderbook.50.ETHUSDT","ts":1789875210020,"
 const TRADE_FRAME: &str = r#"{"topic":"publicTrade.BTCUSDT","ts":1789875217841,"type":"snapshot","data":[{"BT":false,"RPI":false,"S":"Sell","T":1789875217840,"i":"2290000001211680903","p":"80413.3","s":"BTCUSDT","seq":114263055846,"v":"0.06"},{"BT":false,"RPI":false,"S":"Buy","T":1789875217840,"i":"2290000001211680919","p":"80413.4","s":"BTCUSDT","seq":114263055850,"v":"0.004904"},{"BT":false,"RPI":false,"S":"Buy","T":1789875217841,"i":"2290000001211680920","p":"80413.4","s":"BTCUSDT","seq":114263055851,"v":"0.001"}]}"#;
 
 /// What Bybit answers `{"op":"ping"}` with. No `topic`, so it must be control.
-const PONG: &str = r#"{"success":true,"ret_msg":"pong","conn_id":"d9avt8sb86tr31f6ej90-d0qm8","op":"pong"}"#;
+const PONG: &str =
+    r#"{"success":true,"ret_msg":"pong","conn_id":"d9avt8sb86tr31f6ej90-d0qm8","op":"pong"}"#;
 
 fn codec() -> BybitCodec {
     BybitCodec::spot()
@@ -105,8 +106,10 @@ fn the_delta_after_the_snapshot_continues_from_it() {
         panic!("delta must decode");
     };
     let Incoming::BookDelta(diff) = *delta else {
-        panic!("a `type: delta` frame must NOT decode as a snapshot -- that would \
-                replace a 50-level book with the two levels that moved");
+        panic!(
+            "a `type: delta` frame must NOT decode as a snapshot -- that would \
+                replace a 50-level book with the two levels that moved"
+        );
     };
 
     assert_eq!(
@@ -156,7 +159,10 @@ fn the_in_band_snapshot_and_delta_sync_the_book_with_no_rest() {
     );
 
     assert_eq!(outcome, DiffOutcome::Applied);
-    assert!(book.is_synced(), "the book is live with no REST request made");
+    assert!(
+        book.is_synced(),
+        "the book is live with no REST request made"
+    );
 }
 
 /// Every trade in a batched frame must arrive, and the taker side must invert.
@@ -183,8 +189,14 @@ fn a_batched_trade_frame_yields_every_trade_with_the_taker_side_inverted() {
     assert_eq!(trades[0].symbol, "BTCUSDT");
 
     // `S` is the taker side: a taker Sell means the buyer was the maker.
-    assert!(trades[0].is_buyer_maker, "S == \"Sell\" inverts to maker=true");
-    assert!(!trades[1].is_buyer_maker, "S == \"Buy\" inverts to maker=false");
+    assert!(
+        trades[0].is_buyer_maker,
+        "S == \"Sell\" inverts to maker=true"
+    );
+    assert!(
+        !trades[1].is_buyer_maker,
+        "S == \"Buy\" inverts to maker=false"
+    );
     assert!(!trades[2].is_buyer_maker);
 
     // Ids are distinct and ascending, which is what the gap detector needs.

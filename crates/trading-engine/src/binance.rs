@@ -597,9 +597,9 @@ impl ExchangeAdapter for BinanceRest {
 mod tests {
     use super::*;
     use crate::execution::OrderSide;
-    use axum::Router;
     use axum::extract::{Request, State};
     use axum::routing::{get, post};
+    use axum::Router;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 

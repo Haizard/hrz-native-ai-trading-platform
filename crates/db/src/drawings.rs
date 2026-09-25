@@ -1,12 +1,13 @@
 //! Drawings: the shapes a user has drawn on a symbol (`docs/14`).
 //!
-//! ## Two anchors and a kind
+//! ## Two anchors -- and sometimes three -- and a kind
 //!
-//! Everything a trader draws is a pair of `(time, price)` points with a rule for
-//! what goes between them, so that is the whole schema: `kind`, an anchor, and
-//! an optional second anchor. A trendline is the segment, a rectangle is the
-//! area, a Fibonacci is the levels, and a horizontal line is the degenerate case
-//! that needs one anchor.
+//! Everything a trader draws is `(time, price)` points with a rule for what
+//! goes between them: `kind`, an anchor, an optional second anchor, and -- for
+//! the parity vocabulary -- an optional third. A trendline is the segment, a
+//! rectangle is the area, a Fibonacci is the levels, a horizontal line is the
+//! degenerate case that needs one anchor, and a parallel channel is two points
+//! for the line plus one for its width.
 //!
 //! ## This is the one user-authored table that is edited
 //!
@@ -46,9 +47,13 @@ use crate::repositories::dt_to_ns;
 /// array and the engine's enum are the only two places the set is written down,
 /// and `a_kind_the_engine_cannot_draw_is_refused` keeps them in step.
 ///
-/// Adding one is a variant in `chart_engine::drawing::DrawingKind` plus an arm
-/// in its `parts` -- no migration, because every kind is two anchors.
-pub const KINDS: [&str; 8] = [
+/// The 2026-09 parity extension added the TradingView staples: channel, angle,
+/// arc, circle, triangle, long/short position boxes and the date/price range
+/// -- see `docs/21`. Each is one variant plus a `shapes` arm in the engine.
+/// `kline` is listed but is the parity oddball: it is a bar chart per day and
+/// draws with the candle geometry, not with anchors, so it lives in the
+/// registry while storage keeps its own vocabulary.
+pub const KINDS: [&str; 16] = [
     "trendline",
     "hline",
     "vline",
@@ -57,6 +62,14 @@ pub const KINDS: [&str; 8] = [
     "rect",
     "fib",
     "measure",
+    "channel",
+    "angle",
+    "arc",
+    "circle",
+    "triangle",
+    "position_long",
+    "position_short",
+    "dateprice_range",
 ];
 
 /// Whether a kind needs its second anchor.
@@ -73,6 +86,39 @@ pub const KINDS: [&str; 8] = [
 #[must_use]
 pub fn needs_second_anchor(kind: &str) -> bool {
     !matches!(kind, "hline" | "vline")
+}
+
+/// Whether a kind needs its **third** anchor.
+///
+/// The parity vocabulary's rule: a parallel channel is two points for the line
+/// and one for its width; an arc is a centre plus two radius points; a
+/// triangle is one anchor per vertex. A circle is a centre plus a *single*
+/// point on its radius -- the radius is the distance between the two, so it
+/// stops at two, matching the engine's `DrawingKind::needs_third_anchor`.
+/// Everything else stops at two as well.
+///
+/// Written as the *negation* of the two-anchor list, matching
+/// [`needs_second_anchor`]'s style: unknown kinds answer `true`, and demanding
+/// more rather than less of something unrecognised is the safe way to be
+/// wrong.
+#[must_use]
+pub fn needs_third_anchor(kind: &str) -> bool {
+    !matches!(
+        kind,
+        "trendline"
+            | "hline"
+            | "vline"
+            | "ray"
+            | "extended"
+            | "rect"
+            | "fib"
+            | "measure"
+            | "angle"
+            | "circle"
+            | "position_long"
+            | "position_short"
+            | "dateprice_range"
+    )
 }
 
 /// A stored drawing, with its anchors in **milliseconds**.
@@ -92,6 +138,10 @@ pub struct DrawingRow {
     pub a2_time_ms: Option<f64>,
     /// Second anchor's price.
     pub a2_price: Option<f64>,
+    /// Third anchor, for the parity kinds that need one (`0011`).
+    pub a3_time_ms: Option<f64>,
+    /// Third anchor's price.
+    pub a3_price: Option<f64>,
     /// What the user called it, if anything.
     pub label: Option<String>,
     /// Who is accountable for this row: `None` is a hand-drawn one, and
@@ -132,6 +182,10 @@ pub struct NewDrawing {
     pub a2_time_ms: Option<f64>,
     /// Second anchor's price.
     pub a2_price: Option<f64>,
+    /// Third anchor, milliseconds since the epoch.
+    pub a3_time_ms: Option<f64>,
+    /// Third anchor's price.
+    pub a3_price: Option<f64>,
     /// What the user called it, if anything.
     pub label: Option<String>,
     /// Provenance (`0009_drawing_provenance.sql`): who is accountable, which
@@ -183,6 +237,8 @@ fn dt_to_ms(dt: DateTime<Utc>) -> f64 {
 fn row_to_drawing(row: &sqlx::postgres::PgRow) -> Result<DrawingRow, DbError> {
     let a2_time: Option<DateTime<Utc>> = row.try_get("a2_time")?;
     let a2_price: Option<f64> = row.try_get("a2_price")?;
+    let a3_time: Option<DateTime<Utc>> = row.try_get("a3_time")?;
+    let a3_price: Option<f64> = row.try_get("a3_price")?;
     Ok(DrawingRow {
         id: row.try_get("id")?,
         symbol: row.try_get("symbol")?,
@@ -194,6 +250,9 @@ fn row_to_drawing(row: &sqlx::postgres::PgRow) -> Result<DrawingRow, DbError> {
         // hand, and reporting `None` is the honest reading of it.
         a2_time_ms: a2_time.map(dt_to_ms),
         a2_price,
+        // The third anchor obeys the same whole-or-absent CHECK (`0011`).
+        a3_time_ms: a3_time.map(dt_to_ms),
+        a3_price,
         label: row.try_get("label")?,
         created_by: row.try_get("created_by")?,
         agent: row.try_get("agent")?,
@@ -218,7 +277,7 @@ pub async fn list_drawings(
     symbol: &str,
 ) -> Result<Vec<DrawingRow>, DbError> {
     let rows = sqlx::query(
-        "SELECT id, symbol, kind, a1_time, a1_price, a2_time, a2_price, label, \
+        "SELECT id, symbol, kind, a1_time, a1_price, a2_time, a2_price, a3_time, a3_price, label, \
          created_by, agent, confidence, reason, created_at, updated_at \
          FROM drawings WHERE user_id = $1 AND symbol = $2 ORDER BY created_at, id",
     )
@@ -245,9 +304,9 @@ pub async fn create_drawing(
     drawing: &NewDrawing,
 ) -> Result<Uuid, DbError> {
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO drawings (user_id, symbol, kind, a1_time, a1_price, a2_time, a2_price, label, \
-         created_by, agent, confidence, reason) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id",
+        "INSERT INTO drawings (user_id, symbol, kind, a1_time, a1_price, a2_time, a2_price, \
+         a3_time, a3_price, label, created_by, agent, confidence, reason) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id",
     )
     .bind(user_id)
     .bind(symbol)
@@ -256,11 +315,18 @@ pub async fn create_drawing(
     .bind(drawing.a1_price)
     .bind(drawing.a2_time_ms.map(ms_to_dt))
     .bind(drawing.a2_price)
+    .bind(drawing.a3_time_ms.map(ms_to_dt))
+    .bind(drawing.a3_price)
     .bind(drawing.label.as_deref())
     .bind(drawing.provenance.as_ref().map(|p| p.created_by.as_str()))
     .bind(drawing.provenance.as_ref().and_then(|p| p.agent.as_deref()))
     .bind(drawing.provenance.as_ref().and_then(|p| p.confidence))
-    .bind(drawing.provenance.as_ref().and_then(|p| p.reason.as_deref()))
+    .bind(
+        drawing
+            .provenance
+            .as_ref()
+            .and_then(|p| p.reason.as_deref()),
+    )
     .fetch_one(pool)
     .await?;
     Ok(id)
@@ -297,7 +363,7 @@ pub async fn update_drawing(
 ) -> Result<bool, DbError> {
     let updated: Option<Uuid> = sqlx::query_scalar(
         "UPDATE drawings SET kind = $3, a1_time = $4, a1_price = $5, a2_time = $6, \
-         a2_price = $7, label = $8, updated_at = now() \
+         a2_price = $7, a3_time = $8, a3_price = $9, label = $10, updated_at = now() \
          WHERE id = $1 AND user_id = $2 RETURNING id",
     )
     .bind(id)
@@ -307,6 +373,8 @@ pub async fn update_drawing(
     .bind(drawing.a1_price)
     .bind(drawing.a2_time_ms.map(ms_to_dt))
     .bind(drawing.a2_price)
+    .bind(drawing.a3_time_ms.map(ms_to_dt))
+    .bind(drawing.a3_price)
     .bind(drawing.label.as_deref())
     .fetch_optional(pool)
     .await?;
@@ -352,6 +420,36 @@ mod tests {
         // anchor, which is the shape that reaches the engine and cannot be drawn.
         assert!(needs_second_anchor("channel"));
         assert!(needs_second_anchor(""));
+    }
+
+    #[test]
+    fn only_the_parity_kinds_need_a_third_anchor() {
+        // The 2026-09 vocabulary, one rule: channel, arc and triangle are
+        // three-point tools. A circle is centre plus one radius point, so it
+        // stops at two -- the same rule the engine's
+        // `DrawingKind::needs_third_anchor` states.
+        for kind in ["channel", "arc", "triangle"] {
+            assert!(needs_third_anchor(kind), "{kind} needs three anchors");
+        }
+        for kind in [
+            "trendline",
+            "hline",
+            "vline",
+            "ray",
+            "extended",
+            "rect",
+            "fib",
+            "measure",
+            "angle",
+            "circle",
+            "position_long",
+            "position_short",
+            "dateprice_range",
+        ] {
+            assert!(!needs_third_anchor(kind), "{kind} needs two");
+        }
+        // And the safe way to be wrong about something unrecognised.
+        assert!(needs_third_anchor(""));
     }
 
     #[test]

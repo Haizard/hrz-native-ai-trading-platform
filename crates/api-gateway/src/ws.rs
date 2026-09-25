@@ -78,7 +78,7 @@ use crate::AppState;
 /// per symbol would multiply the series by every market the platform touches,
 /// and "connections are growing" is a question about the channel, not about
 /// BTCUSDT.
-struct Connection {
+pub(crate) struct Connection {
     metrics: Arc<Registry>,
     channel: &'static str,
     /// When the socket was accepted. Reported on close, because "opened and
@@ -89,7 +89,7 @@ struct Connection {
 
 impl Connection {
     /// Count a connection in.
-    fn open(metrics: Arc<Registry>, channel: &'static str) -> Self {
+    pub(crate) fn open(metrics: Arc<Registry>, channel: &'static str) -> Self {
         let labels = Labels::new(&[("channel", channel)]);
         metrics.add_gauge(
             WS_CONNECTIONS,
@@ -116,7 +116,7 @@ impl Connection {
     /// client was told `lagged` and a chart drew a gap. A number that climbs is
     /// the signal that a consumer cannot keep up, which is a different incident
     /// from a connection that died.
-    fn missed(&self, dropped: u64) {
+    pub(crate) fn missed(&self, dropped: u64) {
         self.metrics.add_gauge(
             WS_DROPS,
             "Messages a WebSocket client was too slow to receive",
@@ -138,7 +138,7 @@ impl Connection {
     /// `detail` is whatever identifies the one connection: the full channel, the
     /// session id, the bot id. The gauge is deliberately keyed only on the
     /// channel *kind*, so this field is where the symbol and timeframe survive.
-    fn closed(&self, detail: &impl std::fmt::Display, reason: &'static str) {
+    pub(crate) fn closed(&self, detail: &impl std::fmt::Display, reason: &'static str) {
         info!(
             socket = self.channel,
             %detail,
@@ -178,7 +178,7 @@ const DEPTH_GRACE: Duration = Duration::from_secs(5);
 /// A frame every channel may send, so a client can tell a notice from data.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum Frame<'a> {
+pub(crate) enum Frame<'a> {
     /// Sent once on connect: what this socket is now watching.
     Subscribed {
         channel: &'a str,
@@ -714,6 +714,20 @@ where
                 crate::market_data::DbDrawingWriter::new(std::sync::Arc::clone(database)),
             )),
         );
+        // Memory, exactly as `POST /agent/ask` attaches it: one adapter, one
+        // grant, one identity. The socket path must not be the quiet one
+        // where the agent forgets everything between conversations.
+        ask = ask.with_memory(
+            ai_agent::MemoryContext::new(
+                std::sync::Arc::new(crate::market_data::DbAgentMemory::new(
+                    std::sync::Arc::clone(database),
+                )),
+                user.user_id.to_string(),
+            )
+            .with_writer(std::sync::Arc::new(crate::market_data::DbAgentMemory::new(
+                std::sync::Arc::clone(database),
+            ))),
+        );
     }
 
     // The same claim `POST /agent/ask` makes: asking about a symbol is a reason
@@ -905,7 +919,7 @@ async fn bot_loop(
     connection.closed(&bot_id, reason);
 }
 
-async fn send_text<S>(sink: &mut S, frame: &Frame<'_>) -> Result<(), ()>
+pub(crate) async fn send_text<S>(sink: &mut S, frame: &Frame<'_>) -> Result<(), ()>
 where
     S: SinkExt<Message> + Unpin,
 {
@@ -914,7 +928,7 @@ where
         .map_err(|_| ())
 }
 
-async fn send_binary<S>(sink: &mut S, frame: &Frame<'_>) -> Result<(), ()>
+pub(crate) async fn send_binary<S>(sink: &mut S, frame: &Frame<'_>) -> Result<(), ()>
 where
     S: SinkExt<Message> + Unpin,
 {

@@ -366,9 +366,7 @@ impl HistoryRegistry {
             .read()
             .map(|map| {
                 map.iter()
-                    .map(|((symbol, timeframe), series)| {
-                        (symbol.clone(), *timeframe, series.len())
-                    })
+                    .map(|((symbol, timeframe), series)| (symbol.clone(), *timeframe, series.len()))
                     .collect()
             })
             .unwrap_or_default();

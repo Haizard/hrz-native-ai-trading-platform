@@ -189,6 +189,15 @@ function pickTool(name, index = PANE) {
   paneNode(index).querySelector(`.tools button[data-tool="${name}"]`).click();
 }
 
+/// A click on the **global** toolbar, the one above the chart grid. Same
+/// gesture as `pickTool`, different surface: the checks that care about the
+/// two toolbars agreeing need a way to press each of them.
+function globalPick(name) {
+  document
+    .querySelector(`#globalTools button[data-tool="${name}"]`)
+    .click();
+}
+
 /// A `change` event the way a `<select>` fires one: bubbling.
 ///
 /// `new Event("change")` defaults to `bubbles: false`, and the page listens for
@@ -692,6 +701,9 @@ window.fetch = async (path, options = {}) => {
         kind: body.kind,
         a1: body.a1,
         a2: body.a2 ?? null,
+        // The parity kinds carry a third anchor; the stub echoes whatever the
+        // shell sent, which is also the check that the shell sends one.
+        a3: body.a3 ?? null,
         label: body.label ?? null,
       };
       backend.drawings.push(stored);
@@ -951,7 +963,7 @@ check(
 );
 check(
   "the drawing toolbar is on the page",
-  paneNode().querySelectorAll(".tools button[data-tool]").length >= 5,
+  paneNode().querySelectorAll(".tools button[data-tool]").length === 17,
   `${paneNode().querySelectorAll(".tools button[data-tool]").length} tools`
 );
 check(
@@ -959,13 +971,17 @@ check(
   (() => {
     const toolbar = paneNode().querySelector(".tools");
     const names = [...toolbar.querySelectorAll("button[data-tool]")].map((b) => b.dataset.tool);
-    const expected = ["cursor", "trendline", "hline", "vline", "ray", "extended", "rect", "fib", "measure"];
+    const expected = [
+      "cursor", "trendline", "hline", "vline", "ray", "extended", "rect", "fib", "measure",
+      "channel", "angle", "arc", "circle", "triangle", "position_long", "position_short",
+      "dateprice_range",
+    ];
     return expected.every((name) => names.includes(name)) && `${names.join(",")}`;
   })()
 );
 check(
   "the tools are grouped into the registry's flyouts",
-  paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length === 8,
+  paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length === 16,
   `${paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length} flyout tools`
 );
 check(
@@ -3097,6 +3113,104 @@ check(
 
 socketBehaviour.refuse = null;
 backend.meStatus = 200;
+
+// --- the parity tools and the global toolbar ---------------------------------
+//
+// The two features this session added to the shell, checked the way the rest
+// of this file checks things: through the page's own DOM and its own network
+// stub, never by reaching into internals.
+
+console.log("\nthe global toolbar and the parity tools");
+
+check(
+  "a standalone toolbar exists outside the panes",
+  Boolean(document.getElementById("globalTools")),
+  document.getElementById("globalTools") ? "present" : "absent"
+);
+check(
+  "and it is built from the engine's registry, not empty",
+  document.querySelectorAll("#globalTools button[data-tool]").length === 17,
+  `${document.querySelectorAll("#globalTools button[data-tool]").length} buttons`
+);
+check(
+  "and it names the chart it acts on",
+  document.getElementById("globalToolsWhich")?.textContent.includes("BTCUSDT"),
+  document.getElementById("globalToolsWhich")?.textContent ?? "(no label)"
+);
+check(
+  "and its pressed state mirrors the active pane's tool",
+  (() => {
+    const panePressed = paneNode(0).querySelector('.tools button[aria-pressed="true"]');
+    const globalPressed = document.querySelector('#globalTools button[aria-pressed="true"]');
+    return panePressed && globalPressed && panePressed.dataset.tool === globalPressed.dataset.tool;
+  })(),
+  `${paneNode(0).querySelector('.tools button[aria-pressed="true"]')?.dataset.tool} vs ${
+    document.querySelector('#globalTools button[aria-pressed="true"]')?.dataset.tool
+  }`
+);
+
+// A click on the *global* row arms the tool on the active pane -- that is the
+// whole point of a second toolbar: two surfaces, one state.
+globalPick("rect");
+check(
+  "picking a tool on the global row arms it on the active pane",
+  paneNode(0).querySelector('.tools button[data-tool="rect"]').getAttribute("aria-pressed") ===
+    "true",
+  paneNode(0).querySelector('.tools button[data-tool="rect"]').getAttribute("aria-pressed")
+);
+
+// A three-anchor tool takes three clicks, and the stored row carries the third
+// anchor the engine resolved. This is the parity gesture end to end.
+const drawingsBeforeThree = backend.drawings.length;
+pickTool("triangle");
+pointer("pointerdown", 300, 200);
+pointer("pointerup", 300, 200);
+pointer("pointermove", 420, 200);
+pointer("pointerdown", 420, 200);
+pointer("pointerup", 420, 200);
+pointer("pointermove", 360, 120);
+pointer("pointerdown", 360, 120);
+pointer("pointerup", 360, 120);
+await settle();
+await settle();
+const triangle = backend.drawings[backend.drawings.length - 1];
+check(
+  "a three-anchor tool stores exactly one drawing after three clicks",
+  backend.drawings.length === drawingsBeforeThree + 1,
+  `${backend.drawings.length - drawingsBeforeThree} stored`
+);
+check(
+  "and the stored row carries all three anchors, absolute",
+  triangle &&
+    triangle.a1?.unit === "absolute" &&
+    triangle.a2?.unit === "absolute" &&
+    triangle.a3?.unit === "absolute" &&
+    triangle.a1.time !== triangle.a2.time &&
+    triangle.a2.time !== triangle.a3.time,
+  triangle && JSON.stringify([triangle.a1, triangle.a2, triangle.a3])
+);
+
+// A two-anchor drag must still work -- and must not send a third anchor at
+// all, because the engine refuses an `a3` on a kind that does not take one.
+const drawingsBeforeTwo = backend.drawings.length;
+pickTool("trendline");
+pointer("pointerdown", 180, 280);
+pointer("pointermove", 520, 130);
+pointer("pointerup", 520, 130);
+await settle();
+await settle();
+const trendline = backend.drawings[backend.drawings.length - 1];
+check(
+  "a two-anchor drag still stores, with no third anchor sent",
+  backend.drawings.length === drawingsBeforeTwo + 1 &&
+    trendline && trendline.a3 == null,
+  trendline && `a3: ${JSON.stringify(trendline.a3)}`
+);
+
+// Back to a neutral state for whatever reads the page after this file.
+pointer("pointerdown", 400, 300, 0);
+pointer("pointerup", 400, 300, 0);
+await settle();
 
 // --- nothing threw -----------------------------------------------------------
 //

@@ -30,6 +30,7 @@
 #![deny(missing_docs)]
 
 pub mod agent;
+pub mod agent_memory;
 pub mod chart_context;
 pub mod error;
 pub mod llm_client;
@@ -44,8 +45,12 @@ pub mod user_drawings;
 
 pub use agent::draft_strategy_spec;
 pub use agent::{
-    Agent, AgentAnswer, AgentConfig, AskRequest, DrawingsContext, GeneratedStrategy,
+    Agent, AgentAnswer, AgentConfig, AskRequest, DrawingsContext, GeneratedStrategy, MemoryContext,
     StrategyRequest, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
+};
+pub use agent_memory::{
+    facts_from_thesis, render_recall, MemoryRow, MemorySource, MemoryWriter, NewMemory,
+    MAX_CONTENT_CHARS, RECALL_LIMIT,
 };
 pub use chart_context::{
     ChartContext, ChartScreenshot, DrawnLevel, MAX_DRAWINGS, MAX_SCREENSHOT_BYTES,

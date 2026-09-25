@@ -65,8 +65,6 @@
 //! was built for opens one, and a multi-category deployment opens three
 //! collectors rather than teaching one collector to multiplex.
 
-
-
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -331,13 +329,17 @@ fn parse_levels(levels: &[(String, String)], side: &str) -> Result<Vec<(f64, f64
             .parse()
             .map_err(|e| format!("{side} price `{price}` is not a number: {e}"))?;
         if !price.is_finite() || price <= 0.0 {
-            return Err(format!("{side} price `{price}` is not a positive finite number"));
+            return Err(format!(
+                "{side} price `{price}` is not a positive finite number"
+            ));
         }
         let quantity: f64 = qty
             .parse()
             .map_err(|e| format!("{side} qty `{qty}` is not a number: {e}"))?;
         if !quantity.is_finite() || quantity < 0.0 {
-            return Err(format!("{side} qty `{quantity}` is not a non-negative number"));
+            return Err(format!(
+                "{side} qty `{quantity}` is not a non-negative number"
+            ));
         }
         out.push((price, quantity));
     }
@@ -388,8 +390,10 @@ impl WireCodec for BybitCodec {
             return None;
         }
 
-        self.next_ping_ms
-            .store(now_ms + self.ping_interval.as_millis() as u64, Ordering::Relaxed);
+        self.next_ping_ms.store(
+            now_ms + self.ping_interval.as_millis() as u64,
+            Ordering::Relaxed,
+        );
         Some(r#"{"op":"ping"}"#.to_string())
     }
 
@@ -527,7 +531,8 @@ mod tests {
     const TRADE_FRAME: &str = r#"{"topic":"publicTrade.BTCUSDT","ts":1789875217841,"type":"snapshot","data":[{"BT":false,"RPI":false,"S":"Sell","T":1789875217840,"i":"2290000001211680903","p":"80413.3","s":"BTCUSDT","seq":114263055846,"v":"0.06"},{"BT":false,"RPI":false,"S":"Buy","T":1789875217840,"i":"2290000001211680919","p":"80413.4","s":"BTCUSDT","seq":114263055850,"v":"0.004904"}]}"#;
 
     /// The pong Bybit answers a `{"op":"ping"}` with.
-    const PONG: &str = r#"{"success":true,"ret_msg":"pong","conn_id":"d9avt8sb86tr31f6ej90-d0qm8","op":"pong"}"#;
+    const PONG: &str =
+        r#"{"success":true,"ret_msg":"pong","conn_id":"d9avt8sb86tr31f6ej90-d0qm8","op":"pong"}"#;
 
     fn codec() -> BybitCodec {
         BybitCodec::spot()
@@ -644,7 +649,10 @@ mod tests {
     #[test]
     fn an_empty_side_is_an_empty_change_not_a_clearing_instruction() {
         let (_, _, bids, asks) = decode_delta(BOOK_DELTA);
-        assert!(asks.is_empty(), "the ask side was empty and must stay empty");
+        assert!(
+            asks.is_empty(),
+            "the ask side was empty and must stay empty"
+        );
         assert!(!bids.is_empty(), "and the bid side carries the change");
     }
 
@@ -666,7 +674,11 @@ mod tests {
         let Incoming::Trades(trades) = *incoming else {
             panic!("expected trades");
         };
-        assert_eq!(trades.len(), 2, "both trades in the frame, not just the first");
+        assert_eq!(
+            trades.len(),
+            2,
+            "both trades in the frame, not just the first"
+        );
 
         assert_eq!(trades[0].trade_id, 2_290_000_001_211_680_903);
         assert!((trades[0].price - 80413.3).abs() < 1e-9);
@@ -901,4 +913,3 @@ mod tests {
         (diff.symbol, diff.final_update_id, diff.bids, diff.asks)
     }
 }
-

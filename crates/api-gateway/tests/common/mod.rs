@@ -136,7 +136,16 @@ impl Harness {
             FeedMode::Off,
             std::time::Duration::from_millis(100),
         ));
-        let limits = Arc::new(RateLimiter::new(RateLimit::default()));
+        // The default limit's shape (burst 5), but refilling ~never: a test
+        // whose subject is the burst boundary must not race the refill. The
+        // real 0.5 tokens/s refilled a whole token across this suite's slow
+        // database windows, and the 6th request then passed instead of reading
+        // 429 -- a flake that looked like a gateway bug. Production keeps its
+        // refill; only the harness needs the boundary to be load-bearing.
+        let limits = Arc::new(RateLimiter::new(RateLimit {
+            per_minute: 1.0,
+            burst: RateLimit::default().burst,
+        }));
         let metrics = Arc::new(Registry::new());
         let state = AppState {
             db: Some(Arc::new(database.clone())),
@@ -144,6 +153,9 @@ impl Harness {
             skills: Arc::new(ai_agent::SkillLibrary::new()),
             auth: secret.map(|secret| Arc::new(AuthConfig::new(secret))),
             bots: Arc::clone(&supervisor),
+            // The same lanes the supervisor's feed watchers write into, so a
+            // test that publishes candles sees its events on both surfaces.
+            events: supervisor.events(),
             // Nothing in a test may reach a venue. Port 1 refuses instantly, so
             // a route that tries to fetch history fails fast rather than
             // hanging -- and `GET /candles` degrades to what RAM can answer.
