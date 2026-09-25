@@ -33,6 +33,9 @@ use crate::sigv4;
 pub const ENV_REGION: &str = "AWS_BEDROCK_REGION";
 /// Environment variable read for the model id.
 pub const ENV_MODEL_ID: &str = "AWS_BEDROCK_MODEL_ID";
+/// Environment variable read for the vision model id, when the deployment
+/// splits coding and vision across two Bedrock models.
+pub const ENV_VISION_MODEL_ID: &str = "AWS_BEDROCK_VISION_MODEL_ID";
 
 /// Configuration for the Bedrock provider.
 #[derive(Debug, Clone)]
@@ -40,7 +43,23 @@ pub struct BedrockConfig {
     /// Region, e.g. `us-east-1`.
     pub region: String,
     /// Model id as Bedrock spells it, e.g. `qwen.qwen3-coder-next`.
+    ///
+    /// This is the deployment's **primary** model: every text-only turn goes
+    /// here, which is why a coding-tuned id works well even though the agent
+    /// also answers prose questions.
     pub model_id: String,
+    /// The model that serves requests carrying **image** blocks, e.g.
+    /// `moonshotai.kimi-k2.5`. `None` sends everything to [`Self::model_id`].
+    ///
+    /// Why this exists: the primary id is chosen for code generation and tool
+    /// calling, and some of those models reject image blocks outright -- the
+    /// question that attached a chart screenshot then fails with a 400 after
+    /// the whole ladder read, which is the most expensive possible place to
+    /// learn the model cannot see. Routing on the request's own shape (does
+    /// any message carry an image?) needs no per-callsite plumbing: the same
+    /// [`LlmClient`] serves both, and a deployment that configures one
+    /// multimodal model for everything simply leaves this unset.
+    pub vision_model_id: Option<String>,
     /// Access key id.
     pub access_key: String,
     /// Secret access key.
@@ -68,10 +87,15 @@ impl BedrockConfig {
         let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY")
             .map_err(|_| AgentError::NotConfigured("AWS_SECRET_ACCESS_KEY is not set".into()))?;
         let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
+        let vision_model_id = std::env::var(ENV_VISION_MODEL_ID)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
 
         Ok(Self {
             region,
             model_id,
+            vision_model_id,
             access_key,
             secret_key,
             session_token,
@@ -115,17 +139,44 @@ impl BedrockClient {
         &self.config.model_id
     }
 
-    /// `(url, host, path)`.
+    /// The model id this request should run on.
+    ///
+    /// A request whose conversation carries **any** image block goes to the
+    /// vision model when one is configured; everything else stays on the
+    /// primary. The decision rides the request itself, so a follow-up turn in
+    /// a screenshot conversation keeps routing to the same model (the image
+    /// stays in the history) and a purely textual turn -- an indicator
+    /// generation, a retry after a tool error -- keeps the coding model. A
+    /// conversation that *started* with an image therefore never mid-stream
+    /// swaps models either: the image blocks persist across its turns.
+    ///
+    /// With no vision model configured this is always the primary, which is
+    /// the pre-routing behavior exactly.
+    fn model_for(&self, request: &LlmRequest) -> &str {
+        let has_image = request.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Image { .. }))
+        });
+        match has_image {
+            true => self
+                .config
+                .vision_model_id
+                .as_deref()
+                .unwrap_or(&self.config.model_id),
+            false => &self.config.model_id,
+        }
+    }
+
+    /// `(url, host, path)` for one model id.
     ///
     /// The path is built **once** and used for both the request URL and the
     /// SigV4 canonical URI. SigV4 signs the path the server sees; if the two
     /// differ by so much as one percent-escape the result is a 403 that looks
     /// like a credentials problem and costs an afternoon to diagnose.
-    fn endpoint(&self) -> (String, String, String) {
-        let path = format!(
-            "/model/{}/converse",
-            sigv4::uri_encode(&self.config.model_id, false)
-        );
+    fn endpoint_for(&self, model_id: &str) -> (String, String, String) {
+        let path = format!("/model/{}/converse", sigv4::uri_encode(model_id, false));
         let host = format!("bedrock-runtime.{}.amazonaws.com", self.config.region);
         (format!("https://{host}{path}"), host, path)
     }
@@ -135,7 +186,7 @@ impl BedrockClient {
 impl LlmClient for BedrockClient {
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, AgentError> {
         let body = serde_json::to_vec(&WireRequest::from(&request))?;
-        let (url, host, path) = self.endpoint();
+        let (url, host, path) = self.endpoint_for(self.model_for(&request));
 
         let credentials = sigv4::Credentials {
             access_key: self.config.access_key.clone(),
@@ -168,9 +219,12 @@ impl LlmClient for BedrockClient {
             request_builder = request_builder.header("x-amz-security-token", token);
         }
 
+        // Named per request, not from the config: with vision routing on, the
+        // two models alternate inside one conversation and a log that only
+        // ever named the primary would make the vision turns invisible.
         debug!(
             target: "ai_agent",
-            model = %self.config.model_id,
+            model = self.model_for(&request),
             bytes = body.len(),
             "bedrock converse"
         );
@@ -597,16 +651,84 @@ mod tests {
         let client = BedrockClient::new(BedrockConfig {
             region: "us-east-1".into(),
             model_id: "anthropic.claude-3-5-sonnet-20240620-v1:0".into(),
+            vision_model_id: None,
             access_key: "a".into(),
             secret_key: "b".into(),
             session_token: None,
             timeout_secs: 5,
         })
         .unwrap();
-        let (url, host, path) = client.endpoint();
+        let (url, host, path) = client.endpoint_for(&client.config.model_id);
         assert_eq!(host, "bedrock-runtime.us-east-1.amazonaws.com");
         assert!(url.contains("/model/anthropic.claude-3-5-sonnet-20240620-v1%3A0/converse"));
         // The signed path and the requested path are the same string.
         assert!(url.ends_with(&path));
+    }
+
+    fn routing_client(vision: Option<&str>) -> BedrockClient {
+        BedrockClient::new(BedrockConfig {
+            region: "us-east-1".into(),
+            model_id: "qwen.qwen3-coder-next".into(),
+            vision_model_id: vision.map(str::to_string),
+            access_key: "a".into(),
+            secret_key: "b".into(),
+            session_token: None,
+            timeout_secs: 5,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_text_only_request_stays_on_the_primary_model() {
+        let client = routing_client(Some("moonshotai.kimi-k2.5"));
+        let request = LlmRequest::new(vec![Message::user("what closed above the high?")]);
+        assert_eq!(client.model_for(&request), "qwen.qwen3-coder-next");
+    }
+
+    #[test]
+    fn a_request_carrying_an_image_routes_to_the_vision_model() {
+        let client = routing_client(Some("moonshotai.kimi-k2.5"));
+        let request = LlmRequest::new(vec![Message::user_with_image(
+            "read this chart",
+            "image/png",
+            "aGk=",
+        )]);
+        assert_eq!(client.model_for(&request), "moonshotai.kimi-k2.5");
+    }
+
+    #[test]
+    fn an_image_anywhere_in_the_history_routes_to_the_vision_model() {
+        // The screenshot goes out once and then rides the conversation: the
+        // follow-up turns must keep the same model, or one conversation would
+        // swap brains between turns.
+        let client = routing_client(Some("moonshotai.kimi-k2.5"));
+        let request = LlmRequest::new(vec![
+            Message::user_with_image("read this chart", "image/png", "aGk="),
+            Message::assistant("price is at the range high"),
+            Message::user("and now?"),
+        ]);
+        assert_eq!(client.model_for(&request), "moonshotai.kimi-k2.5");
+    }
+
+    #[test]
+    fn without_a_vision_model_everything_stays_on_the_primary() {
+        let client = routing_client(None);
+        let request = LlmRequest::new(vec![Message::user_with_image(
+            "read this chart",
+            "image/png",
+            "aGk=",
+        )]);
+        assert_eq!(client.model_for(&request), "qwen.qwen3-coder-next");
+    }
+
+    #[test]
+    fn the_vision_model_id_is_uri_encoded_into_its_own_endpoint() {
+        let client = routing_client(Some("moonshotai.kimi-k2.5"));
+        let (url, _, path) = client.endpoint_for("moonshotai.kimi-k2.5");
+        assert!(url.contains("/model/moonshotai.kimi-k2.5/converse"));
+        // No colons here, but the encoding contract is the same one the
+        // primary model's path already proves -- and this pins that vision
+        // requests sign the path they actually call.
+        assert!(url.ends_with(path.as_str()));
     }
 }

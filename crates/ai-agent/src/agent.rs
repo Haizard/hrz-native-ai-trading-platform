@@ -846,13 +846,27 @@ impl Agent {
                 continue;
             };
 
-            let yaml = call.input["yaml"]
-                .as_str()
-                .ok_or_else(|| AgentError::InvalidToolArgs {
-                    tool: DRAFT_STRATEGY.into(),
-                    reason: "`yaml` must be a string".into(),
-                })?
-                .to_string();
+            // A wrong-typed `yaml` (the model sometimes hands back an object
+            // or a number) is **retried, not fatal**: it is exactly the kind
+            // of first-pass mistake the attempt loop exists to correct, and
+            // aborting here would burn all of `max_attempts`' promise on a
+            // one-line complaint the next turn could fix. The error text goes
+            // back the same way a validator rejection does, so the model sees
+            // one consistent correction channel.
+            let Some(yaml) = call.input["yaml"].as_str().map(str::to_string) else {
+                repaired_errors.push("`yaml` must be a string".into());
+                messages.push(response.message.clone());
+                messages.push(Message::tool_results(vec![ToolResult {
+                    tool_use_id: call.id.clone(),
+                    content: json!({
+                        "valid": false,
+                        "error": "`yaml` must be a string -- send the strategy document itself, not an object.",
+                        "instruction": "Send the whole document as the string value of `yaml` and call draft_strategy again.",
+                    }),
+                    is_error: true,
+                }]));
+                continue;
+            };
 
             // The validator checks the document; it cannot check that the
             // document is the one that was asked for. A live draft came back

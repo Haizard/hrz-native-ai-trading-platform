@@ -318,6 +318,11 @@
     border-bottom: 1px solid var(--line);
     background: var(--panel, #171b26);
   }
+  /* The wrapper the toolbar and the charts share: a column inside `main`'s
+     row, so the toolbar gets a strip across the top and the charts get
+     everything that is left -- the same room they had before the toolbar
+     existed. Without it the toolbar is a row sibling and the charts shrink. */
+  #chartColumn { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .globalTools[hidden] { display: none; }
   .globalTools button { padding: 2px 8px; font-size: 11px; color: var(--muted); }
   .globalTools button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
@@ -972,8 +977,15 @@
   -->
   <!-- Deliberately *not* class="tools": every pane-scoped lookup of `.tools`
        must resolve to a pane's own row, never to this one. -->
-  <div id="globalTools" class="globalTools" role="toolbar" aria-label="Drawing tools for the active chart" hidden></div>
-  <div id="charts">
+  <!-- The toolbar and the chart grid live in a **column** wrapper. `main` is a
+       row, and the toolbar placed straight into it sat *beside* the charts as a
+       sibling — taking a share of the row's width and squeezing the charts to a
+       sliver (a 619px toolbar left a 219px chart). The strip's own CSS comment
+       says "above the chart grid"; the wrapper is what makes that true in the
+       DOM and not only in prose. -->
+  <div id="chartColumn">
+    <div id="globalTools" class="globalTools" role="toolbar" aria-label="Drawing tools for the active chart" hidden></div>
+    <div id="charts">
     <section class="chartPane">
       <!--
         The pane's own chrome is deliberately tiny: what this chart is (filled
@@ -1133,6 +1145,7 @@
       <div class="footprintStats" hidden></div>
       <div class="chartNote"></div>
     </section>
+  </div>
   </div>
 
   <!-- Width splitter for the aside (AI chat / thesis / scan); drag logic in `wireSplitters`. -->
