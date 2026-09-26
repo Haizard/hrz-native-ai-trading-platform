@@ -580,7 +580,7 @@ impl Agent {
         // honestly rather than inventing a base rate. The drawings source is
         // the same shape: absent unless the host attached one, and the tool
         // says so rather than implying the chart is bare.
-        let mut ctx = ToolContext::new(data).with_config(self.config.market_state);
+        let mut ctx = ToolContext::new(data).with_config(self.config.market_state.clone());
         // The memory tools get the same grant the loop already holds, so the
         // model's explicit `remember` cannot write where the auto-store could
         // not: one identity, one door.
@@ -1315,8 +1315,21 @@ fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Sk
          5. **String-to-bool and bool-to-string comparisons always fail.** You \
            cannot compare `trend == true` or `absorption_detected == \\\"yes\\\"`.\n\n",
     );
-    out.push_str("String fields: trend, divergence, market_structure.trend, market_structure.break, market_structure.break_direction, liquidity_swept\n");
-    out.push_str("Bool fields: absorption_detected, absorption_bullish, absorption_bearish, imbalance_detected, imbalance_buy, imbalance_sell, imbalance_stacked, in_position\n\n");
+    out.push_str("String fields: trend, divergence, market_structure.trend, market_structure.break, market_structure.break_direction, liquidity_swept, session.kind (asia/london/new_york/custom, absent off-session), rsi_divergence.kind (bullish/bearish, absent when none)\n");
+    out.push_str("Bool fields: absorption_detected, absorption_bullish, absorption_bearish, imbalance_detected, imbalance_buy, imbalance_sell, imbalance_stacked, rsi_divergence.detected, in_position\n\n");
+    out.push_str(
+        "Session fields (session.kind, session.vwap, session.open, session.delta) are ABSENT \
+         outside a session window, and absent makes any comparison false -- so \
+         `session.kind == \"london\"` is a genuine killzone gate, not a default. \
+         The default windows are Asia 23:00-02:00 UTC, London 07:00-10:00 UTC, \
+         New York 12:00-15:00 UTC. `session.vwap`/`session.open`/`session.delta` \
+         restart at every session boundary. `rsi_divergence.detected` is true when \
+         the lookback contains an RSI/price divergence; read `rsi_divergence.kind` \
+         to gate on its direction. `volume_score` is the newest candle's \
+         volume-weighted aggression in -1..=1 (buy positive); it is 0.0 for an \
+         average-volume candle and absent during warm-up, so use e.g. \
+         `volume_score > 0.4` for conviction, never `volume_score != 0`.\n\n",
+    );
 
     if let Some(skill) = skill {
         out.push_str("\n## Skill to encode\n");

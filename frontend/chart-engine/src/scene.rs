@@ -243,6 +243,17 @@ pub struct Request {
     /// cannot drift from the chart's own time and price transforms.
     #[serde(default)]
     pub indicator: Option<IndicatorOutput>,
+    /// A generated indicator's **live definition**: the document name and the
+    /// concepts to detect on the request's own candles, every frame.
+    ///
+    /// Where [`Request::indicator`] positions a one-time preview snapshot, this
+    /// re-runs detection on whatever series the request carries -- any symbol,
+    /// any timeframe, the newest bar included. That is what makes a generated
+    /// indicator portable and continuously current: the chart owns the
+    /// arithmetic (docs/14's rule), the request only says *what* to detect.
+    /// Absent means the pane shows no generated indicator.
+    #[serde(default)]
+    pub live_indicator: Option<LiveIndicator>,
     /// Whether the window should stay pinned to the series' newest bar.
     ///
     /// A live chart appends bars while the user is reading; a window resolved
@@ -299,11 +310,29 @@ impl Default for Request {
             drawings: Vec::new(),
             overlays: Vec::new(),
             indicator: None,
+            live_indicator: None,
             follow: false,
             last_price: None,
             snap: false,
         }
     }
+}
+
+/// A generated indicator attached to a chart **live**: name plus the concepts
+/// to detect on the request's own candles, every frame, any symbol, any
+/// timeframe, until the shell stops sending it.
+///
+/// This is the open vocabulary: whatever the generator chat produces from a
+/// client's description is data here, not code -- a new idea needs no engine
+/// edit, only a document whose concepts the platform's detector already
+/// understands. A concept that fails validation is skipped with its reason in
+/// the scene note rather than half-drawn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveIndicator {
+    /// Display name, shown on the chart chip.
+    pub name: String,
+    /// The document's concepts, detected on the request's candles each frame.
+    pub concepts: Vec<Concept>,
 }
 
 /// One candle, already positioned.
@@ -1146,6 +1175,41 @@ pub fn build(request: &Request) -> Scene {
                 &mut scene.note,
                 format!("generated indicator is not drawn: {reason}"),
             ),
+        }
+    }
+
+    // The live layer: re-detect the attached indicator's concepts on **this
+    // request's candles** -- any symbol, any timeframe, the forming bar
+    // included -- so the drawing is always current and travels with the chart
+    // instead of being frozen to the window it was generated on.
+    if let Some(live) = request.live_indicator.as_ref() {
+        let mut output = crate::indicator::IndicatorOutput {
+            revision_id: format!("live:{}", live.name),
+            name: Some(live.name.clone()),
+            concepts: live.concepts.clone(),
+            ..crate::indicator::IndicatorOutput::default()
+        };
+        let before = live
+            .concepts
+            .iter()
+            .filter(|concept| analytics_core::concepts::validate(concept).is_err())
+            .count();
+        output.refresh_from_concepts(&request.candles);
+        match indicator_parts(&output, &frame) {
+            Ok(indicator) => scene.indicator = Some(indicator),
+            Err(reason) => add_note(
+                &mut scene.note,
+                format!("live indicator `{}` is not drawn: {reason}", live.name),
+            ),
+        }
+        if before > 0 {
+            add_note(
+                &mut scene.note,
+                format!(
+                    "{before} of `{}`'s concepts were refused by the detector and are not drawn",
+                    live.name
+                ),
+            );
         }
     }
 
@@ -4516,6 +4580,8 @@ mod tests {
         let second = 40 * 300_000_000_000;
         let output = IndicatorOutput {
             revision_id: "revision-7".into(),
+            name: None,
+            concepts: Vec::new(),
             evidence: vec![
                 Evidence {
                     id: "sweep".into(),

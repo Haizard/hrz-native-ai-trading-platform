@@ -241,6 +241,33 @@ impl MarketContext {
             }
             Field::ImbalanceNetVolume => FieldValue::Num(state.net_imbalance_volume()),
 
+            // Session fields are absent, not "none", off-session -- the same
+            // rule as an unbuilt VWAP: a comparison against them must be
+            // false, not true against a fabricated zero or name.
+            Field::SessionKindField => state
+                .session
+                .map_or(FieldValue::Absent, |s| FieldValue::Str(s.name())),
+            Field::SessionVwap => state
+                .session_vwap
+                .map_or(FieldValue::Absent, FieldValue::Num),
+            Field::SessionOpen => state
+                .session_open
+                .map_or(FieldValue::Absent, FieldValue::Num),
+            Field::SessionDelta => state
+                .session_delta
+                .map_or(FieldValue::Absent, FieldValue::Num),
+            Field::RsiDivergenceDetected => {
+                FieldValue::Bool(state.rsi_divergence.is_some())
+            }
+            Field::RsiDivergenceKindField => state
+                .rsi_divergence
+                .map_or(FieldValue::Absent, |d| {
+                    FieldValue::Str(d.direction.name())
+                }),
+            Field::VolumeScore => state
+                .volume_score
+                .map_or(FieldValue::Absent, FieldValue::Num),
+
             Field::LiquiditySwept => FieldValue::Str(swept_side(view)),
             Field::LiquiditySweptLevel => match swept_side(view) {
                 "buy_side" => {

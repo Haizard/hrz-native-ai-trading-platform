@@ -32,14 +32,20 @@ use crate::liquidity::{
 use crate::market_structure::{
     detect_market_structure, MarketStructure, StructureBreak, StructureConfig, Trend,
 };
+use crate::rsi_divergence::{latest_rsi_divergence, RsiDivergence, RsiDivergenceConfig};
+use crate::sessions::{SessionEngine, SessionKind, SessionWindow};
 use crate::types::{Candle, Trade};
+use crate::volume_score::{latest_volume_score, VolumeScoreConfig};
 use crate::volume_profile::{
     calculate_volume_profile, calculate_volume_profile_from_candles, VolumeProfile,
 };
 use crate::vwap::calculate_vwap_series;
 
 /// Tuning for [`build_market_state`].
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// Not `Copy` since the session windows became part of the tuning: a `Vec`
+/// cannot be copied, and cloning a config is a rare, cold-path event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarketStateConfig {
     /// Price bucket width for the volume profile and footprints.
     pub bucket_size: f64,
@@ -55,6 +61,12 @@ pub struct MarketStateConfig {
     /// 200-candle window can break a dozen levels, and the tenth-oldest break
     /// costs tokens to say nothing the newest one does not.
     pub structure_breaks: usize,
+    /// RSI/price divergence tuning.
+    pub rsi_divergence: RsiDivergenceConfig,
+    /// Volume-weighted aggression score tuning.
+    pub volume_score: VolumeScoreConfig,
+    /// The session windows a candle is matched against, earliest wins.
+    pub session_windows: Vec<SessionWindow>,
     /// Swing-detection tuning.
     pub structure: StructureConfig,
     /// Imbalance tuning.
@@ -73,6 +85,9 @@ impl Default for MarketStateConfig {
             divergence_lookback: 20,
             footprint_candles: 200,
             structure_breaks: 8,
+            rsi_divergence: RsiDivergenceConfig::default(),
+            volume_score: VolumeScoreConfig::default(),
+            session_windows: SessionWindow::defaults().to_vec(),
             structure: StructureConfig::default(),
             imbalance: ImbalanceConfig::default(),
             absorption: AbsorptionConfig::default(),
@@ -152,6 +167,30 @@ pub struct MarketState {
     /// candle slice the detector was handed, and by the time anything reads the
     /// state that slice is gone. `None` when nothing has broken.
     pub bars_since_break: Option<usize>,
+    /// The session the newest candle belongs to, if any.
+    ///
+    /// Crypto trades 24/7, so `None` is off-session -- a fact, not a failure.
+    /// The three aggregates below reset at every session boundary, which is
+    /// what makes today's London VWAP comparable to yesterday's.
+    #[serde(default)]
+    pub session: Option<SessionKind>,
+    /// VWAP accumulated within the current session; `None` off-session or
+    /// before any volume traded.
+    #[serde(default)]
+    pub session_vwap: Option<f64>,
+    /// The session's first open; `None` off-session.
+    #[serde(default)]
+    pub session_open: Option<f64>,
+    /// The session's cumulative delta.
+    #[serde(default)]
+    pub session_delta: Option<f64>,
+    /// The most recent RSI/price divergence in the lookback window.
+    #[serde(default)]
+    pub rsi_divergence: Option<RsiDivergence>,
+    /// The newest candle's volume-weighted aggression score, `[-1, 1]`.
+    /// `None` while the volume baseline is still warming up.
+    #[serde(default)]
+    pub volume_score: Option<f64>,
 }
 
 impl MarketState {
@@ -325,6 +364,15 @@ pub fn build_market_state(
     }
     let absorption = detect_absorption(&footprints, config.absorption);
 
+    // Session aggregates walk the whole window so the values describe *this*
+    // session so far, not the last candle's slice of it.
+    let mut session_engine = SessionEngine::new(config.session_windows.clone());
+    for candle in candles {
+        session_engine.update(candle);
+    }
+    let rsi_divergence = latest_rsi_divergence(candles, &config.rsi_divergence);
+    let volume_score = latest_volume_score(candles, &config.volume_score);
+
     Some(assemble(
         last,
         cvd,
@@ -336,6 +384,9 @@ pub fn build_market_state(
         imbalances,
         absorption,
         liquidity,
+        session_engine,
+        rsi_divergence,
+        volume_score,
     ))
 }
 
@@ -362,6 +413,7 @@ fn recent_footprints(
 
 /// Assemble the state. Split out so the public function reads as a recipe.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn assemble(
     last: &Candle,
     cvd: f64,
@@ -373,6 +425,9 @@ fn assemble(
     imbalances: Vec<ImbalanceEvent>,
     absorption: Vec<AbsorptionEvent>,
     liquidity: Vec<LiquidityLevel>,
+    session: SessionEngine,
+    rsi_divergence: Option<RsiDivergence>,
+    volume_score: Option<f64>,
 ) -> MarketState {
     // The newest break, and how far back it is. Computed here because this is
     // the last frame that knows how long the candle slice was; `index` alone
@@ -414,6 +469,14 @@ fn assemble(
         swing_lows: structure.swing_lows.clone(),
         breaks,
         bars_since_break,
+        session: session.session(),
+        session_vwap: session.vwap(),
+        session_open: session.open(),
+        session_delta: session
+            .session()
+            .map(|_| session.delta()),
+        rsi_divergence,
+        volume_score,
     }
 }
 

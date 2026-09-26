@@ -276,7 +276,7 @@ pub fn replay<S: Strategy>(
     let rolling = RollingConfig::new(
         config.runtime.max_history,
         config.state_window,
-        config.state,
+        config.state.clone(),
     );
     let mut ladder = RollingLadder::new(&input.timeframes);
     let mut cursors: BTreeMap<String, SeriesCursor> = input

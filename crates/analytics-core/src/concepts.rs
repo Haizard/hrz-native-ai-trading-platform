@@ -56,7 +56,7 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::AnalyticsError;
-use crate::regions::{mitigation, Region, RegionOrigin};
+use crate::regions::{mitigation_and_death, Region, RegionOrigin};
 use crate::types::{Candle, Side};
 
 /// The fewest candles a pattern can span.
@@ -594,6 +594,10 @@ pub fn detect(candles: &[Candle], concept: &Concept) -> Vec<Region> {
             }
         }
 
+        // One walk answers both questions: how much of the band price has
+        // traded back through, and which candle (if any) killed it.
+        let (mitigated, died_at) =
+            mitigation_and_death(candles, end, concept.side, price_low, price_high);
         out.push(Region {
             side: concept.side,
             name: concept.label(),
@@ -604,8 +608,13 @@ pub fn detect(candles: &[Candle], concept: &Concept) -> Vec<Region> {
             // the level is measured from.
             formed_at: window[0].open_time,
             from: window[0].open_time,
-            to,
-            mitigated: mitigation(candles, end, concept.side, price_low, price_high),
+            // A band price has traded all the way through is history: it stops
+            // at the candle that killed it, not at the right edge. Without this
+            // a detector that fires a hundred times in a week paints a hundred
+            // rectangles to `now` and the chart disappears under them.
+            to: died_at.unwrap_or(to),
+            mitigated,
+            mitigated_at: died_at,
             origin: RegionOrigin::Pattern,
         });
     }

@@ -1,6 +1,8 @@
 # Rust build artifacts
 /target/
 **/target/
+# Isolated integration-test target dir (agent scratch, same class as /target/)
+/target-itest/
 
 # Local agent working memory (project-local scratch, not source)
 .workbuddy-ai/

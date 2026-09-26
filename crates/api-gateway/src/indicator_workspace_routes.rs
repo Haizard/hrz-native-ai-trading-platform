@@ -391,7 +391,12 @@ pub async fn create_message(
     .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
     let agent = state.agent.as_ref().ok_or_else(|| ApiError::unavailable("the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID and AWS credentials"))?;
     let memory = workspace.memory.to_string();
-    let description = format!("Workspace: {}. Existing compact memory: {memory}. Client request: {}. IMPORTANT: timeframes.entry MUST be exactly `{}` — no other value is acceptable.", workspace.name, body.content.trim(), workspace.timeframe);
+    let description = format!(
+        "Workspace: {}. Existing compact memory: {memory}. Client request: {}. IMPORTANT: this workspace generates `kind: indicator` detector documents only — the user asked for an indicator, so the document MUST declare `kind: indicator` with `concepts` (the patterns to detect) and MUST NOT have entry/risk blocks; a `kind: strategy` here is a wrong answer even if it validates. IMPORTANT: timeframes.entry MUST be exactly `{}` — no other value is acceptable.",
+        workspace.name,
+        body.content.trim(),
+        workspace.timeframe
+    );
     let mut request =
         ai_agent::StrategyRequest::new(description, &workspace.symbol, &workspace.timeframe);
     request.skill_id = body.skill_id.clone();
@@ -455,6 +460,11 @@ pub async fn create_message(
         Err(reason) => (
             chart_engine::IndicatorOutput {
                 revision_id: revision_tag.clone(),
+                // Even a replay that could not run stores the document's
+                // concepts: the definition is what lets a chart re-detect the
+                // layer live later, on data the generator never saw.
+                name: Some(document.name.clone()),
+                concepts: document.concepts.clone(),
                 evidence: Vec::new(),
                 zones: Vec::new(),
                 markers: Vec::new(),

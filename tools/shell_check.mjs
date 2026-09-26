@@ -2409,8 +2409,18 @@ check(
 // read below has to wait for it, or it inspects the canvas as it was before the
 // answer arrived. That is not a detail of the harness: it is the shape of the
 // feature, and a check that skipped this wait would pass against a shell that
-// never redrew at all.
-await settle();
+// never redrew at all. A fixed 30ms nap raced the rAF whenever the machine was
+// loaded -- the redraw is scheduled, not immediate -- so this waits for the
+// drawn labels themselves, with a generous cap that only a genuinely broken
+// redraw can reach.
+for (
+  let waited = 0;
+  waited < 2000 &&
+  !painted.text.slice(agentTextBefore).some((line) => line.startsWith("stop"));
+  waited += 25
+) {
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
 
 const drawn = painted.text.slice(agentTextBefore);
 const activePaneSymbol = () => paneNode().querySelector(".symbol").value;

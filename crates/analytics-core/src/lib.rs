@@ -58,9 +58,12 @@ pub mod liquidity;
 pub mod market_structure;
 pub mod regions;
 pub mod resample;
+pub mod rsi_divergence;
+pub mod sessions;
 pub mod state;
 pub mod types;
 pub mod volume_profile;
+pub mod volume_score;
 pub mod vwap;
 
 pub use absorption::{detect_absorption, AbsorptionConfig, AbsorptionEvent};
@@ -85,6 +88,14 @@ pub use market_structure::{
     SwingKind, SwingPoint, Trend,
 };
 pub use regions::{detect_zones, Region, RegionKind, ZoneConfig};
+pub use rsi_divergence::{
+    latest_rsi_divergence, rsi_divergences, rsi_series, RsiDivergence, RsiDivergenceConfig,
+    RsiDivergenceKind, DEFAULT_OVERBOUGHT, DEFAULT_OVERSOLD,
+};
+pub use sessions::{
+    minute_of_day, session_of, SessionEngine, SessionKind, SessionWindow, MINUTES_PER_DAY,
+};
+pub use volume_score::{latest_volume_score, volume_scores, VolumeScoreConfig};
 pub use resample::{resample, resample_all};
 pub use state::{build_market_state, MarketState, MarketStateConfig};
 pub use types::{Candle, FootprintCell, OrderBookLevel, OrderBookSnapshot, Side, Timeframe, Trade};

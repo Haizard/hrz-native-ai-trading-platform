@@ -21,6 +21,17 @@ pub const MAX_PRIMITIVES: usize = 500;
 pub struct IndicatorOutput {
     /// Immutable source revision that produced the visuals.
     pub revision_id: String,
+    /// The document's display name, when the caller knows it. Rendered on the
+    /// chart chip; absent leaves the chip to the revision id.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The document's concepts, when the output was produced by a `kind:
+    /// indicator` document. Persisted with the revision so the chart can
+    /// re-detect **live** on any symbol and timeframe instead of replaying a
+    /// frozen snapshot: the concepts are the definition, the coordinates below
+    /// are just the preview the generator saw.
+    #[serde(default)]
+    pub concepts: Vec<analytics_core::concepts::Concept>,
     /// Named evidence nodes. A connector may only reference nodes in this list.
     #[serde(default)]
     pub evidence: Vec<Evidence>,
@@ -134,6 +145,8 @@ impl IndicatorOutput {
             revision_id: revision_id.into(),
             ..Self::default()
         };
+        // `name` and `concepts` stay empty here: a replayed setup layer carries
+        // neither -- it is positioned output, not a document definition.
         for fragment in kept {
             output.evidence.extend(fragment.evidence);
             output.zones.extend(fragment.zones);
@@ -172,6 +185,137 @@ impl IndicatorOutput {
         // Links are dropped wholesale when over budget: a detector layer emits
         // none, and a strategy replay has `from_replay` for its own culling.
         self.links.clear();
+    }
+
+    /// Detect the output's own concepts over `candles` and **replace** the
+    /// evidence/zones/markers with the live result.
+    ///
+    /// This is what makes a generated indicator portable and current: the
+    /// request carries the series (any symbol, any timeframe, the forming bar
+    /// included) and this recomputes the layer from the document's concepts --
+    /// the definition -- rather than replaying coordinates captured once in the
+    /// generator chat. Overlapping same-name bands are merged so a detector
+    /// that fires a hundred times in a week reads as the dozen distinct levels
+    /// it actually is, and the result is culled to the render budget.
+    ///
+    /// A concept that fails validation is skipped (never half-drawn); when
+    /// **every** concept is refused the output is emptied honestly, which the
+    /// caller surfaces as an empty layer rather than a broken chart.
+    pub fn refresh_from_concepts(&mut self, candles: &[analytics_core::types::Candle]) {
+        self.evidence.clear();
+        self.zones.clear();
+        self.markers.clear();
+        self.links.clear();
+
+        // Validated concepts only; refusals are reported by the caller through
+        // the scene note, not drawn half-way.
+        let concepts: Vec<_> = self
+            .concepts
+            .iter()
+            .filter(|concept| analytics_core::concepts::validate(concept).is_ok())
+            .cloned()
+            .collect();
+
+        // One evidence/zone/marker triple per detected band, exactly as the
+        // generator's own preview built them -- same id scheme, same label
+        // source, same mitigation vocabulary -- so a live layer and its stored
+        // preview are the same drawing at different times.
+        let mut next = 0usize;
+        let mut bands: Vec<(analytics_core::regions::Region, usize)> = Vec::new();
+        for concept in &concepts {
+            for region in analytics_core::concepts::detect(candles, concept) {
+                bands.push((region, next));
+                next += 1;
+            }
+        }
+
+        // Merge overlapping bands **per concept slot**: same label, overlapping
+        // in price and time means one level seen through several windows, not
+        // several levels. Different concepts stay separate even when they
+        // overlap -- a bull FVG and a demand band describing the same prices are
+        // two statements, not one.
+        bands.sort_by(|a, b| {
+            a.0.name
+                .cmp(&b.0.name)
+                .then(a.0.from.cmp(&b.0.from))
+        });
+        let mut merged: Vec<analytics_core::regions::Region> = Vec::with_capacity(bands.len());
+        for (region, _) in bands {
+            match merged.last_mut() {
+                // Overlap in both axes, and the same name: extend the band.
+                // The widest price span wins; the longest life wins. A merged
+                // band's mitigation is the *maximum* of its parts -- any part
+                // price fully traded through is a part that is gone.
+                Some(last)
+                    if last.name == region.name
+                        && region.from <= last.to
+                        && region.price_low <= last.price_high
+                        && region.price_high >= last.price_low =>
+                {
+                    last.price_low = last.price_low.min(region.price_low);
+                    last.price_high = last.price_high.max(region.price_high);
+                    last.to = last.to.max(region.to);
+                    last.mitigated = last.mitigated.max(region.mitigated);
+                }
+                _ => merged.push(region),
+            }
+        }
+
+        for (index, region) in merged.iter().enumerate() {
+            let id = format!("live-{index}");
+            self.evidence.push(Evidence {
+                id: id.clone(),
+                event: region.name.clone(),
+                time: region.from,
+                price: region.price_low,
+                explanation: format!(
+                    "detected {} (band {}..{})",
+                    region.name, region.price_low, region.price_high
+                ),
+            });
+            self.zones.push(IndicatorZone {
+                id: id.clone(),
+                start_time: region.from,
+                end_time: region.to,
+                price_low: region.price_low,
+                price_high: region.price_high,
+                label: region.name.clone(),
+                state: region_zone_state(region),
+            });
+            self.markers.push(IndicatorMarker {
+                id: format!("{id}-marker"),
+                evidence_id: id,
+                time: region.from,
+                price: region.price_low,
+                label: region.name.clone(),
+                kind: marker_kind(region.side),
+            });
+        }
+        self.cull_to_budget();
+    }
+}
+
+/// Map a detected region's mitigation to the chart's zone lifecycle.
+///
+/// The same vocabulary the gateway's preview builder applies; living here too
+/// keeps a live layer and its stored preview the same drawing.
+fn region_zone_state(region: &analytics_core::regions::Region) -> ZoneState {
+    if region.mitigated <= 0.0 {
+        ZoneState::Active
+    } else if region.mitigated > 1.0 {
+        ZoneState::Tapped
+    } else if (region.mitigated - 1.0).abs() < 1e-9 {
+        ZoneState::Mitigated
+    } else {
+        ZoneState::Active
+    }
+}
+
+/// Map a detection side to the marker vocabulary the chart paints.
+fn marker_kind(side: analytics_core::types::Side) -> MarkerKind {
+    match side {
+        analytics_core::types::Side::Buy => MarkerKind::Bullish,
+        analytics_core::types::Side::Sell => MarkerKind::Bearish,
     }
 }
 
@@ -514,6 +658,8 @@ mod tests {
     fn output() -> IndicatorOutput {
         IndicatorOutput {
             revision_id: "revision-7".into(),
+            name: None,
+            concepts: Vec::new(),
             evidence: vec![Evidence {
                 id: "sweep".into(),
                 event: "liquidity_sweep".into(),
@@ -704,5 +850,159 @@ mod tests {
         let before = output.evidence.len();
         output.cull_to_budget();
         assert_eq!(output.evidence.len(), before);
+    }
+
+    /// A five-candle series with one fair-value gap in the middle.
+    fn fvg_series() -> Vec<analytics_core::types::Candle> {
+        use analytics_core::types::{Candle, Timeframe};
+        let width = Timeframe::M5.nanos();
+        (0..5)
+            .map(|i| {
+                let (open, close) = match i {
+                    0 => (100.0, 100.2),
+                    1 => (105.0, 106.0),
+                    2 => (107.0, 108.0),
+                    3 => (108.0, 108.5),
+                    // Deliberately not another displacement: low(4) must sit
+                    // below high(2) so the window [2,3,4] is not a third gap
+                    // and the fixture has exactly one merged band.
+                    _ => (108.2, 108.4),
+                };
+                Candle {
+                    symbol: "TEST".into(),
+                    timeframe: Timeframe::M5,
+                    open_time: i * width,
+                    open,
+                    close,
+                    high: open.max(close) + 0.2,
+                    low: open.min(close) - 0.2,
+                    volume: 10.0,
+                    buy_volume: 6.0,
+                    sell_volume: 4.0,
+                }
+            })
+            .collect()
+    }
+
+    /// The FVG concept matching [`fvg_series`], as a document would declare it.
+    fn fvg_concept() -> analytics_core::concepts::Concept {
+        serde_json::from_value(serde_json::json!({
+            "name": "bullish_gap",
+            "label": "fvg",
+            "side": "buy",
+            "window": 3,
+            "lower": { "high": 0 },
+            "upper": { "low": 2 },
+            "require": [{ "left": { "high": 0 }, "op": "below", "right": { "low": 2 } }]
+        }))
+        .expect("the fixture concept must parse")
+    }
+
+    #[test]
+    fn a_live_indicator_is_detected_from_its_concepts() {
+        let mut output = IndicatorOutput {
+            revision_id: "live".into(),
+            name: Some("FVG probe".into()),
+            concepts: vec![fvg_concept()],
+            ..IndicatorOutput::default()
+        };
+        output.refresh_from_concepts(&fvg_series());
+        output
+            .validate()
+            .expect("a live layer must satisfy its own contract");
+        assert_eq!(output.zones.len(), 1, "{:#?}", output.zones);
+        assert_eq!(output.zones[0].label, "fvg");
+        assert_eq!(output.evidence.len(), output.zones.len());
+        assert_eq!(output.markers.len(), output.zones.len());
+        // The marker cites evidence that exists.
+        assert_eq!(output.markers[0].evidence_id, output.evidence[0].id);
+    }
+
+    #[test]
+    fn a_live_indicator_re_detects_when_the_series_changes() {
+        let mut output = IndicatorOutput {
+            revision_id: "live".into(),
+            name: Some("FVG probe".into()),
+            concepts: vec![fvg_concept()],
+            ..IndicatorOutput::default()
+        };
+        output.refresh_from_concepts(&fvg_series());
+        let first_from = output.zones[0].start_time;
+
+        // The same definition over a series shifted a day later -- a different
+        // symbol's data, or a later window -- produces a layer anchored to the
+        // new series, not to the one it was generated on.
+        let shifted: Vec<_> = fvg_series()
+            .into_iter()
+            .map(|mut c| {
+                c.open_time += 24 * 60 * 60 * 1_000_000_000;
+                c
+            })
+            .collect();
+        output.refresh_from_concepts(&shifted);
+        assert_eq!(output.zones.len(), 1);
+        assert_eq!(
+            output.zones[0].start_time,
+            first_from + 24 * 60 * 60 * 1_000_000_000,
+            "the layer must follow the new series, not the old one"
+        );
+    }
+
+    #[test]
+    fn overlapping_same_name_bands_merge_into_one_zone() {
+        // Two back-to-back FVG windows share candles, so their bands overlap
+        // in price and time and describe one extended level.
+        use analytics_core::types::{Candle, Timeframe};
+        let width = Timeframe::M5.nanos();
+        let candles: Vec<Candle> = (0..6)
+            .map(|i| {
+                let (open, close) = match i {
+                    0 => (100.0, 100.2),
+                    1 => (104.0, 106.0),
+                    2 => (107.0, 108.0),
+                    3 => (110.0, 112.0),
+                    4 => (113.0, 114.0),
+                    _ => (114.0, 114.5),
+                };
+                Candle {
+                    symbol: "TEST".into(),
+                    timeframe: Timeframe::M5,
+                    open_time: i * width,
+                    open,
+                    close,
+                    high: open.max(close) + 0.2,
+                    low: open.min(close) - 0.2,
+                    volume: 10.0,
+                    buy_volume: 6.0,
+                    sell_volume: 4.0,
+                }
+            })
+            .collect();
+        let mut output = IndicatorOutput {
+            revision_id: "live".into(),
+            name: Some("merge probe".into()),
+            concepts: vec![fvg_concept()],
+            ..IndicatorOutput::default()
+        };
+        output.refresh_from_concepts(&candles);
+        assert!(
+            output.zones.len() < 3,
+            "overlapping windows must merge, got {} zones: {:#?}",
+            output.zones.len(),
+            output.zones
+        );
+    }
+
+    #[test]
+    fn a_live_indicator_over_a_series_with_no_matches_is_an_honest_empty() {
+        let mut output = IndicatorOutput {
+            revision_id: "live".into(),
+            name: Some("quiet probe".into()),
+            concepts: vec![fvg_concept()],
+            ..IndicatorOutput::default()
+        };
+        output.refresh_from_concepts(&[]);
+        assert!(output.zones.is_empty());
+        assert!(output.validate().is_ok(), "an empty layer is still valid");
     }
 }

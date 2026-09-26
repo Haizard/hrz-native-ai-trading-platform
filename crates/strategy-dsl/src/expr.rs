@@ -190,6 +190,34 @@ pub enum Field {
     ImbalanceStacked,
     /// Signed net imbalance volume.
     ImbalanceNetVolume,
+    /// The session the newest candle belongs to: `asia`, `london`,
+    /// `new_york`, or `custom`. Absent off-session.
+    ///
+    /// A session is a property of the *clock* a candle opened under, which no
+    /// window of candles can recover -- the reason it is a field and not a
+    /// pattern. A killzone gate is `session == "london"`.
+    SessionKindField,
+    /// VWAP accumulated within the current session. Absent off-session.
+    ///
+    /// Separate from [`Field::Vwap`] because the two answer different
+    /// questions: the session one restarts at every boundary, so today's
+    /// London VWAP is comparable to yesterday's.
+    SessionVwap,
+    /// The session's first open. Absent off-session.
+    SessionOpen,
+    /// The session's cumulative delta. Absent off-session.
+    SessionDelta,
+    /// Whether an RSI/price divergence was found in the lookback window.
+    RsiDivergenceDetected,
+    /// Direction of the most recent RSI divergence: `bullish` or `bearish`.
+    /// Absent when there is none.
+    RsiDivergenceKindField,
+    /// The volume-weighted aggression score of the newest candle, `-1..=1`.
+    ///
+    /// `0.0` is neutral; positive is buy pressure weighted by unusual volume.
+    /// Absent while the volume baseline warms up, so a strategy cannot act on
+    /// a number built from a too-short window.
+    VolumeScore,
     /// Direction of the most recent sweep: `buy_side`, `sell_side` or `none`.
     LiquiditySwept,
     /// Price of the level the newest candle swept, on the side
@@ -257,6 +285,13 @@ pub const ALL_FIELDS: &[Field] = &[
     Field::ImbalanceSell,
     Field::ImbalanceStacked,
     Field::ImbalanceNetVolume,
+    Field::SessionKindField,
+    Field::SessionVwap,
+    Field::SessionOpen,
+    Field::SessionDelta,
+    Field::RsiDivergenceDetected,
+    Field::RsiDivergenceKindField,
+    Field::VolumeScore,
     Field::LiquiditySwept,
     Field::LiquiditySweptLevel,
     Field::LiquidityNearestAbove,
@@ -307,6 +342,13 @@ impl Field {
             Self::ImbalanceSell => "imbalance.sell",
             Self::ImbalanceStacked => "imbalance.stacked",
             Self::ImbalanceNetVolume => "imbalance.net_volume",
+            Self::SessionKindField => "session.kind",
+            Self::SessionVwap => "session.vwap",
+            Self::SessionOpen => "session.open",
+            Self::SessionDelta => "session.delta",
+            Self::RsiDivergenceDetected => "rsi_divergence.detected",
+            Self::RsiDivergenceKindField => "rsi_divergence.kind",
+            Self::VolumeScore => "volume_score",
             Self::LiquiditySwept => "liquidity.swept",
             Self::LiquiditySweptLevel => "liquidity.swept_level",
             Self::LiquidityNearestAbove => "liquidity.nearest_above",
@@ -327,6 +369,7 @@ impl Field {
             Self::Trend | Self::Divergence | Self::MarketStructureTrend | Self::LiquiditySwept => {
                 Type::Str
             }
+            Self::SessionKindField | Self::RsiDivergenceKindField => Type::Str,
             // The break's kind and direction are names, not numbers -- `bos`
             // and `choch` are compared as strings the same way `trend` is.
             Self::MarketStructureBreak | Self::MarketStructureBreakDirection => Type::Str,
@@ -337,6 +380,7 @@ impl Field {
             | Self::ImbalanceBuy
             | Self::ImbalanceSell
             | Self::ImbalanceStacked
+            | Self::RsiDivergenceDetected
             | Self::InPosition => Type::Bool,
             _ => Type::Num,
         }

@@ -884,6 +884,12 @@ mod tests {
                 swing_lows: Vec::new(),
                 breaks: Vec::new(),
                 bars_since_break: None,
+                session: None,
+                session_vwap: None,
+                session_open: None,
+                session_delta: None,
+                rsi_divergence: None,
+                volume_score: None,
             },
         }
     }

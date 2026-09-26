@@ -599,6 +599,46 @@ function createChartPane(root, hooks = {}) {
     ctx.fillText(text, x + 4, y + 3.5);
   }
 
+  /// Presentation colour helpers. Both take a colour string the shell chose
+  /// and return another colour string -- there is no market data here, only
+  /// paint, which keeps docs/14's no-arithmetic rule intact.
+  function hexToRgba(hex, alpha) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  }
+
+  function roundRectPath(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  /// A zone label as a pill: dark plate, coloured text, thin coloured rim.
+  /// Bare coloured text disappears over candles; the plate is what makes the
+  /// reference charts' labels readable at every zoom.
+  function drawZoneLabel(ctx, label, x, yTop, h, colour) {
+    const pad = 4;
+    const tw = ctx.measureText(label).width;
+    const boxW = tw + pad * 2;
+    const boxH = 14;
+    // Above the band when the band is too short to hold the pill.
+    const boxY = h >= boxH + 4 ? yTop + 3 : yTop - boxH - 3;
+    ctx.fillStyle = "rgba(11, 14, 20, 0.82)";
+    roundRectPath(ctx, x + 2, boxY, boxW, boxH, 4);
+    ctx.fill();
+    ctx.strokeStyle = hexToRgba(colour, 0.55);
+    ctx.lineWidth = 1;
+    roundRectPath(ctx, x + 2.5, boxY + 0.5, boxW - 1, boxH - 1, 4);
+    ctx.stroke();
+    ctx.fillStyle = colour;
+    ctx.fillText(label, x + 2 + pad, boxY + 10);
+  }
+
   /// Regions -- the chart's only *area* overlay.
   ///
   /// Every coordinate, every price and the label itself come from the engine.
@@ -623,21 +663,31 @@ function createChartPane(root, hooks = {}) {
 
     for (const region of scene.regions) {
       const colour = COLORS[region.name] || COLORS[region.side] || COLORS.text;
-      ctx.globalAlpha = region.fresh ? 0.16 : 0.07;
-      ctx.fillStyle = colour;
+      // Soft vertical fade -- the edge price reacts from reads slightly
+      // stronger, which is where the reference charts' depth comes from.
+      const grad = ctx.createLinearGradient(0, region.y_top, 0, region.y_top + region.h);
+      grad.addColorStop(0, hexToRgba(colour, region.fresh ? 0.26 : 0.10));
+      grad.addColorStop(1, hexToRgba(colour, region.fresh ? 0.08 : 0.03));
+      ctx.fillStyle = grad;
       ctx.fillRect(region.x, region.y_top, region.w, region.h);
-      ctx.globalAlpha = 1;
 
-      // The outline, so a band in a quiet stretch of chart is still visible.
-      ctx.strokeStyle = colour;
-      ctx.globalAlpha = region.fresh ? 0.7 : 0.35;
-      ctx.setLineDash([3, 3]);
-      ctx.strokeRect(region.x + 0.5, region.y_top + 0.5, region.w - 1, region.h - 1);
+      // The outline, pixel-aligned so two adjacent bands never blur. Fresh
+      // bands are solid, spent ones dashed -- the same distinction as before,
+      // drawn cleaner.
+      ctx.strokeStyle = hexToRgba(colour, region.fresh ? 0.8 : 0.3);
+      ctx.lineWidth = 1;
+      ctx.setLineDash(region.fresh ? [] : [3, 3]);
+      ctx.strokeRect(
+        Math.round(region.x) + 0.5,
+        Math.round(region.y_top) + 0.5,
+        Math.max(1, Math.round(region.w) - 1),
+        Math.max(1, Math.round(region.h) - 1)
+      );
       ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
 
-      ctx.fillStyle = colour;
-      ctx.fillText(region.label, region.x + 4, region.y_top + 11);
+      if (region.w > 28) {
+        drawZoneLabel(ctx, region.label, region.x, region.y_top, region.h, colour);
+      }
     }
   }
 
@@ -648,28 +698,61 @@ function createChartPane(root, hooks = {}) {
   function drawIndicatorZones(ctx, scene) {
     const indicator = scene.indicator;
     if (!indicator || !indicator.zones.length) return;
-    const palette = {
-      created: "#a78bfa",
-      active: "#2dd4bf",
-      tapped: "#fbbf24",
-      mitigated: "#94a3b8",
-      invalidated: "#fb7185",
-    };
     ctx.font = "600 10px ui-sans-serif, system-ui";
+    // One hue per concept label, so a four-concept detector reads as four
+    // layers instead of one blur: the label is the concept's own name, which
+    // is stable across every chart the indicator runs on. Deterministic
+    // hashing into a curated palette -- TV-colour-grade, dark-chart friendly.
+    const hues = ["#2dd4bf", "#f472b6", "#60a5fa", "#fbbf24", "#a78bfa", "#fb7185", "#4ade80", "#fb923c"];
+    const labelHue = (label) => {
+      let h = 0;
+      for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) | 0;
+      return hues[Math.abs(h) % hues.length];
+    };
+    // Zones clip to the plot the way the reference charts do: a band that
+    // ran into the price axis is the single loudest " homemade" tell.
+    const plot = scene.plot;
     for (const zone of indicator.zones) {
-      const colour = palette[zone.state] || palette.active;
-      const alpha = zone.state === "mitigated" || zone.state === "invalidated" ? 0.06 : 0.16;
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = colour;
-      ctx.fillRect(zone.x, zone.y_top, zone.w, zone.h);
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = colour;
+      // The concept owns the colour; the lifecycle owns the treatment.
+      const colour = labelHue(zone.label);
+      const spent = zone.state === "mitigated" || zone.state === "invalidated";
+      const x = Math.max(zone.x, plot.x);
+      const right = Math.min(zone.x + zone.w, plot.x + plot.w);
+      const w = right - x;
+      if (w <= 0 || zone.h <= 0) continue;
+
+      // Soft vertical fade instead of a flat fill -- the top edge (the one
+      // price reacts from) carries a little more colour than the far edge.
+      const grad = ctx.createLinearGradient(0, zone.y_top, 0, zone.y_top + zone.h);
+      if (spent) {
+        grad.addColorStop(0, hexToRgba(colour, 0.06));
+        grad.addColorStop(1, hexToRgba(colour, 0.02));
+      } else {
+        grad.addColorStop(0, hexToRgba(colour, 0.28));
+        grad.addColorStop(1, hexToRgba(colour, 0.10));
+      }
+      ctx.fillStyle = grad;
+      ctx.fillRect(x, zone.y_top, w, zone.h);
+
+      // Crisp 1px border on the pixel grid; dashed only for spent history.
+      // Pixel alignment is why two adjacent bands never blur into a stripe.
+      ctx.strokeStyle = hexToRgba(colour, spent ? 0.35 : 0.85);
       ctx.lineWidth = 1;
-      ctx.setLineDash(zone.state === "active" ? [] : [4, 3]);
-      ctx.strokeRect(zone.x + 0.5, zone.y_top + 0.5, zone.w - 1, zone.h - 1);
+      ctx.setLineDash(spent ? [4, 3] : []);
+      ctx.strokeRect(
+        Math.round(x) + 0.5,
+        Math.round(zone.y_top) + 0.5,
+        Math.max(1, Math.round(w) - 1),
+        Math.max(1, Math.round(zone.h) - 1)
+      );
       ctx.setLineDash([]);
-      ctx.fillStyle = colour;
-      ctx.fillText(`${zone.label} · ${zone.state}`, zone.x + 6, zone.y_top + 13);
+
+      // Only zones still in play carry their name, and only where there is
+      // room to say it: a week of detections is mostly history, and the pill
+      // is what keeps the ones that are labelled readable over candles.
+      if (!spent && w > 28) {
+        drawZoneLabel(ctx, zone.label, x, zone.y_top, zone.h, colour);
+      }
     }
   }
 
@@ -696,14 +779,59 @@ function createChartPane(root, hooks = {}) {
     }
     ctx.setLineDash([]);
     ctx.font = "600 10px ui-sans-serif, system-ui";
+    // Markers take their zone's concept hue (same hash), falling back to the
+    // side palette when a marker has no zone -- a bare sweep marker from a
+    // replay-style output.
+    const hues = ["#2dd4bf", "#f472b6", "#60a5fa", "#fbbf24", "#a78bfa", "#fb7185", "#4ade80", "#fb923c"];
+    const labelHue = (label) => {
+      let h = 0;
+      for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) | 0;
+      return hues[Math.abs(h) % hues.length];
+    };
+    const zoneHue = new Map(
+      (scene.indicator ? scene.indicator.zones : []).map((zone) => [zone.id, labelHue(zone.label)])
+    );
     for (const marker of indicator.markers) {
-      const colour = palette[marker.kind] || palette.context;
+      const colour = zoneHue.get(marker.evidence_id) || palette[marker.kind] || palette.context;
       ctx.fillStyle = colour;
-      ctx.beginPath();
-      ctx.arc(marker.x, marker.y, marker.kind === "signal" ? 5 : 3.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#d1d4dc";
-      ctx.fillText(marker.label, marker.x + 7, marker.y - 7);
+      // TV-style glyphs: a direction reads from the shape before its colour.
+      if (marker.kind === "bullish" || marker.kind === "bearish") {
+        const up = marker.kind === "bullish";
+        const r = 4;
+        ctx.beginPath();
+        if (up) {
+          ctx.moveTo(marker.x, marker.y - r);
+          ctx.lineTo(marker.x + r, marker.y + r);
+          ctx.lineTo(marker.x - r, marker.y + r);
+        } else {
+          ctx.moveTo(marker.x, marker.y + r);
+          ctx.lineTo(marker.x + r, marker.y - r);
+          ctx.lineTo(marker.x - r, marker.y - r);
+        }
+        ctx.closePath();
+        ctx.fill();
+      } else if (marker.kind === "signal") {
+        // A filled dot with a dark ring -- the "confirmation" glyph.
+        ctx.beginPath();
+        ctx.arc(marker.x, marker.y, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(11, 14, 20, 0.9)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      } else {
+        // Context: a small diamond, quieter than a dot.
+        const r = 3;
+        ctx.beginPath();
+        ctx.moveTo(marker.x, marker.y - r);
+        ctx.lineTo(marker.x + r, marker.y);
+        ctx.lineTo(marker.x, marker.y + r);
+        ctx.lineTo(marker.x - r, marker.y);
+        ctx.closePath();
+        ctx.fill();
+      }
+      // The dot marks the spot; the name is drawn by the zone it belongs to.
+      // Labelling every dot too double-painted a dense detector layer into
+      // unreadability.
     }
   }
 
@@ -1395,6 +1523,20 @@ function createChartPane(root, hooks = {}) {
       overlays: thesis && thesis.symbol === el("symbol").value ? thesisOverlays(thesis) : [],
       indicator,
     };
+    // The live layer. An attached indicator that carries its document's
+    // concepts is sent as a **definition**, not a snapshot: the engine
+    // re-detects it on this request's candles every frame -- any symbol, any
+    // timeframe, the forming bar included -- so the drawing is always current
+    // and survives series changes. The static `indicator` snapshot is then
+    // withheld: drawing both would double-paint the same detections, which is
+    // half of how a dense layer became unreadable.
+    if (indicator && Array.isArray(indicator.concepts) && indicator.concepts.length) {
+      request.live_indicator = {
+        name: indicator.name || "generated indicator",
+        concepts: indicator.concepts,
+      };
+      request.indicator = null;
+    }
     // Assigned rather than sent as `null`: a null is not a missing field, and the
     // engine's `Viewport` is a struct rather than an option, so `viewport: null`
     // would be a deserialization error rather than a default. Absent means
@@ -1803,7 +1945,13 @@ function createChartPane(root, hooks = {}) {
   function resetSeries() {
     resetViewport();
     candles = [];
-    indicator = null;
+    // A live indicator (one carrying its concepts) survives the reset: its
+    // definition is not tied to a series, and the next render re-detects it on
+    // the new one. A snapshot-only preview is dropped -- its coordinates
+    // describe the old series only.
+    if (!(indicator && Array.isArray(indicator.concepts) && indicator.concepts.length)) {
+      indicator = null;
+    }
     lastPrice = null;
   }
 
@@ -2742,6 +2890,7 @@ function createChartPane(root, hooks = {}) {
   /// ones, and nothing accumulates in the DOM.
   let toastTimer = 0;
   function toast(message) {
+    pageToast(message);
     if (!message) return;
     let elToast = el("chartWrap").querySelector(".chartToast");
     if (!elToast) {
@@ -3267,6 +3416,19 @@ function createChartPane(root, hooks = {}) {
   /// from it: `wire()` is about the chart and its series, this is about the
   /// pane as a panel.
   function wireChrome() {
+    // The generated-indicator chip: its × removes the layer from this pane.
+    // The chip itself is synced by `syncIndicatorChip`, called wherever the
+    // attachment or the pane title changes.
+    const chipRemove = root.querySelector(".indicatorChipRemove");
+    if (chipRemove) {
+      chipRemove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const chip = root.querySelector(".indicatorChip");
+        const name = chip ? chip.querySelector(".indicatorChipName").textContent : "indicator";
+        detachIndicator();
+        toast(`Removed ${name} from this chart`);
+      });
+    }
     el("zoomIn").addEventListener("click", () => zoomStep(true));
     el("zoomOut").addEventListener("click", () => zoomStep(false));
     el("minBtn").addEventListener("click", () => setMin(!root.classList.contains("min")));
@@ -3439,27 +3601,39 @@ function createChartPane(root, hooks = {}) {
     symbol: () => el("symbol").value,
     timeframe: () => el("timeframe").value,
 
-    /// Attach a validated generated indicator to this chart immediately. The
-    /// caller may only pass a preview returned by the workspace revision API;
-    /// source itself never runs in the browser.
+    /// Attach a generated indicator to this chart. A revision preview whose
+    /// `concepts` survived is attached **live**: the engine re-detects its
+    /// concepts on whatever series this pane loads -- any symbol, any
+    /// timeframe, every new candle -- until it is removed. A snapshot-only
+    /// payload (no concepts) still attaches as the one-window preview it is.
+    /// The caller may only pass a preview returned by the workspace revision
+    /// API; source itself never runs in the browser.
     attachIndicator(output) {
       indicator = output || null;
       renderNow();
+      syncIndicatorChip();
     },
 
     /// Take the attached indicator off this chart.
     ///
-    /// Called with every series change. An indicator is an overlay *on* a
-    /// series -- the payload is coordinates against the candles it was
-    /// generated from -- so carrying it across a symbol or timeframe change
-    /// drew the previous chart's lines over the new one's prices, which is the
-    /// "the old chart's indicator is on my new chart" report. The workspace
-    /// still holds it; switching back re-attaches from the revision.
+    /// Called with every series change. A **live** indicator (one carrying its
+    /// concepts) survives: its definition is symbol-agnostic, so it keeps
+    /// detecting on the new series by design. A snapshot-only payload is
+    /// cleared -- coordinates against the old series are meaningless on the
+    /// new one, which is the "the old chart's indicator is on my new chart"
+    /// report. The workspace still holds both; the picker re-attaches.
     clearIndicator() {
       if (indicator === null) return;
+      if (indicator && Array.isArray(indicator.concepts) && indicator.concepts.length) return;
       indicator = null;
       renderNow();
+      syncIndicatorChip();
     },
+
+    /// This pane's attached indicator, for the picker and the chip. The page
+    /// cannot reach the pane's `indicator` local directly -- that is the point
+    /// of the pane boundary -- so the answer comes through the API.
+    attachedIndicator: () => indicator,
 
     /// What the user is looking at, as `POST /agent/ask` accepts it.
     ///
@@ -3737,6 +3911,7 @@ function setActive(pane) {
   // user last touched, so an activation that changes nothing else may still
   // change what the toolbar's buttons would act on.
   refreshGlobalTools();
+  syncIndicatorChip();
 }
 
 /// The global drawing toolbar: the standalone twin of the right-click menu's
@@ -3882,6 +4057,67 @@ const globalTools = {
     if (this.node) this.node.hidden = hidden;
   },
 };
+
+/// A page-level toast, for messages from outside any pane: the workspace chat's
+/// attach confirmations, picker errors. One element, one timer -- the same
+/// discipline as a pane's own toast, at page scope because the workspace panel
+/// is not part of any chart.
+let pageToastTimer = 0;
+function pageToast(message) {
+  if (!message) return;
+  let box = document.getElementById("pageToast");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "pageToast";
+    box.className = "pageToast";
+    box.setAttribute("role", "status");
+    document.body.appendChild(box);
+  }
+  box.textContent = message;
+  box.classList.add("show");
+  if (pageToastTimer) clearTimeout(pageToastTimer);
+  pageToastTimer = setTimeout(() => {
+    box.classList.remove("show");
+    pageToastTimer = 0;
+  }, 4000);
+}
+
+/// Sync every pane's generated-indicator chip to what that pane holds.
+///
+/// Derived, never stored: each pane's chip shows that pane's own attachment
+/// (multi-chart means many chips), with the live ones marked. Called wherever
+/// an attachment changes and wherever the active pane changes -- cheap, and it
+/// cannot drift the way a flag set in one place and read in another does.
+function syncIndicatorChip() {
+  for (const pane of panes) {
+    const chip = pane.root.querySelector(".indicatorChip");
+    if (!chip) continue;
+    const attached = pane.attachedIndicator();
+    const live = attached && Array.isArray(attached.concepts) && attached.concepts.length > 0;
+    chip.hidden = !attached;
+    if (attached) {
+      chip.querySelector(".indicatorChipName").textContent =
+        (attached.name || "generated indicator") + (live ? " · live" : "");
+      chip.title = live
+        ? "Detects live on every candle of this chart until removed"
+        : "Static preview from the generator window";
+    }
+  }
+}
+
+/// Remove the active pane's attached indicator.
+function detachIndicator() {
+  if (!activePane) return;
+  const output = activePane.attachedIndicator();
+  activePane.clearIndicator();
+  // A live definition survives series changes by design, so `clearIndicator`
+  // skips it; the chip's × means *remove*, so it goes through the full reset
+  // by handing the pane a bare null payload.
+  if (output && Array.isArray(output.concepts) && output.concepts.length) {
+    activePane.attachIndicator(null);
+  }
+  syncIndicatorChip();
+}
 
 /// Re-derive every global button's state from the active pane. Derived,
 /// never stored -- the same rule the pane toolbars follow for `aria-pressed`.
@@ -7504,19 +7740,28 @@ async function selectWorkspace(id) {
   el("wsActiveName").textContent = ws.name;
   el("wsChatMsg").textContent = "";
   await Promise.all([loadRevisions(id), loadMessages(id), loadAlerts(id)]);
-  // Auto-attach the active revision to the chart if one exists.
+  // Auto-attach the active revision to the active chart, if one exists.
+  //
+  // A live revision (one carrying its concepts) attaches to any chart -- a
+  // concept is a shape, and the engine detects it on whatever series the pane
+  // holds, including a different symbol or timeframe than the generator used.
+  // A snapshot-only preview only ever attaches to the symbol it was computed
+  // from: its coordinates are meaningless over another instrument.
   if (ws.active_revision_id && activePane) {
     try {
       const rev = await api(`/indicator-workspaces/${id}/revisions/${ws.active_revision_id}`);
-      if (rev.preview) {
-        activePane.attachIndicator(rev.preview);
+      const preview = rev.preview;
+      const live = preview && Array.isArray(preview.concepts) && preview.concepts.length > 0;
+      if (preview && (live || !ws.symbol || ws.symbol === activePane.symbol())) {
+        activePane.attachIndicator(preview);
+        syncIndicatorChip();
+        const liveNote = live
+          ? " — it keeps detecting on every new candle of any chart it is attached to"
+          : "";
+        pageToast(`Attached "${preview.name || ws.name}" to ${activePane.symbol()} ${activePane.timeframe()}${liveNote}`);
       }
-      // Show what was attached in the chart note strip.
-      const noteEl = document.getElementById('chartNote');
-      if (noteEl) noteEl.textContent = `Attached indicator revision #${rev.revision_number} (${rev.preview?.evidence?.length || 0} evidence, ${rev.preview?.zones?.length || 0} zones)`;
     } catch (e) {
-      const noteEl = document.getElementById('chartNote');
-      if (noteEl) noteEl.textContent = `Failed to attach indicator: ${e.message}`;
+      pageToast(`Failed to attach indicator: ${e.message}`);
     }
   }
 }
@@ -7538,6 +7783,7 @@ async function loadRevisions(wsId) {
   out.innerHTML = wsRevisions.map(r => {
     const isActive = r.id === activeId;
     const evidence = r.preview && r.preview.evidence ? r.preview.evidence.length : 0;
+    const live = r.preview && Array.isArray(r.preview.concepts) && r.preview.concepts.length > 0;
     return `
       <div class="ws-revision" style="padding:6px 0;border-bottom:1px solid var(--line)">
         <div class="row">
@@ -7545,15 +7791,47 @@ async function loadRevisions(wsId) {
           <span class="muted">${escapeHtml(r.summary)}</span>
           ${isActive ? '<span class="up">active</span>' : ''}
           <span class="muted">${evidence} evidence</span>
+          ${live ? '<span class="up" title="This indicator detects live on any chart it is attached to">live</span>' : ''}
         </div>
         <div class="muted" style="font-size:11px">${escapeHtml(r.change_summary)}</div>
         <div class="row" style="margin-top:4px">
+          <button onclick="attachRevisionToChart('${wsId}','${r.id}')" title="Attach this indicator to a chart">Attach to chart</button>
           <button onclick="restoreRevision('${wsId}','${r.id}')" title="Set as active">Restore</button>
           <button onclick="viewRevision('${wsId}','${r.id}')" title="View source and preview">View</button>
         </div>
       </div>
     `;
   }).join("");
+}
+
+/// Attach a revision's indicator to a chart the user picks.
+///
+/// A generated indicator is not bound to the symbol it was generated on: a
+/// concept is a shape, and the engine detects that shape on whatever series a
+/// pane holds. The picker lists every open chart; a single-chart workspace
+/// skips the question and attaches straight away.
+async function attachRevisionToChart(wsId, revId) {
+  try {
+    const rev = await api(`/indicator-workspaces/${wsId}/revisions/${revId}`);
+    if (!rev.preview) { alert("This revision has no chart preview."); return; }
+    let target = activePane;
+    if (panes.length > 1) {
+      const labels = panes.map((p, i) => `${i + 1}. ${p.symbol()} ${p.timeframe()}${p === activePane ? " (active)" : ""}`);
+      const pick = prompt(`Attach "${rev.preview.name || "indicator"}" to which chart?\n${labels.join("\n")}\nEnter a number:`, "1");
+      if (pick === null) return;
+      const index = parseInt(pick, 10) - 1;
+      if (!(index >= 0 && index < panes.length)) { alert("No such chart."); return; }
+      target = panes[index];
+    }
+    if (!target) { alert("Open a chart first."); return; }
+    target.attachIndicator(rev.preview);
+    setActive(target);
+    syncIndicatorChip();
+    const live = Array.isArray(rev.preview.concepts) && rev.preview.concepts.length > 0;
+    pageToast(`Attached "${rev.preview.name || "indicator"}" to ${target.symbol()} ${target.timeframe()}${live ? " — it keeps detecting on new candles" : ""}`);
+  } catch (e) {
+    pageToast(`Could not attach: ${e.message}`);
+  }
 }
 
 async function restoreRevision(wsId, revId) {
@@ -7568,11 +7846,13 @@ async function restoreRevision(wsId, revId) {
 async function viewRevision(wsId, revId) {
   try {
     const rev = await api(`/indicator-workspaces/${wsId}/revisions/${revId}`);
-    // Always attach the indicator to the chart — even when no signals
-    // fired the preview still carries zones, markers, and the strategy
-    // document itself.
+    // Attaching is the point of the button: a live definition works on any
+    // chart, a snapshot attaches to the active pane as the one-window view of
+    // what the generator saw.
     if (rev.preview && activePane) {
       activePane.attachIndicator(rev.preview);
+      syncIndicatorChip();
+      pageToast(`Attached "${rev.preview.name || "indicator"}" to ${activePane.symbol()} ${activePane.timeframe()}`);
     }
     // Show the source in the strategy editor if available.
     const src = document.getElementById('strategySource');

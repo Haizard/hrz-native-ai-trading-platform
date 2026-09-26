@@ -112,12 +112,19 @@ pub fn build_preview(revision_id: &str, signals: &[ReplaySignal]) -> IndicatorOu
 /// plan.
 pub fn build_indicator_preview(
     revision_id: impl Into<String>,
+    document_name: &str,
     concepts: &[concepts::Concept],
     series: &[types::Candle],
     source_timeframe: Option<Timeframe>,
 ) -> IndicatorOutput {
     let mut output = IndicatorOutput {
         revision_id: revision_id.into(),
+        // The document's own name, and its concepts: stored with the revision
+        // so a chart can re-detect the layer **live** on any symbol and
+        // timeframe -- the coordinates below are the snapshot the generator
+        // saw, the concepts are the definition that keeps running.
+        name: Some(document_name.to_owned()),
+        concepts: concepts.to_vec(),
         ..IndicatorOutput::default()
     };
 
@@ -274,6 +281,7 @@ pub async fn replay_preview(
         let concepts: Vec<_> = document.concepts.clone();
         let mut preview = build_indicator_preview(
             document.name.clone(),
+            &document.name,
             &concepts,
             &series.get("entry").cloned().unwrap_or_default(),
             Some(source_timeframe),
@@ -428,6 +436,7 @@ mod tests {
         let series = gap_series();
         let output = build_indicator_preview(
             Uuid::new_v4(),
+            "test indicator",
             &concepts,
             &series,
             Some(analytics_core::types::Timeframe::M5),
@@ -463,6 +472,7 @@ mod tests {
         let short = vec![indicator_candle(0, 100.0, 101.0, 99.0, 100.5)];
         let output = build_indicator_preview(
             Uuid::new_v4(),
+            "test indicator",
             &concepts,
             &short,
             Some(analytics_core::types::Timeframe::M5),
@@ -483,6 +493,7 @@ mod tests {
         let concepts = vec![bullish_gap_concept()];
         let output = build_indicator_preview(
             Uuid::new_v4(),
+            "test indicator",
             &concepts,
             &candles,
             Some(analytics_core::types::Timeframe::M5),
@@ -501,6 +512,7 @@ mod tests {
         let series = gap_series();
         let output = build_indicator_preview(
             Uuid::new_v4(),
+            "test indicator",
             &concepts,
             &series,
             Some(analytics_core::types::Timeframe::M5),

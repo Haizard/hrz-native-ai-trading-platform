@@ -159,6 +159,15 @@ pub struct Region {
     /// `1.0` means price has been through the whole band, so there is nothing
     /// left to react to.
     pub mitigated: f64,
+    /// When the band died, if it did: the close time of the candle that
+    /// completed full mitigation (`mitigated` reaching `1.0`).
+    ///
+    /// A spent level is history, and history should stop drawing where it
+    /// stopped being true. `None` keeps the band alive to the right edge; the
+    /// zone's `to` then already carries that edge. Producers that never track
+    /// the death candle leave `None`, which is the old stretch-to-now
+    /// behaviour, so this field is additive for every existing caller.
+    pub mitigated_at: Option<i64>,
     /// What put it there.
     pub origin: RegionOrigin,
 }
@@ -341,6 +350,7 @@ fn zone_for(
         }
     }
 
+    let (mitigated, died_at) = mitigation_and_death(candles, break_index, side, price_low, price_high);
     Some(Region {
         side,
         name: kind.name().to_owned(),
@@ -348,8 +358,9 @@ fn zone_for(
         price_high,
         formed_at: origin[0].open_time,
         from: origin[0].open_time,
-        to,
-        mitigated: mitigation(candles, break_index, side, price_low, price_high),
+        to: died_at.unwrap_or(to),
+        mitigated,
+        mitigated_at: died_at,
         origin: RegionOrigin::StructureBreak {
             kind: break_kind,
             level: broken_level,
@@ -377,31 +388,56 @@ pub(crate) fn mitigation(
     price_low: f64,
     price_high: f64,
 ) -> f64 {
+    mitigation_and_death(candles, after_index, side, price_low, price_high).0
+}
+
+/// [`mitigation`] plus the close time of the candle that completed it.
+///
+/// A band price has fully traded through has a death candle, and a chart
+/// drawing the band past that candle is drawing a level that is no longer
+/// there. `None` means still alive -- untouched, partially mitigated, or
+/// degenerate.
+pub(crate) fn mitigation_and_death(
+    candles: &[Candle],
+    after_index: usize,
+    side: Side,
+    price_low: f64,
+    price_high: f64,
+) -> (f64, Option<i64>) {
     let height = price_high - price_low;
     if height.is_nan() || height <= 0.0 {
-        return 1.0;
+        return (1.0, None);
     }
     let after = &candles[after_index + 1..];
     if after.is_empty() {
-        return 0.0;
+        return (0.0, None);
     }
     // Which way price has to come from to reach the band: a buy-side band sits
     // below the market once price has moved up, so it is filled from the top
-    // down.
-    let travelled = match side {
-        Side::Buy => {
-            let deepest = after.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
-            price_high - deepest
-        }
-        Side::Sell => {
-            let deepest = after
-                .iter()
-                .map(|c| c.high)
-                .fold(f64::NEG_INFINITY, f64::max);
-            deepest - price_low
-        }
+    // down. Walked in order rather than folded, because the *first* candle
+    // that completes the excursion is the one that killed the band.
+    let mut deepest = match side {
+        Side::Buy => f64::INFINITY,
+        Side::Sell => f64::NEG_INFINITY,
     };
-    (travelled / height).clamp(0.0, 1.0)
+    for candle in after {
+        match side {
+            Side::Buy => deepest = deepest.min(candle.low),
+            Side::Sell => deepest = deepest.max(candle.high),
+        }
+        let travelled = match side {
+            Side::Buy => price_high - deepest,
+            Side::Sell => deepest - price_low,
+        };
+        if travelled / height >= 1.0 {
+            return (1.0, Some(candle.open_time + candle.timeframe.nanos()));
+        }
+    }
+    let travelled = match side {
+        Side::Buy => price_high - deepest,
+        Side::Sell => deepest - price_low,
+    };
+    ((travelled / height).clamp(0.0, 1.0), None)
 }
 
 #[cfg(test)]
