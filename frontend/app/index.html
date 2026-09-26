@@ -365,6 +365,25 @@
     position: absolute; left: 12px; bottom: 8px; pointer-events: none;
     color: var(--muted); font-family: var(--mono); font-size: 10px; opacity: 0.75;
   }
+  /*
+    The chart toast. The note strip under the chart records refusals -- a shape
+    that could not be placed, a save that failed -- but the user is looking at
+    the crosshair, not the strip, and a refusal nobody sees reads as "the tool
+    is broken". The toast floats the same words over the plot, out of the
+    pointer's way, and leaves on its own: no dismissal to learn, nothing to
+    click through, no accumulation -- one element per pane, shown and cleared
+    by timer (see `toast` in `app.js`).
+  */
+  .chartToast {
+    position: absolute; top: 44px; left: 50%; transform: translateX(-50%) translateY(-6px);
+    max-width: min(80%, 52ch); padding: 7px 14px;
+    background: rgba(23, 27, 38, 0.92); border: 1px solid var(--warn);
+    border-radius: 8px; color: var(--text); font-size: 12px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease;
+    z-index: 4;
+  }
+  .chartToast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   .chartHint b { font-weight: 600; }
   .chartMsg {
     position: absolute; inset: auto 0 40% 0; text-align: center;

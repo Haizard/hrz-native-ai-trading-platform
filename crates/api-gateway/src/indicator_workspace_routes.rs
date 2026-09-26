@@ -300,7 +300,7 @@ pub async fn create_revision(
     user: UserContext,
     Path(id): Path<Uuid>,
     ApiJson(body): ApiJson<CreateRevisionBody>,
-) -> Result<Json<RevisionResponse>, ApiError> {
+) -> Result<(StatusCode, Json<RevisionResponse>), ApiError> {
     if body.source.trim().is_empty()
         || body.summary.trim().is_empty()
         || body.change_summary.trim().is_empty()
@@ -338,7 +338,7 @@ pub async fn create_revision(
     )
     .await?
     .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
-    Ok(Json(row.into()))
+    Ok((StatusCode::CREATED, Json(row.into())))
 }
 
 /// `GET /indicator-workspaces/{id}/messages`.

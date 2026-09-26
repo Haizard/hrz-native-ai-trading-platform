@@ -2283,6 +2283,61 @@ fn shapes(
                 }
             }
         }
+        DrawingKind::FibExtension => {
+            if let Some((t2, p2)) = a2 {
+                // The swing spans the plot horizontally like the retracement's
+                // levels do, but the *levels* run past the second anchor: the
+                // swing is the 0..1 unit and the extensions are where the move
+                // is projected to reach. `direction` is the drag's own sign, so
+                // an upward drag projects upward and a downward one downward --
+                // the way the reference packages read the same gesture.
+                let x2 = frame.x_at_ms(t2);
+                let left = x1.min(x2);
+                let right = x1.max(x2);
+                let direction = (p2 - p1).signum();
+                // 0 and 100 mark the swing itself; the rest are the targets.
+                const EXTENSION_LEVELS: [(f64, &str); 7] = [
+                    (0.0, "0"),
+                    (1.0, "100"),
+                    (1.272, "127.2"),
+                    (1.618, "161.8"),
+                    (2.0, "200"),
+                    (2.618, "261.8"),
+                    (3.618, "361.8"),
+                ];
+                for (ratio, label) in EXTENSION_LEVELS {
+                    let price = p1 + (p2 - p1) * ratio;
+                    let y = frame.y_at(price);
+                    // Targets are dashed: they are projections, not the swing
+                    // the user drew, and the retracement's solid lines are the
+                    // convention for the levels that exist on the range.
+                    parts.push(DrawingPart::Segment {
+                        x1: left,
+                        y1: y,
+                        x2: right,
+                        y2: y,
+                        dashed: ratio > 1.0,
+                    });
+                    parts.push(DrawingPart::Text {
+                        x: left + 4.0,
+                        y: y - 3.0,
+                        text: format!("{label}%  {price:.2}"),
+                    });
+                }
+                // The projection ray: from the 100% level's edge out in the
+                // direction of the targets, so the direction the swing implies
+                // is on the chart and not only in the level prices.
+                let edge = if direction >= 0.0 { right } else { left };
+                let y100 = frame.y_at(p2);
+                parts.push(DrawingPart::Segment {
+                    x1: edge,
+                    y1: y100,
+                    x2: edge + direction * (right - left) * 0.35,
+                    y2: y100,
+                    dashed: true,
+                });
+            }
+        }
     }
 
     // Handles only when selected, and only at anchors this kind actually uses.

@@ -169,6 +169,30 @@ async function authenticate(register, emailId, passwordId, msgId) {
   }
 }
 
+const API_BASE = "";
+
+/// Decode one WebSocket frame, from either of the two encodings the gateway
+/// sends.
+///
+/// The gateway's market and order-book channels send their JSON payloads as
+/// **binary** frames (`Message::Binary` in `ws.rs` -- throughput, not style),
+/// and a browser hands a binary frame to `onmessage` as a `Blob`, not as an
+/// `ArrayBuffer`. A `TextDecoder` cannot read a Blob -- `decode(blob)` throws --
+/// so the decoder that ran here before dropped *every candle frame on the
+/// floor*, silently, and a chart that only ever moved on a reload was the
+/// result. The `catch { return }` meant nothing ever said so.
+///
+/// Text frames (the `subscribed` hello, the `notice` and `lagged` frames) stay
+/// strings; `decodeFrame` reads both. Every `onmessage` in this file goes
+/// through this one function, so there is one answer to "how does a frame
+/// arrive" rather than four.
+async function decodeFrame(event) {
+  if (typeof event.data === "string") return JSON.parse(event.data);
+  const buffer =
+    event.data instanceof ArrayBuffer ? event.data : await event.data.arrayBuffer();
+  return JSON.parse(new TextDecoder().decode(buffer));
+}
+
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (token()) headers.authorization = `Bearer ${token()}`;
@@ -434,6 +458,7 @@ function createChartPane(root, hooks = {}) {
     hline: "#e3b341",
     rect: "#9564e2",
     fib: "#4caf8e",
+    fib_extension: "#26a69a",
     // The kinds the registry added. Distinct hues, one per kind, so a ray and
     // a trendline on the same chart are told apart by what they are; the
     // ruler is the value-area blue because it measures, like the fib.
@@ -1274,6 +1299,14 @@ function createChartPane(root, hooks = {}) {
       render();
       if (!message.textContent) message.textContent = candles.length ? "" : "no candles in this window";
     } catch (e) {
+      // The window the fetch asked for is gone, so what is on screen must go
+      // with it: repainting empty says "this series is not here" rather than
+      // leaving the previous symbol's bars under the new one's title -- which
+      // is the failed symbol switch the user reads as "the chart broke".
+      candles = [];
+      lastPrice = null;
+      footprint = null;
+      render();
       message.textContent = e.message;
     }
   }
@@ -1456,11 +1489,24 @@ function createChartPane(root, hooks = {}) {
 
     // Shift is the price axis, which is the convention every charting package
     // uses and therefore the one a trader will try first.
-    applyGesture(
-      event.shiftKey
-        ? { kind: "zoom_price", factor, anchor: at.y }
-        : { kind: "zoom_time", factor, anchor: at.x }
-    );
+    if (event.shiftKey) {
+      applyGesture({ kind: "zoom_price", factor, anchor: at.y });
+      return;
+    }
+    // A sideways wheel -- a trackpad's two-finger slide, or a tilt wheel --
+    // pans instead of zooming, the way every charting package reads it. The
+    // delta is a fraction of the plot, the same unit the drag-pan below uses,
+    // so a two-finger slide and a drag feel like the same gesture; the sign is
+    // the drag's (fingers right reveal older bars), and any horizontal pan
+    // takes the window back from the live edge exactly as a drag does.
+    const sideways = event.deltaX * (event.deltaMode === 1 ? 16 : 1);
+    if (Math.abs(sideways) > Math.abs(pixels)) {
+      const time = -(sideways / scene.plot.w) * 4;
+      if (sideways !== 0) followLive = false;
+      applyGesture({ kind: "pan", time, price: 0 });
+      return;
+    }
+    applyGesture({ kind: "zoom_time", factor, anchor: at.x });
   }
 
   // The pointer gesture in progress, or null.
@@ -1741,6 +1787,24 @@ function createChartPane(root, hooks = {}) {
   function resetViewport() {
     viewport = null;
     followLive = true;
+  }
+
+  /// Drop everything this pane holds *about* a series, because the series is
+  /// changing.
+  ///
+  /// The window (`resetViewport`) is one part. The other two are the candles
+  /// themselves and the attached indicator: a refetch that fails -- an unknown
+  /// symbol, a gateway that cannot reach the venue -- used to leave the old
+  /// series on screen under a new symbol's title, and the old chart's
+  /// indicator drawn over it. What the user saw after a failed switch was the
+  /// previous chart lying about what it was showing. Both go before the fetch:
+  /// a chart that briefly shows nothing is honest, and the fetch repaints it
+  /// the moment it has something true to show.
+  function resetSeries() {
+    resetViewport();
+    candles = [];
+    indicator = null;
+    lastPrice = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -2664,6 +2728,35 @@ function createChartPane(root, hooks = {}) {
   /// Say something about the chart, in the strip the engine's own notes use.
   function note(message) {
     el("chartNote").textContent = message;
+    // The strip sits under the chart, where a user mid-drag is looking at the
+    // crosshair -- and a refusal they never see is, to them, "nothing
+    // happened". The toast floats the same words over the plot for a few
+    // seconds; the strip keeps the permanent record.
+    toast(message);
+  }
+
+  /// One quiet message over the plot, gone again before it becomes wallpaper.
+  ///
+  /// A single element per pane, shown and cleared by timer -- so a burst of
+  /// refusals reads as one persistent message rather than three overlapping
+  /// ones, and nothing accumulates in the DOM.
+  let toastTimer = 0;
+  function toast(message) {
+    if (!message) return;
+    let elToast = el("chartWrap").querySelector(".chartToast");
+    if (!elToast) {
+      elToast = document.createElement("div");
+      elToast.className = "chartToast";
+      elToast.setAttribute("role", "status");
+      el("chartWrap").appendChild(elToast);
+    }
+    elToast.textContent = message;
+    elToast.classList.add("show");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      elToast.classList.remove("show");
+      toastTimer = 0;
+    }, 4000);
   }
 
   /// Milliseconds per bar, for sizing a footprint window.
@@ -2876,6 +2969,16 @@ function createChartPane(root, hooks = {}) {
   /// a WebSocket handshake. The channel is public anyway, but passing the token
   /// when we have one keeps the code honest about which channels need it.
   function connectLive() {
+    // A select with no options has nothing to aim at. Wiring fires `connectLive`
+    // on every series change, including the one a symbol change makes while the
+    // timeframe list is being rebuilt -- and a channel to `/ws/market//` can only
+    // 404, over and over, with the backoff hiding it from everyone but the log.
+    // Refused here rather than retried there.
+    if (!el("symbol").value || !el("timeframe").value) {
+      live.state = "idle";
+      refreshLiveBadge();
+      return;
+    }
     // Closing a socket that has not opened yet is what makes a browser say
     // "WebSocket is closed before the connection is established" -- and it
     // throws away a handshake already in flight, so a pane that is re-pointed
@@ -2918,13 +3021,15 @@ function createChartPane(root, hooks = {}) {
       live.state = "open";
       refreshLiveBadge();
     };
-    ws.onmessage = (event) => {
+    ws.onmessage = async (event) => {
       // Same guard as `onopen`: a frame from a channel this pane has already
       // left is not evidence about the one it is on now.
       if (socket !== ws) return;
       let frame;
       try {
-        frame = JSON.parse(typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data));
+        // Binary frames arrive as Blobs (see `decodeFrame`); decoding them
+        // wrong is what kept this chart frozen until a reload.
+        frame = await decodeFrame(event);
       } catch { return; }
 
       if (frame.type === "data") {
@@ -3191,6 +3296,12 @@ function createChartPane(root, hooks = {}) {
       resetViewport();
       refresh().then(connectLive);
     });
+    // The bar count is part of the series: a smaller limit drops bars the old
+    // array still holds, so the candles go and are refetched at the new count.
+    el("limit").addEventListener("change", () => {
+      resetSeries();
+      refresh().then(connectLive);
+    });
     // A redraw, not a refetch: the zones are detected from the candles the engine
     // already has, so there is nothing new to ask the backend for.
     el("zones").addEventListener("click", (event) => {
@@ -3205,19 +3316,23 @@ function createChartPane(root, hooks = {}) {
     el("mode").addEventListener("change", () => { refresh(); paintTitle(); });
     // These change the series itself, so the window means nothing afterwards -- a
     // bar index into the old series is not a bar in the new one, and the limit
-    // select changes how many exist at all.
+    // select changes how many exist at all. A limit change can also *drop* bars
+    // the old array still holds, so the candles go too.
     el("timeframe").addEventListener("change", () => {
-      resetViewport();
+      resetSeries();
       refresh().then(connectLive);
       paintTitle();
     });
     el("symbol").addEventListener("change", () => {
-      // A different instrument has different timeframes, so the list is rebuilt
-      // before the fetch that reads the chosen one.
-      fillTimeframes(el("symbol").value);
-      resetViewport();
-      refresh().then(connectLive);
-      paintTitle();
+    // A different instrument has different timeframes, so the list is rebuilt
+    // before the fetch that reads the chosen one.
+    fillTimeframes(el("symbol").value);
+    // Everything about the old series goes before the fetch: candles, window
+    // and indicator. A fetch that fails now shows an empty chart and its
+    // error, not the previous instrument under the new one's name.
+    resetSeries();
+    refresh().then(connectLive);
+    paintTitle();
       if (hooks.onSymbolChange) hooks.onSymbolChange(paneApi);
     });
     // Fit is also where following resumes: "show the whole series again"
@@ -3329,6 +3444,20 @@ function createChartPane(root, hooks = {}) {
     /// source itself never runs in the browser.
     attachIndicator(output) {
       indicator = output || null;
+      renderNow();
+    },
+
+    /// Take the attached indicator off this chart.
+    ///
+    /// Called with every series change. An indicator is an overlay *on* a
+    /// series -- the payload is coordinates against the candles it was
+    /// generated from -- so carrying it across a symbol or timeframe change
+    /// drew the previous chart's lines over the new one's prices, which is the
+    /// "the old chart's indicator is on my new chart" report. The workspace
+    /// still holds it; switching back re-attaches from the revision.
+    clearIndicator() {
+      if (indicator === null) return;
+      indicator = null;
       renderNow();
     },
 
@@ -4139,12 +4268,12 @@ function connectBook() {
   // still syncing" (a message worth keeping) and a bare disconnect.
   ws.bookNotice = null;
 
-  ws.onmessage = (event) => {
+  ws.onmessage = async (event) => {
     let frame;
     try {
-      frame = JSON.parse(
-        typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data)
-      );
+      // Binary frames arrive as Blobs -- see `decodeFrame`; this channel's
+      // candles are sent binary exactly like the market channel's.
+      frame = await decodeFrame(event);
     } catch { return; }
 
     if (frame.type === "data") renderBook(frame.payload);
@@ -4459,12 +4588,10 @@ function ensureAgentSocket() {
   return agentReady;
 }
 
-function onAgentFrame(event) {
+async function onAgentFrame(event) {
   let frame;
   try {
-    frame = JSON.parse(
-      typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data)
-    );
+    frame = await decodeFrame(event);
   } catch {
     return;
   }
@@ -5956,12 +6083,10 @@ function watchBot(id) {
   const ws = new WebSocket(`${scheme}://${location.host}/ws/bots/${id}${query}`);
   botSocket = ws;
 
-  ws.onmessage = (event) => {
+  ws.onmessage = async (event) => {
     let frame;
     try {
-      frame = JSON.parse(
-        typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data)
-      );
+      frame = await decodeFrame(event);
     } catch {
       return;
     }

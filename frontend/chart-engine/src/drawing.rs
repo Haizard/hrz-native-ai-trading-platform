@@ -69,6 +69,10 @@ pub enum DrawingKind {
     Rect,
     /// Fibonacci retracement levels between the two anchors.
     Fib,
+    /// Fibonacci **extension** levels projected beyond the swing: the 0 and 100
+    /// sit on the swing itself and the 1.272 / 1.618 / 2.0 / 2.618 targets are
+    /// drawn past the second anchor, in the direction of the drag.
+    FibExtension,
     /// The price/time delta between the two anchors: a box, dashed guides to
     /// both axes, and the delta as a label.
     Measure,
@@ -100,7 +104,7 @@ pub enum DrawingKind {
 
 impl DrawingKind {
     /// Every kind, for a client that wants to build a toolbar.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Trendline,
         Self::Hline,
         Self::Vline,
@@ -108,6 +112,7 @@ impl DrawingKind {
         Self::Extended,
         Self::Rect,
         Self::Fib,
+        Self::FibExtension,
         Self::Measure,
         Self::Channel,
         Self::Angle,
@@ -130,7 +135,8 @@ impl DrawingKind {
             Self::Ray => "ray",
             Self::Extended => "extended",
             Self::Rect => "rect",
-            Self::Fib => "fib",
+                        Self::Fib => "fib",
+            Self::FibExtension => "fib_extension",
             Self::Measure => "measure",
             Self::Channel => "channel",
             Self::Angle => "angle",
@@ -245,7 +251,7 @@ pub struct ToolSpec {
 /// The cursor is deliberately absent: it is not an object the engine can draw,
 /// it is the shell's "select and pan" state, and a registry of *objects*
 /// pretending to contain it would be one more thing to filter out.
-pub const REGISTRY: [ToolSpec; 16] = [
+pub const REGISTRY: [ToolSpec; 17] = [
     ToolSpec {
         kind: DrawingKind::Trendline,
         label: "Trend",
@@ -298,6 +304,14 @@ pub const REGISTRY: [ToolSpec; 16] = [
         kind: DrawingKind::Fib,
         label: "Fib",
         title: "Drag from one swing to another",
+        group: ToolGroup::Measurement,
+        group_label: "Measure",
+        anchors: 2,
+    },
+    ToolSpec {
+        kind: DrawingKind::FibExtension,
+        label: "Fib ext",
+        title: "Drag from one swing to another — targets project past the second point",
         group: ToolGroup::Measurement,
         group_label: "Measure",
         anchors: 2,

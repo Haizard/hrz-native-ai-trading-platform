@@ -53,7 +53,7 @@ use crate::repositories::dt_to_ns;
 /// `kline` is listed but is the parity oddball: it is a bar chart per day and
 /// draws with the candle geometry, not with anchors, so it lives in the
 /// registry while storage keeps its own vocabulary.
-pub const KINDS: [&str; 16] = [
+pub const KINDS: [&str; 17] = [
     "trendline",
     "hline",
     "vline",
@@ -61,6 +61,7 @@ pub const KINDS: [&str; 16] = [
     "extended",
     "rect",
     "fib",
+    "fib_extension",
     "measure",
     "channel",
     "angle",
@@ -112,6 +113,7 @@ pub fn needs_third_anchor(kind: &str) -> bool {
             | "extended"
             | "rect"
             | "fib"
+            | "fib_extension"
             | "measure"
             | "angle"
             | "circle"

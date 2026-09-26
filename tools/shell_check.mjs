@@ -963,7 +963,7 @@ check(
 );
 check(
   "the drawing toolbar is on the page",
-  paneNode().querySelectorAll(".tools button[data-tool]").length === 17,
+  paneNode().querySelectorAll(".tools button[data-tool]").length === 18,
   `${paneNode().querySelectorAll(".tools button[data-tool]").length} tools`
 );
 check(
@@ -972,7 +972,7 @@ check(
     const toolbar = paneNode().querySelector(".tools");
     const names = [...toolbar.querySelectorAll("button[data-tool]")].map((b) => b.dataset.tool);
     const expected = [
-      "cursor", "trendline", "hline", "vline", "ray", "extended", "rect", "fib", "measure",
+      "cursor", "trendline", "hline", "vline", "ray", "extended", "rect", "fib", "fib_extension", "measure",
       "channel", "angle", "arc", "circle", "triangle", "position_long", "position_short",
       "dateprice_range",
     ];
@@ -981,7 +981,7 @@ check(
 );
 check(
   "the tools are grouped into the registry's flyouts",
-  paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length === 16,
+  paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length === 17,
   `${paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length} flyout tools`
 );
 check(
@@ -2701,6 +2701,10 @@ try {
 } catch {
   // Recorded by the check below, which is looking for the page having said so.
 }
+// The shell's frame handlers are async (`decodeFrame` reads Blob bodies), so a
+// delivered frame lands one microtask after `deliver` returns -- the same
+// settle every other delivered frame above waits for.
+await settle();
 
 check(
   "an answer the page cannot render says so, instead of hanging on Working…",
@@ -3129,7 +3133,7 @@ check(
 );
 check(
   "and it is built from the engine's registry, not empty",
-  document.querySelectorAll("#globalTools button[data-tool]").length === 17,
+  document.querySelectorAll("#globalTools button[data-tool]").length === 18,
   `${document.querySelectorAll("#globalTools button[data-tool]").length} buttons`
 );
 check(

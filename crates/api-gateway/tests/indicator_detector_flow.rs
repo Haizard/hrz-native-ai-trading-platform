@@ -86,7 +86,7 @@ fn now_ns() -> i64 {
 }
 
 /// A week of 5m candles ending at the last closed bar, with the fvg shape
-/// planted at the very start.
+/// planted mid-series.
 ///
 /// The body of the series is a gentle uptrend with a sine wobble -- ordinary
 /// bars the detector may or may not also match, which is fine: the test pins
@@ -95,12 +95,30 @@ fn seed_candles(symbol: &str) -> Vec<Candle> {
     let width = Timeframe::M5.nanos();
     let latest_open = (now_ns() / width - 1) * width;
     let count: i64 = 7 * 24 * 12 + 120;
+    // The planted fair-value-gap window: three hand-built candles buried
+    // mid-series, whose edges are exactly PLANTED_LOW/PLANTED_HIGH. The
+    // sine wobble below never produces a gap on its own -- its highs always
+    // overlap later lows -- which silently emptied this fixture once.
+    const PLANT_AT: i64 = 1000;
     (0..count)
         .map(|i| {
             let open_time = latest_open - (count - 1 - i) * width;
             let base = 100.0 + (i as f64 * 0.01) + ((i as f64 * 0.15).sin() * 2.0);
-            let open = base;
-            let close = base + ((i as f64 * 0.15).cos() * 0.4);
+            let mut open = base;
+            let mut close = base + ((i as f64 * 0.15).cos() * 0.4);
+            if i == PLANT_AT {
+                // Candle A: its high is the band's floor, exactly 100.5.
+                open = 99.9;
+                close = 100.2;
+            } else if i == PLANT_AT + 1 {
+                // Candle B: entirely inside the band, bridging the gap.
+                open = 101.6;
+                close = 101.9;
+            } else if i == PLANT_AT + 2 {
+                // Candle C: its low is the band's ceiling, exactly 104.0.
+                open = 104.3;
+                close = 105.0;
+            }
             let high = open.max(close) + 0.3;
             let low = open.min(close) - 0.3;
             Candle {
@@ -121,9 +139,9 @@ fn seed_candles(symbol: &str) -> Vec<Candle> {
 
 /// The planted band's exact edges: candle A's high, candle C's low.
 ///
-/// Prices 100.5 / 104.0 on consecutive candles give `high(0) = 100.5 < low(2) =
-/// 104.0`, a band of height 3.5 against a window range of 4.3 -- a 0.81 ratio,
-/// well over the document's `min_band_ratio: 0.2`.
+/// The planted candles give `high(0) = 100.5 < low(2) = 104.0`, a band of
+/// height 3.5 against a window range of 5.7 -- a 0.61 ratio, well over the
+/// document's `min_band_ratio: 0.2`.
 const PLANTED_LOW: f64 = 100.5;
 const PLANTED_HIGH: f64 = 104.0;
 
