@@ -64,6 +64,14 @@ const PROFILE_WIDTH: f64 = 74.0;
 const PROFILE_ROWS: f64 = 40.0;
 /// Height of the per-candle summary strip below the footprint.
 const SUMMARY_HEIGHT: f64 = 22.0;
+/// Height of one sub-pane (RSI and friends), before clamping.
+const SUB_PANE_HEIGHT: f64 = 90.0;
+/// The most canvas sub-panes may take in total, so three of them cannot
+/// squeeze the price plot into a strip.
+const SUB_PANES_MAX_TOTAL: f64 = 220.0;
+/// Vertical gap between the price plot and the first sub-pane, and between
+/// panes. A pane that touches its neighbour shares a pixel row with it.
+const SUB_PANE_GAP: f64 = 8.0;
 
 /// What the chart is showing.
 ///
@@ -120,6 +128,23 @@ impl Mode {
     }
 }
 
+/// Which edge of the plot the overlay volume profile is anchored to.
+///
+/// The default is [`ProfileAnchor::Right`] -- bars growing leftward from the
+/// price axis, under the candles. [`ProfileAnchor::Left`] keeps the same
+/// geometry mirrored: bars grow rightward from the plot's left edge, which
+/// is where an order-flow reading puts the ladder when the candles carry the
+/// story and the histogram is only ever glanced at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileAnchor {
+    /// Grow leftward from the plot's right edge. The historical behaviour.
+    #[default]
+    Right,
+    /// Grow rightward from the plot's left edge.
+    Left,
+}
+
 /// What the shell asks for.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Request {
@@ -154,6 +179,11 @@ pub struct Request {
     /// ABI check found it.
     #[serde(default = "default_lines")]
     pub lines: Vec<String>,
+    /// Which edge the overlay volume profile grows from. Absent means the
+    /// right edge, which is where every existing caller's profile already
+    /// sits -- the same reason `lines` defaults rather than demands.
+    #[serde(default)]
+    pub profile_anchor: ProfileAnchor,
     /// Whether to detect and draw supply/demand zones.
     ///
     /// Detection runs **here**, on the candles the request already carries,
@@ -254,6 +284,13 @@ pub struct Request {
     /// Absent means the pane shows no generated indicator.
     #[serde(default)]
     pub live_indicator: Option<LiveIndicator>,
+    /// A second, **frozen** indicator output drawn faded beneath the main
+    /// one -- the revision diff view. The shell strips the concepts before
+    /// sending (a diff between two moving layers is noise), so this positions
+    /// the snapshot exactly as [`Request::indicator`] does, under it in the
+    /// scene's own field. Absent means no diff is showing.
+    #[serde(default)]
+    pub diff_indicator: Option<IndicatorOutput>,
     /// Whether the window should stay pinned to the series' newest bar.
     ///
     /// A live chart appends bars while the user is reading; a window resolved
@@ -285,11 +322,35 @@ pub struct Request {
     /// never snap: a stored drawing already means exactly what it says.
     #[serde(default)]
     pub snap: bool,
+    /// Sub-panes to render under the price plot.
+    ///
+    /// An oscillator class (RSI, divergence markers, eventually CVD) cannot
+    /// live in the price pane: it has a different y-scale and a different
+    /// meaning, and drawing a 0..100 momentum line into a 100,000..110,000
+    /// price range is a picture of nothing. Each spec names a **measurement**;
+    /// the engine computes it from the request's own candles with
+    /// `analytics-core`, scales it into its own plot below the main one, and
+    /// returns it positioned -- the same arrangement as the volume profile.
+    ///
+    /// Absent means no sub-panes, and an older request keeps meaning that.
+    #[serde(default)]
+    pub sub_panes: Vec<SubPaneSpec>,
 }
 
-/// The levels drawn when a request does not say.
-fn default_lines() -> Vec<String> {
-    vec!["vwap".into(), "poc".into(), "vah".into(), "val".into()]
+/// One requested sub-pane: a named measurement, computed in the engine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum SubPaneSpec {
+    /// Wilder's RSI over the request's candles, with its 30/70 bands and any
+    /// RSI/price divergence the detector confirms.
+    Rsi {
+        /// RSI period. 14 is the convention; a client may ask for another.
+        period: usize,
+        /// Overbought level, drawn as the upper band.
+        overbought: f64,
+        /// Oversold level, drawn as the lower band.
+        oversold: f64,
+    },
 }
 
 impl Default for Request {
@@ -303,6 +364,7 @@ impl Default for Request {
             footprint: Vec::new(),
             footprint_trades: 0,
             lines: default_lines(),
+            profile_anchor: ProfileAnchor::default(),
             zones: false,
             concepts: Vec::new(),
             viewport: crate::viewport::Viewport::default(),
@@ -311,11 +373,18 @@ impl Default for Request {
             overlays: Vec::new(),
             indicator: None,
             live_indicator: None,
+            diff_indicator: None,
             follow: false,
             last_price: None,
             snap: false,
+            sub_panes: Vec::new(),
         }
     }
+}
+
+/// The levels drawn when a request does not say.
+fn default_lines() -> Vec<String> {
+    vec!["vwap".into(), "poc".into(), "vah".into(), "val".into()]
 }
 
 /// A generated indicator attached to a chart **live**: name plus the concepts
@@ -686,6 +755,17 @@ pub struct Scene {
     /// The attached generated indicator, when its output was valid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indicator: Option<SceneIndicator>,
+    /// Sub-panes under the price plot, in request order. Empty when none were
+    /// asked for -- and an older shell that ignores this field keeps working,
+    /// the same way one that ignored `regions` did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub_panes: Vec<ScenePane>,
+    /// The diff overlay: the older revision, positioned on the same frame as
+    /// the main indicator. The shell paints it faded; the flag is the only
+    /// difference, because the coordinates are already as true as the main
+    /// layer's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_indicator: Option<SceneIndicator>,
     /// The live price, already positioned, with whether it is above the last
     /// drawn bar's close -- the up/down the tag is coloured by.
     ///
@@ -706,6 +786,65 @@ pub struct Scene {
     pub snap_points: Vec<SnapPoint>,
     /// A caveat about what is being shown, when there is one.
     pub note: Option<String>,
+}
+
+/// One sub-pane laid out and filled in: an oscillator with its own y-scale
+/// under the price plot.
+///
+/// The pane's plot is already shrunk to its slice of the canvas, every point
+/// is already positioned, and the level lines (30/70 for RSI) are already
+/// mapped -- the shell paints rectangles and paths, exactly as it does for the
+/// main plot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScenePane {
+    /// Which measurement this pane shows, echoed for the shell's label.
+    pub kind: String,
+    /// Display name, e.g. `RSI (14)`.
+    pub label: String,
+    /// The pane's own plot rectangle, below the price plot.
+    pub plot: Plot,
+    /// The line, in canvas coordinates, oldest first.
+    pub line: Vec<Point>,
+    /// Horizontal reference lines -- RSI's 30/70 -- already positioned.
+    pub levels: Vec<PaneLevel>,
+    /// Confirmed divergences, drawn as a line between the two RSI extremes.
+    pub divergences: Vec<PaneDivergence>,
+    /// The pane's own y-axis ticks, positioned and valued.
+    pub ticks: Vec<PaneTick>,
+}
+
+/// A horizontal reference line inside a sub-pane.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PaneLevel {
+    /// Canvas y.
+    pub y: f64,
+    /// The value it marks (30, 70).
+    pub value: f64,
+}
+
+/// A divergence drawn inside a sub-pane: a line between two RSI extremes,
+/// coloured by direction in the shell from `kind`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaneDivergence {
+    /// First extreme: canvas x and y.
+    pub from_x: f64,
+    /// First extreme: canvas y.
+    pub from_y: f64,
+    /// Second extreme: canvas x.
+    pub to_x: f64,
+    /// Second extreme: canvas y.
+    pub to_y: f64,
+    /// `bullish` or `bearish`.
+    pub kind: String,
+}
+
+/// A sub-pane's y-axis tick.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PaneTick {
+    /// Canvas y.
+    pub y: f64,
+    /// The value.
+    pub value: f64,
 }
 
 /// The live price line: the price, where it sits, and which way it last moved.
@@ -870,11 +1009,22 @@ fn fitted_range(candles: &[Candle]) -> crate::viewport::PriceRange {
 pub fn build(request: &Request) -> Scene {
     let width = request.width.max(1.0);
     let height = request.height.max(1.0);
+    // Each sub-pane takes a fixed slice off the bottom of the canvas, and the
+    // price plot keeps what is left. The divider is part of the pane's own
+    // space, so the price plot's bottom edge and the pane's top edge never
+    // touch: two plots sharing a pixel row is how a candle wick ends up drawn
+    // over an oscillator line.
+    let sub_height = sub_pane_heights(&request.sub_panes);
+    // A gap before every pane -- including the first -- so the last pane's
+    // bottom edge lands exactly on the bottom padding line, never inside the
+    // time-axis strip.
+    let sub_total: f64 = sub_height.iter().copied().sum::<f64>()
+        + SUB_PANE_GAP * sub_height.len() as f64;
     let plot = Plot {
         x: PAD_LEFT,
         y: PAD_TOP,
         w: (width - PAD_LEFT - PAD_RIGHT).max(1.0),
-        h: (height - PAD_TOP - PAD_BOTTOM).max(1.0),
+        h: (height - PAD_TOP - PAD_BOTTOM - sub_total).max(1.0),
     };
 
     let mut scene = Scene {
@@ -897,6 +1047,8 @@ pub fn build(request: &Request) -> Scene {
         drawings: Vec::new(),
         overlays: Vec::new(),
         indicator: None,
+        sub_panes: Vec::new(),
+        diff_indicator: None,
         last_price: None,
         snap_points: Vec::new(),
         note: None,
@@ -1019,7 +1171,13 @@ pub fn build(request: &Request) -> Scene {
     let profile = calculate_volume_profile_from_candles(visible_real, bucket_size);
 
     if request.mode.shows_profile() {
-        scene.profile = profile_bars(&profile, &plot, scene.price_min, scene.price_max);
+        scene.profile = profile_bars(
+            &profile,
+            &plot,
+            scene.price_min,
+            scene.price_max,
+            request.profile_anchor,
+        );
     }
 
     match request.mode {
@@ -1044,7 +1202,13 @@ pub fn build(request: &Request) -> Scene {
                 // imbalances it never had. That is why `analytics-core` refuses
                 // to build one, and why this falls back to a different chart
                 // rather than a worse version of the same one.
-                scene.profile = profile_bars(&profile, &plot, scene.price_min, scene.price_max);
+                scene.profile = profile_bars(
+                    &profile,
+                    &plot,
+                    scene.price_min,
+                    scene.price_max,
+                    request.profile_anchor,
+                );
                 scene.note = Some(
                     "no trades are stored for this window, so there is no ladder to draw. This is \
                      the volume profile instead -- a real chart, but not a footprint. Run \
@@ -1178,6 +1342,20 @@ pub fn build(request: &Request) -> Scene {
         }
     }
 
+    // The diff overlay positions through the same mapper as the main layer --
+    // it *is* an indicator output, frozen. A refused diff is reported and the
+    // main layer still draws: a broken comparison must not take the chart's
+    // primary evidence down with it.
+    if let Some(output) = request.diff_indicator.as_ref() {
+        match indicator_parts(output, &frame) {
+            Ok(diff) => scene.diff_indicator = Some(diff),
+            Err(reason) => add_note(
+                &mut scene.note,
+                format!("the diff revision is not drawn: {reason}"),
+            ),
+        }
+    }
+
     // The live layer: re-detect the attached indicator's concepts on **this
     // request's candles** -- any symbol, any timeframe, the forming bar
     // included -- so the drawing is always current and travels with the chart
@@ -1244,7 +1422,150 @@ pub fn build(request: &Request) -> Scene {
         );
     }
 
+    // Sub-panes last: they are pure add-ons under the price plot and cannot
+    // refuse anything in it. The visible slice is what they measure -- an RSI
+    // over the whole series beside candles showing a tenth of it would disagree
+    // with its own chart, the same way a whole-series profile would.
+    let mut pane_top = plot.y + plot.h + SUB_PANE_GAP;
+    for (spec, height) in request.sub_panes.iter().zip(sub_height) {
+        let pane_plot = Plot {
+            x: plot.x,
+            y: pane_top,
+            w: plot.w,
+            h: height,
+        };
+        match sub_pane(spec, visible_real, slot, &pane_plot) {
+            Some(pane) => scene.sub_panes.push(pane),
+            None => add_note(
+                &mut scene.note,
+                "a requested sub-pane had nothing to measure and is not drawn".to_string(),
+            ),
+        }
+        pane_top += height + SUB_PANE_GAP;
+    }
+
     scene
+}
+
+/// Height of each requested sub-pane, in request order.
+///
+/// Every pane gets the same fixed slice, sized so an oscillator reads: tall
+/// enough for its line to breathe, short enough that the price plot stays the
+/// chart. The last pane absorbs the rounding remainder so `plot.h + sum(panes)
+/// + gaps` exactly accounts for the canvas.
+fn sub_pane_heights(panes: &[SubPaneSpec]) -> Vec<f64> {
+    let count = panes.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    let available = (SUB_PANE_HEIGHT * count as f64).min(SUB_PANES_MAX_TOTAL);
+    vec![available / count as f64; count]
+}
+
+/// Build one sub-pane, or `None` when the measurement has nothing to show.
+fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], slot: f64, plot: &Plot) -> Option<ScenePane> {
+    match spec {
+        SubPaneSpec::Rsi {
+            period,
+            overbought,
+            oversold,
+        } => rsi_pane(candles, slot, plot, *period, *overbought, *oversold),
+    }
+}
+
+/// The RSI sub-pane: Wilder's line, the 30/70 bands, and confirmed
+/// RSI/price divergences drawn between their extremes.
+fn rsi_pane(
+    candles: &[Candle],
+    slot: f64,
+    plot: &Plot,
+    period: usize,
+    overbought: f64,
+    oversold: f64,
+) -> Option<ScenePane> {
+    const PANE_MIN: f64 = 0.0;
+    const PANE_MAX: f64 = 100.0;
+    if period == 0 || candles.len() <= period {
+        // Warm-up longer than the window: a line that does not exist yet is
+        // not drawn, and the caller's note says why.
+        return None;
+    }
+    let y_at = |value: f64| {
+        plot.y + plot.h - (value - PANE_MIN) / (PANE_MAX - PANE_MIN) * plot.h
+    };
+
+    let config = analytics_core::rsi_divergence::RsiDivergenceConfig {
+        period,
+        overbought,
+        oversold,
+        // The pane draws every confirmed swing pair in view, not just the
+        // newest: a chart is a history, and a divergence detector that
+        // reported one line per window would erase the ones the user just
+        // scrolled past. The strength/spacing defaults are the detector's.
+        ..analytics_core::rsi_divergence::RsiDivergenceConfig::default()
+    };
+    // The detector returns divergences over the trailing `lookback` (60 by
+    // default) but the pane draws the whole visible window, so run it over
+    // everything visible and keep every hit.
+    let mut config = config;
+    config.lookback = candles.len();
+    let divergences = analytics_core::rsi_divergence::rsi_divergences(candles, &config);
+    let rsi_values = analytics_core::rsi_divergence::rsi_series(candles, period);
+
+    let line: Vec<Point> = rsi_values
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| {
+            value.map(|v| Point {
+                x: plot.x + slot * (index as f64 + 0.5),
+                y: y_at(v),
+            })
+        })
+        .collect();
+    if line.is_empty() {
+        return None;
+    }
+
+    // Divergence lines: both ends are RSI swings, so both map through the
+    // pane's own scale. The index is into the same `candles` slice the line
+    // was built from, so the x coordinates line up with the line's own points.
+    let marks: Vec<PaneDivergence> = divergences
+        .iter()
+        .map(|div| PaneDivergence {
+            from_x: plot.x + slot * (div.prior.index as f64 + 0.5),
+            from_y: y_at(div.prior.rsi),
+            to_x: plot.x + slot * (div.rsi_index as f64 + 0.5),
+            to_y: y_at(div.rsi),
+            kind: div.direction.name().to_owned(),
+        })
+        .collect();
+
+    let levels = [oversold, overbought]
+        .into_iter()
+        .filter(|value| value.is_finite())
+        .map(|value| PaneLevel {
+            y: y_at(value),
+            value,
+        })
+        .collect();
+    let ticks: Vec<PaneTick> = [PANE_MAX, overbought, 50.0, oversold, PANE_MIN]
+        .into_iter()
+        .filter(|value| value.is_finite() && *value >= PANE_MIN && *value <= PANE_MAX)
+        .map(|value| PaneTick {
+            y: y_at(value),
+            value,
+        })
+        .collect();
+
+    Some(ScenePane {
+        kind: "rsi".into(),
+        label: format!("RSI ({period})"),
+        plot: *plot,
+        line,
+        levels,
+        divergences: marks,
+        ticks,
+    })
 }
 
 /// Resolve the answer's levels onto the frame.
@@ -1488,6 +1809,7 @@ fn profile_bars(
     plot: &Plot,
     price_min: f64,
     price_max: f64,
+    anchor: ProfileAnchor,
 ) -> Vec<ProfileBar> {
     let peak = profile
         .histogram
@@ -1497,7 +1819,13 @@ fn profile_bars(
     if peak <= 0.0 {
         return Vec::new();
     }
-    let right = plot.x + plot.w;
+    // The x a zero-volume bar would take: the edge the histogram grows from.
+    // One subtraction either side of it, so mirroring the anchor mirrors one
+    // line and cannot split the two halves of the geometry.
+    let base = match anchor {
+        ProfileAnchor::Right => plot.x + plot.w,
+        ProfileAnchor::Left => plot.x,
+    };
     let row_height = (plot.h / PROFILE_ROWS).max(1.0);
 
     profile
@@ -1509,7 +1837,10 @@ fn profile_bars(
             let w = node.volume / peak * PROFILE_WIDTH;
             let total = node.buy_volume + node.sell_volume;
             ProfileBar {
-                x: right - w,
+                x: match anchor {
+                    ProfileAnchor::Right => base - w,
+                    ProfileAnchor::Left => base,
+                },
                 y: y - row_height / 2.0,
                 w,
                 h: row_height,
@@ -2736,8 +3067,7 @@ mod tests {
     }
 
     #[test]
-    fn the_longest_profile_bar_is_the_widest() {
-        let scene = build(&request(300));
+    fn the_longest_profile_bar_is_the_widest() {        let scene = build(&request(300));
         let widest = scene.profile.iter().map(|bar| bar.w).fold(0.0f64, f64::max);
         let loudest = scene
             .profile
@@ -2761,6 +3091,30 @@ mod tests {
         let scene = build(&request(300));
         assert!(scene.profile.iter().any(|bar| bar.in_value_area));
         assert!(scene.profile.iter().any(|bar| !bar.in_value_area));
+    }
+
+    #[test]
+    fn a_left_anchored_profile_mirrors_the_right_anchored_one() {
+        let mut ask = request(300);
+        ask.profile_anchor = ProfileAnchor::Left;
+        let left = build(&ask);
+        let right = build(&request(300));
+
+        assert_eq!(left.profile.len(), right.profile.len(), "the same candles,
+            so the same buckets -- only the edge they grow from moved");
+        for (l, r) in left.profile.iter().zip(&right.profile) {
+            // Same bar, mirrored: a right-anchored bar of width w sits at
+            // right_edge - w; a left-anchored one at plot.x. Their outer
+            // edges are the two edges of the plot.
+            assert!(
+                (l.x - left.plot.x).abs() < 1e-9,
+                "left-anchored bars grow rightward from the plot's left edge: {l:?}"
+            );
+            assert_eq!(l.w, r.w, "width is volume, not the anchor");
+            assert_eq!(l.y, r.y);
+            assert_eq!(l.buy_ratio, r.buy_ratio);
+            assert_eq!(l.in_value_area, r.in_value_area);
+        }
     }
 
     #[test]
@@ -4708,5 +5062,158 @@ mod tests {
         .expect("a bare request parses");
         assert!(parsed.overlays.is_empty());
         assert!(build(&parsed).overlays.is_empty());
+    }
+
+    // --- sub-panes ----------------------------------------------------------
+
+    #[test]
+    fn an_rsi_sub_pane_lays_out_below_the_price_plot_with_its_own_scale() {
+        let mut request = request(120);
+        request.height = 600.0;
+        request.sub_panes = vec![SubPaneSpec::Rsi {
+            period: 14,
+            overbought: 70.0,
+            oversold: 30.0,
+        }];
+        let scene = build(&request);
+
+        assert_eq!(scene.sub_panes.len(), 1);
+        let pane = &scene.sub_panes[0];
+        // The main plot shrank by the pane's height plus the gap.
+        let expected_main = 600.0 - PAD_TOP - PAD_BOTTOM - SUB_PANE_HEIGHT - SUB_PANE_GAP;
+        assert!((scene.plot.h - expected_main).abs() < 1e-9, "{}", scene.plot.h);
+        // The pane sits below the price plot with the gap between them.
+        assert!((pane.plot.y - (scene.plot.y + scene.plot.h + SUB_PANE_GAP)).abs() < 1e-9);
+        assert!((pane.plot.h - SUB_PANE_HEIGHT).abs() < 1e-9);
+        assert_eq!(pane.kind, "rsi");
+        assert!(pane.label.contains("14"), "{}", pane.label);
+        // The line exists, stays inside the pane, and spans the RSI range.
+        assert!(!pane.line.is_empty());
+        for point in &pane.line {
+            assert!(point.y >= pane.plot.y - 1e-9 && point.y <= pane.plot.y + pane.plot.h + 1e-9);
+        }
+        // The 30/70 bands and the ticks are mapped into the pane.
+        assert_eq!(pane.levels.len(), 2);
+        let oversold = pane.levels.iter().find(|l| l.value == 30.0).expect("30 band");
+        let overbought = pane.levels.iter().find(|l| l.value == 70.0).expect("70 band");
+        assert!(oversold.y > overbought.y, "y grows downward");
+        assert!(!pane.ticks.is_empty());
+    }
+
+    #[test]
+    fn a_series_too_short_for_the_period_draws_no_pane_and_says_so() {
+        let mut request = request(10);
+        request.height = 600.0;
+        request.sub_panes = vec![SubPaneSpec::Rsi {
+            period: 14,
+            overbought: 70.0,
+            oversold: 30.0,
+        }];
+        let scene = build(&request);
+        assert!(scene.sub_panes.is_empty());
+        assert!(scene.note.is_some(), "the absence is explained");
+    }
+
+    #[test]
+    fn two_sub_panes_split_the_allotted_space_and_never_touch() {
+        let mut request = request(120);
+        request.height = 700.0;
+        let rsi = SubPaneSpec::Rsi {
+            period: 14,
+            overbought: 70.0,
+            oversold: 30.0,
+        };
+        request.sub_panes = vec![rsi.clone(), rsi];
+        let scene = build(&request);
+        assert_eq!(scene.sub_panes.len(), 2);
+        let [first, second] = [&scene.sub_panes[0], &scene.sub_panes[1]];
+        // Two 90px panes fit under 700px, so each keeps its full height.
+        assert!((first.plot.h - SUB_PANE_HEIGHT).abs() < 1e-9);
+        // And the second starts below the first, with the gap between.
+        assert!(second.plot.y > first.plot.y + first.plot.h);
+    }
+
+    #[test]
+    fn a_divergent_series_draws_the_divergence_line_in_the_pane() {
+        // The same bullish-divergence shape `rsi_divergence`'s own tests use:
+        // a leg down, a bounce, a lower low whose RSI is higher.
+        let shape: [(f64, f64, f64); 23] = [
+            (100.5, 99.5, 100.0),
+            (100.8, 99.8, 100.3),
+            (100.6, 99.6, 100.1),
+            (100.9, 99.9, 100.4),
+            (100.7, 99.7, 100.2),
+            (100.5, 99.5, 100.0),
+            (100.3, 99.3, 99.8),
+            (100.5, 99.5, 100.0),
+            (99.8, 98.5, 99.0),
+            (98.8, 96.5, 97.0),
+            (96.8, 94.0, 94.5),
+            (94.4, 91.5, 92.0),
+            (92.2, 90.0, 90.5),
+            (91.8, 90.6, 91.4),
+            (92.6, 91.4, 92.2),
+            (93.4, 92.2, 93.0),
+            (93.2, 91.8, 92.2),
+            (92.0, 90.8, 91.2),
+            (91.2, 89.6, 90.0),
+            (90.4, 88.9, 89.3),
+            (89.6, 88.8, 89.0),
+            (90.2, 89.5, 90.0),
+            (90.8, 90.1, 90.6),
+        ];
+        let candles: Vec<Candle> = shape
+            .into_iter()
+            .enumerate()
+            .map(|(i, (high, low, close))| Candle {
+                symbol: "BTCUSDT".into(),
+                timeframe: Timeframe::M5,
+                open_time: i as i64 * 300_000_000_000,
+                open: close,
+                high,
+                low,
+                close,
+                volume: 10.0,
+                buy_volume: 5.0,
+                sell_volume: 5.0,
+            })
+            .collect();
+        let mut request = Request {
+            candles,
+            ..Request::default()
+        };
+        request.height = 600.0;
+        request.sub_panes = vec![SubPaneSpec::Rsi {
+            period: 5,
+            overbought: 70.0,
+            oversold: 30.0,
+        }];
+        let scene = build(&request);
+        let pane = scene.sub_panes.first().expect("the pane drew");
+        assert!(!pane.divergences.is_empty(), "the fixture diverges");
+        let mark = &pane.divergences[0];
+        // A bullish divergence's RSI second extreme is *higher* than its first,
+        // so on canvas it sits lower (y grows downward).
+        assert_eq!(mark.kind, "bullish");
+        assert!(mark.to_y < mark.from_y, "{} -> {}", mark.from_y, mark.to_y);
+    }
+
+    #[test]
+    fn sub_panes_parse_from_a_request_the_shell_sends() {
+        let parsed: Request = serde_json::from_value(serde_json::json!({
+            "candles": [], "width": 800.0, "height": 600.0,
+            "sub_panes": [{ "kind": "rsi", "period": 14, "overbought": 70.0, "oversold": 30.0 }]
+        }))
+        .expect("the wire form parses");
+        assert_eq!(parsed.sub_panes.len(), 1);
+        let scene = build(&parsed);
+        // No candles: the scene is empty but the request still parsed.
+        assert!(scene.sub_panes.is_empty());
+        // And an old request without the field still parses.
+        let old: Request = serde_json::from_value(serde_json::json!({
+            "candles": [], "width": 800.0, "height": 600.0
+        }))
+        .expect("a request without sub_panes parses");
+        assert!(old.sub_panes.is_empty());
     }
 }

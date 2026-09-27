@@ -58,6 +58,7 @@ pub mod event_engine;
 pub mod extract;
 pub mod footprint_routes;
 pub mod indicator_alerts;
+pub mod parameter_sweep;
 pub mod indicator_preview;
 pub mod indicator_workspace_routes;
 pub mod market_data;
@@ -278,6 +279,14 @@ pub fn router(state: AppState) -> Router {
             post(strategy_routes::validate_stored),
         )
         .route("/strategies/{id}/backtest", post(strategy_routes::backtest))
+        .route(
+            "/strategies/{id}/sweep",
+            post(strategy_routes::parameter_sweep),
+        )
+        .route(
+            "/indicator-workspaces/{id}/promote",
+            post(indicator_workspace_routes::promote_revision),
+        )
         .route(
             "/strategies/{id}/backtests",
             get(strategy_routes::list_backtests),

@@ -52,6 +52,21 @@ pub struct RsiDivergence {
     pub price: f64,
     /// The RSI extreme at the divergence point.
     pub rsi: f64,
+    /// Bar index and RSI value of the **first** (earlier) swing -- the one the
+    /// divergence is measured against. A chart draws the divergence line
+    /// between this point and the reported extreme; carrying both ends is what
+    /// keeps that line the detector's own claim rather than a renderer's guess
+    /// about which prior swing mattered.
+    pub prior: Swing,
+}
+
+/// One end of a divergence line: where it sits and what it measured.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Swing {
+    /// Bar index into the slice the detector saw.
+    pub index: usize,
+    /// The RSI value at that bar.
+    pub rsi: f64,
 }
 
 /// Which way a divergence leans.
@@ -232,13 +247,18 @@ fn divergence_of(
 
     // The divergence is reported at the *price* swing -- that is where the
     // chart draws it and where a condition compares. The RSI swing rides
-    // along as evidence.
+    // along as evidence, and the earlier RSI swing completes the line a chart
+    // draws between the two extremes.
     Some(RsiDivergence {
         direction: kind,
         price_index: price_extreme_last.index.0,
         rsi_index: rsi_extreme_last.index.0,
         price: price_extreme_last.value,
         rsi: rsi_extreme_last.value,
+        prior: Swing {
+            index: rsi_extreme_first.index.0,
+            rsi: rsi_extreme_first.value,
+        },
     })
 }
 
@@ -365,10 +385,7 @@ mod tests {
             lookback: 60,
             ..RsiDivergenceConfig::default()
         };
-        let (rsi_values, divergences) = {
-            let values = rsi_series(&bullish_series(), config.period);
-            (values, rsi_divergences(&bullish_series(), &config))
-        };
+        let divergences = rsi_divergences(&bullish_series(), &config);
         // The fixture is built so the second low's RSI is higher; assert the
         // detector agrees, and that the point it reports is the price low.
         let div = divergences

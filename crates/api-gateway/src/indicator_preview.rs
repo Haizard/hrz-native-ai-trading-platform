@@ -32,6 +32,7 @@ use analytics_core::concepts::{self, detect};
 use analytics_core::regions::Region;
 use analytics_core::types::{self, Timeframe};
 use backtester::replay::{replay, ReplayConfig, ReplayInput, ReplaySignal};
+use serde::Serialize;
 use chart_engine::{
     self, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind, ReplayExit, ReplaySetup,
     SetupDirection,
@@ -221,7 +222,7 @@ pub async fn replay_preview(
     source_timeframe: &str,
     document: &strategy_dsl::StrategyDocument,
     validated: &strategy_dsl::ValidatedStrategy,
-) -> Result<IndicatorOutput, String> {
+) -> Result<(IndicatorOutput, Option<PreviewStats>), String> {
     let to_ns = crate::now_ns();
     let from_ns = to_ns - PREVIEW_WINDOW_NS;
     // The workspace's own chart timeframe is the natural source to aggregate
@@ -293,7 +294,19 @@ pub async fn replay_preview(
         // recent matches, the ones a chart is showing, the same rule
         // `IndicatorOutput::from_replay` applies to setups.
         preview.cull_to_budget();
-        return Ok(preview);
+        // A detector layer has no trades to score -- its honest stats are the
+        // detection counts the preview already carries.
+        let stats = PreviewStats {
+            kind: PreviewKind::Detector,
+            fires: preview.zones.len(),
+            trades: 0,
+            win_rate: None,
+            average_r: None,
+            max_drawdown_r: None,
+            net_r: None,
+            window_days: PREVIEW_WINDOW_NS as f64 / (24.0 * 3600.0 * 1e9),
+        };
+        return Ok((preview, Some(stats)));
     }
 
     let input = ReplayInput::new(document, series)
@@ -314,7 +327,62 @@ pub async fn replay_preview(
     )
     .map_err(|error| format!("the preview replay did not complete: {error}"))?;
 
-    Ok(build_preview("", &output.signals))
+    // The same metrics the backtester reports, computed from the preview
+    // replay's own trades. This is the "is the idea even viable" answer, and
+    // it costs nothing: the trades already exist, `compute_metrics` is the
+    // shared arithmetic, and a preview that scored differently from a real
+    // backtest would be a second implementation of the one thing this
+    // workspace must never have two of.
+    let metrics = backtester::report::compute_metrics(&output.trades, PREVIEW_WINDOW_NS);
+    let stats = PreviewStats {
+        kind: PreviewKind::Strategy,
+        fires: output.signals.len(),
+        trades: metrics.total_trades,
+        win_rate: Some(metrics.win_rate),
+        average_r: Some(metrics.average_r),
+        max_drawdown_r: Some(metrics.max_drawdown_pct),
+        net_r: Some(metrics.net_return_pct),
+        window_days: PREVIEW_WINDOW_NS as f64 / (24.0 * 3600.0 * 1e9),
+    };
+
+    Ok((build_preview("", &output.signals), Some(stats)))
+}
+
+/// What kind of document the preview replayed -- which stats mean what.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewKind {
+    /// A `kind: strategy` replay: `fires` is signals, the R numbers are real.
+    Strategy,
+    /// A `kind: indicator` detection pass: `fires` is matched windows, and
+    /// the R fields are `None` by design rather than by omission.
+    Detector,
+}
+
+/// The numbers a preview replay produced, for the chat's auto-backtest card.
+///
+/// Deliberately small and honest: this is a one-week sandboxed replay, not a
+/// historical backtest, and the card says so. `Serialize` because it travels
+/// inside the assistant message's payload.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct PreviewStats {
+    /// Which kind of document produced these numbers.
+    pub kind: PreviewKind,
+    /// Entry signals fired (strategy) or windows matched (detector).
+    pub fires: usize,
+    /// Completed trades. Zero for a detector.
+    pub trades: u32,
+    /// Fraction of trades that made money; `None` for a detector.
+    pub win_rate: Option<f64>,
+    /// Mean R per trade; `None` for a detector.
+    pub average_r: Option<f64>,
+    /// Largest peak-to-trough fall of the cumulative R curve, positive; `None`
+    /// for a detector.
+    pub max_drawdown_r: Option<f64>,
+    /// Total R over the window; `None` for a detector.
+    pub net_r: Option<f64>,
+    /// How many days the replay covered, so the card can say "per week".
+    pub window_days: f64,
 }
 
 #[cfg(test)]

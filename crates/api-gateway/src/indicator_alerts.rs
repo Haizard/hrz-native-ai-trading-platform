@@ -2,10 +2,24 @@
 //!
 //! ## What this does
 //!
-//! When a running bot fires a decision event (e.g., `EntryQueued` with
-//! `long_setup` reasons), this worker checks whether any workspace has an alert
-//! preference for that event and, if so, delivers the notification to the
-//! configured webhook.
+//! Two event sources feed the same preference table:
+//!
+//! * **Bot decisions** -- a running bot fires `EntryQueued` with
+//!   `long_setup` reasons, and a preference for that event name delivers.
+//! * **Derived market events** -- the event engine detects a sweep, a
+//!   structural break or a fresh gap on a live candle (`fvg_created`,
+//!   `liquidity_sweep`, ...), and a preference for that kind delivers even
+//!   though no bot is running. This is the source that makes a
+//!   `kind: indicator` workspace -- which has no entry logic by design and
+//!   can never produce a bot decision -- alertable at all.
+//!
+//! ## Killzone gating
+//!
+//! A preference's `channels` JSON may carry `"session": "london"` (or any
+//! name the session module knows). A gated alert only delivers while the
+//! event's timestamp is inside that session window -- "tell me about fresh
+//! London gaps" is a different instruction from "tell me about gaps", and a
+//! filter that fired around the clock would not honour it.
 //!
 //! ## Deduplication
 //!
@@ -45,14 +59,17 @@ pub struct AlertDeliveryState {
     pub http: reqwest::Client,
 }
 
-/// Spawn the indicator alert delivery worker.
+/// Spawn the indicator alert delivery worker: bot decisions and derived
+/// market events into one preference table, one cooldown map.
 pub fn spawn_indicator_alert_delivery(
     state: AlertDeliveryState,
     mut events: broadcast::Receiver<BotEvent>,
+    market_events: broadcast::Receiver<analytics_core::events::MarketEvent>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut cooldowns: HashMap<AlertKey, std::time::Instant> = HashMap::new();
         let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        let mut market = market_events;
         ticker.tick().await;
 
         loop {
@@ -62,6 +79,9 @@ pub fn spawn_indicator_alert_delivery(
                         handle_decision(&state, &mut cooldowns, *bot_id, record).await;
                     }
                 }
+                Ok(market_event) = market.recv() => {
+                    handle_market_event(&state, &mut cooldowns, &market_event).await;
+                }
                 _ = ticker.tick() => {
                     let now = std::time::Instant::now();
                     cooldowns.retain(|_, last| now.duration_since(*last) < DELIVERY_COOLDOWN);
@@ -69,6 +89,139 @@ pub fn spawn_indicator_alert_delivery(
             }
         }
     })
+}
+
+/// Which session a preference is gated to, read out of its `channels` JSON.
+///
+/// `channels` is a free-form object the shell writes (`{"webhook": true}`);
+/// an optional `"session"` key narrows delivery to that window. Unknown or
+/// misspelled names return `None` -- and `None` means *ungated*, which is why
+/// the read is strict about what it accepts rather than best-effort.
+fn gated_session(channels: &serde_json::Value) -> Option<analytics_core::SessionKind> {
+    let name = channels.get("session")?.as_str()?;
+    match name {
+        "asia" => Some(analytics_core::SessionKind::Asia),
+        "london" => Some(analytics_core::SessionKind::London),
+        "new_york" => Some(analytics_core::SessionKind::NewYork),
+        _ => None,
+    }
+}
+
+/// Whether an event timestamp passes the preference's session gate.
+fn passes_session_gate(
+    channels: &serde_json::Value,
+    at_ns: i64,
+    windows: &[analytics_core::SessionWindow],
+) -> bool {
+    match gated_session(channels) {
+        // Ungated: every event passes.
+        None => true,
+        Some(wanted) => matches!(
+            analytics_core::session_of(at_ns, windows),
+            Some(kind) if kind == wanted
+        ),
+    }
+}
+
+/// Process one derived market event and deliver matching alerts.
+async fn handle_market_event(
+    state: &AlertDeliveryState,
+    cooldowns: &mut HashMap<AlertKey, std::time::Instant>,
+    event: &analytics_core::events::MarketEvent,
+) {
+    let event_name = event.kind.name();
+    let rows = match db::list_enabled_indicator_alert_preferences(state.db.pool()).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            warn!(error = %error, "could not read indicator alert preferences");
+            return;
+        }
+    };
+    if rows.is_empty() {
+        return;
+    }
+
+    for row in &rows {
+        if row.event_name != event_name {
+            continue;
+        }
+        if !passes_session_gate(&row.channels, event.bar_time, &analytics_core::SessionWindow::defaults()) {
+            debug!(
+                workspace = %row.workspace_id,
+                event = %event_name,
+                "market-event alert suppressed outside its gated session"
+            );
+            continue;
+        }
+
+        let key = AlertKey {
+            workspace_id: row.workspace_id,
+            revision_id: row.revision_id,
+            event_name: row.event_name.clone(),
+        };
+        if let Some(last) = cooldowns.get(&key) {
+            if last.elapsed() < DELIVERY_COOLDOWN {
+                continue;
+            }
+        }
+        deliver_market_alert(state, &key, event).await;
+        cooldowns.insert(key, std::time::Instant::now());
+    }
+}
+
+/// Deliver a derived-market-event alert.
+async fn deliver_market_alert(
+    state: &AlertDeliveryState,
+    key: &AlertKey,
+    event: &analytics_core::events::MarketEvent,
+) {
+    let Some(webhook_url) = &state.webhook_url else {
+        info!(
+            workspace = %key.workspace_id,
+            event = %key.event_name,
+            "market-event alert fired but no webhook is configured"
+        );
+        return;
+    };
+
+    let payload = serde_json::json!({
+        "type": "market_event_alert",
+        "workspace_id": key.workspace_id,
+        "revision_id": key.revision_id,
+        "event": key.event_name,
+        "symbol": event.symbol,
+        "timeframe": event.timeframe.to_string(),
+        "price": event.price,
+        "bar_time_ns": event.bar_time,
+        "side": event.side.map(|s| s.name()),
+    });
+
+    match state.http.post(webhook_url).json(&payload).send().await {
+        Ok(response) if response.status().is_success() => {
+            info!(
+                workspace = %key.workspace_id,
+                event = %key.event_name,
+                symbol = %event.symbol,
+                "market-event alert delivered"
+            );
+        }
+        Ok(response) => {
+            warn!(
+                status = %response.status(),
+                workspace = %key.workspace_id,
+                event = %key.event_name,
+                "market-event alert webhook rejected the delivery"
+            );
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                workspace = %key.workspace_id,
+                event = %key.event_name,
+                "market-event alert delivery failed"
+            );
+        }
+    }
 }
 
 /// Map a decision outcome to the event names it represents.
@@ -234,5 +387,44 @@ mod tests {
     fn no_signal_produces_no_events() {
         let names = event_names_for_outcome(&DecisionOutcome::NoSignal);
         assert!(names.is_empty());
+    }
+
+    #[test]
+    fn a_session_gate_reads_the_channels_json_and_refuses_unknown_names() {
+        let json = serde_json::json!({"webhook": true, "session": "london"});
+        assert_eq!(gated_session(&json), Some(analytics_core::SessionKind::London));
+        let json = serde_json::json!({"session": "new_york"});
+        assert_eq!(gated_session(&json), Some(analytics_core::SessionKind::NewYork));
+        // Unknown names are None -- ungated -- because a typo'd gate silently
+        // deleting all deliveries would be worse than delivering ungated.
+        assert_eq!(gated_session(&serde_json::json!({"session": "londoner"})), None);
+        // And a preference with no session key at all is simply ungated.
+        assert_eq!(gated_session(&serde_json::json!({"webhook": true})), None);
+    }
+
+    #[test]
+    fn a_killzone_gate_passes_only_inside_its_window() {
+        let gate = serde_json::json!({"session": "london"});
+        let windows = analytics_core::SessionWindow::defaults();
+        let ns_per_min = 60 * 1_000_000_000i64;
+        // 08:30 UTC is inside London 07:00-10:00.
+        assert!(passes_session_gate(&gate, 8 * 60 * ns_per_min + 30 * ns_per_min, &windows));
+        // 16:00 is outside every window.
+        assert!(!passes_session_gate(&gate, 16 * 60 * ns_per_min, &windows));
+        // And an ungated preference passes everywhere, which is the default.
+        let ungated = serde_json::json!({});
+        assert!(passes_session_gate(&ungated, 16 * 60 * ns_per_min, &windows));
+    }
+
+    #[test]
+    fn derived_market_event_kinds_are_the_preference_names() {
+        // The preference's event_name is the event kind's canonical name, so
+        // a shell can offer the menu from `EventKind::ALL` and the worker
+        // matches on exactly those strings.
+        assert_eq!(analytics_core::events::EventKind::FvgCreated.name(), "fvg_created");
+        assert_eq!(
+            analytics_core::events::EventKind::LiquiditySweep.name(),
+            "liquidity_sweep"
+        );
     }
 }

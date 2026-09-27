@@ -319,6 +319,17 @@ pub struct StrategyRequest {
     pub skill_id: Option<String>,
     /// Validation-retry cap; `None` uses [`DEFAULT_MAX_ATTEMPTS`].
     pub max_attempts: Option<usize>,
+    /// Screenshots attached ahead of the description, chart captures most
+    /// recently first.
+    ///
+    /// This is the "start anywhere" half of the generator: a user pastes a
+    /// chart screenshot -- often of somebody else's indicator -- and the
+    /// model reads the drawing's zones, bands and markers off it and drafts
+    /// the matching document. Images ride on the **first user message**
+    /// rather than a separate one, for the same reason `ask` does it: an
+    /// image-only turn would consume the attempt loop's turn budget for no
+    /// reasoning.
+    pub images: Vec<crate::chart_context::ChartScreenshot>,
 }
 
 impl StrategyRequest {
@@ -335,7 +346,15 @@ impl StrategyRequest {
             entry_timeframe: entry_timeframe.into(),
             skill_id: None,
             max_attempts: None,
+            images: Vec::new(),
         }
+    }
+
+    /// Attach a screenshot for the model to read the indicator off.
+    #[must_use]
+    pub fn with_image(mut self, image: crate::chart_context::ChartScreenshot) -> Self {
+        self.images.push(image);
+        self
     }
 }
 
@@ -820,7 +839,26 @@ impl Agent {
             strategy_system_prompt(&request.market, &request.entry_timeframe, skill.as_ref());
         let max_attempts = request.max_attempts.unwrap_or(self.config.max_attempts);
 
-        let mut messages = vec![Message::user(&request.description)];
+        let mut messages = if request.images.is_empty() {
+            vec![Message::user(&request.description)]
+        } else {
+            // Image first, text second -- the same ordering rule `ask` keeps:
+            // a model reading "the chart in the image" before the image has to
+            // hold a reference across turns, and the image-before-text form is
+            // what the provider layer already validates against.
+            let mut content: Vec<ContentBlock> = Vec::with_capacity(request.images.len() + 1);
+            for shot in &request.images {
+                content.push(ContentBlock::Image {
+                    media_type: shot.media_type.clone(),
+                    data: shot.data.clone(),
+                });
+            }
+            content.push(ContentBlock::Text(request.description.clone()));
+            vec![Message {
+                role: crate::llm_client::Role::User,
+                content,
+            }]
+        };
         let tools = vec![draft_strategy_spec()];
         let mut repaired_errors = Vec::new();
 
@@ -1225,6 +1263,21 @@ fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Sk
         "kind: indicator, strategy, bot. max_risk_pct must be <= {}.\n\n",
         strategy_dsl::MAX_RISK_PCT_CEILING
     ));
+
+    out.push_str("## Screenshots — reading an indicator off an image\n");
+    out.push_str(
+        "When images are attached, treat each one as the SPEC the user wants \
+         reproduced, not as decoration. Read the drawing off the chart: shaded \
+         bands become concepts (window = the candles the band spans; lower/upper \
+         = the band's edges; side = which colour/edge price is expected to react \
+         from), horizontal lines become liquidity or level conditions, arrows or \
+         labels above/below candles become the direction of a marker concept. \
+         Translate what you SEE into windows, selectors and requirements -- a red \
+         box above price with three candles of consolidation before a drop is a \
+         supply zone; a dashed horizontal at a prior low is `liquidity.nearest_below`. \
+         If the image is ambiguous, pick the most standard reading and say what you \
+         assumed. The draft should reproduce the picture, not describe it.\n\n",
+    );
 
     out.push_str("## Concepts — when the idea is not in that list\n");
     out.push_str(

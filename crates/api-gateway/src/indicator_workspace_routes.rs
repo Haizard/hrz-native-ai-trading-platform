@@ -43,7 +43,21 @@ pub struct CreateMessageBody {
     pub content: String,
     /// Optional skill to pin while Bedrock generates the underlying DSL.
     pub skill_id: Option<String>,
+    /// Optional screenshots to read the indicator off -- the "start anywhere"
+    /// path. Bounded; see `MAX_MESSAGE_IMAGES`.
+    #[serde(default)]
+    pub images: Vec<MessageImage>,
 }
+
+/// The most images one workspace message may carry.
+///
+/// A chart draft is one image; two is generous. More than four is somebody
+/// stuffing the request, and each image is real base64 in the LLM context.
+const MAX_MESSAGE_IMAGES: usize = 4;
+
+/// The media types the provider accepts -- the agent's own list, by reference
+/// rather than by copy, so the two cannot drift.
+const MESSAGE_IMAGE_TYPES: &[&str] = &ai_agent::chart_context::SCREENSHOT_MEDIA_TYPES;
 
 /// A durable workspace message.
 #[derive(Debug, Serialize)]
@@ -94,6 +108,18 @@ impl From<db::IndicatorAlertPreference> for AlertPreferenceResponse {
             channels: row.channels,
         }
     }
+}
+
+/// An image attached to a workspace message.
+///
+/// Base64 data only: the shell reads the file itself and sends bytes, the
+/// same way `agent_routes` takes screenshots from the chart capture.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageImage {
+    /// Media type. Only what the provider accepts travels further.
+    pub media_type: String,
+    /// Base64-encoded image bytes.
+    pub data: String,
 }
 
 /// Body of the alert preference endpoint.
@@ -385,11 +411,40 @@ pub async fn create_message(
         "user",
         "message",
         body.content.trim(),
-        &serde_json::json!({"skill_id": body.skill_id}),
+        // The image count, not the bytes: base64 payloads do not belong in a
+        // transcript, but "this request had a screenshot" belongs in history.
+        &serde_json::json!({"skill_id": body.skill_id, "image_count": body.images.len()}),
     )
     .await?
     .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
     let agent = state.agent.as_ref().ok_or_else(|| ApiError::unavailable("the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID and AWS credentials"))?;
+    // Screenshots: bounded and type-checked before anything expensive runs.
+    // A rejected image is a 400 the shell can show, not a silent drop -- a
+    // user who pasted a chart and got a text-only reading would not know why.
+    if body.images.len() > MAX_MESSAGE_IMAGES {
+        return Err(ApiError::bad_request(
+            "TOO_MANY_IMAGES",
+            &format!("a message may carry at most {MAX_MESSAGE_IMAGES} images"),
+        ));
+    }
+    let mut screenshots = Vec::new();
+    for image in &body.images {
+        if !MESSAGE_IMAGE_TYPES.contains(&image.media_type.as_str()) {
+            return Err(ApiError::bad_request(
+                "UNSUPPORTED_IMAGE_TYPE",
+                &format!(
+                    "{} is not accepted; use one of {}",
+                    image.media_type,
+                    MESSAGE_IMAGE_TYPES.join(", ")
+                ),
+            ));
+        }
+        screenshots.push(ai_agent::chart_context::ChartScreenshot {
+            media_type: image.media_type.clone(),
+            data: image.data.clone(),
+            label: Some("user-attached chart screenshot".to_string()),
+        });
+    }
     let memory = workspace.memory.to_string();
     let description = format!(
         "Workspace: {}. Existing compact memory: {memory}. Client request: {}. IMPORTANT: this workspace generates `kind: indicator` detector documents only — the user asked for an indicator, so the document MUST declare `kind: indicator` with `concepts` (the patterns to detect) and MUST NOT have entry/risk blocks; a `kind: strategy` here is a wrong answer even if it validates. IMPORTANT: timeframes.entry MUST be exactly `{}` — no other value is acceptable.",
@@ -400,6 +455,9 @@ pub async fn create_message(
     let mut request =
         ai_agent::StrategyRequest::new(description, &workspace.symbol, &workspace.timeframe);
     request.skill_id = body.skill_id.clone();
+    for shot in screenshots {
+        request = request.with_image(shot);
+    }
     // Give the model extra retry attempts — it often ignores the entry
     // timeframe on the first pass and needs the feedback loop to correct.
     request.max_attempts = Some(5);
@@ -442,7 +500,7 @@ pub async fn create_message(
     // revision, so the failure is recorded and an honest empty preview is kept
     // rather than a chart that quietly claims evidence it does not have.
     let revision_tag = strategy_id.to_string();
-    let (preview, preview_note) = match crate::indicator_preview::replay_preview(
+    let (preview, preview_note, preview_stats) = match crate::indicator_preview::replay_preview(
         &state,
         database,
         &workspace.symbol,
@@ -452,10 +510,9 @@ pub async fn create_message(
     )
     .await
     {
-        Ok(replayed) => {
-            let mut replayed = replayed;
+        Ok((mut replayed, stats)) => {
             replayed.revision_id = revision_tag.clone();
-            (replayed, serde_json::Value::Null)
+            (replayed, serde_json::Value::Null, stats)
         }
         Err(reason) => (
             chart_engine::IndicatorOutput {
@@ -471,6 +528,7 @@ pub async fn create_message(
                 links: Vec::new(),
             },
             serde_json::Value::String(reason),
+            None,
         ),
     };
     let preview_json = serde_json::to_value(&preview)
@@ -523,6 +581,10 @@ pub async fn create_message(
         "evidence_nodes": preview.evidence.len(),
         "zones": preview.zones.len(),
         "markers": preview.markers.len(),
+        // The auto-backtest card: the preview replay's own numbers, rendered
+        // by the shell as a compact stats row under the message. Absent when
+        // the replay could not run, so the card is honest about its absence.
+        "preview_stats": preview_stats,
     });
     let assistant_message = db::create_indicator_workspace_message(
         database.pool(),
@@ -703,6 +765,122 @@ pub async fn create_bot_draft(
     .await?
     .ok_or_else(|| ApiError::not_found("workspace revision or strategy not found"))?;
     Ok((StatusCode::CREATED, Json(draft.into())))
+}
+
+/// Body of the promote endpoint.
+#[derive(Debug, Deserialize)]
+pub struct PromoteBody {
+    /// The revision whose concepts become a tradeable strategy.
+    pub revision_id: Uuid,
+    /// What the entry should be, in the user's own words. The detector's
+    /// concepts are the *measurements*; this says what acting on them means --
+    /// "enter on a fresh gap and stop below the band". Optional: absent, the
+    /// agent writes the conventional entry for the concepts it finds.
+    #[serde(default)]
+    pub entry_instruction: Option<String>,
+}
+
+/// `POST /indicator-workspaces/{id}/promote`.
+///
+/// Turns a generated **indicator** revision into a tradeable **strategy**:
+/// the revision's concepts are carried over verbatim as the strategy's own
+/// measurements, and the agent writes entry/risk/invalidation around them.
+/// The result is validated, sandbox-checked, and stored as a strategy the
+/// normal bot-draft path can pin -- the funnel from detection to paper trading
+/// without re-describing the indicator.
+///
+/// # Errors
+/// 404 when the workspace or revision is not the caller's; 503 without an
+/// agent; 422 when the promoted document is refused by the sandbox.
+pub async fn promote_revision(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path(id): Path<Uuid>,
+    ApiJson(body): ApiJson<PromoteBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let database = database(&state)?;
+    let workspace = db::get_indicator_workspace(database.pool(), user.user_id, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    let revision = db::get_indicator_revision(database.pool(), user.user_id, id, body.revision_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("indicator revision not found"))?;
+    let agent = state
+        .agent
+        .as_ref()
+        .ok_or_else(|| ApiError::unavailable("the agent is not configured"))?;
+
+    // The revision's concepts come from the stored preview, which is where
+    // the generator put them; a revision whose preview predates concepts is
+    // promoted as a strategy the agent writes from its summary alone.
+    let concepts: Vec<serde_json::Value> = revision
+        .preview
+        .get("concepts")
+        .and_then(|c| c.as_array().cloned())
+        .unwrap_or_default();
+    let concepts_yaml = concepts
+        .iter()
+        .map(|c| serde_json::to_string(c).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let instruction = body.entry_instruction.as_deref().unwrap_or(
+        "Choose the conventional entry: act when a fresh band appears and confirm \
+         with reclaim or rejection; stop on the far side of the band; take profit \
+         at two times the risk.",
+    );
+    let description = format!(
+        "Promote this generated indicator into a `kind: strategy` document. The \
+         indicator's concepts are BELOW, verbatim -- carry every one into the \
+         strategy's `concepts:` block unchanged, and write entry, risk and \
+         invalidation conditions that reference them (concepts.<name>.fresh, \
+         .mitigated, .top, .bottom). Entry instruction: {instruction}. Workspace: \
+         {}. Symbol: {}. timeframes.entry MUST be exactly `{}`. The concepts, in \
+         their JSON form, one per line: {concepts_yaml}",
+        workspace.name,
+        workspace.symbol,
+        workspace.timeframe
+    );
+
+    let mut request =
+        ai_agent::StrategyRequest::new(description, &workspace.symbol, &workspace.timeframe);
+    request.max_attempts = Some(5);
+    let generated = agent.generate_strategy(&request).await.map_err(ApiError::from)?;
+    let attempts = generated.attempts;
+    let document = generated.document().clone();
+    let yaml = generated.yaml.clone();
+    let validated = generated.into_validated();
+    // A promoted document WILL be traded, unlike a preview: the sandbox check
+    // is mandatory here, not skipped for indicator kinds.
+    Decisions::sandboxed(state.sandbox.as_ref(), &validated).map_err(|err| {
+        ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INDICATOR_SANDBOX_REFUSED",
+            err.to_string(),
+        )
+    })?;
+
+    let strategy = serde_json::to_value(&document)
+        .map_err(|err| ApiError::internal(format!("could not store promoted strategy: {err}")))?;
+    let strategy_id = db::create_strategy(
+        database.pool(),
+        user.user_id,
+        &document.name,
+        &document.version,
+        &strategy,
+        "ai_agent",
+    )
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "strategy_id": strategy_id,
+            "revision_id": body.revision_id,
+            "kind": document.kind.to_string(),
+            "source": yaml,
+            "attempts": attempts,
+        })),
+    ))
 }
 
 /// Body of the draft approval endpoint.

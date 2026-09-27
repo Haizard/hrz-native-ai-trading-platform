@@ -309,7 +309,7 @@ const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartHint", "chartNote",
   "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "fit",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
-  "magnet", "aiLayer", "undo", "redo",
+  "magnet", "aiLayer", "profileAnchor", "undo", "redo",
   // The pane's own chrome (title, zoom/collapse buttons) and the hidden bar
   // the right-click menu hosts.
   "paneTitle", "zoomIn", "zoomOut", "minBtn", "expBtn", "chartBar",
@@ -390,6 +390,10 @@ function createChartPane(root, hooks = {}) {
   // The filter is *presentation only* — the rows stay in `drawings`, so undo,
   // deletion, and the object count are unaffected by what is being shown.
   let aiLayerOn = false;
+  // Which edge the volume profile grows from. Presentation only, like the AI
+  // layer: the engine positions every bar, this names the edge -- off (the
+  // default) is the historical right-edge anchor, on mirrors it to the left.
+  let profileLeft = false;
   // The active drawing tool, or `"cursor"`.
   let tool = "cursor";
   // The magnet. On, every fraction anchor a placement sends is snapped by the
@@ -419,6 +423,10 @@ function createChartPane(root, hooks = {}) {
   // The active, server-validated generated revision. It is an opaque market
   // coordinate payload; only the Rust engine maps it into the scene.
   let indicator = null;
+  // An older revision frozen under the active one, for the diff view. Drawn
+  // faded by `drawIndicatorZones`; never re-detected (concepts stripped at
+  // set time), because a diff between two *moving* layers is noise.
+  let diffIndicator = null;
 
   // ---------------------------------------------------------------------------
   // Drawing
@@ -497,6 +505,17 @@ function createChartPane(root, hooks = {}) {
     sell: "#f23645",
   };
 
+  // The static-layer cache: everything that only changes when the *scene*
+  // changes, pre-rendered once and blitted each frame. A live chart re-draws
+  // several times a second; the grid, zones, regions and profile are identical
+  // between those frames, and redrawing 500 primitives at 60fps is the
+  // difference between smooth and janky (docs/14's own advice, MDN's, and
+  // every chart library's). The cache key is the scene identity the shell
+  // assigns per rebuild -- anything that changes the static layers changes it.
+  let staticLayer = null; // OffscreenCanvas
+  let staticLayerKey = null;
+  let staticSceneId = 0; // Bumped whenever `scene` is replaced.
+
   function draw() {
     const canvas = el("chart");
     const wrap = canvas.parentElement;
@@ -511,18 +530,47 @@ function createChartPane(root, hooks = {}) {
     ctx.clearRect(0, 0, width, height);
     if (!scene) return;
 
-    drawGrid(ctx, scene);
+    // Resize or a new scene invalidates the cache. Keyed on size too, so a
+    // window resize cannot blit a stale-size buffer.
+    const cacheKey = `${staticSceneId}:${Math.floor(width)}x${Math.floor(height)}:${ratio}`;
+    if (!staticLayer || staticLayerKey !== cacheKey) {
+      staticLayer = document.createElement("canvas");
+      staticLayer.width = canvas.width;
+      staticLayer.height = canvas.height;
+      const sctx = staticLayer.getContext("2d");
+      sctx.setTransform(ratio, 0, 0, ratio, 0, 0);
 
-    // Zones go under everything, before the candles: a supply/demand band is a
-    // backdrop the price is read against, not a mark on top of it.
-    drawRegions(ctx, scene);
-    drawIndicatorZones(ctx, scene);
+      drawGrid(sctx, scene);
+      // Zones go under everything, before the candles: a supply/demand band is a
+      // backdrop the price is read against, not a mark on top of it.
+      drawRegions(sctx, scene);
+      drawIndicatorZones(sctx, scene);
+      if (scene.footprint) drawFootprintGrid(sctx, scene);
+      if (scene.profile.length) drawProfile(sctx, scene);
+      staticLayerKey = cacheKey;
+    }
+    ctx.drawImage(staticLayer, 0, 0, width, height);
 
     // The engine says what to draw, so this is a dispatch rather than a decision.
     // Adding a chart type means adding a case here and a variant in Rust -- not
     // teaching JavaScript what a Heikin-Ashi candle is.
-    if (scene.footprint) drawFootprintGrid(ctx, scene);
-    if (scene.profile.length) drawProfile(ctx, scene);
+    switch (scene.style) {
+      case "heikin_ashi":
+      case "candles":
+        drawCandles(ctx, scene);
+        break;
+      case "bars":
+        drawOhlcBars(ctx, scene);
+        break;
+      case "area":
+        drawArea(ctx, scene);
+        break;
+      case "line":
+        drawLine(ctx, scene);
+        break;
+      default:
+        break;
+    }
     switch (scene.style) {
       case "heikin_ashi":
       case "candles":
@@ -549,7 +597,8 @@ function createChartPane(root, hooks = {}) {
     // where the request is built: the engine has no way to know which instrument
     // a bare price belongs to.
     drawOverlays(ctx, scene);
-    drawIndicatorEvidence(ctx, scene);    // The user's own marks, above everything: a drawing that could cover the
+    drawIndicatorEvidence(ctx, scene);
+    // The user's own marks, above everything: a drawing that could cover the
     // answer's levels, or the price labels, would be an annotation they cannot
     // read.
     drawDrawings(ctx, scene);
@@ -559,7 +608,88 @@ function createChartPane(root, hooks = {}) {
     // one *is* the market, now.
     drawLastPrice(ctx, scene);
 
+    // Oscillator panes under the price plot -- RSI and its divergences. Every
+    // coordinate comes from the engine; this fills and strokes, like everywhere
+    // else in this file.
+    drawSubPanes(ctx, scene);
+
     drawAxis(ctx, scene);
+  }
+
+  /// Sub-panes: oscillator plots below the price chart, each with its own
+  /// y-scale. The engine computed the series, mapped it, placed the 30/70
+  /// bands and the divergence lines; this only paints.
+  function drawSubPanes(ctx, scene) {
+    if (!scene.sub_panes || !scene.sub_panes.length) return;
+    for (const pane of scene.sub_panes) {
+      // Pane background and frame -- a slightly darker field than the price
+      // plot, so the eye reads "separate measurement" at a glance.
+      ctx.fillStyle = "rgba(13, 17, 26, 0.65)";
+      ctx.fillRect(pane.plot.x, pane.plot.y, pane.plot.w, pane.plot.h);
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(
+        Math.round(pane.plot.x) + 0.5,
+        Math.round(pane.plot.y) + 0.5,
+        Math.max(1, Math.round(pane.plot.w) - 1),
+        Math.max(1, Math.round(pane.plot.h) - 1)
+      );
+
+      // Reference bands (30/70): faint lines, labelled at the right edge.
+      ctx.font = "9px ui-monospace, monospace";
+      ctx.setLineDash([2, 3]);
+      for (const level of pane.levels) {
+        ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
+        ctx.beginPath();
+        ctx.moveTo(Math.round(pane.plot.x), Math.round(level.y) + 0.5);
+        ctx.lineTo(pane.plot.x + pane.plot.w, Math.round(level.y) + 0.5);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(148, 163, 184, 0.7)";
+        ctx.fillText(String(level.value), pane.plot.x + pane.plot.w + 4, level.y + 3);
+      }
+      ctx.setLineDash([]);
+
+      // The oscillator line itself.
+      if (pane.line.length > 1) {
+        ctx.strokeStyle = "#60a5fa";
+        ctx.lineWidth = 1.25;
+        ctx.beginPath();
+        ctx.moveTo(pane.line[0].x, pane.line[0].y);
+        for (const point of pane.line) ctx.lineTo(point.x, point.y);
+        ctx.stroke();
+      }
+
+      // Divergence lines: the detector's own claim, drawn between the two RSI
+      // extremes -- green for bullish, red for bearish, labelled once.
+      ctx.font = "600 9px ui-sans-serif, system-ui";
+      for (const div of pane.divergences) {
+        const colour = div.kind === "bullish" ? "#34d399" : "#fb7185";
+        ctx.strokeStyle = colour;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(div.from_x, div.from_y);
+        ctx.lineTo(div.to_x, div.to_y);
+        ctx.stroke();
+        // A small marker at the divergence's second extreme.
+        ctx.fillStyle = colour;
+        ctx.beginPath();
+        ctx.arc(div.to_x, div.to_y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillText(div.kind, div.to_x + 5, div.to_y + 3);
+      }
+
+      // Pane label, top-left: what this measurement is.
+      ctx.fillStyle = "rgba(226, 232, 240, 0.85)";
+      ctx.font = "600 10px ui-sans-serif, system-ui";
+      ctx.fillText(pane.label, pane.plot.x + 6, pane.plot.y + 12);
+
+      // Pane y-axis ticks, right-aligned to the shared price-axis column.
+      ctx.font = "9px ui-monospace, monospace";
+      ctx.fillStyle = "rgba(148, 163, 184, 0.9)";
+      for (const tick of pane.ticks) {
+        ctx.fillText(String(tick.value), pane.plot.x + pane.plot.w + 6, tick.y + 3);
+      }
+    }
   }
 
   /// The last-price line: the horizontal rule other platforms draw at the live
@@ -696,9 +826,23 @@ function createChartPane(root, hooks = {}) {
   /// and the named evidence chain is drawn later above price. The engine has
   /// already placed every coordinate; this code only paints it.
   function drawIndicatorZones(ctx, scene) {
+    // The diff layer first, so the active layer paints over it: the old
+    // revision is a ghost the new one answers, not a peer.
+    if (scene.diff_indicator && scene.diff_indicator.zones.length) {
+      drawZoneSet(ctx, scene.diff_indicator.zones, 0.35, null, scene.plot);
+    }
     const indicator = scene.indicator;
     if (!indicator || !indicator.zones.length) return;
     ctx.font = "600 10px ui-sans-serif, system-ui";
+    drawZoneSet(ctx, indicator.zones, 1.0, scene.sub_panes, scene.plot);
+  }
+
+  /// One indicator zone set, faded by `strength` (1.0 = full treatment).
+  ///
+  /// Shared by the live layer and the diff ghost so a revision comparison is
+  /// the same drawing at two opacities -- a different shape for the ghost
+  /// would say "different indicator" when it means "different revision".
+  function drawZoneSet(ctx, zones, strength, subPanes, plotArg) {
     // One hue per concept label, so a four-concept detector reads as four
     // layers instead of one blur: the label is the concept's own name, which
     // is stable across every chart the indicator runs on. Deterministic
@@ -710,9 +854,14 @@ function createChartPane(root, hooks = {}) {
       return hues[Math.abs(h) % hues.length];
     };
     // Zones clip to the plot the way the reference charts do: a band that
-    // ran into the price axis is the single loudest " homemade" tell.
-    const plot = scene.plot;
-    for (const zone of indicator.zones) {
+    // ran into the price axis is the single loudest "homemade" tell.
+    const plot = plotArg;
+    // Label collision pass: two concepts sharing a price zone would paint
+    // their pills on top of each other, which is how a layered chart turned
+    // into one blur. First pill wins; the crowded zone is still fully drawn,
+    // it just does not shout twice.
+    const placedLabels = [];
+    for (const zone of zones) {
       // The concept owns the colour; the lifecycle owns the treatment.
       const colour = labelHue(zone.label);
       const spent = zone.state === "mitigated" || zone.state === "invalidated";
@@ -723,20 +872,21 @@ function createChartPane(root, hooks = {}) {
 
       // Soft vertical fade instead of a flat fill -- the top edge (the one
       // price reacts from) carries a little more colour than the far edge.
+      // The strength multiplier is what makes the diff ghost a ghost.
       const grad = ctx.createLinearGradient(0, zone.y_top, 0, zone.y_top + zone.h);
       if (spent) {
-        grad.addColorStop(0, hexToRgba(colour, 0.06));
-        grad.addColorStop(1, hexToRgba(colour, 0.02));
+        grad.addColorStop(0, hexToRgba(colour, 0.06 * strength));
+        grad.addColorStop(1, hexToRgba(colour, 0.02 * strength));
       } else {
-        grad.addColorStop(0, hexToRgba(colour, 0.28));
-        grad.addColorStop(1, hexToRgba(colour, 0.10));
+        grad.addColorStop(0, hexToRgba(colour, 0.28 * strength));
+        grad.addColorStop(1, hexToRgba(colour, 0.10 * strength));
       }
       ctx.fillStyle = grad;
       ctx.fillRect(x, zone.y_top, w, zone.h);
 
       // Crisp 1px border on the pixel grid; dashed only for spent history.
       // Pixel alignment is why two adjacent bands never blur into a stripe.
-      ctx.strokeStyle = hexToRgba(colour, spent ? 0.35 : 0.85);
+      ctx.strokeStyle = hexToRgba(colour, (spent ? 0.35 : 0.85) * strength);
       ctx.lineWidth = 1;
       ctx.setLineDash(spent ? [4, 3] : []);
       ctx.strokeRect(
@@ -747,11 +897,22 @@ function createChartPane(root, hooks = {}) {
       );
       ctx.setLineDash([]);
 
-      // Only zones still in play carry their name, and only where there is
-      // room to say it: a week of detections is mostly history, and the pill
-      // is what keeps the ones that are labelled readable over candles.
-      if (!spent && w > 28) {
-        drawZoneLabel(ctx, zone.label, x, zone.y_top, zone.h, colour);
+      // Only zones still in play carry their name, and only at full strength
+      // -- a ghost labelled like a live layer would read as a second active
+      // indicator rather than as history. The collision box is the pill's
+      // would-be rectangle, in plot space; an earlier overlapping pill wins.
+      if (!spent && w > 28 && strength >= 1.0) {
+        const pad = 4;
+        const boxW = ctx.measureText(zone.label).width + pad * 2 + 4;
+        const boxY = zone.h >= 18 ? zone.y_top + 3 : zone.y_top - 17;
+        const box = { x: x + 2, y: boxY, w: boxW, h: 14 };
+        const overlaps = placedLabels.some((b) =>
+          box.x < b.x + b.w && box.x + box.w > b.x && box.y < b.y + b.h && box.y + box.h > b.y
+        );
+        if (!overlaps) {
+          placedLabels.push(box);
+          drawZoneLabel(ctx, zone.label, x, zone.y_top, zone.h, colour);
+        }
       }
     }
   }
@@ -1521,7 +1682,14 @@ function createChartPane(root, hooks = {}) {
       // -- and short-circuiting on `thesis &&` is exactly what would hide it,
       // because the read that throws is the one after the guard.
       overlays: thesis && thesis.symbol === el("symbol").value ? thesisOverlays(thesis) : [],
+      // The profile's edge, in the engine's own spelling. Assigned only when
+      // set: absent means Right, which keeps every existing request byte-identical.
+      ...(profileLeft ? { profile_anchor: "left" } : {}),
       indicator,
+      // The frozen older revision, drawn faded behind the live layer. Sent as
+      // its own request field so the engine positions it with the same frame
+      // everything else uses -- a second indicator field would double-paint.
+      diff_indicator: diffIndicator,
     };
     // The live layer. An attached indicator that carries its document's
     // concepts is sent as a **definition**, not a snapshot: the engine
@@ -1544,7 +1712,23 @@ function createChartPane(root, hooks = {}) {
     if (viewport) request.viewport = viewport;
     if (gesture) request.gesture = gesture;
 
+    // A generated indicator whose document mentions divergence gets an RSI
+    // sub-pane: the detector reports RSI/price divergences, and those belong
+    // under the chart with their own scale -- the same reason TradingView puts
+    // oscillators in lower panes. The engine computes and positions everything;
+    // this only names the measurement it wants.
+    const liveNames = (indicator && Array.isArray(indicator.concepts) ? indicator.concepts : [])
+      .map((c) => String(c.name || ""))
+      .join(" ");
+    if (/divergence|rsi/i.test(liveNames)) {
+      request.sub_panes = [{ kind: "rsi", period: 14, overbought: 70, oversold: 30 }];
+    }
+
     scene = buildScene(request);
+    // New scene ⇒ new static-layer identity: without this the next draw would
+    // find a matching cacheKey and blit the previous scene's grid, zones and
+    // profile over the new candles.
+    staticSceneId += 1;
     viewport = scene.viewport;
     // The engine's own answer to "how wide must a cell be for the numbers that
     // are in this window", kept for the next window the user asks for. The count
@@ -1601,6 +1785,45 @@ function createChartPane(root, hooks = {}) {
   /// a display concern rather than a market one. Clamped to the plot, so a pointer
   /// that has wandered onto the price axis zooms about the nearest edge rather
   /// than about a fraction outside the chart.
+  /// Hit-test the generated markers under the pointer and fill the evidence
+  /// tooltip. Nearest marker inside the radius wins -- markers can overlap at
+  /// dense zoom-outs, and the closest one is the one the pointer is on.
+  function updateEvidenceTip(event) {
+    const tip = document.getElementById("evidenceTip");
+    if (!tip) return;
+    const indicator = scene && scene.indicator;
+    const markers = indicator && Array.isArray(indicator.markers) ? indicator.markers : [];
+    const rect = el("chart").getBoundingClientRect();
+    const px = event.clientX - rect.left;
+    const py = event.clientY - rect.top;
+    const radius = 9;
+    let best = null;
+    let bestDist = Infinity;
+    for (const marker of markers) {
+      if (typeof marker.x !== "number" || typeof marker.y !== "number") continue;
+      const d = Math.hypot(marker.x - px, marker.y - py);
+      if (d <= radius && d < bestDist) {
+        best = marker;
+        bestDist = d;
+      }
+    }
+    if (!best || (!best.explanation && !best.label)) {
+      tip.hidden = true;
+      return;
+    }
+    tip.hidden = false;
+    tip.innerHTML =
+      `<div class="tipKind">${escapeHtml(best.label || best.kind || "evidence")}</div>` +
+      (best.explanation ? `<div>${escapeHtml(best.explanation)}</div>` : "");
+    // Follow the pointer, clamped to the chart area so it never covers the
+    // axis or runs off the window edge.
+    const wrap = el("chartWrap").getBoundingClientRect();
+    const left = Math.min(px + 14, wrap.width - 330);
+    const top = Math.min(py + 14, wrap.height - 70);
+    tip.style.left = `${Math.max(0, left)}px`;
+    tip.style.top = `${Math.max(0, top)}px`;
+  }
+
   function plotFraction(event) {
     if (!scene) return null;
     const rect = el("chart").getBoundingClientRect();
@@ -1713,6 +1936,12 @@ function createChartPane(root, hooks = {}) {
 
   function onPointerMove(event) {
     if (!scene) return;
+    // Evidence tooltips: while no gesture is in flight, the pointer is tested
+    // against the generated markers' positions -- every marker already knows
+    // *why* it fired (`explanation`), and surfacing that on hover is the
+    // evidence chain made legible without touching the data model. Hit radius
+    // is generous because the glyphs are 3-5px.
+    if (!drag) updateEvidenceTip(event);
     // A click-click-click placement is alive *between* clicks too: with no
     // button held there is no `drag`, but the pending anchor still has to
     // follow the pointer or the user draws blind -- the shape would sit frozen
@@ -2709,6 +2938,18 @@ function createChartPane(root, hooks = {}) {
     scheduleRender();
   }
 
+  /// Toggle which edge the volume profile is anchored to.
+  ///
+  /// Presentation only, like every other overlay switch: the engine places the
+  /// bars and this pane merely asks for the left edge. The static-layer cache
+  /// needs no help -- a new scene bumps its identity already.
+  function toggleProfileAnchor() {
+    profileLeft = !profileLeft;
+    const button = el("profileAnchor");
+    if (button) button.setAttribute("aria-pressed", String(profileLeft));
+    scheduleRender();
+  }
+
   /// Rebuild this pane's tool buttons from the engine's registry, grouped into
   /// labelled flyouts (`docs/21`).
   ///
@@ -3610,8 +3851,30 @@ function createChartPane(root, hooks = {}) {
     /// API; source itself never runs in the browser.
     attachIndicator(output) {
       indicator = output || null;
+      diffIndicator = null;
       renderNow();
       syncIndicatorChip();
+    },
+
+    /// Overlay an older revision under the attached one, for the diff view:
+    /// the old revision's zones draw faded behind the live layer, so "what
+    /// changed between rev 3 and rev 4" is a picture instead of two mental
+    /// models. Only snapshot zones diff well -- a live old layer would
+    /// re-detect on today's series and make the comparison lie.
+    diffIndicatorAgainst(oldPreview) {
+      diffIndicator = oldPreview && Array.isArray(oldPreview.zones) ? oldPreview : null;
+      if (diffIndicator && Array.isArray(oldPreview.concepts) && oldPreview.concepts.length) {
+        // A live old layer would move; the diff wants the frozen coordinates.
+        diffIndicator = { ...oldPreview, concepts: [] };
+      }
+      renderNow();
+    },
+
+    /// Clear the diff overlay.
+    clearDiffIndicator() {
+      if (diffIndicator === null) return;
+      diffIndicator = null;
+      renderNow();
     },
 
     /// Take the attached indicator off this chart.
@@ -3634,6 +3897,9 @@ function createChartPane(root, hooks = {}) {
     /// cannot reach the pane's `indicator` local directly -- that is the point
     /// of the pane boundary -- so the answer comes through the API.
     attachedIndicator: () => indicator,
+
+    /// The pane's diff overlay, if one is set.
+    diffIndicator: () => diffIndicator,
 
     /// What the user is looking at, as `POST /agent/ask` accepts it.
     ///
@@ -3783,6 +4049,7 @@ function createChartPane(root, hooks = {}) {
     currentTool: () => tool,
     magnetOn: () => magnet,
     aiLayerOn: () => aiLayerOn,
+    profileLeft: () => profileLeft,
     canUndo: () => undoStack.length > 0,
     canRedo: () => redoStack.length > 0,
     deleteSelected,
@@ -3795,6 +4062,7 @@ function createChartPane(root, hooks = {}) {
     },
     toggleMagnet,
     toggleAiLayer,
+    toggleProfileAnchor,
     /// Swap this pane's fallback buttons for the registry's set. Called by the
     /// page once the engine has loaded; a no-op before that.
     rebuildToolbar: buildToolbarFromRegistry,
@@ -4016,6 +4284,7 @@ const globalTools = {
     const controls = [
       ["button[data-magnet]", "Magnet", "Snap new drawings to nearby open, high, low, close and value-area prices", "magnet"],
       ["button[data-ai-layer]", "AI", "Show objects the AI agent drew on the active chart, with the reason it gave for each", "aiLayer"],
+      ["button[data-profile-anchor]", "Profile", "Anchor the volume profile to the plot's left edge instead of the right", "profileAnchor"],
       ["button[data-undo]", "Undo", "Undo the last drawing change on the active chart (Ctrl+Z)", "undo"],
       ["button[data-redo]", "Redo", "Redo an undone drawing change on the active chart (Ctrl+Y)", "redo"],
     ];
@@ -4041,6 +4310,9 @@ const globalTools = {
         refreshGlobalTools();
       } else if (button.hasAttribute("data-ai-layer")) {
         activePane.toggleAiLayer();
+        refreshGlobalTools();
+      } else if (button.hasAttribute("data-profile-anchor")) {
+        activePane.toggleProfileAnchor();
         refreshGlobalTools();
       } else if (button.hasAttribute("data-undo")) {
         activePane.history("undo");
@@ -4153,6 +4425,8 @@ function refreshGlobalTools() {
   if (magnet) magnet.setAttribute("aria-pressed", String(activePane.magnetOn()));
   const ai = node.querySelector("[data-ai-layer]");
   if (ai) ai.setAttribute("aria-pressed", String(activePane.aiLayerOn()));
+  const profile = node.querySelector("[data-profile-anchor]");
+  if (profile) profile.setAttribute("aria-pressed", String(activePane.profileLeft()));
   const undo = node.querySelector("[data-undo]");
   if (undo) undo.disabled = !activePane.canUndo();
   const redo = node.querySelector("[data-redo]");
@@ -7426,6 +7700,35 @@ async function main() {
   el("wsDelete").onclick = deleteWorkspace;
   el("wsBack").onclick = showWorkspaceList;
   el("wsChatSend").onclick = sendWorkspaceMessage;
+  // Sweep buttons are rendered inside message bubbles, so the click is caught
+  // on the stream and dispatched -- one listener instead of one per bubble.
+  const chatStream = document.getElementById("wsChat");
+  if (chatStream) {
+    chatStream.addEventListener("click", (e) => {
+      const btn = e.target.closest(".ws-sweep-btn");
+      if (btn && btn.dataset.strategy) runParameterSweep(btn.dataset.strategy, btn);
+    });
+  }
+  // Screenshot attachment: the file input is hidden and the paperclip opens
+  // it, so the composer stays one row tall until images are actually chosen.
+  const attachBtn = document.getElementById("wsChatAttach");
+  const imageInput = document.getElementById("wsChatImage");
+  if (attachBtn && imageInput) {
+    attachBtn.onclick = () => imageInput.click();
+    imageInput.onchange = async () => {
+      const files = Array.from(imageInput.files || []).slice(0, 4);
+      for (const file of files) {
+        try {
+          const shot = await readImageFile(file);
+          if (wsPendingImages.length < 4) wsPendingImages.push(shot);
+        } catch {
+          pageToast(`Could not read ${file.name}`);
+        }
+      }
+      imageInput.value = "";
+      renderPendingImages();
+    };
+  }
   // The composer is one line until it needs more: a growing box keeps the
   // conversation on screen instead of letting a long prompt push it away, and
   // the ceiling matches the CSS so the send button never leaves the frame.
@@ -7798,6 +8101,7 @@ async function loadRevisions(wsId) {
           <button onclick="attachRevisionToChart('${wsId}','${r.id}')" title="Attach this indicator to a chart">Attach to chart</button>
           <button onclick="restoreRevision('${wsId}','${r.id}')" title="Set as active">Restore</button>
           <button onclick="viewRevision('${wsId}','${r.id}')" title="View source and preview">View</button>
+          ${isActive ? '' : `<button onclick="diffRevision('${wsId}','${r.id}')" title="Draw this revision faded under the active one, to see what changed">Diff vs active</button>`}
         </div>
       </div>
     `;
@@ -7831,6 +8135,25 @@ async function attachRevisionToChart(wsId, revId) {
     pageToast(`Attached "${rev.preview.name || "indicator"}" to ${target.symbol()} ${target.timeframe()}${live ? " — it keeps detecting on new candles" : ""}`);
   } catch (e) {
     pageToast(`Could not attach: ${e.message}`);
+  }
+}
+
+/// Draw an older revision faded under the active one: "what changed" as a
+/// picture. Both previews are already on the client; the diff is frozen
+/// coordinates, so it draws even when the two revisions were generated on
+/// different windows.
+async function diffRevision(wsId, revId) {
+  try {
+    if (!activePane) { alert("Open a chart first."); return; }
+    const attached = activePane.attachedIndicator();
+    if (!attached) { alert("Attach the active revision to a chart first, then diff another against it."); return; }
+    const rev = await api(`/indicator-workspaces/${wsId}/revisions/${revId}`);
+    if (!rev.preview || !Array.isArray(rev.preview.zones)) { alert("That revision has no zones to diff."); return; }
+    activePane.diffIndicatorAgainst(rev.preview);
+    syncIndicatorChip();
+    pageToast(`Diffing rev #${rev.revision_number} (faded) against the attached layer`);
+  } catch (e) {
+    pageToast(`Could not diff: ${e.message}`);
   }
 }
 
@@ -7868,7 +8191,99 @@ async function viewRevision(wsId, revId) {
   }
 }
 
-async function loadMessages(wsId) {
+  /// The auto-backtest card under a generated revision's chat message.
+  ///
+  /// The gateway computed these from the generation replay's own trades -- the
+  /// same `compute_metrics` a real backtest runs -- so the card describes a
+  /// one-week sandboxed preview, and says so. A detector layer has no trades
+  /// by design; its card reports the detection counts instead of inventing R
+  /// numbers that do not exist.
+  function previewStatsCard(stats) {
+    if (!stats || typeof stats !== "object") return "";
+    const days = Math.max(1, Math.round(Number(stats.window_days) || 7));
+    const fmt = (v, suffix = "") =>
+      v === null || v === undefined ? "—" : `${Number(v).toFixed(2)}${suffix}`;
+    if (stats.kind === "detector") {
+      return `
+        <div class="ws-stats" title="Detection counts from the generation replay over the last ${days} days">
+          <span class="muted">preview replay · ${days}d</span>
+          <span><strong>${Number(stats.fires) || 0}</strong> detections</span>
+          <span class="muted">detector layer — no trades by design</span>
+        </div>`;
+    }
+    return `
+      <div class="ws-stats" title="Auto-backtest of the generated document over the last ${days} days (sandboxed replay, R multiples)">
+        <span class="muted">preview backtest · ${days}d</span>
+        <span><strong>${Number(stats.fires) || 0}</strong> signals</span>
+        <span><strong>${Number(stats.trades) || 0}</strong> trades</span>
+        <span>win <strong>${stats.win_rate === null || stats.win_rate === undefined ? "—" : `${(Number(stats.win_rate) * 100).toFixed(0)}%`}</strong></span>
+        <span>avg <strong>${fmt(stats.average_r, "R")}</strong></span>
+        <span>net <strong>${fmt(stats.net_r, "R")}</strong></span>
+        <span>maxDD <strong>${fmt(stats.max_drawdown_r, "R")}</strong></span>
+      </div>`;
+  }
+
+  /// Parameter sweep: call the sweep route and render each parameter's grid
+  /// as a compact table. The "stable" read is the point -- a parameter whose
+  /// neighbours all lose money is a lucky spike, not an edge.
+  async function runParameterSweep(strategyId, btn) {
+    const card = btn && btn.parentElement;
+    if (card) {
+      btn.disabled = true;
+      btn.textContent = "Sweeping…";
+    }
+    try {
+      const to = new Date().toISOString().slice(0, 10);
+      const from = new Date(Date.now() - 7 * 86400e3).toISOString().slice(0, 10);
+      const resp = await api(`/strategies/${strategyId}/sweep`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ symbol: activePane ? activePane.symbol() : "BTCUSDT", from, to, source_timeframe: "1m" }),
+      });
+      const host = el("wsSweepResult");
+      if (!host) { pageToast("No sweep panel on this view"); return; }
+      host.hidden = false;
+      host.innerHTML = (resp.parameters || []).map((p) => {
+        if (!p.points || !p.points.length) {
+          return `<div class="ws-sweep"><strong>threshold(${p.base_value})</strong> <span class="muted">no variant ran: ${escapeHtml((p.skipped || []).join("; ") || "unknown")}</span></div>`;
+        }
+        const best = p.points.reduce((a, b) => (b.net_r > a.net_r ? b : a), p.points[0]);
+        // Colour by net R: red below 0, green above, brightest at the best.
+        const cell = (pt) => {
+          const r = pt.net_r;
+          const tone = r >= 0
+            ? `rgba(45, 212, 191, ${Math.min(0.55, 0.12 + r * 0.3)})`
+            : `rgba(251, 113, 133, ${Math.min(0.55, 0.12 + Math.abs(r) * 0.3)})`;
+          const isBest = pt === best && p.points.length > 1;
+          return `<td style="background:${tone}">${r.toFixed(2)}R${isBest ? ' ★' : ''}</td>`;
+        };
+        return `
+          <div class="ws-sweep">
+            <div class="row"><strong>threshold(${p.base_value})</strong><span class="muted">${escapeHtml(p.condition)}</span></div>
+            <table>
+              <thead><tr><th>×${p.points.map((pt) => pt.multiplier).join("</th><th>×")}</th></tr></thead>
+              <tbody><tr><td>${p.points.map(cell).join("</td><td>")}</td></tr></tbody>
+            </table>
+            <div class="muted" style="font-size:11px">net R per grid point · trades ${p.points.map((pt) => pt.trades).join("/")} · ${best.multiplier}× (${best.value}) was best${(p.skipped || []).length ? ` · ${p.skipped.length} variant(s) refused` : ""}</div>
+          </div>`;
+      }).join("") || "<p class=\"muted\">This document has no threshold() parameters to sweep.</p>";
+      if (card && btn) {
+        btn.disabled = false;
+        btn.textContent = "Sweep parameters";
+      }
+      // Open the tab that hosts the result, so the click always has a visible
+      // effect even when the button lives in a collapsed message.
+      host.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (e) {
+      if (card && btn) {
+        btn.disabled = false;
+        btn.textContent = "Sweep parameters";
+      }
+      pageToast(`Sweep failed: ${e.message}`);
+    }
+  }
+
+  async function loadMessages(wsId) {
   const out = el("wsChat");
   try {
     wsMessages = await api(`/indicator-workspaces/${wsId}/messages`);
@@ -7893,12 +8308,21 @@ async function loadMessages(wsId) {
         <pre class="ws-source">${escapeHtml(src)}</pre>
       </details>
     ` : "";
+    // The auto-backtest card: the generation replay's own numbers, so "is
+    // this idea even viable" is answered in the same breath that produced it.
+    const statsCard = !isUser && m.payload && m.payload.preview_stats
+      ? previewStatsCard(m.payload.preview_stats) : "";
+    // Parameter sweep button: only for kind: strategy, which is the kind the
+    // backtester runs. A detector layer has no thresholds to sweep.
+    const sweepBtn = !isUser && m.payload && m.payload.kind === "strategy" && m.payload.strategy_id
+      ? `<button type="button" class="ws-sweep-btn" data-strategy="${m.payload.strategy_id}" title="Sweep every threshold() over a grid and show what each value did">Sweep parameters</button>`
+      : "";
     const when = m.created_at ? new Date(m.created_at / 1e6).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
     return `
       <div class="msg ${isUser ? "user" : "ai"}">
         <div class="avatar" aria-hidden="true">${isUser ? "🧑" : "✦"}</div>
         <div>
-          <div class="bubble">${escapeHtml(m.content)}${srcBlock}</div>
+          <div class="bubble">${escapeHtml(m.content)}${statsCard}${sweepBtn}${srcBlock}</div>
           <div class="meta">${isUser ? "You" : "AI"}${when ? ` · ${when}` : ""}</div>
         </div>
       </div>
@@ -7907,20 +8331,66 @@ async function loadMessages(wsId) {
   out.scrollTop = out.scrollHeight;
 }
 
-async function sendWorkspaceMessage() {
+  /// Screenshots pending attachment to the next workspace message.
+  ///
+  /// Read to data URLs immediately (the file input's value does not survive
+  /// the round trip) and sent as base64 with the next message -- the same
+  /// shape the chart-capture path already sends.
+  let wsPendingImages = [];
+
+  function readImageFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({
+        media_type: file.type,
+        data: String(reader.result).split(",")[1] || "",
+        name: file.name,
+      });
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function renderPendingImages() {
+    const row = el("wsImageRow");
+    if (!wsPendingImages.length) {
+      row.hidden = true;
+      row.innerHTML = "";
+      return;
+    }
+    row.hidden = false;
+    row.innerHTML = wsPendingImages
+      .map((img, i) => `<span>📎 ${escapeHtml(img.name || "screenshot")} <button type="button" data-idx="${i}" class="ws-img-remove" title="Remove">✕</button></span>`)
+      .join(" ");
+    row.querySelectorAll(".ws-img-remove").forEach((btn) => {
+      btn.onclick = () => {
+        wsPendingImages.splice(Number(btn.dataset.idx), 1);
+        renderPendingImages();
+      };
+    });
+  }
+
+  async function sendWorkspaceMessage() {
   if (!wsActiveId) return;
   const input = el("wsChatInput");
   const content = input.value.trim();
-  if (!content) return;
+  if (!content && !wsPendingImages.length) return;
+  if (!content) {
+    el("wsChatMsg").textContent = "Describe what to build along with the screenshot.";
+    return;
+  }
   input.value = "";
   input.style.height = "auto";
+  const images = wsPendingImages.map(({ media_type, data }) => ({ media_type, data }));
+  wsPendingImages = [];
+  renderPendingImages();
   const msg = el("wsChatMsg");
-  msg.textContent = "Generating…";
+  msg.textContent = images.length ? "Reading the screenshot and generating…" : "Generating…";
   try {
     const resp = await api(`/indicator-workspaces/${wsActiveId}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, images }),
     });
     // Show the revision info from the response before refreshing.
     if (resp && resp.revision) {

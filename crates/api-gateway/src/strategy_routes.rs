@@ -264,6 +264,103 @@ fn validate_source(source: &str) -> Result<strategy_dsl::ValidatedStrategy, ApiE
     strategy_dsl::parse_and_validate(source).map_err(ApiError::from)
 }
 
+/// `POST /strategies/{id}/sweep` body.
+#[derive(Debug, Deserialize)]
+pub struct SweepRequest {
+    /// Symbol to replay.
+    pub symbol: String,
+    /// Window start, `YYYY-MM-DD`, inclusive.
+    pub from: String,
+    /// Window end, `YYYY-MM-DD`, inclusive.
+    pub to: String,
+    /// Resolution to resample from when a declared timeframe has no candles.
+    #[serde(default = "default_source_timeframe")]
+    pub source_timeframe: String,
+}
+
+/// `POST /strategies/{id}/sweep` response: one table per `threshold()`.
+#[derive(Debug, Serialize)]
+pub struct SweepResponse {
+    /// One result per swept parameter, in document order.
+    pub parameters: Vec<crate::parameter_sweep::SweepResult>,
+}
+
+/// `POST /strategies/{id}/sweep` -- sweep every `threshold()` over a small
+/// grid and report what each value did.
+///
+/// The window is loaded **once** and every variant replays over the same
+/// candles, so the comparison between grid points is honest: the only thing
+/// that changes is the number, not the data underneath it.
+///
+/// # Errors
+/// 404 when the strategy is not the caller's; 422 when the stored source no
+/// longer parses (a drifted row, not a swept variant); 400 on a bad window.
+pub async fn parameter_sweep(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path(id): Path<String>,
+    ApiJson(request): ApiJson<SweepRequest>,
+) -> Result<Json<SweepResponse>, ApiError> {
+    let database = database(&state)?;
+    let id = parse_id(&id, "strategy")?;
+    let row = db::strategies::get_strategy(database.pool(), user.user_id, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("no such strategy"))?;
+
+    let source = serde_json::to_string(&row.document)
+        .map_err(|e| ApiError::internal(format!("the stored document is not readable: {e}")))?;
+    // Re-validated up front so the 404/422 contract is about the *base*
+    // document; per-variant failures come back in the table as skips.
+    strategy_dsl::parse_and_validate(&source).map_err(ApiError::from)?;
+
+    let source_timeframe: Timeframe = request.source_timeframe.parse().map_err(|e| {
+        ApiError::bad_request(
+            "TIMEFRAME_INVALID",
+            format!(
+                "unknown source timeframe `{}`: {e}",
+                request.source_timeframe
+            ),
+        )
+    })?;
+    let from_ns = parse_date_ns(&request.from)?;
+    let to_ns = parse_date_ns(&request.to)? + 86_400 * 1_000_000_000;
+    if to_ns <= from_ns {
+        return Err(ApiError::bad_request(
+            "WINDOW_INVALID",
+            "`to` must not be before `from`",
+        ));
+    }
+    let symbol = request.symbol.to_uppercase();
+
+    let document: strategy_dsl::StrategyDocument = serde_json::from_value(row.document.clone())
+        .map_err(|e| ApiError::internal(format!("the stored document is not readable: {e}")))?;
+    let series = db::loading::load_timeframe_series(
+        database.pool(),
+        &symbol,
+        &document.timeframes,
+        from_ns,
+        to_ns,
+        source_timeframe,
+    )
+    .await?;
+
+    let input = crate::parameter_sweep::SweepInput {
+        source,
+        symbol,
+        from_ns,
+        to_ns: to_ns - 1,
+        series,
+    };
+    let parameters = crate::parameter_sweep::sweep(&input).map_err(|e| {
+        ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "SWEEP_REFUSED",
+            e,
+        )
+    })?;
+    Ok(Json(SweepResponse { parameters }))
+}
+
 fn validation_summary(
     validated: &strategy_dsl::ValidatedStrategy,
 ) -> Result<ValidationResponse, ApiError> {

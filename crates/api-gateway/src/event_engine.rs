@@ -157,7 +157,13 @@ impl SymbolEvents {
     }
 
     /// Subscribe to everything from here on.
-    fn subscribe(&self) -> broadcast::Receiver<MarketEvent> {
+    ///
+    /// Public since the alert worker listens on every symbol's lane at once:
+    /// a preference is scoped to (workspace, revision, event-kind), and the
+    /// worker learns which symbol a preference cares about from the event
+    /// itself. Subscribing per symbol would miss preferences for symbols no
+    /// one has opened yet.
+    pub fn subscribe(&self) -> broadcast::Receiver<MarketEvent> {
         self.tx.subscribe()
     }
 }
@@ -169,9 +175,30 @@ impl SymbolEvents {
 /// A deployment that watched ten thousand symbols would hold at most ten
 /// thousand small vectors — the reaper bounds the *feeds*, not the record of
 /// what they saw.
-#[derive(Default)]
 pub struct EventEngine {
     symbols: Mutex<std::collections::HashMap<String, SymbolLane>>,
+    /// Fan-out of **every** symbol's events to process-wide listeners -- the
+    /// alert worker, which is scoped to event kinds rather than symbols and
+    /// learns a preference's symbol from the event itself.
+    all_tx: broadcast::Sender<MarketEvent>,
+}
+
+impl Default for EventEngine {
+    fn default() -> Self {
+        let (all_tx, _) = broadcast::channel(EVENT_BUFFER);
+        Self {
+            symbols: Mutex::new(std::collections::HashMap::new()),
+            all_tx,
+        }
+    }
+}
+
+impl EventEngine {
+    /// Subscribe to every symbol's events from here on.
+    #[must_use]
+    pub fn subscribe_all(&self) -> broadcast::Receiver<MarketEvent> {
+        self.all_tx.subscribe()
+    }
 }
 
 /// One symbol's lane plus the watcher that feeds it, when one was spawned.
@@ -238,7 +265,12 @@ impl EventEngine {
             watcher: None,
         });
         if lane.watcher.is_none() {
-            lane.watcher = Some(spawn_watcher(symbol, history, Arc::clone(&lane.events)));
+            lane.watcher = Some(spawn_watcher(
+                symbol,
+                history,
+                Arc::clone(&lane.events),
+                self.all_tx.clone(),
+            ));
         }
         Arc::clone(&lane.events)
     }
@@ -265,6 +297,7 @@ fn spawn_watcher(
     symbol: String,
     history: Arc<market_data::HistoryRegistry>,
     lane: Arc<SymbolEvents>,
+    all_tx: broadcast::Sender<MarketEvent>,
 ) -> tokio::task::AbortHandle {
     let handle = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(IDLE_RECHECK);
@@ -302,6 +335,12 @@ fn spawn_watcher(
                         count = events.len(),
                         "the event watcher recorded derived events"
                     );
+                    // Fan out to process-wide listeners before the lane eats
+                    // its copy: `send` fails only when nobody listens, which
+                    // is the common case and costs nothing.
+                    for event in &events {
+                        let _ = all_tx.send(event.clone());
+                    }
                     lane.record(events);
                 }
             }

@@ -226,6 +226,32 @@
     font-size: 13px; line-height: 1; padding: 1px 5px; border-radius: 50%;
   }
   .indicatorChipRemove:hover { color: var(--text); background: color-mix(in srgb, #fb7185 25%, transparent); }
+  /* Auto-backtest card under a generated revision's chat message. */
+  .ws-stats {
+    display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+    margin-top: 6px; padding: 6px 10px; border-radius: 8px;
+    background: color-mix(in srgb, #2dd4bf 7%, transparent);
+    border: 1px solid color-mix(in srgb, #2dd4bf 25%, transparent);
+    font-size: 11.5px; color: var(--muted);
+  }
+  .ws-stats strong { color: var(--text); font-weight: 600; }
+  /* Parameter sweep table: a mini heatmap of net R per grid point. */
+  .ws-sweep { margin: 8px 0; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: rgba(13, 17, 26, 0.6); }
+  .ws-sweep table { border-collapse: collapse; margin: 6px 0; font-size: 11px; }
+  .ws-sweep th { color: var(--muted); font-weight: 500; padding: 2px 8px; text-align: center; }
+  .ws-sweep td { padding: 4px 10px; text-align: center; border-radius: 4px; color: var(--text); }
+  .ws-sweep-btn { margin-top: 6px; font-size: 11px; padding: 2px 10px; }
+  /* Evidence tooltip: follows the pointer over a generated marker. */
+  .evidenceTip {
+    position: absolute; z-index: 40; pointer-events: none;
+    max-width: 320px; padding: 6px 10px; border-radius: 8px;
+    background: rgba(11, 14, 20, 0.94); border: 1px solid rgba(167, 139, 250, 0.45);
+    color: var(--text); font-size: 11.5px; line-height: 1.45;
+    box-shadow: 0 4px 16px rgba(0,0,0,.45);
+  }
+  .evidenceTip .tipKind { color: #a78bfa; font-weight: 600; }
+  .evidenceTip[hidden] { display: none; }
   .paneBtns { margin-left: auto; display: flex; align-items: center; gap: 2px; }
   .paneBtns button {
     padding: 2px 8px; font-size: 12px; line-height: 1.4; border-radius: 5px;
@@ -386,6 +412,8 @@
   /* The AI layer toggle shares the magnet's pressed language: one style for
      "this toolbar state is on", whatever the control (`docs/21` phase 3). */
   .tools button[data-ai-layer][aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  /* The profile-anchor toggle wears the same pressed language. */
+  .tools button[data-profile-anchor][aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
   .chartHint {
     position: absolute; left: 12px; bottom: 8px; pointer-events: none;
     color: var(--muted); font-family: var(--mono); font-size: 10px; opacity: 0.75;
@@ -1145,6 +1173,8 @@
 
       <div class="chartWrap">
         <canvas class="chart"></canvas>
+        <!-- Evidence tooltip: filled by hit-testing the scene's markers. -->
+        <div id="evidenceTip" class="evidenceTip" hidden></div>
         <!--
           The drawing tools. A tool stays active until it is changed, so several
           shapes can be drawn in a row; `Esc` returns to the cursor, and the Cursor
@@ -1182,6 +1212,9 @@
           <!-- The AI analysis layer (`docs/21` phase 3): off by default, because
                annotations the agent drew are a claim that needs opting into. -->
           <button data-ai-layer class="aiLayer" aria-pressed="false" title="Show objects the AI agent drew on this chart, with the reason it gave for each">AI</button>
+          <!-- The volume profile's edge: the engine positions the bars, this
+               only says which edge of the plot the histogram grows from. -->
+          <button data-profile-anchor class="profileAnchor" aria-pressed="false" title="Anchor the volume profile to the plot's left edge instead of the right">Profile</button>
           <button data-undo class="undo" title="Undo the last drawing change (Ctrl+Z)" disabled>Undo</button>
           <button data-redo class="redo" title="Redo an undone drawing change (Ctrl+Y)" disabled>Redo</button>
           <button class="deleteDrawing danger" title="Delete the selected drawing" disabled>Delete</button>
@@ -1455,11 +1488,17 @@
 
         <div id="wsChat" class="chat-stream" aria-live="polite"></div>
 
+        <!-- Parameter sweep results render here, above the composer. -->
+        <div id="wsSweepResult" hidden style="max-height: 260px; overflow: auto; margin: 6px 0"></div>
+
         <div class="chat-composer">
           <button type="button" id="aiModelChip" class="aiChip modelChip" title="Which AI model answers your chats — change it in the AI Model tab">◇ Platform model</button>
-          <textarea id="wsChatInput" rows="1" placeholder="Ask for an indicator…"></textarea>
+          <button type="button" id="wsChatAttach" class="chat-send" title="Attach a chart screenshot — the AI will read the indicator off it" style="flex:0 0 auto">📎</button>
+          <input type="file" id="wsChatImage" accept="image/png,image/jpeg,image/webp" multiple hidden>
+          <textarea id="wsChatInput" rows="1" placeholder="Ask for an indicator… or attach a screenshot to copy"></textarea>
           <button id="wsChatSend" class="chat-send primary" title="Send (Enter)">➤</button>
         </div>
+        <div id="wsImageRow" class="chat-hint" hidden></div>
         <div class="chat-hint">
           <span id="wsChatMsg" class="muted"></span>
           <span class="muted">Enter to send · Shift+Enter for a new line</span>

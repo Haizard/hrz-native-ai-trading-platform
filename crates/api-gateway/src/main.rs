@@ -158,7 +158,12 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| reqwest::Client::new()),
         };
         let events_rx = state.bots.subscribe_events();
-        api_gateway::indicator_alerts::spawn_indicator_alert_delivery(indicator_state, events_rx);
+        let market_rx = state.events.subscribe_all();
+        api_gateway::indicator_alerts::spawn_indicator_alert_delivery(
+            indicator_state,
+            events_rx,
+            market_rx,
+        );
 
         // Retention: the market tables have no other bound. `xtask collect`
         // and the backfills write candles, trades and book snapshots; without
