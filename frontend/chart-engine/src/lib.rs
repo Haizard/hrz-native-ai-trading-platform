@@ -52,13 +52,14 @@ pub use drawing::{
 };
 pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
 pub use indicator::{
-    Evidence, EvidenceLink, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind,
-    ReplayExit, ReplaySetup, SetupDirection, ZoneState, MAX_PRIMITIVES,
+    Evidence, EvidenceLink, IndicatorMarker, IndicatorOutput, IndicatorTrendline, IndicatorZone,
+    MarkerKind, ReplayExit, ReplaySetup, SetupDirection, TrendPoint, ZoneState,
+    MAX_PRIMITIVES,
 };
 pub use scene::{
     build, heikin_ashi, Bar, LastPrice, Level, Mode, Plot, Point, ProfileBar, Request, Scene,
     SceneEvidenceLink, SceneIndicator, SceneIndicatorMarker, SceneIndicatorZone, SceneOrigin,
-    SceneRegion, Tick,
+    SceneRegion, SceneTrendPoint, SceneTrendline, Tick,
 };
 pub use viewport::{Gesture, PriceRange, Viewport, Window, MIN_BARS};
 

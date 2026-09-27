@@ -71,6 +71,15 @@ pub const MIN_WINDOW: usize = 2;
 /// looks like it means.
 pub const MAX_WINDOW: usize = 8;
 
+/// The most candles a trendline-shaped concept may span.
+///
+/// The band bound exists because past eight candles a "pattern" becomes a
+/// claim about structure. A trendline *is* a claim about structure -- its
+/// whole job is to connect swing pivots -- so it gets a wider window, but it
+/// is still a local fit: anything wider stops being a line the user can see
+/// on their chart and becomes a lookback.
+pub const MAX_TRENDLINE_WINDOW: usize = 24;
+
 /// The longest a concept name may be.
 pub const MAX_NAME: usize = 48;
 
@@ -387,6 +396,26 @@ mod side_wire {
     }
 }
 
+/// How a concept renders on the chart.
+///
+/// The vocabulary deliberately stays small: a concept is still a window, a
+/// band and a set of comparisons -- the shape only decides how a match is
+/// *drawn*. `Band` (the default) is the historical behaviour. `Trendline`
+/// fits a line through the match's swing pivots instead of drawing a box, so
+/// a request like "draw the trendline connecting the swing highs" renders as
+/// the line the user described rather than as a band that happens to be
+/// called one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConceptShape {
+    /// Filled price bands, one per matched window. The historical rendering.
+    #[default]
+    Band,
+    /// A line through the match's swing pivots, extended to the chart's
+    /// right edge.
+    Trendline,
+}
+
 /// A measurement a client defined.
 ///
 /// See the module docs for the shape and for what it deliberately cannot say.
@@ -424,6 +453,17 @@ pub struct Concept {
     /// not a default -- and a client who wants only meaningful bands sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_band_ratio: Option<f64>,
+    /// How matches render. Absent means [`ConceptShape::Band`], which keeps
+    /// every existing document byte-identical through a round trip.
+    #[serde(default, skip_serializing_if = "is_default_shape")]
+    pub shape: ConceptShape,
+}
+
+/// `skip_serializing_if` for [`Concept::shape`]: the default is the historical
+/// band rendering, and omitting it keeps older documents unchanged.
+#[must_use]
+fn is_default_shape(shape: &ConceptShape) -> bool {
+    *shape == ConceptShape::Band
 }
 
 impl Concept {
@@ -478,11 +518,19 @@ pub fn validate(concept: &Concept) -> Result<(), AnalyticsError> {
         )));
     }
 
-    if concept.window < MIN_WINDOW || concept.window > MAX_WINDOW {
+    // The window bounds are shape-dependent: a band is a local 2..8-candle
+    // pattern, but a trendline needs swing pivots on both sides, and swing
+    // detection itself spans a few candles. 24 is still a *local* pattern --
+    // anything wider stops being a description and becomes a lookback.
+    let (min_window, max_window) = match concept.shape {
+        ConceptShape::Band => (MIN_WINDOW, MAX_WINDOW),
+        ConceptShape::Trendline => (MIN_WINDOW, MAX_TRENDLINE_WINDOW),
+    };
+    if concept.window < min_window || concept.window > max_window {
         return Err(AnalyticsError::ConceptWindowOutOfRange {
             window: concept.window,
-            min: MIN_WINDOW,
-            max: MAX_WINDOW,
+            min: min_window,
+            max: max_window,
         });
     }
 
@@ -621,6 +669,81 @@ pub fn detect(candles: &[Candle], concept: &Concept) -> Vec<Region> {
     out
 }
 
+/// One point of a fitted trendline, in market coordinates.
+///
+/// Points rather than a slope-and-intercept because the chart draws segments
+/// between them and the endpoints are what a user reads; a slope can be
+/// derived, a pivot cannot be un-pivoted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrendPoint {
+    /// Candle open time of the pivot.
+    pub time: i64,
+    /// Price at the pivot: the high of a pivot high, the low of a pivot low.
+    pub price: f64,
+}
+
+/// Confirmed swing pivots over a series, in time order.
+///
+/// A pivot is a candle whose high (or low) is the extreme of its immediate
+/// `2 * strength + 1` neighbourhood -- the same "confirmed only by later
+/// bars" definition the market-structure detector uses, at the smallest
+/// usable strength. Returns them sorted by time; highs and lows interleave
+/// because that is what the chart should draw: the actual zigzag of swings.
+#[must_use]
+pub fn swing_pivots(candles: &[Candle], strength: usize) -> Vec<(usize, bool)> {
+    let mut out: Vec<(usize, bool)> = Vec::new();
+    if candles.len() < 2 * strength + 1 {
+        return out;
+    }
+    for i in strength..candles.len().saturating_sub(strength) {
+        let high = candles[i].high;
+        let low = candles[i].low;
+        let is_high = candles[i - strength..=i + strength]
+            .iter()
+            .all(|c| c.high <= high)
+            && candles[i - strength..=i + strength]
+                .iter()
+                .any(|c| c.high < high);
+        let is_low = candles[i - strength..=i + strength]
+            .iter()
+            .all(|c| c.low >= low)
+            && candles[i - strength..=i + strength]
+                .iter()
+                .any(|c| c.low > low);
+        if is_high {
+            out.push((i, true));
+        }
+        if is_low {
+            out.push((i, false));
+        }
+    }
+    out
+}
+
+/// The points a trendline-shaped concept's matches connect, for one series.
+///
+/// `strength` is the pivot confirmation half-width; 1 keeps the line honest
+/// to recent swings, 2 smooths noise. Empty when the series has no confirmed
+/// pivots -- a line through one point is a dot, and the caller should draw
+/// nothing rather than pretend.
+#[must_use]
+pub fn trendline_segments(candles: &[Candle], strength: usize) -> Vec<TrendPoint> {
+    let mut points: Vec<TrendPoint> = swing_pivots(candles, strength)
+        .into_iter()
+        .map(|(index, is_high)| TrendPoint {
+            time: candles[index].open_time,
+            price: if is_high {
+                candles[index].high
+            } else {
+                candles[index].low
+            },
+        })
+        .collect();
+    points.sort_by_key(|p| p.time);
+    points.dedup_by(|a, b| a.time == b.time);
+    points
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +834,7 @@ mod tests {
                 right: Selector::Low(2),
             }],
             min_band_ratio: None,
+            shape: ConceptShape::Band,
         }
     }
 
@@ -728,6 +852,7 @@ mod tests {
                 right: Selector::High(2),
             }],
             min_band_ratio: None,
+            shape: ConceptShape::Band,
         }
     }
 
@@ -756,6 +881,7 @@ mod tests {
                 },
             ],
             min_band_ratio: None,
+            shape: ConceptShape::Band,
         }
     }
 
@@ -1185,7 +1311,49 @@ mod tests {
         .expect("the optional fields are optional");
         assert!(minimal.require.is_empty());
         assert!(minimal.min_band_ratio.is_none());
+        assert!(minimal.shape == ConceptShape::Band, "shape defaults to band");
         assert_eq!(minimal.label(), "gap");
         validate(&minimal).expect("and it is still valid");
+    }
+
+    #[test]
+    fn a_trendline_shape_takes_a_wider_window_than_a_band() {
+        let base = r#"{"name":"tl","side":"buy","window":%W%,
+                "lower":{"low":0},"upper":{"high":2}}"#;
+        let mut wide: Concept = serde_json::from_str(&base.replace("%W%", "20")).unwrap();
+        wide.shape = ConceptShape::Trendline;
+        assert!(validate(&wide).is_ok(), "a 20-candle trendline window is valid");
+        let mut wide_band = wide.clone();
+        wide_band.shape = ConceptShape::Band;
+        assert!(validate(&wide_band).is_err(), "the same window as a band is not");
+    }
+
+    #[test]
+    fn trendline_segments_connect_the_pivots_a_fixture_was_built_to_have() {
+        // Ten candles rising into a peak at 4, falling after: the high at
+        // index 4 is the one confirmed pivot high a swing detector can find,
+        // and the low at index 0 starts the series.
+        let mut candles: Vec<Candle> = Vec::new();
+        for i in 0..10 {
+            let price = 100.0 + if i <= 4 { i as f64 } else { (9 - i) as f64 };
+            candles.push(Candle {
+                open_time: i * 60_000_000_000,
+                open: price,
+                high: price + 0.5,
+                low: price - 0.5,
+                close: price,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+                symbol: "T".into(),
+                timeframe: crate::types::Timeframe::M1,
+            });
+        }
+        let segments = trendline_segments(&candles, 1);
+        assert!(!segments.is_empty(), "a peaked fixture has pivots");
+        // Pivots come out in time order, whatever the swing walk does.
+        for pair in segments.windows(2) {
+            assert!(pair[0].time <= pair[1].time, "{pair:?}");
+        }
     }
 }

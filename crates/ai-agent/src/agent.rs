@@ -306,6 +306,21 @@ pub struct AgentAnswer {
     pub usage: Usage,
 }
 
+/// A request to review a generated document against a chart screenshot.
+#[derive(Debug, Clone)]
+pub struct ReviewRequest {
+    /// The generated document's YAML source, as stored on the revision.
+    pub document_source: String,
+    /// What the user originally asked for, when known -- the review measures
+    /// the rendered result against the request, not only against the source.
+    pub original_request: Option<String>,
+    /// The generator's own note about the preview replay (empty counts, a
+    /// refusal reason). The reviewer reads it as a hint, not as truth.
+    pub preview_note: String,
+    /// Screenshots of the chart the document is attached to, newest first.
+    pub images: Vec<crate::chart_context::ChartScreenshot>,
+}
+
 /// A natural-language request for a strategy document.
 #[derive(Debug, Clone)]
 pub struct StrategyRequest {
@@ -330,6 +345,13 @@ pub struct StrategyRequest {
     /// image-only turn would consume the attempt loop's turn budget for no
     /// reasoning.
     pub images: Vec<crate::chart_context::ChartScreenshot>,
+    /// The existing document this request EDITS, when there is one.
+    ///
+    /// Present means "revise this, don't start over": the loop's first user
+    /// message carries the current source verbatim and the prompt gains an
+    /// edit-mode section. `None` keeps the original from-scratch behaviour,
+    /// so a first generation is byte-identical in behaviour.
+    pub base_document: Option<String>,
 }
 
 impl StrategyRequest {
@@ -347,6 +369,7 @@ impl StrategyRequest {
             skill_id: None,
             max_attempts: None,
             images: Vec::new(),
+            base_document: None,
         }
     }
 
@@ -354,6 +377,13 @@ impl StrategyRequest {
     #[must_use]
     pub fn with_image(mut self, image: crate::chart_context::ChartScreenshot) -> Self {
         self.images.push(image);
+        self
+    }
+
+    /// Make this request an EDIT of `source` rather than a fresh generation.
+    #[must_use]
+    pub fn with_base_document(mut self, source: impl Into<String>) -> Self {
+        self.base_document = Some(source.into());
         self
     }
 }
@@ -566,6 +596,10 @@ impl Agent {
             &view,
             request.chart.as_ref(),
             memories.as_deref(),
+            request
+                .drawings
+                .as_ref()
+                .is_some_and(|d| d.writer().is_some()),
         );
         // Screenshots ride on the first user message, primary view first. It is
         // attached here rather than as a separate message because Bedrock
@@ -835,12 +869,27 @@ impl Agent {
             None => None,
         };
 
-        let system =
-            strategy_system_prompt(&request.market, &request.entry_timeframe, skill.as_ref());
+        let system = strategy_system_prompt(
+            &request.market,
+            &request.entry_timeframe,
+            skill.as_ref(),
+            request.base_document.is_some(),
+        );
         let max_attempts = request.max_attempts.unwrap_or(self.config.max_attempts);
 
+        let description = match &request.base_document {
+            // Edit mode: the current source rides the first user message, so the
+            // model revises what the user sees rather than imagining it. Same
+            // message as the description, same turn budget -- only the payload
+            // changed.
+            Some(base) => format!(
+                "## Current document source\n```yaml\n{base}\n```\n\n## Requested change\n{}",
+                request.description
+            ),
+            None => request.description.clone(),
+        };
         let mut messages = if request.images.is_empty() {
-            vec![Message::user(&request.description)]
+            vec![Message::user(&description)]
         } else {
             // Image first, text second -- the same ordering rule `ask` keeps:
             // a model reading "the chart in the image" before the image has to
@@ -853,7 +902,7 @@ impl Agent {
                     data: shot.data.clone(),
                 });
             }
-            content.push(ContentBlock::Text(request.description.clone()));
+            content.push(ContentBlock::Text(description));
             vec![Message {
                 role: crate::llm_client::Role::User,
                 content,
@@ -964,6 +1013,85 @@ impl Agent {
         ))
     }
 
+    /// Review a generated document against a screenshot of the chart it is
+    /// attached to.
+    ///
+    /// This closes the loop the generator leaves open: the model wrote the
+    /// document, the user attached it, and now the model looks at what it
+    /// actually produced -- rendered zones, lines and markers over real
+    /// candles -- and reports bugs, missing pieces and divergences from what
+    /// the user asked for. No tools, one completion: the review is a READING
+    /// of evidence, not another generation.
+    ///
+    /// # Errors
+    /// [`AgentError::Provider`] family errors from the LLM call.
+    pub async fn review_document(
+        &self,
+        request: &ReviewRequest,
+    ) -> Result<String, AgentError> {
+        let mut system = String::from(
+            "You are reviewing an indicator document YOU generated earlier, on \
+             behalf of the user who asked for it. A screenshot of the chart it is \
+             attached to is attached. Compare what the document DECLARES against \
+             what the chart SHOWS and answer in plain prose, at most three short \
+             sections:\n\
+             1. What renders correctly and matches the request.\n\
+             2. What is wrong or missing: detections that should be visible but \
+             are not, shapes that draw as the wrong kind of object (a band where \
+             the user asked for a line), markers on the wrong side, nothing at all \
+             when the chart clearly has the pattern.\n\
+             3. The smallest concrete change to the document's YAML -- a concept \
+             window, selector, requirement, min_band_ratio, or shape -- that would \
+             fix the most important problem. Quote the YAML field you would change.\n\
+             Be honest about an empty chart: if the indicator drew nothing, say so \
+             and say the likely reason (window too strict, no matches in view, \
+             concept referencing the wrong side). Never invent detections you \
+             cannot see.\n\n",
+        );
+        if let Some(original) = &request.original_request {
+            system.push_str(&format!(
+                "The user originally asked for: {original}\n\n"
+            ));
+        }
+
+        let mut content: Vec<ContentBlock> = Vec::with_capacity(request.images.len() + 2);
+        for shot in &request.images {
+            content.push(ContentBlock::Image {
+                media_type: shot.media_type.clone(),
+                data: shot.data.clone(),
+            });
+        }
+        content.push(ContentBlock::Text(format!(
+            "## Document source (the thing attached to the chart)\n```yaml\n{}\n```",
+            request.document_source
+        )));
+        if !request.preview_note.is_empty() {
+            content.push(ContentBlock::Text(format!(
+                "## Generator's own note about the preview replay\n{}",
+                request.preview_note
+            )));
+        }
+        content.push(ContentBlock::Text(
+            "Review the rendered result on the screenshot against this source now.".into(),
+        ));
+
+        let response = self
+            .llm
+            .complete(LlmRequest {
+                system: Some(system),
+                messages: vec![Message {
+                    role: crate::llm_client::Role::User,
+                    content,
+                }],
+                tools: Vec::new(),
+                tool_choice: None,
+                max_tokens: self.config.max_tokens,
+                temperature: 0.0,
+            })
+            .await?;
+        Ok(response.text())
+    }
+
     /// Pick the skill for a request: pinned by id, else by relevance.
     fn select_skill(&self, request: &AskRequest) -> Result<Option<Skill>, AgentError> {
         if let Some(id) = &request.skill_id {
@@ -1046,6 +1174,7 @@ fn ask_system_prompt(
     ladder: &LadderView,
     chart: Option<&crate::chart_context::ChartContext>,
     memories: Option<&[crate::agent_memory::MemoryRow]>,
+    can_draw: bool,
 ) -> String {
     let mut out = String::new();
     out.push_str("You are the market analyst for an order-flow trading terminal.\n\n");
@@ -1072,6 +1201,26 @@ fn ask_system_prompt(
          weak one.\n",
     );
     out.push_str("5. Every check cites the tool that produced it in its `source` field.\n\n");
+    // Announced only when a writer is actually attached: a promise the tools
+    // cannot keep is worse than silence, and the writer's presence is the
+    // runtime fact -- the tools themselves stay registered either way and
+    // would report their absence honestly if the prompt ever drifted.
+    if can_draw {
+        out.push_str(
+            "## Drawing on the user's chart\n\
+             You CAN draw on the user's chart, and a thesis that names a level \
+             should draw it. Use `create_drawing` to mark what your analysis \
+             found -- hline for a single level (support, resistance, liquidity), \
+             trendline for a slope between two points, rect for a zone (supply, \
+             demand, FVG), fib for a measured retracement. Every drawing must \
+             carry `symbol`, `kind`, `time*_ms` and `price*` you took from tool \
+             results -- never a price you inferred from the picture. Use \
+             `update_drawing` to reposition, and `delete_drawing` when the \
+             analysis no longer supports it or the user asks you to remove it. \
+             Draw few, draw precisely, and say in the narrative what you drew and \
+             why.\n\n",
+        );
+    }
 
     if let Some(skill) = skill {
         out.push_str("## Skill\n");
@@ -1197,7 +1346,12 @@ invalidation:
     condition: "close_below(vwap)"
 "#;
 
-fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Skill>) -> String {
+fn strategy_system_prompt(
+    market: &str,
+    entry_timeframe: &str,
+    skill: Option<&Skill>,
+    editing: bool,
+) -> String {
     let fields = strategy_dsl::ALL_FIELDS
         .iter()
         .map(|f| f.name())
@@ -1264,6 +1418,20 @@ fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Sk
         strategy_dsl::MAX_RISK_PCT_CEILING
     ));
 
+    if editing {
+        out.push_str("## Editing an existing document\n");
+        out.push_str(
+            "The user message contains `## Current document source` followed by the YAML \
+             of the version the user is looking at. Your job is to produce the NEXT \
+             version: apply exactly the change asked for and keep everything else -- \
+             names, concepts, windows, risk, kind, timeframes -- untouched. Do not \
+             regenerate from scratch and do not reformat untouched parts; a user who \
+             asked to tighten one window should not lose their other concepts. If the \
+             request is genuinely a new feature rather than a change, still start from \
+             the current source and add to it.\n\n",
+        );
+    }
+
     out.push_str("## Screenshots — reading an indicator off an image\n");
     out.push_str(
         "When images are attached, treat each one as the SPEC the user wants \
@@ -1300,10 +1468,20 @@ fn strategy_system_prompt(market: &str, entry_timeframe: &str, skill: Option<&Sk
     ));
     out.push_str(&format!("`op` is one of: {ops}.\n"));
     out.push_str(&format!(
-        "`window` is {}..={}: how many candles the pattern spans.\n",
+        "`window` is {}..={}: how many candles the pattern spans (up to {} when \
+         `shape: trendline`).\n",
         analytics_core::concepts::MIN_WINDOW,
-        analytics_core::concepts::MAX_WINDOW
+        analytics_core::concepts::MAX_WINDOW,
+        analytics_core::concepts::MAX_TRENDLINE_WINDOW
     ));
+    out.push_str(
+        "`shape` is how a match DRAWS: `band` (the default -- a filled zone) or \
+         `trendline`. When the user asks for a LINE -- a trendline, a swing line, \
+         connecting the highs/lows -- declare the concept with `shape: trendline`: \
+         the chart fits a line through the confirmed swing pivots and draws that, \
+         instead of a box. A request for a trendline rendered as a band, or as \
+         bands that never fire, is a wrong answer even when it validates.\n",
+    );
     out.push_str(
         "`side` is `buy` or `sell` -- lowercase, unlike the rest of the wire. \
          `min_band_ratio` is optional: the band must be at least that share of the \
@@ -2085,6 +2263,86 @@ invalidation:
     }
 
     #[tokio::test]
+    async fn a_review_sends_the_source_and_image_and_returns_the_prose() {
+        let review = r#"1. Bands render correctly. 2. No trendline. 3. Set shape: trendline."#;
+        let llm = Arc::new(ScriptedClient::new(vec![LlmResponse {
+            message: Message {
+                role: crate::llm_client::Role::Assistant,
+                content: vec![ContentBlock::Text(review.into())],
+            },
+            stop_reason: StopReason::EndTurn,
+            usage: Usage::default(),
+        }]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+        let answer = agent
+            .review_document(&ReviewRequest {
+                document_source: "name: \"T\"".into(),
+                original_request: Some("draw the trendline".into()),
+                preview_note: "no bands fired".into(),
+                images: vec![crate::chart_context::ChartScreenshot {
+                    media_type: "image/png".into(),
+                    data: "aGk=".into(),
+                    label: Some("chart".into()),
+                }],
+            })
+            .await
+            .unwrap();
+        assert_eq!(answer, review);
+        let sent = llm.requests().into_iter().next().expect("a request");
+        assert!(sent.tools.is_empty(), "a review calls no tools");
+        let first = sent.messages.first().expect("one user message");
+        // Image first, source second, note last -- the ordering rule the other
+        // image-bearing paths keep.
+        assert!(matches!(first.content.first(), Some(ContentBlock::Image { .. })));
+        let text = first
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("name: \"T\""));
+        assert!(text.contains("no bands fired"));
+    }
+
+    #[tokio::test]
+    async fn an_edit_request_carries_the_current_document_and_edit_prompt() {
+        let llm = Arc::new(ScriptedClient::new(vec![draft(VALID_YAML)]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+        let request = StrategyRequest::new("tighten the entry window", "BTCUSDT", "5m")
+            .with_base_document("name: \"Existing\"\nversion: \"1.0\"\n");
+        agent.generate_strategy(&request).await.unwrap();
+
+        let sent = llm.requests().into_iter().next().expect("a request");
+        let user_text = sent
+            .messages
+            .first()
+            .map(|m| {
+                m.content
+                    .iter()
+                    .find_map(|block| match block {
+                        ContentBlock::Text(text) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        assert!(
+            user_text.contains("## Current document source"),
+            "the base source must ride the first user message: {user_text}"
+        );
+        assert!(user_text.contains("name: \"Existing\""));
+        assert!(user_text.contains("## Requested change"));
+        let system = sent.system.expect("a system prompt");
+        assert!(
+            system.contains("## Editing an existing document"),
+            "edit mode is announced only when there is something to edit"
+        );
+    }
+
+    #[tokio::test]
     async fn an_invalid_first_draft_is_corrected_on_retry() {
         // First draft: risk above the ceiling and an empty invalidation.
         let bad = r#"
@@ -2201,7 +2459,7 @@ invalidation: []
     fn the_prompt_warns_about_the_mistake_the_model_actually_makes() {
         // A live generation put `value:` inside an `all_of` entry -- copied
         // from `risk.take_profit`. Naming it beats hoping.
-        let prompt = strategy_system_prompt("BTCUSDT", "5m", None);
+        let prompt = strategy_system_prompt("BTCUSDT", "5m", None, false);
         assert!(
             prompt.contains("no `value` here"),
             "prompt does not warn about `value` in conditions"
@@ -2210,7 +2468,7 @@ invalidation: []
 
     #[test]
     fn the_strategy_prompt_lists_the_real_vocabulary() {
-        let prompt = strategy_system_prompt("BTCUSDT", "5m", None);
+        let prompt = strategy_system_prompt("BTCUSDT", "5m", None, false);
         for func in strategy_dsl::ALL_FUNCS {
             assert!(
                 prompt.contains(func.name()),
@@ -2267,7 +2525,7 @@ invalidation: []
         // left out of the rendering. A part the model is never told about is a
         // part it will never write, and that failure is silent: documents keep
         // validating, they just never use the language.
-        let prompt = strategy_system_prompt("BTCUSDT", "5m", None);
+        let prompt = strategy_system_prompt("BTCUSDT", "5m", None, false);
 
         for part in ConceptPart::ALL {
             assert!(

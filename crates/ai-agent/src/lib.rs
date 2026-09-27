@@ -45,8 +45,9 @@ pub mod user_drawings;
 
 pub use agent::draft_strategy_spec;
 pub use agent::{
-    Agent, AgentAnswer, AgentConfig, AskRequest, DrawingsContext, GeneratedStrategy, MemoryContext,
-    StrategyRequest, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
+    Agent, AgentAnswer, AgentConfig, AskRequest, DrawingsContext, GeneratedStrategy,
+    MemoryContext, ReviewRequest, StrategyRequest, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TURNS,
+    DRAFT_STRATEGY,
 };
 pub use agent_memory::{
     facts_from_thesis, render_recall, MemoryRow, MemorySource, MemoryWriter, NewMemory,

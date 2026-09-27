@@ -336,8 +336,16 @@ pub async fn create_revision(
             "source, summary and change_summary must not be empty",
         ));
     }
+    // The source itself must parse as a strategy document: a revision is a
+    // runnable unit, and storing YAML the engine will refuse would turn the
+    // code panel into a place where broken documents look saved. The failure
+    // is a 422 naming the validator's first issue, which the editor shows.
+    let source_valid = strategy_dsl::parse_and_validate(&body.source);
     let database = database(&state)?;
-    let valid = body.preview.validate();
+    let valid = match (&source_valid, body.preview.validate()) {
+        (Err(err), _) => Err(err.to_string()),
+        (Ok(_), preview) => preview,
+    };
     let (status, validation) = match valid {
         Ok(()) => (
             "validated",
@@ -458,6 +466,17 @@ pub async fn create_message(
     for shot in screenshots {
         request = request.with_image(shot);
     }
+    // Iterative editing: a workspace with an active revision revises THAT
+    // document instead of starting over -- the model sees the current source
+    // and the edit-mode prompt, so "make the bands tighter" tightens the bands
+    // and does not lose the user's other concepts.
+    if let Some(active_id) = workspace.active_revision_id {
+        if let Some(active) =
+            db::get_indicator_revision(database.pool(), user.user_id, id, active_id).await?
+        {
+            request = request.with_base_document(active.source);
+        }
+    }
     // Give the model extra retry attempts — it often ignores the entry
     // timeframe on the first pass and needs the feedback loop to correct.
     request.max_attempts = Some(5);
@@ -526,6 +545,7 @@ pub async fn create_message(
                 zones: Vec::new(),
                 markers: Vec::new(),
                 links: Vec::new(),
+                trendlines: Vec::new(),
             },
             serde_json::Value::String(reason),
             None,
@@ -553,13 +573,27 @@ pub async fn create_message(
     let assistant_text = if document.kind == strategy_dsl::DocumentKind::Indicator {
         let zones = preview.zones.len();
         let markers = preview.markers.len();
-        let note = if preview.evidence.is_empty() {
-            "no detection bands fired in the backfilled preview window -- on a real but tiny stored window that can mean missing data or a concept that did not match yet, not necessarily a wrong idea.".to_string()
+        let lines = preview.trendlines.len();
+        // A trendline-shaped concept never produces bands -- its evidence is
+        // the fitted line -- so an all-trendline document is expected to show
+        // zero zones and must not be reported as a failure to detect.
+        let wanted_lines = document
+            .concepts
+            .iter()
+            .filter(|c| c.shape == analytics_core::concepts::ConceptShape::Trendline)
+            .count();
+        let note = if preview.evidence.is_empty() && lines == 0 {
+            if wanted_lines > 0 {
+                "the trendline concept(s) found no confirmed swing pivots on the backfilled window, so no line was fitted -- either the window is too short for swings to confirm or the pivots are not there yet; a longer chart window will usually draw it.".to_string()
+            } else {
+                "no detection bands fired in the backfilled preview window -- on a real but tiny stored window that can mean missing data or a concept that did not match yet, not necessarily a wrong idea.".to_string()
+            }
         } else {
             format!(
-                "the detector layer found {zones} zone(s) and {markers} marker(s) on the chart over the backfilled window; because this is a kind: indicator with no entry/risk blocks it fires 0 trading setups by design -- a kind: strategy is what produces setups.",
+                "the detector layer found {zones} zone(s), {markers} marker(s) and {lines} fitted trendline(s) on the chart over the backfilled window; because this is a kind: indicator with no entry/risk blocks it fires 0 trading setups by design -- a kind: strategy is what produces setups.",
                 zones = zones,
                 markers = markers,
+                lines = lines,
             )
         };
         format!(
@@ -699,6 +733,98 @@ pub async fn get_revision(
         .await?
         .ok_or_else(|| ApiError::not_found("indicator revision not found"))?;
     Ok(Json(row.into()))
+}
+
+/// Body of the screenshot self-review endpoint.
+#[derive(Debug, Deserialize)]
+pub struct ReviewBody {
+    /// Screenshots of the chart the revision is attached to. At least one:
+    /// a review without a picture would be a re-read of the source, which
+    /// the generator already did.
+    pub images: Vec<MessageImage>,
+}
+
+/// Response of the screenshot self-review endpoint.
+#[derive(Debug, Serialize)]
+pub struct ReviewResponse {
+    /// The reviewer's prose: what renders, what is wrong, what to change.
+    pub review: String,
+}
+
+/// `POST /indicator-workspaces/{id}/revisions/{revision_id}/review`.
+///
+/// The model looks at a screenshot of the chart the revision is attached to
+/// and reports bugs and missing pieces against the document it generated --
+/// closing the loop the generation path leaves open.
+pub async fn review_revision(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path((id, revision_id)): Path<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<ReviewBody>,
+) -> Result<Json<ReviewResponse>, ApiError> {
+    if body.images.is_empty() {
+        return Err(ApiError::bad_request(
+            "REVIEW_IMAGE_REQUIRED",
+            "a review needs at least one screenshot of the chart",
+        ));
+    }
+    if body.images.len() > MAX_MESSAGE_IMAGES {
+        return Err(ApiError::bad_request(
+            "TOO_MANY_IMAGES",
+            &format!("a review may carry at most {MAX_MESSAGE_IMAGES} images"),
+        ));
+    }
+    for image in &body.images {
+        if !MESSAGE_IMAGE_TYPES.contains(&image.media_type.as_str()) {
+            return Err(ApiError::bad_request(
+                "UNSUPPORTED_IMAGE_TYPE",
+                &format!(
+                    "{} is not accepted; use one of {}",
+                    image.media_type,
+                    MESSAGE_IMAGE_TYPES.join(", ")
+                ),
+            ));
+        }
+    }
+    let database = database(&state)?;
+    let row = db::get_indicator_revision(database.pool(), user.user_id, id, revision_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("indicator revision not found"))?;
+    // The original ask lives in the workspace's memory -- the same compact
+    // record `create_message` writes -- so the review can measure the render
+    // against the request, not only against the source.
+    let original_request = db::get_indicator_workspace(database.pool(), user.user_id, id)
+        .await?
+        .and_then(|workspace| {
+            workspace
+                .memory
+                .get("last_request")
+                .and_then(|value| value.as_str().map(str::to_string))
+        });
+    let preview_note = row
+        .validation
+        .get("preview_note")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let agent = state.agent.as_ref().ok_or_else(|| {
+        ApiError::unavailable("the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID and AWS credentials")
+    })?;
+    let request = ai_agent::ReviewRequest {
+        document_source: row.source,
+        original_request,
+        preview_note,
+        images: body
+            .images
+            .into_iter()
+            .map(|image| ai_agent::chart_context::ChartScreenshot {
+                media_type: image.media_type,
+                data: image.data,
+                label: Some("chart screenshot with the revision attached".into()),
+            })
+            .collect(),
+    };
+    let review = agent.review_document(&request).await.map_err(ApiError::from)?;
+    Ok(Json(ReviewResponse { review }))
 }
 
 /// `GET /indicator-workspaces/{id}/alerts`.

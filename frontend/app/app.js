@@ -825,16 +825,67 @@ function createChartPane(root, hooks = {}) {
   /// zones sit below price, their lifecycle changes the opacity/dash treatment,
   /// and the named evidence chain is drawn later above price. The engine has
   /// already placed every coordinate; this code only paints it.
+  // One hue per concept label, so a four-concept detector reads as four
+  // layers instead of one blur: the label is the concept's own name, which
+  // is stable across every chart the indicator runs on. Deterministic
+  // hashing into a curated palette -- TV-colour-grade, dark-chart friendly.
+  // Shared by zones and trendlines so one concept is one colour however it
+  // is drawn.
+  const LABEL_HUES = ["#2dd4bf", "#f472b6", "#60a5fa", "#fbbf24", "#a78bfa", "#fb7185", "#4ade80", "#fb923c"];
+  const labelHue = (label) => {
+    let h = 0;
+    for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) | 0;
+    return LABEL_HUES[Math.abs(h) % LABEL_HUES.length];
+  };
+
   function drawIndicatorZones(ctx, scene) {
     // The diff layer first, so the active layer paints over it: the old
     // revision is a ghost the new one answers, not a peer.
     if (scene.diff_indicator && scene.diff_indicator.zones.length) {
       drawZoneSet(ctx, scene.diff_indicator.zones, 0.35, null, scene.plot);
     }
+    if (scene.diff_indicator && scene.diff_indicator.trendlines && scene.diff_indicator.trendlines.length) {
+      drawTrendlineSet(ctx, scene.diff_indicator.trendlines, 0.35, scene.plot);
+    }
     const indicator = scene.indicator;
+    if (indicator && indicator.trendlines && indicator.trendlines.length) {
+      drawTrendlineSet(ctx, indicator.trendlines, 1.0, scene.plot);
+    }
     if (!indicator || !indicator.zones.length) return;
     ctx.font = "600 10px ui-sans-serif, system-ui";
     drawZoneSet(ctx, indicator.zones, 1.0, scene.sub_panes, scene.plot);
+  }
+
+  /// The generated module's fitted trendlines.
+  ///
+  /// Points are already positioned by the engine -- the shell connects them
+  /// in order, clipped to the plot. A line through a concept's confirmed
+  /// swing pivots is the drawing the user asked for when they said
+  /// "trendline"; a band named "trendline" would not have been.
+  function drawTrendlineSet(ctx, lines, strength, plot) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.x, plot.y, plot.w, plot.h);
+    ctx.clip();
+    ctx.lineWidth = 1.5;
+    for (const line of lines) {
+      if (!line.points || line.points.length < 2) continue;
+      const colour = labelHue(line.label || "line");
+      ctx.strokeStyle = hexToRgba(colour, 0.9 * strength);
+      ctx.beginPath();
+      ctx.moveTo(line.points[0].x, line.points[0].y);
+      for (let i = 1; i < line.points.length; i++) ctx.lineTo(line.points[i].x, line.points[i].y);
+      ctx.stroke();
+      // The name rides the line's last point, full strength only: a ghost
+      // labelled like a live layer would read as a second active indicator.
+      if (strength >= 1.0) {
+        const last = line.points[line.points.length - 1];
+        ctx.fillStyle = hexToRgba(colour, 0.95);
+        ctx.font = "600 10px ui-sans-serif, system-ui";
+        ctx.fillText(line.label || "", last.x + 4, last.y - 4);
+      }
+    }
+    ctx.restore();
   }
 
   /// One indicator zone set, faded by `strength` (1.0 = full treatment).
@@ -843,16 +894,6 @@ function createChartPane(root, hooks = {}) {
   /// the same drawing at two opacities -- a different shape for the ghost
   /// would say "different indicator" when it means "different revision".
   function drawZoneSet(ctx, zones, strength, subPanes, plotArg) {
-    // One hue per concept label, so a four-concept detector reads as four
-    // layers instead of one blur: the label is the concept's own name, which
-    // is stable across every chart the indicator runs on. Deterministic
-    // hashing into a curated palette -- TV-colour-grade, dark-chart friendly.
-    const hues = ["#2dd4bf", "#f472b6", "#60a5fa", "#fbbf24", "#a78bfa", "#fb7185", "#4ade80", "#fb923c"];
-    const labelHue = (label) => {
-      let h = 0;
-      for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) | 0;
-      return hues[Math.abs(h) % hues.length];
-    };
     // Zones clip to the plot the way the reference charts do: a band that
     // ran into the price axis is the single loudest "homemade" tell.
     const plot = plotArg;
@@ -7707,6 +7748,8 @@ async function main() {
     chatStream.addEventListener("click", (e) => {
       const btn = e.target.closest(".ws-sweep-btn");
       if (btn && btn.dataset.strategy) runParameterSweep(btn.dataset.strategy, btn);
+      const reviewBtn = e.target.closest(".ws-review-btn");
+      if (reviewBtn && reviewBtn.dataset.revision) reviewRevisionWithChart(reviewBtn.dataset.revision, reviewBtn);
     });
   }
   // Screenshot attachment: the file input is hidden and the paperclip opens
@@ -8075,10 +8118,12 @@ async function loadRevisions(wsId) {
     wsRevisions = await api(`/indicator-workspaces/${wsId}/revisions`);
   } catch (e) {
     out.innerHTML = `<p class="error">${e.message}</p>`;
+    renderCodeFiles();
     return;
   }
   if (!wsRevisions.length) {
     out.innerHTML = `<p class="empty">No revisions yet.</p>`;
+    renderCodeFiles();
     return;
   }
   const ws = wsWorkspaces.find(w => w.id === wsId);
@@ -8101,12 +8146,157 @@ async function loadRevisions(wsId) {
           <button onclick="attachRevisionToChart('${wsId}','${r.id}')" title="Attach this indicator to a chart">Attach to chart</button>
           <button onclick="restoreRevision('${wsId}','${r.id}')" title="Set as active">Restore</button>
           <button onclick="viewRevision('${wsId}','${r.id}')" title="View source and preview">View</button>
+          <button onclick="openCodeFile('${wsId}','${r.id}')" title="Open this revision's source in the code panel">Code</button>
           ${isActive ? '' : `<button onclick="diffRevision('${wsId}','${r.id}')" title="Draw this revision faded under the active one, to see what changed">Diff vs active</button>`}
         </div>
       </div>
     `;
   }).join("");
+  renderCodeFiles();
+
+// ---------------------------------------------------------------------------
+// The code panel: the workspace's revisions as files, Pine-editor style.
+// ---------------------------------------------------------------------------
+
+// The file currently open in the editor, { revisionId, name, source, fresh }.
+// `fresh` marks a never-saved "New file" draft, which has no revision to
+// point at yet.
+let wsCodeFile = null;
+
+/// Render the file list from `wsRevisions` (already fetched) and restore the
+/// editor's visibility. Cheap enough to re-run on every revision load.
+function renderCodeFiles() {
+  const host = el("wsCodeFiles");
+  if (!host) return;
+  if (!wsRevisions.length) {
+    host.innerHTML = `<p class="empty">No files yet — generate a revision first.</p>`;
+    const editor = el("wsCodeEditor");
+    if (editor) editor.hidden = true;
+    return;
+  }
+  const activeId = (wsWorkspaces.find((w) => w.id === wsActiveId) || {}).active_revision_id;
+  host.innerHTML = wsRevisions.map((r) => `
+    <div class="row" style="padding:2px 0;border-bottom:1px solid var(--line)">
+      <button type="button" class="ws-code-file" data-revision="${r.id}" title="Open in the code panel">${escapeHtml(r.summary || "indicator")}</button>
+      <span class="muted" style="font-size:11px">rev #${r.revision_number}${r.id === activeId ? " · active" : ""}</span>
+    </div>`).join("");
 }
+
+/// Open one revision's source in the code panel.
+async function openCodeFile(wsId, revId) {
+  try {
+    const rev = await api(`/indicator-workspaces/${wsId}/revisions/${revId}`);
+    if (!rev.source) { alert("This revision has no stored source."); return; }
+    wsCodeFile = { wsId, revisionId: revId, name: rev.summary || `rev #${rev.revision_number}`, source: rev.source, fresh: false };
+    paintCodeEditor(false);
+  } catch (e) {
+    alert(`Could not open: ${e.message}`);
+  }
+}
+
+/// Paint the editor for `wsCodeFile`. `readOnlyView` keeps the textarea
+/// read-only until Edit is pressed: looking at code and changing code are
+/// different intents, and a textarea that always edits makes a stray
+/// keystroke a silent rewrite of history.
+function paintCodeEditor(readOnlyView) {
+  const editor = el("wsCodeEditor");
+  const source = el("wsCodeSource");
+  const title = el("wsCodeTitle");
+  const msg = el("wsCodeMsg");
+  if (!editor || !source || !title) return;
+  editor.hidden = false;
+  title.textContent = wsCodeFile.fresh ? "new file (unsaved)" : wsCodeFile.name;
+  source.value = wsCodeFile.source;
+  source.readOnly = readOnlyView;
+  if (msg) msg.textContent = "";
+  const editBtn = el("wsCodeEdit");
+  if (editBtn) editBtn.hidden = wsCodeFile.fresh;
+  const saveBtn = el("wsCodeSave");
+  if (saveBtn) saveBtn.disabled = readOnlyView;
+}
+
+/// Start a blank document: same kind rules the chat generator enforces are
+/// the user's to get right, and the save path validates before storing.
+function newCodeFile() {
+  if (!wsActiveId) { alert("Select the workspace first."); return; }
+  wsCodeFile = { wsId: wsActiveId, revisionId: null, name: "new file (unsaved)", source: "", fresh: true };
+  paintCodeEditor(false);
+  el("wsCodeSource").focus();
+}
+
+/// Save the editor's contents as a NEW revision: validated server-side by the
+/// same create_revision gate the chat path uses, then restored as active so
+/// the chart picks it up.
+async function saveCodeAsRevision() {
+  if (!wsCodeFile) { alert("Nothing to save."); return; }
+  const source = el("wsCodeSource").value;
+  if (!source.trim()) { alert("The file is empty."); return; }
+  const msg = el("wsCodeMsg");
+  if (msg) msg.textContent = "Validating…";
+  try {
+    const resp = await api(`/indicator-workspaces/${wsCodeFile.wsId}/revisions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source,
+        summary: wsCodeFile.fresh ? "New file from the code panel" : `Edited ${wsCodeFile.name}`,
+        change_summary: "Saved from the code panel",
+        // A non-empty revision_id is the preview validator's one hard ask;
+        // the code panel has no replay of its own to name.
+        preview: { revision_id: "code-panel", evidence: [], zones: [], markers: [], links: [], trendlines: [] },
+      }),
+    });
+    if (msg) msg.textContent = `Saved as rev #${resp.revision_number}.`;
+    wsCodeFile = { wsId: wsCodeFile.wsId, revisionId: resp.id, name: resp.summary, source, fresh: false };
+    await loadRevisions(wsCodeFile.wsId);
+    if (wsActiveId) await selectWorkspace(wsActiveId);
+  } catch (e) {
+    if (msg) msg.textContent = `Save failed: ${e.message}`;
+  }
+}
+
+function wireCodePanel() {
+  const files = el("wsCodeFiles");
+  if (files && !files.dataset.wired) {
+    files.addEventListener("click", (e) => {
+      const file = e.target.closest(".ws-code-file");
+      if (file && file.dataset.revision && wsActiveId) openCodeFile(wsActiveId, file.dataset.revision);
+    });
+    files.dataset.wired = "1";
+  }
+  const copy = el("wsCodeCopy");
+  if (copy && !copy.dataset.wired) {
+    copy.onclick = async () => {
+      if (!el("wsCodeSource")) return;
+      const text = el("wsCodeSource").value;
+      try {
+        await navigator.clipboard.writeText(text);
+        if (el("wsCodeMsg")) el("wsCodeMsg").textContent = "Copied.";
+      } catch {
+        // Clipboard permission denied: select instead, Ctrl+C still works.
+        el("wsCodeSource").select();
+        if (el("wsCodeMsg")) el("wsCodeMsg").textContent = "Clipboard refused — selection made, press Ctrl+C.";
+      }
+    };
+    copy.dataset.wired = "1";
+  }
+  const edit = el("wsCodeEdit");
+  if (edit && !edit.dataset.wired) {
+    edit.onclick = () => paintCodeEditor(false);
+    edit.dataset.wired = "1";
+  }
+  const fresh = el("wsCodeNew");
+  if (fresh && !fresh.dataset.wired) {
+    fresh.onclick = newCodeFile;
+    fresh.dataset.wired = "1";
+  }
+  const save = el("wsCodeSave");
+  if (save && !save.dataset.wired) {
+    save.onclick = saveCodeAsRevision;
+    save.dataset.wired = "1";
+  }
+}
+wireCodePanel();}
 
 /// Attach a revision's indicator to a chart the user picks.
 ///
@@ -8226,6 +8416,38 @@ async function viewRevision(wsId, revId) {
   /// Parameter sweep: call the sweep route and render each parameter's grid
   /// as a compact table. The "stable" read is the point -- a parameter whose
   /// neighbours all lose money is a lucky spike, not an edge.
+  /// Screenshot self-review: capture the chart the revision is attached to
+  /// (the ACTIVE pane -- it must be the one showing the indicator) and ask
+  /// the model to compare the rendered result against the document it wrote.
+  /// The review lands in the sweep/result panel so it can be read at leisure
+  /// and closed; the chat bubble's own button says "Review on chart".
+  async function reviewRevisionWithChart(revisionId, btn) {
+    if (!activePane) { alert("Open a chart and attach the revision to it first."); return; }
+    if (btn) { btn.disabled = true; btn.textContent = "Reviewing…"; }
+    try {
+      const shot = captureChart(activePane.canvas, activePane.timeframe());
+      if (!shot) { alert("Could not capture the active chart."); return; }
+      if (!wsActiveId) { alert("Select the workspace this indicator belongs to first."); return; }
+      const resp = await api(`/indicator-workspaces/${wsActiveId}/revisions/${revisionId}/review`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ images: [{ media_type: shot.media_type, data: shot.data }] }),
+      });
+      const host = el("wsSweepResult");
+      if (host) {
+        host.hidden = false;
+        host.innerHTML = `<div class="ws-review"><strong>AI review of the rendered chart</strong>
+          <pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px">${escapeHtml(resp.review || "(empty review)")}</pre></div>`;
+      } else {
+        pageToast("Review ready — see the workspace panel");
+      }
+    } catch (e) {
+      pageToast(`Review failed: ${e.message}`);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Review on chart"; }
+    }
+  }
+
   async function runParameterSweep(strategyId, btn) {
     const card = btn && btn.parentElement;
     if (card) {
@@ -8317,12 +8539,17 @@ async function viewRevision(wsId, revId) {
     const sweepBtn = !isUser && m.payload && m.payload.kind === "strategy" && m.payload.strategy_id
       ? `<button type="button" class="ws-sweep-btn" data-strategy="${m.payload.strategy_id}" title="Sweep every threshold() over a grid and show what each value did">Sweep parameters</button>`
       : "";
+    // Self-review button: sends a screenshot of the chart the revision is
+    // attached to, and the model reads what it actually drew off the picture.
+    const reviewBtn = !isUser && m.payload && m.payload.revision_id
+      ? `<button type="button" class="ws-review-btn" data-revision="${m.payload.revision_id}" title="Screenshot the chart this indicator is attached to and have the AI check what it drew">Review on chart</button>`
+      : "";
     const when = m.created_at ? new Date(m.created_at / 1e6).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
     return `
       <div class="msg ${isUser ? "user" : "ai"}">
         <div class="avatar" aria-hidden="true">${isUser ? "🧑" : "✦"}</div>
         <div>
-          <div class="bubble">${escapeHtml(m.content)}${statsCard}${sweepBtn}${srcBlock}</div>
+          <div class="bubble">${escapeHtml(m.content)}${statsCard}${sweepBtn}${reviewBtn}${srcBlock}</div>
           <div class="meta">${isUser ? "You" : "AI"}${when ? ` · ${when}` : ""}</div>
         </div>
       </div>

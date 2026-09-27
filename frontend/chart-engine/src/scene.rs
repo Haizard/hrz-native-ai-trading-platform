@@ -592,6 +592,30 @@ pub struct SceneIndicator {
     pub markers: Vec<SceneIndicatorMarker>,
     /// Causal connectors between evidence nodes.
     pub links: Vec<SceneEvidenceLink>,
+    /// Fitted trendlines, positioned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trendlines: Vec<SceneTrendline>,
+}
+
+/// One fitted trendline, positioned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneTrendline {
+    /// Stable generated id.
+    pub id: String,
+    /// Ready-to-display label.
+    pub label: String,
+    /// The fitted points, in time order, positioned. The shell connects them
+    /// with segments in order; the engine decides where the line is.
+    pub points: Vec<SceneTrendPoint>,
+}
+
+/// One positioned point of a trendline.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneTrendPoint {
+    /// Canvas x.
+    pub x: f64,
+    /// Canvas y.
+    pub y: f64,
 }
 
 /// A generated zone mapped into the chart's coordinate system.
@@ -1653,6 +1677,22 @@ fn indicator_parts(output: &IndicatorOutput, frame: &Frame) -> Result<SceneIndic
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let trendlines = output
+        .trendlines
+        .iter()
+        .map(|line| SceneTrendline {
+            id: line.id.clone(),
+            label: line.label.clone(),
+            points: line
+                .points
+                .iter()
+                .map(|point| SceneTrendPoint {
+                    x: frame.x_at_nanos(point.time),
+                    y: frame.y_at(point.price),
+                })
+                .collect(),
+        })
+        .collect();
     let links = output
         .links
         .iter()
@@ -1680,6 +1720,7 @@ fn indicator_parts(output: &IndicatorOutput, frame: &Frame) -> Result<SceneIndic
         zones,
         markers,
         links,
+        trendlines,
     })
 }
 
@@ -2975,6 +3016,7 @@ mod tests {
             // the low price returned to.
             lower: Selector::High(0),
             upper: Selector::Low(2),
+            shape: analytics_core::concepts::ConceptShape::Band,
             require: vec![Requirement {
                 left: Selector::High(0),
                 op: Compare::Below,
@@ -3091,6 +3133,64 @@ mod tests {
         let scene = build(&request(300));
         assert!(scene.profile.iter().any(|bar| bar.in_value_area));
         assert!(scene.profile.iter().any(|bar| !bar.in_value_area));
+    }
+
+    #[test]
+    fn a_trendline_shaped_concept_is_detected_and_positioned_live() {
+        // A W-shaped series: two confirmed swing highs with a valley between
+        // them -- one pivot cannot make a line, two can.
+        let mut candles: Vec<Candle> = Vec::new();
+        for i in 0..40 {
+            let base = 100.0
+                + if i <= 10 {
+                    i as f64
+                } else if i <= 20 {
+                    (20 - i) as f64
+                } else if i <= 30 {
+                    (i - 20) as f64
+                } else {
+                    (40 - i) as f64
+                };
+            candles.push(candle(i, base, base + 0.2));
+        }
+        let concept = analytics_core::concepts::Concept {
+            name: "swing_line".into(),
+            label: Some("swing line".into()),
+            side: Side::Buy,
+            window: 5,
+            lower: Selector::Low(0),
+            upper: Selector::High(4),
+            require: Vec::new(),
+            min_band_ratio: None,
+            shape: analytics_core::concepts::ConceptShape::Trendline,
+        };
+        let mut output = IndicatorOutput {
+            revision_id: "live:test".into(),
+            name: Some("trendline".into()),
+            concepts: vec![concept],
+            ..IndicatorOutput::default()
+        };
+        output.refresh_from_concepts(&candles);
+        assert!(
+            !output.trendlines.is_empty(),
+            "a peaked series has confirmed pivots to connect"
+        );
+        let scene = build(&Request {
+            candles: candles.clone(),
+            live_indicator: Some(LiveIndicator {
+                name: "trendline".into(),
+                concepts: output.concepts.clone(),
+            }),
+            ..request(40)
+        });
+        let indicator = scene.indicator.expect("the live layer is drawn");
+        assert!(!indicator.trendlines.is_empty());
+        for line in &indicator.trendlines {
+            assert!(line.points.len() >= 2, "{line:?}");
+            for point in &line.points {
+                assert!(point.y.is_finite(), "{line:?}");
+            }
+        }
     }
 
     #[test]
@@ -4936,6 +5036,7 @@ mod tests {
             revision_id: "revision-7".into(),
             name: None,
             concepts: Vec::new(),
+            trendlines: Vec::new(),
             evidence: vec![
                 Evidence {
                     id: "sweep".into(),

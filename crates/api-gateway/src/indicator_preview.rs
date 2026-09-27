@@ -129,6 +129,38 @@ pub fn build_indicator_preview(
         ..IndicatorOutput::default()
     };
 
+    // Trendline-shaped concepts contribute fitted lines instead of -- not
+    // alongside -- bands: the user asked for a line, so a box would be the
+    // wrong answer even when the band fires. The fit is over the same series
+    // the bands were detected on, so a stored preview and a later live layer
+    // agree on the geometry.
+    let mut next_line = 0usize;
+    for concept in concepts {
+        if concept.shape != concepts::ConceptShape::Trendline {
+            continue;
+        }
+        let points: Vec<chart_engine::TrendPoint> =
+            concepts::trendline_segments(series, chart_engine::indicator::TRENDLINE_STRENGTH)
+                .into_iter()
+                .map(|point| chart_engine::TrendPoint {
+                    time: point.time,
+                    price: point.price,
+                })
+                .collect();
+        if points.len() < 2 {
+            continue;
+        }
+        output.trendlines.push(chart_engine::IndicatorTrendline {
+            id: format!("tl-{next_line}"),
+            label: concept
+                .label
+                .clone()
+                .unwrap_or_else(|| concept.name.clone()),
+            points,
+        });
+        next_line += 1;
+    }
+
     let mut next_evidence = 0usize;
     for concept in concepts {
         let bands = detect(series, concept);
@@ -484,6 +516,43 @@ mod tests {
                 right: concepts::Selector::Low(2),
             }],
             min_band_ratio: None,
+            shape: concepts::ConceptShape::Band,
+        }
+    }
+
+    #[test]
+    fn a_trendline_concept_yields_fitted_lines_not_bands() {
+        // A W over 40 candles: two confirmed highs, one valley.
+        let mut series: Vec<analytics_core::types::Candle> = Vec::new();
+        for i in 0..40i64 {
+            let base = 100.0
+                + if i <= 10 {
+                    i as f64
+                } else if i <= 20 {
+                    (20 - i) as f64
+                } else if i <= 30 {
+                    (i - 20) as f64
+                } else {
+                    (40 - i) as f64
+                };
+            series.push(indicator_candle(i, base, base + 0.5, base - 0.5, base + 0.2));
+        }
+        let mut concept = bullish_gap_concept();
+        concept.name = "swing_line".into();
+        concept.label = Some("swing line".into());
+        concept.window = 5;
+        concept.lower = concepts::Selector::Low(0);
+        concept.upper = concepts::Selector::High(4);
+        concept.require = Vec::new();
+        concept.shape = concepts::ConceptShape::Trendline;
+
+        let output = build_indicator_preview("rev", "trendlines", &[concept], &series, None);
+        assert!(
+            !output.trendlines.is_empty(),
+            "the W has pivots, so the fit succeeds"
+        );
+        for line in &output.trendlines {
+            assert!(line.points.len() >= 2, "{line:?}");
         }
     }
 

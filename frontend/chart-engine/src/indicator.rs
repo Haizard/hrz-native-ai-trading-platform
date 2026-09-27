@@ -15,6 +15,15 @@ use serde::{Deserialize, Serialize};
 /// returning a label for every tick in a long history.
 pub const MAX_PRIMITIVES: usize = 500;
 
+/// Pivot confirmation half-width for trendline fitting.
+///
+/// 1 keeps the line honest to recent swings; higher values smooth noise but
+/// lag the structure the user is looking at.
+pub const TRENDLINE_STRENGTH: usize = 1;
+
+/// Trendlines kept when an output breaches the primitive budget.
+pub const MAX_TRENDLINES_KEEP: usize = 16;
+
 /// All visual evidence produced by one validated indicator revision.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +53,36 @@ pub struct IndicatorOutput {
     /// Logical links between evidence nodes.
     #[serde(default)]
     pub links: Vec<EvidenceLink>,
+    /// Fitted trendlines, in market coordinates.
+    ///
+    /// Produced by live re-detection of concepts that declare
+    /// `shape: trendline`; the generator's own snapshot preview carries them
+    /// the same way, so a stored preview and a live layer draw the same
+    /// geometry.
+    #[serde(default)]
+    pub trendlines: Vec<IndicatorTrendline>,
+}
+
+/// One fitted trendline, in market coordinates.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndicatorTrendline {
+    /// Stable generated id.
+    pub id: String,
+    /// Ready-to-display label.
+    pub label: String,
+    /// The fitted points, in time order. Two or more; fewer is not drawn.
+    pub points: Vec<TrendPoint>,
+}
+
+/// One point of a market-coordinate trendline.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrendPoint {
+    /// Candle open time.
+    pub time: i64,
+    /// Price at that time.
+    pub price: f64,
 }
 
 impl IndicatorOutput {
@@ -53,11 +92,42 @@ impl IndicatorOutput {
     /// Returns a human-readable refusal that can be shown in the workspace chat.
     pub fn validate(&self) -> Result<(), String> {
         non_empty("revision_id", &self.revision_id)?;
-        let total = self.evidence.len() + self.zones.len() + self.markers.len() + self.links.len();
+        let total = self.evidence.len()
+            + self.zones.len()
+            + self.markers.len()
+            + self.links.len()
+            + self.trendlines.len();
         if total > MAX_PRIMITIVES {
             return Err(format!(
                 "indicator output has {total} primitives; the chart limit is {MAX_PRIMITIVES}"
             ));
+        }
+        for trendline in &self.trendlines {
+            non_empty("trendline.id", &trendline.id)?;
+            non_empty("trendline.label", &trendline.label)?;
+            if trendline.points.len() < 2 {
+                return Err(format!(
+                    "trendline `{}` has {} point(s); a line needs at least two",
+                    trendline.id,
+                    trendline.points.len()
+                ));
+            }
+            for point in &trendline.points {
+                finite("trendline.time", point.time as f64)?;
+                finite("trendline.price", point.price)?;
+            }
+            // Time order is a rendering invariant: a zigzag drawn out of order
+            // is a lie about the structure it claims to connect.
+            if trendline
+                .points
+                .windows(2)
+                .any(|pair| pair[1].time < pair[0].time)
+            {
+                return Err(format!(
+                    "trendline `{}` is not in time order",
+                    trendline.id
+                ));
+            }
         }
 
         let mut ids = BTreeSet::new();
@@ -166,7 +236,11 @@ impl IndicatorOutput {
     /// ones a chart is showing) and what remains still passes validate. A no-op
     /// when the output is already within budget.
     pub fn cull_to_budget(&mut self) {
-        let total = self.evidence.len() + self.zones.len() + self.markers.len() + self.links.len();
+        let total = self.evidence.len()
+            + self.zones.len()
+            + self.markers.len()
+            + self.links.len()
+            + self.trendlines.len();
         if total <= MAX_PRIMITIVES {
             return;
         }
@@ -185,6 +259,10 @@ impl IndicatorOutput {
         // Links are dropped wholesale when over budget: a detector layer emits
         // none, and a strategy replay has `from_replay` for its own culling.
         self.links.clear();
+        // Trendlines are rare -- one per trendline-shaped concept -- so they
+        // never realistically breach the budget on their own; keep them, and
+        // let the newest-matches culling above absorb the pressure.
+        self.trendlines.truncate(MAX_TRENDLINES_KEEP);
     }
 
     /// Detect the output's own concepts over `candles` and **replace** the
@@ -206,6 +284,7 @@ impl IndicatorOutput {
         self.zones.clear();
         self.markers.clear();
         self.links.clear();
+        self.trendlines.clear();
 
         // Validated concepts only; refusals are reported by the caller through
         // the scene note, not drawn half-way.
@@ -259,6 +338,32 @@ impl IndicatorOutput {
                 }
                 _ => merged.push(region),
             }
+        }
+
+        // One fitted line per trendline-shaped concept: the swing pivots of
+        // the whole series, connected in time order. This is the half of the
+        // "draw the trendline" request the band detector could never answer.
+        let mut next_line = 0usize;
+        for concept in &concepts {
+            if concept.shape != analytics_core::concepts::ConceptShape::Trendline {
+                continue;
+            }
+            let points = analytics_core::concepts::trendline_segments(candles, TRENDLINE_STRENGTH)
+                .into_iter()
+                .map(|p| TrendPoint {
+                    time: p.time,
+                    price: p.price,
+                })
+                .collect::<Vec<_>>();
+            if points.len() < 2 {
+                continue;
+            }
+            self.trendlines.push(IndicatorTrendline {
+                id: format!("live-tl-{next_line}"),
+                label: concept.label(),
+                points,
+            });
+            next_line += 1;
         }
 
         for (index, region) in merged.iter().enumerate() {
@@ -660,6 +765,7 @@ mod tests {
             revision_id: "revision-7".into(),
             name: None,
             concepts: Vec::new(),
+            trendlines: Vec::new(),
             evidence: vec![Evidence {
                 id: "sweep".into(),
                 event: "liquidity_sweep".into(),

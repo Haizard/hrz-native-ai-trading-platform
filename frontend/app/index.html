@@ -242,6 +242,11 @@
   .ws-sweep th { color: var(--muted); font-weight: 500; padding: 2px 8px; text-align: center; }
   .ws-sweep td { padding: 4px 10px; text-align: center; border-radius: 4px; color: var(--text); }
   .ws-sweep-btn { margin-top: 6px; font-size: 11px; padding: 2px 10px; }
+  /* Screenshot self-review: the prose the model returned about the rendered
+     chart, shown in the same result panel as the sweep heatmap. */
+  .ws-review { margin: 8px 0; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid rgba(167, 139, 250, 0.4); background: rgba(13, 17, 26, 0.6); }
+  .ws-review-btn { margin-top: 6px; font-size: 11px; padding: 2px 10px; }
   /* Evidence tooltip: follows the pointer over a generated marker. */
   .evidenceTip {
     position: absolute; z-index: 40; pointer-events: none;
@@ -1480,6 +1485,30 @@
         <details class="ws-extra">
           <summary>Revisions</summary>
           <div id="wsRevisions"><p class="empty">No revisions yet.</p></div>
+        </details>
+        <!-- The code panel: the workspace's documents as files, Pine-editor
+             style. Each revision is one read-only-via-chat "file"; the editor
+             below edits a copy and saves it as a NEW revision, because a
+             stored source is history, not a scratch pad. -->
+        <details class="ws-extra">
+          <summary>Code</summary>
+          <div id="wsCodeFiles"><p class="empty">No files yet — generate a revision first.</p></div>
+          <div id="wsCodeEditor" hidden>
+            <div class="row" style="margin:6px 0">
+              <strong id="wsCodeTitle" class="muted"></strong>
+              <span class="spacer"></span>
+              <button type="button" id="wsCodeCopy" title="Copy the file's contents">Copy</button>
+              <button type="button" id="wsCodeEdit" title="Edit a copy of this file">Edit</button>
+              <button type="button" id="wsCodeNew" title="Start a new empty document">New file</button>
+            </div>
+            <textarea id="wsCodeSource" spellcheck="false"
+              style="width:100%;min-height:280px;font-family:var(--mono);font-size:11px;background:rgba(13,17,26,.7);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px"></textarea>
+            <div class="row" style="margin-top:6px">
+              <span id="wsCodeMsg" class="muted" style="font-size:11px"></span>
+              <span class="spacer"></span>
+              <button type="button" id="wsCodeSave" class="primary" title="Validate the source and store it as a new revision">Save as new revision</button>
+            </div>
+          </div>
         </details>
         <details class="ws-extra">
           <summary>Alerts</summary>
