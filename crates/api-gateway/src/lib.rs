@@ -64,6 +64,7 @@ pub mod indicator_workspace_routes;
 pub mod market_data;
 pub mod market_routes;
 pub mod metrics;
+pub mod orderflow_routes;
 pub mod plot;
 pub mod provider_routes;
 pub mod rate_limit;
@@ -257,6 +258,11 @@ pub fn router(state: AppState) -> Router {
         .route("/scan", get(scan_routes::scan))
         .route("/footprint", get(footprint_routes::footprint))
         .route("/footprint/coverage", get(footprint_routes::coverage))
+        .route("/bar-delta-stats", get(orderflow_routes::bar_delta_stats))
+        .route("/delta-by-size", get(orderflow_routes::delta_by_size))
+        .route("/profile-memory", get(orderflow_routes::profile_memory))
+        .route("/icebergs", get(orderflow_routes::icebergs))
+        .route("/vpin", get(orderflow_routes::vpin))
         .route("/orderbook", get(market_routes::orderbook))
         .route(
             "/strategies",

@@ -30,9 +30,10 @@ use tracing::debug;
 use analytics_core::types::{Candle, Timeframe, Trade};
 use analytics_core::volume_profile::VolumeNode;
 use analytics_core::{
-    build_market_state, calculate_volume_profile_from_candles, detect_absorption,
+    bar_delta_stats_window, build_market_state, calculate_cvd_by_size, calculate_vpin_series,
+    calculate_volume_profile_from_candles, delta_by_size_per_candle, detect_absorption,
     detect_imbalances_with, detect_liquidity_levels_with, detect_market_structure, MarketState,
-    MarketStateConfig,
+    MarketStateConfig, SizeClass, SizeClassConfig, VpinConfig,
 };
 
 use crate::error::AgentError;
@@ -310,6 +311,26 @@ impl ToolRegistry {
                     input_schema: symbol_timeframe_schema(Some("count")),
                 },
                 ToolSpec {
+                    name: "get_delta_by_size".into(),
+                    description: GET_DELTA_BY_SIZE.into(),
+                    input_schema: symbol_timeframe_schema(Some("count")),
+                },
+                ToolSpec {
+                    name: "get_bar_delta_stats".into(),
+                    description: GET_BAR_DELTA_STATS.into(),
+                    input_schema: symbol_timeframe_schema(Some("count")),
+                },
+                ToolSpec {
+                    name: "get_vpin".into(),
+                    description: GET_VPIN.into(),
+                    input_schema: symbol_timeframe_schema(Some("count")),
+                },
+                ToolSpec {
+                    name: "detect_size_divergence".into(),
+                    description: DETECT_SIZE_DIVERGENCE.into(),
+                    input_schema: symbol_timeframe_schema(Some("count")),
+                },
+                ToolSpec {
                     name: "get_delta".into(),
                     description: GET_DELTA.into(),
                     input_schema: symbol_timeframe_schema(Some("lookback")),
@@ -435,6 +456,10 @@ impl ToolRegistry {
             "get_candles" => get_candles(ctx, &call.input).await,
             "get_volume_profile" => get_volume_profile(ctx, &call.input).await,
             "get_footprint" => get_footprint(ctx, &call.input).await,
+            "get_delta_by_size" => get_delta_by_size(ctx, &call.input).await,
+            "get_bar_delta_stats" => get_bar_delta_stats(ctx, &call.input).await,
+            "get_vpin" => get_vpin(ctx, &call.input).await,
+            "detect_size_divergence" => detect_size_divergence(ctx, &call.input).await,
             "get_delta" => get_delta(ctx, &call.input).await,
             "get_cvd" => get_cvd(ctx, &call.input).await,
             "get_vwap" => get_vwap(ctx, &call.input).await,
@@ -829,6 +854,24 @@ const GET_FOOTPRINT: &str = "Per-price bid vs ask volume for the most recent can
     Only available when tick data exists for the window; returns an explicit \
     note when it does not.";
 
+const GET_DELTA_BY_SIZE: &str = "Delta and cumulative delta (CVD) split by order size \
+    class (small/medium/large by notional). Use it to answer whether big players \
+    and small players are on the same or opposite sides of a move.";
+
+const GET_BAR_DELTA_STATS: &str = "Intra-bar delta extremes and intrabar VWAP per candle: \
+    the highest and lowest running delta reached inside each bar and where the bar \
+    closed within that range. A bar whose peak delta was strongly positive but \
+    closed negative trapped late buyers. Unavailable without tick data.";
+
+const GET_VPIN: &str = "Order-flow toxicity (VPIN) over volume buckets, 0 to 1. High \
+    values historically precede volatility bursts; treat it as a risk input for \
+    sizing and invalidation width, not as a direction.";
+
+const DETECT_SIZE_DIVERGENCE: &str = "Score the divergence between large-order CVD and \
+    small-order CVD over the window. Positive means large players accumulated \
+    while small players distributed (or vice versa for negative). Unavailable \
+    without tick data.";
+
 const GET_DELTA: &str = "Buy-aggressed minus sell-aggressed volume for the recent candles, \
     and the cumulative total over the window.";
 
@@ -1076,6 +1119,196 @@ async fn get_footprint(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Age
         "available": true,
         "candles": rendered,
     }))
+}
+
+async fn get_delta_by_size(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "get_delta_by_size";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "count", TOOL)?);
+    let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
+    if trades.is_empty() {
+        return Ok(json!({
+            "symbol": symbol,
+            "timeframe": timeframe.to_string(),
+            "available": false,
+            "note": NO_TICK_DATA,
+        }));
+    }
+
+    let config = SizeClassConfig::default();
+    let per_candle = delta_by_size_per_candle(&candles, &trades, &config);
+    let cvd = calculate_cvd_by_size(&candles, &trades, &config, true);
+    let last = cvd.last();
+
+    let classes = SizeClass::all().iter().map(|class| {
+        let index = class.index();
+        json!({
+            "class": class.as_str(),
+            "window_delta": per_candle.iter().map(|b| b.classes[index].delta()).sum::<f64>(),
+            "cvd_latest": last.map_or(0.0, |p| p.classes[index]),
+            "trades": per_candle.iter().map(|b| b.classes[index].trades).sum::<usize>(),
+        })
+    }).collect::<Vec<_>>();
+
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "available": true,
+        "small_below": config.small_below,
+        "medium_below": config.medium_below,
+        "classes": classes,
+        "series": cvd.iter().map(|p| json!({
+            "open_time": p.open_time,
+            "small": p.classes[0],
+            "medium": p.classes[1],
+            "large": p.classes[2],
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+async fn get_bar_delta_stats(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "get_bar_delta_stats";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "count", TOOL)?).min(50);
+    let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
+    if trades.is_empty() {
+        return Ok(json!({
+            "symbol": symbol,
+            "timeframe": timeframe.to_string(),
+            "available": false,
+            "note": NO_TICK_DATA,
+        }));
+    }
+
+    let stats = bar_delta_stats_window(&candles, &trades);
+    let rendered: Vec<_> = stats
+        .iter()
+        .filter(|stat| !stat.is_empty())
+        .map(|stat| {
+            json!({
+                "open_time": stat.open_time,
+                "delta": stat.delta,
+                "max_delta": stat.max_delta,
+                "min_delta": stat.min_delta,
+                "delta_close_position": stat.delta_close_position(),
+                "intrabar_vwap": stat.intrabar_vwap,
+                "trades": stat.trades,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "available": true,
+        "candles": rendered,
+    }))
+}
+
+async fn get_vpin(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "get_vpin";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "count", TOOL)?).min(200);
+    let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
+    if trades.is_empty() {
+        return Ok(json!({
+            "symbol": symbol,
+            "timeframe": timeframe.to_string(),
+            "available": false,
+            "note": NO_TICK_DATA,
+        }));
+    }
+
+    // One bucket per ~0.5% of the window's volume, matching the route.
+    let total: f64 = candles.iter().map(|c| c.volume).sum();
+    let config = VpinConfig {
+        bucket_volume: (total / 200.0).max(1.0),
+        buckets: 50,
+    };
+    let series = calculate_vpin_series(&trades, &config);
+    let latest = series.last();
+
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "available": !series.is_empty(),
+        "note": series.is_empty()
+            .then(|| "not enough volume for a full VPIN window yet".to_string()),
+        "latest": latest.map(|p| serde_json::json!({
+            "vpin": p.vpin,
+            "timestamp": p.timestamp,
+        })),
+        "interpretation": latest.map(|p| match p.vpin {
+            v if v >= 0.6 => "elevated: informed flow likely active, widen invalidation".to_string(),
+            v if v >= 0.3 => "normal range".to_string(),
+            _ => "calm: flow is balanced".to_string(),
+        }),
+    }))
+}
+
+async fn detect_size_divergence(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "detect_size_divergence";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "count", TOOL)?);
+    let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
+    if trades.is_empty() {
+        return Ok(json!({
+            "symbol": symbol,
+            "timeframe": timeframe.to_string(),
+            "available": false,
+            "note": NO_TICK_DATA,
+        }));
+    }
+
+    let config = SizeClassConfig::default();
+    let cvd = calculate_cvd_by_size(&candles, &trades, &config, true);
+    let small: Vec<f64> = cvd.iter().map(|p| p.classes[SizeClass::Small.index()]).collect();
+    let large: Vec<f64> = cvd.iter().map(|p| p.classes[SizeClass::Large.index()]).collect();
+
+    // Normalized Pearson correlation between the small-order and large-order
+    // CVD paths: -1 = opposite behavior, +1 = identical behavior.
+    let correlation = correlation(&small, &large);
+    let large_latest = large.last().copied().unwrap_or(0.0);
+    let small_latest = small.last().copied().unwrap_or(0.0);
+
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "available": true,
+        "correlation": correlation,
+        "large_cvd": large_latest,
+        "small_cvd": small_latest,
+        "reading": match correlation {
+            c if c < -0.3 => "diverged: large and small players are on opposite sides".to_string(),
+            c if c > 0.7 => "aligned: both cohorts flow the same direction".to_string(),
+            _ => "mixed".to_string(),
+        },
+    }))
+}
+
+/// Pearson correlation of two equal-length series, `None`-safe: a flat series
+/// (zero variance) yields 0.0 rather than NaN.
+fn correlation(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len().min(b.len());
+    if n < 2 {
+        return 0.0;
+    }
+    let (a, b) = (&a[..n], &b[..n]);
+    let mean_a = a.iter().sum::<f64>() / n as f64;
+    let mean_b = b.iter().sum::<f64>() / n as f64;
+    let covariance: f64 = a.iter().zip(b).map(|(x, y)| (x - mean_a) * (y - mean_b)).sum();
+    let var_a: f64 = a.iter().map(|x| (x - mean_a) * (x - mean_a)).sum();
+    let var_b: f64 = b.iter().map(|y| (y - mean_b) * (y - mean_b)).sum();
+    let denominator = (var_a * var_b).sqrt();
+    if denominator.abs() < f64::EPSILON {
+        0.0
+    } else {
+        covariance / denominator
+    }
 }
 
 async fn get_delta(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {

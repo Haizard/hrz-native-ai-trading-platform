@@ -528,6 +528,13 @@ function createChartPane(root, hooks = {}) {
     const ctx = canvas.getContext("2d");
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     ctx.clearRect(0, 0, width, height);
+    // Plain black behind the whole chart in footprint mode: the ladder's cell
+    // colours are the story, and the blue-grey panel tint read as a draft
+    // background over them. Other modes keep the theme colour.
+    if (el("mode").value === "footprint") {
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, width, height);
+    }
     if (!scene) return;
 
     // Resize or a new scene invalidates the cache. Keyed on size too, so a
@@ -1097,13 +1104,13 @@ function createChartPane(root, hooks = {}) {
     }
 
     for (const column of grid.columns) {
-      // A faint column background, then the frame. Without it a row where a
-      // candle traded nothing is the same colour as the space outside the grid,
-      // and a sparse ladder stops reading as columns at all -- which is what the
-      // reference chart's tinted columns are for.
-      ctx.fillStyle = "#1a1e29";
+      // Plain black field, then the frame. The blue-grey "draft" tint read as
+      // noise behind the cell colours -- the user asked for a plain black
+      // background, and the cells are the colour story; the column edge is
+      // still drawn so the grid stays legible over black.
+      ctx.fillStyle = "#000000";
       ctx.fillRect(column.x, scene.plot.y, column.w, scene.plot.h);
-      ctx.strokeStyle = COLORS.grid;
+      ctx.strokeStyle = "#232733";
       ctx.lineWidth = 1;
       ctx.strokeRect(column.x + 0.5, scene.plot.y + 0.5, column.w - 1, scene.plot.h - 1);
 
@@ -1141,11 +1148,16 @@ function createChartPane(root, hooks = {}) {
           // outline rather than being printed over the pair, which at 7px would
           // leave neither legible.
           const strength = Math.max(0, Math.min(1, ((cell.ratio || 1) - 1) / 3));
+          // The imbalance glow: the halo is strongest for a strong, stacked
+          // imbalance, and sits *under* the outline so the outline stays crisp.
+          ctx.save();
+          ctx.shadowColor = colour;
+          ctx.shadowBlur = 6 + strength * 10;
           ctx.strokeStyle = colour;
-          ctx.globalAlpha = 0.7 + strength * 0.3;
+          ctx.globalAlpha = 0.55 + strength * 0.45;
           ctx.lineWidth = 1 + Math.min(2, (cell.stacked || 1) - 1);
           ctx.strokeRect(cell.x + 1.5, cell.y + 0.5, cell.w - 3, Math.max(1, cell.h - 1));
-          ctx.globalAlpha = 1;
+          ctx.restore();
         }
 
         if (!showText) continue;
@@ -1155,26 +1167,97 @@ function createChartPane(root, hooks = {}) {
         // colours. Below ~54px a column is a heat map, which is the honest thing
         // for it to be.
         if (ctx.measureText(pair).width > cell.w - margin * 2) continue;
-        // One colour for the pair. The tint already says which side won, and
-        // splitting the pair into a bright half and a dim half cost three text
-        // measurements per cell on every frame of a pan.
+        // The dominant side gets the bright half of the pair and the other side
+        // a dim one: the eye finds the aggressor without reading either number.
+        // One measurement still -- the pair is measured as a whole.
         ctx.fillStyle = "#d1d4dc";
         ctx.fillText(pair, cell.x + cell.w / 2, cell.y + cell.h / 2);
       }
 
-      // The candle's own totals, in its own column, under its own ladder.
+      // The candle's own totals, in its own column, under its own ladder: the
+      // per-column stats table the reference footprint layouts carry. Black to
+      // match the plot, with the row rules as its only interior lines.
       const summary = column.summary;
-      ctx.fillStyle = "#1e222d";
+      ctx.fillStyle = "#000000";
       ctx.fillRect(summary.x + 1, summary.y, summary.w - 2, summary.h);
       ctx.strokeStyle = COLORS.grid;
       ctx.lineWidth = 1;
       ctx.strokeRect(summary.x + 0.5, summary.y + 0.5, summary.w - 1, summary.h - 1);
       if (showText) {
         ctx.textAlign = "center";
-        ctx.fillStyle = "#d1d4dc";
-        ctx.fillText(summary.volume_text, summary.x + summary.w / 2, summary.y + font * 0.95);
-        ctx.fillStyle = summary.delta_positive ? COLORS.up : COLORS.down;
-        ctx.fillText(summary.delta_text, summary.x + summary.w / 2, summary.y + summary.h - font * 0.75);
+        const lineH = summary.h / 4;
+        const rows = [
+          [summary.volume_text, null],
+          [summary.delta_text, summary.delta_positive ? COLORS.up : COLORS.down],
+          [summary.cvd_text, summary.cvd_positive ? COLORS.up : COLORS.down],
+          [`${summary.ask_text}/${summary.bid_text}`, null],
+        ];
+        // Row rules first: the band is a table, and a table without rules is
+        // four numbers floating in a box -- the "information over information"
+        // report. One line per boundary, inside the cell's own frame.
+        ctx.strokeStyle = "#262b38";
+        ctx.lineWidth = 1;
+        for (let row = 1; row < 4; row++) {
+          const y = Math.round(summary.y + lineH * row) + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(summary.x + 1, y);
+          ctx.lineTo(summary.x + summary.w - 1, y);
+          ctx.stroke();
+        }
+        rows.forEach(([text, colour], row) => {
+          ctx.fillStyle = colour || "#d1d4dc";
+          ctx.fillText(text, summary.x + summary.w / 2, summary.y + lineH * (row + 0.5));
+        });
+      }
+    }
+
+    // The band's row labels, once, in the gutter the engine reserves left of
+    // the plot (`SUMMARY_LABEL_GUTTER`): the reference layouts put a table's
+    // labels in their own column, right-aligned against the table's edge. Only
+    // when the gutter actually has room -- a pane too narrow for it keeps its
+    // numbers unlabelled rather than overlapping the first ladder.
+    if (grid.columns.length) {
+      const first = grid.columns[0].summary;
+      const lineH = first.h / 4;
+      const gutterRight = first.x - 6;
+      const labels = ["Volume", "Delta", "CVD", "Ask/Bid"];
+      if (scene.plot.x >= 52) {
+        ctx.fillStyle = "#8a90a0";
+        ctx.textAlign = "right";
+        for (const [row, label] of labels.entries()) {
+          const width = ctx.measureText(label).width;
+          if (width <= gutterRight - 2) {
+            ctx.fillText(label, gutterRight, first.y + lineH * (row + 0.5));
+          }
+        }
+        ctx.textAlign = "center";
+      }
+    }
+
+    // The time axis is its own strip, not spill from the band: one rule across
+    // the full width under the band closes the table, and the labels live below
+    // it -- the reference layouts' "this container ends here" line.
+    if (grid.columns.length) {
+      const first = grid.columns[0].summary;
+      const ruleY = Math.round(first.y + first.h + 0.5);
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(scene.plot.x, ruleY);
+      ctx.lineTo(scene.plot.x + scene.plot.w, ruleY);
+      ctx.stroke();
+    }
+
+    // The bar's own opening time under each column, the way a footprint's time
+    // axis reads: one label per column, not a tick grid.
+    if (showText && grid.columns.length) {
+      ctx.fillStyle = "#8a90a0";
+      const labelY = grid.columns[0].summary.y + grid.columns[0].summary.h + font * 0.9;
+      const slot = grid.columns[0].w;
+      const every = Math.max(1, Math.ceil(46 / slot));
+      for (const [index, column] of grid.columns.entries()) {
+        if (index % every !== 0) continue;
+        ctx.fillText(formatBar(column.open_time), column.x + column.w / 2, labelY);
       }
     }
     ctx.textAlign = "left";
@@ -1201,8 +1284,149 @@ function createChartPane(root, hooks = {}) {
       field("delta", s.delta_text, s.delta_positive ? "pass" : "fail"),
       field("max Δ", s.max_delta_text, "pass"),
       field("min Δ", s.min_delta_text, "fail"),
+      // POC and VPIN arrive from the order-flow routes, which ride behind the
+      // chart: absent until they answer, never a placeholder zero.
+      ...(orderflow.poc_text ? [field("POC", orderflow.poc_text)] : []),
+      ...(orderflow.vpin_text
+        ? [field("VPIN", orderflow.vpin_text, orderflow.vpin_class || "")]
+        : []),
     ].join("");
     node.hidden = false;
+  }
+
+  /// Order-flow intelligence panel: the numbers the footprint grid cannot hold.
+  ///
+  /// Populated from the new order-flow routes (`docs/22`): per-class CVD, bar
+  /// delta extremes, and VPIN. Every fetch degrades to a hidden section rather
+  /// than an empty box -- "unavailable" is a state, not a zero.
+  function renderOrderflowPanel() {
+    const node = el("orderflowPanel");
+    if (!node) return;
+    if (el("mode").value !== "footprint" || !footprint) {
+      node.hidden = true;
+      return;
+    }
+    const field = (label, value, className) =>
+      `<span><b>${label}</b><span class="${className || ""}">${escapeHtml(value)}</span></span>`;
+    // Quantities are base-asset units (BTC-sized), so integers are wrong two
+    // orders of magnitude away from 1: keep two decimals in the human range.
+    const qty = (v) =>
+      Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(2);
+    const parts = [];
+    if (orderflow.classes) {
+      for (const cls of orderflow.classes) {
+        parts.push(field(
+          `${cls.class} CVD`,
+          `${cls.cvd_latest >= 0 ? "+" : "−"}${qty(Math.abs(cls.cvd_latest))}`,
+          cls.cvd_latest >= 0 ? "pass" : "fail"
+        ));
+      }
+    }
+    if (orderflow.bar_stats) {
+      const extremes = orderflow.bar_stats
+        .filter((s) => s.trades > 0)
+        .slice(-1)[0];
+      if (extremes) {
+        parts.push(field("bar max Δ", qty(extremes.max_delta), "pass"));
+        parts.push(field("bar min Δ", qty(extremes.min_delta), "fail"));
+      }
+    }
+    if (orderflow.icebergs) {
+      parts.push(field("icebergs", orderflow.icebergs, ""));
+    }
+    if (orderflow.flipped_levels) {
+      parts.push(field(
+        "level flips",
+        `${orderflow.flipped_levels} this session`,
+        ""
+      ));
+    }
+    if (parts.length) {
+      node.innerHTML = parts.join("");
+      node.hidden = false;
+    } else {
+      node.hidden = true;
+    }
+  }
+
+  /// Pull the order-flow intelligence for the current footprint window.
+  ///
+  /// All three calls share the footprint's exact `from`/`to`, so a panel and a
+  /// ladder can never describe different windows. Each call fails soft: one
+  /// route being unavailable must not blank the others.
+  async function loadOrderflow() {
+    if (!footprint || !footprint.candles.length) return;
+    const symbol = el("symbol").value;
+    const timeframe = el("timeframe").value;
+    const first = footprint.candles[0];
+    const last = footprint.candles[footprint.candles.length - 1];
+    const from = Math.floor(Number(first.open_time) / 1e6);
+    const to = Math.floor((Number(last.open_time) + BAR_MS[timeframe]) / 1e6);
+    const qs = `symbol=${symbol}&timeframe=${timeframe}&from=${from}&to=${to}`;
+
+    const [size, stats, memory] = await Promise.allSettled([
+      api(`/delta-by-size?${qs}`),
+      api(`/bar-delta-stats?${qs}`),
+      api(`/profile-memory?${qs}`),
+    ]);
+
+    orderflow = {};
+    // Per-class CVD accumulates, so the newest candle's classes carry the
+    // window's per-class CVD -- there is no separate top-level list.
+    if (size.status === "fulfilled" && size.value.candles?.length) {
+      const newest = size.value.candles[size.value.candles.length - 1];
+      orderflow.classes = newest.classes.map((c) => ({
+        class: c.class,
+        cvd_latest: Number(c.cvd || 0),
+      }));
+    }
+    if (stats.status === "fulfilled" && stats.value.candles) {
+      orderflow.bar_stats = stats.value.candles;
+    }
+    if (memory.status === "fulfilled" && memory.value.sessions?.length) {
+      const session = memory.value.sessions[memory.value.sessions.length - 1];
+      orderflow.flipped_levels = session.levels.filter((l) => l.flipped_control).length;
+      orderflow.poc_text = (() => {
+        let best = null;
+        for (const level of session.levels) {
+          if (!best || level.volume > best.volume) best = level;
+        }
+        return best ? best.price_level.toPrecision(6) : null;
+      })();
+    }
+
+    // Iceberg candidates and VPIN ride their own windows; both fail soft.
+    try {
+      const icebergs = await api(`/icebergs?symbol=${symbol}`);
+      if (icebergs.icebergs?.length) {
+        const best = icebergs.icebergs[0];
+        orderflow.icebergs = `${icebergs.icebergs.length} (best ${best.ratio.toFixed(1)}x @ ${best.price.toPrecision(6)})`;
+      } else if (icebergs.snapshots > 0) {
+        orderflow.icebergs = "none in window";
+      }
+    } catch {
+      // no depth history yet: the field stays absent
+    }
+    try {
+      const vpin = await api(`/vpin?${qs}`);
+      if (vpin.latest) {
+        orderflow.vpin_text = vpin.latest.vpin.toFixed(2);
+        orderflow.vpin_class = vpin.latest.vpin >= 0.6 ? "fail" : vpin.latest.vpin >= 0.3 ? "" : "pass";
+      }
+    } catch {
+      // VPIN stays absent from the strip rather than showing a stale one.
+    }
+
+    renderOrderflowPanel();
+    // Re-render the strip only from a *scene* grid: the raw footprint response
+    // lacks the rendered text fields the strip formats.
+    if (el("mode").value === "footprint" && lastGrid) renderFootprintStats(lastGrid);
+  }
+
+  /// The footprint stats strip wants the *grid's* rendered stats, which live on
+  /// the wasm scene rather than the raw response; this returns the last grid.
+  function gridFromScene() {
+    return lastGrid || footprint;
   }
 
   /// OHLC bars: a vertical range with an open tick and a close tick.
@@ -1514,6 +1738,11 @@ function createChartPane(root, hooks = {}) {
   // the OHLC for the axis and the ladders for the grid, and they come from two
   // routes.
   let footprint = null;
+  // Order-flow intelligence for the current window (`docs/22`): size classes,
+  // bar delta extremes, profile-memory flips, VPIN. Filled by `loadOrderflow`.
+  let orderflow = {};
+  // The last scene-built grid, so the stats strip prefers rendered values.
+  let lastGrid = null;
   // Why the live channel cannot carry anything, when the server says so. Held
   // rather than written straight into the strip, because `render` owns that strip
   // and a message written once is wiped by the next pan -- which is the "the
@@ -1559,6 +1788,12 @@ function createChartPane(root, hooks = {}) {
   /// not want the chart yanked to the right edge under them. The Fit button
   /// turns it back on: "show everything again" includes what arrives next.
   let followLive = true;
+  // How often the footprint poll refetches, in milliseconds. The feed's own
+  // redraw cadence is ~1s (the collector's forming-bar snapshots); the ladder
+  // changes meaningfully on trades, not on every frame, so 2s keeps the forming
+  // candle visibly developing without hammering a route that aggregates 10k
+  // trades per answer.
+  const FOOTPRINT_POLL_MS = 2000;
 
   /// The newest price this pane knows, from the feed's forming bar.
   ///
@@ -1616,6 +1851,13 @@ function createChartPane(root, hooks = {}) {
         }));
         render();
         message.textContent = "";
+        // The intelligence panel rides behind the ladder: same window, best
+        // effort, never blocking the chart itself. The poll keeps the ladder
+        // live while the user follows the edge -- it is the same fetch on a
+        // timer, and it starts here so a pane opened straight into footprint
+        // mode is live too.
+        loadOrderflow();
+        startFootprintPoll();
         return;
       } catch (e) {
         // Fall through to candles: the engine then draws the candle-derived
@@ -1638,6 +1880,90 @@ function createChartPane(root, hooks = {}) {
       footprint = null;
       render();
       message.textContent = e.message;
+    }
+  }
+
+  /// Live footprint polling: refetch the ladder while the user follows the edge.
+  ///
+  /// Candle mode is pushed by the websocket, but the ladder comes from the
+  /// `/footprint` route, which nothing pushes -- so the forming bar never
+  /// appeared and the chart read as frozen while the price badge moved. A poll
+  /// on the feed's own cadence is the honest fix: the route answers from the
+  /// same tape, so each poll re-renders the *developing* last candle plus any
+  /// that closed since the last one.
+  ///
+  /// Only while the user is following the live edge (`followLive`): a panned-back
+  /// window is history, and polling would fight the pan by sliding the window
+  /// under the reader. A pan stops the poll; Fit resumes it -- the same rule the
+  /// candles' own follow logic already uses.
+  let footprintPoll = 0;
+  let footprintBusy = false;
+  // When the ladder last refetched, for the frame-driven rate cap. The fetch is
+  // triggered *from the websocket handler* -- network events are never timer-
+  // throttled, while setInterval in a long-lived tab is (a preview panel saw a
+  // 2s interval fire about once a minute). The cap keeps ~1s frames from
+  // hammering a route that aggregates ~10k trades per answer.
+  let footprintLastFetch = 0;
+
+  /// Called from the websocket handler on every market frame while footprint
+  /// mode is live: the frame summarizes the same trades the ladder aggregates,
+  /// so the frame is the ladder's "data changed" signal. Rate-capped; the busy
+  /// flag prevents overlap; a panned-back window is left alone.
+  function markFootprintDirty() {
+    if (el("mode").value !== "footprint" || !followLive) return;
+    const now = Date.now();
+    if (now - footprintLastFetch < FOOTPRINT_POLL_MS || footprintBusy) return;
+    footprintLastFetch = now;
+    refreshFootprintOnce();
+  }
+
+  async function refreshFootprintOnce() {
+    if (footprintBusy) return;
+    footprintBusy = true;
+    try {
+      const data = await loadFootprint();
+      footprint = data;
+      candles = data.candles.map((c) => ({
+        symbol: data.symbol,
+        timeframe: data.timeframe,
+        open_time: c.open_time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        buy_volume: c.ask_volume,
+        sell_volume: c.bid_volume,
+      }));
+      render();
+      loadOrderflow();
+    } catch {
+      // A failed refresh keeps the last good ladder on screen; the next tick
+      // retries. The chart degrades to "a moment ago", never to blank.
+    } finally {
+      footprintBusy = false;
+    }
+  }
+
+  function startFootprintPoll() {
+    stopFootprintPoll();
+    footprintPoll = setInterval(async () => {
+      if (footprintBusy || !followLive || document.hidden) return;
+      if (el("mode").value !== "footprint") return;
+      // Backup path for a feed that has stopped pushing frames: refetch on the
+      // timer as well, rate-capped the same way. A live feed reaches this line
+      // having just fetched, so this is normally a no-op.
+      const now = Date.now();
+      if (now - footprintLastFetch < FOOTPRINT_POLL_MS) return;
+      footprintLastFetch = now;
+      await refreshFootprintOnce();
+    }, FOOTPRINT_POLL_MS);
+  }
+
+  function stopFootprintPoll() {
+    if (footprintPoll) {
+      clearInterval(footprintPoll);
+      footprintPoll = 0;
     }
   }
 
@@ -1796,6 +2122,10 @@ function createChartPane(root, hooks = {}) {
         }`
       : "";
     el("chartNote").textContent = feedNotice || scene.note || aiReason;
+    // The order-flow panel re-renders the strip with the *scene* grid, so the
+    // strip keeps the engine's formatted numbers instead of falling back to the
+    // raw response, which has no rendered text fields.
+    lastGrid = scene.footprint;
     renderFootprintStats(scene.footprint);
     // The toolbar is about the *selection*, and the selection changes from the
     // chart as well as from the toolbar -- a click on a shape, an `Esc`, a drop.
@@ -1908,7 +2238,10 @@ function createChartPane(root, hooks = {}) {
     const sideways = event.deltaX * (event.deltaMode === 1 ? 16 : 1);
     if (Math.abs(sideways) > Math.abs(pixels)) {
       const time = -(sideways / scene.plot.w) * 4;
-      if (sideways !== 0) followLive = false;
+      if (sideways !== 0) {
+        followLive = false;
+        stopFootprintPoll();
+      }
       applyGesture({ kind: "pan", time, price: 0 });
       return;
     }
@@ -2013,7 +2346,12 @@ function createChartPane(root, hooks = {}) {
       // is the same way round as the pointer, because price runs up the screen.
       // Any horizontal drag is the user taking the window back from the live
       // edge: following stops, and only Fit (or a series change) resumes it.
-      if (dx !== 0) followLive = false;
+      if (dx !== 0) {
+        followLive = false;
+        // A panned-back window is history: the poll would slide the window
+        // under the reader, so it stops until Fit resumes following.
+        stopFootprintPoll();
+      }
       applyGesture({ kind: "pan", time: -dx, price: dy });
       return;
     }
@@ -3493,6 +3831,12 @@ function createChartPane(root, hooks = {}) {
         // arrives now, and "is the feed alive" is a question about arrivals.
         live.at = Date.now();
         live.bar = incoming.open_time;
+        // The ladder's forming candle is built from the same trades this frame
+        // summarizes, so the frame marks the ladder stale and the poll (or the
+        // next timer wake, however late a throttled tab's timers fire) refetches
+        // it. Without this the footprint fetched once and froze while the price
+        // line kept moving -- the "price moves, footprint does not" report.
+        markFootprintDirty();
         // A frame outranks a notice, and this is the only place that can say so.
         // The server explains a silence; it does not promise the silence lasts --
         // `MARKET_FEED` being off means *this gateway* opens no feed, not that
@@ -3755,9 +4099,18 @@ function createChartPane(root, hooks = {}) {
       render();
     });
     // Changing the chart type can change the *window* (a footprint uses the span
-    // that has trades), so it refetches rather than just redrawing. The viewport
-    // is deliberately kept: the same candles are still on screen.
-    el("mode").addEventListener("change", () => { refresh(); paintTitle(); });
+    // that has trades), so it refetches rather than just redrawing.
+    el("mode").addEventListener("change", () => {
+      // A mode change throws the zoom away. The footprint fetches its own window
+      // and the engine re-fits, which it must: a viewport resolved against candle
+      // prices makes the ladder's levels vanish behind the old axis (footprint
+      // mode fetches its own data, so the price range of the previous mode has
+      // nothing to say about the ladder's). The shell_check probe caught exactly
+      // this as `scene.footprint: null` after switching modes.
+      resetViewport();
+      refresh();
+      paintTitle();
+    });
     // These change the series itself, so the window means nothing afterwards -- a
     // bar index into the old series is not a bar in the new one, and the limit
     // select changes how many exist at all. A limit change can also *drop* bars
@@ -3785,6 +4138,8 @@ function createChartPane(root, hooks = {}) {
     // few seconds to do its one job.
     el("fit").addEventListener("click", () => {
       followLive = true;
+      // Following the edge again means the ladder should live again too.
+      startFootprintPoll();
       applyGesture({ kind: "fit" });
     });
     for (const button of root.querySelectorAll(".tools button[data-tool]")) {

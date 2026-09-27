@@ -46,27 +46,40 @@
 #![deny(missing_docs)]
 
 pub mod absorption;
+pub mod bar_delta;
 pub mod concepts;
 pub mod cvd;
 pub mod delta;
 pub mod error;
 pub mod events;
 pub mod footprint;
+pub mod iceberg;
 pub mod imbalance;
 pub mod indicators;
 pub mod liquidity;
 pub mod market_structure;
+pub mod profile_memory;
 pub mod regions;
 pub mod resample;
 pub mod rsi_divergence;
 pub mod sessions;
+pub mod size_classes;
 pub mod state;
 pub mod types;
 pub mod volume_profile;
 pub mod volume_score;
+pub mod vpin;
 pub mod vwap;
 
 pub use absorption::{detect_absorption, AbsorptionConfig, AbsorptionEvent};
+pub use bar_delta::{bar_delta_stats, bar_delta_stats_window, BarDeltaStats};
+pub use iceberg::{detect_icebergs, IcebergConfig, IcebergEvent};
+pub use profile_memory::{build_profile_memory, LevelDeltaVisit, LevelMemory, ProfileMemory};
+pub use size_classes::{
+    calculate_cvd_by_size, calculate_volume_profile_for_class, delta_by_size,
+    delta_by_size_per_candle, SizeClass, SizeClassConfig, SizeClassCvdPoint, SizeDeltaBreakdown,
+};
+pub use vpin::{bucket_imbalances, calculate_vpin_series, latest_vpin, BucketImbalance, VpinConfig, VpinPoint};
 pub use concepts::{
     detect as detect_concept, validate as validate_concept, Compare, Concept, Requirement,
     Selector, SelectorKind, MAX_WINDOW, MIN_WINDOW,

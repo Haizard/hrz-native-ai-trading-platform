@@ -62,8 +62,12 @@ const BODY_FRACTION: f64 = 0.7;
 const PROFILE_WIDTH: f64 = 74.0;
 /// Rows a volume profile aims for over the visible range.
 const PROFILE_ROWS: f64 = 40.0;
-/// Height of the per-candle summary strip below the footprint.
-const SUMMARY_HEIGHT: f64 = 22.0;
+/// Height of the per-candle summary band below the footprint.
+///
+/// 22px carried two lines (volume, delta). The band now carries the per-column
+/// table the reference layouts show -- volume, delta, CVD, ask, bid, delta % --
+/// as three text rows, plus its own header and the time labels underneath.
+const SUMMARY_HEIGHT: f64 = 52.0;
 /// Height of one sub-pane (RSI and friends), before clamping.
 const SUB_PANE_HEIGHT: f64 = 90.0;
 /// The most canvas sub-panes may take in total, so three of them cannot
@@ -1044,11 +1048,30 @@ pub fn build(request: &Request) -> Scene {
     // time-axis strip.
     let sub_total: f64 = sub_height.iter().copied().sum::<f64>()
         + SUB_PANE_GAP * sub_height.len() as f64;
+    // Footprint mode's bottom pad carries the per-column stats band *and* the
+    // time labels under it; the other modes just need the time-axis strip. A
+    // fixed pad clipped the band at two of its four rows -- visible as a
+    // summary that stopped mid-table.
+    let bottom_pad = if request.mode == Mode::Footprint {
+        SUMMARY_HEIGHT + 20.0
+    } else {
+        PAD_BOTTOM
+    };
+    // Footprint mode also reserves a **label gutter** on the left: the stats
+    // band is a table (Volume / Delta / CVD / Ask-Bid) and a table's row labels
+    // live in their own column, the way every reference footprint platform
+    // draws them. Without the reservation the labels had nowhere to go and the
+    // band read as four numbers per column with no names.
+    let left_pad = if request.mode == Mode::Footprint {
+        PAD_LEFT + crate::footprint::SUMMARY_LABEL_GUTTER
+    } else {
+        PAD_LEFT
+    };
     let plot = Plot {
-        x: PAD_LEFT,
+        x: left_pad,
         y: PAD_TOP,
-        w: (width - PAD_LEFT - PAD_RIGHT).max(1.0),
-        h: (height - PAD_TOP - PAD_BOTTOM - sub_total).max(1.0),
+        w: (width - left_pad - PAD_RIGHT).max(1.0),
+        h: (height - PAD_TOP - bottom_pad - sub_total).max(1.0),
     };
 
     let mut scene = Scene {
@@ -1248,12 +1271,33 @@ pub fn build(request: &Request) -> Scene {
                 } else {
                     Some((profile.val, profile.vah))
                 };
+                // The ladder follows the **resolved window** exactly as the
+                // candle bars do: `window.from..window.end()` is the same slice
+                // the slot and the profile were computed from, so a pan or a
+                // zoom moves the grid instead of being ignored by it. The
+                // footprint response and the candles are the same bars fetched
+                // together (`app.js` builds one from the other), so indexing by
+                // the candle window is indexing the ladder.
+                //
+                // The stats then describe what is on screen -- the shell's
+                // footer reads them, and a footer citing trades the user cannot
+                // see is the disagreement this slice removes.
+                let footprint_window = &request.footprint
+                    [window.from.min(request.footprint.len())..window.end().min(request.footprint.len())];
+                // The drawn price range decides which rows exist, the same
+                // range the candle chart draws against: zooming the price axis
+                // (shift+wheel) scales the ladder instead of being refused.
+                let price_bounds = (
+                    scene.price_min,
+                    scene.price_max,
+                );
                 scene.footprint = crate::footprint::layout(
-                    &request.footprint,
+                    footprint_window,
                     plot,
                     value_area,
                     SUMMARY_HEIGHT,
                     request.footprint_trades,
+                    Some(price_bounds),
                 );
                 // The caveat comes off the grid rather than being recomputed here:
                 // the row cap depends on the plot height, and working it out a
@@ -1264,7 +1308,22 @@ pub fn build(request: &Request) -> Scene {
                     .and_then(|grid| grid.note.as_ref())
                     .map(|note| note.message.clone());
                 if scene.footprint.is_none() {
-                    scene.note = Some("the footprint for this window holds no price levels".into());
+                    // Either the response was empty (the shell does not send one)
+                    // or the resolved price axis zoomed past every level this
+                    // window traded -- distinguish the two, because the second is
+                    // a zoom the user can undo and the first is a data gap.
+                    let zoomed_past = request.footprint.iter().any(|column| {
+                        column.cells.iter().any(|cell| {
+                            cell.price >= scene.price_min && cell.price <= scene.price_max
+                        })
+                    });
+                    scene.note = Some(if zoomed_past {
+                        "every ladder level is outside the current price axis -- zoom back \
+                         out (shift+wheel) to see the ladders"
+                            .into()
+                    } else {
+                        "the footprint for this window holds no price levels".into()
+                    });
                 }
             }
         }

@@ -202,6 +202,14 @@ struct BookFreshness {
     newest_ns: Option<i64>,
 }
 
+/// Book snapshots kept per symbol for iceberg detection.
+///
+/// The Resistance method needs depth *history*: executed volume compared
+/// against the largest size ever displayed at a level, which the newest book
+/// alone cannot answer. 1,000 snapshots at ~1.3 KB is ~1.3 MB per symbol --
+/// the same trade the tape already makes, applied to the cheap half.
+pub const BOOK_HISTORY_SNAPSHOTS: usize = 1_000;
+
 /// The live, in-memory half of market data: a tape and a book per symbol.
 ///
 /// Deliberately one handle rather than two, because both are fed by the same
@@ -215,6 +223,8 @@ pub struct LiveRegistry {
     freshness: RwLock<HashMap<String, BookFreshness>>,
     /// Trades dropped because they arrived out of order, for the log.
     dropped: RwLock<u64>,
+    /// Bounded depth history per symbol, oldest first, for iceberg detection.
+    book_history: RwLock<HashMap<String, VecDeque<OrderBookSnapshot>>>,
 }
 
 impl LiveRegistry {
@@ -253,9 +263,34 @@ impl LiveRegistry {
         }
     }
 
+    /// The bounded book-snapshot history for `symbol`, oldest first.
+    ///
+    /// Empty when no book has arrived for the symbol yet -- which iceberg
+    /// detection reports as "unavailable" rather than treating as "no
+    /// icebergs."
+    #[must_use]
+    pub fn book_history(&self, symbol: &str) -> Vec<OrderBookSnapshot> {
+        self.book_history
+            .read()
+            .ok()
+            .and_then(|history| history.get(&symbol.to_uppercase()).cloned())
+            .map_or_else(Vec::new, |queue| queue.iter().cloned().collect())
+    }
+
     /// Record a book snapshot, and mark the symbol's book fresh.
     pub fn record_book(&self, snapshot: &OrderBookSnapshot) {
         self.books.set(snapshot.clone());
+
+        // Retain the bounded depth history for iceberg detection.
+        if let Ok(mut history) = self.book_history.write() {
+            let queue = history
+                .entry(snapshot.symbol.to_uppercase())
+                .or_insert_with(VecDeque::new);
+            queue.push_back(snapshot.clone());
+            while queue.len() > BOOK_HISTORY_SNAPSHOTS {
+                queue.pop_front();
+            }
+        }
 
         // Monotonic: a book that arrives out of order must not make the symbol
         // look older than it is. The whole point of this number is the moment a

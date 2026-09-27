@@ -148,6 +148,32 @@ pub struct Summary {
     pub delta_positive: bool,
     /// The close, formatted.
     pub close_text: String,
+    /// The open, formatted.
+    pub open_text: String,
+    /// The high, formatted.
+    pub high_text: String,
+    /// The low, formatted.
+    pub low_text: String,
+    /// Total bid volume, formatted.
+    pub bid_text: String,
+    /// Total ask volume, formatted.
+    pub ask_text: String,
+    /// This column's largest level delta, formatted.
+    pub max_delta_text: String,
+    /// This column's smallest level delta, formatted.
+    pub min_delta_text: String,
+    /// Delta as a share of volume, formatted with a `%` -- `0` when the column
+    /// traded nothing.
+    pub delta_pct_text: String,
+    /// Delta accumulated from the first column of the *drawn window* through
+    /// this one. Window-relative on purpose: the drawn window is what the grid
+    /// is honest about, and a session-absolute CVD is a different (server-side)
+    /// number.
+    pub cvd_text: String,
+    /// Whether the accumulated CVD is positive.
+    pub cvd_positive: bool,
+    /// The point-of-control price, formatted. Empty when the column has none.
+    pub poc_text: String,
 }
 
 /// One column of the grid.
@@ -239,6 +265,14 @@ pub struct Grid {
     pub min_cell_px: f64,
 }
 
+/// Width of the stats band's label gutter, in pixels.
+///
+/// The band is a table (Volume / Delta / CVD / Ask-Bid) and the row labels live
+/// left of the first column, in space the plot reserves. Sized for the widest
+/// label at the 10px axis font plus a little air; the shell right-aligns each
+/// label against `plot.x`.
+pub const SUMMARY_LABEL_GUTTER: f64 = 52.0;
+
 /// Rows beyond this and the axis is a smear at any height.
 ///
 /// A ceiling, not the real cap: what a window can carry depends on the plot
@@ -249,9 +283,12 @@ const MAX_ROWS: usize = 80;
 
 /// The smallest font that is still a number rather than a smudge.
 ///
-/// The same number the shell used to hold privately. It belongs to this crate
-/// because this crate is what decides how many rows fit.
-const MIN_FONT_PX: f64 = 7.0;
+/// 7.0 put nine candles on a 1080px plot; the compact formats were designed to
+/// stay readable one size down (`8` at 7px is `8` at 6.5px -- one character, one
+/// glyph), and traders ask for footprint **density** the way candle charts give
+/// bar count. The floor pairs with [`FONT_PER_ROW`]: 6.5 / 0.78 is an 8.3px row,
+/// so a 500px plot carries 60 rows.
+const MIN_FONT_PX: f64 = 6.5;
 
 /// A row's height as a fraction of the font that sits in it.
 ///
@@ -367,6 +404,14 @@ pub fn signed(value: f64) -> String {
 ///
 /// Returns `None` when there is nothing to draw, so the caller can decide what
 /// to say rather than being handed an empty grid.
+///
+/// `price_bounds` is the **resolved price axis** — what the user has zoomed or
+/// panned the vertical axis to, `None` for "fitted to the data". Rows outside
+/// the bounds are not drawn, which is what makes wheel-zoom on the price axis
+/// behave like every other mode: the same `scene.price_min`/`price_max` the
+/// candle chart is drawn against decides which ladder rows exist. The caller
+/// is expected to have already sliced `columns` to the resolved *time* window
+/// (the stats must describe what is on screen, not what was fetched).
 #[must_use]
 pub fn layout(
     columns: &[Column],
@@ -374,6 +419,7 @@ pub fn layout(
     value_area: Option<(f64, f64)>,
     summary_height: f64,
     trades: usize,
+    price_bounds: Option<(f64, f64)>,
 ) -> Option<Grid> {
     if columns.is_empty() || columns.iter().all(|column| column.cells.is_empty()) {
         return None;
@@ -389,8 +435,22 @@ pub fn layout(
     prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     prices.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
 
+    // The price axis the user has chosen wins first: a row outside the resolved
+    // range does not exist on screen, exactly as a candle outside it does not.
+    // `None` keeps every level -- "fitted".
+    if let Some((low, high)) = price_bounds {
+        prices.retain(|price| *price >= low && *price <= high);
+    }
+
     // How many levels the window has, and how many this plot can carry.
     let levels = prices.len();
+    // A price axis zoomed past every level this window traded is a real state
+    // (the user zoomed the vertical axis somewhere else), and an empty grid here
+    // would divide by zero below. `None` says "nothing to draw at this zoom",
+    // and the caller says why.
+    if levels == 0 {
+        return None;
+    }
     let cap = legible_rows(plot.h);
     let truncated = levels > cap;
     if truncated {
@@ -449,6 +509,12 @@ pub fn layout(
     let mut total_bid = 0.0;
     let mut total_ask = 0.0;
 
+    // CVD accumulates across the **drawn** window, oldest to newest, so the
+    // summary row's last column is the window's cumulative delta and every
+    // column shows how it got there -- the bottom band of the reference
+    // layouts, read left to right.
+    let mut running_cvd = 0.0;
+
     let columns_scene: Vec<ColumnScene> = columns
         .iter()
         .enumerate()
@@ -494,6 +560,15 @@ pub fn layout(
                 .collect();
 
             let summary_y = plot.y + plot.h + 2.0;
+            running_cvd += column.delta;
+            let column_max = cells
+                .iter()
+                .map(|cell| cell.delta)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let column_min = cells
+                .iter()
+                .map(|cell| cell.delta)
+                .fold(f64::INFINITY, f64::min);
             ColumnScene {
                 x,
                 w: slot,
@@ -508,6 +583,32 @@ pub fn layout(
                     delta_text: signed(column.delta),
                     delta_positive: column.delta >= 0.0,
                     close_text: compact(column.close),
+                    open_text: compact(column.open),
+                    high_text: compact(column.high),
+                    low_text: compact(column.low),
+                    bid_text: compact(column.bid_volume),
+                    ask_text: compact(column.ask_volume),
+                    max_delta_text: if column_max.is_finite() {
+                        signed(column_max)
+                    } else {
+                        "0".into()
+                    },
+                    min_delta_text: if column_min.is_finite() {
+                        signed(column_min)
+                    } else {
+                        "0".into()
+                    },
+                    delta_pct_text: if column.volume > 0.0 {
+                        format!("{:.1}%", (column.delta / column.volume) * 100.0)
+                    } else {
+                        "0%".into()
+                    },
+                    cvd_text: signed(running_cvd),
+                    cvd_positive: running_cvd >= 0.0,
+                    poc_text: column
+                        .poc
+                        .map(|poc| compact(poc))
+                        .unwrap_or_default(),
                 },
             }
         })
@@ -520,6 +621,33 @@ pub fn layout(
     if min_delta == f64::INFINITY {
         min_delta = 0.0;
     }
+
+    // Candles that traded (their OHLCV says so) but whose ladder is empty are a
+    // **data gap**, not a quiet market: the window reaches back past the trade
+    // tape while the candles come from kline history. Silent, it reads as "the
+    // chart broke"; said, it reads as what it is.
+    let empty_columns = columns
+        .iter()
+        .filter(|column| column.volume > 0.0 && column.cells.is_empty())
+        .count();
+    let note = if empty_columns > 0 {
+        Some(Note {
+            message: format!(
+                "{empty_columns} of these candles predate the stored trade tape, so they have \
+                 volume but no ladder -- the tape keeps only recent trades. Newer windows are \
+                 complete."
+            ),
+        })
+    } else if truncated {
+        Some(Note {
+            message: format!(
+                "{levels} price levels in this window, showing the middle {cap}. Ask for fewer \
+                 candles or a coarser bucket to see all of them."
+            ),
+        })
+    } else {
+        None
+    };
 
     Some(Grid {
         rows,
@@ -539,12 +667,7 @@ pub fn layout(
         font_px,
         show_text: font_px >= MIN_FONT_PX,
         min_cell_px,
-        note: truncated.then(|| Note {
-            message: format!(
-                "{levels} price levels in this window, showing the middle {cap}. Ask for fewer \
-                 candles or a coarser bucket to see all of them."
-            ),
-        }),
+        note,
     })
 }
 
@@ -625,8 +748,8 @@ mod tests {
 
     #[test]
     fn nothing_to_draw_is_none_rather_than_an_empty_grid() {
-        assert!(layout(&[], plot(), None, 20.0, 0).is_none());
-        assert!(layout(&[column(0, vec![])], plot(), None, 20.0, 0).is_none());
+        assert!(layout(&[], plot(), None, 20.0, 0, None).is_none());
+        assert!(layout(&[column(0, vec![])], plot(), None, 20.0, 0, None).is_none());
     }
 
     #[test]
@@ -638,7 +761,7 @@ mod tests {
             column(0, vec![cell(100.0, 1.0, 1.0), cell(101.0, 1.0, 1.0)]),
             column(1, vec![cell(101.0, 1.0, 1.0), cell(102.0, 1.0, 1.0)]),
         ];
-        let grid = layout(&columns, plot(), None, 20.0, 10).expect("a grid");
+        let grid = layout(&columns, plot(), None, 20.0, 10, None).expect("a grid");
         assert_eq!(grid.rows.len(), 3, "100, 101, 102");
 
         // The shared level sits at the same y in both columns.
@@ -659,7 +782,7 @@ mod tests {
             0,
             vec![cell(100.0, 1.0, 1.0), cell(110.0, 1.0, 1.0)],
         )];
-        let grid = layout(&columns, plot(), None, 20.0, 5).expect("a grid");
+        let grid = layout(&columns, plot(), None, 20.0, 5, None).expect("a grid");
         // rows are ordered by y ascending, so price must descend across them.
         assert!(grid.rows[0].price > grid.rows[1].price);
         assert!(grid.rows[0].y < grid.rows[1].y);
@@ -672,16 +795,65 @@ mod tests {
             column(0, vec![cell(100.0, 1.0, 1.0)]),
             column(1, vec![cell(105.0, 2.0, 3.0)]),
         ];
-        let grid = layout(&columns, plot(), None, 20.0, 5).expect("a grid");
+        let grid = layout(&columns, plot(), None, 20.0, 5, None).expect("a grid");
         assert_eq!(grid.rows.len(), 2);
         assert_eq!(grid.columns[0].cells.len(), 1);
         assert_eq!(grid.columns[1].cells.len(), 1);
     }
 
     #[test]
+    fn the_price_axis_bounds_decide_which_rows_exist() {
+        // The resolved price axis is what the user zoomed the vertical axis to;
+        // a level outside it is as invisible as a candle outside the window.
+        let columns = vec![column(
+            0,
+            vec![
+                cell(100.0, 1.0, 1.0),
+                cell(105.0, 1.0, 1.0),
+                cell(110.0, 1.0, 1.0),
+            ],
+        )];
+        let grid = layout(&columns, plot(), None, 20.0, 5, Some((102.0, 112.0)))
+            .expect("a grid");
+        assert_eq!(grid.rows.len(), 2, "100 is below the axis, 105 and 110 remain");
+        assert!(!grid
+            .columns[0]
+            .cells
+            .iter()
+            .any(|c| (c.price - 100.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn an_axis_zoomed_past_every_level_draws_nothing_rather_than_panicking() {
+        let columns = vec![column(0, vec![cell(100.0, 1.0, 1.0)])];
+        // Zoomed far below the only level: the intersection is empty.
+        assert!(layout(&columns, plot(), None, 20.0, 5, Some((10.0, 20.0))).is_none());
+    }
+
+    #[test]
+    fn the_summary_band_accumulates_cvd_across_the_drawn_window() {
+        let columns = vec![
+            column(0, vec![cell(100.0, 1.0, 3.0)]), // delta +2
+            column(1, vec![cell(100.0, 4.0, 1.0)]), // delta -3
+            column(2, vec![cell(100.0, 1.0, 1.0)]), // delta 0
+        ];
+        let grid = layout(&columns, plot(), None, 20.0, 5, None).expect("a grid");
+        let summaries: Vec<&Summary> = grid.columns.iter().map(|c| &c.summary).collect();
+        assert_eq!(summaries[0].cvd_text, "+2.00");
+        assert!(summaries[0].cvd_positive);
+        assert_eq!(summaries[1].cvd_text, "-1.00");
+        assert!(!summaries[1].cvd_positive);
+        assert_eq!(summaries[2].cvd_text, "-1.00", "running, not per-column");
+        // The band also carries the OHLC and totals the reference layouts show.
+        assert!(!summaries[0].open_text.is_empty());
+        assert!(!summaries[0].bid_text.is_empty());
+        assert!(summaries[0].delta_pct_text.ends_with('%'));
+    }
+
+    #[test]
     fn a_cell_carries_the_text_the_shell_draws() {
         let columns = vec![column(0, vec![cell(100.0, 0.44, 12.5)])];
-        let grid = layout(&columns, plot(), None, 20.0, 5).expect("a grid");
+        let grid = layout(&columns, plot(), None, 20.0, 5, None).expect("a grid");
         let cell = &grid.columns[0].cells[0];
         assert_eq!(cell.bid_text, "0.44");
         assert_eq!(cell.ask_text, "12.5");
@@ -698,7 +870,7 @@ mod tests {
             stacked: 3,
         });
         let columns = vec![column(0, vec![imbalanced])];
-        let grid = layout(&columns, plot(), None, 20.0, 5).expect("a grid");
+        let grid = layout(&columns, plot(), None, 20.0, 5, None).expect("a grid");
         let cell = &grid.columns[0].cells[0];
         assert_eq!(cell.side.as_deref(), Some("buy"));
         assert_eq!(cell.ratio, Some(6.0));
@@ -715,7 +887,7 @@ mod tests {
                 cell(110.0, 1.0, 1.0),
             ],
         )];
-        let grid = layout(&columns, plot(), Some((102.0, 108.0)), 20.0, 5).expect("a grid");
+        let grid = layout(&columns, plot(), Some((102.0, 108.0)), 20.0, 5, None).expect("a grid");
         let marked: Vec<bool> = grid.columns[0]
             .cells
             .iter()
@@ -734,7 +906,7 @@ mod tests {
             0,
             vec![cell(100.0, 1.0, 1.0), cell(105.0, 9.0, 9.0)],
         )];
-        let grid = layout(&columns, plot(), None, 20.0, 5).expect("a grid");
+        let grid = layout(&columns, plot(), None, 20.0, 5, None).expect("a grid");
         let pocs: Vec<f64> = grid.columns[0]
             .cells
             .iter()
@@ -750,7 +922,7 @@ mod tests {
             column(0, vec![cell(100.0, 5.0, 1.0)]),
             column(1, vec![cell(100.0, 1.0, 5.0)]),
         ];
-        let grid = layout(&columns, plot(), None, 20.0, 5).expect("a grid");
+        let grid = layout(&columns, plot(), None, 20.0, 5, None).expect("a grid");
         for (index, column) in grid.columns.iter().enumerate() {
             assert!(column.summary.y >= plot().y + plot().h);
             assert_eq!(column.summary.h, 20.0);
@@ -770,7 +942,7 @@ mod tests {
             column(0, vec![cell(100.0, 5.0, 1.0)]),
             column(1, vec![cell(100.0, 1.0, 5.0)]),
         ];
-        let grid = layout(&columns, plot(), None, 20.0, 42).expect("a grid");
+        let grid = layout(&columns, plot(), None, 20.0, 42, None).expect("a grid");
         assert_eq!(grid.stats.trades, 42);
         assert_eq!(grid.stats.columns, 2);
         assert_eq!(grid.stats.bid_text, "6.00");
@@ -785,7 +957,7 @@ mod tests {
     #[test]
     fn a_deep_window_is_truncated_to_what_the_plot_can_carry_and_says_so() {
         let cells: Vec<ColumnCell> = (0..200).map(|i| cell(100.0 + i as f64, 1.0, 1.0)).collect();
-        let grid = layout(&[column(0, cells)], plot(), None, 20.0, 100).expect("a grid");
+        let grid = layout(&[column(0, cells)], plot(), None, 20.0, 100, None).expect("a grid");
         assert_eq!(grid.rows.len(), legible_rows(plot().h));
         assert!(grid.rows.len() < 200, "200 levels do not fit a 400px plot");
         let note = grid.note.expect("a caveat");
@@ -804,6 +976,7 @@ mod tests {
             None,
             20.0,
             1,
+            None,
         )
         .expect("a grid");
         assert!(grid.note.is_none());
@@ -823,7 +996,7 @@ mod tests {
             w: 600.0,
             h: 500.0,
         };
-        let grid = layout(&[column(0, cells)], plot, None, 20.0, 1).expect("a grid");
+        let grid = layout(&[column(0, cells)], plot, None, 20.0, 1, None).expect("a grid");
         assert_eq!(grid.rows.len(), 45, "45 rows fit a 500px plot");
         assert!(
             grid.show_text,
@@ -848,7 +1021,7 @@ mod tests {
             w: 1080.0,
             h: 500.0,
         };
-        let grid = layout(&columns, plot, None, 20.0, 1).expect("a grid");
+        let grid = layout(&columns, plot, None, 20.0, 1, None).expect("a grid");
 
         assert_eq!(grid.rows.len(), 45);
         assert!(grid.show_text, "{}px in a 54px cell", grid.font_px);
@@ -878,7 +1051,7 @@ mod tests {
             w: 1080.0,
             h: 500.0,
         };
-        let grid = layout(&columns, plot, None, 20.0, 1).expect("a grid");
+        let grid = layout(&columns, plot, None, 20.0, 1, None).expect("a grid");
         assert!(!grid.show_text, "{}px in a 27px cell", grid.font_px);
     }
 
@@ -899,6 +1072,7 @@ mod tests {
             None,
             20.0,
             1,
+            None,
         )
         .expect("a grid");
         assert_eq!(
@@ -945,14 +1119,14 @@ mod tests {
             w: 1080.0,
             h: 500.0,
         };
-        let seed = layout(&[column(0, cells.clone())], plot, None, 20.0, 1).expect("a grid");
+        let seed = layout(&[column(0, cells.clone())], plot, None, 20.0, 1, None).expect("a grid");
 
         let fits = (plot.w / seed.min_cell_px).floor() as usize;
         assert!(fits > 1, "a 1080px plot holds more than one ladder cell");
 
         let at = |n: usize| {
             let columns: Vec<Column> = (0..n).map(|i| column(i as i64, cells.clone())).collect();
-            layout(&columns, plot, None, 20.0, 1).expect("a grid")
+            layout(&columns, plot, None, 20.0, 1, None).expect("a grid")
         };
 
         let roomy = at(fits);
@@ -974,7 +1148,7 @@ mod tests {
     #[test]
     fn the_grid_serializes_for_the_shell() {
         let columns = vec![column(0, vec![cell(100.0, 0.4, 2.4)])];
-        let grid = layout(&columns, plot(), None, 20.0, 7).expect("a grid");
+        let grid = layout(&columns, plot(), None, 20.0, 7, None).expect("a grid");
         let json = serde_json::to_value(&grid).expect("must serialize");
         assert!(json["rows"].is_array());
         assert!(json["columns"][0]["cells"][0]["bid_text"].is_string());

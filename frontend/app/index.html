@@ -419,9 +419,14 @@
   .tools button[data-ai-layer][aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
   /* The profile-anchor toggle wears the same pressed language. */
   .tools button[data-profile-anchor][aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  /* The hint lives in the pane title bar (a plain inline span, right side via
+     the flex row), never over the plot: the footprint stats band and time axis
+     own the bottom of the canvas, and hint text over them was the "information
+     overlaps information" report. */
   .chartHint {
-    position: absolute; left: 12px; bottom: 8px; pointer-events: none;
-    color: var(--muted); font-family: var(--mono); font-size: 10px; opacity: 0.75;
+    margin-left: auto; pointer-events: none;
+    color: var(--muted); font-family: var(--mono); font-size: 10px; opacity: 0.7;
+    white-space: nowrap;
   }
   /*
     The chart toast. The note strip under the chart records refusals -- a shape
@@ -837,7 +842,7 @@
       and stays readable; it is kept rather than hidden because the chart's
       gestures are still not discoverable without it.
     */
-    .chartHint { right: 12px; }
+    .chartHint { display: none; }
     /* Two fields and a button in one unwrapped row overflow a phone. */
     #signin { flex-wrap: wrap; }
     #signin input { flex: 1 1 140px; min-width: 0; }
@@ -1077,6 +1082,10 @@
       -->
       <div class="paneHead">
         <span class="paneTitle" title="This chart's symbol, timeframe and type">…</span>
+        <!-- The gesture hint lives in the title bar, right-aligned: it used to
+             float over the plot bottom, on top of the footprint stats band and
+             time axis -- two containers painted over each other. -->
+        <span class="chartHint">wheel zooms · shift+wheel price · drag pans · right-click menu</span>
         <!--
           The generated-indicator chip. Present only while a generated
           indicator is attached to this chart; the × removes it. A live
@@ -1231,11 +1240,15 @@
           wheel or a drag would do anything, and an affordance nobody can find is the
           same as no affordance.
         -->
-        <div class="chartHint">wheel zooms · shift+wheel scales the price axis · drag pans · <b>right-click</b> for chart settings and tools · <b>Esc</b> back to the cursor</div>
         <div class="chartMsg empty">Loading the chart engine…</div>
       </div>
 
       <div class="footprintStats" hidden></div>
+      <!-- Order-flow intelligence (`docs/22`): size-class CVD, bar delta
+           extremes, session level flips. Hidden outside footprint mode and when
+           the routes answer nothing -- a panel that always shows is a panel
+           nobody reads. -->
+      <div class="footprintStats orderflowPanel" id="orderflowPanel" hidden></div>
       <div class="chartNote"></div>
     </section>
   </div>
