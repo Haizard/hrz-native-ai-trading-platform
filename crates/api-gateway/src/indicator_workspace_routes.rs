@@ -36,6 +36,23 @@ pub struct CreateRevisionBody {
     pub preview: chart_engine::IndicatorOutput,
 }
 
+/// What a script's preview run counted. Rendered as the chat's stats card.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ScriptPreviewStats {
+    /// The preview window's length, in whole days.
+    pub window_days: i64,
+    /// Bars the script ran over.
+    pub bars: usize,
+    /// `plot()` series drawn.
+    pub plots: usize,
+    /// `hline()` levels.
+    pub levels: usize,
+    /// `plotshape()`/`plotchar()` markers.
+    pub shapes: usize,
+    /// Whether the script draws on the price pane.
+    pub overlays: usize,
+}
+
 /// Body of `POST /indicator-workspaces/{id}/messages`.
 #[derive(Debug, Deserialize)]
 pub struct CreateMessageBody {
@@ -454,113 +471,79 @@ pub async fn create_message(
         });
     }
     let memory = workspace.memory.to_string();
-    let description = format!(
-        "Workspace: {}. Existing compact memory: {memory}. Client request: {}. IMPORTANT: this workspace generates `kind: indicator` detector documents only — the user asked for an indicator, so the document MUST declare `kind: indicator` with `concepts` (the patterns to detect) and MUST NOT have entry/risk blocks; a `kind: strategy` here is a wrong answer even if it validates. IMPORTANT: timeframes.entry MUST be exactly `{}` — no other value is acceptable.",
-        workspace.name,
+    let _ = &memory; // compact memory rides the request text below.
+    let generated = crate::pine_codegen::generate_script(
+        agent.llm().as_ref(),
+        crate::pine_codegen::script_system_prompt(&workspace.symbol, &workspace.timeframe),
         body.content.trim(),
-        workspace.timeframe
-    );
-    let mut request =
-        ai_agent::StrategyRequest::new(description, &workspace.symbol, &workspace.timeframe);
-    request.skill_id = body.skill_id.clone();
-    for shot in screenshots {
-        request = request.with_image(shot);
-    }
-    // Iterative editing: a workspace with an active revision revises THAT
-    // document instead of starting over -- the model sees the current source
-    // and the edit-mode prompt, so "make the bands tighter" tightens the bands
-    // and does not lose the user's other concepts.
-    if let Some(active_id) = workspace.active_revision_id {
-        if let Some(active) =
-            db::get_indicator_revision(database.pool(), user.user_id, id, active_id).await?
-        {
-            request = request.with_base_document(active.source);
-        }
-    }
-    // Give the model extra retry attempts — it often ignores the entry
-    // timeframe on the first pass and needs the feedback loop to correct.
-    request.max_attempts = Some(5);
-    let generated = agent
-        .generate_strategy(&request)
-        .await
-        .map_err(ApiError::from)?;
-    let document = generated.document().clone();
-    let yaml = generated.yaml.clone();
-    let attempts = generated.attempts;
-    let repaired_errors = generated.repaired_errors.clone();
-    let validated = generated.into_validated();
-    // Only sandbox-check tradable documents. `kind: indicator` documents
-    // have no entry/risk blocks by design and the sandbox rightfully refuses
-    // them — skipping is correct, not a safety gap.
-    if document.kind != strategy_dsl::DocumentKind::Indicator {
-        Decisions::sandboxed(state.sandbox.as_ref(), &validated).map_err(|err| {
-            ApiError::coded(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "INDICATOR_SANDBOX_REFUSED",
-                err.to_string(),
+        // Iterative editing: a workspace with an active revision revises THAT
+        // script instead of starting over -- "make the bands tighter" tightens
+        // the bands and does not lose the user's other plots.
+        match workspace.active_revision_id {
+            Some(active_id) => db::get_indicator_revision(
+                database.pool(),
+                user.user_id,
+                id,
+                active_id,
             )
-        })?;
-    }
-    let strategy = serde_json::to_value(&document)
-        .map_err(|err| ApiError::internal(format!("could not store generated strategy: {err}")))?;
-    let strategy_id = db::create_strategy(
-        database.pool(),
-        user.user_id,
-        &document.name,
-        &document.version,
-        &strategy,
-        "ai_agent",
-    )
-    .await?;
-
-    // Replay the document and turn the signals it actually emitted into the
-    // chart's evidence chain. A replay that cannot run (no stored candles, a
-    // declared timeframe with no data) is not a reason to discard a validated
-    // revision, so the failure is recorded and an honest empty preview is kept
-    // rather than a chart that quietly claims evidence it does not have.
-    let revision_tag = strategy_id.to_string();
-    let (preview, preview_note, preview_stats) = match crate::indicator_preview::replay_preview(
-        &state,
-        database,
-        &workspace.symbol,
-        &workspace.timeframe,
-        &document,
-        &validated,
+            .await?
+            .map(|active| active.source),
+            None => None,
+        }
+        .as_deref(),
+        agent.max_tokens(),
+        agent.temperature(),
     )
     .await
-    {
-        Ok((mut replayed, stats)) => {
-            replayed.revision_id = revision_tag.clone();
-            (replayed, serde_json::Value::Null, stats)
-        }
-        Err(reason) => (
-            chart_engine::IndicatorOutput {
-                revision_id: revision_tag.clone(),
-                // Even a replay that could not run stores the document's
-                // concepts: the definition is what lets a chart re-detect the
-                // layer live later, on data the generator never saw.
-                name: Some(document.name.clone()),
-                concepts: document.concepts.clone(),
-                evidence: Vec::new(),
-                zones: Vec::new(),
-                markers: Vec::new(),
-                links: Vec::new(),
-                trendlines: Vec::new(),
-            },
-            serde_json::Value::String(reason),
-            None,
-        ),
-    };
+    .map_err(ApiError::from)?;
+    let source = generated.source.clone();
+    let attempts = generated.attempts;
+    let repaired_errors = generated.repaired_errors.clone();
+    let header = generated.header.clone();
+
+    // Preview: run the vetted script over the workspace's stored candles so
+    // the response carries honest numbers, while the revision stores the
+    // SOURCE -- the shell attaches scripts as definitions and re-runs them
+    // on the chart's own data every frame (the document path's live
+    // concepts, in code form).
+    let title = header.title.clone().unwrap_or_else(|| "script".to_string());
+    let revision_tag = format!("script:{}", title);
+    let (preview, preview_stats, preview_note) =
+        match crate::indicator_preview::replay_script_preview(
+            &state,
+            database,
+            &workspace.symbol,
+            &workspace.timeframe,
+            &source,
+        )
+        .await
+        {
+            Ok((output, stats)) => (output, Some(stats), serde_json::Value::Null),
+            Err(reason) => (
+                chart_engine::IndicatorOutput {
+                    revision_id: revision_tag.clone(),
+                    name: Some(title.clone()),
+                    concepts: Vec::new(),
+                    evidence: Vec::new(),
+                    zones: Vec::new(),
+                    markers: Vec::new(),
+                    links: Vec::new(),
+                    trendlines: Vec::new(),
+                },
+                None,
+                serde_json::Value::String(reason),
+            ),
+        };
     let preview_json = serde_json::to_value(&preview)
         .map_err(|err| ApiError::internal(format!("could not store indicator preview: {err}")))?;
-    let validation = serde_json::json!({"valid": true, "engine": "strategy-dsl-wasm-v1", "strategy_id": strategy_id, "attempts": attempts, "repaired_errors": repaired_errors, "preview_note": preview_note, "evidence_nodes": preview.evidence.len()});
+    let validation = serde_json::json!({"valid": true, "engine": "pine-lite-v1", "representation": "code", "attempts": attempts, "repaired_errors": repaired_errors, "overlay": header.overlay, "preview_note": preview_note});
     let revision = db::create_indicator_revision(
         database.pool(),
         user.user_id,
         id,
         workspace.active_revision_id,
-        &yaml,
-        &format!("Generated strategy {}", document.name),
+        &source,
+        &format!("Generated script {}", title),
         "Generated from workspace message",
         &validation,
         &preview_json,
@@ -568,56 +551,36 @@ pub async fn create_message(
     )
     .await?
     .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
-    let memory = serde_json::json!({"last_request": body.content.trim(), "active_strategy_id": strategy_id, "revision": revision.revision_number});
+    let memory = serde_json::json!({"last_request": body.content.trim(), "representation": "pine-lite", "revision": revision.revision_number});
     db::update_indicator_workspace_memory(database.pool(), user.user_id, id, &memory).await?;
-    let assistant_text = if document.kind == strategy_dsl::DocumentKind::Indicator {
-        let zones = preview.zones.len();
-        let markers = preview.markers.len();
-        let lines = preview.trendlines.len();
-        // A trendline-shaped concept never produces bands -- its evidence is
-        // the fitted line -- so an all-trendline document is expected to show
-        // zero zones and must not be reported as a failure to detect.
-        let wanted_lines = document
-            .concepts
-            .iter()
-            .filter(|c| c.shape == analytics_core::concepts::ConceptShape::Trendline)
-            .count();
-        let note = if preview.evidence.is_empty() && lines == 0 {
-            if wanted_lines > 0 {
-                "the trendline concept(s) found no confirmed swing pivots on the backfilled window, so no line was fitted -- either the window is too short for swings to confirm or the pivots are not there yet; a longer chart window will usually draw it.".to_string()
-            } else {
-                "no detection bands fired in the backfilled preview window -- on a real but tiny stored window that can mean missing data or a concept that did not match yet, not necessarily a wrong idea.".to_string()
-            }
-        } else {
-            format!(
-                "the detector layer found {zones} zone(s), {markers} marker(s) and {lines} fitted trendline(s) on the chart over the backfilled window; because this is a kind: indicator with no entry/risk blocks it fires 0 trading setups by design -- a kind: strategy is what produces setups.",
-                zones = zones,
-                markers = markers,
-                lines = lines,
-            )
-        };
-        format!(
-            "Generated and validated revision {} (kind: indicator). This is a detector layer: it marks where the declared concepts match on the chart but has no entry/risk logic, so it produces 0 trading setups by design. {}",
-            revision.revision_number,
-            note,
-        )
-    } else if preview.evidence.is_empty() {
-        format!("Generated and validated revision {} (kind: strategy). The replay over the past week fired no setups -- the conditions never coincided in that window. The source is shown below and the revision is attached; create a bot draft only after you have stored a historical backtest.", revision.revision_number)
+    let plots = preview.zones.len();
+    let markers = preview.markers.len();
+    let stats_levels = preview_stats.map(|s| s.levels).unwrap_or(0);
+    let kind_note = if header.overlay {
+        "it draws on the price pane"
     } else {
-        format!("Generated and validated revision {} (kind: strategy). Attached to the chart with {} evidence node(s) from the replayed signals; source below. Create a bot draft only after you have stored a historical backtest.", revision.revision_number, preview.evidence.len())
+        "it has its own pane under the chart"
     };
+    let assistant_text = format!(
+        "Generated and validated revision {} (pine-lite script, {} model attempt(s)). Attached to the chart: {} plot(s) and {} marker(s) in its preview window; {}. The source is stored as code -- open the Code panel to read or edit it.",
+        revision.revision_number,
+        attempts,
+        plots,
+        markers,
+        kind_note,
+    );
     let assistant_payload = serde_json::json!({
         "revision_id": revision.id,
-        "strategy_id": strategy_id,
         "revision_number": revision.revision_number,
-        "kind": document.kind.to_string(),
-        "source": yaml,
-        "evidence_nodes": preview.evidence.len(),
-        "zones": preview.zones.len(),
-        "markers": preview.markers.len(),
-        // The auto-backtest card: the preview replay's own numbers, rendered
-        // by the shell as a compact stats row under the message. Absent when
-        // the replay could not run, so the card is honest about its absence.
+        "representation": "pine-lite",
+        "kind": "indicator",
+        "source": source,
+        "overlay": header.overlay,
+        "plots": plots,
+        "levels": stats_levels,
+        "markers": markers,
+        // The preview run's own counts, rendered by the shell as the stats
+        // row under the message -- the same honesty the document replay buys.
         "preview_stats": preview_stats,
     });
     let assistant_message = db::create_indicator_workspace_message(
@@ -637,7 +600,7 @@ pub async fn create_message(
             user_message: user_message.into(),
             assistant_message: assistant_message.into(),
             revision: revision.into(),
-            strategy_id: strategy_id.to_string(),
+            strategy_id: String::new(),
         }),
     ))
 }

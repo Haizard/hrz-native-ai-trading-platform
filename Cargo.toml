@@ -32,6 +32,10 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 analytics-core   = { path = "crates/analytics-core" }
 market-data      = { path = "crates/market-data" }
+# docs/23: the Pine-like scripting language. A leaf like analytics-core --
+# its only internal dependency is the math crate, and it must keep building
+# for wasm32 because the sandbox guest links it.
+pine-lite        = { path = "crates/pine-lite" }
 # YAML is OFF by default across the workspace, and each crate opts in.
 #
 # This is not tidiness. The sandbox guest (crates/sandbox-guest) compiles

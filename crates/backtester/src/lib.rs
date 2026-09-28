@@ -83,6 +83,8 @@
 pub mod error;
 pub mod replay;
 pub mod report;
+// docs/23 Phase 7: Pine-lite strategy scripts as a `Strategy` source.
+pub mod script_strategy;
 
 pub use error::BacktestError;
 pub use replay::{replay, run_backtest, ReplayConfig, ReplayInput, ReplayOutput};

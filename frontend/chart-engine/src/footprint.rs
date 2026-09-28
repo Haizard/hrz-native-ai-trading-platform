@@ -605,10 +605,7 @@ pub fn layout(
                     },
                     cvd_text: signed(running_cvd),
                     cvd_positive: running_cvd >= 0.0,
-                    poc_text: column
-                        .poc
-                        .map(|poc| compact(poc))
-                        .unwrap_or_default(),
+                    poc_text: column.poc.map(compact).unwrap_or_default(),
                 },
             }
         })

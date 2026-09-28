@@ -427,6 +427,11 @@ function createChartPane(root, hooks = {}) {
   // faded by `drawIndicatorZones`; never re-detected (concepts stripped at
   // set time), because a diff between two *moving* layers is noise.
   let diffIndicator = null;
+  // Pine-lite scripts attached to this chart (docs/23): [{ source, inputs }].
+  // Attached by the studio's "attach to chart" action once the gateway has
+  // vetted the source; the engine runs them every frame like the live
+  // indicator's concepts.
+  let attachedScripts = [];
 
   // ---------------------------------------------------------------------------
   // Drawing
@@ -604,6 +609,11 @@ function createChartPane(root, hooks = {}) {
     // where the request is built: the engine has no way to know which instrument
     // a bare price belongs to.
     drawOverlays(ctx, scene);
+    // Overlay scripts' plots: a script with overlay=true draws into the price
+    // pane, under the user's drawings and over the engine's levels -- the same
+    // z-order an answer's overlays take, because a script plot is also an
+    // opinion about a price the candles own.
+    drawScriptOverlays(ctx, scene);
     drawIndicatorEvidence(ctx, scene);
     // The user's own marks, above everything: a drawing that could cover the
     // answer's levels, or the price labels, would be an annotation they cannot
@@ -619,6 +629,12 @@ function createChartPane(root, hooks = {}) {
     // coordinate comes from the engine; this fills and strokes, like everywhere
     // else in this file.
     drawSubPanes(ctx, scene);
+
+    // Pine-lite script panes (docs/23) -- the same paint-only contract as
+    // drawSubPanes: the engine ran the script, positioned every plot and
+    // level, and this fills rectangles and strokes polylines. Nothing here
+    // reads a price or computes a coordinate (the no-JS-math rule).
+    drawScriptPanes(ctx, scene);
 
     drawAxis(ctx, scene);
   }
@@ -697,6 +713,112 @@ function createChartPane(root, hooks = {}) {
         ctx.fillText(String(tick.value), pane.plot.x + pane.plot.w + 6, tick.y + 3);
       }
     }
+  }
+
+  /// Pine-lite script panes (docs/23): one pane per non-overlay script, with
+  /// its plots, hlines and shapes already positioned by the engine. The pane's
+  /// y-range came back with it, so the shell can even label the axis without
+  /// arithmetic -- the engine precomputed value_min/value_max for that.
+  function drawScriptPanes(ctx, scene) {
+    if (!scene.script_panes || !scene.script_panes.length) return;
+    for (const pane of scene.script_panes) {
+      // Pane background and frame, matching drawSubPanes' look.
+      ctx.fillStyle = "rgba(13, 17, 26, 0.65)";
+      ctx.fillRect(pane.plot.x, pane.plot.y, pane.plot.w, pane.plot.h);
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(
+        Math.round(pane.plot.x) + 0.5,
+        Math.round(pane.plot.y) + 0.5,
+        Math.max(1, Math.round(pane.plot.w) - 1),
+        Math.max(1, Math.round(pane.plot.h) - 1)
+      );
+
+      // hline() levels: dashed, labelled at the right edge.
+      ctx.font = "9px ui-monospace, monospace";
+      ctx.setLineDash([2, 3]);
+      for (const level of pane.levels) {
+        ctx.strokeStyle = rgbaFromPacked(level.color, 0.5);
+        ctx.beginPath();
+        ctx.moveTo(Math.round(pane.plot.x), Math.round(level.y) + 0.5);
+        ctx.lineTo(pane.plot.x + pane.plot.w, Math.round(level.y) + 0.5);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      // The plots, in the engine's own order and colours.
+      for (const p of pane.plots) {
+        if (p.points.length < 1) continue;
+        ctx.strokeStyle = rgbaFromPacked(p.color, 1.0);
+        ctx.lineWidth = p.linewidth || 1.25;
+        ctx.beginPath();
+        ctx.moveTo(p.points[0].x, p.points[0].y);
+        for (const pt of p.points) ctx.lineTo(pt.x, pt.y);
+        ctx.stroke();
+      }
+
+      // Shapes: a small circle per marker -- the glyph table comes later.
+      for (const shape of pane.shapes) {
+        ctx.fillStyle = rgbaFromPacked(shape.color, 1.0);
+        ctx.beginPath();
+        ctx.arc(shape.x, shape.y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Pane label, top-left, exactly like the built-in panes.
+      ctx.fillStyle = "rgba(226, 232, 240, 0.85)";
+      ctx.font = "600 10px ui-sans-serif, system-ui";
+      ctx.fillText(pane.title, pane.plot.x + 6, pane.plot.y + 12);
+
+      // The pane's own y-range at the right edge: top and bottom only. The
+      // engine computed these from the script's own values.
+      ctx.font = "9px ui-monospace, monospace";
+      ctx.fillStyle = "rgba(148, 163, 184, 0.9)";
+      ctx.fillText(fmtNum(pane.value_max), pane.plot.x + pane.plot.w + 6, pane.plot.y + 9);
+      ctx.fillText(fmtNum(pane.value_min), pane.plot.x + pane.plot.w + 6, pane.plot.y + pane.plot.h);
+    }
+  }
+
+  /// A packed-RGBA u32 (from a script's `color=`) to a CSS colour string.
+  /// Pure formatting: the packing is the engine's, the alpha byte is its top
+  /// one, and a missing alpha is opaque.
+  function rgbaFromPacked(color, alpha) {
+    const r = (color >>> 24) & 0xFF;
+    const g = (color >>> 16) & 0xFF;
+    const b = (color >>> 8) & 0xFF;
+    const a = ((color & 0xFF) / 255) * (alpha == null ? 1.0 : alpha);
+    return `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
+  }
+
+  /// Overlay scripts (docs/23): polylines already mapped through the price
+  /// pane's scale, painted under the user's drawings. Nothing computed here.
+  function drawScriptOverlays(ctx, scene) {
+    if (!scene.script_overlays || !scene.script_overlays.length) return;
+    for (const overlay of scene.script_overlays) {
+      for (const p of overlay.plots) {
+        if (p.points.length < 1) continue;
+        ctx.strokeStyle = rgbaFromPacked(p.color, 1.0);
+        ctx.lineWidth = p.linewidth || 1.25;
+        ctx.beginPath();
+        ctx.moveTo(p.points[0].x, p.points[0].y);
+        for (const pt of p.points) ctx.lineTo(pt.x, pt.y);
+        ctx.stroke();
+        // Label the plot at its right end, so two overlay scripts do not
+        // blur into one line set.
+        const lastPt = p.points[p.points.length - 1];
+        ctx.fillStyle = rgbaFromPacked(p.color, 1.0);
+        ctx.font = "600 9px ui-sans-serif, system-ui";
+        ctx.fillText(p.title, lastPt.x + 5, lastPt.y + 3);
+      }
+    }
+  }
+
+  /// Compact number for a pane's axis labels: the value the engine computed,
+  /// trimmed for display only.
+  function fmtNum(v) {
+    if (!Number.isFinite(v)) return "";
+    if (Math.abs(v) >= 1000) return String(Math.round(v));
+    return String(Math.round(v * 100) / 100);
   }
 
   /// The last-price line: the horizontal rule other platforms draw at the live
@@ -2089,6 +2211,16 @@ function createChartPane(root, hooks = {}) {
       .join(" ");
     if (/divergence|rsi/i.test(liveNames)) {
       request.sub_panes = [{ kind: "rsi", period: 14, overbought: 70, oversold: 30 }];
+    }
+
+    // Pine-lite scripts (docs/23): sent as source + inputs, run by the engine
+    // over the visible candles every frame. An empty list keeps the field out
+    // of the JSON -- an older engine ignores it either way.
+    if (attachedScripts.length) {
+      request.scripts = attachedScripts.map((s) => ({
+        source: s.source,
+        inputs: s.inputs || {},
+      }));
     }
 
     scene = buildScene(request);
@@ -4252,6 +4384,31 @@ function createChartPane(root, hooks = {}) {
       syncIndicatorChip();
     },
 
+    /// Attach a vetted Pine-lite script (docs/23) to this chart. The caller
+    /// passes { source, inputs } -- source already accepted by
+    /// `POST /scripts/vet`; the browser never runs or parses it, it only
+    /// sends it back so the engine can. Multiple scripts attach side by
+    /// side; each non-overlay one takes its own pane.
+    attachScript(spec) {
+      if (!spec || !spec.source) return;
+      attachedScripts.push({ source: spec.source, inputs: spec.inputs || {}, name: spec.name });
+      renderNow();
+      syncIndicatorChip();
+    },
+
+    /// Every attached script, for the chip and the attach paths.
+    attachedScripts() {
+      return attachedScripts;
+    },
+
+    /// Take every attached script off this chart.
+    clearScripts() {
+      if (!attachedScripts.length) return;
+      attachedScripts = [];
+      renderNow();
+      syncIndicatorChip();
+    },
+
     /// Overlay an older revision under the attached one, for the diff view:
     /// the old revision's zones draw faded behind the live layer, so "what
     /// changed between rev 3 and rev 4" is a picture instead of two mental
@@ -4761,6 +4918,18 @@ function syncIndicatorChip() {
     const chip = pane.root.querySelector(".indicatorChip");
     if (!chip) continue;
     const attached = pane.attachedIndicator();
+    const scripts = pane.attachedScripts ? pane.attachedScripts() : [];
+    // A script revision shows its own chip when no document layer is
+    // attached: the name is the script's title, and "live" is literally
+    // true -- the chart re-runs the code on every frame.
+    if (!attached && scripts.length) {
+      const first = scripts[scripts.length - 1];
+      chip.hidden = false;
+      chip.querySelector(".indicatorChipName").textContent =
+        (first.name || "script") + (scripts.length > 1 ? ` +${scripts.length - 1}` : "") + " · live";
+      chip.title = "A pine-lite script runs on this chart's candles every frame";
+      continue;
+    }
     const live = attached && Array.isArray(attached.concepts) && attached.concepts.length > 0;
     chip.hidden = !attached;
     if (attached) {
@@ -4784,6 +4953,9 @@ function detachIndicator() {
   if (output && Array.isArray(output.concepts) && output.concepts.length) {
     activePane.attachIndicator(null);
   }
+  // Attached scripts go with the same ×: the chip may be describing a script
+  // when no document layer is attached, so removing means removing both.
+  activePane.clearScripts();
   syncIndicatorChip();
 }
 
@@ -8452,14 +8624,25 @@ async function selectWorkspace(id) {
     try {
       const rev = await api(`/indicator-workspaces/${id}/revisions/${ws.active_revision_id}`);
       const preview = rev.preview;
-      const live = preview && Array.isArray(preview.concepts) && preview.concepts.length > 0;
-      if (preview && (live || !ws.symbol || ws.symbol === activePane.symbol())) {
-        activePane.attachIndicator(preview);
+      // A pine-lite revision attaches as CODE: the source goes back to the
+      // engine, which re-runs it on this chart's candles every frame. A
+      // document revision attaches as the concepts/preview pair, as before.
+      if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
+        activePane.clearIndicator();
+        activePane.clearScripts();
+        activePane.attachScript({ source: rev.source, inputs: {}, name: (preview && preview.name) || ws.name });
         syncIndicatorChip();
-        const liveNote = live
-          ? " — it keeps detecting on every new candle of any chart it is attached to"
-          : "";
-        pageToast(`Attached "${preview.name || ws.name}" to ${activePane.symbol()} ${activePane.timeframe()}${liveNote}`);
+        pageToast(`Attached script "${(preview && preview.name) || ws.name}" to ${activePane.symbol()} ${activePane.timeframe()} — it re-runs on every candle`);
+      } else {
+        const live = preview && Array.isArray(preview.concepts) && preview.concepts.length > 0;
+        if (preview && (live || !ws.symbol || ws.symbol === activePane.symbol())) {
+          activePane.attachIndicator(preview);
+          syncIndicatorChip();
+          const liveNote = live
+            ? " — it keeps detecting on every new candle of any chart it is attached to"
+            : "";
+          pageToast(`Attached "${preview.name || ws.name}" to ${activePane.symbol()} ${activePane.timeframe()}${liveNote}`);
+        }
       }
     } catch (e) {
       pageToast(`Failed to attach indicator: ${e.message}`);
@@ -8673,11 +8856,19 @@ async function attachRevisionToChart(wsId, revId) {
       target = panes[index];
     }
     if (!target) { alert("Open a chart first."); return; }
-    target.attachIndicator(rev.preview);
+    // A pine-lite revision attaches as code; a document revision as its
+    // concepts/preview pair -- see `selectWorkspace`'s same fork.
+    if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
+      target.clearIndicator();
+      target.clearScripts();
+      target.attachScript({ source: rev.source, inputs: {}, name: rev.preview.name || "script" });
+    } else {
+      target.attachIndicator(rev.preview);
+    }
     setActive(target);
     syncIndicatorChip();
-    const live = Array.isArray(rev.preview.concepts) && rev.preview.concepts.length > 0;
-    pageToast(`Attached "${rev.preview.name || "indicator"}" to ${target.symbol()} ${target.timeframe()}${live ? " — it keeps detecting on new candles" : ""}`);
+    const isScript = rev.validation && rev.validation.engine === "pine-lite-v1";
+    pageToast(`Attached "${rev.preview.name || "indicator"}" to ${target.symbol()} ${target.timeframe()}${isScript ? " — the script re-runs on every candle" : ""}`);
   } catch (e) {
     pageToast(`Could not attach: ${e.message}`);
   }
@@ -8714,11 +8905,17 @@ async function restoreRevision(wsId, revId) {
 async function viewRevision(wsId, revId) {
   try {
     const rev = await api(`/indicator-workspaces/${wsId}/revisions/${revId}`);
-    // Attaching is the point of the button: a live definition works on any
-    // chart, a snapshot attaches to the active pane as the one-window view of
-    // what the generator saw.
+    // Attaching is the point of the button: a script attaches as code, a
+    // live document definition works on any chart, a snapshot attaches to
+    // the active pane as the one-window view of what the generator saw.
     if (rev.preview && activePane) {
-      activePane.attachIndicator(rev.preview);
+      if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
+        activePane.clearIndicator();
+        activePane.clearScripts();
+        activePane.attachScript({ source: rev.source, inputs: {}, name: rev.preview.name || "script" });
+      } else {
+        activePane.attachIndicator(rev.preview);
+      }
       syncIndicatorChip();
       pageToast(`Attached "${rev.preview.name || "indicator"}" to ${activePane.symbol()} ${activePane.timeframe()}`);
     }
@@ -8748,6 +8945,17 @@ async function viewRevision(wsId, revId) {
     const days = Math.max(1, Math.round(Number(stats.window_days) || 7));
     const fmt = (v, suffix = "") =>
       v === null || v === undefined ? "—" : `${Number(v).toFixed(2)}${suffix}`;
+    // A pine-lite script's preview: what the VM ran over and what it drew.
+    if (typeof stats.bars === "number") {
+      return `
+        <div class="ws-stats" title="The script ran over the preview window's candles on the server">
+          <span class="muted">script replay · ${days}d</span>
+          <span><strong>${stats.bars}</strong> bars</span>
+          <span><strong>${Number(stats.plots) || 0}</strong> plots</span>
+          <span><strong>${Number(stats.levels) || 0}</strong> levels</span>
+          <span><strong>${Number(stats.shapes) || 0}</strong> markers</span>
+        </div>`;
+    }
     if (stats.kind === "detector") {
       return `
         <div class="ws-stats" title="Detection counts from the generation replay over the last ${days} days">
@@ -8894,6 +9102,8 @@ async function viewRevision(wsId, revId) {
     const sweepBtn = !isUser && m.payload && m.payload.kind === "strategy" && m.payload.strategy_id
       ? `<button type="button" class="ws-sweep-btn" data-strategy="${m.payload.strategy_id}" title="Sweep every threshold() over a grid and show what each value did">Sweep parameters</button>`
       : "";
+    // Code revisions carry their source too; the summary line names the
+    // representation so the transcript reads "code", not "document".
     // Self-review button: sends a screenshot of the chart the revision is
     // attached to, and the model reads what it actually drew off the picture.
     const reviewBtn = !isUser && m.payload && m.payload.revision_id

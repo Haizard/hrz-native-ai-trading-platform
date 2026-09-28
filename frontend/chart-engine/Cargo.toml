@@ -21,5 +21,10 @@ crate-type = ["cdylib", "rlib"]
 # TypeScript.
 analytics-core = { workspace = true }
 
+# docs/23: Pine-lite scripts run here too -- the engine executes the same
+# language the gateway vets and the sandbox will isolate, and the shell paints
+# positioned output only.
+pine-lite = { workspace = true }
+
 serde = { workspace = true }
 serde_json = { workspace = true }

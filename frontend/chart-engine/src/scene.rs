@@ -339,6 +339,16 @@ pub struct Request {
     /// Absent means no sub-panes, and an older request keeps meaning that.
     #[serde(default)]
     pub sub_panes: Vec<SubPaneSpec>,
+    /// Pine-lite scripts (`docs/23`) to run over the request's candles.
+    ///
+    /// The engine vets nothing here -- the gateway already refused broken
+    /// sources -- but it *isolates* failures: a script that runs out of fuel
+    /// or errors mid-run costs its pane a note, never the whole frame. A
+    /// script's plots go to its own sub-pane (`overlay=false`) or onto the
+    /// price pane (`overlay=true`) as positioned polylines; the shell only
+    /// paints, the same contract as every other layer.
+    #[serde(default)]
+    pub scripts: Vec<crate::script::ScriptSpec>,
 }
 
 /// One requested sub-pane: a named measurement, computed in the engine.
@@ -382,6 +392,7 @@ impl Default for Request {
             last_price: None,
             snap: false,
             sub_panes: Vec::new(),
+            scripts: Vec::new(),
         }
     }
 }
@@ -788,6 +799,16 @@ pub struct Scene {
     /// the same way one that ignored `regions` did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_panes: Vec<ScenePane>,
+    /// Pine-lite script panes (`docs/23`), after the built-in sub-panes.
+    /// Always present and usually empty, like [`Scene::regions`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub script_panes: Vec<crate::script::SceneScriptPane>,
+    /// Overlay scripts' plots, mapped through the price pane's scale. These
+    /// draw *under* the user's drawings, with the levels and regions -- a
+    /// script's opinion about a price is still an opinion about the pane the
+    /// candles own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub script_overlays: Vec<crate::script::ScriptOverlay>,
     /// The diff overlay: the older revision, positioned on the same frame as
     /// the main indicator. The shell paints it faded; the flag is the only
     /// difference, because the coordinates are already as true as the main
@@ -985,7 +1006,7 @@ fn snap_anchor(anchor: Anchor, plot: &Plot, points: &[SnapPoint]) -> Anchor {
 }
 
 /// Map a price into canvas y, given the range and the plot.
-fn price_to_y(price: f64, price_min: f64, price_max: f64, plot: &Plot) -> f64 {
+pub(crate) fn price_to_y(price: f64, price_min: f64, price_max: f64, plot: &Plot) -> f64 {
     let span = price_max - price_min;
     if span <= 0.0 {
         // A flat series: draw everything on the middle line rather than
@@ -1042,7 +1063,12 @@ pub fn build(request: &Request) -> Scene {
     // space, so the price plot's bottom edge and the pane's top edge never
     // touch: two plots sharing a pixel row is how a candle wick ends up drawn
     // over an oscillator line.
-    let sub_height = sub_pane_heights(&request.sub_panes);
+    let script_pane_count = request
+        .scripts
+        .iter()
+        .filter(|spec| !pine_lite::vet(&spec.source).map(|(h, _)| h.overlay).unwrap_or(false))
+        .count();
+    let sub_height = sub_pane_heights(&request.sub_panes, script_pane_count);
     // A gap before every pane -- including the first -- so the last pane's
     // bottom edge lands exactly on the bottom padding line, never inside the
     // time-axis strip.
@@ -1095,6 +1121,8 @@ pub fn build(request: &Request) -> Scene {
         overlays: Vec::new(),
         indicator: None,
         sub_panes: Vec::new(),
+        script_panes: Vec::new(),
+        script_overlays: Vec::new(),
         diff_indicator: None,
         last_price: None,
         snap_points: Vec::new(),
@@ -1510,7 +1538,7 @@ pub fn build(request: &Request) -> Scene {
     // over the whole series beside candles showing a tenth of it would disagree
     // with its own chart, the same way a whole-series profile would.
     let mut pane_top = plot.y + plot.h + SUB_PANE_GAP;
-    for (spec, height) in request.sub_panes.iter().zip(sub_height) {
+    for (spec, height) in request.sub_panes.iter().zip(sub_height.iter().copied()) {
         let pane_plot = Plot {
             x: plot.x,
             y: pane_top,
@@ -1527,6 +1555,72 @@ pub fn build(request: &Request) -> Scene {
         pane_top += height + SUB_PANE_GAP;
     }
 
+    // Pine-lite scripts (`docs/23`), after the built-in sub-panes: each
+    // non-overlay script gets the next pane slice and runs over the same
+    // visible slice everything else measured -- a script whose RSI disagreed
+    // with its own chart is the failure this window rule exists to prevent.
+    // An overlay script's plots join the price pane instead, mapped through
+    // the frame the candles already use.
+    let script_heights = &sub_height[request.sub_panes.len()..];
+    for (spec, height) in request.scripts.iter().zip(script_heights.iter().copied().chain(
+        std::iter::repeat(SUB_PANE_HEIGHT),
+    )) {
+        let header_overlay = pine_lite::vet(&spec.source)
+            .map(|(h, _)| h.overlay)
+            .unwrap_or(false);
+        if header_overlay {
+            // Overlay: plots map through the price pane's own scale. Vet
+            // errors cost the note, not the frame.
+            let (header, parsed) = match pine_lite::vet(&spec.source) {
+                Ok(v) => v,
+                Err(errs) => {
+                    add_note(
+                        &mut scene.note,
+                        format!(
+                            "a script could not run: {}",
+                            errs.iter()
+                                .map(|e| format!("line {}: {}", e.span.line, e.message))
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        ),
+                    );
+                    continue;
+                }
+            };
+            match pine_lite::run(
+                &parsed,
+                visible_real,
+                &pine_lite::Inputs {
+                    numbers: spec.inputs.clone(),
+                    ..pine_lite::Inputs::default()
+                },
+            ) {
+                Ok(output) => {
+                    let plots = crate::script::scene_overlay_plots(&output, slot, &frame);
+                    scene.script_overlays.push(crate::script::ScriptOverlay {
+                        id: format!(
+                            "script:{}",
+                            header.title.clone().unwrap_or_else(|| "script".into())
+                        ),
+                        title: header.title.clone().unwrap_or_else(|| "script".into()),
+                        plots,
+                    });
+                }
+                Err(err) => add_note(&mut scene.note, format!("a script could not run: {err}")),
+            }
+            continue;
+        }
+        let pane_plot = Plot { x: plot.x, y: pane_top, w: plot.w, h: height };
+        match crate::script::script_pane(spec, visible_real, slot, &pane_plot) {
+            Ok(pane) => scene.script_panes.push(pane),
+            Err(reason) => add_note(
+                &mut scene.note,
+                format!("a script pane is not drawn: {reason}"),
+            ),
+        }
+        pane_top += height + SUB_PANE_GAP;
+    }
+
     scene
 }
 
@@ -1536,8 +1630,12 @@ pub fn build(request: &Request) -> Scene {
 /// enough for its line to breathe, short enough that the price plot stays the
 /// chart. The last pane absorbs the rounding remainder so `plot.h + sum(panes)
 /// + gaps` exactly accounts for the canvas.
-fn sub_pane_heights(panes: &[SubPaneSpec]) -> Vec<f64> {
-    let count = panes.len();
+///
+/// Script panes (`docs/23`) count too: each non-overlay script takes one
+/// slice, so a chart with RSI plus two scripts shares the same budget and the
+/// price plot keeps what is left.
+fn sub_pane_heights(panes: &[SubPaneSpec], script_pane_count: usize) -> Vec<f64> {
+    let count = panes.len() + script_pane_count;
     if count == 0 {
         return Vec::new();
     }
@@ -2036,20 +2134,20 @@ fn levels(
 /// because it reads as coverage. The precondition is written down instead of
 /// defended.
 #[derive(Debug, Clone, Copy)]
-struct Frame {
+pub(crate) struct Frame {
     /// The plot rectangle.
-    plot: Plot,
+    pub(crate) plot: Plot,
     /// Left edge of the visible window, in unix nanoseconds.
-    from: i64,
+    pub(crate) from: i64,
     /// Right edge.
-    to: i64,
+    pub(crate) to: i64,
     /// The bottom of the price range.
-    price_min: f64,
+    pub(crate) price_min: f64,
     /// The top.
-    price_max: f64,
+    pub(crate) price_max: f64,
     /// One candle's width, in nanoseconds: the series' own timeframe, so a
     /// measurement's bar count is the bars it spans and not a guess.
-    bar_nanos: i64,
+    pub(crate) bar_nanos: i64,
 }
 
 impl Frame {

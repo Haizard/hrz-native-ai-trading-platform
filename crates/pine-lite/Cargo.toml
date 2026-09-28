@@ -1,0 +1,20 @@
+[package]
+name = "pine-lite"
+description = "Pine Script-like imperative language for indicators and strategies: lexer, parser, type checker, series interpreter and plot contract."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A leaf crate, like analytics-core: nothing internal except the math crate,
+# and it must keep building for wasm32 -- the sandbox guest and the chart
+# engine both link this language. docs/23-PINE-LITE-SCRIPTING-LANGUAGE.md is
+# the spec; this manifest is the dependency rule made executable.
+[dependencies]
+analytics-core = { path = "../analytics-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Nothing yet. Parity fixtures against analytics-core units live in-tree.

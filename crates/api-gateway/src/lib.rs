@@ -66,9 +66,13 @@ pub mod market_routes;
 pub mod metrics;
 pub mod orderflow_routes;
 pub mod plot;
+pub mod pine_codegen;
 pub mod provider_routes;
 pub mod rate_limit;
 pub mod scan_routes;
+// docs/23 Phase 9: Pine-lite script vetting. No persistence here -- scripts
+// live in the indicator-workspace revision tables as a new representation.
+pub mod script_routes;
 pub mod skills_routes;
 pub mod strategy_routes;
 pub mod tickers;
@@ -271,6 +275,9 @@ pub fn router(state: AppState) -> Router {
         // Both before `/strategies/{id}`, or the literal paths would be read as
         // an id.
         .route("/strategies/validate", post(strategy_routes::validate))
+        // docs/23: the Pine-lite vet gate. A script that never passed here
+        // has no path to a chart or a bot.
+        .route("/scripts/vet", post(script_routes::vet))
         .route("/strategies/reference", get(strategy_routes::reference))
         .route("/strategies/examples", get(strategy_routes::examples))
         .route("/strategies/schema", get(strategy_routes::schema))

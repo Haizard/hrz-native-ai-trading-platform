@@ -471,6 +471,26 @@ impl Agent {
         }
     }
 
+    /// The model client, for callers that drive their own generation loop
+    /// (the pine-lite studio's code path) over the same provider the agent
+    /// was built with.
+    #[must_use]
+    pub fn llm(&self) -> &Arc<dyn LlmClient> {
+        &self.llm
+    }
+
+    /// The configured completion budget, in tokens.
+    #[must_use]
+    pub fn max_tokens(&self) -> u32 {
+        self.config.max_tokens
+    }
+
+    /// The configured sampling temperature.
+    #[must_use]
+    pub fn temperature(&self) -> f32 {
+        self.config.temperature
+    }
+
     /// Answer a question with a thesis.
     ///
     /// # Errors

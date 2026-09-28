@@ -3,33 +3,24 @@
 //!
 //! ## What this is for
 //!
-//! The generation path used to store:
-//!
-//! ```text
-//! IndicatorOutput { evidence: vec![], zones: vec![], markers: vec![], links: vec![] }
-//! ```
-//!
-//! -- a revision whose chart described nothing. The replay-and-translate fix is
-//! only as good as the claim "a revision now carries real evidence", and that
-//! claim spans a lot this crate's unit tests do not: the message route, the
-//! sandboxed replay over **candles loaded from the database**, the evidence
-//! builder, and the revision write. So this test drives the whole thing the way
-//! a client would.
+//! The generation path used to store an empty preview -- a revision whose
+//! chart described nothing. The fix is to *run* what the model produced over
+//! candles loaded from the database and store the counts; this test drives
+//! that whole chain the way a client would: the message route, the script
+//! preview replay, and the revision write.
 //!
 //! ## The one stubbed link
 //!
-//! The LLM is a [`ScriptedClient`] that returns a fixed document, because a live
-//! model is neither reachable nor deterministic here. Everything after it is the
-//! real code: the real `create_message` handler, the real sandbox, the real
-//! `indicator_preview::replay_preview`, the real database. The agent's *output*
-//! is stubbed; its *consumption* is not.
+//! The LLM is a [`ScriptedClient`] that returns a fixed script, because a live
+//! model is neither reachable nor deterministic here. Everything after it is
+//! the real code: the real `create_message` handler, the real vet pipeline,
+//! the real `replay_script_preview`, the real database.
 //!
-//! ## The document is deliberately guaranteed to fire
+//! ## The script is deliberately guaranteed to plot
 //!
-//! `close > threshold(0)` is always true, so the replay cannot produce an empty
-//! preview by accident -- a test that passed because the strategy happened never
-//! to signal would prove nothing about the wiring. If the chain breaks, the
-//! evidence count goes to zero and the assertion says so.
+//! `plot(ta.ema(close, 9))` is finite on any candle with a past, so a
+//! non-empty preview is guaranteed if the plumbing works at all. If the chain
+//! breaks, the zone count goes to zero and the assertion says so.
 
 mod common;
 
@@ -40,40 +31,22 @@ use ai_agent::{AgentConfig, ContentBlock, LlmResponse, Message, Role, StopReason
 use analytics_core::types::{Candle, Timeframe};
 use serde_json::json;
 
-/// The scripted document. `close > threshold(0)` fires on every bar, so a
-/// non-empty preview is guaranteed if the plumbing works at all.
-const FIREABLE_STRATEGY: &str = r#"
-name: "Preview probe"
-version: "1"
-kind: strategy
-market: BTCUSDT
-timeframes:
-  entry: 5m
-entry:
-  direction: long
-  all_of:
-    - timeframe: entry
-      condition: close > threshold(0)
-risk:
-  max_risk_pct: 1.0
-  stop: {kind: below_recent_low, bars: 20}
-  take_profit:
-    type: "risk_multiple"
-    value: 1.0
-invalidation:
-  - timeframe: entry
-    condition: close_below(stop_price)
-"#;
+/// The scripted script: an EMA line, finite on every bar after the ninth.
+const FIREABLE_SCRIPT: &str = concat!(
+    "//@pine_lite version=1 overlay=false title=\"EMA probe\"\n",
+    "e = ta.ema(close, 9)\n",
+    "plot(e, title=\"EMA9\", color=color.orange)\n",
+);
 
-/// A scripted agent whose one draft is [`FIREABLE_STRATEGY`].
+/// A scripted agent whose one draft is [`FIREABLE_SCRIPT`].
 fn scripted_agent() -> Arc<ai_agent::Agent> {
     let response = LlmResponse {
         message: Message {
             role: Role::Assistant,
             content: vec![ContentBlock::ToolUse {
                 id: "d1".into(),
-                name: "draft_strategy".into(),
-                input: json!({ "yaml": FIREABLE_STRATEGY }),
+                name: "submit_script".into(),
+                input: json!({ "script": FIREABLE_SCRIPT }),
             }],
         },
         stop_reason: StopReason::ToolUse,
@@ -154,7 +127,7 @@ async fn a_generation_turn_stores_a_non_empty_validated_preview() {
     let (status, body) = h
         .post(
             &format!("/indicator-workspaces/{workspace_id}/messages"),
-            json!({ "content": "give me an always-on long" }),
+            json!({ "content": "plot an ema" }),
             Some(&user.token),
         )
         .await;
@@ -168,52 +141,35 @@ async fn a_generation_turn_stores_a_non_empty_validated_preview() {
     assert_eq!(revision["status"], "validated", "revision: {revision}");
     let preview = &revision["preview"];
 
-    let evidence = preview["evidence"].as_array().expect("an evidence array");
-    let markers = preview["markers"].as_array().expect("a markers array");
-    let links = preview["links"].as_array().expect("a links array");
     let zones = preview["zones"].as_array().expect("a zones array");
-
     assert!(
-        !evidence.is_empty(),
-        "the preview carries no evidence; the empty-preview bug is back: {preview}"
+        !zones.is_empty(),
+        "one finite EMA plot over a week of candles is one preview zone; \
+         the empty-preview bug is back: {preview}"
     );
-    assert!(!markers.is_empty(), "evidence with no markers: {preview}");
-    assert!(!links.is_empty(), "evidence with no links: {preview}");
-    assert!(!zones.is_empty(), "an entry with no risk band: {preview}");
 
-    // A marker must cite evidence that exists, which is the chain's own contract.
-    let ids: Vec<&str> = evidence.iter().filter_map(|e| e["id"].as_str()).collect();
-    for marker in markers {
-        let cited = marker["evidence_id"].as_str().expect("a cited evidence id");
-        assert!(
-            ids.contains(&cited),
-            "marker cites evidence `{cited}` that is absent"
-        );
-    }
-
-    // The stored revision, read back through the API, is the same non-empty one.
+    // The stored source is the script, and read back through the API the
+    // stored revision is the same non-empty one.
+    assert!(
+        revision["source"].as_str().is_some_and(|s| s.contains("//@pine_lite")),
+        "the revision stores the script as source: {revision}"
+    );
     let listed = h
         .ok(
             &format!("/indicator-workspaces/{workspace_id}/revisions"),
             Some(&user.token),
         )
         .await;
-    let stored = &listed[0]["preview"]["evidence"];
+    let stored = &listed[0]["preview"]["zones"];
     assert!(
-        stored.as_array().is_some_and(|nodes| !nodes.is_empty()),
+        stored.as_array().is_some_and(|z| !z.is_empty()),
         "the stored revision's preview is empty: {listed}"
     );
 
-    // Cleanup: children before the user, candles by symbol, nothing left behind.
+    // Cleanup: children before the user, nothing left behind.
     db::delete_indicator_workspace(h.database.pool(), user.id, workspace_id.parse().unwrap())
         .await
         .expect("workspace cleanup");
-    db::strategies::delete_strategy(
-        h.database.pool(),
-        body["strategy_id"].as_str().unwrap().parse().unwrap(),
-    )
-    .await
-    .expect("strategy cleanup");
     db::repositories::delete_candles_for_symbol(h.database.pool(), &symbol)
         .await
         .expect("candle cleanup");

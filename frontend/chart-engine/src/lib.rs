@@ -44,6 +44,7 @@ pub mod drawing;
 pub mod footprint;
 pub mod indicator;
 pub mod scene;
+pub mod script;
 pub mod viewport;
 
 pub use drawing::{

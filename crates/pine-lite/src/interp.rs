@@ -1,0 +1,1303 @@
+//! The interpreter: per-bar execution over a host-provided window.
+//!
+//! One [`Vm`] owns the whole script run: it walks bars 0..N and, for each bar,
+//! walks the AST. Variables are ring buffers (one value per bar) so `x[3]`
+//! and `ta.sma(x, 9)` read the same history the chart would draw. `na` is
+//! `f64::NAN` and propagates arithmetically; comparisons with `na` are false;
+//! plots skip `na` rather than drawing it.
+//!
+//! The VM is deterministic and side-effect-free: it reads candles and input
+//! values, and writes [`Output`] (plots, hlines, shapes, strategy intents).
+//! Everything time-dependent is supplied by the host, which is what makes the
+//! native run and the sandboxed run byte-identical.
+
+use analytics_core::types::Candle;
+
+use crate::parse::{Arg, BinOp, BlockKind, CmpOp, Expr, ExprKind, Item, Script, UnOp, VarMode};
+use crate::ta::{self, NA, Series};
+
+/// Host-supplied input values, by variable name. Anything the script declares
+/// with `input.*` but the host does not supply runs on its declared default.
+#[derive(Debug, Default, Clone)]
+pub struct Inputs {
+    /// Numeric inputs (`input.int` / `input.float`).
+    pub numbers: std::collections::HashMap<String, f64>,
+    /// Boolean inputs.
+    pub bools: std::collections::HashMap<String, bool>,
+    /// String inputs (`title`s live in the script; these are values).
+    pub strings: std::collections::HashMap<String, String>,
+}
+
+/// One collected plot series.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Plot {
+    /// Stable id, in source order: `p0`, `p1`, ...
+    pub id: String,
+    /// `title=`, or `plot 3`.
+    pub title: String,
+    /// The per-bar values; `na` bars are skipped by the renderer.
+    pub values: Series,
+    /// How the renderer draws it.
+    pub style: PlotStyle,
+    /// Packed RGBA from `color=`.
+    pub color: u32,
+    /// `linewidth=`.
+    pub linewidth: f64,
+    /// Whether the series was produced by a histogram-style plot.
+    pub kind: PlotKind,
+}
+
+/// Visual style, from `style=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlotStyle {
+    /// A line, skipping na.
+    #[default]
+    Line,
+    /// A line that breaks at na instead of bridging it.
+    LineBr,
+    /// Histogram from the pane's zero line.
+    Histogram,
+    /// Columns (histogram that always renders, even at zero).
+    Columns,
+    /// Circles at each point.
+    Circles,
+    /// Step line.
+    StepLine,
+    /// Area fill to the pane bottom.
+    AreaBr,
+}
+
+/// Plot family, which decides the renderer's primitive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlotKind {
+    /// A continuous series.
+    #[default]
+    Line,
+    /// A point marker (plotshape/plotchar).
+    Shape,
+    /// A per-bar arrow (plotarrow).
+    Arrow,
+}
+
+/// A horizontal reference level from `hline()`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HLine {
+    /// The price/value it sits at.
+    pub value: f64,
+    /// `title=`.
+    pub title: String,
+    /// Packed RGBA.
+    pub color: u32,
+    /// Dashed/dotted; the renderer maps linestyle to dash patterns.
+    pub dashed: bool,
+}
+
+/// A point marker from `plotshape`/`plotchar`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shape {
+    /// Bar index.
+    pub bar: usize,
+    /// The value to place it at (`location.absolute`) or the bar extreme.
+    pub value: f64,
+    /// Text/shape name, for the renderer's glyph table.
+    pub glyph: String,
+    /// Packed RGBA.
+    pub color: u32,
+}
+
+/// One strategy intent recorded during the run.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Intent {
+    /// `strategy.entry(id, direction)`.
+    Entry {
+        /// Order id.
+        id: String,
+        /// `long` or `short`.
+        long: bool,
+    },
+    /// `strategy.exit(id, stop=, limit=, ...)`.
+    Exit {
+        /// Order id.
+        id: String,
+        /// Optional stop price.
+        stop: Option<f64>,
+        /// Optional limit price.
+        limit: Option<f64>,
+    },
+    /// `strategy.close(id)` / `strategy.close_all()`.
+    Close {
+        /// The entry id, or all when empty.
+        id: Option<String>,
+    },
+}
+
+/// What one run produced.
+#[derive(Debug, Default, Clone)]
+pub struct Output {
+    /// Plots in source order.
+    pub plots: Vec<Plot>,
+    /// Horizontal levels.
+    pub hlines: Vec<HLine>,
+    /// Point markers.
+    pub shapes: Vec<Shape>,
+    /// Strategy intents, in bar order.
+    pub intents: Vec<(usize, Intent)>,
+    /// Strategy state reads the script made, for the report.
+    pub strategy_used: bool,
+}
+
+/// Run a vetted script over a window, producing its output.
+///
+/// # Errors
+/// Returns a [`ScriptError`](crate::ScriptError) when the script reads a
+/// variable before writing it, calls a function it did not define, or exceeds
+/// a dynamic budget -- all things static checking cannot see (values that
+/// only appear at runtime, like a loop bound computed from `close`).
+pub fn run(script: &Script, candles: &[Candle], inputs: &Inputs) -> Result<Output, crate::ScriptError> {
+    let mut vm = Vm::new(script, candles, inputs);
+    vm.run()
+}
+
+/// The virtual machine.
+pub struct Vm<'a> {
+    script: &'a Script,
+    candles: &'a [Candle],
+    inputs: &'a Inputs,
+    /// Per-variable ring buffers.
+    vars: std::collections::HashMap<String, Vec<f64>>,
+    /// Variables that carry state across bars (`var`).
+    var_modes: std::collections::HashMap<String, VarMode>,
+    /// User functions.
+    funcs: std::collections::HashMap<String, &'a [Item]>,
+    /// Call depth of user functions; recursion is refused at [`MAX_CALL_DEPTH`].
+    call_depth: usize,
+    /// Loop variable values, scoped like call frames.
+    loop_scopes: Vec<(String, f64)>,
+    /// Call frames for user functions (locals shadow nothing; Pine has one
+    /// namespace, and the checker refuses reads-before-writes).
+    scopes: Vec<std::collections::HashMap<String, f64>>,
+    /// Plot statements deferred to after the bar loop: replaying a plot's
+    /// expression needs *completed* buffers, and one AST call site is one
+    /// plot no matter how many bars its branch fires on.
+    deferred: Vec<Expr>,
+    deferred_seen: std::collections::HashSet<usize>,
+    /// True while the per-bar loop runs; plot calls defer instead of acting.
+    collecting: bool,
+    /// Cached whole-window series for ta calls that read only builtins
+    /// (`ta.sma(close, 9)`): computed once, keyed by the argument expression's
+    /// address. Var-dependent series recompute -- their buffers change.
+    series_cache: std::collections::HashMap<usize, Series>,
+    /// The variable name an `input.*` call is binding, set by the assignment
+    /// evaluator just before the call runs -- Pine's `x = input.int(...)`
+    /// names the input by its target.
+    current_input_name: String,
+    out: Output,
+    bar: usize,
+    steps: u64,
+    fuel: u64,
+}
+
+/// The per-bar step budget per 1000 bars, from `docs/23`.
+pub const FUEL_PER_1000_BARS: u64 = 200_000;
+
+/// How deep user-function calls may nest. Pine allows recursion; this
+/// platform refuses it -- a recursive script cannot have a per-bar cost
+/// bound, and the stack depth is the one thing the fuel counter cannot
+/// meter before it blows.
+pub const MAX_CALL_DEPTH: usize = 16;
+
+impl<'a> Vm<'a> {
+    fn new(script: &'a Script, candles: &'a [Candle], inputs: &'a Inputs) -> Self {
+        let fuel = (candles.len() as u64).max(1) * FUEL_PER_1000_BARS / 1000;
+        Self {
+            script,
+            candles,
+            inputs,
+            vars: std::collections::HashMap::new(),
+            var_modes: std::collections::HashMap::new(),
+            funcs: std::collections::HashMap::new(),
+            call_depth: 0,
+            loop_scopes: Vec::new(),
+            scopes: Vec::new(),
+            deferred: Vec::new(),
+            deferred_seen: std::collections::HashSet::new(),
+            collecting: false,
+            series_cache: std::collections::HashMap::new(),
+            current_input_name: String::new(),
+            out: Output::default(),
+            bar: 0,
+            steps: 0,
+            fuel,
+        }
+    }
+
+    fn run(&mut self) -> Result<Output, crate::ScriptError> {
+        // Pass 1: hoist function definitions (Pine allows calling a function
+        // defined later in the file).
+        for item in &self.script.items {
+            if let Item::FuncDef { name, body, .. } = item {
+                self.funcs.insert(name.clone(), body);
+            }
+        }
+        // Per-bar execution. Plot calls defer: their series are replayed
+        // after the loop, against completed buffers.
+        self.collecting = true;
+        for bar in 0..self.candles.len() {
+            self.bar = bar;
+            for item in &self.script.items {
+                self.item(item)?;
+            }
+        }
+        self.collecting = false;
+        // Deferred plots, replayed against completed buffers.
+        let deferred = std::mem::take(&mut self.deferred);
+        self.deferred_seen.clear();
+        for expr in &deferred {
+            if let ExprKind::Call { callee, args } = &expr.kind {
+                let series = self.plot_series(callee, args)?;
+                self.out.plots.push(series);
+            }
+        }
+        Ok(std::mem::take(&mut self.out))
+    }
+
+    fn tick(&mut self) -> Result<(), crate::ScriptError> {
+        self.steps += 1;
+        if self.steps > self.fuel {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Limit,
+                span: crate::Span::new(1, 1),
+                message: format!(
+                    "script exceeded its step budget ({}) for this window; simplify the loop or lower max_bars_back",
+                    self.fuel
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn item(&mut self, item: &Item) -> Result<(), crate::ScriptError> {
+        self.tick()?;
+        match item {
+            Item::Assign { name, mode, expr, .. } => {
+                // `x = input.int(...)` -- the input reads its name from the
+                // assignment target.
+                if let ExprKind::Call { callee, .. } = &expr.kind {
+                    if callee.starts_with("input.") {
+                        self.current_input_name = name.clone();
+                    }
+                }
+                // `var` semantics: initialized once, at bar 0. On later bars
+                // the initializer does not run at all -- Pine's rule, which is
+                // what makes `var count = 0` a counter and not a zeroing.
+                if *mode != VarMode::Auto && self.bar > 0 && self.vars.contains_key(name) {
+                    return Ok(());
+                }
+                let value = self.eval_f(expr)?;
+                // Ring buffer: one slot per bar, written at the current bar.
+                // `var`/`varip` initialize **once** (bar 0) and then carry:
+                // their earlier slots stay frozen so `count := count + 1`
+                // accumulates and any `count[k]` reads real history.
+                let buf = self
+                    .vars
+                    .entry(name.clone())
+                    .or_insert_with(|| vec![NA; self.candles.len()]);
+                buf[self.bar] = value;
+                self.var_modes.insert(name.clone(), *mode);
+            }
+            Item::Expr { expr, .. } => {
+                self.eval_stmt(expr)?;
+            }
+            Item::Block { kind, exprs, loop_var, body, els, .. } => match kind {
+                BlockKind::If => {
+                    let cond = self.eval_f(&exprs[0])?;
+                    if self.truthy(cond) {
+                        self.body(body)?;
+                    } else if let Some(els) = els {
+                        self.body(els)?;
+                    }
+                }
+                BlockKind::For => {
+                    let from = self.eval_f(&exprs[0])?;
+                    let to = self.eval_f(&exprs[1])?;
+                    let step = self.eval_f(&exprs[2])?;
+                    let mut i = from;
+                    let positive = step >= 0.0;
+                    // A zero step would spin forever; Pine errors, here the
+                    // loop simply does not run. Fuel is the backstop.
+                    if step == 0.0 {
+                        return Ok(());
+                    }
+                    let name = loop_var.clone().unwrap_or_default();
+                    while if positive { i <= to } else { i >= to } {
+                        self.tick()?;
+                        self.loop_scopes.push((name.clone(), i));
+                        self.body(body)?;
+                        self.loop_scopes.pop();
+                        i += step;
+                    }
+                }
+                BlockKind::While => {
+                    // Refused statically; unreachable here, and refusing again
+                    // costs nothing.
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Limit,
+                        span: crate::Span::new(1, 1),
+                        message: "`while` is refused in v1".into(),
+                    });
+                }
+            },
+            Item::FuncDef { .. } => {} // hoisted in run()
+        }
+        Ok(())
+    }
+
+    fn body(&mut self, items: &[Item]) -> Result<(), crate::ScriptError> {
+        for item in items {
+            self.item(item)?;
+        }
+        Ok(())
+    }
+
+    fn truthy(&self, value: f64) -> bool {
+        // Pine's bools are numbers under the hood: 1.0 true, 0.0 false, na
+        // false. This is the one place the unified model pays its way.
+        value.is_finite() && value != 0.0
+    }
+
+    /// Evaluate a statement expression: calls whose values are discarded
+    /// (plots, strategy calls) return nothing meaningful.
+    fn eval_stmt(&mut self, expr: &Expr) -> Result<(), crate::ScriptError> {
+        self.tick()?;
+        match &expr.kind {
+            ExprKind::Call { callee, args } => {
+                self.call_stmt(callee, args)
+            }
+            ExprKind::Bin { left, op: BinOp::Cmp(_), right } => {
+                // `flag and plot(...)`-style mixing is refused by the type
+                // checker; a bare comparison as a statement does nothing, but
+                // evaluating it keeps `x == y` from erroring.
+                self.eval_f(left)?;
+                self.eval_f(right)?;
+                Ok(())
+            }
+            _ => {
+                self.eval_f(expr)?;
+                Ok(())
+            }
+        }
+    }
+
+    fn call_stmt(&mut self, callee: &str, args: &[Arg]) -> Result<(), crate::ScriptError> {
+        self.tick()?;
+        match callee {
+            "plot" | "plotshape" | "plotchar" | "plotarrow" => {
+                if self.collecting {
+                    // Defer by call site: one AST node, one plot, however many
+                    // bars (or branch firings) reach it. The key is the callee
+                    // plus the first argument's source position, which is
+                    // stable per call site and needs no pointer tricks.
+                    let key = callee.len()
+                        ^ args
+                            .first()
+                            .map_or(0, |a| a.value.span.col ^ a.value.span.line);
+                    if self.deferred_seen.insert(key) {
+                        // Rebuild the full expression for replay.
+                        self.deferred.push(Expr {
+                            span: crate::Span::new(1, 1),
+                            kind: ExprKind::Call {
+                                callee: callee.to_string(),
+                                args: args.to_vec(),
+                            },
+                        });
+                    }
+                    return Ok(());
+                }
+                let series = self.plot_series(callee, args)?;
+                self.out.plots.push(series);
+                Ok(())
+            }
+            "hline" => {
+                // hlines have no series -- they are a level and nothing else,
+                // so they act once, at bar 0, not once per bar.
+                if self.bar > 0 {
+                    return Ok(());
+                }
+                let value = self.arg_f(args, 0)?.unwrap_or(NA);
+                let title = self.arg_str(args, "title").unwrap_or_default();
+                let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
+                let dashed = self.arg_str(args, "linestyle").is_some_and(|s| s != "solid");
+                self.out.hlines.push(HLine { value, title, color, dashed });
+                Ok(())
+            }
+            "fill" | "bgcolor" | "barcolor" => {
+                // v1 collects but does not render fills/tints; the plots they
+                // reference are kept by id for the renderer to pair.
+                Ok(())
+            }
+            "strategy.entry" => {
+                let id = self.arg_str(args, "id").or_else(|| self.arg_str_pos(args, 0)).unwrap_or_default();
+                let dir = self.arg_str(args, "direction").or_else(|| self.arg_str_pos(args, 1)).unwrap_or_default();
+                self.out.strategy_used = true;
+                self.out
+                    .intents
+                    .push((self.bar, Intent::Entry { id, long: dir != "short" }));
+                Ok(())
+            }
+            "strategy.exit" => {
+                let id = self.arg_str(args, "id").or_else(|| self.arg_str_pos(args, 0)).unwrap_or_default();
+                let stop = self.arg_named_f(args, "stop");
+                let limit = self.arg_named_f(args, "limit");
+                self.out.strategy_used = true;
+                self.out.intents.push((self.bar, Intent::Exit { id, stop, limit }));
+                Ok(())
+            }
+            "strategy.close" => {
+                let id = self.arg_str(args, "id").or_else(|| self.arg_str_pos(args, 0));
+                self.out.strategy_used = true;
+                self.out.intents.push((self.bar, Intent::Close { id }));
+                Ok(())
+            }
+            "strategy.close_all" => {
+                self.out.strategy_used = true;
+                self.out.intents.push((self.bar, Intent::Close { id: None }));
+                Ok(())
+            }
+            "strategy.cancel" => Ok(()),
+            _ => {
+                // User function called as a statement: run for side effects.
+                if self.funcs.contains_key(callee) {
+                    self.call_user(callee, args)?;
+                    Ok(())
+                } else {
+                    Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!("`{callee}` is not a statement here"),
+                    })
+                }
+            }
+        }
+    }
+
+    /// Build a [`Plot`] from a plot call. The series argument is evaluated
+    /// into a full-window buffer by re-evaluating the expression over the
+    /// run's own variable history -- the current bar's value plus the ring
+    /// buffers the VM already maintains.
+    fn plot_series(&mut self, callee: &str, args: &[Arg]) -> Result<Plot, crate::ScriptError> {
+        let n = self.candles.len();
+        let mut values = vec![NA; n];
+        if callee == "plot" {
+            if let Some(first) = args.first() {
+                // Evaluate the plot's expression at every bar by replaying the
+                // VM's variable history: assignments wrote one slot per bar,
+                // so re-reading the expression against frozen history gives
+                // the same series the script saw -- without re-running.
+                let saved_bar = self.bar;
+                for (bar, slot) in values.iter_mut().enumerate() {
+                    self.bar = bar;
+                    *slot = self.eval_f(&first.value)?;
+                }
+                self.bar = saved_bar;
+            }
+        } else {
+            // plotshape/plotchar/plotarrow: a bool or numeric condition; the
+            // bars where it is truthy become shapes.
+            let series = if let Some(first) = args.first() {
+                let saved_bar = self.bar;
+                let mut flags = vec![NA; n];
+                for (bar, slot) in flags.iter_mut().enumerate() {
+                    self.bar = bar;
+                    *slot = self.eval_f(&first.value)?;
+                }
+                self.bar = saved_bar;
+                flags
+            } else {
+                vec![NA; n]
+            };
+            let glyph = self
+                .arg_str(args, "shape")
+                .or_else(|| self.arg_str(args, "char"))
+                .unwrap_or_else(|| "circle".to_string());
+            let color = self.arg_color(args).unwrap_or(0xFF_60_A5_FAu32);
+            let location_value = self.arg_named_f(args, "location_value").unwrap_or(NA);
+            for (bar, v) in series.iter().enumerate() {
+                if self.truthy(*v) {
+                    self.out.shapes.push(Shape {
+                        bar,
+                        value: location_value,
+                        glyph: glyph.clone(),
+                        color,
+                    });
+                }
+            }
+            return Ok(Plot {
+                id: format!("p{}", self.out.plots.len()),
+                title: self.arg_str(args, "title").unwrap_or_else(|| "plot".into()),
+                values,
+                style: crate::PlotStyle::Line,
+                color,
+                linewidth: 1.0,
+                kind: crate::PlotKind::Shape,
+            });
+        }
+        let style = match self.arg_str(args, "style").as_deref() {
+            Some("linebr") => crate::PlotStyle::LineBr,
+            Some("histogram") => crate::PlotStyle::Histogram,
+            Some("columns") => crate::PlotStyle::Columns,
+            Some("circles") => crate::PlotStyle::Circles,
+            Some("stepline") => crate::PlotStyle::StepLine,
+            Some("areabr") => crate::PlotStyle::AreaBr,
+            _ => crate::PlotStyle::Line,
+        };
+        Ok(Plot {
+            id: format!("p{}", self.out.plots.len()),
+            title: self.arg_str(args, "title").unwrap_or_else(|| "plot".into()),
+            values,
+            style,
+            color: self.arg_color(args).unwrap_or(0xFF_60_A5_FAu32),
+            linewidth: self.arg_named_f(args, "linewidth").unwrap_or(1.0),
+            kind: crate::PlotKind::Line,
+        })
+    }
+
+    // ---- expression evaluation ----
+
+    fn eval_f(&mut self, expr: &Expr) -> Result<f64, crate::ScriptError> {
+        self.tick()?;
+        Ok(match &expr.kind {
+            ExprKind::Num(n) => *n,
+            ExprKind::Bool(b) => f64::from(*b),
+            ExprKind::Color(_) | ExprKind::Str(_) => NA, // colors/strings cannot be numeric
+            ExprKind::Na => NA,
+            ExprKind::Ident(name) => self.read_name(name)?,
+            ExprKind::Member { path } => self.read_member(path)?,
+            ExprKind::History { base, offset } => {
+                let off = self.eval_f(offset)?;
+                let off = if off.is_finite() { off.max(0.0) as usize } else { 0 };
+                self.read_history(base, off)?
+            }
+            ExprKind::Ternary { cond, then, els } => {
+                let c = self.eval_f(cond)?;
+                if self.truthy(c) {
+                    self.eval_f(then)?
+                } else {
+                    self.eval_f(els)?
+                }
+            }
+            ExprKind::Un { op, expr } => {
+                let v = self.eval_f(expr)?;
+                match op {
+                    UnOp::Neg => -v,
+                    UnOp::Pos => v,
+                    UnOp::Not => f64::from(!self.truthy(v)),
+                }
+            }
+            ExprKind::Bin { left, op, right } => {
+                let l = self.eval_f(left)?;
+                let r = self.eval_f(right)?;
+                self.bin(*op, l, r)
+            }
+            ExprKind::Call { callee, args } => self.call_f(callee, args)?,
+        })
+    }
+
+    fn bin(&self, op: BinOp, l: f64, r: f64) -> f64 {
+        // Pine: comparisons with na are false; arithmetic with na is na.
+        match op {
+            BinOp::Or => f64::from(self.truthy(l) || self.truthy(r)),
+            BinOp::And => f64::from(self.truthy(l) && self.truthy(r)),
+            BinOp::Cmp(op) => {
+                if !(l.is_finite() && r.is_finite()) {
+                    return 0.0;
+                }
+                let hit = match op {
+                    CmpOp::Eq => l == r,
+                    CmpOp::Ne => l != r,
+                    CmpOp::Lt => l < r,
+                    CmpOp::Le => l <= r,
+                    CmpOp::Gt => l > r,
+                    CmpOp::Ge => l >= r,
+                };
+                f64::from(hit)
+            }
+            BinOp::Add(add) => match add {
+                crate::parse::AddOp::Add => l + r,
+                crate::parse::AddOp::Sub => l - r,
+            },
+            BinOp::Mul(mul) => match mul {
+                crate::parse::MulOp::Mul => l * r,
+                crate::parse::MulOp::Div => {
+                    if r == 0.0 {
+                        NA
+                    } else {
+                        l / r
+                    }
+                }
+                crate::parse::MulOp::Rem => {
+                    if r == 0.0 {
+                        NA
+                    } else {
+                        l % r
+                    }
+                }
+            },
+            BinOp::Pow => l.powf(r),
+        }
+    }
+
+    fn read_name(&mut self, name: &str) -> Result<f64, crate::ScriptError> {
+        // Loop variables and function locals shadow globals.
+        for (n, v) in self.loop_scopes.iter().rev() {
+            if n == name {
+                return Ok(*v);
+            }
+        }
+        for scope in self.scopes.iter().rev() {
+            if let Some(v) = scope.get(name) {
+                return Ok(*v);
+            }
+        }
+        if let Some(buf) = self.vars.get(name) {
+            // Pine carry-forward: a variable read before its (re)assignment
+            // this bar has the value it ended the previous bar with -- this
+            // is what makes `var count := count + 1` a counter.
+            let current = buf[self.bar];
+            if current.is_finite() {
+                return Ok(current);
+            }
+            if self.bar > 0 {
+                return Ok(buf[self.bar - 1]);
+            }
+            return Ok(current);
+        }
+        // Builtin series.
+        self.read_member(name)
+    }
+
+    fn read_member(&self, path: &str) -> Result<f64, crate::ScriptError> {
+        let c = &self.candles[self.bar];
+        Ok(match path {
+            "open" => c.open,
+            "high" => c.high,
+            "low" => c.low,
+            "close" => c.close,
+            "volume" => c.volume,
+            "hl2" => (c.high + c.low) / 2.0,
+            "hlc3" => (c.high + c.low + c.close) / 3.0,
+            "ohlc4" => (c.open + c.high + c.low + c.close) / 4.0,
+            "bar_index" => self.bar as f64,
+            "last_bar_index" => (self.candles.len().saturating_sub(1)) as f64,
+            "time" => c.open_time as f64,
+            "time_close" => (c.open_time + c.timeframe.nanos()) as f64,
+            "barstate.isconfirmed" => 1.0, // the host only runs closed bars
+            "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
+            | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => 0.0,
+            _ => {
+                return Err(crate::ScriptError {
+                    kind: crate::ErrorKind::Type,
+                    span: crate::Span::new(1, 1),
+                    message: format!("`{path}` is not readable here"),
+                })
+            }
+        })
+    }
+
+    fn read_history(&mut self, base: &Expr, off: usize) -> Result<f64, crate::ScriptError> {
+        // The base must be a variable or a builtin series: expressions get a
+        // value only for the current bar, and Pine's `f(x)[3]` sugar is v2.
+        // Beyond the beginning of the window the read is `na`, not the first
+        // value -- saturating at index 0 would fabricate history.
+        match &base.kind {
+            ExprKind::Ident(name) => {
+                if let Some(buf) = self.vars.get(name) {
+                    return Ok(if off <= self.bar { buf[self.bar - off] } else { NA });
+                }
+                let series = self.builtin_series(name)?;
+                Ok(if off <= self.bar { series[self.bar - off] } else { NA })
+            }
+            ExprKind::Member { path } => {
+                let series = self.builtin_series(path)?;
+                Ok(if off <= self.bar { series[self.bar - off] } else { NA })
+            }
+            _ => Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "history indexing needs a variable or a builtin series".into(),
+            }),
+        }
+    }
+
+    fn builtin_series(&self, name: &str) -> Result<Series, crate::ScriptError> {
+        Ok(match name {
+            "open" => self.candles.iter().map(|c| c.open).collect(),
+            "high" => self.candles.iter().map(|c| c.high).collect(),
+            "low" => self.candles.iter().map(|c| c.low).collect(),
+            "close" => self.candles.iter().map(|c| c.close).collect(),
+            "volume" => self.candles.iter().map(|c| c.volume).collect(),
+            "hl2" => self.candles.iter().map(|c| (c.high + c.low) / 2.0).collect(),
+            "hlc3" => self
+                .candles
+                .iter()
+                .map(|c| (c.high + c.low + c.close) / 3.0)
+                .collect(),
+            "ohlc4" => self
+                .candles
+                .iter()
+                .map(|c| (c.open + c.high + c.low + c.close) / 4.0)
+                .collect(),
+            _ => {
+                return Err(crate::ScriptError {
+                    kind: crate::ErrorKind::Type,
+                    span: crate::Span::new(1, 1),
+                    message: format!("`{name}` is not a series"),
+                })
+            }
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn call_f(&mut self, callee: &str, args: &[Arg]) -> Result<f64, crate::ScriptError> {
+        self.tick()?;
+        // Inputs first: they are host-supplied or defaults, never computed.
+        // The bool/int/string distinction rides on the call's own kind.
+        if let Some(kind) = callee.strip_prefix("input.") {
+            let name = self.current_input_name.clone();
+            let default = self.arg_named_f(args, "defval").unwrap_or(0.0);
+            return Ok(match kind {
+                "bool" => {
+                    f64::from(self.inputs.bools.get(&name).copied().unwrap_or(default != 0.0))
+                }
+                "int" | "float" => self.inputs.numbers.get(&name).copied().unwrap_or(default),
+                _ => default,
+            });
+        }
+        macro_rules! a {
+            ($i:expr) => {
+                match args.get($i) {
+                    Some(arg) => self.eval_f(&arg.value),
+                    None => Ok(NA),
+                }
+            };
+        }
+        match callee {
+            "na" => Ok(f64::from(!a!(0)?.is_finite())),
+            "nz" => {
+                let v = a!(0)?;
+                if v.is_finite() {
+                    return Ok(v);
+                }
+                let fallback = match args.get(1) {
+                    Some(arg) => self.eval_f(&arg.value)?,
+                    None => 0.0,
+                };
+                Ok(fallback)
+            }
+            "fixnan" => {
+                // Carry the last finite value forward; na before the first.
+                let v = a!(0)?;
+                Ok(v) // full-window form handled by ta::fixnan_series in v2
+            }
+            "ta.sma" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_sma(&src, a!(1)?)[self.bar])
+            }
+            "ta.ema" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_ema(&src, a!(1)?)[self.bar])
+            }
+            "ta.rma" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_rma(&src, a!(1)?)[self.bar])
+            }
+            "ta.rsi" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_rsi(&src, a!(1)?)[self.bar])
+            }
+            "ta.atr" => Ok(ta::ta_atr(self.candles, a!(0)?)[self.bar]),
+            "ta.tr" => Ok(ta::ta_tr(self.candles)[self.bar]),
+            "ta.highest" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_highest(&src, a!(1)?)[self.bar])
+            }
+            "ta.lowest" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_lowest(&src, a!(1)?)[self.bar])
+            }
+            "ta.change" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_change(&src)[self.bar])
+            }
+            "ta.mom" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_mom(&src, a!(1)?)[self.bar])
+            }
+            "ta.roc" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_roc(&src, a!(1)?)[self.bar])
+            }
+            "ta.stoch" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_stoch(&src, &self.builtin_series("high")?, &self.builtin_series("low")?, a!(1)?)[self.bar])
+            }
+            "ta.vwap" => Ok(ta::ta_vwap(self.candles)[self.bar]),
+            "ta.crossover" | "ta.crossunder" | "ta.cross" => {
+                let l = self.series_arg(args, 0)?;
+                let r = self.series_arg(args, 1)?;
+                Ok(if callee == "ta.crossover" {
+                    ta::ta_crossover(&l, &r)[self.bar]
+                } else {
+                    ta::ta_crossunder(&l, &r)[self.bar]
+                })
+            }
+            "math.abs" => Ok(a!(0)?.abs()),
+            "math.min" | "math.max" => {
+                let mut acc = a!(0)?;
+                for i in 1..args.len() {
+                    let v = a!(i)?;
+                    acc = if callee == "math.min" { acc.min(v) } else { acc.max(v) };
+                }
+                Ok(acc)
+            }
+            "math.floor" => Ok(a!(0)?.floor()),
+            "math.ceil" => Ok(a!(0)?.ceil()),
+            "math.round" => Ok(a!(0)?.round()),
+            "math.sqrt" => Ok(a!(0)?.sqrt()),
+            "math.log" => Ok(a!(0)?.ln()),
+            "math.exp" => Ok(a!(0)?.exp()),
+            "math.sign" => Ok(a!(0)?.signum()),
+            "math.pow" => Ok(a!(0)?.powf(a!(1)?)),
+            "math.avg" => {
+                let mut sum = 0.0;
+                let mut count = 0.0;
+                for i in 0..args.len() {
+                    let v = a!(i)?;
+                    if v.is_finite() {
+                        sum += v;
+                        count += 1.0;
+                    }
+                }
+                Ok(if count > 0.0 { sum / count } else { NA })
+            }
+            "math.sum" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::math_sum(&src, a!(1)?)[self.bar])
+            }
+            _ => self.call_user(callee, args),
+        }
+    }
+
+    /// Evaluate an argument into a whole-window series, for the ta functions
+    /// that must see history: the plot/ta split means `ta.sma(rsi(close, 14),
+    /// 9)` needs rsi's *past bars*, which the VM has only as ring buffers.
+    ///
+    /// The rule: a series argument is either (a) a builtin series, (b) a
+    /// variable (ring buffer, already per-bar), or (c) a call -- in which case
+    /// the call is re-evaluated for every bar against frozen buffers. (c) is
+    /// the expensive path and why fuel exists.
+    fn series_arg(&mut self, args: &[Arg], index: usize) -> Result<Series, crate::ScriptError> {
+        let Some(arg) = args.get(index) else {
+            return Ok(vec![NA; self.candles.len()]);
+        };
+        let n = self.candles.len();
+        match &arg.value.kind {
+            ExprKind::Ident(name) => {
+                if let Some(buf) = self.vars.get(name) {
+                    return Ok(buf.clone());
+                }
+                self.builtin_series(name)
+            }
+            ExprKind::Member { path } => self.builtin_series(path),
+            _ => {
+                // Pure-builtin ta calls (`ta.sma(close, 9)`) never change:
+                // compute once and cache. Var-dependent ones recompute, which
+                // is the real cost the fuel budget meters.
+                let key = std::ptr::from_ref(&arg.value).addr();
+                if !Self::expr_depends_on_vars(&arg.value) {
+                    if let Some(cached) = self.series_cache.get(&key) {
+                        return Ok(cached.clone());
+                    }
+                }
+                let saved_bar = self.bar;
+                let mut out = vec![NA; n];
+                for (bar, slot) in out.iter_mut().enumerate() {
+                    self.bar = bar;
+                    *slot = self.eval_f(&arg.value)?;
+                }
+                self.bar = saved_bar;
+                if !Self::expr_depends_on_vars(&arg.value) {
+                    self.series_cache.insert(key, out.clone());
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// Whether an expression reads a script variable (anything that is not a
+    /// builtin series name or a namespaced read). Used to decide whether a
+    /// ta call's series can be cached for the whole run.
+    fn expr_depends_on_vars(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(name) => !matches!(
+                name.as_str(),
+                "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4"
+            ) && !name.contains('.'),
+            ExprKind::Member { .. } | ExprKind::Num(_) | ExprKind::Bool(_) | ExprKind::Str(_)
+            | ExprKind::Color(_) | ExprKind::Na => false,
+            ExprKind::Bin { left, right, .. } => {
+                Self::expr_depends_on_vars(left) || Self::expr_depends_on_vars(right)
+            }
+            ExprKind::Un { expr, .. } => Self::expr_depends_on_vars(expr),
+            ExprKind::Ternary { cond, then, els } => {
+                Self::expr_depends_on_vars(cond)
+                    || Self::expr_depends_on_vars(then)
+                    || Self::expr_depends_on_vars(els)
+            }
+            ExprKind::History { base, offset } => {
+                Self::expr_depends_on_vars(base) || Self::expr_depends_on_vars(offset)
+            }
+            ExprKind::Call { args, .. } => {
+                args.iter().any(|a| Self::expr_depends_on_vars(&a.value))
+            }
+        }
+    }
+
+    fn call_user(&mut self, callee: &str, args: &[Arg]) -> Result<f64, crate::ScriptError> {
+        if self.call_depth >= MAX_CALL_DEPTH {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Limit,
+                span: crate::Span::new(1, 1),
+                message: format!(
+                    "call depth exceeds {MAX_CALL_DEPTH}; recursion is refused"
+                ),
+            });
+        }
+        let body = *self
+            .funcs
+            .get(callee)
+            .ok_or_else(|| crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: format!("`{callee}` is not defined"),
+            })?;
+        // Bind arguments by the signature's parameter names -- the checker
+        // already guaranteed the arity matches.
+        let mut locals = std::collections::HashMap::new();
+        for (i, arg) in args.iter().enumerate() {
+            let v = self.eval_f(&arg.value)?;
+            let param = self
+                .script
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::FuncDef { name: n, params, .. } if n == callee => {
+                        params.get(i).cloned()
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| format!("arg{i}"));
+            locals.insert(param, v);
+        }
+        // Named parameters by position: the checker knows the signature; the
+        // VM binds positionally (docs/23: positional order matches the table).
+        self.scopes.push(locals);
+        self.call_depth += 1;
+        let mut result = NA;
+        let last = body.len().saturating_sub(1);
+        for (i, item) in body.iter().enumerate() {
+            if i == last {
+                if let Item::Expr { expr, .. } = item {
+                    result = self.eval_f(expr)?;
+                    continue;
+                }
+            }
+            self.item(item)?;
+        }
+        self.call_depth -= 1;
+        self.scopes.pop();
+        Ok(result)
+    }
+
+    // ---- argument helpers ----
+
+    fn arg_f(&mut self, args: &[Arg], index: usize) -> Result<Option<f64>, crate::ScriptError> {
+        match args.get(index) {
+            Some(arg) => Ok(Some(self.eval_f(&arg.value)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn arg_named_f(&mut self, args: &[Arg], name: &str) -> Option<f64> {
+        let arg = args.iter().find(|a| a.name.as_deref() == Some(name))?;
+        self.eval_f(&arg.value).ok()
+    }
+
+    fn arg_str_pos(&self, args: &[Arg], index: usize) -> Option<String> {
+        match args.get(index) {
+            Some(Arg { value: Expr { kind: ExprKind::Str(s), .. }, .. }) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    fn arg_str(&self, args: &[Arg], name: &str) -> Option<String> {
+        let arg = args.iter().find(|a| a.name.as_deref() == Some(name))?;
+        match &arg.value.kind {
+            ExprKind::Str(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    fn arg_color(&self, args: &[Arg]) -> Option<u32> {
+        let arg = args.iter().find(|a| a.name.as_deref() == Some("color"))?;
+        match &arg.value.kind {
+            ExprKind::Color(c) => Some(*c),
+            ExprKind::Ident(name) => named_color(name),
+            _ => None,
+        }
+    }
+}
+
+/// The 17 named colors Pine has; the handful a chart legend needs.
+fn named_color(name: &str) -> Option<u32> {
+    Some(match name {
+        "color.red" => 0xFF_EF_44_44,
+        "color.green" => 0xFF_22_C5_5E,
+        "color.blue" => 0xFF_3B_82_F6,
+        "color.orange" => 0xFF_F9_73_16,
+        "color.yellow" => 0xFF_EA_B3_08,
+        "color.purple" => 0xFF_A8_55_F7,
+        "color.white" => 0xFF_F8_FA_FC,
+        "color.gray" => 0xFF_94_A3_B8,
+        "color.teal" => 0xFF_2D_D4_BF,
+        "color.lime" => 0xFF_84_CC_16,
+        "color.aqua" => 0xFF_22_D3_EE,
+        "color.maroon" => 0xFF_7F_1D_1D,
+        "color.navy" => 0xFF_1E_3A_8A,
+        "color.olive" => 0xFF_80_80_00,
+        "color.silver" => 0xFF_C0_C0_C0,
+        "color.fuchsia" => 0xFF_D9_46_EF,
+        "color.black" => 0xFF_13_17_22,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{lex, parse, typecheck, limits};
+    use analytics_core::types::Timeframe;
+
+    fn candle(i: usize, close: f64) -> Candle {
+        Candle {
+            symbol: "T".into(),
+            timeframe: Timeframe::M1,
+            open_time: i as i64 * 60_000_000_000,
+            open: close,
+            high: close + 1.0,
+            low: close - 1.0,
+            close,
+            volume: 10.0,
+            buy_volume: 5.0,
+            sell_volume: 5.0,
+        }
+    }
+
+    fn run_src(src: &str, candles: &[Candle]) -> Output {
+        let (_header, tokens) = lex::lex(src).expect("lex");
+        let script = parse::parse(tokens).expect("parse");
+        assert!(typecheck::check(&script).is_empty(), "type errors");
+        assert!(limits::check(&script).is_empty(), "limit errors");
+        run(&script, candles, &Inputs::default()).expect("run")
+    }
+
+    #[test]
+    fn rsi_script_plots_a_series_matching_the_crate() {
+        let candles: Vec<Candle> = (0..40)
+            .map(|i| candle(i, 100.0 + ((i % 7) as f64)))
+            .collect();
+        let src = "//@pine_lite version=1 overlay=false title=\"RSI\"\n\
+                   r = ta.rsi(close, 14)\n\
+                   plot(r, title=\"RSI\", color=color.purple)\n";
+        let out = run_src(src, &candles);
+        assert_eq!(out.plots.len(), 1);
+        let expected = ta::ta_rsi(&ta::closes(&candles), 14.0);
+        for (got, want) in out.plots[0].values.iter().zip(&expected) {
+            if want.is_finite() {
+                assert!((got - want).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn history_indexing_reads_the_ring_buffer() {
+        let candles: Vec<Candle> = (0..10).map(|i| candle(i, i as f64)).collect();
+        let src = "//@pine_lite version=1\n\
+                   x = close\n\
+                   d = close[1] - close[2]\n";
+        let out = run_src(src, &candles);
+        assert!(out.plots.is_empty());
+        // No crash is the contract here; value checks come via plots below.
+    }
+
+    #[test]
+    fn history_of_a_variable_is_visible_through_a_plot() {
+        let candles: Vec<Candle> = (0..12).map(|i| candle(i, i as f64)).collect();
+        let src = "//@pine_lite version=1\n\
+                   x = close\n\
+                   lag = x[3]\n\
+                   plot(lag, title=\"lag\")\n";
+        let out = run_src(src, &candles);
+        let values = &out.plots[0].values;
+        assert!((values[5] - 2.0).abs() < 1e-9, "{}", values[5]);
+        assert!(values[2].is_nan(), "before enough history the lag is na");
+    }
+
+    #[test]
+    fn var_state_carries_across_bars() {
+        let candles: Vec<Candle> = (0..20).map(|i| candle(i, i as f64)).collect();
+        let src = "//@pine_lite version=1\n\
+                   var count = 0\n\
+                   count := count + 1\n\
+                   plot(count, title=\"n\")\n";
+        let out = run_src(src, &candles);
+        let values = &out.plots[0].values;
+        assert!((values[0] - 1.0).abs() < 1e-9);
+        assert!((values[19] - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ternary_and_bools_behave_like_pine() {
+        let candles: Vec<Candle> = (0..6).map(|i| candle(i, i as f64)).collect();
+        let src = "//@pine_lite version=1\n\
+                   up = close > close[1]\n\
+                   plot(up ? 1 : 0, title=\"u\")\n";
+        let out = run_src(src, &candles);
+        let values = &out.plots[0].values;
+        assert_eq!(values[0], 0.0, "close[1] on bar 0 is na; the comparison is false");
+        assert_eq!(values[3], 1.0);
+    }
+
+    #[test]
+    fn strategy_intents_are_recorded() {
+        let candles: Vec<Candle> = (0..30).map(|i| candle(i, 100.0 + ((i % 7) as f64))).collect();
+        // Real newlines with real indentation: Rust's `\n\` continuation
+        // strips the next line's leading whitespace, which would flatten the
+        // if-body out of the block.
+        let src = concat!(
+            "//@pine_lite version=1\n",
+            "cross_up = ta.crossover(close, ta.sma(close, 5))\n",
+            "if cross_up\n",
+            "    strategy.entry(\"long\", direction=\"long\")\n",
+            "plot(close)\n",
+        );
+        let out = run_src(src, &candles);
+        assert!(out.strategy_used);
+        assert!(!out.intents.is_empty());
+        assert!(out.intents.iter().all(|(_, i)| matches!(i, Intent::Entry { long: true, .. })));
+    }
+
+    #[test]
+    fn crossover_over_a_ta_call_works() {
+        let candles: Vec<Candle> = (0..60).map(|i| candle(i, 100.0 + ((i % 9) as f64))).collect();
+        let src = "//@pine_lite version=1\n\
+                   up = ta.crossover(close, ta.sma(close, 9))\n\
+                   plot(up ? 1 : 0, title=\"x\")\n";
+        let out = run_src(src, &candles);
+        assert!(out.plots[0].values.contains(&1.0));
+    }
+
+    #[test]
+    fn na_propagates_and_comparisons_are_false() {
+        let candles: Vec<Candle> = (0..20).map(|i| candle(i, i as f64)).collect();
+        let src = "//@pine_lite version=1\n\
+                   m = ta.sma(close, 20)\n\
+                   plot(m, title=\"m\")\n";
+        let out = run_src(src, &candles);
+        assert!(out.plots[0].values[0].is_nan());
+    }
+
+    #[test]
+    fn for_loop_variable_is_bound_inside_the_body() {
+        let candles: Vec<Candle> = (0..5).map(|i| candle(i, 100.0)).collect();
+        // Indentation must survive: see the note on `concat!` above.
+        let src = concat!(
+            "//@pine_lite version=1\n",
+            "s = 0.0\n",
+            "for i = 1 to 4\n",
+            "    s := s + i\n",
+            "plot(s, title=\"s\")\n",
+        );
+        let out = run_src(src, &candles);
+        assert!((out.plots[0].values[0] - 10.0).abs() < 1e-9, "1+2+3+4=10, got {}", out.plots[0].values[0]);
+    }
+
+    #[test]
+    fn for_loop_sums_a_window_of_history() {
+        let candles: Vec<Candle> = (0..10).map(|i| candle(i, i as f64)).collect();
+        let src = concat!(
+            "//@pine_lite version=1\n",
+            "s = 0.0\n",
+            "for k = 0 to 3\n",
+            "    s := s + close[k]\n",
+            "plot(s, title=\"sum4\")\n",
+        );
+        let out = run_src(src, &candles);
+        // Bar 9: close[0..3] = 9+8+7+6 = 30.
+        assert!((out.plots[0].values[9] - 30.0).abs() < 1e-9, "got {}", out.plots[0].values[9]);
+    }
+
+    #[test]
+    fn a_zero_step_loop_never_runs() {
+        let candles: Vec<Candle> = (0..5).map(|i| candle(i, 100.0)).collect();
+        let src = concat!(
+            "//@pine_lite version=1\n",
+            "s = 0.0\n",
+            "for i = 1 to 4 by 0\n",
+            "    s := s + 1\n",
+            "plot(s, title=\"s\")\n",
+        );
+        let out = run_src(src, &candles);
+        assert_eq!(out.plots[0].values[0], 0.0);
+    }
+
+    #[test]
+    fn recursion_is_refused_at_the_depth_cap() {
+        let candles: Vec<Candle> = (0..5).map(|i| candle(i, 100.0)).collect();
+        let src = concat!(
+            "//@pine_lite version=1\n",
+            "f(n) =>\n",
+            "    f(n)\n",
+            "x = f(1)\n",
+            "plot(close)\n",
+        );
+        let result = run_src_safe(src, &candles);
+        let err = result.expect_err("recursion refused");
+        assert!(err.message.contains("recursion is refused"), "{err:?}");
+    }
+
+    #[test]
+    fn a_huge_loop_is_killed_by_fuel() {
+        let candles: Vec<Candle> = (0..5).map(|i| candle(i, 100.0)).collect();
+        // 5 candles -> fuel = 1000 steps. Ten million iterations cannot fit;
+        // the loop is killed mid-run and reported, never half-drawn.
+        let src = concat!(
+            "//@pine_lite version=1\n",
+            "s = 0.0\n",
+            "for i = 1 to 10000000\n",
+            "    s := s + 1\n",
+            "plot(close)\n",
+        );
+        let result = run_src_safe(src, &candles);
+        let err = result.expect_err("fuel killed");
+        assert!(err.message.contains("step budget"), "{err:?}");
+    }
+
+    /// Like [`run_src`] but returns the error instead of panicking.
+    fn run_src_safe(src: &str, candles: &[Candle]) -> Result<Output, crate::ScriptError> {
+        let (_header, tokens) = lex::lex(src).expect("lex");
+        let script = parse::parse(tokens).expect("parse");
+        assert!(typecheck::check(&script).is_empty(), "type errors");
+        assert!(limits::check(&script).is_empty(), "limit errors");
+        run(&script, candles, &Inputs::default())
+    }
+}

@@ -234,6 +234,129 @@ fn zone_state(region: &Region) -> chart_engine::ZoneState {
     }
 }
 
+/// Run a generated pine-lite script over the same window the document replay
+/// uses, and fold its plots into the preview vocabulary the shell already
+/// renders (`docs/23`).
+///
+/// The full plot series live on in the shell's own script runner (the chart
+/// re-runs the source every frame); the preview's numbers exist for the chat
+/// transcript -- "your script drew 2 plots over 672 bars" -- and for the
+/// revision card, the same honesty the document replay buys.
+///
+/// # Errors
+/// A human-readable reason when candles cannot be loaded or the script fails
+/// at run time (a dynamic budget, a read-before-write) -- never a panic.
+pub async fn replay_script_preview(
+    state: &AppState,
+    database: &db::Database,
+    symbol: &str,
+    timeframe: &str,
+    source: &str,
+) -> Result<(chart_engine::IndicatorOutput, crate::indicator_workspace_routes::ScriptPreviewStats), String>
+{
+    let (header, parsed) =
+        pine_lite::vet(source).map_err(|errs| format!("the script no longer vets: {}", errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; ")))?;
+    let to_ns = crate::now_ns();
+    let from_ns = to_ns - PREVIEW_WINDOW_NS;
+    let tf = timeframe
+        .parse::<Timeframe>()
+        .unwrap_or(Timeframe::M1);
+    // The document replay backfills its window from the venue first; a script
+    // preview over an empty store would "draw nothing" for data reasons, so
+    // the same backfill runs here -- idempotent on repeat.
+    if let Ok(candles) = state
+        .backfill
+        .backfill_candles(
+            symbol,
+            tf,
+            from_ns,
+            to_ns,
+            market_data::BackfillSource::Klines,
+        )
+        .await
+    {
+        if !candles.is_empty() {
+            if let Err(error) = db::repositories::insert_candles(database.pool(), &candles).await {
+                tracing::warn!(%error, "could not store script preview backfill");
+            }
+        }
+    }
+    let timeframes = std::collections::BTreeMap::from([(
+        "entry".to_string(),
+        tf,
+    )]);
+    let series = db::loading::load_timeframe_series(
+        database.pool(),
+        symbol,
+        &timeframes,
+        from_ns,
+        to_ns,
+        tf,
+    )
+    .await
+    .map_err(|error| format!("could not load candles for the script preview: {error}"))?;
+    let candles = series.get("entry").cloned().unwrap_or_default();
+    if candles.is_empty() {
+        return Err("no stored candles for this symbol and timeframe yet".to_string());
+    }
+    let inputs = pine_lite::interp::Inputs::default();
+    let output = pine_lite::interp::run(&parsed, &candles, &inputs)
+        .map_err(|err| format!("the script failed at run time: {err}"))?;
+    let stats = crate::indicator_workspace_routes::ScriptPreviewStats {
+        window_days: (PREVIEW_WINDOW_NS / 86_400_000_000_000) as i64,
+        bars: candles.len(),
+        plots: output.plots.len(),
+        levels: output.hlines.len(),
+        shapes: output.shapes.len(),
+        overlays: usize::from(header.overlay),
+    };
+    let title = header.title.clone().unwrap_or_else(|| "script".to_string());
+    // The preview folds the run into the shared vocabulary: one zone per
+    // plot (its value range over the window), one marker per shape. The real
+    // rendering is the chart engine's script runner -- these are the counts
+    // and shapes the chat reports.
+    let mut out = chart_engine::IndicatorOutput {
+        revision_id: format!("script:{title}"),
+        name: Some(title),
+        concepts: Vec::new(),
+        evidence: Vec::new(),
+        zones: Vec::new(),
+        markers: Vec::new(),
+        links: Vec::new(),
+        trendlines: Vec::new(),
+    };
+    for plot in &output.plots {
+        let finite: Vec<f64> = plot.values.iter().copied().filter(|v| v.is_finite()).collect();
+        let (Some(low), Some(high)) = (
+            finite.iter().copied().reduce(f64::min),
+            finite.iter().copied().reduce(f64::max),
+        ) else {
+            continue;
+        };
+        out.zones.push(chart_engine::IndicatorZone {
+            id: format!("{}-plot", plot.id),
+            start_time: candles.first().map(|c| c.open_time).unwrap_or(0),
+            end_time: candles.last().map(|c| c.open_time).unwrap_or(0),
+            price_low: low,
+            price_high: high,
+            label: plot.title.clone(),
+            state: chart_engine::ZoneState::Active,
+        });
+    }
+    for shape in &output.shapes {
+        let Some(candle) = candles.get(shape.bar) else { continue };
+        out.markers.push(chart_engine::IndicatorMarker {
+            id: format!("{}-shape-{}", out.revision_id, shape.bar),
+            evidence_id: String::new(),
+            time: candle.open_time,
+            price: shape.value,
+            label: shape.glyph.clone(),
+            kind: chart_engine::MarkerKind::Signal,
+        });
+    }
+    Ok((out, stats))
+}
+
 /// Map a detection side to the marker vocabulary the chart already paints.
 fn marker_kind(side: analytics_core::types::Side) -> MarkerKind {
     match side {

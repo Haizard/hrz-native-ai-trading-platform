@@ -10,6 +10,10 @@ license.workspace = true
 analytics-core = { workspace = true }
 strategy-runtime = { workspace = true }
 strategy-dsl = { workspace = true }
+# docs/23: a Pine-lite strategy script is one more `Strategy` source. The
+# adapter in `script_strategy` drives the vetted script per bar and lowers its
+# `strategy.*` calls into the same signals the DSL engine emits.
+pine-lite = { workspace = true }
 
 serde = { workspace = true }
 thiserror = { workspace = true }
