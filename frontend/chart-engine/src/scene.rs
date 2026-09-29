@@ -1593,6 +1593,7 @@ pub fn build(request: &Request) -> Scene {
                 &pine_lite::Inputs {
                     numbers: spec.inputs.clone(),
                     security: spec.security.clone(),
+                    series_pool: spec.series_pool.clone(),
                     ..pine_lite::Inputs::default()
                 },
             ) {

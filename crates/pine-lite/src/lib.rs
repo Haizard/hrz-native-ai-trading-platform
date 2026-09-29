@@ -133,6 +133,20 @@ impl Default for Header {
     }
 }
 
+impl Header {
+    /// The `const`-constructible empty header: the anchor for the body-less
+    /// script a `request.security` sub-VM runs (`docs/23` Phase 11).
+    pub const fn empty() -> Self {
+        Self {
+            version: 1,
+            overlay: false,
+            title: None,
+            max_bars_back: 300,
+            sec: None,
+        }
+    }
+}
+
 /// Vet a script end-to-end without running it: lex, parse, type check, limits.
 ///
 /// Returns every problem, not the first, because the studio's repair loop

@@ -290,6 +290,23 @@ backtest, or a bot.
 Phases 1–5 are the language core and land as one reviewable unit; 6–8 make it
 visible and safe; 9–10 wire it to users.
 
+### Phases 11–14: closing the gap to full Pine (planned 2026-09)
+
+The studio must be able to say "yes" to any indicator idea a trader brings.
+Four gaps remain against full TradingView Pine; each is an extension of the
+builtin table, the vet rules and the output contract — not a redesign.
+
+| Phase | Delivers | Done when |
+| --- | --- | --- |
+| 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", request.close())` (string/symbol, string/timeframe, series expression), `sec=` stays as the single-pair shorthand; host fetches every named pair + timeframe, aligns each onto the chart's bars (carry-forward flat), VM keeps a keyed series pool (cap 8 pairs/script) | SMT-across-3-pairs and MTF-trend scripts vet, run in gateway preview and in the browser engine; alignment unit tests |
+| 12 | **User-defined functions**: `f(x, y) =>` single-expression (then block form), typed by the same checker, inlined by the compiler with the call-depth cap, library-free by design | A pivot/snag helper library script vets and matches its inlined twin's output exactly |
+| 13 | **Drawing objects**: `line.new(bar1, price1, bar2, price2, color=, style=)`, `label.new(bar, price, text=, style=)`, `box.new(left, top, right, bottom, color=)` into a VM heap (cap 64 objects, like arrays); engine positions them from bar/time coordinates; shell draws them under the user's own drawings | An order-block script draws real boxes; an SMT script labels the divergence bars with text |
+| 14 | **External data**: first a platform-native feed (funding rates, OI from the existing market-data crate) as `request.data("funding")`, then generic HTTP behind a permission prompt and a size-capped cache | A funding-adjusted spread script runs end to end; no script can fetch without the user seeing the source list |
+
+Order is value-first: 11 unblocks the most requested real strategies (MTF
+trend + multi-pair SMT), 12 removes the inline-length ceiling, 13 gives
+zones/labels their native form, 14 is gated on permissions and ships last.
+
 ## Implementation notes (2026-09)
 
 Decisions the code made that the spec above only implied:

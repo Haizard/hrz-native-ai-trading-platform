@@ -297,6 +297,48 @@ async fn fetch_security_candles(
 /// (the pair traded less often) the last secondary close carries forward with
 /// flat OHLC, and before the pair's first bar everything is flat at that
 /// first close -- indexes never drift, which is what cross-market math needs.
+/// Align a POOLED series onto the chart's bars (docs/23 Phase 11):
+/// `request.security("SYM", tf, ...)` reads the pooled candle whose window
+/// CONTAINS the chart bar, completed only -- while that pooled candle is
+/// still forming the script sees the PREVIOUS one, which is what keeps a
+/// coarser-timeframe read free of lookahead. Window math: the host stores
+/// open times, so a pooled candle at `t` covers `[t, t + tf)`. A chart bar
+/// before the pooled series' first candle is flat at that first close, the
+/// same carry-forward the `sec=` aligner uses.
+fn align_security_pooled(primary: &[types::Candle], pooled: &[types::Candle]) -> Vec<types::Candle> {
+    if pooled.is_empty() || primary.is_empty() {
+        return Vec::new();
+    }
+    let first = pooled[0].close;
+    let mut out = Vec::with_capacity(primary.len());
+    let mut cursor = 0usize;
+    for bar in primary {
+        // Advance while the NEXT pooled candle has COMPLETED by this bar's
+        // open: its window starts at or before the bar, so it is usable.
+        while cursor + 1 < pooled.len() && pooled[cursor + 1].open_time <= bar.open_time {
+            cursor += 1;
+        }
+        // The chosen candle must have STARTED by the bar; otherwise the bar
+        // predates the pooled series entirely.
+        let usable = pooled[cursor].open_time <= bar.open_time;
+        let src = if usable { &pooled[cursor] } else { &pooled[0] };
+        let fill = if usable { src.close } else { first };
+        out.push(types::Candle {
+            symbol: src.symbol.clone(),
+            timeframe: src.timeframe,
+            open_time: bar.open_time,
+            open: if usable { src.open } else { fill },
+            high: if usable { src.high } else { fill },
+            low: if usable { src.low } else { fill },
+            close: fill,
+            volume: if usable { src.volume } else { 0.0 },
+            buy_volume: if usable { src.buy_volume } else { 0.0 },
+            sell_volume: if usable { src.sell_volume } else { 0.0 },
+        });
+    }
+    out
+}
+
 fn align_security(primary: &[types::Candle], sec: &[types::Candle]) -> Vec<types::Candle> {
     if sec.is_empty() || primary.is_empty() {
         return Vec::new();
@@ -411,7 +453,32 @@ pub async fn replay_script_preview(
         }
         None => Vec::new(),
     };
-    let inputs = pine_lite::interp::Inputs { security, ..pine_lite::interp::Inputs::default() };
+    // Phase 11 (docs/23): every `request.security("SYM", "tf", ...)` pair
+    // the script names, fetched and aligned onto the chart's own bars into
+    // the keyed pool the VM reads. A pair on a COARSER timeframe is fetched
+    // at that tf and aligned by window coverage (a chart bar inside a pooled
+    // candle uses that candle -- completed bars only, no lookahead); the
+    // chart's own symbol/timeframe is served from the primary fetch.
+    let mut series_pool = std::collections::HashMap::new();
+    for key in pine_lite::typecheck::collect_series_pool(&parsed, &header) {
+        let Some((sym, tf_str)) = key.split_once('@') else { continue };
+        let pooled_tf = tf_str.parse::<Timeframe>().unwrap_or(tf);
+        let is_own = sym.eq_ignore_ascii_case(symbol) && pooled_tf == tf;
+        let raw = if is_own {
+            candles.clone()
+        } else {
+            let fetched =
+                fetch_security_candles(state, database, sym, pooled_tf, from_ns, to_ns).await;
+            if fetched.is_empty() {
+                tracing::warn!(%sym, %tf_str, "request.security pool fetch came back empty");
+                continue;
+            }
+            fetched
+        };
+        let aligned = align_security_pooled(&candles, &raw);
+        series_pool.insert(key, aligned);
+    }
+    let inputs = pine_lite::interp::Inputs { security, series_pool, ..pine_lite::interp::Inputs::default() };
     let output = pine_lite::interp::run(&parsed, &candles, &inputs)
         .map_err(|err| format!("the script failed at run time: {err}"))?;
     let stats = crate::indicator_workspace_routes::ScriptPreviewStats {

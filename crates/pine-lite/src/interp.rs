@@ -33,6 +33,14 @@ pub struct Inputs {
     /// so indexes never drift -- cross-market math stays bar-aligned.
     /// Empty when the header declares no `sec`.
     pub security: Vec<Candle>,
+    /// Every named pair of `request.security("SYM", "tf", ...)` in the
+    /// script, keyed `SYM@tf`, uppercased, already fetched and aligned onto
+    /// the chart's bars by the host -- the same contract as `security`.
+    /// Phase 11 (docs/23): multi-pair, multi-timeframe cross-market math.
+    /// The chart's own symbol/timeframe may be named too (a script reading
+    /// its primary at a coarser tf); the host serves it from the same pool.
+    /// Empty when the script names none. Cap: 8 keys (see `check_with_header`).
+    pub series_pool: std::collections::HashMap<String, Vec<Candle>>,
 }
 
 /// One collected plot series.
@@ -234,9 +242,46 @@ pub const MAX_ARRAYS: usize = 64;
 /// chart's worth of pivots at any sane lookback.
 pub const MAX_ARRAY_LEN: usize = 4096;
 
+/// The body-less script a `request.security` sub-VM runs: it has no
+/// statements, only the caller's cloned expression, so one `'static` anchor
+/// serves every sub-run and the lifetime stays honest.
+static EMPTY_SCRIPT: Script = Script { items: Vec::new(), header: crate::Header::empty() };
+
 impl<'a> Vm<'a> {
     fn new(script: &'a Script, candles: &'a [Candle], inputs: &'a Inputs) -> Self {
         let fuel = (candles.len() as u64).max(1) * FUEL_PER_1000_BARS / 1000;
+        Self::with_fuel(script, candles, inputs, fuel)
+    }
+
+    /// The pooled-series key for a `request.security` call: `SYM@TF` from
+    /// its two literal arguments. The host fills `Inputs::series_pool` with
+    /// exactly the keys the checker collected, so a key miss here is a host
+    /// bug and reads as data, not as a missing feature.
+    fn security_key(&self, args: &[Arg]) -> Result<String, crate::ScriptError> {
+        let sym = match args.first().map(|a| &a.value.kind) {
+            Some(ExprKind::Str(s)) => s.to_uppercase(),
+            _ => {
+                return Err(crate::ScriptError {
+                    kind: crate::ErrorKind::Type,
+                    span: crate::Span::new(1, 1),
+                    message: "`request.security` argument 1 must be a quoted symbol".into(),
+                })
+            }
+        };
+        let tf = match args.get(1).map(|a| &a.value.kind) {
+            Some(ExprKind::Str(s)) => s.to_uppercase(),
+            _ => {
+                return Err(crate::ScriptError {
+                    kind: crate::ErrorKind::Type,
+                    span: crate::Span::new(1, 1),
+                    message: "`request.security` argument 2 must be a quoted timeframe".into(),
+                })
+            }
+        };
+        Ok(format!("{sym}@{tf}"))
+    }
+
+    fn with_fuel(script: &'a Script, candles: &'a [Candle], inputs: &'a Inputs, fuel: u64) -> Self {
         Self {
             script,
             candles,
@@ -259,6 +304,31 @@ impl<'a> Vm<'a> {
             steps: 0,
             fuel,
         }
+    }
+
+    /// A one-expression VM over a pooled series: `request.security`'s third
+    /// argument, evaluated per bar as if the PAIR were the chart. Fuel is a
+    /// per-call slice of the parent's remaining budget (a sub-run must never
+    /// outlive its parent's meter), every ring starts empty, and `ta.*` over
+    /// the pooled candles is plain composition -- smoothed pair closes need
+    /// no special case. The sub-VM's own `request.*` surface is empty: nested
+    /// security calls are refused at vet time (the pool key would need a
+    /// per-call context the flat pool cannot express).
+    fn new_for_pool(
+        expr: &Expr,
+        candles: &'a [Candle],
+        inputs: &'a Inputs,
+        fuel: u64,
+    ) -> Self {
+        // An empty script: the sub-run has no statements of its own, only
+        // the caller's cloned expression (parked in `deferred`). No
+        // `'static` dance needed because `with_fuel` only ever READS the
+        // script within the VM's own lifetime... which is this call, so the
+        // script must outlive the sub-VM. The caller keeps it alive: the
+        // static EMPTY_SCRIPT below is that caller's anchor.
+        let mut sub = Self::with_fuel(&EMPTY_SCRIPT, candles, inputs, fuel);
+        sub.deferred.push(expr.clone());
+        sub
     }
 
     fn run(&mut self) -> Result<Output, crate::ScriptError> {
@@ -1078,6 +1148,51 @@ impl<'a> Vm<'a> {
                 Ok(ta::ta_stoch(&src, &self.builtin_series("high")?, &self.builtin_series("low")?, a!(1)?)[self.bar])
             }
             "ta.vwap" => Ok(ta::ta_vwap(self.candles)[self.bar]),
+            // ---- request.security("SYM", "tf", expr) (Phase 11, docs/23):
+            // any pair, any timeframe the host pooled, per call. The first
+            // two arguments are string literals (vet-checked); the third is
+            // evaluated per bar over that pair's candles, as if it were the
+            // script's own series. History on the result works through the
+            // ordinary assign-then-offset rule, because the value lands in a
+            // variable like any other.
+            "request.security" => {
+                let key = self.security_key(args)?;
+                let candles = self
+                    .inputs
+                    .series_pool
+                    .get(&key)
+                    .ok_or_else(|| crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!(
+                            "`request.security` has no pooled series for {key}; the host must fetch and align it before the run"
+                        ),
+                    })?;
+                // The pooled series replaces the script's own candles for the
+                // third argument's evaluation: a sub-VM over that pair sees
+                // `close` as the PAIR's close. One allocation per call per
+                // bar is bounded by the fuel meter like every other step.
+                let expr = args[2].value.clone();
+                // Bare `request.*` INSIDE the third argument reads the pair:
+                // the sub-VM's security vec IS the pooled series (the key was
+                // vetted as literals, so no recursion is expressible).
+                let sub_inputs = Inputs {
+                    security: candles.clone(),
+                    series_pool: std::collections::HashMap::new(),
+                    ..Inputs::default()
+                };
+                // A per-call slice of the parent's remaining fuel: a nested
+                // expression cannot spend what its parent has not earned.
+                let slice = self.fuel.saturating_sub(self.steps).max(1);
+                let mut sub = Vm::new_for_pool(&expr, candles, &sub_inputs, slice);
+                // Evaluate the third argument at THIS chart bar over the
+                // pair's series: the pool is index-aligned (pooled[i] covers
+                // chart bar i), so the sub-VM's bar IS the parent's bar.
+                sub.bar = self.bar;
+                let value = sub.eval_f(&expr)?;
+                self.steps += sub.steps;
+                Ok(value)
+            }
             // ---- request.*: the second instrument's series, bar-aligned by
             // the host. A call with no `sec=` in the header is refused here
             // with the fix named -- the same honesty the vet layer gives.

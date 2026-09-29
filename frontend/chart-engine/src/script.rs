@@ -28,6 +28,13 @@ pub struct ScriptSpec {
     /// then `request.*` reads are the VM's data-missing error.
     #[serde(default)]
     pub security: Vec<analytics_core::types::Candle>,
+    /// Every `request.security("SYM", "tf", ...)` pair the script names,
+    /// keyed `SYM@TF` and time-aligned onto the chart's bars by the shell
+    /// (same carry-forward contract as `security`). The engine hands the
+    /// pool straight to the VM. Absent on older shells' requests — the
+    /// script's reads then report the missing-key error, which is the truth.
+    #[serde(default)]
+    pub series_pool: std::collections::HashMap<String, Vec<analytics_core::types::Candle>>,
 }
 
 /// One positioned script plot inside a [`SceneScriptPane`].
@@ -129,6 +136,7 @@ pub fn script_pane(
     let inputs = Inputs {
         numbers: spec.inputs.clone(),
         security: spec.security.clone(),
+        series_pool: spec.series_pool.clone(),
         ..Inputs::default()
     };
     let output: Output = run(&parsed, candles, &inputs).map_err(|err| err.to_string())?;
@@ -346,7 +354,7 @@ mod tests {
     fn an_rsi_script_yields_a_positioned_pane() {
         let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0 + ((i % 7) as f64))).collect();
         let pane = script_pane(
-            &ScriptSpec { source: RSI_SCRIPT.into(), inputs: Default::default(), security: Vec::new() },
+            &ScriptSpec { source: RSI_SCRIPT.into(), inputs: Default::default(), security: Vec::new(), series_pool: Default::default() },
             &candles,
             10.0,
             &plot_rect(),
@@ -377,6 +385,7 @@ mod tests {
                 source: "//@pine_lite version=1\nx = zzz\n".into(),
                 inputs: Default::default(),
                 security: Vec::new(),
+                series_pool: Default::default(),
             },
             &candles,
             10.0,
@@ -397,12 +406,55 @@ mod tests {
                 source: "//@pine_lite version=1\nm = ta.sma(close, 30)\nplot(m)\n".into(),
                 inputs: Default::default(),
                 security: Vec::new(),
+                series_pool: Default::default(),
             },
             &candles,
             10.0,
             &plot_rect(),
         );
         assert!(err.is_err(), "an all-na series must refuse, not draw an empty pane");
+    }
+
+    #[test]
+    fn a_pooled_request_security_script_panes() {
+        // Phase 11 in the engine: the shell sends the pool it fetched and
+        // aligned; the pane draws the PAIR's series, not the chart's.
+        let src = concat!(
+            "//@pine_lite version=1 overlay=false title=\"MTF\"\n",
+            "pair = request.security(\"ETHUSDT\", \"1m\", request.close())\n",
+            "plot(pair)\n",
+        );
+        let candles: Vec<Candle> = (0..30).map(|i| candle(i, 100.0)).collect();
+        let pool: Vec<Candle> = (0..30)
+            .map(|i| {
+                let close = 50.0 + (i as f64) * 0.5;
+                Candle {
+                    symbol: "ETHUSDT".into(),
+                    timeframe: Timeframe::M1,
+                    open_time: i as i64 * 60_000_000_000,
+                    open: close,
+                    high: close + 1.0,
+                    low: close - 1.0,
+                    close,
+                    volume: 10.0,
+                    buy_volume: 5.0,
+                    sell_volume: 5.0,
+                }
+            })
+            .collect();
+        let mut series_pool = std::collections::HashMap::new();
+        series_pool.insert("ETHUSDT@1M".to_string(), pool);
+        let spec = ScriptSpec {
+            source: src.into(),
+            inputs: Default::default(),
+            security: Vec::new(),
+            series_pool,
+        };
+        let pane = script_pane(&spec, &candles, 10.0, &plot_rect()).expect("pane");
+        assert_eq!(pane.plots.len(), 1);
+        // The pooled close at bar 20 is 60.0, not the chart's 100.0: the
+        // pane's value range must span the pair, not the chart.
+        assert!(pane.value_max < 70.0, "max={} (pair, not chart)", pane.value_max);
     }
 
     #[test]

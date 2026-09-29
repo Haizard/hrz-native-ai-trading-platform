@@ -25,6 +25,11 @@ pub struct Checked {
     pub inputs: Vec<InputDecl>,
     /// `plot*`/`hline` call sites in source order, in case the UI wants them.
     pub plots: Vec<Span>,
+    /// Every `request.security("SYM", "tf", ...)` pair the script names, as
+    /// `SYM@TF` keys in first-seen order (docs/23 Phase 11). The host fetches
+    /// exactly these before running the script; `check_with_header` refuses
+    /// scripts naming more than the cap.
+    pub series_pool: Vec<String>,
 }
 
 /// One user function's signature.
@@ -61,10 +66,41 @@ pub fn check(script: &Script) -> Vec<ScriptError> {
 /// `request.close()` with no `sec=` in the header is refused HERE, with the
 /// fix in the message, rather than at run time.
 pub fn check_with_header(script: &Script, header: &crate::Header) -> Vec<ScriptError> {
-    let mut cx = Cx { errors: Vec::new(), out: Checked::default(), depth: 0, sec: header.sec.clone() };
+    let mut cx = Cx {
+        errors: Vec::new(),
+        out: Checked::default(),
+        depth: 0,
+        sec: header.sec.clone(),
+        series_pool: Vec::new(),
+        in_security_expr: 0,
+    };
     cx.items(&script.items);
+    cx.out.series_pool = std::mem::take(&mut cx.series_pool);
     cx.errors
 }
+
+/// The `request.security("SYM", "tf", ...)` pairs a script names, as
+/// `SYM@TF` keys in first-seen order (docs/23 Phase 11). The host fetches
+/// and aligns exactly these before running; an empty list means nothing to
+/// fetch. Runs the full check first, so a script that does not vet (bad
+/// literals, over-cap pool) yields whatever was collected until the error.
+#[must_use]
+pub fn collect_series_pool(script: &Script, header: &crate::Header) -> Vec<String> {
+    let mut cx = Cx {
+        errors: Vec::new(),
+        out: Checked::default(),
+        depth: 0,
+        sec: header.sec.clone(),
+        series_pool: Vec::new(),
+        in_security_expr: 0,
+    };
+    cx.items(&script.items);
+    cx.series_pool
+}
+
+/// How many distinct pairs one script may name (docs/23 Phase 11): a fetch
+/// is a real cost, and eight pairs cover every sane multi-leg strategy.
+const MAX_SERIES_POOL: usize = 8;
 
 struct Cx {
     errors: Vec<ScriptError>,
@@ -72,9 +108,45 @@ struct Cx {
     depth: usize,
     /// The header's `sec=` symbol, when declared.
     sec: Option<String>,
+    /// Every `request.security("SYM", "tf", ...)` pair the script names,
+    /// as `SYM@TF` keys in first-seen order. The host reads this AFTER the
+    /// check to know what to fetch; the cap is enforced here, at vet time.
+    series_pool: Vec<String>,
+    /// Depth inside a `request.security` third argument: there, bare
+    /// `request.*` reads the PAIR (the VM swaps the candle set), so the
+    /// no-`sec=` gate must not fire.
+    in_security_expr: usize,
 }
 
 impl Cx {
+    /// Record a `request.security` pair (already vetted as string literals)
+    /// and refuse the script when it names more than [`MAX_SERIES_POOL`].
+    fn check_series_pool(&mut self, args: &[Arg]) {
+        if args.len() < 2 {
+            return;
+        }
+        let sym = match &args[0].value.kind {
+            crate::parse::ExprKind::Str(s) => s.to_uppercase(),
+            _ => return,
+        };
+        let tf = match &args[1].value.kind {
+            crate::parse::ExprKind::Str(s) => s.to_uppercase(),
+            _ => return,
+        };
+        let key = format!("{sym}@{tf}");
+        if !self.series_pool.contains(&key) {
+            self.series_pool.push(key);
+            if self.series_pool.len() > MAX_SERIES_POOL {
+                self.err(
+                    Span::new(1, 1),
+                    format!(
+                        "a script may request at most {MAX_SERIES_POOL} symbol/timeframe pairs; got {}",
+                        self.series_pool.len()
+                    ),
+                );            }
+        }
+    }
+
     fn err(&mut self, span: Span, message: impl Into<String>) {
         self.errors.push(ScriptError {
             kind: ErrorKind::Type,
@@ -401,10 +473,54 @@ impl Cx {
     }
 
     fn call(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
+        // `request.security("SYM", "tf", expr)` (Phase 11, docs/23): any
+        // pair, any timeframe the host serves, per call -- the full Pine
+        // form. The symbol/timeframe must be string LITERALS (the host
+        // fetches them before the script runs; a computed symbol is a fetch
+        // the user never saw). The third argument is a series expression
+        // over that pair, evaluated per bar by the VM against the pooled
+        // series; it may itself contain request.security (depth-capped).
+        if callee == "request.security" {
+            if args.len() != 3 {
+                self.err(
+                    span,
+                    "`request.security` takes exactly 3 arguments: request.security(\"SYM\", \"tf\", series_expr)".to_string(),
+                );
+            }
+            for (i, a) in args.iter().enumerate() {
+                if i < 2 {
+                    if let Some(s) = a.name.as_deref() {
+                        self.err(span, format!("`request.security` argument {} is positional; named `{s}` is not accepted", i + 1));
+                    }
+                    match a.value.kind {
+                        crate::parse::ExprKind::Str(_) => {}
+                        _ => self.err(
+                            span,
+                            format!(
+                                "`request.security` argument {} must be a quoted string literal (the host fetches it before the run): got an expression",
+                                i + 1
+                            ),
+                        ),
+                    }
+                }
+            }
+            self.check_series_pool(args);
+            // The third argument is evaluated over the PAIR: inside it, bare
+            // `request.*` reads the pooled series, so the no-`sec=` gate is
+            // lifted for exactly this subtree.
+            self.in_security_expr += 1;
+            if let Some(a) = args.get(2) {
+                self.expr(&a.value);
+            }
+            self.in_security_expr -= 1;
+            return Ty::Float;
+        }
         // The second instrument's reads are header-gated: a `request.*` call
         // in a script that never declared `sec=` is a vet error naming the
-        // fix, not a runtime surprise.
-        if callee.starts_with("request.") && self.sec.is_none() {
+        // fix, not a runtime surprise. `request.security` was handled above,
+        // and bare `request.*` INSIDE its third argument reads the pooled
+        // pair, so the gate is lifted there.
+        if callee.starts_with("request.") && self.sec.is_none() && self.in_security_expr == 0 {
             self.err(
                 span,
                 format!(
@@ -542,6 +658,10 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         // aligns its candles; the script reads them through these.
         "request.symbol" | "request.open" | "request.high" | "request.low"
         | "request.close" | "request.volume" => (0, 0),
+        // Phase 11: the full Pine form, any pair, any timeframe. Arity is
+        // checked in `call` (which also vets the literal strings and fills
+        // the series pool); the entry here keeps `unknown()` away from it.
+        "request.security" => (3, 3),
         "plot" | "plotshape" | "plotchar" | "plotarrow" => (1, 8),
         "hline" => (1, 4),
         "fill" => (2, 6),

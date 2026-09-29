@@ -264,6 +264,21 @@ function scriptSecSymbol(source) {
   return m ? m[1].toUpperCase() : null;
 }
 
+/// Every `request.security("SYM", "tf", ...)` pair a script names, as
+/// `SYM@TF` keys (docs/23 Phase 11). A regex over the source is enough:
+/// the vet layer has already refused non-literal symbols, so every pair is
+/// a plain quoted string in the source.
+function scriptPoolKeys(source) {
+  const keys = [];
+  const re = /request\.security\(\s*"([A-Za-z0-9_\-:.]+)"\s*,\s*"([A-Za-z0-9_\-:.]+)"/g;
+  let m;
+  while ((m = re.exec(String(source || ""))) !== null) {
+    const key = m[1].toUpperCase() + "@" + m[2].toUpperCase();
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
 /// The second instrument's candles, aligned onto `primary`'s bars: candle i
 /// covers the same window as primary[i]; bars the pair did not trade carry
 /// its last close forward flat. Returns null until a fetch has succeeded.
@@ -290,8 +305,35 @@ function alignedSecurityCandles(sec, primarySymbol, timeframe, primary) {
   return out;
 }
 
+/// The pooled series for `key` (`SYM@TF`) aligned onto `primary`'s bars:
+/// the pooled candle whose window CONTAINS the chart bar, completed only --
+/// while that candle is still forming the script sees the previous one, so
+/// a coarser-timeframe read never looks ahead. Mirrors the gateway's
+/// `align_security_pooled`; the two must agree because the same script runs
+/// in the preview and on the chart.
+function alignedPoolSeries(key, primary) {
+  const cached = securityCache.get(key);
+  if (!cached || !cached.candles || !cached.candles.length) return null;
+  const pooled = cached.candles;
+  const [sym, tfStr] = key.split("@");
+  const BAR_NS = { "1M": 60_000_000_000, "5M": 300_000_000_000, "15M": 900_000_000_000, "1H": 3_600_000_000_000, "4H": 14_400_000_000_000 };
+  const tfNanos = BAR_NS[tfStr] || 60_000_000_000;
+  const first = pooled[0];
+  const out = [];
+  let cursor = 0;
+  for (const bar of primary) {
+    while (cursor + 1 < pooled.length && pooled[cursor + 1].open_time <= bar.open_time) cursor += 1;
+    const usable = pooled[cursor].open_time <= bar.open_time;
+    const src = usable ? pooled[cursor] : first;
+    const fill = usable ? src.close : first.close;
+    out.push({ ...src, open_time: bar.open_time, open: usable ? src.open : fill, high: usable ? src.high : fill, low: usable ? src.low : fill, close: fill, volume: usable ? src.volume : 0, buy_volume: usable ? src.buy_volume : 0, sell_volume: usable ? src.sell_volume : 0, symbol: sym });
+  }
+  return out;
+}
+
 /// Refresh the security cache for `symbols` (fire and forget): one /candles
-/// call per symbol not cached within the TTL.
+/// call per symbol not cached within the TTL. Pool keys (`SYM@TF`) ride the
+/// same map, stored under the key string itself.
 function refreshSecurityCandles(symbols, timeframe, barCount) {
   for (const sec of symbols) {
     if (!sec) continue;
@@ -304,7 +346,11 @@ function refreshSecurityCandles(symbols, timeframe, barCount) {
     entry.pending = true;
     entry.fetchedAt = 0;
     securityCache.set(sec, entry);
-    api(`/candles?symbol=${encodeURIComponent(sec)}&timeframe=${encodeURIComponent(timeframe)}&limit=${Math.min(barCount, 1500)}`)
+    // A `SYM@TF` pool key fetches at ITS OWN timeframe; a bare symbol uses
+    // the chart's.
+    const [keySym, keyTf] = sec.includes("@") ? sec.split("@") : [sec, null];
+    const fetchTf = keyTf ? keyTf.toLowerCase() : timeframe;
+    api(`/candles?symbol=${encodeURIComponent(keySym)}&timeframe=${encodeURIComponent(fetchTf)}&limit=${Math.min(barCount, 1500)}`)
       .then((resp) => {
         const list = resp && Array.isArray(resp.candles) ? resp.candles : [];
         if (!list.length) throw new Error(`empty candle list for ${sec}`);
@@ -2388,8 +2434,13 @@ function createChartPane(root, hooks = {}) {
       // this function has no locals of those names (the ones in `loadCandles`
       // are a different function's) -- a bare `timeframe` here was a
       // `ReferenceError` that killed every render once a script attached.
+      // Pool keys (`SYM@TF`) ride the same cache: Phase 11 scripts name
+      // their pairs per call, and the fetch fires at the key's own tf.
+      const poolKeys = attachedScripts.flatMap((s) => scriptPoolKeys(s.source));
       refreshSecurityCandles(
-        attachedScripts.map((s) => scriptSecSymbol(s.source)),
+        attachedScripts
+          .map((s) => scriptSecSymbol(s.source))
+          .concat(poolKeys),
         el("timeframe").value,
         candles.length
       );
@@ -2404,6 +2455,19 @@ function createChartPane(root, hooks = {}) {
             candles
           );
           if (aligned) spec.security = aligned;
+        }
+        // Phase 11: every named pair, aligned onto this chart's bars. A key
+        // whose fetch has not landed yet is simply absent -- the engine's
+        // read reports the missing key, and the cache's listener rebuilds
+        // the scene when the data arrives.
+        const keys = scriptPoolKeys(s.source);
+        if (keys.length) {
+          const pool = {};
+          for (const key of keys) {
+            const aligned = alignedPoolSeries(key, candles);
+            if (aligned) pool[key] = aligned;
+          }
+          if (Object.keys(pool).length) spec.series_pool = pool;
         }
         return spec;
       });
