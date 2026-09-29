@@ -155,11 +155,73 @@ pub struct Output {
     pub hlines: Vec<HLine>,
     /// Point markers.
     pub shapes: Vec<Shape>,
+    /// Drawing objects from `line.new` / `label.new` / `box.new`
+    /// (docs/23 Phase 13): anchored to bar-index + price coordinates the
+    /// script chose, in creation order. Capped like the array heap: past
+    /// the cap the draw calls become no-ops and `objects_truncated` reports
+    /// it, the way TradingView stops drawing instead of failing.
+    pub objects: Vec<ScriptObject>,
+    /// True when a script tried to draw past [`MAX_OBJECTS`]: the scene
+    /// note says so, and the first 64 objects still render.
+    pub objects_truncated: bool,
     /// Strategy intents, in bar order.
     pub intents: Vec<(usize, Intent)>,
     /// Strategy state reads the script made, for the report.
     pub strategy_used: bool,
 }
+
+/// One drawing object. Bar coordinates are INDexes into the run window
+/// (negative counts back from the last bar, Pine's convention for
+/// `bar_index - n`); the engine maps them to time/canvas, never the script.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScriptObject {
+    /// `line.new(bar1, price1, bar2, price2, ...)`.
+    Line {
+        /// First anchor's bar index.
+        bar1: f64,
+        /// First anchor's price.
+        price1: f64,
+        /// Second anchor's bar index.
+        bar2: f64,
+        /// Second anchor's price.
+        price2: f64,
+        /// Packed RGBA.
+        color: u32,
+        /// "solid" | "dashed" | "dotted".
+        style: String,
+        /// Line width.
+        width: f64,
+    },
+    /// `label.new(bar, price, text, ...)`.
+    Label {
+        /// Anchor bar index.
+        bar: f64,
+        /// Anchor price.
+        price: f64,
+        /// The label text.
+        text: String,
+        /// Packed RGBA.
+        color: u32,
+    },
+    /// `box.new(left, top, right, bottom, ...)`.
+    Box {
+        /// Left bar index.
+        left: f64,
+        /// Top price.
+        top: f64,
+        /// Right bar index.
+        right: f64,
+        /// Bottom price.
+        bottom: f64,
+        /// Packed RGBA (fill).
+        color: u32,
+    },
+}
+
+/// The drawing-object heap cap, per run (docs/23 Phase 13): the array cap's
+/// sibling. A script that draws on every bar hits it and is refused, not
+/// allowed to leak.
+pub const MAX_OBJECTS: usize = 64;
 
 /// Run a vetted script over a window, producing its output.
 ///
@@ -594,6 +656,57 @@ impl<'a> Vm<'a> {
                 Ok(())
             }
             "strategy.cancel" => Ok(()),
+            // ---- drawing objects (docs/23 Phase 13): statements that push
+            // to the object heap, capped like the array heap. Coordinates are
+            // plain f64 bar indexes/prices; the engine maps them to the
+            // canvas, never the script.
+            "line.new" => {
+                self.tick()?;
+                // The heap cap STOPS drawing rather than killing the run
+                // (TradingView's behavior): a script that conditions fired
+                // 100 times on a long window still renders its first 64
+                // objects, with the truncation reported in the scene note.
+                if self.out.objects.len() < MAX_OBJECTS {
+                    let bar1 = self.arg_f(args, 0)?.unwrap_or(NA);
+                    let price1 = self.arg_f(args, 1)?.unwrap_or(NA);
+                    let bar2 = self.arg_f(args, 2)?.unwrap_or(NA);
+                    let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
+                    let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
+                    let style = self.arg_str(args, "style").unwrap_or_else(|| "solid".into());
+                    let width = self.arg_named_f(args, "width").unwrap_or(1.0);
+                    self.out.objects.push(ScriptObject::Line { bar1, price1, bar2, price2, color, style, width });
+                } else {
+                    self.out.objects_truncated = true;
+                }
+                Ok(())
+            }
+            "label.new" => {
+                self.tick()?;
+                if self.out.objects.len() < MAX_OBJECTS {
+                    let bar = self.arg_f(args, 0)?.unwrap_or(NA);
+                    let price = self.arg_f(args, 1)?.unwrap_or(NA);
+                    let text = self.arg_str(args, "text").or_else(|| self.arg_str_pos(args, 2)).unwrap_or_default();
+                    let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
+                    self.out.objects.push(ScriptObject::Label { bar, price, text, color });
+                } else {
+                    self.out.objects_truncated = true;
+                }
+                Ok(())
+            }
+            "box.new" => {
+                self.tick()?;
+                if self.out.objects.len() < MAX_OBJECTS {
+                    let left = self.arg_f(args, 0)?.unwrap_or(NA);
+                    let top = self.arg_f(args, 1)?.unwrap_or(NA);
+                    let right = self.arg_f(args, 2)?.unwrap_or(NA);
+                    let bottom = self.arg_f(args, 3)?.unwrap_or(NA);
+                    let color = self.arg_color(args).unwrap_or(0x33_94_A3_B8_u32);
+                    self.out.objects.push(ScriptObject::Box { left, top, right, bottom, color });
+                } else {
+                    self.out.objects_truncated = true;
+                }
+                Ok(())
+            }
             // ---- array mutators: statements, because they act on the heap
             // and their value (if any) is rarely used. `array.push` grows
             // with a cap; `array.pop`/`shift` shrink; `array.set` writes.

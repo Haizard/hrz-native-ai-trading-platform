@@ -37,6 +37,61 @@ pub struct ScriptSpec {
     pub series_pool: std::collections::HashMap<String, Vec<analytics_core::types::Candle>>,
 }
 
+/// One positioned drawing object (docs/23 Phase 13): the script chose
+/// bar-index + price coordinates; the engine maps them to the canvas with
+/// the same frame every plot and shape uses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ScriptDraw {
+    /// `line.new` — two anchors, canvas coordinates.
+    Line {
+        /// First anchor.
+        x1: f64,
+        /// First anchor.
+        y1: f64,
+        /// Second anchor.
+        x2: f64,
+        /// Second anchor.
+        y2: f64,
+        /// Packed RGBA.
+        color: u32,
+        /// "solid" | "dashed" | "dotted".
+        style: String,
+        /// Width in CSS pixels.
+        width: f64,
+    },
+    /// `label.new` — anchor + text.
+    Label {
+        /// Anchor.
+        x: f64,
+        /// Anchor.
+        y: f64,
+        /// The text.
+        text: String,
+        /// Packed RGBA.
+        color: u32,
+    },
+    /// `box.new` — rectangle.
+    Box {
+        /// Left.
+        x1: f64,
+        /// Top.
+        y1: f64,
+        /// Right.
+        x2: f64,
+        /// Bottom.
+        y2: f64,
+        /// Packed RGBA (fill).
+        color: u32,
+    },
+}
+
+/// Every drawing object of one overlay script, in creation order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScriptObjects {
+    /// The objects, ordered.
+    pub objects: Vec<ScriptDraw>,
+}
+
 /// One positioned script plot inside a [`SceneScriptPane`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScriptPlot {
@@ -119,6 +174,9 @@ pub struct ScriptOverlay {
     pub plots: Vec<ScriptPlot>,
     /// The point markers (`plotshape`), positioned on the price pane.
     pub shapes: Vec<ScriptShape>,
+    /// The drawing objects (`line.new`/`label.new`/`box.new`), positioned.
+    #[serde(default)]
+    pub objects: Vec<ScriptDraw>,
 }
 
 /// Run one script and lay its pane out.
@@ -307,6 +365,64 @@ pub fn scene_overlay_shapes(
                 glyph: s.glyph.clone(),
                 color: s.color,
                 bar: s.bar,
+            }
+        })
+        .collect()
+}
+
+/// Position an overlay script's drawing objects (docs/23 Phase 13): the
+/// script's bar-index + price coordinates through the SAME frame mapping
+/// plots and shapes use. Negative bar indexes count back from the last bar
+/// (Pine's `bar_index - n` convention); an object whose anchors fall outside
+/// the visible window still maps — the canvas clips it.
+pub fn scene_overlay_objects(
+    output: &Output,
+    slot: f64,
+    frame: &crate::scene::Frame,
+) -> Vec<ScriptDraw> {
+    let (lo, hi) = (frame.price_min, frame.price_max);
+    let last = frame.to / frame.bar_nanos; // bars in the window (approx index space)
+    let bx = |bar: f64| -> f64 {
+        // Negative indexes anchor from the right edge; >= 0 from the left.
+        let idx = if bar < 0.0 { last as f64 + bar } else { bar };
+        frame.plot.x + slot * (idx + 0.5)
+    };
+    let py = |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot) };
+    output
+        .objects
+        .iter()
+        .filter_map(|o| match o {
+            pine_lite::interp::ScriptObject::Line { bar1, price1, bar2, price2, color, style, width } => {
+                if !bar1.is_finite() || !bar2.is_finite() || !price1.is_finite() || !price2.is_finite() {
+                    return None;
+                }
+                Some(ScriptDraw::Line {
+                    x1: bx(*bar1),
+                    y1: py(*price1),
+                    x2: bx(*bar2),
+                    y2: py(*price2),
+                    color: *color,
+                    style: style.clone(),
+                    width: *width,
+                })
+            }
+            pine_lite::interp::ScriptObject::Label { bar, price, text, color } => {
+                if !bar.is_finite() || !price.is_finite() {
+                    return None;
+                }
+                Some(ScriptDraw::Label { x: bx(*bar), y: py(*price), text: text.clone(), color: *color })
+            }
+            pine_lite::interp::ScriptObject::Box { left, top, right, bottom, color } => {
+                if !left.is_finite() || !right.is_finite() || !top.is_finite() || !bottom.is_finite() {
+                    return None;
+                }
+                Some(ScriptDraw::Box {
+                    x1: bx(*left),
+                    y1: py(*top),
+                    x2: bx(*right),
+                    y2: py(*bottom),
+                    color: *color,
+                })
             }
         })
         .collect()
@@ -505,6 +621,51 @@ mod tests {
         // The bar index rides along: the shell pulses only markers on the
         // freshest bars, so "which bar is this marker on" must survive.
         assert_eq!(shapes[20].bar, 20, "marker i sits on bar i");
+    }
+
+    #[test]
+    fn drawing_objects_position_through_the_frame() {
+        // A line from bar 5 to bar 25 at prices 100..110, one label at bar
+        // 15/105, one box 8..18 / 104..102. All must land inside the plot.
+        let frame = crate::scene::Frame {
+            plot: plot_rect(),
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 99.0,
+            price_max: 111.0,
+            bar_nanos: 60_000_000_000,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "if bar_index == 0\n",
+            "    line.new(5, 100.0, 25, 110.0, color=color.blue)\n",
+            "    label.new(15, 105.0, \"mid\", color=color.red)\n",
+            "    box.new(8, 104.0, 18, 102.0, color=color.green)\n",
+            "plot(close)\n",
+        );
+        let (header, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let inputs = Inputs::default();
+        let output = run(&parsed, &candles, &inputs).expect("run");
+        assert_eq!(output.objects.len(), 3);
+        let objects = scene_overlay_objects(&output, 10.0, &frame);
+        assert_eq!(objects.len(), 3, "every finite object maps");
+        match &objects[0] {
+            ScriptDraw::Line { x1, y1, x2, y2, .. } => {
+                let rect = plot_rect();
+                assert!(*x1 > rect.x && *x1 < rect.x + rect.w, "{x1}");
+                assert!(*x2 > rect.x && *x2 < rect.x + rect.w, "{x2}");
+                // price 110 is near the top of 99..111.
+                assert!(*y1 > rect.y && *y1 < rect.y + rect.h, "{y1}");
+                assert!(*y2 < *y1, "higher price maps higher (smaller y)");
+            }
+            other => panic!("expected a line: {other:?}"),
+        }
+        match &objects[1] {
+            ScriptDraw::Label { text, .. } => assert_eq!(text, "mid"),
+            other => panic!("expected a label: {other:?}"),
+        }
+        let _ = header;
     }
 
     #[test]

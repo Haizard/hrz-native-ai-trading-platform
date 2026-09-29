@@ -119,6 +119,17 @@ With `sec=` set, these zero-argument calls give the pair's series, bar-aligned t
 ## Inputs (user-adjustable parameters)
 `len = input.int(defval=14, title="RSI Length")`, `input.float(defval=2.0, title="Mult")`, `input.bool(defval=true, title="Show signals")`. Use them instead of magic numbers.
 
+## Drawing objects (anchored lines, labels, boxes)
+Statements that add to a drawing heap (cap 64 per script):
+
+    if pivot_high
+        line.new(bar_index - w, high[w], bar_index, close, color=color.blue, style="solid", width=1)
+        label.new(bar_index - w, high[w], "pivot", color=color.red)
+    if demand_zone
+        box.new(zone_left, zone_top, zone_right, zone_bottom, color=color.green)
+
+Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~64 bars (a refusal). `style=` is "solid"/"dashed"/"dotted".
+
 ## Pattern detection WITHOUT arrays (there is no `a[i] = v` assignment)
 You cannot build lists or arrays -- not with brackets, not any other way. Track state with `var` scalars that persist across bars and reassign inside `if` blocks. The two idioms you need:
 

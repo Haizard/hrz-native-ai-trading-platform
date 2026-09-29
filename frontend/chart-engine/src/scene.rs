@@ -1600,6 +1600,17 @@ pub fn build(request: &Request) -> Scene {
                 Ok(output) => {
                     let plots = crate::script::scene_overlay_plots(&output, slot, &frame);
                     let shapes = crate::script::scene_overlay_shapes(&output, slot, &frame);
+                    let objects = crate::script::scene_overlay_objects(&output, slot, &frame);
+                    if output.objects_truncated {
+                        add_note(
+                            &mut scene.note,
+                            format!(
+                                "a script drew past the {}-object cap; showing the first {}",
+                                pine_lite::interp::MAX_OBJECTS,
+                                pine_lite::interp::MAX_OBJECTS
+                            ),
+                        );
+                    }
                     scene.script_overlays.push(crate::script::ScriptOverlay {
                         id: format!(
                             "script:{}",
@@ -1608,6 +1619,7 @@ pub fn build(request: &Request) -> Scene {
                         title: header.title.clone().unwrap_or_else(|| "script".into()),
                         plots,
                         shapes,
+                        objects,
                     });
                 }
                 Err(err) => add_note(&mut scene.note, format!("a script could not run: {err}")),

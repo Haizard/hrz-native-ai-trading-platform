@@ -998,6 +998,39 @@ function createChartPane(root, hooks = {}) {
   function drawScriptOverlays(ctx, scene, freshMarkerBars = 0) {
     if (!scene.script_overlays || !scene.script_overlays.length) return;
     for (const overlay of scene.script_overlays) {
+      // Drawing objects (line.new/label.new/box.new): under the user's own
+      // drawings, over the candles -- the same z-order a script plot takes.
+      for (const o of overlay.objects || []) {
+        if (o.Line) {
+          const l = o.Line;
+          ctx.strokeStyle = rgbaFromPacked(l.color, 1.0);
+          ctx.lineWidth = l.width || 1.25;
+          ctx.setLineDash(l.style === "dashed" ? [6, 4] : l.style === "dotted" ? [2, 3] : []);
+          ctx.beginPath();
+          ctx.moveTo(l.x1, l.y1);
+          ctx.lineTo(l.x2, l.y2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        } else if (o.Box) {
+          const b = o.Box;
+          ctx.fillStyle = rgbaFromPacked(b.color, 0.22);
+          ctx.fillRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+          ctx.strokeStyle = rgbaFromPacked(b.color, 0.8);
+          ctx.lineWidth = 1;
+          ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+        } else if (o.Label) {
+          const lb = o.Label;
+          ctx.font = "600 10px ui-sans-serif, system-ui";
+          const w = ctx.measureText(lb.text).width + 10;
+          const h = 16;
+          ctx.fillStyle = rgbaFromPacked(lb.color, 0.9);
+          ctx.beginPath();
+          ctx.roundRect(lb.x - w / 2, lb.y - h - 4, w, h, 3);
+          ctx.fill();
+          ctx.fillStyle = "#0b1120";
+          ctx.fillText(lb.text, lb.x - w / 2 + 5, lb.y - 8);
+        }
+      }
       for (const p of overlay.plots) {
         if (p.points.length < 1) continue;
         ctx.strokeStyle = rgbaFromPacked(p.color, 1.0);
