@@ -191,6 +191,11 @@ pub struct Vm<'a> {
     /// Call frames for user functions (locals shadow nothing; Pine has one
     /// namespace, and the checker refuses reads-before-writes).
     scopes: Vec<std::collections::HashMap<String, f64>>,
+    /// Per-call-frame parameter SERIES bindings: param name -> the caller's
+    /// argument expression, re-evaluated at whichever bar the body reads it.
+    /// This is Pine's series-passing model (`f(close)` passes close, not a
+    /// snapshot) and what lets a function body run `ta.*` over a parameter.
+    series_args: Vec<std::collections::HashMap<String, Expr>>,
     /// Plot statements deferred to after the bar loop: replaying a plot's
     /// expression needs *completed* buffers, and one AST call site is one
     /// plot no matter how many bars its branch fires on.
@@ -292,6 +297,7 @@ impl<'a> Vm<'a> {
             call_depth: 0,
             loop_scopes: Vec::new(),
             scopes: Vec::new(),
+            series_args: Vec::new(),
             deferred: Vec::new(),
             deferred_seen: std::collections::HashSet::new(),
             heap: Vec::new(),
@@ -838,6 +844,16 @@ impl<'a> Vm<'a> {
                 return Ok(*v);
             }
         }
+        // A function PARAMETER bound to a caller series: re-evaluate the
+        // caller's expression AT THIS BAR (Pine's series-passing model).
+        // Checked before the scalar scope frame, which holds the bind-time
+        // snapshot only as a fallback.
+        for frame in self.series_args.iter().rev() {
+            if let Some(expr) = frame.get(name) {
+                let expr = expr.clone();
+                return self.eval_f(&expr);
+            }
+        }
         for scope in self.scopes.iter().rev() {
             if let Some(v) = scope.get(name) {
                 return Ok(*v);
@@ -1352,6 +1368,33 @@ impl<'a> Vm<'a> {
                 if let Some(buf) = self.vars.get(name) {
                     return Ok(buf.clone());
                 }
+                // A function PARAMETER as a series argument (`f(x) =>
+                // ta.sma(x, n)` with `f(close)`): Pine passes the SERIES, so
+                // the parameter's history is the caller expression evaluated
+                // per bar. Replay it across the window (the cache rule below
+                // keeps var-free caller expressions to one pass).
+                for frame in self.series_args.iter().rev() {
+                    if let Some(expr) = frame.get(name) {
+                        let expr = expr.clone();
+                        let key = std::ptr::from_ref(&expr).addr();
+                        if !Self::expr_depends_on_vars(&expr) {
+                            if let Some(cached) = self.series_cache.get(&key) {
+                                return Ok(cached.clone());
+                            }
+                        }
+                        let saved_bar = self.bar;
+                        let mut out = vec![NA; n];
+                        for (bar, slot) in out.iter_mut().enumerate() {
+                            self.bar = bar;
+                            *slot = self.eval_f(&expr)?;
+                        }
+                        self.bar = saved_bar;
+                        if !Self::expr_depends_on_vars(&expr) {
+                            self.series_cache.insert(key, out.clone());
+                        }
+                        return Ok(out);
+                    }
+                }
                 self.builtin_series(name)
             }
             ExprKind::Member { path } => self.builtin_series(path),
@@ -1410,7 +1453,25 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// Substitute parameter names in a caller argument with their bound
+    /// expressions (one level per existing frame, walking outward): this is
+    /// what keeps a recursive or forwarding call's series binding from
+    /// becoming a self-referential frame that reads itself forever.
+    fn resolve_param(&self, expr: &Expr) -> Expr {
+        if let ExprKind::Ident(name) = &expr.kind {
+            for frame in self.series_args.iter().rev() {
+                if let Some(bound) = frame.get(name) {
+                    return bound.clone();
+                }
+            }
+        }
+        expr.clone()
+    }
+
     fn call_user(&mut self, callee: &str, args: &[Arg]) -> Result<f64, crate::ScriptError> {
+        // Depth first: a recursive body must name RECURSION as its refusal
+        // (the fuel message would be true but misleading), and each frame
+        // binds caller expressions, so the cap also bounds that growth.
         if self.call_depth >= MAX_CALL_DEPTH {
             return Err(crate::ScriptError {
                 kind: crate::ErrorKind::Limit,
@@ -1420,6 +1481,7 @@ impl<'a> Vm<'a> {
                 ),
             });
         }
+        self.tick()?;
         let body = *self
             .funcs
             .get(callee)
@@ -1429,10 +1491,17 @@ impl<'a> Vm<'a> {
                 message: format!("`{callee}` is not defined"),
             })?;
         // Bind arguments by the signature's parameter names -- the checker
-        // already guaranteed the arity matches.
+        // already guaranteed the arity matches. PINE SEMANTICS: a parameter
+        // binds the caller's EXPRESSION as a series, not its value snapshot
+        // -- `f(close)` means every read of `x` inside the body sees close
+        // AT THE READING BAR, which is what makes `f(x) => ta.sma(x, n)`
+        // the sma of the caller's series over its real history. Call-site
+        // expressions are kept in `series_args` (keyed by param name); a
+        // read of a param consults that map first, so plain arithmetic
+        // (`f(high - low)`) replays the expression per bar too.
         let mut locals = std::collections::HashMap::new();
+        let mut series_args: std::collections::HashMap<String, Expr> = std::collections::HashMap::new();
         for (i, arg) in args.iter().enumerate() {
-            let v = self.eval_f(&arg.value)?;
             let param = self
                 .script
                 .items
@@ -1444,10 +1513,20 @@ impl<'a> Vm<'a> {
                     _ => None,
                 })
                 .unwrap_or_else(|| format!("arg{i}"));
+            // Transitive substitution: binding `n -> Ident("n")` would make a
+            // parameter read resolve against ITS OWN frame -- an eval loop
+            // the depth cap can never see (no call frame is pushed). Resolve
+            // the argument through existing frames first; a recursion
+            // `f(f(n-1))` therefore binds a real expression, and a bare
+            // self-name binds nothing (the scalar local rules).
+            let resolved = self.resolve_param(&arg.value);
+            series_args.insert(param.clone(), resolved);
+            let v = self.eval_f(&arg.value)?;
             locals.insert(param, v);
         }
         // Named parameters by position: the checker knows the signature; the
         // VM binds positionally (docs/23: positional order matches the table).
+        self.series_args.push(series_args);
         self.scopes.push(locals);
         self.call_depth += 1;
         let mut result = NA;
@@ -1463,6 +1542,7 @@ impl<'a> Vm<'a> {
         }
         self.call_depth -= 1;
         self.scopes.pop();
+        self.series_args.pop();
         Ok(result)
     }
 
