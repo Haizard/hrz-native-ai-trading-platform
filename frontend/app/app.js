@@ -237,6 +237,92 @@ const ENGINE_URL = "/chart_engine.wasm";
 // markup's own five buttons carry the toolbar until then.
 let toolRegistry = null;
 
+// ---- second-instrument support (docs/23 `sec=` / request.*) ----
+//
+// A script that declares `sec="ETHUSDT"` reads the pair's series through
+// request.open/high/low/close/volume. The fetch happens ONCE per symbol and
+// is cached; alignment onto this chart's bars happens per render, walking the
+// primary series so indexes never drift. The cache is best-effort: a failed
+// fetch leaves the cache empty and the script's reads report missing data,
+// which is the truth.
+const securityCache = new Map(); // symbol -> { candles, fetchedAt }
+const SECURITY_TTL_NS = 60_000_000_000; // one minute
+// Diagnostics: the multi-symbol path spans fetch, cache and scene request;
+// a console peek at this map answers "did the pair arrive" in one step.
+window.__securityCache = securityCache;
+// Set by the chart closure once `renderNow` exists there: a fetch that lands
+// after the first render needs the scene rebuilt, but `renderNow` is a
+// closure local -- calling it from here used to throw `ReferenceError`, and
+// the throw landed in this same promise's `.catch`, which then wiped the
+// cache entry it had just filled. Data arrived; the callback murdered it.
+let securityDataListener = null;
+
+/// The `sec="SYMBOL"` header value of a script, uppercased, or null.
+function scriptSecSymbol(source) {
+  const first = String(source || "").split("\n", 1)[0] || "";
+  const m = first.match(/sec\s*=\s*"([A-Za-z0-9_\-:.]+)"/);
+  return m ? m[1].toUpperCase() : null;
+}
+
+/// The second instrument's candles, aligned onto `primary`'s bars: candle i
+/// covers the same window as primary[i]; bars the pair did not trade carry
+/// its last close forward flat. Returns null until a fetch has succeeded.
+function alignedSecurityCandles(sec, primarySymbol, timeframe, primary) {
+  const cached = securityCache.get(sec);
+  if (!cached || !cached.candles.length) return null;
+  const out = [];
+  let cursor = 0;
+  const first = cached.candles[0];
+  for (const bar of primary) {
+    while (cursor + 1 < cached.candles.length && cached.candles[cursor + 1].open_time <= bar.open_time) cursor += 1;
+    const c = cached.candles[cursor];
+    // The whole cached candle, with only the timestamp re-stamped to the
+    // primary bar's window: the engine deserializes these as full `Candle`
+    // records (symbol, timeframe, volumes included) exactly like the chart's
+    // own candles -- a reduced object used to fail deserialization, which
+    // left the script's `request.*` reads with an empty series.
+    if (c.open_time <= bar.open_time) {
+      out.push({ ...c, open_time: bar.open_time });
+    } else {
+      out.push({ ...first, open_time: bar.open_time, open: first.close, high: first.close, low: first.close, close: first.close, volume: 0, buy_volume: 0, sell_volume: 0 });
+    }
+  }
+  return out;
+}
+
+/// Refresh the security cache for `symbols` (fire and forget): one /candles
+/// call per symbol not cached within the TTL.
+function refreshSecurityCandles(symbols, timeframe, barCount) {
+  for (const sec of symbols) {
+    if (!sec) continue;
+    const cached = securityCache.get(sec);
+    const now = Date.now();
+    // fetchedAt=0 marks a failed attempt: retry right away instead of the
+    // TTL silence a poisoned entry used to buy (60s of guaranteed-empty).
+    if (cached && (cached.pending || (cached.fetchedAt && now - cached.fetchedAt < SECURITY_TTL_NS))) continue;
+    const entry = cached || { candles: [], fetchedAt: 0, pending: false };
+    entry.pending = true;
+    entry.fetchedAt = 0;
+    securityCache.set(sec, entry);
+    api(`/candles?symbol=${encodeURIComponent(sec)}&timeframe=${encodeURIComponent(timeframe)}&limit=${Math.min(barCount, 1500)}`)
+      .then((resp) => {
+        const list = resp && Array.isArray(resp.candles) ? resp.candles : [];
+        if (!list.length) throw new Error(`empty candle list for ${sec}`);
+        securityCache.set(sec, { candles: list, fetchedAt: Date.now(), pending: false });
+        // The scene must rebuild with the data now that it exists. The
+        // listener is the chart closure's `renderNow`, registered below;
+        // before the chart exists there is nothing to rebuild.
+        if (securityDataListener) securityDataListener();
+      })
+      .catch((err) => {
+        // A failure leaves the slot EMPTY but unpoisoned: fetchedAt stays 0
+        // so the next render retries, and the reason is on the console.
+        securityCache.set(sec, { candles: [], fetchedAt: 0, pending: false });
+        console.warn(`security fetch failed for ${sec}:`, err && err.message);
+      });
+  }
+}
+
 async function loadEngine() {
   const response = await fetch(ENGINE_URL);
   if (!response.ok) {
@@ -809,6 +895,25 @@ function createChartPane(root, hooks = {}) {
         ctx.fillStyle = rgbaFromPacked(p.color, 1.0);
         ctx.font = "600 9px ui-sans-serif, system-ui";
         ctx.fillText(p.title, lastPt.x + 5, lastPt.y + 3);
+      }
+      // plotshape() markers: a small triangle, pointing down when the shape
+      // name says down ("triangledown"/"arrowdown") and up otherwise -- the
+      // glyph table the pane path is still waiting for, in its simplest form.
+      for (const shape of overlay.shapes || []) {
+        ctx.fillStyle = rgbaFromPacked(shape.color, 1.0);
+        const down = /down/i.test(shape.glyph || "");
+        ctx.beginPath();
+        if (down) {
+          ctx.moveTo(shape.x, shape.y + 4);
+          ctx.lineTo(shape.x - 3.5, shape.y - 2);
+          ctx.lineTo(shape.x + 3.5, shape.y - 2);
+        } else {
+          ctx.moveTo(shape.x, shape.y - 4);
+          ctx.lineTo(shape.x - 3.5, shape.y + 2);
+          ctx.lineTo(shape.x + 3.5, shape.y + 2);
+        }
+        ctx.closePath();
+        ctx.fill();
       }
     }
   }
@@ -2214,13 +2319,38 @@ function createChartPane(root, hooks = {}) {
     }
 
     // Pine-lite scripts (docs/23): sent as source + inputs, run by the engine
-    // over the visible candles every frame. An empty list keeps the field out
-    // of the JSON -- an older engine ignores it either way.
+    // over the visible candles every frame. A script whose header declares a
+    // second instrument (`sec="...") also carries that pair's candles,
+    // time-aligned onto this chart's own bars from the cached fetch -- the
+    // alignment walks the primary series so indexes never drift. An empty
+    // list keeps the field out of the JSON -- an older engine ignores it.
     if (attachedScripts.length) {
-      request.scripts = attachedScripts.map((s) => ({
-        source: s.source,
-        inputs: s.inputs || {},
-      }));
+      // Kick the cache for every declared second instrument, then read it --
+      // the first render after a fresh attach draws without the pair and the
+      // cache's own renderNow() rebuilds the scene once the data lands.
+      // `el("symbol").value` / `el("timeframe").value`, not bare identifiers:
+      // this function has no locals of those names (the ones in `loadCandles`
+      // are a different function's) -- a bare `timeframe` here was a
+      // `ReferenceError` that killed every render once a script attached.
+      refreshSecurityCandles(
+        attachedScripts.map((s) => scriptSecSymbol(s.source)),
+        el("timeframe").value,
+        candles.length
+      );
+      request.scripts = attachedScripts.map((s) => {
+        const spec = { source: s.source, inputs: s.inputs || {} };
+        const sec = scriptSecSymbol(s.source);
+        if (sec) {
+          const aligned = alignedSecurityCandles(
+            sec,
+            el("symbol").value,
+            el("timeframe").value,
+            candles
+          );
+          if (aligned) spec.security = aligned;
+        }
+        return spec;
+      });
     }
 
     scene = buildScene(request);
@@ -2657,6 +2787,11 @@ function createChartPane(root, hooks = {}) {
     }
     waitingGesture = null;
     render();
+  }
+  // A second-instrument fetch that lands after this closure exists needs the
+  // scene rebuilt -- see the listener variable up at the security cache.
+  if (typeof securityDataListener !== "undefined") {
+    securityDataListener = renderNow;
   }
 
   /// Throw the window away, so the next frame fits everything again.
@@ -8762,9 +8897,11 @@ function newCodeFile() {
   el("wsCodeSource").focus();
 }
 
-/// Save the editor's contents as a NEW revision: validated server-side by the
-/// same create_revision gate the chat path uses, then restored as active so
-/// the chart picks it up.
+/// Save the editor's contents as pine-lite: the same vet gate the generator's
+/// output passes, the same revision store, and -- on success -- the script
+/// attaches to the chart immediately. A failed vet lists EVERY issue with its
+/// line and column, TradingView-editor style: fix, resubmit, no model in the
+/// loop.
 async function saveCodeAsRevision() {
   if (!wsCodeFile) { alert("Nothing to save."); return; }
   const source = el("wsCodeSource").value;
@@ -8772,24 +8909,40 @@ async function saveCodeAsRevision() {
   const msg = el("wsCodeMsg");
   if (msg) msg.textContent = "Validating…";
   try {
-    const resp = await api(`/indicator-workspaces/${wsCodeFile.wsId}/revisions`, {
+    const resp = await api(`/indicator-workspaces/${wsCodeFile.wsId}/scripts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         source,
-        summary: wsCodeFile.fresh ? "New file from the code panel" : `Edited ${wsCodeFile.name}`,
-        change_summary: "Saved from the code panel",
-        // A non-empty revision_id is the preview validator's one hard ask;
-        // the code panel has no replay of its own to name.
-        preview: { revision_id: "code-panel", evidence: [], zones: [], markers: [], links: [], trendlines: [] },
+        origin: wsCodeFile.fresh ? "Pasted script" : `Edited ${wsCodeFile.name}`,
       }),
     });
-    if (msg) msg.textContent = `Saved as rev #${resp.revision_number}.`;
-    wsCodeFile = { wsId: wsCodeFile.wsId, revisionId: resp.id, name: resp.summary, source, fresh: false };
+    const stats = resp.preview_stats;
+    const statNote = stats ? ` — ${stats.bars} bars replayed, ${stats.plots} plot(s), ${stats.shapes} marker(s)` : "";
+    if (msg) msg.textContent = `Saved as rev #${resp.revision_number}${statNote}.`;
+    wsCodeFile = { wsId: wsCodeFile.wsId, revisionId: resp.revision_id, name: resp.title, source, fresh: false };
     await loadRevisions(wsCodeFile.wsId);
+    // Attach straight to the chart: save and run are one gesture, the way
+    // the Pine editor does it.
+    if (activePane) {
+      activePane.clearIndicator();
+      activePane.clearScripts();
+      activePane.attachScript({ source, inputs: {}, name: resp.title || "script" });
+      syncIndicatorChip();
+      pageToast(`Attached "${resp.title || "script"}" to ${activePane.symbol()} ${activePane.timeframe()} — it re-runs on every candle`);
+    }
     if (wsActiveId) await selectWorkspace(wsActiveId);
   } catch (e) {
-    if (msg) msg.textContent = `Save failed: ${e.message}`;
+    // The 422's details carry every vet issue as {path, message} pairs;
+    // render them as an error list, not a wall of JSON.
+    if (msg) {
+      const issues = e.details && e.details.issues;
+      if (Array.isArray(issues) && issues.length) {
+        msg.innerHTML = `<ul class="ws-vet-errors">${issues.map(i => `<li>${escapeHtml(String(i.message))}</li>`).join("")}</ul>`;
+      } else {
+        msg.textContent = `Save failed: ${e.message}`;
+      }
+    }
   }
 }
 

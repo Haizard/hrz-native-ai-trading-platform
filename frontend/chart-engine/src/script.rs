@@ -22,6 +22,12 @@ pub struct ScriptSpec {
     /// host does not supply runs on its declared default.
     #[serde(default)]
     pub inputs: std::collections::HashMap<String, f64>,
+    /// The second instrument (`sec=` in the header), time-aligned onto the
+    /// chart's own bars: candle i covers the same window as candle i. The
+    /// shell fills it by fetching the pair's klines; empty when absent, and
+    /// then `request.*` reads are the VM's data-missing error.
+    #[serde(default)]
+    pub security: Vec<analytics_core::types::Candle>,
 }
 
 /// One positioned script plot inside a [`SceneScriptPane`].
@@ -88,8 +94,8 @@ pub struct SceneScriptPane {
     pub value_max: f64,
 }
 
-/// An overlay script's plots, mapped through the price pane's scale. No
-/// levels or shapes: `hline()` in an overlay script means a *price* level,
+/// An overlay script's plots and markers, mapped through the price pane's
+/// scale. No levels: `hline()` in an overlay script means a *price* level,
 /// and those ride the same [`ScriptLevel`] mapping only a pane can give.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScriptOverlay {
@@ -99,6 +105,8 @@ pub struct ScriptOverlay {
     pub title: String,
     /// The line plots, positioned on the price pane.
     pub plots: Vec<ScriptPlot>,
+    /// The point markers (`plotshape`), positioned on the price pane.
+    pub shapes: Vec<ScriptShape>,
 }
 
 /// Run one script and lay its pane out.
@@ -115,6 +123,7 @@ pub fn script_pane(
         pine_lite::vet(&spec.source).map_err(|errs| format_script_errors(&errs))?;
     let inputs = Inputs {
         numbers: spec.inputs.clone(),
+        security: spec.security.clone(),
         ..Inputs::default()
     };
     let output: Output = run(&parsed, candles, &inputs).map_err(|err| err.to_string())?;
@@ -200,10 +209,12 @@ pub fn pane_from_output(
     let shapes = output
         .shapes
         .iter()
-        .filter(|s| s.value.is_finite())
         .map(|s| ScriptShape {
             x: plot.x + slot * (s.bar as f64 + 0.5),
-            y: y_at(s.value),
+            // A shape without `location_value=` has no absolute value: anchor
+            // it just above the pane's bottom edge -- the pane-adapted form of
+            // Pine's below-bar markers, so plotshape() always renders.
+            y: if s.value.is_finite() { y_at(s.value) } else { plot.y + plot.h - 6.0 },
             glyph: s.glyph.clone(),
             color: s.color,
         })
@@ -258,6 +269,34 @@ pub fn scene_overlay_plots(
         .collect()
 }
 
+/// Position an overlay script's `plotshape` markers on the price pane.
+///
+/// A shape carries the price it marks (`location_value=`) or nothing at all --
+/// and nothing at all still needs a place to sit, so it anchors a few percent
+/// above the bottom of the price range, which reads as Pine's below-bar
+/// marker without pretending the script told us the bar's low.
+#[allow(private_interfaces)] // `Frame` is crate-private by design
+pub fn scene_overlay_shapes(
+    output: &Output,
+    slot: f64,
+    frame: &crate::scene::Frame,
+) -> Vec<ScriptShape> {
+    let (lo, hi) = (frame.price_min, frame.price_max);
+    output
+        .shapes
+        .iter()
+        .map(|s| {
+            let value = if s.value.is_finite() { s.value } else { lo + (hi - lo) * 0.04 };
+            ScriptShape {
+                x: frame.plot.x + slot * (s.bar as f64 + 0.5),
+                y: crate::scene::price_to_y(value, lo, hi, &frame.plot),
+                glyph: s.glyph.clone(),
+                color: s.color,
+            }
+        })
+        .collect()
+}
+
 /// Human-readable multi-error rendering, for the scene note.
 fn format_script_errors(errs: &[pine_lite::ScriptError]) -> String {
     errs.iter()
@@ -300,7 +339,7 @@ mod tests {
     fn an_rsi_script_yields_a_positioned_pane() {
         let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0 + ((i % 7) as f64))).collect();
         let pane = script_pane(
-            &ScriptSpec { source: RSI_SCRIPT.into(), inputs: Default::default() },
+            &ScriptSpec { source: RSI_SCRIPT.into(), inputs: Default::default(), security: Vec::new() },
             &candles,
             10.0,
             &plot_rect(),
@@ -330,6 +369,7 @@ mod tests {
             &ScriptSpec {
                 source: "//@pine_lite version=1\nx = zzz\n".into(),
                 inputs: Default::default(),
+                security: Vec::new(),
             },
             &candles,
             10.0,
@@ -349,6 +389,7 @@ mod tests {
             &ScriptSpec {
                 source: "//@pine_lite version=1\nm = ta.sma(close, 30)\nplot(m)\n".into(),
                 inputs: Default::default(),
+                security: Vec::new(),
             },
             &candles,
             10.0,
@@ -378,5 +419,50 @@ mod tests {
         let mid = plot_rect().y + plot_rect().h / 2.0;
         assert!((plots[0].points[20].y - mid).abs() < 1.0, "{}", plots[0].points[20].y);
         let _ = header;
+    }
+
+    #[test]
+    fn overlay_shapes_land_on_the_price_scale() {
+        // An overlay script that marks every 10th bar: markers must position
+        // through the price scale, not vanish (the pane path used to drop
+        // shapes without a value; an overlay dropped them all).
+        let frame = crate::scene::Frame {
+            plot: plot_rect(),
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 99.0,
+            price_max: 101.0,
+            bar_nanos: 60_000_000_000,
+        };
+        let src = "//@pine_lite version=1 overlay=true\nplot(close)\nmark = close == close\nplotshape(mark, color=color.green, location_value=high)\n";
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        let shapes = scene_overlay_shapes(&output, 10.0, &frame);
+        assert_eq!(shapes.len(), 40, "one marker per bar");
+        // high=101 is the top of the 99..101 frame, so it maps to the plot's
+        // own top edge.
+        assert!((shapes[20].y - plot_rect().y).abs() < 1.0, "high=101 is the top: {}", shapes[20].y);
+    }
+
+    #[test]
+    fn overlay_shapes_without_a_value_still_get_a_place() {
+        let frame = crate::scene::Frame {
+            plot: plot_rect(),
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 99.0,
+            price_max: 101.0,
+            bar_nanos: 60_000_000_000,
+        };
+        let src = "//@pine_lite version=1 overlay=true\nplot(close)\nmark = close == close\nplotshape(mark, color=color.green)\n";
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        let shapes = scene_overlay_shapes(&output, 10.0, &frame);
+        assert_eq!(shapes.len(), 40);
+        // Anchored near the bottom of the price range, inside the plot.
+        assert!(shapes[0].y > plot_rect().y + plot_rect().h * 0.85, "{}", shapes[0].y);
+        assert!(shapes[0].y <= plot_rect().y + plot_rect().h, "{}", shapes[0].y);
     }
 }

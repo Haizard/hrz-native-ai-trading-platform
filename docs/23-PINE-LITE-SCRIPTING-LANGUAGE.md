@@ -113,26 +113,64 @@ primary      = number | string | bool | "na" | color | IDENT | "(" expr ")"
 A script **must** begin with the version annotation:
 
 ```
-//@pine_lite version=1 overlay=true title="My RSI" max_bars_back=300
+//@pine_lite version=1 overlay=true title="My RSI" max_bars_back=300 sec="ETHUSDT"
 ```
 
 Unknown annotations are a validation error (the AI must not be able to invent
 host knobs). `overlay=true` sends plots to the price pane; `overlay=false`
-(the default) gives the script its own sub-pane.
+(the default) gives the script its own sub-pane. `sec="SYMBOL"` (optional)
+declares a second instrument for cross-market math — see *Cross-market reads*
+below.
 
 ### Operators, precedence, history
 
-Standard arithmetic, comparison, boolean short-circuit, `?:`. History indexing
-`expr[n]` is allowed on any series expression and on builtin-call results
-(`ta.rsi(close, 14)[1]`). The maximum history depth is `max_bars_back`,
-default 300, hard cap 5000. Requesting deeper history is a **compile error**,
-not a runtime `na`.
+Standard arithmetic, comparison, boolean short-circuit, `?:`, and the logic
+words `and` / `or` / `not`. History indexing `name[n]` is allowed on a
+variable or a builtin series (`close[1]`, `ma[3]`) — **not** on a call
+result: `ta.rsi(close, 14)[1]` is refused at vet time, so assign first
+(`r = ta.rsi(close, 14)` then `r[1]`). The maximum history depth is
+`max_bars_back`, default 300, hard cap 5000. Requesting deeper history is a
+**compile error**, not a runtime `na`.
+
+Multi-value calls are taken apart on the assignment line, one name per
+output: `macd_line, signal_line, hist = ta.macd(close, 12, 26, 9)`,
+`basis, upper, lower = ta.bb(close, 20, 2)`, `k, d = ta.stoch(close, 14)`.
+A multi-output call read as a single value is a compile error naming the
+fix; `ta.stoch` alone still reads as its %K.
+
+### Cross-market reads (`sec=` / `request.*`)
+
+A script can see one instrument besides its chart. The pair is declared once
+in the header — `sec="ETHUSDT"` — and read through **zero-argument** calls:
+`request.symbol()`, `request.open()`, `request.high()`, `request.low()`,
+`request.close()`, `request.volume()`. There is no per-call
+`request.security(...)`; TradingView's per-call form is deliberately not
+implemented.
+
+- `request.*` values are **bar-aligned to the chart's own bars** by the host
+  (`indicator_preview::align_security`): the secondary bar whose window covers
+  the chart bar is used, and where the pair printed no bar its last OHLC
+  carries forward flat — indexes never drift, which is what spread and SMT
+  math needs. The host fetches the pair's candles (store first, venue
+  backfill when thin); the script never does I/O.
+- Every `request.*` call is vet-refused when the header has no `sec=`
+  (`typecheck::check_with_header`), and the runtime refuses again with the fix
+  in the message when the host supplies no series — the same honesty as the
+  rest of the vetting.
+- `request.*` calls are plain series expressions: history applies after
+  assignment (`rc = request.close()` then `rc[1]`), and they compose with all
+  ta functions — spreads (`close - request.close()`), ratios, and SMT
+  divergence (our new swing high while the pair makes a lower high) are
+  ordinary arithmetic over them.
+- Scope note: `request.*` gives the pair **on the chart's own timeframe**
+  only; there is no per-call timeframe. Multi-timeframe reads are a future
+  extension, not a current capability.
 
 ## Builtin namespaces
 
 | Namespace | Contents (v1) |
 | --- | --- |
-| `ta.` | sma, ema, rma (Wilder), wma, rsi, macd, stoch, atr, tr, bb, crossover/crossunder/cross, change, mom, roc, highest, lowest, vwap, sar |
+| `ta.` | sma, ema, rma (Wilder), wma, rsi, atr, tr, change, mom, roc, highest, lowest, vwap, crossover/crossunder/cross; multi-value: macd → (line, signal, hist), bb → (basis, upper, lower), stoch → (k, d) |
 | `math.` | abs, min, max, floor, ceil, round, pow, sqrt, log, exp, sign, avg, sum |
 | `input.` | int, float, bool, string, color — with `defval`, `minval`, `maxval`, `title`; values are host-supplied per chart |
 | `strategy.` | entry, exit, close, close_all, cancel — see Phase 7 |

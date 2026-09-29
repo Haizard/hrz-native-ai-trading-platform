@@ -96,9 +96,11 @@ pub async fn vet(ApiJson(request): ApiJson<VetRequest>) -> Result<Json<VetRespon
 pub fn vet_response(source: &str) -> VetResponse {
     match pine_lite::vet(source) {
         Ok((header, script)) => {
-            // The checker's errors were already empty (vet would have
-            // returned Err otherwise); this pass is for nothing but shape.
-            let type_errors = pine_lite::typecheck::check(&script);
+            // The header-aware check, with the script's OWN header: `request.*`
+            // legality depends on `sec=` in the header, so rechecking against
+            // the default header would refuse every honest multi-symbol
+            // script (the `sec` knob is known only to the header).
+            let type_errors = pine_lite::typecheck::check_with_header(&script, &header);
             VetResponse {
                 valid: type_errors.is_empty(),
                 issues: type_errors
@@ -212,5 +214,19 @@ mod tests {
         let response = vet_response("plot(close)\n");
         assert!(!response.valid);
         assert!(response.issues.iter().any(|i| i.message.contains("@pine_lite")));
+    }
+
+    #[test]
+    fn a_sec_header_script_vets_clean() {
+        // A multi-symbol script vets with its OWN header: the stale default-
+        // header recheck used to refuse every honest `request.*` script here.
+        let src = concat!(
+            "//@pine_lite version=1 overlay=false title=\"SMT\" sec=\"ETHUSDT\"\n",
+            "rc = request.close()\n",
+            "spread = close - rc\n",
+            "plot(spread)\n",
+        );
+        let response = vet_response(src);
+        assert!(response.valid, "{:?}", response.issues);
     }
 }

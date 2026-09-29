@@ -26,6 +26,13 @@ pub struct Inputs {
     pub bools: std::collections::HashMap<String, bool>,
     /// String inputs (`title`s live in the script; these are values).
     pub strings: std::collections::HashMap<String, String>,
+    /// The second instrument (`sec="..."` in the header), already fetched
+    /// and time-aligned by the host: candle i covers the SAME bar window as
+    /// the script's own candle i. When the second market did not trade a
+    /// bar the host still supplies a slot (carry-forward close, flat OHLC),
+    /// so indexes never drift -- cross-market math stays bar-aligned.
+    /// Empty when the header declares no `sec`.
+    pub security: Vec<Candle>,
 }
 
 /// One collected plot series.
@@ -187,10 +194,22 @@ pub struct Vm<'a> {
     /// (`ta.sma(close, 9)`): computed once, keyed by the argument expression's
     /// address. Var-dependent series recompute -- their buffers change.
     series_cache: std::collections::HashMap<usize, Series>,
+    /// The array heap. A variable holds a *handle* (the heap index, as a
+    /// plain f64 in its ring buffer), so `var a = array.new()` allocates once
+    /// at bar 0 and every later bar reads the same object -- Pine's model,
+    /// with `array.push`/`array.get` instead of indexed assignment. Capped:
+    /// a script that allocates a fresh array every bar is refused, not
+    /// allowed to leak.
+    heap: Vec<Vec<f64>>,
     /// The variable name an `input.*` call is binding, set by the assignment
     /// evaluator just before the call runs -- Pine's `x = input.int(...)`
     /// names the input by its target.
     current_input_name: String,
+    /// The header's `sec=` symbol, when the script declared one. `request.*`
+    /// reads are real only when this is Some -- an empty `security` vec on a
+    /// sec-declaring script means the HOST failed to fetch, which must read
+    /// as data, not as a missing-feature error.
+    security_ticker: Option<String>,
     out: Output,
     bar: usize,
     steps: u64,
@@ -205,6 +224,15 @@ pub const FUEL_PER_1000_BARS: u64 = 200_000;
 /// bound, and the stack depth is the one thing the fuel counter cannot
 /// meter before it blows.
 pub const MAX_CALL_DEPTH: usize = 16;
+
+/// The array heap's cap, per run. A script may keep a working set of pivots,
+/// zones and session levels comfortably under this; a script that allocates
+/// fresh arrays every bar hits the cap and is killed, not leaked.
+pub const MAX_ARRAYS: usize = 64;
+
+/// The cap on one array's length. Enough for a full session's FVGs or a
+/// chart's worth of pivots at any sane lookback.
+pub const MAX_ARRAY_LEN: usize = 4096;
 
 impl<'a> Vm<'a> {
     fn new(script: &'a Script, candles: &'a [Candle], inputs: &'a Inputs) -> Self {
@@ -221,9 +249,11 @@ impl<'a> Vm<'a> {
             scopes: Vec::new(),
             deferred: Vec::new(),
             deferred_seen: std::collections::HashSet::new(),
+            heap: Vec::new(),
             collecting: false,
             series_cache: std::collections::HashMap::new(),
             current_input_name: String::new(),
+            security_ticker: script.header.sec.clone(),
             out: Output::default(),
             bar: 0,
             steps: 0,
@@ -304,6 +334,30 @@ impl<'a> Vm<'a> {
                     .or_insert_with(|| vec![NA; self.candles.len()]);
                 buf[self.bar] = value;
                 self.var_modes.insert(name.clone(), *mode);
+            }
+            Item::Destructure { names, call, .. } => {
+                // One call, several outputs: `basis, upper, lower = ta.bb(...)`.
+                // The callee's outputs are whole-window series; each target
+                // takes this bar's slot, so the names carry real history.
+                let ExprKind::Call { callee, args } = &call.kind else {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: "a multi-value assignment needs a function call".into(),
+                    });
+                };
+                let outputs = self.call_multi(callee, args)?;
+                for (index, name) in names.iter().enumerate() {
+                    let value = outputs.get(index).map_or(NA, |series| {
+                        series.get(self.bar).copied().unwrap_or(NA)
+                    });
+                    let buf = self
+                        .vars
+                        .entry(name.clone())
+                        .or_insert_with(|| vec![NA; self.candles.len()]);
+                    buf[self.bar] = value;
+                    self.var_modes.insert(name.clone(), VarMode::Auto);
+                }
             }
             Item::Expr { expr, .. } => {
                 self.eval_stmt(expr)?;
@@ -464,6 +518,66 @@ impl<'a> Vm<'a> {
                 Ok(())
             }
             "strategy.cancel" => Ok(()),
+            // ---- array mutators: statements, because they act on the heap
+            // and their value (if any) is rarely used. `array.push` grows
+            // with a cap; `array.pop`/`shift` shrink; `array.set` writes.
+            "array.push" => {
+                self.tick()?;
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                let value = self.arg_f(args, 1)?.unwrap_or(NA);
+                let list = self.array_ref(handle)?;
+                if list.len() >= MAX_ARRAY_LEN {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Limit,
+                        span: crate::Span::new(1, 1),
+                        message: format!("an array grew past {MAX_ARRAY_LEN} entries; trim it with array.pop/shift or bound the loop"),
+                    });
+                }
+                list.push(value);
+                Ok(())
+            }
+            "array.pop" => {
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                if let Some(v) = self.array_ref(handle)?.pop() {
+                    let _ = v;
+                }
+                Ok(())
+            }
+            "array.shift" => {
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                if !self.array_ref(handle)?.is_empty() {
+                    self.array_ref(handle)?.remove(0);
+                }
+                Ok(())
+            }
+            "array.clear" => {
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                self.array_ref(handle)?.clear();
+                Ok(())
+            }
+            "array.set" => {
+                self.tick()?;
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                let index = self.arg_f(args, 1)?.unwrap_or(NA);
+                let value = self.arg_f(args, 2)?.unwrap_or(NA);
+                let i = if index.is_finite() && index >= 0.0 { index as usize } else {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: "array.set index must be a whole number >= 0".into(),
+                    });
+                };
+                let list = self.array_ref(handle)?;
+                if i >= list.len() {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!("array.set index {i} is past the array's length {}", list.len()),
+                    });
+                }
+                list[i] = value;
+                Ok(())
+            }
             _ => {
                 // User function called as a statement: run for side effects.
                 if self.funcs.contains_key(callee) {
@@ -570,6 +684,7 @@ impl<'a> Vm<'a> {
             ExprKind::Bool(b) => f64::from(*b),
             ExprKind::Color(_) | ExprKind::Str(_) => NA, // colors/strings cannot be numeric
             ExprKind::Na => NA,
+            ExprKind::NaChecked { value } => f64::from(!self.eval_f(value)?.is_finite()),
             ExprKind::Ident(name) => self.read_name(name)?,
             ExprKind::Member { path } => self.read_member(path)?,
             ExprKind::History { base, offset } => {
@@ -661,13 +776,19 @@ impl<'a> Vm<'a> {
         if let Some(buf) = self.vars.get(name) {
             // Pine carry-forward: a variable read before its (re)assignment
             // this bar has the value it ended the previous bar with -- this
-            // is what makes `var count := count + 1` a counter.
+            // is what makes `var count := count + 1` a counter. `var`
+            // declarations write their slot only once (bar 0), so the carry
+            // walks back to the LAST written slot, not just one bar: reading
+            // a `var a = array.new()` handle at bar 5 must still find bar 0's
+            // allocation.
             let current = buf[self.bar];
             if current.is_finite() {
                 return Ok(current);
             }
-            if self.bar > 0 {
-                return Ok(buf[self.bar - 1]);
+            for slot in (0..self.bar).rev() {
+                if buf[slot].is_finite() {
+                    return Ok(buf[slot]);
+                }
             }
             return Ok(current);
         }
@@ -687,6 +808,23 @@ impl<'a> Vm<'a> {
             "hlc3" => (c.high + c.low + c.close) / 3.0,
             "ohlc4" => (c.open + c.high + c.low + c.close) / 4.0,
             "bar_index" => self.bar as f64,
+            // ---- time-of-day words: UTC hours/minutes of the current bar's
+            // open, so session filters (`hour >= 7 and hour < 16`) are plain
+            // comparisons. `dayofweek` is Pine's 1=Sunday..7=Saturday.
+            "hour" => {
+                let t = self.candles.get(self.bar).map_or(0, |c| c.open_time);
+                (t / 3_600_000_000_000).rem_euclid(24) as f64
+            }
+            "minute" => {
+                let t = self.candles.get(self.bar).map_or(0, |c| c.open_time);
+                (t / 60_000_000_000).rem_euclid(60) as f64
+            }
+            "dayofweek" => {
+                let t = self.candles.get(self.bar).map_or(0, |c| c.open_time);
+                let days = t.div_euclid(86_400_000_000_000);
+                // 1970-01-01 was a Thursday (4).
+                (days + 4).rem_euclid(7) as f64 + 1.0
+            }
             "last_bar_index" => (self.candles.len().saturating_sub(1)) as f64,
             "time" => c.open_time as f64,
             "time_close" => (c.open_time + c.timeframe.nanos()) as f64,
@@ -757,6 +895,91 @@ impl<'a> Vm<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
+/// Borrow a heap array by handle. The handle rides a variable's ring
+    /// buffer as a plain float; anything else (na, negative, out of range) is
+    /// an error naming the real cause.
+    fn array_ref(&mut self, handle: f64) -> Result<&mut Vec<f64>, crate::ScriptError> {
+        if std::env::var("PINE_ARRAY_DEBUG").is_ok() {
+            eprintln!("array_ref handle={handle} heap_len={} bar={}", self.heap.len(), self.bar);
+        }
+        if !handle.is_finite() || handle < 0.0 || handle >= self.heap.len() as f64 {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "that variable does not hold an array; create one with `var a = array.new()`".into(),
+            });
+        }
+        Ok(&mut self.heap[handle as usize])
+    }
+
+    /// `array.get(a, i)`, bounds-checked.
+    fn array_read(&mut self, handle: f64, index: f64) -> Result<f64, crate::ScriptError> {
+        let list = self.array_ref(handle)?;
+        let i = if index.is_finite() && index >= 0.0 { index as usize } else {
+            return Ok(NA);
+        };
+        Ok(list.get(i).copied().unwrap_or(NA))
+    }
+
+    /// A multi-output builtin's whole-window series, in output order.
+    ///
+    /// Reachable only from `Item::Destructure`; the scalar path refuses these
+    /// callees (a MACD line read as one number is always a mistake).
+    fn call_multi(
+        &mut self,
+        callee: &str,
+        args: &[Arg],
+    ) -> Result<Vec<Series>, crate::ScriptError> {
+        self.tick()?;
+        macro_rules! a {
+            ($i:expr, $default:expr) => {
+                match args.get($i) {
+                    Some(arg) => {
+                        let v = self.eval_f(&arg.value)?;
+                        if v.is_finite() { v } else { $default }
+                    }
+                    None => $default,
+                }
+            };
+        }
+        let out = match callee {
+            "ta.macd" => {
+                let src = self.series_arg(args, 0)?;
+                let (macd, signal, hist) = ta::ta_macd(
+                    &src,
+                    a!(1, 12.0),
+                    a!(2, 26.0),
+                    a!(3, 9.0),
+                );
+                vec![macd, signal, hist]
+            }
+            "ta.bb" => {
+                let src = self.series_arg(args, 0)?;
+                let (basis, upper, lower) = ta::ta_bb(&src, a!(1, 20.0), a!(2, 2.0));
+                vec![basis, upper, lower]
+            }
+            "ta.stoch" => {
+                let src = self.series_arg(args, 0)?;
+                let k = ta::ta_stoch(
+                    &src,
+                    &self.builtin_series("high")?,
+                    &self.builtin_series("low")?,
+                    a!(1, 14.0),
+                );
+                let d = ta::ta_sma(&k, 3.0);
+                vec![k, d]
+            }
+            other => {
+                return Err(crate::ScriptError {
+                    kind: crate::ErrorKind::Type,
+                    span: crate::Span::new(1, 1),
+                    message: format!("`{other}` does not return several values"),
+                })
+            }
+        };
+        Ok(out)
+    }
+
     fn call_f(&mut self, callee: &str, args: &[Arg]) -> Result<f64, crate::ScriptError> {
         self.tick()?;
         // Inputs first: they are host-supplied or defaults, never computed.
@@ -810,10 +1033,24 @@ impl<'a> Vm<'a> {
                 let src = self.series_arg(args, 0)?;
                 Ok(ta::ta_rma(&src, a!(1)?)[self.bar])
             }
+            "ta.wma" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_wma(&src, a!(1)?)[self.bar])
+            }
             "ta.rsi" => {
                 let src = self.series_arg(args, 0)?;
                 Ok(ta::ta_rsi(&src, a!(1)?)[self.bar])
             }
+            // Multi-output builtins: the scalar path refuses them so an
+            // author learns the destructuring form instead of plotting half a
+            // Bollinger band by accident.
+            "ta.macd" | "ta.bb" => Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: format!(
+                    "`{callee}` returns 3 values; write `a, b, c = {callee}(...)`"
+                ),
+            }),
             "ta.atr" => Ok(ta::ta_atr(self.candles, a!(0)?)[self.bar]),
             "ta.tr" => Ok(ta::ta_tr(self.candles)[self.bar]),
             "ta.highest" => {
@@ -841,6 +1078,35 @@ impl<'a> Vm<'a> {
                 Ok(ta::ta_stoch(&src, &self.builtin_series("high")?, &self.builtin_series("low")?, a!(1)?)[self.bar])
             }
             "ta.vwap" => Ok(ta::ta_vwap(self.candles)[self.bar]),
+            // ---- request.*: the second instrument's series, bar-aligned by
+            // the host. A call with no `sec=` in the header is refused here
+            // with the fix named -- the same honesty the vet layer gives.
+            "request.symbol" => Ok(self
+                .security_ticker
+                .clone()
+                .map(|_| 1.0)
+                .unwrap_or(NA)),
+            "request.open" | "request.high" | "request.low" | "request.close"
+            | "request.volume" => {
+                let slot = self
+                    .inputs
+                    .security
+                    .get(self.bar)
+                    .ok_or_else(|| crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!(
+                            "`{callee}` needs a second instrument: add sec=\"SYMBOL\" to the //@pine_lite header"
+                        ),
+                    })?;
+                Ok(match callee {
+                    "request.open" => slot.open,
+                    "request.high" => slot.high,
+                    "request.low" => slot.low,
+                    "request.close" => slot.close,
+                    _ => slot.volume,
+                })
+            }
             "ta.crossover" | "ta.crossunder" | "ta.cross" => {
                 let l = self.series_arg(args, 0)?;
                 let r = self.series_arg(args, 1)?;
@@ -882,6 +1148,72 @@ impl<'a> Vm<'a> {
             "math.sum" => {
                 let src = self.series_arg(args, 0)?;
                 Ok(ta::math_sum(&src, a!(1)?)[self.bar])
+            }
+            // ---- arrays: a variable holds a handle (heap index); the heap
+            // lives on the Vm, so `var a = array.new()` is one object for the
+            // whole run and `array.push(a, v)` mutates it in place.
+            "array.new" => {
+                if self.heap.len() >= MAX_ARRAYS {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Limit,
+                        span: crate::Span::new(1, 1),
+                        message: format!("more than {MAX_ARRAYS} arrays; allocate them once with `var`"),
+                    });
+                }
+                self.heap.push(Vec::new());
+                Ok((self.heap.len() - 1) as f64)
+            }
+            "array.get" => {
+                let handle = a!(0)?;
+                let index = a!(1)?;
+                Ok(self.array_read(handle, index)?)
+            }
+            "array.size" => {
+                let handle = a!(0)?;
+                Ok(self.array_ref(handle)?.len() as f64)
+            }
+            "array.first" => {
+                let handle = a!(0)?;
+                Ok(self.array_ref(handle)?.first().copied().unwrap_or(NA))
+            }
+            "array.last" => {
+                let handle = a!(0)?;
+                Ok(self.array_ref(handle)?.last().copied().unwrap_or(NA))
+            }
+            "array.min" => {
+                let handle = a!(0)?;
+                Ok(self
+                    .array_ref(handle)?
+                    .iter()
+                    .copied()
+                    .filter(|v| v.is_finite())
+                    .fold(f64::INFINITY, f64::min))
+            }
+            "array.max" => {
+                let handle = a!(0)?;
+                Ok(self
+                    .array_ref(handle)?
+                    .iter()
+                    .copied()
+                    .filter(|v| v.is_finite())
+                    .fold(f64::NEG_INFINITY, f64::max))
+            }
+            "array.avg" => {
+                let handle = a!(0)?;
+                let list = self.array_ref(handle)?;
+                let finite: Vec<f64> = list.iter().copied().filter(|v| v.is_finite()).collect();
+                Ok(if finite.is_empty() {
+                    NA
+                } else {
+                    finite.iter().sum::<f64>() / finite.len() as f64
+                })
+            }
+            "array.includes" => {
+                let handle = a!(0)?;
+                let needle = a!(1)?;
+                Ok(f64::from(
+                    self.array_ref(handle)?.iter().any(|v| (*v - needle).abs() < f64::EPSILON),
+                ))
             }
             _ => self.call_user(callee, args),
         }
@@ -944,6 +1276,7 @@ impl<'a> Vm<'a> {
             ) && !name.contains('.'),
             ExprKind::Member { .. } | ExprKind::Num(_) | ExprKind::Bool(_) | ExprKind::Str(_)
             | ExprKind::Color(_) | ExprKind::Na => false,
+            ExprKind::NaChecked { value } => Self::expr_depends_on_vars(value),
             ExprKind::Bin { left, right, .. } => {
                 Self::expr_depends_on_vars(left) || Self::expr_depends_on_vars(right)
             }

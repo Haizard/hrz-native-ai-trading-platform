@@ -246,6 +246,102 @@ fn zone_state(region: &Region) -> chart_engine::ZoneState {
 /// # Errors
 /// A human-readable reason when candles cannot be loaded or the script fails
 /// at run time (a dynamic budget, a read-before-write) -- never a panic.
+/// Fetch a second instrument's candles for the security path: read the
+/// store first, backfill from the venue when thin. Failure is not fatal --
+/// an empty vec means the script's `request.*` reads say the data is missing
+/// (which is the truth), not that the platform broke.
+async fn fetch_security_candles(
+    state: &AppState,
+    database: &db::Database,
+    sec: &str,
+    tf: Timeframe,
+    from_ns: i64,
+    to_ns: i64,
+) -> Vec<types::Candle> {
+    let timeframes = std::collections::BTreeMap::from([("sec".to_string(), tf)]);
+    if let Ok(series) = db::loading::load_timeframe_series(
+        database.pool(),
+        sec,
+        &timeframes,
+        from_ns,
+        to_ns,
+        tf,
+    )
+    .await
+    {
+        let stored = series.get("sec").cloned().unwrap_or_default();
+        let expected = ((to_ns - from_ns).max(1) / tf.nanos().max(1)) as usize;
+        if stored.len() + 8 >= expected {
+            return stored;
+        }
+    }
+    // The store is thin: backfill from the venue, then read again.
+    if let Ok(fresh) = state
+        .backfill
+        .backfill_candles(sec, tf, from_ns, to_ns, market_data::BackfillSource::Klines)
+        .await
+    {
+        if !fresh.is_empty() {
+            if let Err(error) = db::repositories::insert_candles(database.pool(), &fresh).await {
+                tracing::warn!(%error, "could not store security backfill");
+            }
+            return fresh;
+        }
+    }
+    Vec::new()
+}
+
+/// Time-align the second instrument's candles onto the primary series' bars:
+/// candle i of the output covers exactly the primary candle i's window. A
+/// secondary bar is used while its open_time matches; between secondary bars
+/// (the pair traded less often) the last secondary close carries forward with
+/// flat OHLC, and before the pair's first bar everything is flat at that
+/// first close -- indexes never drift, which is what cross-market math needs.
+fn align_security(primary: &[types::Candle], sec: &[types::Candle]) -> Vec<types::Candle> {
+    if sec.is_empty() || primary.is_empty() {
+        return Vec::new();
+    }
+    let first = sec[0].close;
+    let mut out = Vec::with_capacity(primary.len());
+    let mut cursor = 0usize;
+    for bar in primary {
+        while cursor + 1 < sec.len() && sec[cursor + 1].open_time <= bar.open_time {
+            cursor += 1;
+        }
+        let aligned = if sec[cursor].open_time <= bar.open_time {
+            let c = &sec[cursor];
+            types::Candle {
+                symbol: c.symbol.clone(),
+                timeframe: c.timeframe,
+                open_time: bar.open_time,
+                open: c.open,
+                high: c.high,
+                low: c.low,
+                close: c.close,
+                volume: c.volume,
+                buy_volume: c.buy_volume,
+                sell_volume: c.sell_volume,
+            }
+        } else {
+            // Before the pair's first stored bar: flat at its first close.
+            types::Candle {
+                symbol: sec[0].symbol.clone(),
+                timeframe: sec[0].timeframe,
+                open_time: bar.open_time,
+                open: first,
+                high: first,
+                low: first,
+                close: first,
+                volume: 0.0,
+                buy_volume: 0.0,
+                sell_volume: 0.0,
+            }
+        };
+        out.push(aligned);
+    }
+    out
+}
+
 pub async fn replay_script_preview(
     state: &AppState,
     database: &db::Database,
@@ -299,7 +395,23 @@ pub async fn replay_script_preview(
     if candles.is_empty() {
         return Err("no stored candles for this symbol and timeframe yet".to_string());
     }
-    let inputs = pine_lite::interp::Inputs::default();
+    // The header's second instrument (`sec=`): fetch over the SAME window,
+    // then time-align onto the primary series' bars. A bar the second market
+    // did not trade carries its last close forward with flat OHLC, so
+    // cross-market math never drifts by an index.
+    let security = match &header.sec {
+        Some(sec) => {
+            let sec_candles =
+                fetch_security_candles(state, database, sec, tf, from_ns, to_ns).await;
+            if sec_candles.is_empty() {
+                Vec::new()
+            } else {
+                align_security(&candles, &sec_candles)
+            }
+        }
+        None => Vec::new(),
+    };
+    let inputs = pine_lite::interp::Inputs { security, ..pine_lite::interp::Inputs::default() };
     let output = pine_lite::interp::run(&parsed, &candles, &inputs)
         .map_err(|err| format!("the script failed at run time: {err}"))?;
     let stats = crate::indicator_workspace_routes::ScriptPreviewStats {

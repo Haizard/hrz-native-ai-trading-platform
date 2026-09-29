@@ -36,6 +36,16 @@ pub enum Item {
         /// The right-hand side.
         expr: Expr,
     },
+    /// `basis, upper, lower = ta.bb(close, 20, 2)`: one multi-output call,
+    /// several names. The count is checked against the callee at vet time.
+    Destructure {
+        /// Where the statement starts.
+        span: Span,
+        /// Targets, left to right.
+        names: Vec<String>,
+        /// The call whose outputs are taken apart.
+        call: Expr,
+    },
     /// `if` / `for` / `while` with an indented body.
     Block {
         /// Where the statement starts.
@@ -117,6 +127,13 @@ pub enum ExprKind {
     Bool(bool),
     /// `na`.
     Na,
+    /// `na(x)`: the Pine test form. Evaluates to true where the value is
+    /// missing. (The bare keyword stays `Na`.)
+    NaChecked {
+        /// The tested expression.
+        value: Box<Expr>,
+    },
+
     /// An identifier: a variable, a builtin, or a dotted path (`ta.rsi`,
     /// `input.int`, `strategy.entry`, `color.red`, `barstate.isconfirmed`).
     Ident(String),
@@ -160,6 +177,7 @@ pub enum ExprKind {
         /// Arguments, positional or `name=value`.
         args: Vec<Arg>,
     },
+
     /// A member read that is not a call: `strategy.position_size`,
     /// `barstate.isconfirmed`.
     Member {
@@ -359,6 +377,10 @@ impl Parser {
                     Some(Item::Expr { span, expr })
                 }
             }
+            // `a, b = ta.macd(...)`: names, commas, then one multi-output call.
+            TokenKind::Ident(_) if matches!(self.peek_ahead(1).kind, TokenKind::Comma) => {
+                Some(self.destructure(span))
+            }
             TokenKind::Ident(ref name)
                 if matches!(self.peek_ahead(1).kind, TokenKind::Assign(_)) =>
             {
@@ -381,6 +403,36 @@ impl Parser {
                 Some(Item::Expr { span, expr })
             }
         }
+    }
+
+    /// `a, b, c = f(...)` -- the multi-value form. Called with the first name
+    /// still at the cursor.
+    fn destructure(&mut self, span: Span) -> Item {
+        let mut names = Vec::new();
+        loop {
+            match self.bump().kind {
+                TokenKind::Ident(n) => names.push(n),
+                other => {
+                    self.err(span, format!("a multi-value assignment needs names, found `{other:?}`"));
+                    break;
+                }
+            }
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        match self.bump().kind {
+            TokenKind::Assign(op) if op == "=" => {}
+            other => self.err(
+                span,
+                format!("a multi-value assignment needs `=`, found `{other:?}`"),
+            ),
+        }
+        let call = self.expr().unwrap_or(Expr { span, kind: ExprKind::Na });
+        self.end_of_line();
+        Item::Destructure { span, names, call }
     }
 
     /// `var`/`varip` declarations: `var name = expr`. The caller has already
@@ -770,7 +822,21 @@ impl Parser {
             TokenKind::Color(c) => Some(Expr { span, kind: ExprKind::Color(c) }),
             TokenKind::Keyword(k) if k == "true" => Some(Expr { span, kind: ExprKind::Bool(true) }),
             TokenKind::Keyword(k) if k == "false" => Some(Expr { span, kind: ExprKind::Bool(false) }),
-            TokenKind::Keyword(k) if k == "na" => Some(Expr { span, kind: ExprKind::Na }),
+            TokenKind::Keyword(k) if k == "na" => {
+                // `na` is both the literal and Pine's test function: allow the
+                // call form `na(x)` alongside the bare literal.
+                if matches!(self.peek().kind, TokenKind::LParen) {
+                    self.bump(); // (
+                    let inner = self.expr()?;
+                    match self.bump().kind {
+                        TokenKind::RParen => {}
+                        other => self.err(self.peek().span, format!("closing `)` for `na(...)`, found `{other:?}`")),
+                    }
+                    Some(Expr { span, kind: ExprKind::NaChecked { value: Box::new(inner) } })
+                } else {
+                    Some(Expr { span, kind: ExprKind::Na })
+                }
+            }
             TokenKind::Keyword(k) if k == "var" || k == "varip" => {
                 // A declaration mid-expression position is a statement; treat
                 // it as one by handing back to the statement parser via a

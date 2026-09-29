@@ -319,6 +319,10 @@ pub fn router(state: AppState) -> Router {
                 .post(indicator_workspace_routes::create_revision),
         )
         .route(
+            "/indicator-workspaces/{id}/scripts",
+            post(indicator_workspace_routes::submit_script),
+        )
+        .route(
             "/indicator-workspaces/{id}/revisions/{revision_id}",
             get(indicator_workspace_routes::get_revision),
         )

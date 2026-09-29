@@ -53,6 +53,33 @@ pub fn ta_ema(source: &[f64], length: f64) -> Series {
         .collect()
 }
 
+/// `ta.wma(source, length)` -- linearly weighted: the newest bar carries the
+/// greatest weight, `length` down to 1. Pine's definition, and the reason a
+/// WMA turns before an SMA of the same length.
+#[must_use]
+pub fn ta_wma(source: &[f64], length: f64) -> Series {
+    let period = length.max(1.0) as usize;
+    let denom = (period * (period + 1)) as f64 / 2.0;
+    let mut out = vec![NA; source.len()];
+    if period == 0 || source.len() < period {
+        return out;
+    }
+    for i in (period - 1)..source.len() {
+        let window = &source[i + 1 - period..=i];
+        // Any na in the window poisons the average, exactly as Pine's does.
+        if window.iter().any(|v| !v.is_finite()) {
+            continue;
+        }
+        let sum: f64 = window
+            .iter()
+            .enumerate()
+            .map(|(k, v)| v * (k + 1) as f64)
+            .sum();
+        out[i] = sum / denom;
+    }
+    out
+}
+
 /// `ta.rma(source, length)` -- Wilder's smoothing, seeded with the SMA of the
 /// first `length` values (Pine's convention, and `analytics-core::atr`'s).
 ///

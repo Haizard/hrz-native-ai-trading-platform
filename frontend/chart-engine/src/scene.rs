@@ -1592,11 +1592,13 @@ pub fn build(request: &Request) -> Scene {
                 visible_real,
                 &pine_lite::Inputs {
                     numbers: spec.inputs.clone(),
+                    security: spec.security.clone(),
                     ..pine_lite::Inputs::default()
                 },
             ) {
                 Ok(output) => {
                     let plots = crate::script::scene_overlay_plots(&output, slot, &frame);
+                    let shapes = crate::script::scene_overlay_shapes(&output, slot, &frame);
                     scene.script_overlays.push(crate::script::ScriptOverlay {
                         id: format!(
                             "script:{}",
@@ -1604,6 +1606,7 @@ pub fn build(request: &Request) -> Scene {
                         ),
                         title: header.title.clone().unwrap_or_else(|| "script".into()),
                         plots,
+                        shapes,
                     });
                 }
                 Err(err) => add_note(&mut scene.note, format!("a script could not run: {err}")),

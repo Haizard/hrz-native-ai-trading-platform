@@ -53,7 +53,15 @@ pub struct InputDecl {
 /// platform does not know is a typo the author (human or model) wants told
 /// about, and refusing here is what keeps the interpreter's job simple.
 pub fn check(script: &Script) -> Vec<ScriptError> {
-    let mut cx = Cx { errors: Vec::new(), out: Checked::default(), depth: 0 };
+    check_with_header(script, &crate::Header::default())
+}
+
+/// The vet-time check, with the LEXED header so the `request.*` rules can
+/// see whether the script actually declared its second instrument. A
+/// `request.close()` with no `sec=` in the header is refused HERE, with the
+/// fix in the message, rather than at run time.
+pub fn check_with_header(script: &Script, header: &crate::Header) -> Vec<ScriptError> {
+    let mut cx = Cx { errors: Vec::new(), out: Checked::default(), depth: 0, sec: header.sec.clone() };
     cx.items(&script.items);
     cx.errors
 }
@@ -62,6 +70,8 @@ struct Cx {
     errors: Vec<ScriptError>,
     out: Checked,
     depth: usize,
+    /// The header's `sec=` symbol, when declared.
+    sec: Option<String>,
 }
 
 impl Cx {
@@ -81,6 +91,66 @@ impl Cx {
 
     fn item(&mut self, item: &Item) {
         match item {
+            Item::Destructure { span, names, call } => {
+                // The callee decides the count; the names decide how many the
+                // author wanted. Anything else (a single-output call, an
+                // unknown name) is an error with the fix in the text.
+                match &call.kind {
+                    ExprKind::Call { callee, args } => {
+                        for a in args {
+                            self.expr(&a.value);
+                        }
+                        match builtin_arity(callee) {
+                            Some((min, max)) => {
+                                let total = args.len();
+                                let positional =
+                                    args.iter().filter(|a| a.name.is_none()).count();
+                                if total > max || positional > max {
+                                    self.err(
+                                        *span,
+                                        format!("`{callee}` takes at most {max} argument(s)"),
+                                    );
+                                }
+                                if total < min {
+                                    self.err(
+                                        *span,
+                                        format!("`{callee}` needs at least {min} argument(s)"),
+                                    );
+                                }
+                            }
+                            None => {
+                                if !self.out.functions.contains_key(callee) {
+                                    self.unknown(*span, callee);
+                                }
+                            }
+                        }
+                        match multi_output_count(callee) {
+                            Some(n) if n == names.len() => {}
+                            Some(n) => self.err(
+                                *span,
+                                format!(
+                                    "`{callee}` returns {n} value(s), but {} name(s) are given",
+                                    names.len()
+                                ),
+                            ),
+                            None => self.err(
+                                *span,
+                                format!(
+                                    "`{callee}` returns one value; declare it with `name = {callee}(...)`, or use ta.macd, ta.bb or ta.stoch here"
+                                ),
+                            ),
+                        }
+                    }
+                    _ => self.err(
+                        *span,
+                        "a multi-value assignment needs a function call on the right-hand side",
+                    ),
+                }
+                for name in names {
+                    self.out.var_types.insert(name.clone(), Ty::Float);
+                    self.out.variables.insert(name.clone(), VarMode::Auto);
+                }
+            }
             Item::Assign { span, name, mode, expr, .. } => {
                 // `input.*` declarations are recorded for the UI and typed by
                 // their call.
@@ -185,10 +255,24 @@ impl Cx {
             ExprKind::Str(_) => Ty::String,
             ExprKind::Color(_) => Ty::Color,
             ExprKind::Na => Ty::Na,
+            ExprKind::NaChecked { value } => {
+                self.expr(value);
+                Ty::Bool
+            }
             ExprKind::Ident(name) => self.ident(expr.span, name),
             ExprKind::Member { path } => self.member(expr.span, path),
             ExprKind::Call { callee, args } => self.call(expr.span, callee, args),
             ExprKind::History { base, offset } => {
+                // The interpreter only indexes a variable or a builtin series
+                // (`interp.rs`'s history rule); anything else -- a call, a
+                // parenthesized expression -- parses but dies at run time,
+                // where the repair loop can never see it. Name the rule here.
+                if !matches!(base.kind, ExprKind::Ident(_) | ExprKind::Member { .. }) {
+                    self.err(
+                        base.span,
+                        "history indexing needs a variable or a builtin series; assign the expression to a variable first",
+                    );
+                }
                 let inner = self.expr(base);
                 self.expr(offset);
                 match inner {
@@ -306,7 +390,8 @@ impl Cx {
         }
         match path {
             "bar_index" | "last_bar_index" | "time" | "time_close" | "open" | "high" | "low"
-            | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" => Ty::Float,
+            | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "hour" | "minute"
+            | "dayofweek" => Ty::Float,
             "barstate.isconfirmed" => Ty::Bool,
             "syminfo.ticker" => Ty::String,
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
@@ -316,37 +401,49 @@ impl Cx {
     }
 
     fn call(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
+        // The second instrument's reads are header-gated: a `request.*` call
+        // in a script that never declared `sec=` is a vet error naming the
+        // fix, not a runtime surprise.
+        if callee.starts_with("request.") && self.sec.is_none() {
+            self.err(
+                span,
+                format!(
+                    "`{callee}` needs a second instrument; add sec=\"SYMBOL\" to the //@pine_lite header"
+                ),
+            );
+            for a in args {
+                self.expr(&a.value);
+            }
+            return Ty::Float;
+        }
+        // A multi-output builtin read as a single value: almost always a
+        // missing `a, b, c =` -- name the fix rather than type a hole.
+        if let Some(n) = multi_only_count(callee) {
+            self.err(
+                span,
+                format!(
+                    "`{callee}` returns {n} values; write them as `a, b, c = {callee}(...)`"
+                ),
+            );
+            for a in args {
+                self.expr(&a.value);
+            }
+            return Ty::Float;
+        }
         // Arity, by builtin. Named args are allowed everywhere; positional
-        // order matches the table in docs/23.
-        let (min, max): (usize, usize) = match callee {
-            "na" | "nz" => (1, 2),
-            "fixnan" => (1, 1),
-            "ta.sma" | "ta.ema" | "ta.rma" | "ta.wma" | "ta.rsi" | "ta.atr" | "ta.tr"
-            | "ta.highest" | "ta.lowest" | "ta.change" | "ta.mom" | "ta.roc" => (2, 2),
-            "ta.macd" => (3, 5),
-            "ta.stoch" => (3, 3),
-            "ta.bb" => (3, 3),
-            "ta.crossover" | "ta.crossunder" | "ta.cross" => (2, 2),
-            "ta.vwap" => (0, 0),
-            "math.abs" | "math.floor" | "math.ceil" | "math.round" | "math.sqrt" | "math.log"
-            | "math.exp" | "math.sign" => (1, 1),
-            "math.min" | "math.max" | "math.avg" | "math.sum" => (1, 8),
-            "math.pow" => (2, 2),
-            "plot" | "plotshape" | "plotchar" | "plotarrow" => (1, 8),
-            "hline" => (1, 4),
-            "fill" => (2, 6),
-            "bgcolor" | "barcolor" => (1, 4),
-            "input.int" | "input.float" | "input.bool" | "input.string" | "input.color" => (0, 6),
-            "strategy.entry" | "strategy.exit" | "strategy.close" | "strategy.close_all"
-            | "strategy.cancel" => (1, 6),
-            c if self.out.functions.contains_key(c) => {
-                let sig = self.out.functions.get(c).expect("checked above").clone();
+        // order matches the dispatchers in `interp.rs` (`call_f`/`call_stmt`),
+        // which are the only real implementations -- this table must never
+        // teach a function or a shape the interpreter would refuse.
+        let (min, max): (usize, usize) = match builtin_arity(callee) {
+            Some(arity) => arity,
+            None if self.out.functions.contains_key(callee) => {
+                let sig = self.out.functions.get(callee).expect("checked above").clone();
                 let positional = args.iter().filter(|a| a.name.is_none()).count();
                 if positional != sig.params.len() {
                     self.err(
                         span,
                         format!(
-                            "`{c}` takes {} argument(s), got {positional}",
+                            "`{callee}` takes {} argument(s), got {positional}",
                             sig.params.len()
                         ),
                     );
@@ -356,7 +453,7 @@ impl Cx {
                 }
                 return Ty::Float;
             }
-            _ => {
+            None => {
                 self.unknown(span, callee);
                 for a in args {
                     self.expr(&a.value);
@@ -395,7 +492,7 @@ impl Cx {
         matches!(
             name,
             "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "bar_index"
-                | "last_bar_index" | "time" | "time_close"
+                | "last_bar_index" | "time" | "time_close" | "hour" | "minute" | "dayofweek"
         )
     }
 
@@ -411,6 +508,71 @@ impl Cx {
 }
 
 /// Namespaced constants and reads the checker can type statically.
+/// Positional-argument bounds per builtin. The single source of truth for
+/// what an author may write: `interp.rs` dispatches exactly these shapes, so
+/// a call that passes here runs.
+fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
+    Some(match callee {
+        "na" | "nz" => (1, 2),
+        "fixnan" => (1, 1),
+        "ta.sma" | "ta.ema" | "ta.rma" | "ta.wma" | "ta.rsi" | "ta.highest" | "ta.lowest"
+        | "ta.mom" | "ta.roc" => (2, 2),
+        "ta.atr" | "ta.change" => (1, 1),
+        "ta.tr" | "ta.vwap" => (0, 0),
+        "ta.stoch" => (2, 2),
+        "ta.macd" => (3, 4),
+        "ta.bb" => (2, 3),
+        "ta.crossover" | "ta.crossunder" | "ta.cross" => (2, 2),
+        "math.abs" | "math.floor" | "math.ceil" | "math.round" | "math.sqrt" | "math.log"
+        | "math.exp" | "math.sign" => (1, 1),
+        "math.min" | "math.max" | "math.avg" => (1, 8),
+        "math.sum" => (2, 2),
+        "math.pow" => (2, 2),
+        // Arrays: a variable holds a handle from `array.new()`; readers are
+        // functions, mutators are statements.
+        "array.new" => (0, 0),
+        "array.get" => (2, 2),
+        "array.size" | "array.first" | "array.last" | "array.min" | "array.max"
+        | "array.avg" => (1, 1),
+        "array.includes" => (2, 2),
+        "array.push" => (2, 2),
+        "array.pop" | "array.shift" | "array.clear" => (1, 1),
+        "array.set" => (3, 3),
+        // The second instrument (`sec=` in the header): the host fetches and
+        // aligns its candles; the script reads them through these.
+        "request.symbol" | "request.open" | "request.high" | "request.low"
+        | "request.close" | "request.volume" => (0, 0),
+        "plot" | "plotshape" | "plotchar" | "plotarrow" => (1, 8),
+        "hline" => (1, 4),
+        "fill" => (2, 6),
+        "bgcolor" | "barcolor" => (1, 4),
+        "input.int" | "input.float" | "input.bool" | "input.string" | "input.color" => (0, 6),
+        "strategy.entry" | "strategy.exit" | "strategy.close" | "strategy.close_all"
+        | "strategy.cancel" => (1, 6),
+        _ => return None,
+    })
+}
+
+/// How many values a multi-output builtin hands back. Only these may appear on
+/// the right of `a, b, c = ...`.
+fn multi_output_count(callee: &str) -> Option<usize> {
+    match callee {
+        "ta.macd" | "ta.bb" => Some(3),
+        // `ta.stoch` reads as its %K alone, and destructures to %K and %D.
+        "ta.stoch" => Some(2),
+        _ => None,
+    }
+}
+
+/// Multi-output builtins with NO single-value reading: using one as a scalar
+/// is always a mistake worth naming.
+fn multi_only_count(callee: &str) -> Option<usize> {
+    match callee {
+        "ta.macd" | "ta.bb" => Some(3),
+        _ => None,
+    }
+}
+
 fn namespace_const(name: &str) -> Option<Ty> {
     if name.starts_with("color.") {
         return Some(Ty::Color);

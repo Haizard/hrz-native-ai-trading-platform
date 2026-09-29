@@ -127,20 +127,40 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
         }
         let key: String = chars[start..i].iter().collect();
         let mut value = String::new();
-        if i < chars.len() && chars[i] == '=' {
+        // `sec = "ETHUSDT"` (spaces around `=`) is as common from a model as
+        // the tight form: skip whitespace on BOTH sides of the `=` and require
+        // it. A key with no `=` is one malformed knob, named as such -- not a
+        // phantom key plus a stray value (the old split, which reported
+        // "sec needs a symbol" for what was really a syntax slip).
+        let mut j = i;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j >= chars.len() || chars[j] != '=' {
+            errors.push(err(
+                line,
+                1,
+                &format!(
+                    "annotation knobs are `key=value` pairs, e.g. sec=\"ETHUSDT\"; `{key}` has no `=`"
+                ),
+            ));
+            break;
+        }
+        i = j + 1;
+        while i < chars.len() && chars[i].is_whitespace() {
             i += 1;
-            if i < chars.len() && chars[i] == '"' {
+        }
+        if i < chars.len() && chars[i] == '"' {
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                value.push(chars[i]);
                 i += 1;
-                while i < chars.len() && chars[i] != '"' {
-                    value.push(chars[i]);
-                    i += 1;
-                }
-                i += 1; // closing quote
-            } else {
-                while i < chars.len() && !chars[i].is_whitespace() && chars[i] != ',' {
-                    value.push(chars[i]);
-                    i += 1;
-                }
+            }
+            i += 1; // closing quote
+        } else {
+            while i < chars.len() && !chars[i].is_whitespace() && chars[i] != ',' {
+                value.push(chars[i]);
+                i += 1;
             }
         }
         parts.push((key, value));
@@ -165,6 +185,18 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
                 )),
             },
             "title" => header.title = Some(value.clone()),
+            // `request.security`-style second instrument: the host reads this
+            // knob, fetches that symbol over the SAME window and timeframe,
+            // and hands the aligned candles to the VM. The header (not a
+            // call argument) is the declaration because the fetch is a host
+            // decision -- the script can only read what arrived.
+            "sec" => {
+                if value.trim().is_empty() {
+                    errors.push(err(line, 1, "sec needs a symbol, e.g. sec=\"ETHUSDT\""));
+                } else {
+                    header.sec = Some(value.trim().to_uppercase());
+                }
+            }
             "max_bars_back" => match value.parse::<usize>() {
                 // The hard cap lives here rather than in the analyser: a
                 // header asking for more is refused before anything parses.
@@ -179,7 +211,7 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
                 line,
                 1,
                 &format!(
-                    "unknown annotation knob `{other}`; known: version, overlay, title, max_bars_back"
+                    "unknown annotation knob `{other}`; known knobs: version, overlay, title, max_bars_back, sec"
                 ),
             )),
         }
@@ -198,6 +230,10 @@ fn is_keyword(word: &str) -> bool {
     matches!(
         word,
         "var" | "varip" | "if" | "else" | "for" | "to" | "by" | "while" | "true" | "false" | "na"
+        // The logic connectives are reserved words: the parser's `and`/`or`
+        // precedence levels match on `Keyword`, so lexing them as identifiers
+        // silently terminated every compound condition at the first `and`.
+        | "and" | "or" | "not"
     )
 }
 

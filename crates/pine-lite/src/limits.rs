@@ -53,6 +53,7 @@ impl Limiter {
                     self.expr(expr);
                     let _ = span;
                 }
+                Item::Destructure { call, .. } => self.expr(call),
                 Item::Expr { span, expr } => {
                     if let ExprKind::Call { callee, .. } = &expr.kind {
                         if callee == "fill" {
@@ -107,6 +108,7 @@ impl Limiter {
                 self.expr(right);
             }
             ExprKind::Un { expr, .. } => self.expr(expr),
+            ExprKind::NaChecked { value } => self.expr(value),
             ExprKind::Ternary { cond, then, els } => {
                 self.expr(cond);
                 self.expr(then);
@@ -131,6 +133,7 @@ fn span_of(item: &Item) -> crate::Span {
         Item::Assign { span, .. }
         | Item::Block { span, .. }
         | Item::FuncDef { span, .. }
+        | Item::Destructure { span, .. }
         | Item::Expr { span, .. } => *span,
     }
 }

@@ -478,7 +478,9 @@ pub async fn create_message(
         body.content.trim(),
         // Iterative editing: a workspace with an active revision revises THAT
         // script instead of starting over -- "make the bands tighter" tightens
-        // the bands and does not lose the user's other plots.
+        // the bands and does not lose the user's other plots. Only pine-lite
+        // sources qualify: legacy YAML concept documents must not ride along
+        // as "the current script" -- the model would mimic their shape.
         match workspace.active_revision_id {
             Some(active_id) => db::get_indicator_revision(
                 database.pool(),
@@ -487,7 +489,8 @@ pub async fn create_message(
                 active_id,
             )
             .await?
-            .map(|active| active.source),
+            .map(|active| active.source)
+            .filter(|source| source.trim_start().starts_with("//@pine_lite")),
             None => None,
         }
         .as_deref(),
@@ -1093,5 +1096,126 @@ pub async fn approve_bot_draft(
                 .map(BotDraftResponse::from)
                 .unwrap_or(draft.into()),
         ),
+    ))
+}
+
+/// Body of `POST /indicator-workspaces/{id}/scripts` -- the hand-written
+/// path: the author (or their outside AI) pastes pine-lite source; the
+/// platform vets it exactly as it vets the generator's output. No model in
+/// the loop.
+#[derive(Debug, Deserialize)]
+pub struct SubmitScriptBody {
+    /// The full source, `//@pine_lite` header included.
+    pub source: String,
+    /// Where it came from, for the revision history ("pasted", "edited", ...).
+    #[serde(default)]
+    pub origin: Option<String>,
+}
+
+/// `POST /indicator-workspaces/{id}/scripts`.
+///
+/// The Pine-editor flow: paste code, get the same line/col refusals the
+/// generator's repair loop sees, and -- when it vets -- a revision stored as
+/// code, previewed over the workspace's own candles, and attached. A failing
+/// script is a 422 with the full issue list, so an editor can show every
+/// error at once and the author can fix and resubmit.
+pub async fn submit_script(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path(id): Path<Uuid>,
+    ApiJson(body): ApiJson<SubmitScriptBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let database = database(&state)?;
+    let workspace = db::get_indicator_workspace(database.pool(), user.user_id, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    // Vet first: identical treatment to the generator's output, which is the
+    // point -- the platform does not care who wrote the code. The 422's
+    // issues array carries every refusal with line and column, so an editor
+    // can show them all at once.
+    let (header, _parsed) = pine_lite::vet(&body.source).map_err(|errs| {
+        ApiError::from(strategy_dsl::DslError::Validation {
+            issues: errs
+                .iter()
+                .map(|e| {
+                    strategy_dsl::ValidationIssue::new(
+                        "script",
+                        format!("line {} col {} [{}]: {}", e.span.line, e.span.col, pine_lite::kind_name(e.kind), e.message),
+                    )
+                })
+                .collect(),
+        })
+    })?;
+    let title = header.title.clone().unwrap_or_else(|| "script".to_string());
+    let revision_tag = format!("script:{title}");
+    let (preview, preview_stats, preview_note) =
+        match crate::indicator_preview::replay_script_preview(
+            &state,
+            database,
+            &workspace.symbol,
+            &workspace.timeframe,
+            &body.source,
+        )
+        .await
+        {
+            Ok((output, stats)) => (output, Some(stats), serde_json::Value::Null),
+            Err(reason) => (
+                chart_engine::IndicatorOutput {
+                    revision_id: revision_tag.clone(),
+                    name: Some(title.clone()),
+                    concepts: Vec::new(),
+                    evidence: Vec::new(),
+                    zones: Vec::new(),
+                    markers: Vec::new(),
+                    links: Vec::new(),
+                    trendlines: Vec::new(),
+                },
+                None,
+                serde_json::Value::String(reason),
+            ),
+        };
+    let preview_json = serde_json::to_value(&preview)
+        .map_err(|err| ApiError::internal(format!("could not store indicator preview: {err}")))?;
+    let validation = serde_json::json!({
+        "valid": true,
+        "engine": "pine-lite-v1",
+        "representation": "code",
+        "attempts": 1,
+        "repaired_errors": [],
+        "overlay": header.overlay,
+        "origin": body.origin.as_deref().unwrap_or("pasted"),
+        "preview_note": preview_note,
+    });
+    let origin = body.origin.unwrap_or_else(|| "Pasted script".to_string());
+    let revision = db::create_indicator_revision(
+        database.pool(),
+        user.user_id,
+        id,
+        workspace.active_revision_id,
+        &body.source,
+        &format!("{origin}: {title}"),
+        "Submitted by hand through the script editor",
+        &validation,
+        &preview_json,
+        "validated",
+    )
+    .await?
+    .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    let memory = serde_json::json!({"representation": "pine-lite", "revision": revision.revision_number});
+    db::update_indicator_workspace_memory(database.pool(), user.user_id, id, &memory).await?;
+    let plots = preview.zones.len();
+    let markers = preview.markers.len();
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "revision_id": revision.id,
+            "revision_number": revision.revision_number,
+            "source": body.source,
+            "overlay": header.overlay,
+            "title": title,
+            "plots": plots,
+            "markers": markers,
+            "preview_stats": preview_stats,
+        })),
     ))
 }
