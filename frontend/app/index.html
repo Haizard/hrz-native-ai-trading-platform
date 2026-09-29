@@ -646,6 +646,14 @@
     max-height: 240px; font-size: 11px; white-space: pre; user-select: text;
   }
 
+  /* The code panel's vet errors: one red line per refusal, TradingView
+     editor style -- fix, resubmit, no model needed. */
+  ul.ws-vet-errors {
+    margin: 4px 0 0; padding-left: 18px; color: var(--danger, #f87171);
+    font-size: 11px; line-height: 1.5; text-align: left;
+    font-family: ui-monospace, monospace;
+  }
+
   /* The composer: one growing input with the send button inside its frame,
      pinned under the stream so the conversation never pushes it off screen.
      The model chip sits inside the frame as the quiet first element -- what

@@ -608,6 +608,10 @@ function createChartPane(root, hooks = {}) {
   let staticSceneId = 0; // Bumped whenever `scene` is replaced.
 
   function draw() {
+    // The freshest N bars whose script markers count as "just happened" and
+    // so get the pulsing halo. 3 bars on any timeframe: a 1m signal pulses for
+    // 3 minutes, a 1h one for 3 hours -- the event's own clock, not the UI's.
+    const freshMarkerBars = 3;
     const canvas = el("chart");
     const wrap = canvas.parentElement;
     const ratio = window.devicePixelRatio || 1;
@@ -699,7 +703,7 @@ function createChartPane(root, hooks = {}) {
     // pane, under the user's drawings and over the engine's levels -- the same
     // z-order an answer's overlays take, because a script plot is also an
     // opinion about a price the candles own.
-    drawScriptOverlays(ctx, scene);
+    drawScriptOverlays(ctx, scene, freshMarkerBars);
     drawIndicatorEvidence(ctx, scene);
     // The user's own marks, above everything: a drawing that could cover the
     // answer's levels, or the price labels, would be an annotation they cannot
@@ -843,13 +847,10 @@ function createChartPane(root, hooks = {}) {
         ctx.stroke();
       }
 
-      // Shapes: a small circle per marker -- the glyph table comes later.
-      for (const shape of pane.shapes) {
-        ctx.fillStyle = rgbaFromPacked(shape.color, 1.0);
-        ctx.beginPath();
-        ctx.arc(shape.x, shape.y, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
+      // Shapes: the shared marker painter -- glow + glyph, so a pane signal
+      // reads like its overlay sibling (no pulse in panes: a sub-pane signal
+      // is a measurement, not a price-pane event).
+      drawScriptMarkers(ctx, pane.shapes, 0);
 
       // Pane label, top-left, exactly like the built-in panes.
       ctx.fillStyle = "rgba(226, 232, 240, 0.85)";
@@ -876,9 +877,79 @@ function createChartPane(root, hooks = {}) {
     return `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
   }
 
+  // Animation clock for fresh script markers (see `drawScriptMarkers`).
+  let markerPulseTimer = 0;
+
+  /// One script marker: a soft radial glow under a clean glyph, so a signal
+  /// reads at a glance against candles instead of getting lost among them.
+  /// A marker on one of the freshest bars also PULSES -- an expanding fading
+  /// halo -- because "this just fired" is part of what the marker means. The
+  /// pulse animates via `markerPulseTimer`; everything else is static.
+  function drawScriptMarkers(ctx, shapes, pulseWindow = 0) {
+    const now = performance.now();
+    let pulsing = false;
+    for (const shape of shapes) {
+      const down = /down/i.test(shape.glyph || "");
+      const cx = shape.x;
+      const cy = shape.y;
+      // The glow: one radial gradient per marker, alpha from the marker's
+      // own colour so a red signal glows red. Cheap enough per frame.
+      const glowR = 11;
+      const grad = ctx.createRadialGradient(cx, cy, 1.5, cx, cy, glowR);
+      grad.addColorStop(0, rgbaFromPacked(shape.color, 0.5));
+      grad.addColorStop(1, rgbaFromPacked(shape.color, 0.0));
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
+      ctx.fill();
+      // Fresh marker: the expanding halo. bar is the visible-slice index the
+      // engine now reports; markers with no bar (older engines) never pulse.
+      if (pulseWindow > 0 && typeof shape.bar === "number" && shape.bar >= 0) {
+        const fresh = shape.bar >= pulseWindow;
+        if (fresh) {
+          const phase = ((now / 900) + shape.bar * 0.35) % 1;
+          const haloR = 6 + phase * 14;
+          ctx.strokeStyle = rgbaFromPacked(shape.color, 0.75 * (1 - phase));
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(cx, cy, haloR, 0, Math.PI * 2);
+          ctx.stroke();
+          pulsing = true;
+        }
+      }
+      // The glyph itself, larger than the old 7px triangle so the glow has
+      // something to belong to.
+      ctx.fillStyle = rgbaFromPacked(shape.color, 1.0);
+      ctx.beginPath();
+      if (down) {
+        ctx.moveTo(cx, cy + 6);
+        ctx.lineTo(cx - 5.5, cy - 3);
+        ctx.lineTo(cx + 5.5, cy - 3);
+      } else {
+        ctx.moveTo(cx, cy - 6);
+        ctx.lineTo(cx - 5.5, cy + 3);
+        ctx.lineTo(cx + 5.5, cy + 3);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+    // Someone is pulsing: schedule the next frame so the halo breathes even
+    // when the feed is quiet. One timer for the whole chart, self-cancelling
+    // the moment no fresh markers remain.
+    if (pulsing && !markerPulseTimer) {
+      markerPulseTimer = requestAnimationFrame(() => {
+        markerPulseTimer = 0;
+        draw();
+      });
+    } else if (!pulsing && markerPulseTimer) {
+      cancelAnimationFrame(markerPulseTimer);
+      markerPulseTimer = 0;
+    }
+  }
+
   /// Overlay scripts (docs/23): polylines already mapped through the price
   /// pane's scale, painted under the user's drawings. Nothing computed here.
-  function drawScriptOverlays(ctx, scene) {
+  function drawScriptOverlays(ctx, scene, freshMarkerBars = 0) {
     if (!scene.script_overlays || !scene.script_overlays.length) return;
     for (const overlay of scene.script_overlays) {
       for (const p of overlay.plots) {
@@ -896,25 +967,10 @@ function createChartPane(root, hooks = {}) {
         ctx.font = "600 9px ui-sans-serif, system-ui";
         ctx.fillText(p.title, lastPt.x + 5, lastPt.y + 3);
       }
-      // plotshape() markers: a small triangle, pointing down when the shape
-      // name says down ("triangledown"/"arrowdown") and up otherwise -- the
-      // glyph table the pane path is still waiting for, in its simplest form.
-      for (const shape of overlay.shapes || []) {
-        ctx.fillStyle = rgbaFromPacked(shape.color, 1.0);
-        const down = /down/i.test(shape.glyph || "");
-        ctx.beginPath();
-        if (down) {
-          ctx.moveTo(shape.x, shape.y + 4);
-          ctx.lineTo(shape.x - 3.5, shape.y - 2);
-          ctx.lineTo(shape.x + 3.5, shape.y - 2);
-        } else {
-          ctx.moveTo(shape.x, shape.y - 4);
-          ctx.lineTo(shape.x - 3.5, shape.y + 2);
-          ctx.lineTo(shape.x + 3.5, shape.y + 2);
-        }
-        ctx.closePath();
-        ctx.fill();
-      }
+      // plotshape() markers: the shared painter gives every marker a soft
+      // glow and the newest bars' markers a pulsing halo -- a signal is an
+      // event, and an event that just happened should read as one.
+      drawScriptMarkers(ctx, overlay.shapes || []);
     }
   }
 

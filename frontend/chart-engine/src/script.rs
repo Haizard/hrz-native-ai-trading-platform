@@ -68,6 +68,11 @@ pub struct ScriptShape {
     pub glyph: String,
     /// Packed RGBA.
     pub color: u32,
+    /// The bar index the marker sits on, counted over the visible slice the
+    /// engine ran the script on. The shell reads it to single out *fresh*
+    /// markers -- one that landed on the newest bars -- for the pulse; a
+    /// marker's story ("this just happened") is part of its meaning.
+    pub bar: usize,
 }
 
 /// One script's pane: the plots, levels and shapes it asked for, in its own
@@ -217,6 +222,7 @@ pub fn pane_from_output(
             y: if s.value.is_finite() { y_at(s.value) } else { plot.y + plot.h - 6.0 },
             glyph: s.glyph.clone(),
             color: s.color,
+            bar: s.bar,
         })
         .collect();
 
@@ -292,6 +298,7 @@ pub fn scene_overlay_shapes(
                 y: crate::scene::price_to_y(value, lo, hi, &frame.plot),
                 glyph: s.glyph.clone(),
                 color: s.color,
+                bar: s.bar,
             }
         })
         .collect()
@@ -443,6 +450,9 @@ mod tests {
         // high=101 is the top of the 99..101 frame, so it maps to the plot's
         // own top edge.
         assert!((shapes[20].y - plot_rect().y).abs() < 1.0, "high=101 is the top: {}", shapes[20].y);
+        // The bar index rides along: the shell pulses only markers on the
+        // freshest bars, so "which bar is this marker on" must survive.
+        assert_eq!(shapes[20].bar, 20, "marker i sits on bar i");
     }
 
     #[test]
