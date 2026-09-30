@@ -218,6 +218,12 @@ indicator math.
   `plotshape`-class evidence so a strategy script renders exactly like an
   indicator script plus trade markers.
 
+> **Status (2026-09-30):** the chart-side half of this spec — real strategy
+> builtins, simulated orders/positions/equity in preview and on the chart —
+> is designed in **docs/24** (phases S1–S4). The replay adapter
+> (`backtester::script_strategy`) exists and is tested; wiring and the
+> in-VM simulator are the open work.
+
 ## Vetting: "the platform vets scripts" — concretely
 
 Layered, cheapest first, all of it deterministic:
@@ -227,18 +233,21 @@ Layered, cheapest first, all of it deterministic:
 2. **Type check** — unknown identifiers/functions, arity, Pine casting rules
    (int→float ok, float→int refused, na in float context ok, bool in numeric
    context refused).
-3. **Static analyser** — the budget caps above; recursion refused; `for`/
-   `while` bodies with unbounded step expressions refused (`for i = 0 to
-   bar_index` is fine; `while true` is refused unless the body provably
-   mutates the condition — in practice v1 refuses `while` entirely and offers
-   `for`); assignments to builtins refused; `varip` allowed but excluded from
+3. **Static analyser** — the budget caps above; recursion refused; loop
+   nesting capped (4). `while` (v1.1) is allowed: its iterations are fuel
+   metered at run time exactly like `for`, so a condition that never turns
+   false dies on the step budget with the same message any runaway loop
+   gets — statically proving termination is not required, only bounding it.
+   Assignments to builtins refused; `varip` allowed but excluded from
    backtest replay equivalence (documented divergence, matching Pine).
 4. **Sandbox** — the script runs inside the existing WASM guest with the same
    fuel metering and memory ceilings `docs/08` already enforces; the guest's
    `interpret` gains a Pine-lite front-end. A script that outlives its fuel is
    killed and reported as a validation failure, never drawn half-way.
 
-Dynamic budgets scale with window: fuel = 200k steps per 1000 bars, so a
+Dynamic budgets scale with window: fuel = 1M steps per 1000 bars (raised from
+200k in v1.1 after live generation showed real strategies burn ~200 steps per
+bar; measured at n=2016 and n=3000 bars), so a
 300-bar chart costs ~60k steps. A script that cannot finish cannot ship.
 
 ## The AI generation loop (studio integration)
@@ -300,8 +309,9 @@ builtin table, the vet rules and the output contract — not a redesign.
 | --- | --- | --- |
 | 11 | **Multi-pair + per-call timeframe**: `request.security("ETHUSDT", "15m", request.close())` (string/symbol, string/timeframe, series expression), `sec=` stays as the single-pair shorthand; host fetches every named pair + timeframe, aligns each onto the chart's bars (carry-forward flat), VM keeps a keyed series pool (cap 8 pairs/script) | SMT-across-3-pairs and MTF-trend scripts vet, run in gateway preview and in the browser engine; alignment unit tests |
 | 12 | **User-defined functions**: `f(x, y) =>` block form, typed by the same checker, call frames with Pine's series-passing semantics (a parameter re-evaluates the caller's argument expression at the reading bar, so `ta.*` over a parameter sees the caller series' real history), call-depth cap refuses recursion | **done** — parse/typecheck/VM landed with the language core; series-passing + recursion-cap tests in `tests/user_functions.rs` |
-| 13 | **Drawing objects**: `line.new(bar1, price1, bar2, price2, color=, style=)`, `label.new(bar, price, text=)`, `box.new(left, top, right, bottom, color=)` into a VM heap (cap 64 objects, like arrays); engine positions them from bar/time coordinates; shell draws them under the user's own drawings | **done** — VM heap + dispatch + positioning tests (`tests/drawing_objects.rs`, chart-engine `drawing_objects_position_through_the_frame`), shell painter in `drawScriptOverlays` |
+| 13 | **Drawing objects**: `line.new(bar1, price1, bar2, price2, color=, style=)`, `label.new(bar, price, text=)`, `box.new(left, top, right, bottom, color=)` into a VM heap (cap 256 objects — raised from 64 in v1.1, live object cap like arrays); engine positions them from bar/time coordinates; shell draws them under the user's own drawings | **done** — VM heap + dispatch + positioning tests (`tests/drawing_objects.rs`, chart-engine `drawing_objects_position_through_the_frame`), shell painter in `drawScriptOverlays` |
 | 14 | **External data**: first a platform-native feed (funding rates, OI from the existing market-data crate) as `request.data("funding")`, then generic HTTP behind a permission prompt and a size-capped cache | **done** — `request.data("NAME")` reads host-filled platform series (`Inputs.data_series`): ticker fields (`SYM.change_pct`, `SYM.quote_volume`, `SYM.high`, `SYM.low`, `SYM.last`), literal-name vetted, exempt from `sec=`, gateway fills from the ticker cache (`tests/request_data.rs`); generic HTTP stays a future phase behind permissions |
+| 15 | **v1.1 expressiveness** (`while` loops, user-function parameter defaults, object heap 64 → 256): `while cond` with a 4-space body, fuel-metered per iteration exactly like `for` (no static termination proof required); `f(a, b = 2) =>` trailing defaults, caller-scope series semantics (a default of `close[1]` is the caller's yesterday), min-arity checking, required-after-optional refused | **done** — interp while arm + limits/typecheck updates (`limits.rs`, `typecheck.rs`), defaults end-to-end parse→typecheck→VM, cap in `interp::MAX_OBJECTS`; pinned in `tests/model_ergonomics.rs` v1.1 section + `tests/drawing_objects.rs` cap test |
 
 Order is value-first: 11 unblocks the most requested real strategies (MTF
 trend + multi-pair SMT), 12 removes the inline-length ceiling, 13 gives

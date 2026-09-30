@@ -134,6 +134,120 @@ fn the_call_form_of_the_time_of_day_reads_works() {
     assert!((got - 17.0).abs() < 1e-9, "got {got}");
 }
 
+// ---- v1.1 (docs/23 Phase 15): while loops, parameter defaults, object cap ----
+
+#[test]
+fn a_while_loop_runs_until_its_condition_turns_false() {
+    // The counter idiom the prompt teaches: a `var` flag the body mutates,
+    // so the condition turns false instead of burning the fuel budget.
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"t\"\n",
+        "var count = 0\n",
+        "while count < 7\n",
+        "    count := count + 1\n",
+        "plot(count)\n",
+    );
+    let (_, parsed) = vet(src).expect("while vets");
+    let output = run_ok(&parsed);
+    // Per-bar execution: the loop finishes on bar 0 and stays there.
+    assert_eq!(output.plots[0].values[0], 7.0);
+    assert_eq!(output.plots[0].values[29], 7.0);
+}
+
+#[test]
+fn a_runaway_while_dies_on_the_fuel_budget_not_on_a_hang() {
+    // The safety contract: `while true` must ERROR, never hang the chart.
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"t\"\n",
+        "while true\n",
+        "    x = 1\n",
+        "plot(close)\n",
+    );
+    let (_, parsed) = vet(src).expect("the shape parses");
+    let err = pine_lite::run(&parsed, &candles(30), &Inputs::default())
+        .expect_err("a runaway while must die on fuel");
+    assert!(err.message.contains("step budget"), "{}", err.message);
+}
+
+#[test]
+fn while_nesting_beyond_four_is_refused() {
+    // The `for` nesting cap now covers `while` too.
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"t\"\n",
+        "while close > 0\n",
+        "    while close > 0\n",
+        "        while close > 0\n",
+        "            while close > 0\n",
+        "                while close > 0\n",
+        "                    x = 1\n",
+        "plot(close)\n",
+    );
+    let errs = vet(src).expect_err("nesting cap");
+    assert!(errs.iter().any(|e| e.message.contains("nesting deeper than 4")), "{errs:?}");
+}
+
+#[test]
+fn a_function_default_fills_an_omitted_trailing_argument() {
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"t\"\n",
+        "shrink(s, mult = 2.0) =>\n",
+        "    s * mult\n",
+        "a = shrink(high - low)\n",
+        "b = shrink(high - low, 3.0)\n",
+        "plot(a)\n",
+        "plot(b)\n",
+    );
+    let (_, parsed) = vet(src).expect("defaults vet");
+    let output = run_ok(&parsed);
+    // Fixture: high - low == 2.0 on every bar. Default mult -> 4.0, explicit
+    // 3.0 -> 6.0.
+    assert_eq!(output.plots[0].values[5], 4.0);
+    assert_eq!(output.plots[1].values[5], 6.0);
+}
+
+#[test]
+fn a_default_may_read_the_caller_series_history() {
+    // Caller-scope series semantics for defaults, mirroring explicit args:
+    // a default of `close[1]` is the caller's YESTERDAY, re-evaluated per
+    // call, not a value frozen at definition time.
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"t\"\n",
+        "prev(x = close[1]) =>\n",
+        "    x\n",
+        "v = prev()\n",
+        "plot(v)\n",
+    );
+    let (_, parsed) = vet(src).expect("the history default vets");
+    let output = run_ok(&parsed);
+    assert_eq!(output.plots[0].values[5], 102.0, "close[1] at bar 5 == close(bar 4)");
+}
+
+#[test]
+fn a_required_parameter_after_a_default_is_refused() {
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"t\"\n",
+        "f(a = 1.0, b) =>\n",
+        "    a + b\n",
+        "plot(f(1.0, 2.0))\n",
+    );
+    let errs = vet(src).expect_err("required-after-optional");
+    assert!(errs.iter().any(|e| e.message.contains("defaults must be trailing")), "{errs:?}");
+}
+
+#[test]
+fn a_call_below_min_arity_is_refused() {
+    // `h(a, b, c = 3.0)` accepts 2 or 3 args; one is a refusal that names
+    // the accepted range.
+    let src = concat!(
+        "//@pine_lite version=1 overlay=false title=\"t\"\n",
+        "h(a, b, c = 3.0) =>\n",
+        "    a + b + c\n",
+        "plot(h(1.0))\n",
+    );
+    let errs = vet(src).expect_err("below min arity");
+    assert!(errs.iter().any(|e| e.message.contains("2..=3")), "{errs:?}");
+}
+
 fn run_ok(parsed: &pine_lite::parse::Script) -> pine_lite::Output {
     pine_lite::run(parsed, &candles(30), &Inputs::default()).expect("run")
 }

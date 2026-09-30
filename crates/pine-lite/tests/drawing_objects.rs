@@ -83,9 +83,10 @@ fn the_object_heap_stops_at_the_cap_without_failing() {
         "plot(close)\n",
     );
     let (_, parsed) = vet(src).expect("vet");
-    // 100 bars -> 100 labels wanted; the first 64 render and the run SUCCEEDS
-    // with the truncation flagged (TradingView's stop-drawing behavior).
-    let output = run(&parsed, &candles(100), &Inputs::default()).expect("run");
-    assert_eq!(output.objects.len(), 64, "exactly the cap");
+    // 300 bars -> 300 labels wanted; the first MAX_OBJECTS (256) render and
+    // the run SUCCEEDS with the truncation flagged (TradingView's
+    // stop-drawing behavior).
+    let output = run(&parsed, &candles(300), &Inputs::default()).expect("run");
+    assert_eq!(output.objects.len(), pine_lite::interp::MAX_OBJECTS, "exactly the cap");
     assert!(output.objects_truncated, "the scene must learn it was cut");
 }

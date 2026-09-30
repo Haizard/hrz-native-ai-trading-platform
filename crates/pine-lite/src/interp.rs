@@ -167,7 +167,7 @@ pub struct Output {
     /// it, the way TradingView stops drawing instead of failing.
     pub objects: Vec<ScriptObject>,
     /// True when a script tried to draw past [`MAX_OBJECTS`]: the scene
-    /// note says so, and the first 64 objects still render.
+    /// note says so, and the first [`MAX_OBJECTS`] objects still render.
     pub objects_truncated: bool,
     /// Strategy intents, in bar order.
     pub intents: Vec<(usize, Intent)>,
@@ -226,7 +226,7 @@ pub enum ScriptObject {
 /// The drawing-object heap cap, per run (docs/23 Phase 13): the array cap's
 /// sibling. A script that draws on every bar hits it and is refused, not
 /// allowed to leak.
-pub const MAX_OBJECTS: usize = 64;
+pub const MAX_OBJECTS: usize = 256;
 
 /// Run a vetted script over a window, producing its output.
 ///
@@ -553,13 +553,19 @@ impl<'a> Vm<'a> {
                     }
                 }
                 BlockKind::While => {
-                    // Refused statically; unreachable here, and refusing again
-                    // costs nothing.
-                    return Err(crate::ScriptError {
-                        kind: crate::ErrorKind::Limit,
-                        span: crate::Span::new(1, 1),
-                        message: "`while` is refused in v1".into(),
-                    });
+                    // `while` (v1.1): each iteration re-evaluates the
+                    // condition and burns fuel like a `for` iteration, so a
+                    // condition that never turns false dies on the step
+                    // budget with the same message any runaway loop gets --
+                    // not a hang, not a silent skip.
+                    loop {
+                        let cond = self.eval_f(&exprs[0])?;
+                        if !self.truthy(cond) {
+                            break;
+                        }
+                        self.tick()?;
+                        self.body(body)?;
+                    }
                 }
             },
             Item::FuncDef { .. } => {} // hoisted in run()
@@ -687,7 +693,8 @@ impl<'a> Vm<'a> {
                 self.tick()?;
                 // The heap cap STOPS drawing rather than killing the run
                 // (TradingView's behavior): a script that conditions fired
-                // 100 times on a long window still renders its first 64
+                // 100 times on a long window still renders only the first
+                // MAX_OBJECTS
                 // objects, with the truncation reported in the scene note.
                 if self.out.objects.len() < MAX_OBJECTS {
                     let bar1 = self.arg_f(args, 0)?.unwrap_or(NA);
@@ -1703,20 +1710,17 @@ impl<'a> Vm<'a> {
         // expressions are kept in `series_args` (keyed by param name); a
         // read of a param consults that map first, so plain arithmetic
         // (`f(high - low)`) replays the expression per bar too.
+        let def = self.script.items.iter().find_map(|item| match item {
+            Item::FuncDef { name: n, params, defaults, .. } if n == callee => {
+                Some((params.clone(), defaults.clone()))
+            }
+            _ => None,
+        });
+        let (def_params, def_defaults) = def.unwrap_or_else(|| (Vec::new(), Vec::new()));
         let mut locals = std::collections::HashMap::new();
         let mut series_args: std::collections::HashMap<String, Expr> = std::collections::HashMap::new();
         for (i, arg) in args.iter().enumerate() {
-            let param = self
-                .script
-                .items
-                .iter()
-                .find_map(|item| match item {
-                    Item::FuncDef { name: n, params, .. } if n == callee => {
-                        params.get(i).cloned()
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| format!("arg{i}"));
+            let param = def_params.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
             // Transitive substitution: binding `n -> Ident("n")` would make a
             // parameter read resolve against ITS OWN frame -- an eval loop
             // the depth cap can never see (no call frame is pushed). Resolve
@@ -1726,6 +1730,22 @@ impl<'a> Vm<'a> {
             let resolved = self.resolve_param(&arg.value);
             series_args.insert(param.clone(), resolved);
             let v = self.eval_f(&arg.value)?;
+            locals.insert(param, v);
+        }
+        // Omitted trailing parameters (v1.1 defaults): each default is
+        // evaluated fresh per call, in the CALLER's scope, and bound exactly
+        // like an explicit argument -- series semantics included, so a
+        // default of `close[1]` is the caller's yesterday and `b = a * 2`
+        // tracks the bound `a`. The checker already refused a call that
+        // omits a REQUIRED parameter.
+        for i in args.len()..def_params.len() {
+            let Some(default_expr) = def_defaults.get(i).and_then(|d| d.as_ref()) else {
+                continue;
+            };
+            let param = def_params[i].clone();
+            let resolved = self.resolve_param(default_expr);
+            series_args.insert(param.clone(), resolved);
+            let v = self.eval_f(default_expr)?;
             locals.insert(param, v);
         }
         // Named parameters by position: the checker knows the signature; the

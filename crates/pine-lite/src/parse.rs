@@ -69,6 +69,10 @@ pub enum Item {
         name: String,
         /// Parameter names.
         params: Vec<String>,
+        /// One entry per parameter: `Some(default_expr)` when the parameter
+        /// declares a default (`f(a, b = 2) => ...`), `None` when required.
+        /// Right-aligned; the checker refuses required-after-optional.
+        defaults: Vec<Option<Expr>>,
         /// The indented body; the last expression is the return value.
         body: Vec<Item>,
     },
@@ -561,9 +565,23 @@ impl Parser {
         self.bump(); // name
         self.bump(); // (
         let mut params = Vec::new();
+        let mut defaults: Vec<Option<Expr>> = Vec::new();
         loop {
             match self.bump().kind {
-                TokenKind::Ident(p) => params.push(p),
+                TokenKind::Ident(p) => {
+                    params.push(p);
+                    // `param = expr` (v1.1): a default value. Only trailing
+                    // defaults are legal; the checker refuses a required
+                    // parameter after an optional one, where a positional
+                    // call could not say which slot it skips.
+                    if matches!(self.peek().kind, TokenKind::Assign(ref op) if op == "=") {
+                        self.bump();
+                        let Some(d) = self.expr() else { break };
+                        defaults.push(Some(d));
+                    } else {
+                        defaults.push(None);
+                    }
+                }
                 TokenKind::RParen => break,
                 TokenKind::Comma => {}
                 other => {
@@ -578,7 +596,7 @@ impl Parser {
             other => self.err(span, format!("a function body starts with `=>`, found `{other:?}`")),
         }
         let body = self.block_body(span.col.saturating_sub(1));
-        Item::FuncDef { span, name, params, body }
+        Item::FuncDef { span, name, params, defaults, body }
     }
 
     /// Does the current `name(...)` continue with `=>` on this line? A call's

@@ -6,7 +6,7 @@
 //! refusal `chart_engine::indicator::IndicatorOutput::validate` gives for
 //! primitive counts.
 
-use crate::parse::{BlockKind, Expr, ExprKind, Item, Script};
+use crate::parse::{Expr, ExprKind, Item, Script};
 
 /// The budgets, from `docs/23`.
 pub const MAX_PLOTS: usize = 64;
@@ -74,18 +74,13 @@ impl Limiter {
                     }
                     self.expr(expr);
                 }
-                Item::Block { span, kind, exprs, body, els, .. } => {
+                Item::Block { exprs, body, els, .. } => {
                     for e in exprs {
                         self.expr(e);
                     }
-                    if *kind == BlockKind::While {
-                        // v1 refuses `while` outright: "provably terminating"
-                        // is a proof obligation, not a lint.
-                        self.fail(
-                            *span,
-                            "`while` is refused in v1; use `for i = a to b [by c]`",
-                        );
-                    }
+                    // `while` (v1.1) is allowed: its iterations are fuel
+                    // metered at run time exactly like `for`, and its body
+                    // still counts toward the statement budget here.
                     self.count(body);
                     if let Some(els) = els {
                         self.count(els);
@@ -160,12 +155,16 @@ mod tests {
     }
 
     #[test]
-    fn while_is_refused() {
+    fn while_is_allowed_and_its_body_counts() {
+        // v1.1: `while` is legal; its body counts toward the statement
+        // budget exactly like a `for` body. Loop-nesting depth is the
+        // type checker's refusal, not this limiter's.
         let src = "//@pine_lite version=1\n\
-                   while true\n\
-                       x = 1\n";
-        let errs = limit_check(src);
-        assert!(errs.iter().any(|e| e.message.contains("`while` is refused")), "{errs:?}");
+                   var x = 0\n\
+                   while x < 5\n\
+                       x := x + 1\n\
+                   plot(x)\n";
+        assert!(limit_check(src).is_empty(), "{errs:?}", errs = limit_check(src));
     }
 
     #[test]

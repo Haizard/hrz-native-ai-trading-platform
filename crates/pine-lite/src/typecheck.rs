@@ -37,6 +37,13 @@ pub struct Checked {
 pub struct FuncSig {
     /// Parameter names.
     pub params: Vec<String>,
+    /// One entry per parameter, right-aligned: `Some(expr)` when the
+    /// parameter declares a default (`f(a, b = 2) => ...`), `None` when it
+    /// does not. The checker derives the call's minimum arity from the
+    /// leading run of `None`s; the interpreter re-evaluates the default per
+    /// call, in the call's scope, so a default of `close[1]` binds the
+    /// caller's yesterday.
+    pub defaults: Vec<Option<Expr>>,
 }
 
 /// One `input.*` declaration.
@@ -297,7 +304,7 @@ impl Cx {
                 for e in exprs {
                     self.expr(e);
                 }
-                if *kind == BlockKind::For {
+                if *kind == BlockKind::For || *kind == BlockKind::While {
                     self.depth += 1;
                     if self.depth > 4 {
                         self.err(*span, "loop nesting deeper than 4 is refused");
@@ -312,13 +319,29 @@ impl Cx {
                 }
                 self.depth = self.depth.saturating_sub(1);
             }
-            Item::FuncDef { span, name, params, body } => {
+            Item::FuncDef { span, name, params, defaults, body } => {
                 if self.out.functions.contains_key(name) {
                     self.err(*span, format!("function `{name}` is defined twice"));
                 }
+                // Defaults must be trailing: required parameters first,
+                // defaulted ones last. A required parameter after an
+                // optional one could never be filled by a positional call.
+                let mut seen_default = false;
+                for d in defaults {
+                    match d {
+                        None if seen_default => self.err(
+                            *span,
+                            format!(
+                                "`{name}`: a parameter without a default follows one with a default; defaults must be trailing"
+                            ),
+                        ),
+                        None => {}
+                        Some(_) => seen_default = true,
+                    }
+                }
                 self.out
                     .functions
-                    .insert(name.clone(), FuncSig { params: params.clone() });
+                    .insert(name.clone(), FuncSig { params: params.clone(), defaults: defaults.clone() });
                 // Parameters are in scope inside the body; bind them as
                 // numbers so a recursive or self-referencing body checks.
                 for p in params {
@@ -627,12 +650,20 @@ impl Cx {
             None if self.out.functions.contains_key(callee) => {
                 let sig = self.out.functions.get(callee).expect("checked above").clone();
                 let positional = args.iter().filter(|a| a.name.is_none()).count();
-                if positional != sig.params.len() {
+                // Minimum arity: required parameters only. A default fills
+                // every omitted trailing slot (`f(a, b = 2)` accepts 1 or 2
+                // args).
+                let min = sig.defaults.iter().take_while(|d| d.is_none()).count();
+                if positional < min || positional > sig.params.len() {
+                    let range = if min == sig.params.len() {
+                        format!("{}", sig.params.len())
+                    } else {
+                        format!("{min}..={}", sig.params.len())
+                    };
                     self.err(
                         span,
                         format!(
-                            "`{callee}` takes {} argument(s), got {positional}",
-                            sig.params.len()
+                            "`{callee}` takes {range} argument(s), got {positional}"
                         ),
                     );
                 }

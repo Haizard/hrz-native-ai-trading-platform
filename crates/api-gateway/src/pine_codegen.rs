@@ -74,7 +74,7 @@ Reply with ONE fenced code block tagged pine_lite containing the whole script. N
 5. Multi-value calls are destructured on one line: `basis, upper, lower = ta.bb(close, 20, 2)`. The names must match the callee's output count. `ta.macd` and `ta.bb` return three values, `ta.stoch` returns two (%K, %D) -- and `ta.stoch` also reads as its %K alone.
 6. Numbers are floats; bools are `true`/`false`; `na` is the missing value (it propagates; comparisons with it are false). Ternary: `cond ? a : b`. Logic: `and`, `or`, `not`. Comparisons: `< <= > >= == !=`.
 7. `if cond` / `else` blocks contain assignments only (no `plot` inside them); a block body must not be empty.
-8. Loops: `for i = 0 to 99` (optional `by 2`) with a 4-space indented body. Keep loops small; budgets are enforced.
+8. Loops: `for i = 0 to 99` (optional `by 2`), or `while cond` with a 4-space indented body. A `while` condition MUST eventually turn false (guard it with a `var` counter or state flag) -- a runaway loop is killed by the fuel budget with an error. Prefer `for` when a range is known. Keep loops small; budgets are enforced.
 9. `//` starts a comment.
 
 ## Built-in series (bare names)
@@ -119,8 +119,16 @@ With `sec=` set, these zero-argument calls give the pair's series, bar-aligned t
 ## Inputs (user-adjustable parameters)
 `len = input.int(defval=14, title="RSI Length")`, `input.float(defval=2.0, title="Mult")`, `input.bool(defval=true, title="Show signals")`. Use them instead of magic numbers.
 
+## User functions
+Define your own, Pine-style:
+
+    zone_mid(a, b) =>
+        (a + b) / 2
+
+Call like any function: `mid = zone_mid(high, low)`. Trailing parameters can declare defaults -- `zone_mid(a, b, mult = 1.5) =>` -- and callers may omit them: `zone_mid(high, low)`. A required parameter may not follow one with a default. A parameter binds the caller's SERIES (Pine semantics): `f(x) => ta.sma(x, n)` averages the caller's series over its real history, and a default of `close[1]` is the caller's yesterday. No recursion; no `plot`/`hline` inside a function.
+
 ## Drawing objects (anchored lines, labels, boxes)
-Statements that add to a drawing heap (cap 64 per script):
+Statements that add to a drawing heap (cap 256 per script):
 
     if pivot_high
         line.new(bar_index - w, high[w], bar_index, close, color=color.blue, style="solid", width=1)
@@ -128,7 +136,7 @@ Statements that add to a drawing heap (cap 64 per script):
     if demand_zone
         box.new(zone_left, zone_top, zone_right, zone_bottom, color=color.green)
 
-Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~64 bars (a refusal). `style=` is "solid"/"dashed"/"dotted".
+Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~256 bars (past the cap the extra objects are dropped). `style=` is "solid"/"dashed"/"dotted".
 
 ## Pattern detection WITHOUT arrays (there is no `a[i] = v` assignment)
 You cannot build lists or arrays -- not with brackets, not any other way. Track state with `var` scalars that persist across bars and reassign inside `if` blocks. The two idioms you need:
@@ -422,16 +430,16 @@ pub(crate) async fn generate_script(
                 messages.push(response.message.clone());
                 messages.push(Message::tool_results(vec![ai_agent::llm_client::ToolResult {
                     tool_use_id: call.id.clone(),
-                    content: serde_json::json!({
-                        "valid": false,
-                        "errors": errs.iter().map(|e| serde_json::json!({
-                            "kind": pine_lite::kind_name(e.kind),
-                            "line": e.span.line,
-                            "col": e.span.col,
-                            "message": e.message,
-                        })).collect::<Vec<_>>(),
-                        "instruction": "Fix every listed error in the full script and call submit_script again with the COMPLETE corrected script.",
-                    }),
+                    // Errors name what broke and where; the cheat sheet riding
+                    // next to them names what the compiler accepts instead, so
+                    // the model repairs from the language's real surface
+                    // rather than re-deriving it from the system prompt.
+                    content: crate::pine_cheatsheet::repair_content(errs.iter().map(|e| serde_json::json!({
+                        "kind": pine_lite::kind_name(e.kind),
+                        "line": e.span.line,
+                        "col": e.span.col,
+                        "message": e.message,
+                    })).collect::<Vec<_>>()),
                     is_error: true,
                 }]));
             }
@@ -463,6 +471,38 @@ mod tests {
         "hline(30)\n",
         "```\n",
     );
+
+    #[test]
+    fn the_system_prompt_teaches_only_vettable_forms() {
+        // Every form the prompt's prose demonstrates, as one script: if the
+        // prompt ever teaches a construct the language refuses, the model is
+        // baited into a refusal the repair loop must undo.
+        let src = concat!(
+            "//@pine_lite version=1 overlay=false title=\"Prompt forms\"\n",
+            "len = input.int(defval=4, title=\"Pivot window\")\n",
+            "mult = input.float(defval=2.0, title=\"Mult\")\n",
+            "show = input.bool(defval=true, title=\"Show\")\n",
+            "hh = ta.highest(high, 2 * len + 1)\n",
+            "pivot_high = hh[len] == high[len]\n",
+            "var ph1 = na\n",
+            "var ph2 = na\n",
+            "if pivot_high\n",
+            "    ph2 := ph1\n",
+            "    ph1 := high[len]\n",
+            "var count = 0\n",
+            "while count < 3\n",
+            "    count := count + 1\n",
+            "zone_mid(a, b, m = 1.5) =>\n",
+            "    (a + b) / 2 * m\n",
+            "mid = zone_mid(high, low)\n",
+            "atr = ta.atr(14)\n",
+            "flat = math.abs(mid - close) <= atr * 0.15\n",
+            "plot(mid)\n",
+            "plotshape(flat and show, shape=\"triangledown\", color=color.red, location_value=high)\n",
+        );
+        let errs = pine_lite::vet(src);
+        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+    }
 
     #[test]
     fn extracts_a_tagged_block() {

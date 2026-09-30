@@ -66,6 +66,7 @@ pub mod market_routes;
 pub mod metrics;
 pub mod orderflow_routes;
 pub mod plot;
+pub mod pine_cheatsheet;
 pub mod pine_codegen;
 pub mod provider_routes;
 pub mod rate_limit;
