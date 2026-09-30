@@ -132,6 +132,21 @@ impl TickerCache {
             })),
         }
     }
+
+    /// One symbol's cached ticker, or `None` when the cache is cold/stale or
+    /// the venue never listed the symbol. Reads the cache as-is — the
+    /// `GET /tickers` handler is the refresher; `request.data` (docs/23
+    /// Phase 14) deliberately does NOT trigger venue fetches, because a
+    /// script's data reads must not cost venue calls the user never saw.
+    #[must_use]
+    pub async fn get(&self, symbol: &str) -> Option<TickerResponse> {
+        let entry = self.entry.lock().await;
+        let entry = entry.as_ref()?;
+        if entry.at.elapsed() >= self.ttl {
+            return None;
+        }
+        entry.tickers.get(symbol).cloned()
+    }
 }
 
 /// The whole answer, so a client can tell a fresh row from a carried one.

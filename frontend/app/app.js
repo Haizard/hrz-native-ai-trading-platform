@@ -279,6 +279,57 @@ function scriptPoolKeys(source) {
   return keys;
 }
 
+/// Every `request.data("NAME")` name a script reads (docs/23 Phase 14):
+/// platform feeds (`SYMBOL.field` ticker fields today). Plain regex — the
+/// vet layer has already refused non-literal names.
+function scriptDataNames(source) {
+  const names = [];
+  const re = /request\.data\(\s*"([A-Za-z0-9_.\-]+)"\s*\)/g;
+  let m;
+  while ((m = re.exec(String(source || ""))) !== null) {
+    if (!names.includes(m[1])) names.push(m[1]);
+  }
+  return names;
+}
+
+// The /tickers snapshot cache for request.data: fetched at most once a
+// minute, shared by every attached script (same TTL rule as the candles).
+let tickerSnapshot = null;
+let tickerSnapshotAt = 0;
+async function tickerSnapshotFor() {
+  const now = Date.now();
+  if (tickerSnapshot && now - tickerSnapshotAt < 60_000) return tickerSnapshot;
+  try {
+    const resp = await api("/tickers");
+    const map = {};
+    for (const t of resp.tickers || []) map[t.symbol] = t;
+    tickerSnapshot = map;
+    tickerSnapshotAt = now;
+  } catch (e) {
+    console.warn("ticker snapshot for request.data failed:", e && e.message);
+  }
+  return tickerSnapshot;
+}
+
+/// Fill `data_series` for the names a script reads, from the ticker
+/// snapshot: point-in-time values carried flat across the chart's bars
+/// (the same contract the gateway preview uses). Reads the already-fetched
+/// snapshot synchronously -- render cannot await; the snapshot listener
+/// triggers the re-render once a cold-start fetch lands.
+function dataSeriesFor(names, barCount) {
+  if (!names.length || !tickerSnapshot) return null;
+  const out = {};
+  for (const name of names) {
+    const [sym, field] = name.split(".");
+    const t = tickerSnapshot[sym];
+    if (!t) continue;
+    const value = { change_pct: t.price_change_percent, quote_volume: t.quote_volume, high: t.high_price, low: t.low_price, last: t.last_price }[field];
+    if (value == null || !Number.isFinite(value)) continue;
+    out[name] = new Array(barCount).fill(value);
+  }
+  return out;
+}
+
 /// The second instrument's candles, aligned onto `primary`'s bars: candle i
 /// covers the same window as primary[i]; bars the pair did not trade carry
 /// its last close forward flat. Returns null until a fetch has succeeded.
@@ -2477,6 +2528,10 @@ function createChartPane(root, hooks = {}) {
         el("timeframe").value,
         candles.length
       );
+      // Phase 14: request.data series — the snapshot fetch is async (render
+      // is sync), so the first render draws without the feed values and the
+      // data listener rebuilds the scene when the snapshot lands.
+      const dataNames = attachedScripts.flatMap((s) => scriptDataNames(s.source));
       request.scripts = attachedScripts.map((s) => {
         const spec = { source: s.source, inputs: s.inputs || {} };
         const sec = scriptSecSymbol(s.source);
@@ -2502,8 +2557,21 @@ function createChartPane(root, hooks = {}) {
           }
           if (Object.keys(pool).length) spec.series_pool = pool;
         }
+        // Phase 14: filled synchronously from the LAST ticker snapshot (a
+        // cold start renders without feed values until the snapshot lands,
+        // then the listener below re-renders once it has).
+        const names = scriptDataNames(s.source);
+        if (names.length && tickerSnapshot) {
+          const ds = dataSeriesFor(names, candles.length);
+          if (ds && Object.keys(ds).length) spec.data_series = ds;
+        }
         return spec;
       });
+      if (dataNames.length) {
+        tickerSnapshotFor().then((snap) => {
+          if (snap && typeof securityDataListener === "function") securityDataListener();
+        });
+      }
     }
 
     scene = buildScene(request);

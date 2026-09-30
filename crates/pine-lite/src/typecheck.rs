@@ -98,6 +98,58 @@ pub fn collect_series_pool(script: &Script, header: &crate::Header) -> Vec<Strin
     cx.series_pool
 }
 
+/// The `request.data("NAME")` names a script reads (docs/23 Phase 14), in
+/// first-seen order: the host fills exactly these from platform feeds
+/// (ticker fields today, venue funding/OI as those land).
+#[must_use]
+pub fn collect_data_names(script: &Script) -> Vec<String> {
+    let mut names = Vec::new();
+    fn walk(expr: &Expr, names: &mut Vec<String>) {
+        match &expr.kind {
+            ExprKind::Call { callee, args } => {
+                if callee == "request.data" {
+                    if let Some(a) = args.first() {
+                        if let ExprKind::Str(s) = &a.value.kind {
+                            if !names.contains(s) {
+                                names.push(s.clone());
+                            }
+                        }
+                    }
+                }
+                for a in args {
+                    walk(&a.value, names);
+                }
+            }
+            ExprKind::Bin { left, right, .. } => {
+                walk(left, names);
+                walk(right, names);
+            }
+            _ => {}
+        }
+    }
+    fn walk_items(items: &[Item], names: &mut Vec<String>) {
+        for item in items {
+            match item {
+                Item::Expr { expr, .. } => walk(expr, names),
+                Item::Assign { expr, .. } => walk(expr, names),
+                Item::Block { exprs, body, els, .. } => {
+                    for e in exprs {
+                        walk(e, names);
+                    }
+                    walk_items(body, names);
+                    if let Some(els) = els {
+                        walk_items(els, names);
+                    }
+                }
+                Item::Destructure { call, .. } => walk(call, names),
+                _ => {}
+            }
+        }
+    }
+    walk_items(&script.items, &mut names);
+    names
+}
+
 /// How many distinct pairs one script may name (docs/23 Phase 11): a fetch
 /// is a real cost, and eight pairs cover every sane multi-leg strategy.
 const MAX_SERIES_POOL: usize = 8;
@@ -518,9 +570,14 @@ impl Cx {
         // The second instrument's reads are header-gated: a `request.*` call
         // in a script that never declared `sec=` is a vet error naming the
         // fix, not a runtime surprise. `request.security` was handled above,
-        // and bare `request.*` INSIDE its third argument reads the pooled
-        // pair, so the gate is lifted there.
-        if callee.starts_with("request.") && self.sec.is_none() && self.in_security_expr == 0 {
+        // bare `request.*` INSIDE its third argument reads the pooled pair
+        // (gate lifted), and `request.data` is platform-native — it has no
+        // second instrument to declare.
+        if callee.starts_with("request.")
+            && callee != "request.data"
+            && self.sec.is_none()
+            && self.in_security_expr == 0
+        {
             self.err(
                 span,
                 format!(
@@ -550,6 +607,21 @@ impl Cx {
         // order matches the dispatchers in `interp.rs` (`call_f`/`call_stmt`),
         // which are the only real implementations -- this table must never
         // teach a function or a shape the interpreter would refuse.
+        // `request.data`'s name must be a string LITERAL: the host fills the
+        // series by name before the run, so a computed name is a feed the
+        // user never saw.
+        if callee == "request.data" {
+            if let Some(a) = args.first() {
+                if a.name.is_none() {
+                    if !matches!(a.value.kind, ExprKind::Str(_)) {
+                        self.err(
+                            span,
+                            "`request.data` takes a quoted series name, e.g. request.data(\"BTCUSDT.change_pct\")".to_string(),
+                        );
+                    }
+                }
+            }
+        }
         let (min, max): (usize, usize) = match builtin_arity(callee) {
             Some(arity) => arity,
             None if self.out.functions.contains_key(callee) => {
@@ -631,6 +703,10 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
     Some(match callee {
         "na" | "nz" => (1, 2),
         "fixnan" => (1, 1),
+        // Session filters: the bare words are series reads, and models write
+        // the call form `hour(time)` just as reflexively. The argument is
+        // conventionally `time`; the value is the current bar's UTC clock.
+        "hour" | "minute" | "dayofweek" => (1, 1),
         "ta.sma" | "ta.ema" | "ta.rma" | "ta.wma" | "ta.rsi" | "ta.highest" | "ta.lowest"
         | "ta.mom" | "ta.roc" => (2, 2),
         "ta.atr" | "ta.change" => (1, 1),
@@ -662,6 +738,16 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         // checked in `call` (which also vets the literal strings and fills
         // the series pool); the entry here keeps `unknown()` away from it.
         "request.security" => (3, 3),
+        // Phase 13 drawing objects: positional anchors + named knobs. They
+        // are STATEMENTS (no value), so the checker's call path only vets
+        // arity here; the dispatch pushes to the object heap.
+        "line.new" => (4, 7),
+        "label.new" => (3, 4),
+        "box.new" => (4, 5),
+        // Phase 14: platform-native data by name. The literal name is
+        // vetted (the host cannot serve a computed name); the series itself
+        // is host-supplied, so an unknown name is a RUNTIME report.
+        "request.data" => (1, 1),
         "plot" | "plotshape" | "plotchar" | "plotarrow" => (1, 8),
         "hline" => (1, 4),
         "fill" => (2, 6),

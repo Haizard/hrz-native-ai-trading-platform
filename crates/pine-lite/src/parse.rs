@@ -379,7 +379,14 @@ impl Parser {
             }
             // `a, b = ta.macd(...)`: names, commas, then one multi-output call.
             TokenKind::Ident(_) if matches!(self.peek_ahead(1).kind, TokenKind::Comma) => {
-                Some(self.destructure(span))
+                Some(self.destructure(span, false))
+            }
+            // `[a, b] = ta.macd(...)`: the bracketed spelling of the same
+            // form, which models consider the canonical Pine. Dispatch to the
+            // identical destructure item after dropping the brackets.
+            TokenKind::LBracket => {
+                self.bump(); // [
+                Some(self.destructure(span, true))
             }
             TokenKind::Ident(ref name)
                 if matches!(self.peek_ahead(1).kind, TokenKind::Assign(_)) =>
@@ -406,8 +413,10 @@ impl Parser {
     }
 
     /// `a, b, c = f(...)` -- the multi-value form. Called with the first name
-    /// still at the cursor.
-    fn destructure(&mut self, span: Span) -> Item {
+    /// still at the cursor. The bracketed spelling `[a, b, c] = f(...)` is
+    /// normalized into the same item: the dispatcher has already consumed the
+    /// opening `[` and `closing_bracket` says to expect the `]` before `=`.
+    fn destructure(&mut self, span: Span, closing_bracket: bool) -> Item {
         let mut names = Vec::new();
         loop {
             match self.bump().kind {
@@ -421,6 +430,12 @@ impl Parser {
                 self.bump();
             } else {
                 break;
+            }
+        }
+        if closing_bracket {
+            match self.bump().kind {
+                TokenKind::RBracket => {}
+                other => self.err(span, format!("`[` names must close with `]`, found `{other:?}`")),
             }
         }
         match self.bump().kind {
@@ -439,13 +454,30 @@ impl Parser {
     /// consumed the keyword.
     fn var_decl(&mut self, span: Span, keyword: String) -> Item {
         let mode = if keyword == "var" { VarMode::Var } else { VarMode::Varip };
-        let name = match self.bump().kind {
+        let mut name = match self.bump().kind {
             TokenKind::Ident(n) => n,
             other => {
                 self.err(span, format!("`{keyword}` needs a name, found `{other:?}`"));
                 return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
             }
         };
+        // `var float x = 0.0`: Pine carries an optional type word between the
+        // keyword and the name, and models write it reflexively. We infer
+        // types: when the word already read as the name is followed by
+        // `Ident =`, that word was the type and the ident at the cursor is
+        // the real name. The plain `var x = ...` shape (`=` straight after
+        // the name) does not match and is untouched.
+        if matches!(self.peek().kind, TokenKind::Ident(_))
+            && matches!(self.peek_ahead(1).kind, TokenKind::Assign(_))
+        {
+            name = match self.bump().kind {
+                TokenKind::Ident(n) => n,
+                other => {
+                    self.err(span, format!("`{keyword}` needs a name after the type, found `{other:?}`"));
+                    return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+                }
+            };
+        }
         let op = match self.peek().kind {
             TokenKind::Assign(ref op) => {
                 let op = op.clone();
@@ -686,7 +718,27 @@ impl Parser {
 
     fn comparison(&mut self) -> Option<Expr> {
         let mut left = self.additive()?;
-        while let TokenKind::Cmp(op) = self.peek().kind.clone() {
+        loop {
+            // `x = 1` where a comparison belongs: models write `=` for `==`
+            // reflexively, and in a comparison chain the bare `=` is
+            // unambiguous, so it parses as `==` -- the same tolerance the
+            // header lexer extends to `sec = "SYM"`. Assignments are untouched
+            // because the statement parser consumes `name = ...` before an
+            // expression is ever parsed. ONE exception: an indexed left side
+            // (`arr[3] = v`) is an attempted indexed assignment, which v1
+            // refuses (`array.set` is the form) -- reading it as a no-op
+            // comparison would silently drop the model's meaning.
+            if matches!(self.peek().kind, TokenKind::Assign(ref s) if s == "=")
+                && matches!(left.kind, ExprKind::History { .. })
+            {
+                self.err(left.span, "indexed assignment is not in pine-lite v1; use `array.set(a, i, v)`");
+                break;
+            }
+            let op = match self.peek().kind.clone() {
+                TokenKind::Cmp(op) => op,
+                TokenKind::Assign(ref s) if s == "=" => "==".to_string(),
+                _ => break,
+            };
             self.bump();
             let right = self.additive()?;
             let span = left.span;
@@ -847,6 +899,14 @@ impl Parser {
             TokenKind::Ident(name) => {
                 if matches!(self.peek().kind, TokenKind::LParen) {
                     self.bump(); // (
+                    // A call's arguments may wrap across lines: models format
+                    // long `plot(...)`/`label.new(...)` calls one argument per
+                    // line, and the lexer's per-line Newline must not read as
+                    // "expression ends here" inside the parens. The parens own
+                    // the newline, the way Pine's do.
+                    while matches!(self.peek().kind, TokenKind::Newline) {
+                        self.bump();
+                    }
                     let mut args = Vec::new();
                     loop {
                         if matches!(self.peek().kind, TokenKind::RParen) {
@@ -868,8 +928,18 @@ impl Parser {
                         };
                         let value = self.expr()?;
                         args.push(Arg { name: name_arg, value });
+                        // Between arguments: a wrapped call puts the newline
+                        // before the comma (`...high,\n     low)`), so skip
+                        // blank lines ahead of the separator too.
+                        while matches!(self.peek().kind, TokenKind::Newline) {
+                            self.bump();
+                        }
                         match self.bump().kind {
-                            TokenKind::Comma => {}
+                            TokenKind::Comma => {
+                                while matches!(self.peek().kind, TokenKind::Newline) {
+                                    self.bump();
+                                }
+                            }
                             TokenKind::RParen => break,
                             other => {
                                 self.err(

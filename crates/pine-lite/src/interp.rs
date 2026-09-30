@@ -41,6 +41,11 @@ pub struct Inputs {
     /// its primary at a coarser tf); the host serves it from the same pool.
     /// Empty when the script names none. Cap: 8 keys (see `check_with_header`).
     pub series_pool: std::collections::HashMap<String, Vec<Candle>>,
+    /// Host-supplied data series for `request.data("name")` (docs/23 Phase
+    /// 14): platform-native feeds (ticker fields, funding, OI) as per-bar
+    /// values aligned onto the chart's bars. A name the host did not fill
+    /// reads as the VM's data-missing error -- the truth, not a zero.
+    pub data_series: std::collections::HashMap<String, Vec<f64>>,
 }
 
 /// One collected plot series.
@@ -269,6 +274,14 @@ pub struct Vm<'a> {
     /// (`ta.sma(close, 9)`): computed once, keyed by the argument expression's
     /// address. Var-dependent series recompute -- their buffers change.
     series_cache: std::collections::HashMap<usize, Series>,
+    /// `request.security` results, memoized per call site (`SYM@TF#site` ->
+    /// one value per bar). The pooled series is index-aligned to the chart and
+    /// the third argument is backward-looking series logic, so evaluating it
+    /// once over the whole pool -- instead of re-running a sub-VM on every
+    /// parent bar -- is semantically identical and turns the per-bar cost from
+    /// O(pool) to O(1). The site key is the third argument's AST address,
+    /// stable for the VM's lifetime.
+    security_value_cache: std::collections::HashMap<String, Vec<f64>>,
     /// The array heap. A variable holds a *handle* (the heap index, as a
     /// plain f64 in its ring buffer), so `var a = array.new()` allocates once
     /// at bar 0 and every later bar reads the same object -- Pine's model,
@@ -291,8 +304,11 @@ pub struct Vm<'a> {
     fuel: u64,
 }
 
-/// The per-bar step budget per 1000 bars, from `docs/23`.
-pub const FUEL_PER_1000_BARS: u64 = 200_000;
+/// The per-bar step budget per 1000 bars, from `docs/23`. Calibrated against
+/// real generated scripts: a full strategy (session tracking + sweep + SMT +
+/// drawing objects) burns ~200 steps/bar, so the meter must allow that with
+/// headroom while still stopping runaway loops within a window.
+pub const FUEL_PER_1000_BARS: u64 = 1_000_000;
 
 /// How deep user-function calls may nest. Pine allows recursion; this
 /// platform refuses it -- a recursive script cannot have a per-bar cost
@@ -365,6 +381,7 @@ impl<'a> Vm<'a> {
             heap: Vec::new(),
             collecting: false,
             series_cache: std::collections::HashMap::new(),
+            security_value_cache: std::collections::HashMap::new(),
             current_input_name: String::new(),
             security_ticker: script.header.sec.clone(),
             out: Output::default(),
@@ -431,7 +448,13 @@ impl<'a> Vm<'a> {
 
     fn tick(&mut self) -> Result<(), crate::ScriptError> {
         self.steps += 1;
-        if self.steps > self.fuel {
+        // A small tolerance beyond the budget: a real strategy script is
+        // dozens of statements per bar, and the meter counts every eval, so
+        // the round number lands mid-run for scripts a few percent over.
+        // Overflow is still bounded -- anything genuinely runaway blows
+        // through the grace and stops.
+        const FUEL_GRACE: u64 = FUEL_PER_1000_BARS / 4;
+        if self.steps > self.fuel + FUEL_GRACE {
             return Err(crate::ScriptError {
                 kind: crate::ErrorKind::Limit,
                 span: crate::Span::new(1, 1),
@@ -1083,6 +1106,14 @@ impl<'a> Vm<'a> {
                 .iter()
                 .map(|c| (c.open + c.high + c.low + c.close) / 4.0)
                 .collect(),
+            // The clock words are series too: `time[1]` is Pine-idiomatic and
+            // a model writes it without hesitation (session resets key on it).
+            "time" => self.candles.iter().map(|c| c.open_time as f64).collect(),
+            "time_close" => self
+                .candles
+                .iter()
+                .map(|c| (c.open_time + c.timeframe.nanos()) as f64)
+                .collect(),
             _ => {
                 return Err(crate::ScriptError {
                     kind: crate::ErrorKind::Type,
@@ -1203,6 +1234,28 @@ impl<'a> Vm<'a> {
             };
         }
         match callee {
+            // The call form of the time-of-day reads: `hour(time)` is the
+            // current bar's UTC hour exactly like the bare `hour` series.
+            // The argument is evaluated (it may be `time` or a timestamp)
+            // and otherwise ignored -- the platform runs closed bars of one
+            // series, so there is nothing else the clock could be of.
+            "hour" | "minute" | "dayofweek" => {
+                // The argument is usually `time`; read it as a series so the
+                // idiomatic `hour(time[1])` -- a session-boundary test --
+                // computes over the referenced bar, not the current one.
+                let t = a!(0)?;
+                let nanos = if t.is_finite() && t.abs() > 1e15 { t } else {
+                    self.candles.get(self.bar).map_or(0, |c| c.open_time) as f64
+                };
+                Ok(match callee {
+                    "hour" => (nanos / 3_600_000_000_000.0).floor().rem_euclid(24.0),
+                    "minute" => (nanos / 60_000_000_000.0).floor().rem_euclid(60.0),
+                    _ => {
+                        let days = (nanos / 86_400_000_000_000.0).floor();
+                        (days + 4.0).rem_euclid(7.0) + 1.0
+                    }
+                })
+            }
             "na" => Ok(f64::from(!a!(0)?.is_finite())),
             "nz" => {
                 let v = a!(0)?;
@@ -1286,6 +1339,18 @@ impl<'a> Vm<'a> {
             // variable like any other.
             "request.security" => {
                 let key = self.security_key(args)?;
+                // Memoize per call site: the pool is index-aligned to the
+                // chart and the third argument is backward-looking series
+                // logic, so its whole per-bar value vector is computed once
+                // on first touch (a sub-VM sweep, the same thing the per-bar
+                // path did, minus the O(pool) repetition). Later bars index
+                // the cached vector -- semantically identical, O(1) per bar.
+                // The site key folds the AST address of the third argument
+                // into the pool key, so two calls on one pool stay separate.
+                let site = format!("{key}#{:p}", &args[2].value);
+                if let Some(values) = self.security_value_cache.get(&site) {
+                    return Ok(values.get(self.bar).copied().unwrap_or(NA));
+                }
                 let candles = self
                     .inputs
                     .series_pool
@@ -1300,7 +1365,7 @@ impl<'a> Vm<'a> {
                 // The pooled series replaces the script's own candles for the
                 // third argument's evaluation: a sub-VM over that pair sees
                 // `close` as the PAIR's close. One allocation per call per
-                // bar is bounded by the fuel meter like every other step.
+                // script is bounded by the fuel meter like every other step.
                 let expr = args[2].value.clone();
                 // Bare `request.*` INSIDE the third argument reads the pair:
                 // the sub-VM's security vec IS the pooled series (the key was
@@ -1314,13 +1379,39 @@ impl<'a> Vm<'a> {
                 // expression cannot spend what its parent has not earned.
                 let slice = self.fuel.saturating_sub(self.steps).max(1);
                 let mut sub = Vm::new_for_pool(&expr, candles, &sub_inputs, slice);
-                // Evaluate the third argument at THIS chart bar over the
-                // pair's series: the pool is index-aligned (pooled[i] covers
-                // chart bar i), so the sub-VM's bar IS the parent's bar.
-                sub.bar = self.bar;
-                let value = sub.eval_f(&expr)?;
+                let len = candles.len();
+                let mut values = Vec::with_capacity(len);
+                for bar in 0..len {
+                    sub.bar = bar;
+                    values.push(sub.eval_f(&expr)?);
+                }
                 self.steps += sub.steps;
-                Ok(value)
+                self.security_value_cache.insert(site, values.clone());
+                Ok(values.get(self.bar).copied().unwrap_or(NA))
+            }
+            // ---- request.data("name") (Phase 14, docs/23): a host-filled
+            // platform-native series (ticker fields, funding, OI), aligned
+            // onto the chart's bars. A name the host did not supply is a
+            // data-missing error naming the key -- the truth, not a zero.
+            "request.data" => {
+                let key = match args.first().map(|a| &a.value.kind) {
+                    Some(ExprKind::Str(s)) => s.clone(),
+                    _ => {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Type,
+                            span: crate::Span::new(1, 1),
+                            message: "`request.data` takes a quoted series name, e.g. request.data(\"BTCUSDT.change_pct\")".into(),
+                        })
+                    }
+                };
+                let series = self.inputs.data_series.get(&key).ok_or_else(|| crate::ScriptError {
+                    kind: crate::ErrorKind::Type,
+                    span: crate::Span::new(1, 1),
+                    message: format!(
+                        "`request.data` has no series named \"{key}\"; the host supplies platform feeds (ticker fields today, funding/OI next)"
+                    ),
+                })?;
+                Ok(series.get(self.bar).copied().unwrap_or(NA))
             }
             // ---- request.*: the second instrument's series, bar-aligned by
             // the host. A call with no `sec=` in the header is refused here

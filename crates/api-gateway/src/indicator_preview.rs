@@ -478,7 +478,30 @@ pub async fn replay_script_preview(
         let aligned = align_security_pooled(&candles, &raw);
         series_pool.insert(key, aligned);
     }
-    let inputs = pine_lite::interp::Inputs { security, series_pool, ..pine_lite::interp::Inputs::default() };
+    // Phase 14 (docs/23): `request.data("NAME")` — platform-native feeds.
+    // Today: ticker fields from the venue cache, named `SYMBOL.field`
+    // (change_pct, quote_volume, high, low). Tickers are point-in-time, so
+    // the aligned series is the current value carried flat across the
+    // window; venue funding/OI plugs into the same map when those feeds
+    // land, with no language change.
+    let mut data_series = std::collections::HashMap::new();
+    for name in pine_lite::typecheck::collect_data_names(&parsed) {
+        let Some((sym, field)) = name.split_once('.') else { continue };
+        if let Some(t) = state.tickers.get(sym).await {
+            let value = match field {
+                "change_pct" => Some(t.price_change_percent),
+                "quote_volume" => Some(t.quote_volume),
+                "high" => Some(t.high_price),
+                "low" => Some(t.low_price),
+                "last" => Some(t.last_price),
+                _ => None,
+            };
+            if let Some(v) = value {
+                data_series.insert(name.clone(), vec![v; candles.len()]);
+            }
+        }
+    }
+    let inputs = pine_lite::interp::Inputs { security, series_pool, data_series, ..pine_lite::interp::Inputs::default() };
     let output = pine_lite::interp::run(&parsed, &candles, &inputs)
         .map_err(|err| format!("the script failed at run time: {err}"))?;
     let stats = crate::indicator_workspace_routes::ScriptPreviewStats {

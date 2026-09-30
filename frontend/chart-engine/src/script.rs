@@ -35,6 +35,11 @@ pub struct ScriptSpec {
     /// script's reads then report the missing-key error, which is the truth.
     #[serde(default)]
     pub series_pool: std::collections::HashMap<String, Vec<analytics_core::types::Candle>>,
+    /// `request.data("name")` series (docs/23 Phase 14): platform feeds as
+    /// per-bar values aligned onto the chart's bars, filled by the shell
+    /// from the same sources the gateway preview uses (ticker fields today).
+    #[serde(default)]
+    pub data_series: std::collections::HashMap<String, Vec<f64>>,
 }
 
 /// One positioned drawing object (docs/23 Phase 13): the script chose
@@ -195,6 +200,7 @@ pub fn script_pane(
         numbers: spec.inputs.clone(),
         security: spec.security.clone(),
         series_pool: spec.series_pool.clone(),
+        data_series: spec.data_series.clone(),
         ..Inputs::default()
     };
     let output: Output = run(&parsed, candles, &inputs).map_err(|err| err.to_string())?;
@@ -470,7 +476,7 @@ mod tests {
     fn an_rsi_script_yields_a_positioned_pane() {
         let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0 + ((i % 7) as f64))).collect();
         let pane = script_pane(
-            &ScriptSpec { source: RSI_SCRIPT.into(), inputs: Default::default(), security: Vec::new(), series_pool: Default::default() },
+            &ScriptSpec { source: RSI_SCRIPT.into(), inputs: Default::default(), security: Vec::new(), series_pool: Default::default(), data_series: Default::default() },
             &candles,
             10.0,
             &plot_rect(),
@@ -502,6 +508,7 @@ mod tests {
                 inputs: Default::default(),
                 security: Vec::new(),
                 series_pool: Default::default(),
+                data_series: Default::default(),
             },
             &candles,
             10.0,
@@ -523,6 +530,7 @@ mod tests {
                 inputs: Default::default(),
                 security: Vec::new(),
                 series_pool: Default::default(),
+                data_series: Default::default(),
             },
             &candles,
             10.0,
@@ -565,6 +573,7 @@ mod tests {
             inputs: Default::default(),
             security: Vec::new(),
             series_pool,
+            data_series: Default::default(),
         };
         let pane = script_pane(&spec, &candles, 10.0, &plot_rect()).expect("pane");
         assert_eq!(pane.plots.len(), 1);
