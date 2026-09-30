@@ -117,15 +117,13 @@ pub fn intents_to_signal(
             // The stop: the script's own `strategy.exit(stop=)` recorded on
             // this bar, or a default of `2 ATR(14)` below/above the reference
             // -- which is what the DSL's `atr` stop kind resolves to.
+            // The undeclared stop: 2 × ATR(14) from the decision close —
+            // the rule now lives in pine_lite::sim so the VM's simulation
+            // and this lowering share one definition (docs/24 S1).
             let stop = last_stop.unwrap_or_else(|| {
-                let atr14 = pine_lite::ta::ta_atr(candles, 14.0);
-                let atr = atr14.get(bar).copied().unwrap_or(f64::NAN);
-                let distance = if atr.is_finite() { 2.0 * atr } else { candle.close * 0.02 };
-                if direction == Direction::Long {
-                    candle.close - distance
-                } else {
-                    candle.close + distance
-                }
+                let long = direction == Direction::Long;
+                pine_lite::sim::default_stop(candles, bar, long)
+                    .unwrap_or_else(|| candle.close * if long { 0.98 } else { 1.02 })
             });
             let signal = EnterSignal {
                 direction,

@@ -165,7 +165,39 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
         }
         parts.push((key, value));
     }
-    for (key, value) in parts {
+    // The strategy block's sub-knobs arrive as SEPARATE parts (the outer
+    // scanner ends every value at a comma): `strategy(initial_capital=10000,
+    // default_qty_value=5)` becomes (`strategy(initial_capital`, `10000`)
+    // plus (`default_qty_value`, `5`). Re-merge them into one value before
+    // the knob match; a top-level knob's key ends the block.
+    let mut merged: Vec<(String, String)> = Vec::new();
+    let mut pi = 0usize;
+    while pi < parts.len() {
+        let (key, value) = &parts[pi];
+        if key == "strategy" {
+            merged.push((key.clone(), value.clone()));
+            pi += 1;
+        } else if let Some(rest) = key.strip_prefix("strategy(") {
+            let mut subs: Vec<String> = Vec::new();
+            if !rest.is_empty() {
+                subs.push(format!("{}={}", rest.trim_end_matches('='), value.trim_end_matches(')')));
+            }
+            pi += 1;
+            while pi < parts.len() {
+                let (k2, v2) = &parts[pi];
+                if matches!(k2.as_str(), "version" | "overlay" | "title" | "sec" | "max_bars_back") {
+                    break;
+                }
+                subs.push(format!("{}={}", k2, v2.trim_end_matches(')')));
+                pi += 1;
+            }
+            merged.push(("strategy".to_string(), subs.join(",")));
+        } else {
+            merged.push((key.clone(), value.clone()));
+            pi += 1;
+        }
+    }
+    for (key, value) in merged {
         match key.as_str() {
             "version" => match value.parse::<u32>() {
                 Ok(v) if v == 1 => header.version = v,
@@ -207,6 +239,91 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
                     "max_bars_back must be between 1 and 5000",
                 )),
             },
+            // The strategy account block (docs/24 S1):
+            // strategy(initial_capital=10000, default_qty_type="percent_of_equity",
+            //          default_qty_value=10, commission_type="percent",
+            //          commission_value=0.04, slippage=0)
+            // The outer scanner treats it as one `key=value` (the value runs
+            // to the next space-separated key=), so sub-knobs are parsed here.
+            "strategy" => {
+                use crate::sim::{CommissionType, QtyType, StrategyHeader};
+                let mut knobs = StrategyHeader::default();
+                let mut v = value.as_str();
+                // Tolerate the wrapper form `strategy(...)`.
+                if let Some(inner) = v.strip_prefix("strategy(") {
+                    v = inner.strip_suffix(')').unwrap_or(inner);
+                } else if let Some(inner) = v.strip_prefix('(') {
+                    v = inner.strip_suffix(')').unwrap_or(inner);
+                }
+                let mut unknown: Option<String> = None;
+                for part in v.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                    let part = part.trim_end_matches(')');
+                    let Some((k, val)) = part.split_once('=') else {
+                        errors.push(err(line, 1, &format!("strategy(...) knobs are `key=value` pairs; got `{part}`")));
+                        continue;
+                    };
+                    let val = val.trim().trim_matches('"');
+                    match k.trim() {
+                        "initial_capital" => match val.parse::<f64>() {
+                            Ok(n) if n > 0.0 => knobs.initial_capital = n,
+                            _ => errors.push(err(line, 1, "strategy.initial_capital must be a positive number")),
+                        },
+                        "default_qty_type" => match val {
+                            "percent_of_equity" => knobs.default_qty_type = QtyType::PercentOfEquity,
+                            "fixed" => knobs.default_qty_type = QtyType::Fixed,
+                            other => errors.push(err(
+                                line,
+                                1,
+                                &format!("strategy.default_qty_type is \"percent_of_equity\" or \"fixed\", not `\"{other}\"`"),
+                            )),
+                        },
+                        "default_qty_value" => match val.parse::<f64>() {
+                            Ok(n) if n > 0.0 => knobs = StrategyHeader { default_qty_value: n, ..knobs },
+                            _ => errors.push(err(line, 1, "strategy.default_qty_value must be a positive number")),
+                        },
+                        "commission_type" => match val {
+                            "percent" => knobs.commission_type = CommissionType::Percent,
+                            "absolute" => knobs.commission_type = CommissionType::Absolute,
+                            other => errors.push(err(
+                                line,
+                                1,
+                                &format!("strategy.commission_type is \"percent\" or \"absolute\", not `\"{other}\"`"),
+                            )),
+                        },
+                        "commission_value" => match val.parse::<f64>() {
+                            Ok(n) if n >= 0.0 => knobs = StrategyHeader { commission_value: n, ..knobs },
+                            _ => errors.push(err(line, 1, "strategy.commission_value must be a non-negative number")),
+                        },
+                        "slippage" => match val.parse::<f64>() {
+                            Ok(n) if n >= 0.0 => knobs = StrategyHeader { slippage_pct: n, ..knobs },
+                            _ => errors.push(err(line, 1, "strategy.slippage must be a non-negative number")),
+                        },
+                        "pyramiding" => {
+                            match val.parse::<usize>() {
+                                Ok(0) => {}
+                                _ => errors.push(err(
+                                    line,
+                                    1,
+                                    "pyramiding > 0 is not supported yet (single position; docs/24); declare strategy(pyramiding=0)"
+                                )),
+                            }
+                        }
+                        other => {
+                            unknown = Some(other.to_string());
+                        }
+                    }
+                }
+                if let Some(other) = unknown {
+                    errors.push(err(
+                        line,
+                        1,
+                        &format!(
+                            "unknown strategy(...) knob `{other}`; known knobs: initial_capital, default_qty_type, default_qty_value, commission_type, commission_value, slippage, pyramiding"
+                        ),
+                    ));
+                }
+                header.strategy = Some(knobs);
+            }
             other => errors.push(err(
                 line,
                 1,

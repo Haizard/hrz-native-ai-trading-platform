@@ -390,7 +390,14 @@ pub async fn replay_script_preview(
     symbol: &str,
     timeframe: &str,
     source: &str,
-) -> Result<(chart_engine::IndicatorOutput, crate::indicator_workspace_routes::ScriptPreviewStats), String>
+) -> Result<
+    (
+        chart_engine::IndicatorOutput,
+        crate::indicator_workspace_routes::ScriptPreviewStats,
+        serde_json::Value,
+    ),
+    String,
+>
 {
     let (header, parsed) =
         pine_lite::vet(source).map_err(|errs| format!("the script no longer vets: {}", errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; ")))?;
@@ -504,6 +511,14 @@ pub async fn replay_script_preview(
     let inputs = pine_lite::interp::Inputs { security, series_pool, data_series, ..pine_lite::interp::Inputs::default() };
     let output = pine_lite::interp::run(&parsed, &candles, &inputs)
         .map_err(|err| format!("the script failed at run time: {err}"))?;
+    // Run notes (docs/24 S1: the two-pass strategy mismatch, and any later
+    // simulation warnings) ride the preview_note slot -- non-fatal, but the
+    // user must see them.
+    let run_note = if output.notes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(output.notes.join("; "))
+    };
     let stats = crate::indicator_workspace_routes::ScriptPreviewStats {
         window_days: (PREVIEW_WINDOW_NS / 86_400_000_000_000) as i64,
         bars: candles.len(),
@@ -511,6 +526,10 @@ pub async fn replay_script_preview(
         levels: output.hlines.len(),
         shapes: output.shapes.len(),
         overlays: usize::from(header.overlay),
+        strategy: output.simulation.is_some(),
+        trades: output.simulation.as_ref().map_or(0, |s| s.report.total_trades as usize),
+        net_profit: output.simulation.as_ref().map_or(0.0, |s| s.report.net_profit),
+        max_drawdown: output.simulation.as_ref().map_or(0.0, |s| s.report.max_drawdown),
     };
     let title = header.title.clone().unwrap_or_else(|| "script".to_string());
     // The preview folds the run into the shared vocabulary: one zone per
@@ -556,7 +575,7 @@ pub async fn replay_script_preview(
             kind: chart_engine::MarkerKind::Signal,
         });
     }
-    Ok((out, stats))
+    Ok((out, stats, run_note))
 }
 
 /// Map a detection side to the marker vocabulary the chart already paints.

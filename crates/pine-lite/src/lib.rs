@@ -29,6 +29,7 @@ pub mod interp;
 pub mod lex;
 pub mod limits;
 pub mod parse;
+pub mod sim;
 pub mod ta;
 pub mod typecheck;
 
@@ -119,6 +120,11 @@ pub struct Header {
     /// second instrument -- and then those calls are a vet error, not a
     /// runtime surprise.
     pub sec: Option<String>,
+    /// The `strategy(...)` knob block (docs/24 S1): capital, sizing,
+    /// commission, slippage. None when the header declares none -- then the
+    /// simulator uses Pine-compatible defaults, and a script that READS a
+    /// strategy state builtin without the block is refused at vet time.
+    pub strategy: Option<sim::StrategyHeader>,
 }
 
 impl Default for Header {
@@ -129,6 +135,7 @@ impl Default for Header {
             title: None,
             max_bars_back: 300,
             sec: None,
+            strategy: None,
         }
     }
 }
@@ -143,6 +150,7 @@ impl Header {
             title: None,
             max_bars_back: 300,
             sec: None,
+            strategy: None,
         }
     }
 }
@@ -173,11 +181,27 @@ pub fn vet(source: &str) -> Result<(Header, parse::Script), Vec<ScriptError>> {
         return Err(errors);
     }
     let header = header_or_default(script.header.clone(), &header);
+    // The lexed header attaches to the AST here: `run` (and every consumer
+    // of the parsed script) must see the real `sec=` and `strategy(...)`
+    // knobs, not the parser's default placeholder.
+    let mut script = script;
+    script.header = header.clone();
     // The lexed header rides the check: `request.*` legality depends on the
     // script having declared its second instrument (`sec=`), which only the
     // header knows.
     errors.extend(typecheck::check_with_header(&script, &header));
     errors.extend(limits::check(&script));
+    // Refuse the unknowable (docs/24): a script that READS strategy account
+    // state must declare the `strategy(...)` block the simulation reads its
+    // knobs from. Indicators reading `strategy.equity` used to get a silent
+    // 0.0 -- a number that looks real and means nothing.
+    if header.strategy.is_none() && reads_strategy_state(&script) {
+        errors.push(crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span: crate::Span::new(1, 1),
+            message: "reading strategy state (strategy.equity, strategy.position_size, ...) needs a strategy(...) header block declaring the account; add strategy(initial_capital=...) to the first line".to_string(),
+        });
+    }
     if errors.is_empty() {
         Ok((header, script))
     } else {
@@ -190,6 +214,60 @@ pub fn vet(source: &str) -> Result<(Header, parse::Script), Vec<ScriptError>> {
 fn header_or_default(parsed: Header, lexed: &Header) -> Header {
     let _ = parsed;
     lexed.clone()
+}
+
+/// Does the script READ one of the strategy account-state builtins? A
+/// recursive walk over calls (the same shape the limits pass uses), so the
+/// vet refusal above fires wherever the read hides -- inside an if body, a
+/// function, a ternary.
+fn reads_strategy_state(script: &parse::Script) -> bool {
+    const STATE_BUILTINS: [&str; 6] = [
+        "strategy.position_size",
+        "strategy.position_avg_price",
+        "strategy.equity",
+        "strategy.openprofit",
+        "strategy.closedtrades",
+        "strategy.wintrades",
+    ];
+    fn has_state_read(e: &parse::Expr, builtins: &[&str; 6]) -> bool {
+        use crate::parse::ExprKind;
+        match &e.kind {
+            // `strategy.equity` lexes as a dotted-path IDENT, not a call.
+            ExprKind::Ident(path) => builtins.contains(&path.as_str()),
+            ExprKind::Call { callee, args } => {
+                builtins.contains(&callee.as_str())
+                    || args.iter().any(|a| has_state_read(&a.value, builtins))
+            }
+            ExprKind::Bin { left, right, .. } => {
+                has_state_read(left, builtins) || has_state_read(right, builtins)
+            }
+            ExprKind::Un { expr, .. } => has_state_read(expr, builtins),
+            ExprKind::NaChecked { value } => has_state_read(value, builtins),
+            ExprKind::Ternary { cond, then, els } => {
+                has_state_read(cond, builtins)
+                    || has_state_read(then, builtins)
+                    || has_state_read(els, builtins)
+            }
+            ExprKind::History { base, offset } => {
+                has_state_read(base, builtins) || has_state_read(offset, builtins)
+            }
+            _ => false,
+        }
+    }
+    fn item_has_read(it: &parse::Item, builtins: &[&str; 6]) -> bool {
+        match it {
+            parse::Item::Assign { expr, .. } => has_state_read(expr, builtins),
+            parse::Item::Destructure { call, .. } => has_state_read(call, builtins),
+            parse::Item::Expr { expr, .. } => has_state_read(expr, builtins),
+            parse::Item::Block { exprs, body, els, .. } => {
+                exprs.iter().any(|e| has_state_read(e, builtins))
+                    || body.iter().any(|i| item_has_read(i, builtins))
+                    || els.as_ref().is_some_and(|b| b.iter().any(|i| item_has_read(i, builtins)))
+            }
+            parse::Item::FuncDef { body, .. } => body.iter().any(|i| item_has_read(i, builtins)),
+        }
+    }
+    script.items.iter().any(|i| item_has_read(i, &STATE_BUILTINS))
 }
 
 #[cfg(test)]

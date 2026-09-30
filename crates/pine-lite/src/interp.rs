@@ -128,13 +128,17 @@ pub struct Shape {
 /// One strategy intent recorded during the run.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Intent {
-    /// `strategy.entry(id, direction)`.
+    /// `strategy.entry(id, direction, qty=)`.
     Entry {
         /// Order id.
         id: String,
         /// `long` or `short`.
         long: bool,
+        /// Units of the asset when the call passed `qty=`; None sizes from
+        /// the header's `default_qty_*` knobs (docs/24 S1).
+        qty: Option<f64>,
     },
+    #[allow(dead_code)]
     /// `strategy.exit(id, stop=, limit=, ...)`.
     Exit {
         /// Order id.
@@ -166,6 +170,14 @@ pub struct Output {
     /// the cap the draw calls become no-ops and `objects_truncated` reports
     /// it, the way TradingView stops drawing instead of failing.
     pub objects: Vec<ScriptObject>,
+    /// The strategy simulation (docs/24 S1): orders, equity curve, account
+    /// snapshots and the report. None for indicator scripts; Some for every
+    /// run that recorded `strategy.*` intents or (with the header block)
+    /// read account state.
+    pub simulation: Option<crate::sim::Simulation>,
+    /// Non-fatal notes: run warnings that must reach the user (the S1
+    /// pass-mismatch note, S3's simulation_note) without failing the run.
+    pub notes: Vec<String>,
     /// True when a script tried to draw past [`MAX_OBJECTS`]: the scene
     /// note says so, and the first [`MAX_OBJECTS`] objects still render.
     pub objects_truncated: bool,
@@ -268,6 +280,9 @@ pub struct Vm<'a> {
     /// plot no matter how many bars its branch fires on.
     deferred: Vec<Expr>,
     deferred_seen: std::collections::HashSet<usize>,
+    /// Pass 2's per-bar account snapshots (docs/24 S1); None in pass 1, so
+    /// the strategy state builtins answer zero until the simulation exists.
+    account: Option<Vec<crate::sim::SimSnapshot>>,
     /// True while the per-bar loop runs; plot calls defer instead of acting.
     collecting: bool,
     /// Cached whole-window series for ta calls that read only builtins
@@ -384,6 +399,7 @@ impl<'a> Vm<'a> {
             security_value_cache: std::collections::HashMap::new(),
             current_input_name: String::new(),
             security_ticker: script.header.sec.clone(),
+            account: None,
             out: Output::default(),
             bar: 0,
             steps: 0,
@@ -443,7 +459,91 @@ impl<'a> Vm<'a> {
                 self.out.plots.push(series);
             }
         }
+        // Strategy execution (docs/24 S1): the intents this run recorded go
+        // through the shared simulator. A script that READS account state
+        // (`strategy.equity`, ...) gets a second pass: the simulation built
+        // from pass 1's own decisions becomes the account, and the bar loop
+        // reruns with the state builtins answering from it. Pine's broker
+        // emulator has the same shape -- the script calculates against the
+        // PREVIOUS state, one bar late, by construction.
+        let wants_state = crate::reads_strategy_state(self.script);
+        if self.out.strategy_used || (wants_state && self.script.header.strategy.is_some()) {
+            let knobs = self.script.header.strategy.clone().unwrap_or_default();
+            self.out.simulation = Some(crate::sim::simulate(&self.out.intents, self.candles, &knobs));
+            if wants_state {
+                self.rerun_with_account()?;
+            }
+        }
         Ok(std::mem::take(&mut self.out))
+    }
+
+    /// Pass 2: the simulated account exists, so rerun the bar loop with the
+    /// strategy state builtins reading the per-bar snapshots. The script is
+    /// deterministic and the account came from pass 1's decisions, so the
+    /// intents MUST match; on the mismatch that would mean otherwise, pass
+    /// 2's artifacts stand (they align with the state the user reads) and a
+    /// note rides the output instead of a silently wrong trade list.
+    fn rerun_with_account(&mut self) -> Result<(), crate::ScriptError> {
+        let Some(sim) = self.out.simulation.take() else {
+            return Ok(());
+        };
+        let pass1_intents = self.out.intents.clone();
+        self.account = Some(sim.snapshots.clone());
+        // A fresh run: state, series caches and the object/array heaps reset;
+        // fuel restarts (the two passes meter separately, per docs/24).
+        self.out = Output::default();
+        self.vars.clear();
+        self.var_modes.clear();
+        self.scopes.clear();
+        self.series_cache.clear();
+        self.security_value_cache.clear();
+        self.heap.clear();
+        self.deferred.clear();
+        self.deferred_seen.clear();
+        self.steps = 0;
+        self.collecting = true;
+        for bar in 0..self.candles.len() {
+            self.bar = bar;
+            for item in &self.script.items {
+                self.item(item)?;
+            }
+        }
+        self.collecting = false;
+        let deferred = std::mem::take(&mut self.deferred);
+        self.deferred_seen.clear();
+        for expr in &deferred {
+            if let ExprKind::Call { callee, args } = &expr.kind {
+                let series = self.plot_series(callee, args)?;
+                self.out.plots.push(series);
+            }
+        }
+        if self.out.intents != pass1_intents {
+            self.out.notes.push(
+                "strategy state reads changed the script's decisions between passes; the reported trades are pass 1's simulation, the plots are pass 2's".to_string(),
+            );
+            self.out.intents = pass1_intents;
+        }
+        self.out.simulation = Some(sim);
+        self.account = None;
+        Ok(())
+    }
+
+    /// A strategy account-state read (docs/24 S1). Pass 1 has no account yet
+    /// (its own intents are what build it), so the read answers zero -- the
+    /// same one-bar-late shape Pine documents for its broker emulator. Pass
+    /// 2 parked the simulated snapshots in `account`; this bar's row answers.
+    fn strategy_read(&self, name: &str) -> f64 {
+        let Some(snaps) = &self.account else { return 0.0 };
+        let Some(s) = snaps.get(self.bar) else { return 0.0 };
+        match name {
+            "strategy.position_size" => s.position_size,
+            "strategy.position_avg_price" => s.avg_price,
+            "strategy.equity" => s.equity,
+            "strategy.openprofit" => s.openprofit,
+            "strategy.closedtrades" => s.closedtrades,
+            "strategy.wintrades" => s.wintrades,
+            _ => 0.0,
+        }
     }
 
     fn tick(&mut self) -> Result<(), crate::ScriptError> {
@@ -659,10 +759,11 @@ impl<'a> Vm<'a> {
             "strategy.entry" => {
                 let id = self.arg_str(args, "id").or_else(|| self.arg_str_pos(args, 0)).unwrap_or_default();
                 let dir = self.arg_str(args, "direction").or_else(|| self.arg_str_pos(args, 1)).unwrap_or_default();
+                let qty = self.arg_named_f(args, "qty");
                 self.out.strategy_used = true;
                 self.out
                     .intents
-                    .push((self.bar, Intent::Entry { id, long: dir != "short" }));
+                    .push((self.bar, Intent::Entry { id, long: dir != "short", qty }));
                 Ok(())
             }
             "strategy.exit" => {
@@ -1059,7 +1160,9 @@ impl<'a> Vm<'a> {
             "time_close" => (c.open_time + c.timeframe.nanos()) as f64,
             "barstate.isconfirmed" => 1.0, // the host only runs closed bars
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
-            | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => 0.0,
+            | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => {
+                self.strategy_read(path)
+            }
             _ => {
                 return Err(crate::ScriptError {
                     kind: crate::ErrorKind::Type,

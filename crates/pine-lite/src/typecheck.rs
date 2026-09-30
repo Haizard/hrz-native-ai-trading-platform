@@ -784,8 +784,9 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "fill" => (2, 6),
         "bgcolor" | "barcolor" => (1, 4),
         "input.int" | "input.float" | "input.bool" | "input.string" | "input.color" => (0, 6),
-        "strategy.entry" | "strategy.exit" | "strategy.close" | "strategy.close_all"
-        | "strategy.cancel" => (1, 6),
+        "strategy.entry" | "strategy.exit" | "strategy.close" | "strategy.cancel" => (1, 6),
+        // Zero-arg: close everything.
+        "strategy.close_all" => (0, 6),
         _ => return None,
     })
 }

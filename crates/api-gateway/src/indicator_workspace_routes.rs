@@ -51,6 +51,14 @@ pub struct ScriptPreviewStats {
     pub shapes: usize,
     /// Whether the script draws on the price pane.
     pub overlays: usize,
+    /// Strategy execution (docs/24 S1): the run simulated a strategy.
+    pub strategy: bool,
+    /// Closed trades the simulation produced.
+    pub trades: usize,
+    /// Net profit of the simulated account.
+    pub net_profit: f64,
+    /// Peak-to-trough drawdown, as a fraction of the equity peak.
+    pub max_drawdown: f64,
 }
 
 /// Body of `POST /indicator-workspaces/{id}/messages`.
@@ -521,7 +529,7 @@ pub async fn create_message(
         )
         .await
         {
-            Ok((output, stats)) => (output, Some(stats), serde_json::Value::Null),
+            Ok((output, stats, run_note)) => (output, Some(stats), run_note),
             Err(reason) => (
                 chart_engine::IndicatorOutput {
                     revision_id: revision_tag.clone(),
@@ -564,13 +572,27 @@ pub async fn create_message(
     } else {
         "it has its own pane under the chart"
     };
+    // Strategy execution (docs/24 S1): a strategy run's headline rides the
+    // chat row the way the plots summary does.
+    let strategy_note = preview_stats
+        .filter(|s| s.strategy)
+        .map(|s| {
+            format!(
+                " Simulated {} trade(s), net {:.2}, max drawdown {:.1}%.",
+                s.trades,
+                s.net_profit,
+                s.max_drawdown * 100.0
+            )
+        })
+        .unwrap_or_default();
     let assistant_text = format!(
-        "Generated and validated revision {} (pine-lite script, {} model attempt(s)). Attached to the chart: {} plot(s) and {} marker(s) in its preview window; {}. The source is stored as code -- open the Code panel to read or edit it.",
+        "Generated and validated revision {} (pine-lite script, {} model attempt(s)). Attached to the chart: {} plot(s) and {} marker(s) in its preview window; {}{}. The source is stored as code -- open the Code panel to read or edit it.",
         revision.revision_number,
         attempts,
         plots,
         markers,
         kind_note,
+        strategy_note,
     );
     let assistant_payload = serde_json::json!({
         "revision_id": revision.id,
@@ -1158,7 +1180,7 @@ pub async fn submit_script(
         )
         .await
         {
-            Ok((output, stats)) => (output, Some(stats), serde_json::Value::Null),
+            Ok((output, stats, run_note)) => (output, Some(stats), run_note),
             Err(reason) => (
                 chart_engine::IndicatorOutput {
                     revision_id: revision_tag.clone(),
