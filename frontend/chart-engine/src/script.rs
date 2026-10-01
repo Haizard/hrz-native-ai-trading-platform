@@ -161,8 +161,9 @@ pub struct SceneScriptPane {
     /// The point markers.
     pub shapes: Vec<ScriptShape>,
     /// The pane's y-axis range, so the shell can draw its own ticks.
+    /// The bottom of the pane's y-range (lowest plotted value).
     pub value_min: f64,
-    /// The top of the pane's y-range.
+    /// The top of the pane's y-range (highest plotted value).
     pub value_max: f64,
 }
 
@@ -194,6 +195,46 @@ pub fn script_pane(
     slot: f64,
     plot: &crate::scene::Plot,
 ) -> Result<SceneScriptPane, String> {
+    let (header, output) = run_script(spec, candles)?;
+    pane_from_output(&header, &output, slot, plot)
+}
+
+/// Run one script and lay out everything it produces: the pane itself plus,
+/// for strategies, the positioned fills and the equity pane (docs/24 S2).
+/// One run feeds all three -- the strategy extras are projections of the
+/// same `Output`, never a second interpretation of a second run.
+#[allow(private_interfaces)] // `Frame` is crate-private by design
+pub fn script_pane_full(
+    spec: &ScriptSpec,
+    candles: &[analytics_core::types::Candle],
+    slot: f64,
+    plot: &crate::scene::Plot,
+    equity_plot: &crate::scene::Plot,
+    frame: &crate::scene::Frame,
+) -> Result<(SceneScriptPane, Option<ScriptStrategyLayer>, Option<ScriptEquityPane>), String> {
+    let (header, output) = run_script(spec, candles)?;
+    let pane = pane_from_output(&header, &output, slot, plot)?;
+    let title = header.title.clone().unwrap_or_else(|| "script".into());
+    let layer = scene_strategy_layer(&title, &output, slot, frame);
+    let equity = equity_pane(&title, &output, slot, equity_plot);
+    Ok((pane, layer, equity))
+}
+
+/// Vet and run one script: the shared front half of [`script_pane`] and
+/// [`script_pane_full`].
+
+/// Build the pane from a run's output: scale each plot to the pane's own
+/// y-range and position every point.
+///
+/// The y-range is the union of the finite plot values (plus hlines), padded
+/// 5% -- an empty series yields the 0..1 fallback so a pane still draws its
+/// frame and the note says why it is empty.
+/// Vet and run one script: the shared front half of [`script_pane`] and
+/// [`script_pane_full`].
+fn run_script(
+    spec: &ScriptSpec,
+    candles: &[analytics_core::types::Candle],
+) -> Result<(pine_lite::Header, Output), String> {
     let (header, parsed) =
         pine_lite::vet(&spec.source).map_err(|errs| format_script_errors(&errs))?;
     let inputs = Inputs {
@@ -204,15 +245,12 @@ pub fn script_pane(
         ..Inputs::default()
     };
     let output: Output = run(&parsed, candles, &inputs).map_err(|err| err.to_string())?;
-    pane_from_output(&header, &output, slot, plot)
+    Ok((header, output))
 }
 
-/// Build the pane from a run's output: scale each plot to the pane's own
-/// y-range and position every point.
-///
-/// The y-range is the union of the finite plot values (plus hlines), padded
-/// 5% -- an empty series yields the 0..1 fallback so a pane still draws its
-/// frame and the note says why it is empty.
+/// Lay out a script pane from an already-run output: the projection
+/// [`script_pane`] performs, shared with the strategy path
+/// ([`script_pane_full`]) so one run feeds pane + layer + equity.
 pub fn pane_from_output(
     header: &pine_lite::Header,
     output: &Output,
@@ -432,6 +470,205 @@ pub fn scene_overlay_objects(
             }
         })
         .collect()
+}
+
+/// One simulated fill, positioned on the price pane (docs/24 S2). The
+/// strategy-side twin of [`ScriptShape`]: the engine mapped the sim's fill
+/// through the same frame every plot and marker uses, so the shell only
+/// paints.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScriptFill {
+    /// Canvas x of the fill. The sim's order bar is the *decision* bar; the
+    /// fill lands on the NEXT bar's open (docs/24 S1) -- a stop that gaps
+    /// fills intrabar on that same next bar, at the mapped stop price.
+    pub x: f64,
+    /// Canvas y of the fill price on the price pane.
+    pub y: f64,
+    /// The fill price itself, for tooltips.
+    pub price: f64,
+    /// Long side when true; sides pick the marker direction and color.
+    pub long: bool,
+    /// The fill bar's index in the visible slice (decision + 1); the shell's
+    /// fresh-marker pulse reads it the way a shape's `bar` is read.
+    pub bar: usize,
+}
+
+/// One round trip: the entry fill and the closing fill that realized it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScriptTrade {
+    /// The position's opening fill.
+    pub entry: ScriptFill,
+    /// The position's closing fill.
+    pub exit: ScriptFill,
+    /// Realized pnl of the round trip, net of commission (the sim's number).
+    pub pnl: f64,
+    /// The carried stop price at exit time, when one was armed.
+    pub stop: Option<f64>,
+}
+
+/// The strategy report, shell-facing: the same headline numbers the gateway
+/// chat row carries, so both surfaces speak one vocabulary (docs/24 §8.3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScriptReport {
+    /// Realized net profit over the window, initial capital excluded.
+    pub net_profit: f64,
+    /// Closed round trips.
+    pub total_trades: usize,
+    /// Fraction of closed trades that made money, 0..1.
+    pub win_rate: f64,
+    /// Gross wins over gross losses; 0 when there were no losses.
+    pub profit_factor: f64,
+    /// Peak-to-trough decline of the equity curve, as a fraction.
+    pub max_drawdown: f64,
+}
+
+/// A strategy script's simulation, positioned for the shell (docs/24 S2).
+/// Scene-level rather than a [`ScriptOverlay`] field because the fills belong
+/// to the *price* pane regardless of the script's overlay flag -- a strategy's
+/// trades always live where the candles are.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScriptStrategyLayer {
+    /// The script this layer belongs to (`script:{title}`).
+    pub id: String,
+    /// Every closed round trip, chronological.
+    pub trades: Vec<ScriptTrade>,
+    /// The position still held at the window's end, if any.
+    pub open_position: Option<ScriptFill>,
+    /// The report the shell renders in the chip's tooltip.
+    pub report: ScriptReport,
+}
+
+/// A strategy's equity curve as its own pane (docs/24 S2, §8.1 decision:
+/// every strategy gets a dedicated sub-pane -- an equity series' scale is
+/// account-size, never the candle scale, overlay or not).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScriptEquityPane {
+    /// Stable id: `equity:{title}`.
+    pub id: String,
+    /// The strategy's title.
+    pub title: String,
+    /// The pane's own plot rectangle.
+    pub plot: crate::scene::Plot,
+    /// The equity polyline, positioned and bar-aligned with the candles.
+    pub points: Vec<crate::scene::Point>,
+    /// The pane's y-axis range, so the shell can draw its own ticks.
+    pub value_min: f64,
+    /// The top of the pane's y-range.
+    pub value_max: f64,
+}
+
+/// Position a strategy script's simulation onto the scene (docs/24 S2):
+/// fills at their fill-bar slot on the price pane, the report verbatim, and
+/// the open position when one survives the window.
+///
+/// `None` when the run was not a strategy (no simulation) -- the common case
+/// for every indicator script, and the reason the scene costs nothing extra
+/// for them.
+#[allow(private_interfaces)] // `Frame` is crate-private by design
+pub fn scene_strategy_layer(
+    title: &str,
+    output: &Output,
+    slot: f64,
+    frame: &crate::scene::Frame,
+) -> Option<ScriptStrategyLayer> {
+    let sim = output.simulation.as_ref()?;
+    let (lo, hi) = (frame.price_min, frame.price_max);
+    let py = |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot) };
+    let fill = |o: &pine_lite::sim::SimOrder| ScriptFill {
+        // The sim's `bar` is the decision bar; the fill is the next open, so
+        // the marker sits one slot right, on the bar that actually filled.
+        x: frame.plot.x + slot * ((o.bar + 1) as f64 + 0.5),
+        y: py(o.price),
+        price: o.price,
+        long: o.long,
+        bar: o.bar + 1,
+    };
+
+    // The sim's orders are chronological fills; `pnl` marks the closer of a
+    // round trip. Pairing on that marker reconstructs exactly the trades the
+    // report counted, in the sim's own order.
+    let mut trades = Vec::new();
+    let mut open: Option<&pine_lite::sim::SimOrder> = None;
+    for o in &sim.orders {
+        match open.take() {
+            None => {
+                if o.pnl.is_none() {
+                    open = Some(o);
+                }
+            }
+            Some(entry) => trades.push(ScriptTrade {
+                entry: fill(entry),
+                exit: fill(o),
+                pnl: o.pnl.unwrap_or(0.0),
+                stop: o.stop,
+            }),
+        }
+    }
+    // A position still held has no closing fill -- the shell draws it as the
+    // dashed live-position box instead.
+    let open_position = open.map(|entry| fill(entry));
+
+    Some(ScriptStrategyLayer {
+        id: format!("script:{title}"),
+        trades,
+        open_position,
+        report: ScriptReport {
+            net_profit: sim.report.net_profit,
+            total_trades: sim.report.total_trades as usize,
+            win_rate: sim.report.win_rate,
+            profit_factor: sim.report.profit_factor,
+            max_drawdown: sim.report.max_drawdown,
+        },
+    })
+}
+
+/// Build a strategy's equity pane: the account curve over the visible
+/// window, scaled to its own slice like every other pane (docs/24 S2).
+/// `None` when the run was not a strategy or the curve is empty.
+pub fn equity_pane(
+    title: &str,
+    output: &Output,
+    slot: f64,
+    plot: &crate::scene::Plot,
+) -> Option<ScriptEquityPane> {
+    let sim = output.simulation.as_ref()?;
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for v in &sim.equity {
+        if v.is_finite() {
+            min = min.min(*v);
+            max = max.max(*v);
+        }
+    }
+    if !(min.is_finite() && max.is_finite()) {
+        return None;
+    }
+    if (max - min).abs() < f64::EPSILON {
+        // A flat curve still deserves a pane that reads: pad around it.
+        min -= 1.0;
+        max += 1.0;
+    }
+    let pad = (max - min) * 0.05;
+    let (value_min, value_max) = (min - pad, max + pad);
+    let y_at = |v: f64| plot.y + plot.h - (v - value_min) / (value_max - value_min) * plot.h;
+    let points = sim
+        .equity
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.is_finite())
+        .map(|(bar, v)| crate::scene::Point {
+            x: plot.x + slot * (bar as f64 + 0.5),
+            y: y_at(*v),
+        })
+        .collect();
+    Some(ScriptEquityPane {
+        id: format!("equity:{title}"),
+        title: title.to_string(),
+        plot: *plot,
+        points,
+        value_min,
+        value_max,
+    })
 }
 
 /// Human-readable multi-error rendering, for the scene note.
@@ -696,5 +933,99 @@ mod tests {
         // Anchored near the bottom of the price range, inside the plot.
         assert!(shapes[0].y > plot_rect().y + plot_rect().h * 0.85, "{}", shapes[0].y);
         assert!(shapes[0].y <= plot_rect().y + plot_rect().h, "{}", shapes[0].y);
+    }
+
+    // -- docs/24 S2: strategy positioning --------------------------------
+
+    const STRAT_SCRIPT: &str = concat!(
+        "//@pine_lite version=1 overlay=false title=\"Strat\" strategy(commission_value=0)\n",
+        "up = ta.crossover(close, ta.sma(close, 5))\n",
+        "down = ta.crossunder(close, ta.sma(close, 5))\n",
+        "if up\n",
+        "    strategy.entry(\"long\", direction=\"long\")\n",
+        "if down\n",
+        "    strategy.close_all()\n",
+        "plot(close)\n",
+    );
+
+    fn strat_candles(n: usize) -> Vec<Candle> {
+        (0..n).map(|i| candle(i, 100.0 + ((i % 7) as f64))).collect()
+    }
+
+    fn strat_frame() -> crate::scene::Frame {
+        crate::scene::Frame {
+            plot: plot_rect(),
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 99.0,
+            price_max: 108.0,
+            bar_nanos: 60_000_000_000,
+        }
+    }
+
+    #[test]
+    fn a_strategy_script_positions_fills_trades_and_report() {
+        let (_, parsed) = pine_lite::vet(STRAT_SCRIPT).expect("vet");
+        let output = run(&parsed, &strat_candles(40), &Inputs::default()).expect("run");
+        let layer = scene_strategy_layer("Strat", &output, 10.0, &strat_frame()).expect("strategy layer");
+        assert_eq!(layer.id, "script:Strat");
+        assert!(!layer.trades.is_empty(), "the cycling fixture trades");
+        for t in &layer.trades {
+            for f in [&t.entry, &t.exit] {
+                // Fill markers map through the price frame, like every plot.
+                assert!(f.x >= plot_rect().x && f.x <= plot_rect().x + plot_rect().w, "{}", f.x);
+                assert!(f.y >= plot_rect().y && f.y <= plot_rect().y + plot_rect().h, "{}", f.y);
+            }
+            // Next-open rule: the fill bar is the decision bar's successor.
+            assert!(t.exit.bar > t.entry.bar, "{} > {}", t.exit.bar, t.entry.bar);
+            assert!(t.entry.long, "the fixture only enters long");
+        }
+        // The trades' pnl must sum to the report's net profit -- the pairing
+        // reconstructs exactly the round trips the sim counted.
+        let summed: f64 = layer.trades.iter().map(|t| t.pnl).sum();
+        assert!((summed - layer.report.net_profit).abs() < 1e-6, "{summed} vs {}", layer.report.net_profit);
+        assert_eq!(layer.report.total_trades, layer.trades.len());
+    }
+
+    #[test]
+    fn a_strategy_gets_a_dedicated_equity_pane() {
+        let (_, parsed) = pine_lite::vet(STRAT_SCRIPT).expect("vet");
+        let output = run(&parsed, &strat_candles(40), &Inputs::default()).expect("run");
+        let pane = equity_pane("Strat", &output, 10.0, &plot_rect()).expect("equity pane");
+        assert_eq!(pane.id, "equity:Strat");
+        assert_eq!(pane.title, "Strat");
+        // One point per bar of the window, all inside the pane's slice.
+        assert_eq!(pane.points.len(), 40);
+        for p in &pane.points {
+            assert!(p.y >= plot_rect().y && p.y <= plot_rect().y + plot_rect().h, "{}", p.y);
+        }
+        // The curve brackets the initial capital (the sim starts there).
+        assert!(pane.value_min <= 10_000.0 && pane.value_max >= 10_000.0);
+    }
+
+    #[test]
+    fn an_open_position_becomes_the_dashed_box_seed() {
+        let src = concat!(
+            "//@pine_lite version=1 overlay=false title=\"Held\" strategy(commission_value=0)\n",
+            "if bar_index == 3\n",
+            "    strategy.entry(\"long\", direction=\"long\")\n",
+            "plot(close)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let output = run(&parsed, &strat_candles(40), &Inputs::default()).expect("run");
+        let layer = scene_strategy_layer("Held", &output, 10.0, &strat_frame()).expect("strategy layer");
+        assert!(layer.trades.is_empty(), "never closed");
+        let open = layer.open_position.expect("the position survives the window");
+        assert!(open.long);
+        assert!(open.y >= plot_rect().y && open.y <= plot_rect().y + plot_rect().h);
+    }
+
+    #[test]
+    fn an_indicator_script_yields_no_strategy_layer_or_equity() {
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0 + ((i % 7) as f64))).collect();
+        let (_, parsed) = pine_lite::vet(RSI_SCRIPT).expect("vet");
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        assert!(scene_strategy_layer("RSI", &output, 10.0, &strat_frame()).is_none());
+        assert!(equity_pane("RSI", &output, 10.0, &plot_rect()).is_none());
     }
 }

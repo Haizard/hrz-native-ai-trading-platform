@@ -823,6 +823,13 @@ function createChartPane(root, hooks = {}) {
     // reads a price or computes a coordinate (the no-JS-math rule).
     drawScriptPanes(ctx, scene);
 
+    // Strategy execution (docs/24 S2): the sim's fills as trade markers on
+    // the price pane, the open position as a dashed box to the live bar, and
+    // each strategy's equity curve in its own dedicated sub-pane. All
+    // coordinates are the engine's; this only paints.
+    drawStrategyLayers(ctx, scene);
+    drawEquityPanes(ctx, scene);
+
     drawAxis(ctx, scene);
   }
 
@@ -972,6 +979,121 @@ function createChartPane(root, hooks = {}) {
     const b = (color >>> 8) & 0xFF;
     const a = ((color & 0xFF) / 255) * (alpha == null ? 1.0 : alpha);
     return `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
+  }
+
+  /// Strategy trades (docs/24 S2): every closed round trip paints a pair of
+  /// triangle fills at the engine-positioned prices (up = long entry, down =
+  /// short/exit side), an exit with a realized loss gets its pnl printed
+  /// under it, and a still-open position stretches a dashed box from its
+  /// entry fill to the right edge of the price plot -- "this is live" is the
+  /// one thing a closed-trade glyph cannot say.
+  function drawStrategyLayers(ctx, scene) {
+    if (!scene.strategy_layers || !scene.strategy_layers.length) return;
+    const plot = scene.plot;
+    for (const layer of scene.strategy_layers) {
+      for (const trade of layer.trades) {
+        drawTradeFill(ctx, trade.entry, true);
+        drawTradeFill(ctx, trade.exit, false);
+        if (trade.pnl < 0) {
+          ctx.fillStyle = "rgba(242, 54, 69, 0.9)";
+          ctx.font = "9px ui-monospace, monospace";
+          ctx.fillText(fmtNum(trade.pnl), trade.exit.x - 14, Math.min(plot.y + plot.h - 2, trade.exit.y + 14));
+        }
+      }
+      if (layer.open_position) {
+        const f = layer.open_position;
+        const side = f.long ? COLORS.position_long : COLORS.position_short;
+        const top = plot.y + 4;
+        const bottom = plot.y + plot.h - 4;
+        ctx.strokeStyle = side;
+        ctx.lineWidth = 1.25;
+        ctx.setLineDash([5, 4]);
+        ctx.strokeRect(f.x, top, Math.max(2, plot.x + plot.w - f.x), bottom - top);
+        ctx.setLineDash([]);
+        // Entry marker rides the box's left edge.
+        drawTradeFill(ctx, f, true);
+      }
+    }
+  }
+
+  /// One fill marker: a triangle pointing with the trade's side, glow under
+  /// it like a script shape. `entry` only decides emphasis; direction is the
+  /// fill's own `long` flag -- the engine already put the price on the pane.
+  function drawTradeFill(ctx, f, entry) {
+    const color = f.long ? COLORS.position_long : COLORS.position_short;
+    const dir = (f.long && entry) || (!f.long && !entry) ? 1 : -1; // up for a long entry or a short exit
+    const cy = f.y + (dir > 0 ? -7 : 7);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(f.x, cy - dir * 5);
+    ctx.lineTo(f.x - 4.5, cy + dir * 3);
+    ctx.lineTo(f.x + 4.5, cy + dir * 3);
+    ctx.closePath();
+    ctx.fill();
+    if (entry) {
+      ctx.strokeStyle = rgbaFromString(color, 0.55);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(f.x, cy, 8, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  function rgbaFromString(css, alpha) {
+    const m = /#([0-9a-f]{6})/i.exec(css);
+    if (!m) return css;
+    const n = parseInt(m[1], 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  }
+
+  /// Equity panes (docs/24 S2, §8.1): one dedicated sub-pane per strategy,
+  /// the account curve already positioned, plus the report card -- the same
+  /// headline numbers the gateway chat row carries, drawn top-left so the
+  /// pane answers "did it make money" without a tooltip.
+  function drawEquityPanes(ctx, scene) {
+    if (!scene.equity_panes || !scene.equity_panes.length) return;
+    for (const pane of scene.equity_panes) {
+      ctx.fillStyle = "rgba(13, 17, 26, 0.65)";
+      ctx.fillRect(pane.plot.x, pane.plot.y, pane.plot.w, pane.plot.h);
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(
+        Math.round(pane.plot.x) + 0.5,
+        Math.round(pane.plot.y) + 0.5,
+        Math.max(1, Math.round(pane.plot.w) - 1),
+        Math.max(1, Math.round(pane.plot.h) - 1)
+      );
+      // The curve: one stroke, engine-positioned like every other polyline.
+      if (pane.points.length > 1) {
+        ctx.strokeStyle = "rgba(94, 168, 255, 0.95)";
+        ctx.lineWidth = 1.25;
+        ctx.beginPath();
+        ctx.moveTo(pane.points[0].x, pane.points[0].y);
+        for (const pt of pane.points) ctx.lineTo(pt.x, pt.y);
+        ctx.stroke();
+      }
+      // Axis range, right edge -- same convention as drawScriptPanes.
+      ctx.font = "9px ui-monospace, monospace";
+      ctx.fillStyle = "rgba(148, 163, 184, 0.9)";
+      ctx.fillText(fmtNum(pane.value_max), pane.plot.x + pane.plot.w + 6, pane.plot.y + 9);
+      ctx.fillText(fmtNum(pane.value_min), pane.plot.x + pane.plot.w + 6, pane.plot.y + pane.plot.h);
+      // The report card, top-left: title over the headline numbers, pulled
+      // from the sibling strategy layer so both surfaces speak one report.
+      const layer = (scene.strategy_layers || []).find((l) => l.id === `script:${pane.title}`);
+      ctx.fillStyle = "rgba(226, 232, 240, 0.85)";
+      ctx.font = "600 10px ui-sans-serif, system-ui";
+      ctx.fillText(`${pane.title} — equity`, pane.plot.x + 6, pane.plot.y + 12);
+      if (layer) {
+        const r = layer.report;
+        ctx.font = "9px ui-monospace, monospace";
+        ctx.fillStyle = r.net_profit >= 0 ? COLORS.position_long : COLORS.position_short;
+        ctx.fillText(
+          `net ${fmtNum(r.net_profit)} · ${r.total_trades} trades · win ${(r.win_rate * 100).toFixed(0)}% · dd ${(r.max_drawdown * 100).toFixed(1)}%`,
+          pane.plot.x + 6,
+          pane.plot.y + 24
+        );
+      }
+    }
   }
 
   // Animation clock for fresh script markers (see `drawScriptMarkers`).

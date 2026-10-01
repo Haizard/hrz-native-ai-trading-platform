@@ -803,6 +803,13 @@ pub struct Scene {
     /// Always present and usually empty, like [`Scene::regions`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub script_panes: Vec<crate::script::SceneScriptPane>,
+    /// Strategy scripts' positioned trades and reports (docs/24 S2): fills
+    /// mapped on the price pane, paired round trips, the open position.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub strategy_layers: Vec<crate::script::ScriptStrategyLayer>,
+    /// Strategy equity curves, one dedicated pane per strategy (docs/24 S2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub equity_panes: Vec<crate::script::ScriptEquityPane>,
     /// Overlay scripts' plots, mapped through the price pane's scale. These
     /// draw *under* the user's drawings, with the levels and regions -- a
     /// script's opinion about a price is still an opinion about the pane the
@@ -1063,11 +1070,17 @@ pub fn build(request: &Request) -> Scene {
     // space, so the price plot's bottom edge and the pane's top edge never
     // touch: two plots sharing a pixel row is how a candle wick ends up drawn
     // over an oscillator line.
-    let script_pane_count = request
+    // Vet each script's header once: non-overlay scripts get a pane slice,
+    // and a STRATEGY (docs/24 S2) additionally reserves a dedicated equity
+    // slice -- the account curve's scale is capital, never the candle scale,
+    // overlay or not.
+    let vetted: Vec<_> = request
         .scripts
         .iter()
-        .filter(|spec| !pine_lite::vet(&spec.source).map(|(h, _)| h.overlay).unwrap_or(false))
-        .count();
+        .map(|spec| pine_lite::vet(&spec.source).ok().map(|(h, _)| h))
+        .collect();
+    let script_pane_count = vetted.iter().filter(|h| h.as_ref().is_some_and(|h| !h.overlay)).count()
+        + vetted.iter().filter(|h| h.as_ref().is_some_and(|h| h.strategy.is_some())).count();
     let sub_height = sub_pane_heights(&request.sub_panes, script_pane_count);
     // A gap before every pane -- including the first -- so the last pane's
     // bottom edge lands exactly on the bottom padding line, never inside the
@@ -1122,6 +1135,8 @@ pub fn build(request: &Request) -> Scene {
         indicator: None,
         sub_panes: Vec::new(),
         script_panes: Vec::new(),
+        strategy_layers: Vec::new(),
+        equity_panes: Vec::new(),
         script_overlays: Vec::new(),
         diff_indicator: None,
         last_price: None,
@@ -1562,12 +1577,10 @@ pub fn build(request: &Request) -> Scene {
     // An overlay script's plots join the price pane instead, mapped through
     // the frame the candles already use.
     let script_heights = &sub_height[request.sub_panes.len()..];
-    for (spec, height) in request.scripts.iter().zip(script_heights.iter().copied().chain(
+    for (script_index, (spec, height)) in request.scripts.iter().zip(script_heights.iter().copied().chain(
         std::iter::repeat(SUB_PANE_HEIGHT),
-    )) {
-        let header_overlay = pine_lite::vet(&spec.source)
-            .map(|(h, _)| h.overlay)
-            .unwrap_or(false);
+    )).enumerate() {
+        let header_overlay = vetted[script_index].as_ref().map(|h| h.overlay).unwrap_or(false);
         if header_overlay {
             // Overlay: plots map through the price pane's own scale. Vet
             // errors cost the note, not the frame.
@@ -1628,8 +1641,22 @@ pub fn build(request: &Request) -> Scene {
             continue;
         }
         let pane_plot = Plot { x: plot.x, y: pane_top, w: plot.w, h: height };
-        match crate::script::script_pane(spec, visible_real, slot, &pane_plot) {
-            Ok(pane) => scene.script_panes.push(pane),
+        // A strategy's equity pane takes the NEXT slice (docs/24 S2): its
+        // scale is account capital, which no price pane should have to share.
+        let is_strategy = vetted[script_index].as_ref().map(|h| h.strategy.is_some()).unwrap_or(false);
+        let (pane_height, equity_height) = if is_strategy { (height * 0.5, height * 0.5) } else { (height, 0.0) };
+        let pane_plot = Plot { x: plot.x, y: pane_top, w: plot.w, h: pane_height };
+        let equity_plot = Plot { x: plot.x, y: pane_top + pane_height + SUB_PANE_GAP, w: plot.w, h: equity_height };
+        match crate::script::script_pane_full(spec, visible_real, slot, &pane_plot, &equity_plot, &frame) {
+            Ok((pane, layer, equity)) => {
+                scene.script_panes.push(pane);
+                if let Some(layer) = layer {
+                    scene.strategy_layers.push(layer);
+                }
+                if let Some(equity) = equity {
+                    scene.equity_panes.push(equity);
+                }
+            }
             Err(reason) => add_note(
                 &mut scene.note,
                 format!("a script pane is not drawn: {reason}"),

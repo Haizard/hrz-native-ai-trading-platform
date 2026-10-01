@@ -1,6 +1,6 @@
 # 24 — Strategy execution: from signal-only stubs to simulated orders on the chart
 
-Status: **design, not yet implemented** · Supersedes: none · Extends: docs/23 Phase 7
+Status: **S1 + S2 implemented (VM sim, header knobs, preview stats, chart trades + equity panes); S3 + S4 pending** · Supersedes: none · Extends: docs/23 Phase 7
 Authored 2026-09-30 after the v1.1 language phase (while loops, parameter
 defaults, 256-object heap) landed.
 
@@ -196,7 +196,7 @@ its reports.
 
 ## 5. Phased plan
 
-### S1 — The simulator in the VM + one simulate() for both paths
+### S1 — The simulator in the VM + one simulate() for both paths ✅ done
 *Deliverable: a strategy script runs and reports; `ScriptStrategy` shares the
 same core; gateway preview surfaces orders/equity/report.*
 
@@ -217,7 +217,7 @@ same core; gateway preview surfaces orders/equity/report.*
   header knob tests; preview JSON shape test in `indicator_preview.rs`;
   ScriptStrategy tests unchanged-green.
 
-### S2 — Orders and equity on the chart (wasm + shell)
+### S2 — Orders and equity on the chart (wasm + shell) ✅ done
 *Deliverable: the chart shows every trade and the equity curve.*
 
 - Engine: position `SimOrder` fills as trade markers (triangle-up/down at
