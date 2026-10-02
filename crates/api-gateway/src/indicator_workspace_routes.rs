@@ -37,7 +37,8 @@ pub struct CreateRevisionBody {
 }
 
 /// What a script's preview run counted. Rendered as the chat's stats card.
-#[derive(Debug, Clone, Copy, Serialize)]
+/// (`simulation_note` holds an allocated String, so this is Clone, not Copy.)
+#[derive(Debug, Clone, Serialize)]
 pub struct ScriptPreviewStats {
     /// The preview window's length, in whole days.
     pub window_days: i64,
@@ -59,6 +60,10 @@ pub struct ScriptPreviewStats {
     pub net_profit: f64,
     /// Peak-to-trough drawdown, as a fraction of the equity peak.
     pub max_drawdown: f64,
+    /// docs/24 S3: non-fatal warning when a strategy simulated ZERO fills --
+    /// the run is valid, but nothing traded. Rides the stats card and the
+    /// chat row so the user (and the repair loop's next round) sees it.
+    pub simulation_note: Option<String>,
 }
 
 /// Body of `POST /indicator-workspaces/{id}/messages`.
@@ -566,25 +571,38 @@ pub async fn create_message(
     db::update_indicator_workspace_memory(database.pool(), user.user_id, id, &memory).await?;
     let plots = preview.zones.len();
     let markers = preview.markers.len();
-    let stats_levels = preview_stats.map(|s| s.levels).unwrap_or(0);
+    let stats_levels = preview_stats.as_ref().map(|s| s.levels).unwrap_or(0);
     let kind_note = if header.overlay {
         "it draws on the price pane"
     } else {
         "it has its own pane under the chart"
     };
     // Strategy execution (docs/24 S1): a strategy run's headline rides the
-    // chat row the way the plots summary does.
+    // chat row the way the plots summary does. S3: a zero-fill strategy is
+    // also WARNED here -- the note is exactly what the model's next repair
+    // round must see to loosen the entry condition.
     let strategy_note = preview_stats
+        .as_ref()
         .filter(|s| s.strategy)
         .map(|s| {
-            format!(
+            let mut note = format!(
                 " Simulated {} trade(s), net {:.2}, max drawdown {:.1}%.",
                 s.trades,
                 s.net_profit,
                 s.max_drawdown * 100.0
-            )
+            );
+            if let Some(warning) = &s.simulation_note {
+                note.push_str(&format!(" WARNING: {warning}"));
+            }
+            note
         })
         .unwrap_or_default();
+    // S3: the zero-fill warning cloned out here -- `preview_stats` itself
+    // moves into the payload below, and Copy is gone (simulation_note owns
+    // a String).
+    let simulation_note = preview_stats
+        .as_ref()
+        .and_then(|s| s.simulation_note.clone());
     let assistant_text = format!(
         "Generated and validated revision {} (pine-lite script, {} model attempt(s)). Attached to the chart: {} plot(s) and {} marker(s) in its preview window; {}{}. The source is stored as code -- open the Code panel to read or edit it.",
         revision.revision_number,
@@ -607,6 +625,9 @@ pub async fn create_message(
         // The preview run's own counts, rendered by the shell as the stats
         // row under the message -- the same honesty the document replay buys.
         "preview_stats": preview_stats,
+        // S3: the zero-fill warning, so the shell can flag the stats card
+        // even when the text row is not re-read.
+        "simulation_note": simulation_note,
     });
     let assistant_message = db::create_indicator_workspace_message(
         database.pool(),

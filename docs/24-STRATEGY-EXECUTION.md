@@ -1,6 +1,6 @@
 # 24 — Strategy execution: from signal-only stubs to simulated orders on the chart
 
-Status: **S1 + S2 implemented (VM sim, header knobs, preview stats, chart trades + equity panes); S3 + S4 pending** · Supersedes: none · Extends: docs/23 Phase 7
+Status: **S1 + S2 + S3 implemented (VM sim, header knobs, preview stats, chart trades + equity panes, studio teaching + simulation notes); S4 pending** · Supersedes: none · Extends: docs/23 Phase 7
 Authored 2026-09-30 after the v1.1 language phase (while loops, parameter
 defaults, 256-object heap) landed.
 
@@ -140,7 +140,13 @@ recorded intents) buys three things at once:
   script *reads* strategy state builtins — it simulates pass 1's intents,
   then re-runs the bar loop with the builtins reading the simulated account.
   Two passes maximum, fuel-metered separately; scripts that never read
-  strategy state pay nothing.
+  strategy state pay nothing. S3 refinement: pass 1 reads the account as
+  zero (it does not exist yet), so orders GATED on state — `strategy.exit`
+  under `if strategy.position_size > 0` above all — are missing from pass
+  1's intents. When the two passes' intents differ, the state-aware pass is
+  the script's real intent and the simulation is rebuilt from it (gated
+  entries need no special case: the simulator's pyramiding-0 refusal makes
+  pass 1's extra entry intents harmless).
 - the browser engine gets the identical `Simulation` for free (same crate,
   compiled to wasm) — no gateway round trip for chart rendering, and the
   "re-runs on every candle" live path stays true.
@@ -234,7 +240,7 @@ same core; gateway preview surfaces orders/equity/report.*
   `drawing_objects_position_through_the_frame`; shell has no unit harness —
   verified by the visual-check script docs/23 Phase 10 already prescribes.
 
-### S3 — The studio loop: generation knows strategies
+### S3 — The studio loop: generation knows strategies ✅ done
 *Deliverable: "make me a strategy" produces a working backtest in one chat.*
 
 - System prompt gains a Strategy section: header template, the builtin table

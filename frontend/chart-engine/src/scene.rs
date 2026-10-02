@@ -1640,7 +1640,6 @@ pub fn build(request: &Request) -> Scene {
             }
             continue;
         }
-        let pane_plot = Plot { x: plot.x, y: pane_top, w: plot.w, h: height };
         // A strategy's equity pane takes the NEXT slice (docs/24 S2): its
         // scale is account capital, which no price pane should have to share.
         let is_strategy = vetted[script_index].as_ref().map(|h| h.strategy.is_some()).unwrap_or(false);

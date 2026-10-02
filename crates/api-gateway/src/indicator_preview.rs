@@ -530,6 +530,7 @@ pub async fn replay_script_preview(
         trades: output.simulation.as_ref().map_or(0, |s| s.report.total_trades as usize),
         net_profit: output.simulation.as_ref().map_or(0.0, |s| s.report.net_profit),
         max_drawdown: output.simulation.as_ref().map_or(0.0, |s| s.report.max_drawdown),
+        simulation_note: strategy_simulation_note(output.simulation.as_ref(), candles.len()),
     };
     let title = header.title.clone().unwrap_or_else(|| "script".to_string());
     // The preview folds the run into the shared vocabulary: one zone per
@@ -576,6 +577,24 @@ pub async fn replay_script_preview(
         });
     }
     Ok((out, stats, run_note))
+}
+
+/// docs/24 S3: a strategy that simulated ZERO fills is a drawing, not a
+/// strategy -- the run succeeds, but the note must ride the stats card and
+/// the chat row so the user (and the repair loop's next round) sees the
+/// truth instead of a silent "net 0". `None` for indicator runs and for
+/// strategies that actually traded.
+#[must_use]
+pub(crate) fn strategy_simulation_note(
+    simulation: Option<&pine_lite::sim::Simulation>,
+    bars: usize,
+) -> Option<String> {
+    let sim = simulation?;
+    (sim.report.total_trades == 0.0).then(|| {
+        format!(
+            "0 fills in {bars} bars -- the entry condition never fired or every entry was skipped; loosen the entry condition or gate it on strategy.position_size == 0"
+        )
+    })
 }
 
 /// Map a detection side to the marker vocabulary the chart already paints.

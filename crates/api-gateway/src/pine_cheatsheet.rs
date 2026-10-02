@@ -85,6 +85,14 @@ DRAWING
 INPUTS
 - input.int(defval=, title=), input.float(defval=, title=), input.bool(defval=, title=). Use them instead of magic numbers.
 
+STRATEGIES (docs/24)
+- Header: append strategy(initial_capital=10000, default_qty_type=\"percent_of_equity\", default_qty_value=10, commission_value=0.04, slippage=0.02) after title=. Knobs: default_qty_type \"percent_of_equity\" or \"fixed\" (units); commission_type \"percent\" or \"absolute\"; pyramiding=0 only. Size and fees come from the header — never qty= per call.
+- Orders: strategy.entry(\"L\", direction=\"long\"), strategy.exit(\"xl\", stop=price), strategy.close(\"L\"), strategy.close_all(). Fill = NEXT bar's open; a stop fills intrabar when price touches it. Re-arm the stop EVERY bar the position is open.
+- ONE position: an entry while in a position is IGNORED, not reversed. Gate re-entries: if ta.crossover(fast, slow) and strategy.position_size == 0.
+- Account reads (series): strategy.position_size (0 = flat), strategy.position_avg_price, strategy.equity, strategy.openprofit, strategy.closedtrades, strategy.wintrades.
+- Trail state must be var and RATCHET, seeded on the first positioned bar: var float trail = 0.0, reset trail := 0.0 while flat, then inside if strategy.position_size > 0: trail := trail == 0.0 ? close - atr * 3.0 : math.max(trail, close - atr * 3.0) plus strategy.exit(\"xl\", stop=trail) (shorts: close + atr * 3.0 with math.min). A bare trail = 0.0 resets every bar — the trail follows price and stops out at once.
+- 0 fills in the preview means the entry condition never fired or every entry was skipped — loosen the condition, do not ship a strategy that never trades.
+
 LIMITS (vet refuses past them)
 64 plots/hlines · 500 statements · 8 symbol/timeframe pairs · 256 drawing objects · a per-bar step budget: keep `for`/`while` iterations small and never loop over all history every bar.";
 
@@ -104,7 +112,7 @@ pub(crate) fn repair_content(errors: Vec<serde_json::Value>) -> serde_json::Valu
 /// Every construct the sheet names, as one runnable script. If the sheet
 /// teaches a form the language refuses, this fails before any model sees it.
 const SHEET_SCRIPT: &str = concat!(
-    "//@pine_lite version=1 overlay=true title=\"Sheet check\" sec=\"ETHUSDT\"\n",
+    "//@pine_lite version=1 overlay=true title=\"Sheet check\" sec=\"ETHUSDT\" strategy(initial_capital=10000)\n",
     "len = input.int(defval=14, title=\"Length\")\n",
     "mult = input.float(defval=2.0, title=\"Mult\")\n",
     "show = input.bool(defval=true, title=\"Show\")\n",
@@ -144,6 +152,14 @@ const SHEET_SCRIPT: &str = concat!(
     "plotshape(long_sig, shape=\"triangleup\", color=color.green, location_value=low)\n",
     "plotchar(show, char=\"B\")\n",
     "plot(nz(feed), title=\"Feed\")\n",
+    "var float trail = 0.0\n",
+    "if ta.crossover(close, basis) and strategy.position_size == 0\n",
+    "    strategy.entry(\"L\", direction=\"long\")\n",
+    "if strategy.position_size > 0\n",
+    "    trail := math.max(trail, close - atr * 2.0)\n",
+    "    strategy.exit(\"xl\", stop=trail)\n",
+    "if ta.crossunder(close, basis) and strategy.position_size != 0\n",
+    "    strategy.close_all()\n",
 );
 
 #[cfg(test)]
@@ -183,6 +199,11 @@ mod tests {
             "request.security",
             "request.data",
             "style=\"linebr\"",
+            "strategy(initial_capital=10000",
+            "strategy.exit(\"xl\", stop=price)",
+            "strategy.position_size == 0",
+            "var float trail = 0.0",
+            "0 fills",
         ] {
             assert!(SHEET.contains(phrase), "sheet lacks: {phrase}");
         }

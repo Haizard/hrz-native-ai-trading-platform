@@ -473,6 +473,23 @@ impl<'a> Vm<'a> {
             if wants_state {
                 self.rerun_with_account()?;
             }
+            // docs/24 S3: a strategy whose entry never fired still simulates
+            // (a flat equity line at initial_capital), but a silent "net 0"
+            // reads as a broken platform. The note is non-fatal and rides the
+            // preview into the chat row, where the repair loop's next round
+            // can act on it. Pushed AFTER the possible second pass: pass 2
+            // resets `self.out`, which would drop any earlier note.
+            if self
+                .out
+                .simulation
+                .as_ref()
+                .is_some_and(|s| s.report.total_trades == 0.0)
+            {
+                self.out.notes.push(format!(
+                    "simulation produced 0 fills in {} bars -- every entry was skipped or the entry condition never fired; loosen the entry condition or gate it on strategy.position_size == 0",
+                    self.candles.len()
+                ));
+            }
         }
         Ok(std::mem::take(&mut self.out))
     }
@@ -518,12 +535,25 @@ impl<'a> Vm<'a> {
             }
         }
         if self.out.intents != pass1_intents {
-            self.out.notes.push(
-                "strategy state reads changed the script's decisions between passes; the reported trades are pass 1's simulation, the plots are pass 2's".to_string(),
-            );
-            self.out.intents = pass1_intents;
+            // docs/24 S3: pass 1 reads the account as zero (it does not exist
+            // yet), so any order GATED on account state -- `strategy.exit`
+            // under `if strategy.position_size > 0` above all -- is missing
+            // from pass 1's decisions. The state-aware pass is the script's
+            // real intent: rebuild the simulation from it instead of
+            // shipping a gate-blind trade list. Gated entries need no special
+            // case: pass 1 may push them where the position is open, but the
+            // simulator refuses them (pyramiding 0), so the state-aware
+            // rebuild produces the same trades.
+            let knobs = self.script.header.strategy.clone().unwrap_or_default();
+            let state_sim = crate::sim::simulate(&self.out.intents, self.candles, &knobs);
+            self.out.notes.push(format!(
+                "strategy state reads changed the script's decisions between passes; the trades come from the state-aware pass ({} order(s))",
+                state_sim.orders.len()
+            ));
+            self.out.simulation = Some(state_sim);
+        } else {
+            self.out.simulation = Some(sim);
         }
-        self.out.simulation = Some(sim);
         self.account = None;
         Ok(())
     }

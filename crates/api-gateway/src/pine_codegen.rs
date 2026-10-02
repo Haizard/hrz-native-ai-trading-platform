@@ -46,6 +46,44 @@ const REFERENCE_SCRIPT: &str = "//@pine_lite version=1 overlay=true title=\"Band
     plotshape(buy, shape=\"triangleup\", color=color.green, location_value=low)\n\
     plotshape(sell, shape=\"triangledown\", color=color.red, location_value=high)";
 
+/// The reference strategy quoted verbatim in the system prompt, next to
+/// [`REFERENCE_SCRIPT`]. It exercises every taught strategy form -- the
+/// `strategy(...)` header, gated entries, a `var`-ratcheted ATR trailing
+/// stop re-armed each bar, the reversal `close_all`, the account read --
+/// and the test suite requires it to vet AND simulate a trade, so the
+/// prompt can never teach a strategy shape that draws nothing but claims
+/// to trade. NOTE: built with `concat!` on purpose -- a `\n\`-continued
+/// string literal strips each line's leading whitespace, which erases the
+/// script's block indentation and breaks vetting.
+const REFERENCE_STRATEGY: &str = concat!(
+    "//@pine_lite version=1 overlay=false title=\"SMA trend strategy\" strategy(initial_capital=10000, default_qty_type=\"percent_of_equity\", default_qty_value=10, commission_value=0.04, slippage=0.02)\n",
+    "fast = ta.sma(close, 10)\n",
+    "slow = ta.sma(close, 30)\n",
+    "atr = ta.atr(14)\n",
+    "var float trail = 0.0\n",
+    "long_entry = ta.crossover(fast, slow)\n",
+    "short_entry = ta.crossunder(fast, slow)\n",
+    "if long_entry and strategy.position_size == 0\n",
+    "    strategy.entry(\"L\", direction=\"long\")\n",
+    "if short_entry and strategy.position_size == 0\n",
+    "    strategy.entry(\"S\", direction=\"short\")\n",
+    "if short_entry and strategy.position_size > 0\n",
+    "    strategy.close_all()\n",
+    "if long_entry and strategy.position_size < 0\n",
+    "    strategy.close_all()\n",
+    "if strategy.position_size == 0\n",
+    "    trail := 0.0\n",
+    "if strategy.position_size > 0\n",
+    "    trail := trail == 0.0 ? close - atr * 3.0 : math.max(trail, close - atr * 3.0)\n",
+    "    strategy.exit(\"xl\", stop=trail)\n",
+    "if strategy.position_size < 0\n",
+    "    trail := trail == 0.0 ? close + atr * 3.0 : math.min(trail, close + atr * 3.0)\n",
+    "    strategy.exit(\"xs\", stop=trail)\n",
+    "plot(trail, title=\"Trail\", color=color.orange, style=\"linebr\", linewidth=2)\n",
+    "plotshape(long_entry, shape=\"triangleup\", color=color.green, location_value=low)\n",
+    "plotshape(short_entry, shape=\"triangledown\", color=color.red, location_value=high)",
+);
+
 /// The system prompt: the language's whole surface, taught compactly.
 ///
 /// Everything listed here exists in the interpreter -- the builtin table is
@@ -53,6 +91,8 @@ const REFERENCE_SCRIPT: &str = "//@pine_lite version=1 overlay=true title=\"Band
 /// function that would refuse at run time. The non-negotiables (mandatory
 /// header, bounded loops, one statement per line) are the platform's vetting
 /// rules stated as authoring advice, which is where they cost the least.
+/// Both reference scripts are pinned by tests: [`REFERENCE_SCRIPT`] must vet,
+/// and [`REFERENCE_STRATEGY`] must vet AND simulate (docs/24 S3).
 
 pub(crate) fn script_system_prompt(symbol: &str, timeframe: &str) -> String {
     format!(
@@ -167,13 +207,32 @@ Slopes come from the stamps: `slope_high = (not na(ph2) and ph1_bar != ph2_bar) 
 
 Slope thresholds must be SCALE-FREE -- never compare a price-per-bar slope against an absolute constant (that breaks between a 2-dollar stock and an 85000-dollar coin). Use ATR: `atr = ta.atr(14)`, then "flat" means `math.abs(slope_high) <= atr * 0.15` and "rising" means `slope_low >= atr * 0.05`. This pivot + state + slope pattern builds triangles, channels, flags and breakouts -- all without arrays.
 
-## Trading simulation (only when the user asks for signals/entries)
-Orders fire only where the line runs; there is NO `when=` parameter. Gate orders with an `if` block:
+## Strategies (only when the user asks for entries/exits/backtests)
+Declare the trading account in the header -- a `strategy(...)` block after `title`:
 
-    if ta.crossover(close, macd_line)
-        strategy.entry("Long", direction="long")
+    //@pine_lite version=1 overlay=false title="My strategy" strategy(initial_capital=10000, default_qty_type="percent_of_equity", default_qty_value=10, commission_value=0.04, slippage=0.02)
 
-`strategy.entry(id, direction="long" or "short")`, `strategy.exit(id, from_entry="Long", stop=price)`, `strategy.close(id)`, `strategy.close_all()`. An order fills on the NEXT bar's open.
+Knobs, with their defaults (all optional): `initial_capital=10000`, `default_qty_type="percent_of_equity"` (or `"fixed"` = units of the asset), `default_qty_value=10` (a percent of equity, or units), `commission_value=0.04` (percent of notional per side; `commission_type="absolute"` makes it currency), `slippage=0.02` (percent against you on every fill), `pyramiding=0` (the only allowed value -- one position at a time). Position size and fees come from these header knobs; never pass `qty=` per call.
+
+Orders (fire them inside `if` blocks; every order fills on the NEXT bar's open):
+- `strategy.entry("L", direction="long")` or `direction="short"` -- a market entry.
+- `strategy.exit("xl", stop=price)` -- arms a STOP on the open position; it fills when price touches the stop. Re-arm it EVERY bar the position is open to trail it.
+- `strategy.close("L")` / `strategy.close_all()` -- a market exit at the next bar's open.
+- ONE position at a time: an entry fired while a position is open is IGNORED, not reversed. Gate re-entries with the account read.
+
+Account reads (series, usable in any expression): `strategy.position_size` (signed qty, 0 = flat), `strategy.position_avg_price`, `strategy.equity`, `strategy.openprofit`, `strategy.closedtrades`, `strategy.wintrades`.
+
+The rules that keep a strategy correct:
+1. Gate entries with `strategy.position_size == 0` unless you deliberately want a reversal.
+2. Arm the stop inside `if strategy.position_size != 0` -- a stop declared while flat is forgotten.
+3. Persist the trailing level with `var float trail = 0.0` and RATCHET it -- and SEED it on the first bar of the position, because a long's stop starts BELOW price but a short's starts ABOVE it: `trail := trail == 0.0 ? close - atr * 3.0 : math.max(trail, close - atr * 3.0)` for a long (`close + atr * 3.0` with `math.min` for a short), and reset `trail := 0.0` while flat. A bare `trail = 0.0` (no `var`) resets EVERY bar, so the "trail" follows price in both directions and stops out immediately -- the most common strategy bug.
+4. On the exit signal prefer `strategy.close_all()` in the same `if` as the reverse entry, and re-arm nothing while flat.
+
+## Reference strategy (exactly this shape of code, vetted AND simulated)
+
+```
+{REFERENCE_STRATEGY}
+```
 
 ## Non-negotiables
 - The `//@pine_lite` header is MANDATORY on the first line.
@@ -189,6 +248,7 @@ Orders fire only where the line runs; there is NO `when=` parameter. Gate orders
 "#,
         symbol = symbol,
         timeframe = timeframe,
+        REFERENCE_STRATEGY = REFERENCE_STRATEGY,
     )
 }
 
@@ -819,5 +879,195 @@ mod tests {
         // The resistance ray through the last two pivots is finite by the end.
         let res = &output.plots[0].values;
         assert!(res[79].is_finite(), "resistance projected: {}", res[79]);
+    }
+
+    /// The strategy idiom the prompt teaches, verbatim (docs/24 S3): the
+    /// `strategy(...)` header, gated entries, a `var`-ratcheted ATR trailing
+    /// stop re-armed each bar, and the account read. This is the shape the
+    /// generated "ATR Trail" script got wrong (`trail = 0.0`, no `var`, no
+    /// gate) -- the prompt now teaches the fix and this test pins it.
+    const STRATEGY_IDIOM_SCRIPT: &str = REFERENCE_STRATEGY;
+
+    /// An up-trend, a sharp reversal, and a recovery: the SMA(10)/SMA(30)
+    /// cross fires early (long), the reversal's `close_all` (or the trail
+    /// stop) closes it, and the recovery arms the long again -- at least
+    /// one closed trade either way.
+    fn strategy_candles() -> Vec<analytics_core::types::Candle> {
+        (0..140)
+            .map(|i| {
+                let close = match i {
+                    0..=19 => 100.0 + (i as f64) * 0.05,
+                    20..=59 => 101.0 + ((i - 20) as f64) * 0.72,
+                    60..=89 => 130.0 - ((i - 59) as f64) * 0.85,
+                    _ => 104.0 + ((i - 89) as f64) * 0.5,
+                };
+                analytics_core::types::Candle {
+                    symbol: "TEST".into(),
+                    timeframe: analytics_core::types::Timeframe::M1,
+                    open_time: 1_790_553_600_000_000_000i64 + (i as i64) * 60_000_000_000,
+                    open: close - 0.15,
+                    high: close + 1.0,
+                    low: close - 1.0,
+                    close,
+                    volume: 1.0,
+                    buy_volume: 0.5,
+                    sell_volume: 0.5,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_taught_strategy_idiom_vets_and_runs() {
+        // docs/24 S3: the reference strategy must VET...
+        let errs = pine_lite::vet(STRATEGY_IDIOM_SCRIPT);
+        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        let (_, parsed) = pine_lite::vet(STRATEGY_IDIOM_SCRIPT).ok().unwrap();
+        let candles = strategy_candles();
+        let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default()).expect("the strategy runs");
+        // ...and SIMULATE: a strategy that draws but trades nothing has no
+        // business being the prompt's model answer.
+        let sim = output.simulation.as_ref().expect("the reference strategy simulates");
+        assert!(
+            sim.report.total_trades >= 1.0,
+            "the taught idiom must close at least one trade: {:?}",
+            sim.report
+        );
+        assert!(output.strategy_used);
+        // The trail is armed and real: the reference draws positive levels
+        // while the position is open. (The monotone-ratchet property is
+        // pinned separately by the pullback test below.)
+        let trail = &output.plots[0].values;
+        assert!(
+            trail.iter().copied().filter(|v| *v > 0.0).count() > 10,
+            "the trail level is drawn while the position is open"
+        );
+    }
+
+    /// The prompt's rule 3 lesson as a differential test: on a rise, a
+    /// shallow pullback, then a recovery, the bare `trail = close - atr * 3`
+    /// shape (no `var`) resets every bar and follows price DOWN through the
+    /// pullback; the taught `var` + `math.max` ratchet holds the high-water
+    /// level. This is the exact bug the "ATR Trail" generation shipped.
+    #[test]
+    fn the_taught_trail_ratchet_survives_a_pullback() {
+        fn trail_candles() -> Vec<analytics_core::types::Candle> {
+            (0..96)
+                .map(|i| {
+                    let close = match i {
+                        0..=39 => 100.0 + (i as f64) * 0.7,
+                        40..=54 => 127.3 - ((i - 39) as f64) * 0.25,
+                        _ => 123.55 + ((i - 54) as f64) * 0.4,
+                    };
+                    analytics_core::types::Candle {
+                        symbol: "TEST".into(),
+                        timeframe: analytics_core::types::Timeframe::M1,
+                        open_time: (i as i64) * 60_000_000_000,
+                        open: close - 0.15,
+                        high: close + 1.0,
+                        low: close - 1.0,
+                        close,
+                        volume: 1.0,
+                        buy_volume: 0.5,
+                        sell_volume: 0.5,
+                    }
+                })
+                .collect()
+        }
+        fn trail_of(body: &str) -> Vec<f64> {
+            let head = concat!(
+                "//@pine_lite version=1 overlay=false title=\"Ratchet check\" strategy(initial_capital=10000)\n",
+                "atr = ta.atr(14)\n",
+                "if bar_index == 1\n",
+                "    strategy.entry(\"L\", direction=\"long\")\n",
+            );
+            let src = format!("{head}{body}plot(trail, title=\"Trail\")\n");
+            let (_, parsed) = pine_lite::vet(&src).ok().expect("the ratchet fixture vets");
+            let output =
+                pine_lite::run(&parsed, &trail_candles(), &pine_lite::Inputs::default()).expect("the ratchet fixture runs");
+            output.plots[0].values.iter().copied().filter(|v| v.is_finite()).collect()
+        }
+        let taught = trail_of(concat!(
+            "var float trail = 0.0\n",
+            "if strategy.position_size > 0 and not na(atr)\n",
+            "    trail := math.max(trail, close - atr * 3.0)\n",
+            "    strategy.exit(\"xl\", stop=trail)\n",
+        ));
+        let buggy = trail_of(concat!(
+            "trail = close - atr * 3.0\n",
+            "if not na(trail)\n",
+            "    strategy.exit(\"xl\", stop=trail)\n",
+        ));
+        assert!(
+            buggy.windows(2).any(|w| w[1] < w[0] - 1e-9),
+            "the no-var shape resets each bar and follows price down through the pullback"
+        );
+        assert!(
+            !taught.is_empty() && taught.windows(2).all(|w| w[1] >= w[0] - 1e-9),
+            "the var ratchet holds the high-water level through the pullback: {taught:?}"
+        );
+    }
+
+    #[test]
+    fn a_zero_fill_strategy_warns_instead_of_failing() {
+        // The model's condition never fires here (the cross never happens on
+        // a flat line) -- the run must still succeed, but its note must name
+        // the zero fills so the repair loop and the user see the truth.
+        let src = concat!(
+            "//@pine_lite version=1 overlay=false title=\"Never fires\" strategy(initial_capital=10000)\n",
+            "fast = ta.sma(close, 10)\n",
+            "slow = ta.sma(close, 30)\n",
+            "if ta.crossover(fast, slow) and strategy.position_size == 0\n",
+            "    strategy.entry(\"L\", direction=\"long\")\n",
+            "if strategy.position_size > 0\n",
+            "    strategy.exit(\"xl\", stop=close - 1.0)\n",
+            "plot(close)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).ok().expect("vets");
+        let candles: Vec<analytics_core::types::Candle> = (0..80)
+            .map(|i| {
+                let close = 100.0;
+                analytics_core::types::Candle {
+                    symbol: "TEST".into(),
+                    timeframe: analytics_core::types::Timeframe::M1,
+                    open_time: (i as i64) * 60_000_000_000,
+                    open: close,
+                    high: close + 0.5,
+                    low: close - 0.5,
+                    close,
+                    volume: 1.0,
+                    buy_volume: 0.5,
+                    sell_volume: 0.5,
+                }
+            })
+            .collect();
+        let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default()).expect("runs");
+        let sim = output.simulation.as_ref().expect("a strategy run simulates");
+        assert_eq!(sim.report.total_trades as usize, 0, "the entry condition never fires");
+        assert!(
+            output.notes.iter().any(|n| n.contains("0 fills")),
+            "the zero-fill note must ride the output: {:?}",
+            output.notes
+        );
+    }
+
+    #[test]
+    fn the_strategy_header_teaches_only_real_knobs() {
+        // The header the prompt teaches must vet as-is: every knob named,
+        // every quoted value in the language's accepted spelling.
+        let header = REFERENCE_STRATEGY.lines().next().expect("header").to_string();
+        let src = format!("{header}\nplot(close)\n");
+        let errs = pine_lite::vet(&src);
+        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line 1 col {}: {}", e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+    }
+
+    #[test]
+    fn the_prompt_carries_both_reference_scripts() {
+        // The system prompt embeds both references verbatim; a formatting
+        // regression that drops one is exactly what this catches.
+        let prompt = script_system_prompt("BTCUSDT", "15m");
+        assert!(prompt.contains(REFERENCE_SCRIPT), "the indicator reference rides the prompt");
+        assert!(prompt.contains(REFERENCE_STRATEGY), "the strategy reference rides the prompt");
+        assert!(prompt.contains("## Strategies"), "the strategy section exists");
     }
 }

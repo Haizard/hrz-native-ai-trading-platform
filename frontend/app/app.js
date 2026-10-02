@@ -1005,9 +1005,14 @@ function createChartPane(root, hooks = {}) {
         const side = f.long ? COLORS.position_long : COLORS.position_short;
         const top = plot.y + 4;
         const bottom = plot.y + plot.h - 4;
+        // A faint tint under the dashed border: against dense candles the
+        // dash alone disappeared, the wash is what makes the live position
+        // read as a region, not just an outline.
+        ctx.fillStyle = rgbaFromString(side, 0.07);
+        ctx.fillRect(f.x, top, Math.max(2, plot.x + plot.w - f.x), bottom - top);
         ctx.strokeStyle = side;
-        ctx.lineWidth = 1.25;
-        ctx.setLineDash([5, 4]);
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
         ctx.strokeRect(f.x, top, Math.max(2, plot.x + plot.w - f.x), bottom - top);
         ctx.setLineDash([]);
         // Entry marker rides the box's left edge.
@@ -1077,21 +1082,32 @@ function createChartPane(root, hooks = {}) {
       ctx.fillStyle = "rgba(148, 163, 184, 0.9)";
       ctx.fillText(fmtNum(pane.value_max), pane.plot.x + pane.plot.w + 6, pane.plot.y + 9);
       ctx.fillText(fmtNum(pane.value_min), pane.plot.x + pane.plot.w + 6, pane.plot.y + pane.plot.h);
-      // The report card, top-left: title over the headline numbers, pulled
-      // from the sibling strategy layer so both surfaces speak one report.
+      // The report card, top-left, painted LAST so it sits over the curve:
+      // an equity curve brackets initial_capital, so it hugs the pane top
+      // exactly where the title used to cross it. A backing plate dims the
+      // curve behind the text instead of letting it strike through.
       const layer = (scene.strategy_layers || []).find((l) => l.id === `script:${pane.title}`);
+      const titleText = `${pane.title} — equity`;
+      ctx.font = "600 10px ui-sans-serif, system-ui";
+      let plateW = ctx.measureText(titleText).width;
+      let reportText = "";
+      if (layer) {
+        const r = layer.report;
+        reportText = `net ${fmtNum(r.net_profit)} · ${r.total_trades} trades · win ${(r.win_rate * 100).toFixed(0)}% · dd ${(r.max_drawdown * 100).toFixed(1)}%`;
+        ctx.font = "9px ui-monospace, monospace";
+        plateW = Math.max(plateW, ctx.measureText(reportText).width);
+      }
+      const pad = 5;
+      ctx.fillStyle = "rgba(10, 14, 22, 0.82)";
+      ctx.fillRect(pane.plot.x + 3, pane.plot.y + 2, plateW + pad * 2, layer ? 29 : 17);
       ctx.fillStyle = "rgba(226, 232, 240, 0.85)";
       ctx.font = "600 10px ui-sans-serif, system-ui";
-      ctx.fillText(`${pane.title} — equity`, pane.plot.x + 6, pane.plot.y + 12);
+      ctx.fillText(titleText, pane.plot.x + 3 + pad, pane.plot.y + 13);
       if (layer) {
         const r = layer.report;
         ctx.font = "9px ui-monospace, monospace";
         ctx.fillStyle = r.net_profit >= 0 ? COLORS.position_long : COLORS.position_short;
-        ctx.fillText(
-          `net ${fmtNum(r.net_profit)} · ${r.total_trades} trades · win ${(r.win_rate * 100).toFixed(0)}% · dd ${(r.max_drawdown * 100).toFixed(1)}%`,
-          pane.plot.x + 6,
-          pane.plot.y + 24
-        );
+        ctx.fillText(reportText, pane.plot.x + 3 + pad, pane.plot.y + 25);
       }
     }
   }
