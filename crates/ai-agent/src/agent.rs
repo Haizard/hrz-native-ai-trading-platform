@@ -982,21 +982,40 @@ impl Agent {
             // the user has data for.
             let rejection = match strategy_dsl::parse_and_validate(&yaml) {
                 Ok(validated) => {
-                    let entry_tf = validated.document().timeframes.get("entry");
-                    let asked = request.entry_timeframe.trim();
-                    match entry_tf {
-                        Some(tf) if tf.to_string() == asked => {
-                            return Ok(GeneratedStrategy {
-                                validated,
-                                yaml,
-                                attempts: attempt,
-                                repaired_errors,
-                            });
+                    // `kind: indicator` is refused HERE, not by the validator:
+                    // the DSL still parses the indicator documents it already
+                    // stores (replays, promotion), but generation no longer
+                    // creates them -- an indicator is a pine-lite script from
+                    // the indicator workspace, not a concept document. The
+                    // steering message rides the same correction channel as a
+                    // validation error, so the next attempt drafts a strategy
+                    // or the user reads where indicators live now.
+                    if validated.document().kind == strategy_dsl::DocumentKind::Indicator {
+                        Some(
+                            "kind: indicator is not generated as a document any more: indicators \
+                             are pine-lite scripts created in the indicator workspace. If the \
+                             request describes entries, exits and risk, draft kind: strategy \
+                             (it may still declare concepts); if it only draws on the chart, \
+                             the indicator workspace is the tool for it."
+                                .to_string(),
+                        )
+                    } else {
+                        let entry_tf = validated.document().timeframes.get("entry");
+                        let asked = request.entry_timeframe.trim();
+                        match entry_tf {
+                            Some(tf) if tf.to_string() == asked => {
+                                return Ok(GeneratedStrategy {
+                                    validated,
+                                    yaml,
+                                    attempts: attempt,
+                                    repaired_errors,
+                                });
+                            }
+                            other => Some(format!(
+                                "timeframes.entry must be `{asked}` -- it was `{}`",
+                                other.map_or_else(|| "missing".into(), |tf| tf.to_string())
+                            )),
                         }
-                        other => Some(format!(
-                            "timeframes.entry must be `{asked}` -- it was `{}`",
-                            other.map_or_else(|| "missing".into(), |tf| tf.to_string())
-                        )),
                     }
                 }
                 Err(err) => Some(err.to_string()),
@@ -1434,7 +1453,9 @@ fn strategy_system_prompt(
         TAKE_PROFIT_KINDS.join(", ")
     ));
     out.push_str(&format!(
-        "kind: indicator, strategy, bot. max_risk_pct must be <= {}.\n\n",
+        "kind: strategy or bot -- never indicator. Indicators are pine-lite scripts \
+         generated in the indicator workspace, not documents; a `kind: indicator` \
+         draft is refused and costs an attempt. max_risk_pct must be <= {}.\n\n",
         strategy_dsl::MAX_RISK_PCT_CEILING
     ));
 
@@ -2390,6 +2411,38 @@ invalidation: []
         assert_eq!(out.attempts, 2);
         assert_eq!(out.repaired_errors.len(), 1);
         assert!(out.repaired_errors[0].contains("max_risk_pct"));
+    }
+
+    #[tokio::test]
+    async fn a_kind_indicator_draft_is_sent_back() {
+        // The studio flipped indicators to pine-lite code; the document
+        // generator must never produce a `kind: indicator` concept document.
+        // The refusal rides the same correction channel as a validation
+        // error, so the next attempt drafts a strategy instead. The fixture
+        // is a VALID indicator document -- no entry/risk/invalidation -- so
+        // it clears the DSL validator and meets this layer's own refusal.
+        let indicator = r#"
+name: "Gap detector"
+version: "1.0"
+kind: indicator
+market: "BTCUSDT"
+timeframes:
+  entry: "5m"
+"#;
+
+        let agent = agent(vec![draft(indicator), draft(VALID_YAML)]);
+        let out = agent
+            .generate_strategy(&StrategyRequest::new("x", "BTCUSDT", "5m"))
+            .await
+            .unwrap();
+
+        assert_eq!(out.attempts, 2);
+        assert!(
+            out.repaired_errors[0].contains("kind: indicator"),
+            "got {:?}",
+            out.repaired_errors
+        );
+        assert_eq!(out.document().kind, strategy_dsl::DocumentKind::Strategy);
     }
 
     #[tokio::test]
