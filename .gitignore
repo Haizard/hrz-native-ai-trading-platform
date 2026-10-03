@@ -47,3 +47,18 @@ reports/*-soak.log
 # Scratch output from long test/build runs -- console output, not evidence.
 # Anything worth keeping is written up in `reports/*.md` or `docs/`.
 /.cargo-logs/
+
+# Root-level run/test logs (gateway_*, phase_*, s1_/s2_/s3_*, cheat_*, server*)
+# -- the same class as /.cargo-logs/: console output, not evidence.
+/*.log
+/*.err
+
+# Agent session scratch: pasted chart screenshots, captured request/response
+# payloads and one-off diagnostic dumps. Diagnostics worth keeping are
+# promoted into tools/ as real scripts.
+/.freebuff/
+/*.jpg
+
+# Local agent harness state (same class as .workbuddy-ai/ and .superpowers/).
+.agents/
+.commandcode/
