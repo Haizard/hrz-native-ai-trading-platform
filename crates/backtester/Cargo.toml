@@ -24,3 +24,7 @@ serde_json = { workspace = true }
 # The fixtures are YAML, because that is what a strategy author writes. The
 # backtester takes an already-validated document and never parses one itself.
 strategy-dsl = { workspace = true, features = ["yaml"] }
+# docs/24 S4: the parity test runs the same script through the VM's own
+# simulation and through `ScriptStrategy`, so the tests need the interpreter
+# directly, not just through this crate's adapter.
+pine-lite = { workspace = true }

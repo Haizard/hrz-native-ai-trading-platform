@@ -37,8 +37,11 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use std::collections::BTreeMap;
+
 use analytics_core::types::Timeframe;
-use backtester::replay::{run_backtest, ReplayConfig, ReplayInput};
+use backtester::replay::{replay, run_backtest, ReplayConfig, ReplayInput};
+use backtester::script_strategy::ScriptStrategy;
 use strategy_runtime::{RuntimeConfig, StrategyEngine};
 
 use crate::auth::UserContext;
@@ -92,6 +95,16 @@ pub struct BacktestRequest {
     /// Slippage applied to market orders, in basis points.
     #[serde(default = "default_slippage_bps")]
     pub slippage_bps: f64,
+    /// docs/24 S4: an inline pine-lite source replaces the stored document
+    /// for THIS backtest. `representation` must be `"pine-lite"`; when the
+    /// pair is absent the stored DSL document is replayed as before. The
+    /// run still attributes to the strategy in the path -- a what-if
+    /// backtest recorded against it.
+    #[serde(default)]
+    pub representation: Option<String>,
+    /// The inline pine-lite source, sent together with `representation`.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 fn default_source_timeframe() -> String {
@@ -763,9 +776,28 @@ pub async fn backtest(
         .await?
         .ok_or_else(|| ApiError::not_found("no such strategy"))?;
 
-    let source = serde_json::to_string(&row.document)
-        .map_err(|e| ApiError::internal(format!("the stored document is not readable: {e}")))?;
-    let validated = validate_source(&source)?;
+    // docs/24 S4: the inline pair must be complete and the representation
+    // known. Vetting itself happens in the branch below -- a script that
+    // does not vet (pyramiding>0, `strategy.risk.*`, unknown syntax) is the
+    // same 422 a DSL document that no longer runs gets.
+    let inline_source = match (&request.representation, &request.source) {
+        (None, None) => None,
+        (Some(rep), Some(src)) if rep == "pine-lite" => Some(src.clone()),
+        (Some(rep), Some(_)) => {
+            return Err(ApiError::bad_request(
+                "REPRESENTATION_UNSUPPORTED",
+                format!(
+                    "unknown representation `{rep}`: this endpoint takes `pine-lite` inline sources; stored strategies replay their own DSL document"
+                ),
+            ));
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "REQUEST_INCOMPLETE",
+                "`representation` and `source` must be sent together",
+            ));
+        }
+    };
 
     let source_timeframe: Timeframe = request.source_timeframe.parse().map_err(|e| {
         ApiError::bad_request(
@@ -786,45 +818,106 @@ pub async fn backtest(
     }
 
     let symbol = request.symbol.to_uppercase();
-    let document = validated.document();
-
-    let series = db::loading::load_timeframe_series(
-        database.pool(),
-        &symbol,
-        &document.timeframes,
-        from_ns,
-        to_ns,
-        source_timeframe,
-    )
-    .await?;
-    db::loading::warn_about_short_series(&series, &document.timeframes, from_ns, to_ns);
-
-    let input = ReplayInput::new(document, series)?;
-    let mut engine = StrategyEngine::new(&validated, RuntimeConfig::default()).map_err(|e| {
-        ApiError::coded(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "STRATEGY_NOT_RUNNABLE",
-            e.to_string(),
-        )
-    })?;
-
-    let report = run_backtest(
-        &mut engine,
-        &input,
-        &ReplayConfig {
-            symbol: symbol.clone(),
-            from: from_ns,
-            to: to_ns - 1,
-            simulator: backtester::SimulatorConfig {
-                slippage_bps: request.slippage_bps,
-                ..backtester::SimulatorConfig::default()
-            },
-            ..ReplayConfig::default()
+    let replay_config = ReplayConfig {
+        symbol: symbol.clone(),
+        from: from_ns,
+        to: to_ns - 1,
+        simulator: backtester::SimulatorConfig {
+            slippage_bps: request.slippage_bps,
+            ..backtester::SimulatorConfig::default()
         },
-    )?;
+        ..ReplayConfig::default()
+    };
 
-    let report_json = serde_json::to_value(&report)
-        .map_err(|e| ApiError::internal(format!("could not serialize the report: {e}")))?;
+    // Both paths answer with one report JSON the stored row and the
+    // response share. The DSL path's report shape is the platform's backtest
+    // vocabulary; the pine path reports the same trades through the replay
+    // adapter, whose parity with the VM's own simulation is test-pinned
+    // (docs/24 S4).
+    let (report_json, equity) = if let Some(pine_source) = inline_source {
+        let mut script = ScriptStrategy::new(&pine_source).map_err(|e| {
+            ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "STRATEGY_NOT_RUNNABLE",
+                e,
+            )
+        })?;
+        // A script declares no timeframe map: it runs on one series, named
+        // `entry` like the engine's single-timeframe documents.
+        let timeframes: BTreeMap<String, Timeframe> =
+            BTreeMap::from([("entry".to_string(), source_timeframe)]);
+        let series = db::loading::load_timeframe_series(
+            database.pool(),
+            &symbol,
+            &timeframes,
+            from_ns,
+            to_ns,
+            source_timeframe,
+        )
+        .await?;
+        db::loading::warn_about_short_series(&series, &timeframes, from_ns, to_ns);
+        let input = ReplayInput {
+            timeframes,
+            candles: series,
+        };
+        let output = replay(&mut script, &input, &replay_config).map_err(|e| {
+            ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "BACKTEST_FAILED",
+                e.to_string(),
+            )
+        })?;
+        // The replay force-liquidates a still-open position at the end of
+        // data; the closed-trade count matches what the VM's own simulation
+        // would report.
+        let closed = output
+            .trades
+            .iter()
+            .filter(|t| t.exit_trigger != strategy_runtime::ExitTrigger::EndOfData)
+            .count();
+        let report = serde_json::json!({
+            "representation": "pine-lite",
+            "engine": "pine-lite-v1",
+            "candles_processed": output.candles_processed,
+            "trades": output.trades,
+            "trades_closed": closed,
+            "final_r": output.final_r,
+            "refusals": output.refusals,
+        });
+        (report, None)
+    } else {
+        let source = serde_json::to_string(&row.document)
+            .map_err(|e| ApiError::internal(format!("the stored document is not readable: {e}")))?;
+        let validated = validate_source(&source)?;
+        let document = validated.document();
+
+        let series = db::loading::load_timeframe_series(
+            database.pool(),
+            &symbol,
+            &document.timeframes,
+            from_ns,
+            to_ns,
+            source_timeframe,
+        )
+        .await?;
+        db::loading::warn_about_short_series(&series, &document.timeframes, from_ns, to_ns);
+
+        let input = ReplayInput::new(document, series)?;
+        let mut engine =
+            StrategyEngine::new(&validated, RuntimeConfig::default()).map_err(|e| {
+                ApiError::coded(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "STRATEGY_NOT_RUNNABLE",
+                    e.to_string(),
+                )
+            })?;
+
+        let report = run_backtest(&mut engine, &input, &replay_config)?;
+        let report_json = serde_json::to_value(&report)
+            .map_err(|e| ApiError::internal(format!("could not serialize the report: {e}")))?;
+        let equity = equity_plot(&report_json);
+        (report_json, equity)
+    };
 
     let backtest_id = db::strategies::create_backtest(
         database.pool(),
@@ -862,7 +955,7 @@ pub async fn backtest(
             from: from_ns,
             to: to_ns - 1,
             created_at: now_ns(),
-            equity_plot: equity_plot(&report_json),
+            equity_plot: equity,
             report: report_json,
         }),
     ))

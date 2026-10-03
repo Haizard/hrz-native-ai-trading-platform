@@ -94,9 +94,21 @@ pub fn intents_to_signal(
     for (_, intent) in intents {
         match intent {
             pine_lite::interp::Intent::Close { .. } => close = true,
-            pine_lite::interp::Intent::Exit { stop, .. } => {
-                *last_stop = *stop;
-                close = true;
+            pine_lite::interp::Intent::Exit { stop, limit, .. } => {
+                // docs/24 S4: a stop-carrying `strategy.exit` ARMS a standing
+                // stop (the VM's simulator fills it intrabar when price
+                // touches) -- it is not a market exit. Only a naked exit (no
+                // stop, no limit) closes at market, mirroring the VM's
+                // `Intent::Exit { stop: None }` handling. The replay carries
+                // the stop as declared at entry; RE-ARMING it while the
+                // position is open (a trailing stop) is the replay's v2 axis
+                // and stays refused as bracket id-theft (docs/24).
+                if stop.is_some() || limit.is_some() {
+                    *last_stop = *stop;
+                } else {
+                    *last_stop = None;
+                    close = true;
+                }
             }
             pine_lite::interp::Intent::Entry { long, .. } => entry_long = Some(*long),
         }
