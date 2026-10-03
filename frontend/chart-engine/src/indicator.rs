@@ -813,6 +813,27 @@ mod tests {
         assert!(value.validate().unwrap_err().contains("price_low"));
     }
 
+    #[test]
+    fn zone_state_wire_strings_are_the_shells_lifecycle_tiers() {
+        // docs/25: the shell tiers a zone's paint on these exact strings --
+        // "tapped" draws half-strength, "mitigated"/"invalidated" draw a
+        // dashed ghost, the rest draw full. A rename compiles everywhere and
+        // silently turns the tiers off, so the strings are pinned here.
+        let cases = [
+            (ZoneState::Created, "\"created\""),
+            (ZoneState::Active, "\"active\""),
+            (ZoneState::Tapped, "\"tapped\""),
+            (ZoneState::Mitigated, "\"mitigated\""),
+            (ZoneState::Invalidated, "\"invalidated\""),
+        ];
+        for (state, wire) in cases {
+            let json = serde_json::to_string(&state).unwrap();
+            assert_eq!(json, wire);
+            let back: ZoneState = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, state);
+        }
+    }
+
     fn setup(exit: Option<ReplayExit>) -> ReplaySetup {
         ReplaySetup {
             id: "setup-1".into(),

@@ -610,10 +610,13 @@ function createChartPane(root, hooks = {}) {
   // faded by `drawIndicatorZones`; never re-detected (concepts stripped at
   // set time), because a diff between two *moving* layers is noise.
   let diffIndicator = null;
-  // Pine-lite scripts attached to this chart (docs/23): [{ source, inputs }].
-  // Attached by the studio's "attach to chart" action once the gateway has
-  // vetted the source; the engine runs them every frame like the live
-  // indicator's concepts.
+  // Pine-lite script layers attached to this chart (docs/23, docs/25):
+  // [{ source, inputs, name, visible }]. Layers COMPOSE: each runs on every
+  // frame and draws its own output over the same candles. `visible === false`
+  // withholds the layer from the scene request rather than deleting it -- the
+  // engine draws what it is sent, so the filter lives here, the same place
+  // the AI drawing layer's does. Attached by the studio's "attach to chart"
+  // action once the gateway has vetted the source.
   let attachedScripts = [];
 
   // ---------------------------------------------------------------------------
@@ -1478,9 +1481,16 @@ function createChartPane(root, hooks = {}) {
     // it just does not shout twice.
     const placedLabels = [];
     for (const zone of zones) {
-      // The concept owns the colour; the lifecycle owns the treatment.
+      // The concept owns the colour; the lifecycle owns the treatment
+      // (docs/25): three tiers, so a chart reading left-to-right says "fresh,
+      // tested, finished" without a legend. A FRESH zone (created/active)
+      // draws at full strength; a TAPPED one -- price has entered but not
+      // consumed it -- halves the treatment while staying solid, the SMC
+      // "first touch" look; a SPENT one (mitigated/invalidated) fades to a
+      // dashed ghost, history rather than a live level.
       const colour = labelHue(zone.label);
       const spent = zone.state === "mitigated" || zone.state === "invalidated";
+      const tapped = !spent && zone.state === "tapped";
       const x = Math.max(zone.x, plot.x);
       const right = Math.min(zone.x + zone.w, plot.x + plot.w);
       const w = right - x;
@@ -1493,6 +1503,9 @@ function createChartPane(root, hooks = {}) {
       if (spent) {
         grad.addColorStop(0, hexToRgba(colour, 0.06 * strength));
         grad.addColorStop(1, hexToRgba(colour, 0.02 * strength));
+      } else if (tapped) {
+        grad.addColorStop(0, hexToRgba(colour, 0.16 * strength));
+        grad.addColorStop(1, hexToRgba(colour, 0.05 * strength));
       } else {
         grad.addColorStop(0, hexToRgba(colour, 0.28 * strength));
         grad.addColorStop(1, hexToRgba(colour, 0.10 * strength));
@@ -1502,7 +1515,7 @@ function createChartPane(root, hooks = {}) {
 
       // Crisp 1px border on the pixel grid; dashed only for spent history.
       // Pixel alignment is why two adjacent bands never blur into a stripe.
-      ctx.strokeStyle = hexToRgba(colour, (spent ? 0.35 : 0.85) * strength);
+      ctx.strokeStyle = hexToRgba(colour, (spent ? 0.35 : tapped ? 0.5 : 0.85) * strength);
       ctx.lineWidth = 1;
       ctx.setLineDash(spent ? [4, 3] : []);
       ctx.strokeRect(
@@ -2665,7 +2678,11 @@ function createChartPane(root, hooks = {}) {
     // time-aligned onto this chart's own bars from the cached fetch -- the
     // alignment walks the primary series so indexes never drift. An empty
     // list keeps the field out of the JSON -- an older engine ignores it.
-    if (attachedScripts.length) {
+    // Layers the eye turned off are withheld here (docs/25): the engine draws
+    // what it is sent, so a hidden layer is simply not sent -- the layer list
+    // keeps the source, and showing it again is a request, not a re-attach.
+    const visibleScripts = attachedScripts.filter((s) => s.visible !== false);
+    if (visibleScripts.length) {
       // Kick the cache for every declared second instrument, then read it --
       // the first render after a fresh attach draws without the pair and the
       // cache's own renderNow() rebuilds the scene once the data lands.
@@ -2675,9 +2692,9 @@ function createChartPane(root, hooks = {}) {
       // `ReferenceError` that killed every render once a script attached.
       // Pool keys (`SYM@TF`) ride the same cache: Phase 11 scripts name
       // their pairs per call, and the fetch fires at the key's own tf.
-      const poolKeys = attachedScripts.flatMap((s) => scriptPoolKeys(s.source));
+      const poolKeys = visibleScripts.flatMap((s) => scriptPoolKeys(s.source));
       refreshSecurityCandles(
-        attachedScripts
+        visibleScripts
           .map((s) => scriptSecSymbol(s.source))
           .concat(poolKeys),
         el("timeframe").value,
@@ -2686,8 +2703,8 @@ function createChartPane(root, hooks = {}) {
       // Phase 14: request.data series — the snapshot fetch is async (render
       // is sync), so the first render draws without the feed values and the
       // data listener rebuilds the scene when the snapshot lands.
-      const dataNames = attachedScripts.flatMap((s) => scriptDataNames(s.source));
-      request.scripts = attachedScripts.map((s) => {
+      const dataNames = visibleScripts.flatMap((s) => scriptDataNames(s.source));
+      request.scripts = visibleScripts.map((s) => {
         const spec = { source: s.source, inputs: s.inputs || {} };
         const sec = scriptSecSymbol(s.source);
         if (sec) {
@@ -4698,6 +4715,32 @@ function createChartPane(root, hooks = {}) {
         toast(`Removed ${name} from this chart`);
       });
     }
+    // Script-layer chips (docs/25): one delegated listener on the container,
+    // because `syncIndicatorChip` rebuilds the chips on every sync -- wiring
+    // each button would die with the node it was wired to. The eye toggles
+    // the layer's visibility, the × removes it, and both derive their target
+    // from the chip's data-layer index.
+    const layerChips = root.querySelector(".layerChips");
+    if (layerChips) {
+      layerChips.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const button = event.target.closest("button[data-layer]");
+        if (!button) return;
+        const index = parseInt(button.dataset.layer, 10);
+        if (!(index >= 0)) return;
+        if (button.classList.contains("layerChipEye")) {
+          const scripts = paneApi.attachedScripts();
+          const layer = scripts[index];
+          if (!layer) return;
+          paneApi.setScriptVisible(index, layer.visible === false);
+        } else if (button.classList.contains("layerChipRemove")) {
+          const scripts = paneApi.attachedScripts();
+          const name = scripts[index] ? scripts[index].name || "script" : "script";
+          paneApi.removeScriptAt(index);
+          toast(`Removed ${name} from this chart`);
+        }
+      });
+    }
     el("zoomIn").addEventListener("click", () => zoomStep(true));
     el("zoomOut").addEventListener("click", () => zoomStep(false));
     el("minBtn").addEventListener("click", () => setMin(!root.classList.contains("min")));
@@ -4895,21 +4938,45 @@ function createChartPane(root, hooks = {}) {
       syncIndicatorChip();
     },
 
-    /// Attach a vetted Pine-lite script (docs/23) to this chart. The caller
-    /// passes { source, inputs } -- source already accepted by
-    /// `POST /scripts/vet`; the browser never runs or parses it, it only
-    /// sends it back so the engine can. Multiple scripts attach side by
-    /// side; each non-overlay one takes its own pane.
+    /// Attach a vetted Pine-lite script (docs/23) to this chart as a LAYER
+    /// (docs/25). The caller passes { source, inputs } -- source already
+    /// accepted by `POST /scripts/vet`; the browser never runs or parses it,
+    /// it only sends it back so the engine can. Layers compose: attaching a
+    /// new script adds a layer beside the existing ones; re-attaching the
+    /// SAME source updates its layer in place, so saving the revision under
+    /// edit stays one gesture instead of stacking a duplicate per save.
     attachScript(spec) {
       if (!spec || !spec.source) return;
-      attachedScripts.push({ source: spec.source, inputs: spec.inputs || {}, name: spec.name });
+      const layer = { source: spec.source, inputs: spec.inputs || {}, name: spec.name, visible: true };
+      const existing = attachedScripts.findIndex((s) => s.source === spec.source);
+      if (existing >= 0) attachedScripts[existing] = layer;
+      else attachedScripts.push(layer);
       renderNow();
       syncIndicatorChip();
     },
 
-    /// Every attached script, for the chip and the attach paths.
+    /// Every attached script layer, for the chips and the attach paths.
     attachedScripts() {
       return attachedScripts;
+    },
+
+    /// Show or hide one script layer (docs/25). Hiding withholds the layer
+    /// from the scene request rather than deleting it: the layer list is the
+    /// pane's state, and the eye toggles what the engine is asked to draw.
+    setScriptVisible(index, visible) {
+      const layer = attachedScripts[index];
+      if (!layer) return;
+      layer.visible = !!visible;
+      renderNow();
+      syncIndicatorChip();
+    },
+
+    /// Remove one script layer by index.
+    removeScriptAt(index) {
+      if (index < 0 || index >= attachedScripts.length) return;
+      attachedScripts.splice(index, 1);
+      renderNow();
+      syncIndicatorChip();
     },
 
     /// Take every attached script off this chart.
@@ -5426,34 +5493,49 @@ function pageToast(message) {
 /// cannot drift the way a flag set in one place and read in another does.
 function syncIndicatorChip() {
   for (const pane of panes) {
+    // The concept-layer chip: only the attached indicator document, never a
+    // script -- script layers have their own chips below (docs/25), so one
+    // chip never stands in for (or removes) a different layer's output.
     const chip = pane.root.querySelector(".indicatorChip");
-    if (!chip) continue;
-    const attached = pane.attachedIndicator();
-    const scripts = pane.attachedScripts ? pane.attachedScripts() : [];
-    // A script revision shows its own chip when no document layer is
-    // attached: the name is the script's title, and "live" is literally
-    // true -- the chart re-runs the code on every frame.
-    if (!attached && scripts.length) {
-      const first = scripts[scripts.length - 1];
-      chip.hidden = false;
-      chip.querySelector(".indicatorChipName").textContent =
-        (first.name || "script") + (scripts.length > 1 ? ` +${scripts.length - 1}` : "") + " · live";
-      chip.title = "A pine-lite script runs on this chart's candles every frame";
-      continue;
+    if (chip) {
+      const attached = pane.attachedIndicator();
+      const live = attached && Array.isArray(attached.concepts) && attached.concepts.length > 0;
+      chip.hidden = !attached;
+      if (attached) {
+        chip.querySelector(".indicatorChipName").textContent =
+          (attached.name || "generated indicator") + (live ? " · live" : "");
+        chip.title = live
+          ? "Detects live on every candle of this chart until removed"
+          : "Static preview from the generator window";
+      }
     }
-    const live = attached && Array.isArray(attached.concepts) && attached.concepts.length > 0;
-    chip.hidden = !attached;
-    if (attached) {
-      chip.querySelector(".indicatorChipName").textContent =
-        (attached.name || "generated indicator") + (live ? " · live" : "");
-      chip.title = live
-        ? "Detects live on every candle of this chart until removed"
-        : "Static preview from the generator window";
+    // One chip per script layer, derived from the pane's layer list on every
+    // sync -- never stored in the DOM between syncs, so the chips and the
+    // request cannot disagree about what is attached or visible.
+    const layersEl = pane.root.querySelector(".layerChips");
+    if (layersEl) {
+      const scripts = pane.attachedScripts ? pane.attachedScripts() : [];
+      layersEl.hidden = scripts.length === 0;
+      layersEl.innerHTML = scripts
+        .map((s, i) => {
+          const off = s.visible === false;
+          return (
+            `<span class="layerChip${off ? " off" : ""}" title="A pine-lite layer — runs on this chart's candles every frame">` +
+            `<button type="button" class="layerChipEye" data-layer="${i}" aria-pressed="${!off}" ` +
+            `title="${off ? "Show this layer" : "Hide this layer"}">${off ? "○" : "●"}</button>` +
+            `<span class="indicatorChipName">${escapeHtml(s.name || "script")} · live</span>` +
+            `<button type="button" class="indicatorChipRemove layerChipRemove" data-layer="${i}" title="Remove this layer">×</button>` +
+            `</span>`
+          );
+        })
+        .join("");
     }
   }
 }
 
-/// Remove the active pane's attached indicator.
+/// Remove the active pane's attached CONCEPT-layer indicator. Script layers
+/// are untouched: each has its own chip with its own × (docs/25) -- one chip
+/// removing a different layer's output was the old all-or-nothing model.
 function detachIndicator() {
   if (!activePane) return;
   const output = activePane.attachedIndicator();
@@ -5464,9 +5546,6 @@ function detachIndicator() {
   if (output && Array.isArray(output.concepts) && output.concepts.length) {
     activePane.attachIndicator(null);
   }
-  // Attached scripts go with the same ×: the chip may be describing a script
-  // when no document layer is attached, so removing means removing both.
-  activePane.clearScripts();
   syncIndicatorChip();
 }
 
@@ -9139,8 +9218,7 @@ async function selectWorkspace(id) {
       // engine, which re-runs it on this chart's candles every frame. A
       // document revision attaches as the concepts/preview pair, as before.
       if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
-        activePane.clearIndicator();
-        activePane.clearScripts();
+        // A layer (docs/25): joins whatever is already on the chart.
         activePane.attachScript({ source: rev.source, inputs: {}, name: (preview && preview.name) || ws.name });
         syncIndicatorChip();
         pageToast(`Attached script "${(preview && preview.name) || ws.name}" to ${activePane.symbol()} ${activePane.timeframe()} — it re-runs on every candle`);
@@ -9299,13 +9377,14 @@ async function saveCodeAsRevision() {
     wsCodeFile = { wsId: wsCodeFile.wsId, revisionId: resp.revision_id, name: resp.title, source, fresh: false };
     await loadRevisions(wsCodeFile.wsId);
     // Attach straight to the chart: save and run are one gesture, the way
-    // the Pine editor does it.
+    // the Pine editor does it. As a LAYER (docs/25): the script joins any
+    // layers already on the chart instead of replacing them -- re-saving the
+    // same source updates its own layer, and the layer chips toggle or remove
+    // each one.
     if (activePane) {
-      activePane.clearIndicator();
-      activePane.clearScripts();
       activePane.attachScript({ source, inputs: {}, name: resp.title || "script" });
       syncIndicatorChip();
-      pageToast(`Attached "${resp.title || "script"}" to ${activePane.symbol()} ${activePane.timeframe()} — it re-runs on every candle`);
+      pageToast(`Attached "${resp.title || "script"}" to ${activePane.symbol()} ${activePane.timeframe()} — it re-runs on every candle; manage it from the layer chips`);
     }
     if (wsActiveId) await selectWorkspace(wsActiveId);
   } catch (e) {
@@ -9388,8 +9467,7 @@ async function attachRevisionToChart(wsId, revId) {
     // A pine-lite revision attaches as code; a document revision as its
     // concepts/preview pair -- see `selectWorkspace`'s same fork.
     if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
-      target.clearIndicator();
-      target.clearScripts();
+      // A layer (docs/25): joins whatever is already on the chart.
       target.attachScript({ source: rev.source, inputs: {}, name: rev.preview.name || "script" });
     } else {
       target.attachIndicator(rev.preview);
@@ -9439,8 +9517,7 @@ async function viewRevision(wsId, revId) {
     // the active pane as the one-window view of what the generator saw.
     if (rev.preview && activePane) {
       if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
-        activePane.clearIndicator();
-        activePane.clearScripts();
+        // A layer (docs/25): joins whatever is already on the chart.
         activePane.attachScript({ source: rev.source, inputs: {}, name: rev.preview.name || "script" });
       } else {
         activePane.attachIndicator(rev.preview);
