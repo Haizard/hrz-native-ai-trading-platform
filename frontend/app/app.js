@@ -1202,11 +1202,28 @@ function createChartPane(root, hooks = {}) {
           ctx.setLineDash([]);
         } else if (o.Box) {
           const b = o.Box;
+          // Clip to the plot the way drawZoneSet does: a zone extended to
+          // "now" (bar_index + a large right coordinate) must stop at the
+          // price axis, not bleed into it. Coordinates are normalised so a
+          // script that passed bottom before top still draws the band it
+          // meant instead of a negative-height rect.
+          const plot = scene.plot;
+          const x = Math.max(Math.min(b.x1, b.x2), plot.x);
+          const right = Math.min(Math.max(b.x1, b.x2), plot.x + plot.w);
+          const w = right - x;
+          const y = Math.min(b.y1, b.y2);
+          const h = Math.abs(b.y2 - b.y1);
+          if (w <= 0 || h <= 0) continue;
           ctx.fillStyle = rgbaFromPacked(b.color, 0.22);
-          ctx.fillRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+          ctx.fillRect(x, y, w, h);
           ctx.strokeStyle = rgbaFromPacked(b.color, 0.8);
           ctx.lineWidth = 1;
-          ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+          ctx.strokeRect(
+            Math.round(x) + 0.5,
+            Math.round(y) + 0.5,
+            Math.max(1, Math.round(w) - 1),
+            Math.max(1, Math.round(h) - 1)
+          );
         } else if (o.Label) {
           const lb = o.Label;
           ctx.font = "600 10px ui-sans-serif, system-ui";

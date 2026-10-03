@@ -425,10 +425,16 @@ pub fn scene_overlay_objects(
     frame: &crate::scene::Frame,
 ) -> Vec<ScriptDraw> {
     let (lo, hi) = (frame.price_min, frame.price_max);
-    let last = frame.to / frame.bar_nanos; // bars in the window (approx index space)
+    // Bars in the window. The frame's edges are ABSOLUTE unix-nanos
+    // timestamps, so the count is the span over one bar -- `frame.to /
+    // frame.bar_nanos` is a *date* in bar units (tens of millions), which
+    // used to throw every negative (right-edge-anchored) coordinate millions
+    // of bar-slots off the right side of the canvas. A Pine-style
+    // `box.new(start, top, -1, bottom)` "extend to now" was invisible.
+    let last = ((frame.to - frame.from) / frame.bar_nanos.max(1)) as f64;
     let bx = |bar: f64| -> f64 {
         // Negative indexes anchor from the right edge; >= 0 from the left.
-        let idx = if bar < 0.0 { last as f64 + bar } else { bar };
+        let idx = if bar < 0.0 { last + bar } else { bar };
         frame.plot.x + slot * (idx + 0.5)
     };
     let py = |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot) };
@@ -912,6 +918,53 @@ mod tests {
             other => panic!("expected a label: {other:?}"),
         }
         let _ = header;
+    }
+
+    #[test]
+    fn a_right_edge_anchored_box_lands_on_the_chart() {
+        // Regression: `frame.to / frame.bar_nanos` is an absolute date in bar
+        // units (tens of millions), not the window's bar count. A negative
+        // bar coordinate -- Pine's "count back from the last bar", the only
+        // way a script says "extend this zone to the right edge" -- was
+        // anchored that many slots off-screen and never drawn. The frame
+        // here carries real unix-nanos edges so `from` is nowhere near zero.
+        let bar_nanos = 60_000_000_000i64;
+        let bars = 40i64;
+        let from = 1_755_000_000_000_000_000i64;
+        let frame = crate::scene::Frame {
+            plot: plot_rect(),
+            from,
+            to: from + bars * bar_nanos,
+            price_min: 99.0,
+            price_max: 111.0,
+            bar_nanos,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "if bar_index == 0\n",
+            "    box.new(8, 104.0, -1, 102.0, color=color.green)\n",
+            "plot(close)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..bars as usize).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        // slot = plot.w / bars, the invariant `build` keeps in production.
+        let objects = scene_overlay_objects(&output, 380.0 / bars as f64, &frame);
+        assert_eq!(objects.len(), 1);
+        match &objects[0] {
+            ScriptDraw::Box { x1, x2, .. } => {
+                let rect = plot_rect();
+                assert!(*x1 > rect.x && *x1 < rect.x + rect.w, "left edge on-plot: {x1}");
+                // -1 counts back from the last bar: the right edge lands at
+                // the window's right side, not millions of pixels past it.
+                let right_edge = rect.x + rect.w;
+                assert!(
+                    (*x2 - right_edge).abs() <= 10.0,
+                    "right edge anchored at the last bar: x2={x2} plot right={right_edge}"
+                );
+            }
+            other => panic!("expected a box: {other:?}"),
+        }
     }
 
     #[test]

@@ -178,6 +178,61 @@ Statements that add to a drawing heap (cap 256 per script):
 
 Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~256 bars (past the cap the extra objects are dropped). `style=` is "solid"/"dashed"/"dotted".
 
+## SMC zones (order blocks, fair value gaps, breaker blocks): draw BOXES, never markers
+
+A zone is a price band with a birth bar, so the drawing is `box.new`: one box per LIVE zone, its right edge extended past the last bar (`bar_index + 10000`) so the canvas clips it at the plot edge -- TradingView's "extend to now" look. A `plotshape` triangle marks an EVENT (a CHoCH, a sweep, a BOS); it is never the drawing for a ZONE. An SMC indicator that renders zones as triangles or lines has failed the request.
+
+The complete fair-value-gap idiom -- detection, mitigation, and the draw pass. A bullish FVG is a 3-candle gap: today's low above the high 2 bars back; the zone is the gap itself (top = low, bottom = high[2]), born at the pattern's first candle (`bar_index - 2`). It dies when a later bar's low trades through its bottom. Bearish mirrors it (high < low[2]; the zone is low[2]..high; it dies when a later high clears its top):
+
+    var bull_top = array.new()
+    var bull_bot = array.new()
+    var bull_bar = array.new()
+    var bear_top = array.new()
+    var bear_bot = array.new()
+    var bear_bar = array.new()
+    bullish_fvg = low > high[2]
+    bearish_fvg = high < low[2]
+    if bullish_fvg
+        array.push(bull_top, low)
+        array.push(bull_bot, high[2])
+        array.push(bull_bar, bar_index - 2)
+    if bearish_fvg
+        array.push(bear_top, low[2])
+        array.push(bear_bot, high)
+        array.push(bear_bar, bar_index - 2)
+    n_bull = array.size(bull_top)
+    n_bear = array.size(bear_top)
+    for i = 0 to 24
+        if i < n_bull
+            bb = array.get(bull_bot, i)
+            if not na(bb)
+                if low < bb
+                    array.set(bull_bot, i, na)
+        if i < n_bear
+            bt = array.get(bear_top, i)
+            if not na(bt)
+                if high > bt
+                    array.set(bear_top, i, na)
+    if bar_index == last_bar_index
+        for i = 0 to 24
+            if i < n_bull
+                t = array.get(bull_top, i)
+                b = array.get(bull_bot, i)
+                if not na(b)
+                    box.new(array.get(bull_bar, i), t, bar_index + 10000, b, color=color.teal)
+            if i < n_bear
+                t2 = array.get(bear_top, i)
+                b2 = array.get(bear_bot, i)
+                if not na(b2)
+                    box.new(array.get(bear_bar, i), t2, bar_index + 10000, b2, color=color.red)
+
+The rules that make it work:
+- Mitigation is updated EVERY bar in its own loop: `var` arrays rebuild from scratch on every run (the script re-runs over the visible window each frame), so nothing computed last frame carries.
+- The draw pass lives inside `if bar_index == last_bar_index` -- one box per live zone per run keeps the 256-object heap at one box per zone, not one per bar.
+- Mark a dead zone by writing `na` into its edge array (`array.set(bull_bot, i, na)`) and guard every read with `not na(...)`.
+- Keep at most ~25 zones per side in the loops; the heap caps at 256 objects and older zones matter less.
+- An order block is the same shape with different detection: the LAST opposing candle before a displacement (for a bullish OB, the last down candle before a strong 2-3 bar rally); top/bottom are that candle's high/low, born at that candle's bar. A breaker block is an order block that failed and flipped side -- same box, other color.
+
 ## Pattern detection WITHOUT arrays (there is no `a[i] = v` assignment)
 You cannot build lists or arrays -- not with brackets, not any other way. Track state with `var` scalars that persist across bars and reassign inside `if` blocks. The two idioms you need:
 
@@ -879,6 +934,104 @@ mod tests {
         // The resistance ray through the last two pivots is finite by the end.
         let res = &output.plots[0].values;
         assert!(res[79].is_finite(), "resistance projected: {}", res[79]);
+    }
+
+    /// The SMC zone idiom the prompt teaches, verbatim: the fair-value-gap
+    /// detector that draws BOXES. The live failure this pins: a generation
+    /// asked for Smart Money Concepts rendered zones as `plotshape` triangles
+    /// and `plot` lines -- the shapes the reference scripts demonstrate --
+    /// because no taught form showed a zone as a box. If the language ever
+    /// strands this idiom, the prompt is teaching failure and this test
+    /// fails before a model does.
+    const SMC_IDIOM_SCRIPT: &str = concat!(
+        "//@pine_lite version=1 overlay=true title=\"SMC: Fair Value Gaps\"\n",
+        "var bull_top = array.new()\n",
+        "var bull_bot = array.new()\n",
+        "var bull_bar = array.new()\n",
+        "var bear_top = array.new()\n",
+        "var bear_bot = array.new()\n",
+        "var bear_bar = array.new()\n",
+        "bullish_fvg = low > high[2]\n",
+        "bearish_fvg = high < low[2]\n",
+        "if bullish_fvg\n",
+        "    array.push(bull_top, low)\n",
+        "    array.push(bull_bot, high[2])\n",
+        "    array.push(bull_bar, bar_index - 2)\n",
+        "if bearish_fvg\n",
+        "    array.push(bear_top, low[2])\n",
+        "    array.push(bear_bot, high)\n",
+        "    array.push(bear_bar, bar_index - 2)\n",
+        "n_bull = array.size(bull_top)\n",
+        "n_bear = array.size(bear_top)\n",
+        "for i = 0 to 24\n",
+        "    if i < n_bull\n",
+        "        bb = array.get(bull_bot, i)\n",
+        "        if not na(bb)\n",
+        "            if low < bb\n",
+        "                array.set(bull_bot, i, na)\n",
+        "    if i < n_bear\n",
+        "        bt = array.get(bear_top, i)\n",
+        "        if not na(bt)\n",
+        "            if high > bt\n",
+        "                array.set(bear_top, i, na)\n",
+        "if bar_index == last_bar_index\n",
+        "    for i = 0 to 24\n",
+        "        if i < n_bull\n",
+        "            t = array.get(bull_top, i)\n",
+        "            b = array.get(bull_bot, i)\n",
+        "            if not na(b)\n",
+        "                box.new(array.get(bull_bar, i), t, bar_index + 10000, b, color=color.teal)\n",
+        "        if i < n_bear\n",
+        "            t2 = array.get(bear_top, i)\n",
+        "            b2 = array.get(bear_bot, i)\n",
+        "            if not na(b2)\n",
+        "                box.new(array.get(bear_bar, i), t2, bar_index + 10000, b2, color=color.red)\n",
+    );
+
+    #[test]
+    fn the_taught_smc_idiom_vets_runs_and_draws_boxes() {
+        let errs = pine_lite::vet(SMC_IDIOM_SCRIPT);
+        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        let (_, parsed) = pine_lite::vet(SMC_IDIOM_SCRIPT).ok().unwrap();
+        // A bullish gap at bars 0..2 (mitigated at bar 4), another at bars
+        // 6..8 left live: exactly one box survives to the last bar.
+        let ohlc: [(f64, f64, f64, f64); 12] = [
+            (100.0, 101.0, 99.0, 100.0),
+            (102.0, 105.0, 102.0, 104.0),
+            (105.0, 107.0, 104.5, 106.0),
+            (105.0, 106.0, 103.0, 105.0),
+            (104.0, 105.0, 100.0, 101.0),
+            (101.0, 104.5, 99.5, 102.0),
+            (102.0, 103.5, 101.5, 103.0),
+            (104.0, 107.0, 104.0, 106.0),
+            (107.0, 109.0, 106.5, 108.0),
+            (108.0, 110.0, 107.0, 109.0),
+            (109.0, 111.0, 108.0, 110.0),
+            (110.0, 112.0, 109.0, 111.0),
+        ];
+        let candles: Vec<analytics_core::types::Candle> = ohlc
+            .iter()
+            .enumerate()
+            .map(|(i, &(o, h, l, c))| analytics_core::types::Candle {
+                symbol: "TEST".into(),
+                timeframe: analytics_core::types::Timeframe::M1,
+                open_time: (i as i64) * 60_000_000_000,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            })
+            .collect();
+        let output = pine_lite::run(&parsed, &candles, &pine_lite::Inputs::default()).expect("the SMC idiom runs");
+        let boxes = output
+            .objects
+            .iter()
+            .filter(|o| matches!(o, pine_lite::interp::ScriptObject::Box { .. }))
+            .count();
+        assert_eq!(boxes, 1, "the live gap draws exactly one box: {:?}", output.objects);
     }
 
     /// The strategy idiom the prompt teaches, verbatim (docs/24 S3): the

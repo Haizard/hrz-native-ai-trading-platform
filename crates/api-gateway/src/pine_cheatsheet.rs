@@ -79,7 +79,7 @@ DRAWING
 - plotshape(cond, shape=, color=, location_value=), plotchar(cond, char=\"B\"), plotarrow(cond).
 - line.new(bar1, price1, bar2, price2, color=, style=\"dashed\"|\"solid\", width=) — 4 to 7 args.
 - label.new(bar, price, \"text\", color=) — 3 or 4 args.
-- box.new(left, top, right, bottom, color=) — 4 or 5 args.
+- box.new(left, top, right, bottom, color=) — 4 or 5 args. A ZONE (order block, FVG, breaker) is a box, never a plotshape triangle: right = bar_index + 10000 extends it to the chart edge (the canvas clips). Mark mitigation per bar with array.set(edge_arr, i, na); draw inside if bar_index == last_bar_index so each run adds one box per live zone, not one per bar.
 - Object heap: at most 256 live line/label/box objects. Draw only on signal bars (`if sig`), never unconditionally every bar; past the cap the extras are dropped (the run still succeeds).
 
 INPUTS

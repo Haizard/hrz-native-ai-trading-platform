@@ -2185,4 +2185,114 @@ mod tests {
         assert!(limits::check(&script).is_empty(), "limit errors");
         run(&script, candles, &Inputs::default())
     }
+
+    /// The SMC zone idiom the studio's system prompt teaches, verbatim: zones
+    /// live in parallel arrays, mitigation is marked per bar, and each live
+    /// zone is drawn ONCE per run on the last bar as a `box.new` whose right
+    /// edge extends into the future (the canvas clips it at the plot edge --
+    /// TradingView's "extend to now" look). A zone is a band, so it is a box;
+    /// a `plotshape` triangle marks an event and is never the drawing for a
+    /// zone. If a language change strands this script, the prompt is teaching
+    /// failure -- this test fails before a model does.
+    const SMC_ZONE_IDIOM: &str = concat!(
+        "//@pine_lite version=1 overlay=true title=\"SMC: Fair Value Gaps\"\n",
+        "var bull_top = array.new()\n",
+        "var bull_bot = array.new()\n",
+        "var bull_bar = array.new()\n",
+        "var bear_top = array.new()\n",
+        "var bear_bot = array.new()\n",
+        "var bear_bar = array.new()\n",
+        "bullish_fvg = low > high[2]\n",
+        "bearish_fvg = high < low[2]\n",
+        "if bullish_fvg\n",
+        "    array.push(bull_top, low)\n",
+        "    array.push(bull_bot, high[2])\n",
+        "    array.push(bull_bar, bar_index - 2)\n",
+        "if bearish_fvg\n",
+        "    array.push(bear_top, low[2])\n",
+        "    array.push(bear_bot, high)\n",
+        "    array.push(bear_bar, bar_index - 2)\n",
+        "n_bull = array.size(bull_top)\n",
+        "n_bear = array.size(bear_top)\n",
+        "for i = 0 to 24\n",
+        "    if i < n_bull\n",
+        "        bb = array.get(bull_bot, i)\n",
+        "        if not na(bb)\n",
+        "            if low < bb\n",
+        "                array.set(bull_bot, i, na)\n",
+        "    if i < n_bear\n",
+        "        bt = array.get(bear_top, i)\n",
+        "        if not na(bt)\n",
+        "            if high > bt\n",
+        "                array.set(bear_top, i, na)\n",
+        "if bar_index == last_bar_index\n",
+        "    for i = 0 to 24\n",
+        "        if i < n_bull\n",
+        "            t = array.get(bull_top, i)\n",
+        "            b = array.get(bull_bot, i)\n",
+        "            if not na(b)\n",
+        "                box.new(array.get(bull_bar, i), t, bar_index + 10000, b, color=color.teal)\n",
+        "        if i < n_bear\n",
+        "            t2 = array.get(bear_top, i)\n",
+        "            b2 = array.get(bear_bot, i)\n",
+        "            if not na(b2)\n",
+        "                box.new(array.get(bear_bar, i), t2, bar_index + 10000, b2, color=color.red)\n",
+    );
+
+    #[test]
+    fn the_smc_zone_idiom_vets_runs_and_draws_boxes() {
+        // Bar 0..2: a bullish FVG (bar 2's low clears bar 0's high), zone
+        // 101..104.5 born at bar 0. Bar 4 dips through it -- mitigated.
+        // Bar 6..8: a second gap, 103.5..106.5, never revisited -- live.
+        let ohlc: [(f64, f64, f64, f64); 12] = [
+            (100.0, 101.0, 99.0, 100.0),
+            (102.0, 105.0, 102.0, 104.0),
+            (105.0, 107.0, 104.5, 106.0),
+            (105.0, 106.0, 103.0, 105.0),
+            (104.0, 105.0, 100.0, 101.0),
+            // Bar 5's high must reach 104.5: any lower and bar 7's low
+            // (104) gaps over it, and the fixture grows a third FVG.
+            (101.0, 104.5, 99.5, 102.0),
+            (102.0, 103.5, 101.5, 103.0),
+            (104.0, 107.0, 104.0, 106.0),
+            (107.0, 109.0, 106.5, 108.0),
+            (108.0, 110.0, 107.0, 109.0),
+            (109.0, 111.0, 108.0, 110.0),
+            (110.0, 112.0, 109.0, 111.0),
+        ];
+        let candles: Vec<Candle> = ohlc
+            .iter()
+            .enumerate()
+            .map(|(i, &(o, h, l, c))| Candle {
+                symbol: "T".into(),
+                timeframe: Timeframe::M1,
+                open_time: i as i64 * 60_000_000_000,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
+                volume: 10.0,
+                buy_volume: 5.0,
+                sell_volume: 5.0,
+            })
+            .collect();
+        let out = run_src(SMC_ZONE_IDIOM, &candles);
+        let boxes: Vec<_> = out
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                ScriptObject::Box { left, top, right, bottom, .. } => {
+                    Some((*left, *top, *right, *bottom))
+                }
+                _ => None,
+            })
+            .collect();
+        // The mitigated gap is gone; the live gap is the one box drawn.
+        assert_eq!(boxes.len(), 1, "{boxes:?}");
+        let (left, top, right, bottom) = boxes[0];
+        assert_eq!(left, 6.0, "the box anchors at the pattern's first candle");
+        assert_eq!(top, 106.5);
+        assert_eq!(bottom, 103.5);
+        assert!(right >= 10_000.0, "the right edge extends into the future: {right}");
+    }
 }
