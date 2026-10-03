@@ -276,6 +276,11 @@
     box-shadow: 0 4px 16px rgba(0,0,0,.45);
   }
   .evidenceTip .tipKind { color: #a78bfa; font-weight: 600; }
+  /* Zone inspector additions (docs/26): the lifecycle word rides the title in
+     muted text, and the price band gets its own tabular line so the two edge
+     prices read as numbers, not prose. */
+  .evidenceTip .tipState { color: var(--muted); font-weight: 400; }
+  .evidenceTip .tipBand { font-variant-numeric: tabular-nums; color: var(--text); margin-top: 2px; }
   .evidenceTip[hidden] { display: none; }
   .paneBtns { margin-left: auto; display: flex; align-items: center; gap: 2px; }
   .paneBtns button {

@@ -2819,6 +2819,7 @@ function createChartPane(root, hooks = {}) {
     if (!tip) return;
     const indicator = scene && scene.indicator;
     const markers = indicator && Array.isArray(indicator.markers) ? indicator.markers : [];
+    const zones = indicator && Array.isArray(indicator.zones) ? indicator.zones : [];
     const rect = el("chart").getBoundingClientRect();
     const px = event.clientX - rect.left;
     const py = event.clientY - rect.top;
@@ -2833,14 +2834,55 @@ function createChartPane(root, hooks = {}) {
         bestDist = d;
       }
     }
-    if (!best || (!best.explanation && !best.label)) {
+    // Zone inspector (docs/26): when no marker claims the pointer, the zone
+    // under it answers "what is this band and why is it here". Zones paint in
+    // array order, so the LAST containing zone is the topmost one. Only zones
+    // inside the plot count -- a zone clipped to the axis edge must not light
+    // up from the price axis.
+    let zone = null;
+    if (!best && scene && scene.plot) {
+      const inPlot =
+        px >= scene.plot.x && px <= scene.plot.x + scene.plot.w &&
+        py >= scene.plot.y && py <= scene.plot.y + scene.plot.h;
+      if (inPlot) {
+        for (let i = zones.length - 1; i >= 0; i--) {
+          const z = zones[i];
+          const x1 = Math.max(z.x, scene.plot.x);
+          const x2 = Math.min(z.x + z.w, scene.plot.x + scene.plot.w);
+          if (px >= x1 && px <= x2 && py >= z.y_top && py <= z.y_top + z.h) {
+            zone = z;
+            break;
+          }
+        }
+      }
+    }
+    if (!best && !zone) {
       tip.hidden = true;
       return;
     }
     tip.hidden = false;
-    tip.innerHTML =
-      `<div class="tipKind">${escapeHtml(best.label || best.kind || "evidence")}</div>` +
-      (best.explanation ? `<div>${escapeHtml(best.explanation)}</div>` : "");
+    if (best && (best.explanation || best.label)) {
+      tip.innerHTML =
+        `<div class="tipKind">${escapeHtml(best.label || best.kind || "evidence")}</div>` +
+        (best.explanation ? `<div>${escapeHtml(best.explanation)}</div>` : "");
+    } else if (zone) {
+      // The lifecycle word is the same tier the paint uses, so the tooltip
+      // never describes a zone differently from how it is drawn.
+      const stateWord =
+        zone.state === "mitigated" ? "mitigated — fully traded through" :
+        zone.state === "invalidated" ? "invalidated" :
+        zone.state === "tapped" ? "tapped — price entered, not consumed" :
+        "active — untouched";
+      tip.innerHTML =
+        `<div class="tipKind">${escapeHtml(zone.label || "zone")} <span class="tipState">${escapeHtml(stateWord)}</span></div>` +
+        (typeof zone.price_low === "number" && typeof zone.price_high === "number"
+          ? `<div class="tipBand">${fmtPrice(zone.price_low)} – ${fmtPrice(zone.price_high)}</div>`
+          : "") +
+        (zone.explanation ? `<div>${escapeHtml(zone.explanation)}</div>` : "");
+    } else {
+      tip.hidden = true;
+      return;
+    }
     // Follow the pointer, clamped to the chart area so it never covers the
     // axis or runs off the window edge.
     const wrap = el("chartWrap").getBoundingClientRect();

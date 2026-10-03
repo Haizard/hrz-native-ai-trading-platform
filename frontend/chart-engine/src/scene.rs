@@ -650,6 +650,23 @@ pub struct SceneIndicatorZone {
     pub label: String,
     /// Lifecycle state controlling presentation.
     pub state: ZoneState,
+    /// The zone's lower price boundary, carried for the inspector (docs/26).
+    /// Displayed, never derived: the shell reads the number, it does not
+    /// un-map pixels.
+    pub price_low: f64,
+    /// The zone's upper price boundary.
+    pub price_high: f64,
+    /// The zone's left edge as a candle open time (unix nanos).
+    pub start_time: i64,
+    /// The zone's right edge (unix nanos).
+    pub end_time: i64,
+    /// Why this zone exists: the explanation of the evidence that birthed it.
+    /// Zones and their birth evidence share an id in both the generator's
+    /// previews and the live detection path, so the join is an id lookup, not
+    /// a heuristic. Empty -- and omitted from the JSON -- when no evidence
+    /// names this zone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub explanation: String,
 }
 
 /// A generated evidence marker mapped into the chart's coordinate system.
@@ -1852,6 +1869,19 @@ fn indicator_parts(output: &IndicatorOutput, frame: &Frame) -> Result<SceneIndic
                 h: bottom - top,
                 label: zone.label.clone(),
                 state: zone.state,
+                price_low: zone.price_low,
+                price_high: zone.price_high,
+                start_time: zone.start_time,
+                end_time: zone.end_time,
+                // The birth evidence shares the zone's id (the generator's
+                // previews and the live detection path both build the pair
+                // from one index). A zone nothing explains is legal -- a
+                // pasted output may carry zones without an evidence graph --
+                // and serializes without the key.
+                explanation: evidence
+                    .get(zone.id.as_str())
+                    .map(|(_, _, explanation)| (*explanation).to_owned())
+                    .unwrap_or_default(),
             }
         })
         .collect();
@@ -3036,7 +3066,9 @@ mod tests {
     use super::*;
     use crate::drawing::OverlayRole;
     use crate::footprint;
-    use crate::indicator::{Evidence, EvidenceLink, IndicatorMarker, IndicatorOutput, MarkerKind};
+    use crate::indicator::{
+        Evidence, EvidenceLink, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind,
+    };
     use analytics_core::concepts::{Compare, Requirement, Selector};
     use analytics_core::types::Side;
 
@@ -5280,6 +5312,97 @@ mod tests {
         );
         assert!(indicator.links[0].from_x < indicator.links[0].to_x);
         assert!(indicator.links[0].control_y < indicator.links[0].from_y);
+    }
+
+    #[test]
+    fn a_zone_carries_its_birth_evidence_and_its_prices_for_the_inspector() {
+        // docs/26: the inspector tooltip is fed entirely by the zone itself --
+        // the price band and times as numbers, and the *reason the zone
+        // exists* joined from the evidence that shares the zone's id. The
+        // shell displays them; it never un-maps pixels or guesses a join.
+        let born = 20 * 300_000_000_000;
+        let ends = 60 * 300_000_000_000;
+        let output = IndicatorOutput {
+            revision_id: "revision-8".into(),
+            name: None,
+            concepts: Vec::new(),
+            trendlines: Vec::new(),
+            evidence: vec![Evidence {
+                id: "ob-1".into(),
+                event: "order_block".into(),
+                time: born,
+                price: 101.0,
+                explanation: "Last down close before the impulsive break.".into(),
+            }],
+            zones: vec![IndicatorZone {
+                id: "ob-1".into(),
+                start_time: born,
+                end_time: ends,
+                price_low: 100.0,
+                price_high: 102.5,
+                label: "Bullish OB".into(),
+                state: ZoneState::Active,
+            }],
+            markers: vec![],
+            links: vec![],
+        };
+        let scene = build(&Request {
+            indicator: Some(output),
+            ..request(100)
+        });
+        let zone = &scene.indicator.as_ref().expect("drawn").zones[0];
+        assert_eq!(zone.price_low, 100.0);
+        assert_eq!(zone.price_high, 102.5);
+        assert_eq!(zone.start_time, born);
+        assert_eq!(zone.end_time, ends);
+        assert_eq!(
+            zone.explanation,
+            "Last down close before the impulsive break."
+        );
+
+        // The keys the shell's inspector reads are pinned with the zone: a
+        // rename compiles everywhere and the tooltip silently goes empty.
+        let json = serde_json::to_value(&scene).expect("serializes");
+        let wire = &json["indicator"]["zones"][0];
+        for key in [
+            "id", "x", "w", "y_top", "h", "label", "state", "price_low", "price_high",
+            "start_time", "end_time", "explanation",
+        ] {
+            assert!(!wire[key].is_null(), "the inspector reads `{key}`: {wire}");
+        }
+    }
+
+    #[test]
+    fn a_zone_nothing_explains_omits_the_explanation_key() {
+        // A pasted output may carry zones without an evidence graph. The key
+        // is *absent* then, not empty, so the inspector can tell "no reason
+        // recorded" from a reason that happens to be blank.
+        let output = IndicatorOutput {
+            revision_id: "revision-9".into(),
+            name: None,
+            concepts: Vec::new(),
+            trendlines: Vec::new(),
+            evidence: vec![],
+            zones: vec![IndicatorZone {
+                id: "bare".into(),
+                start_time: 10 * 300_000_000_000,
+                end_time: 30 * 300_000_000_000,
+                price_low: 99.0,
+                price_high: 101.0,
+                label: "Zone".into(),
+                state: ZoneState::Active,
+            }],
+            markers: vec![],
+            links: vec![],
+        };
+        let scene = build(&Request {
+            indicator: Some(output),
+            ..request(100)
+        });
+        let json = serde_json::to_value(&scene).expect("serializes");
+        let wire = &json["indicator"]["zones"][0];
+        assert_eq!(wire["explanation"], serde_json::Value::Null);
+        assert_eq!(wire["price_low"], 99.0);
     }
 
     #[test]
