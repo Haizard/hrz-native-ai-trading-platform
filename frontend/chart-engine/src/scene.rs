@@ -440,6 +440,25 @@ pub struct Bar {
     pub close_y: f64,
     /// Whether it closed up.
     pub up: bool,
+    /// The bar's open time (unix nanos), for the crosshair's time tag
+    /// (docs/33). Defaulted so a scene built before the crosshair existed
+    /// still deserializes.
+    #[serde(default)]
+    pub open_time: i64,
+    /// The bar's own OHLC values, for the crosshair's readout (docs/33) —
+    /// the shell formats them; it never recovers a price from a y. Defaulted
+    /// for the same compat reason as `open_time`.
+    #[serde(default)]
+    pub open: f64,
+    /// See `open`.
+    #[serde(default)]
+    pub high: f64,
+    /// See `open`.
+    #[serde(default)]
+    pub low: f64,
+    /// See `open`.
+    #[serde(default)]
+    pub close: f64,
 }
 
 /// A point on a line or area chart.
@@ -1040,6 +1059,20 @@ pub(crate) fn price_to_y(price: f64, price_min: f64, price_max: f64, plot: &Plot
     }
     // y grows downward, price grows upward.
     plot.y + plot.h - (price - price_min) / span * plot.h
+}
+
+/// The inverse of [`price_to_y`]: the price at a canvas y (docs/33). The
+/// crosshair's price tag needs it, and the no-JS-math rule puts the
+/// arithmetic here — the shell calls the `price_at_y` wasm export, which
+/// lands on this. Mirrors [`Frame::price_at`] exactly: a flat span collapses
+/// to the one price the range still knows, and a zero-height plot does the
+/// same rather than dividing by zero.
+pub(crate) fn price_from_y(y: f64, price_min: f64, price_max: f64, plot: &Plot) -> f64 {
+    if plot.h <= 0.0 {
+        return price_max;
+    }
+    let fraction = (y - plot.y) / plot.h;
+    price_max - fraction * (price_max - price_min)
 }
 
 /// Choose a bucket size that yields a readable number of rows.
@@ -2061,6 +2094,14 @@ fn candle_bars(
                 open_y,
                 close_y,
                 up: candle.close >= candle.open,
+                // docs/33: the crosshair's readout reads these; the geometry
+                // above already described the same candle, so this is the
+                // same data in value form, not a second opinion.
+                open_time: candle.open_time,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
             }
         })
         .collect()
@@ -3118,6 +3159,50 @@ mod tests {
             mode,
             ..request(count)
         }
+    }
+
+    #[test]
+    fn price_from_y_inverts_price_to_y() {
+        // docs/33: the crosshair's price tag is the inverse of the mapping
+        // every candle already went through. Round-trips at the range's ends
+        // and middle; a flat span collapses to the one price it knows.
+        let plot = Plot { x: 8.0, y: 10.0, w: 400.0, h: 300.0 };
+        for price in [95.0, 100.0, 105.0] {
+            let y = price_to_y(price, 95.0, 105.0, &plot);
+            let back = price_from_y(y, 95.0, 105.0, &plot);
+            assert!((back - price).abs() < 1e-9, "{price} -> {y} -> {back}");
+        }
+        assert_eq!(price_from_y(123.0, 100.0, 100.0, &plot), 100.0, "a flat range");
+        assert_eq!(
+            price_from_y(123.0, 95.0, 105.0, &Plot { x: 0.0, y: 0.0, w: 1.0, h: 0.0 }),
+            105.0,
+            "a zero-height plot cannot divide"
+        );
+    }
+
+    #[test]
+    fn a_bar_carries_its_candles_values_for_the_crosshair() {
+        // docs/33: the crosshair's OHLC readout and time tag read the Bar,
+        // so the Bar carries the source candle's values verbatim (the shell
+        // formats; it never recovers a price from a y). Old scenes without
+        // the keys still deserialize.
+        let scene = build(&request(12));
+        assert_eq!(scene.candles.len(), 12);
+        let source = series(12);
+        let third = &scene.candles[3];
+        assert_eq!(third.open_time, source[3].open_time);
+        assert_eq!(third.open, source[3].open);
+        assert_eq!(third.high, source[3].high);
+        assert_eq!(third.low, source[3].low);
+        assert_eq!(third.close, source[3].close);
+        let old = serde_json::json!({
+            "x": 1.0, "w": 2.0, "body_top": 3.0, "body_bottom": 4.0,
+            "wick_top": 2.0, "wick_bottom": 5.0, "open_y": 3.5, "close_y": 4.5,
+            "up": true,
+        });
+        let parsed: Bar = serde_json::from_value(old).expect("old scenes still parse");
+        assert_eq!(parsed.open_time, 0);
+        assert_eq!(parsed.close, 0.0);
     }
 
     /// A series with a demand zone in it.

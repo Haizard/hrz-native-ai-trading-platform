@@ -597,6 +597,20 @@ function createChartPane(root, hooks = {}) {
   // so the list only ever holds shapes that exist: a refusal, or a save that
   // failed, cannot leave a half-drawn one in it.
   let placing = null;
+  // The crosshair (docs/33): the pointer's position in canvas CSS pixels
+  // while it is over the price plot, null otherwise. Hover repaints from the
+  // EXISTING scene -- a scene rebuild per mousemove would re-run every
+  // script for a cursor tick, so this rides its own rAF-coalesced painter
+  // rather than scheduleRender.
+  let crosshair = null;
+  let crosshairFrame = 0;
+  function scheduleHoverPaint() {
+    if (crosshairFrame) return;
+    crosshairFrame = requestAnimationFrame(() => {
+      crosshairFrame = 0;
+      draw();
+    });
+  }
   let socket = null; // this pane's live candle channel
   // The instruments this pane may show, as the page last read them. Held here
   // because the pane owns its selects and has to rebuild them when the symbol
@@ -838,6 +852,80 @@ function createChartPane(root, hooks = {}) {
     drawEquityPanes(ctx, scene);
 
     drawAxis(ctx, scene);
+
+    // The crosshair, last of all and over the axes too (docs/33): it reads
+    // the pointer and the existing scene, so hover never triggers a rebuild.
+    drawCrosshair(ctx, scene);
+  }
+
+  /// The crosshair (docs/33): dashed guides snapped to the hovered bar, the
+  /// price tag on the right axis, the bar's time on the bottom axis, and the
+  /// bar's OHLC top-left -- TradingView's default cursor readout. Every
+  /// number is the scene's own: the price is the engine's inverse mapping
+  /// through the `price_at_y` wasm export (the same arithmetic `price_to_y`
+  /// ran, in reverse -- not a JavaScript copy of it), and the OHLC and time
+  /// ride each Bar, so nothing here recovers a price from a pixel.
+  function drawCrosshair(ctx, scene) {
+    if (!crosshair || !scene) return;
+    const plot = scene.plot;
+    if (crosshair.x < plot.x || crosshair.x > plot.x + plot.w ||
+        crosshair.y < plot.y || crosshair.y > plot.y + plot.h) return;
+    // The hovered bar: the one whose span (body plus half the gap either
+    // side) holds the pointer. A lookup over engine positions, not math on
+    // prices. Bars without an open_time came from a pre-crosshair engine --
+    // their readout would show zeros, so the bar features stay off.
+    const bars = scene.candles || [];
+    const gap = bars.length > 1 ? Math.max(0, (bars[1].x - bars[0].x - bars[0].w) / 2) : 0;
+    let bar = null;
+    for (const b of bars) {
+      if (crosshair.x >= b.x - gap && crosshair.x < b.x + b.w + gap) { bar = b; break; }
+    }
+    if (bar && !bar.open_time) bar = null;
+    const vx = bar ? bar.x + bar.w / 2 : crosshair.x;
+    const vy = crosshair.y;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "rgba(120, 123, 134, 0.6)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.round(vx) + 0.5, plot.y);
+    ctx.lineTo(Math.round(vx) + 0.5, plot.y + plot.h);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(plot.x, Math.round(vy) + 0.5);
+    ctx.lineTo(plot.x + plot.w, Math.round(vy) + 0.5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // The price tag on the right axis, when the loaded module is new enough
+    // to export the inverse mapping.
+    if (wasm && typeof wasm.price_at_y === "function") {
+      const price = wasm.price_at_y(plot.y, plot.h, scene.price_min, scene.price_max, vy);
+      ctx.font = "10px ui-monospace, monospace";
+      const label = fmtNum(price);
+      const w = ctx.measureText(label).width + 10;
+      ctx.fillStyle = "#2a2e39";
+      ctx.fillRect(plot.x + plot.w + 1, vy - 8, w, 16);
+      ctx.fillStyle = "#d1d4dc";
+      ctx.fillText(label, plot.x + plot.w + 6, vy + 4);
+    }
+    if (bar) {
+      // The time tag on the bottom axis, centered on the bar and clamped to
+      // the plot so it cannot slide under the price axis.
+      const label = new Date(bar.open_time / 1e6).toISOString().slice(0, 16).replace("T", " ");
+      ctx.font = "10px ui-monospace, monospace";
+      const w = ctx.measureText(label).width + 10;
+      const tx = Math.min(Math.max(vx - w / 2, plot.x), plot.x + plot.w - w);
+      ctx.fillStyle = "#2a2e39";
+      ctx.fillRect(tx, scene.height - 22, w, 16);
+      ctx.fillStyle = "#d1d4dc";
+      ctx.fillText(label, tx + 5, scene.height - 10);
+      // The bar's OHLC, top-left, in the bar's own direction colour.
+      ctx.fillStyle = bar.up ? COLORS.up : COLORS.down;
+      ctx.fillText(
+        `O ${fmtNum(bar.open)}   H ${fmtNum(bar.high)}   L ${fmtNum(bar.low)}   C ${fmtNum(bar.close)}`,
+        plot.x + 6,
+        plot.y + 14
+      );
+    }
   }
 
   /// Sub-panes: oscillator plots below the price chart, each with its own
@@ -3037,6 +3125,21 @@ function createChartPane(root, hooks = {}) {
 
   function onPointerMove(event) {
     if (!scene) return;
+    // The crosshair follows the pointer over the price plot (docs/33). This
+    // is tracking, not a gesture: repaint from the current scene, never a
+    // rebuild. The plot-rect test is layout, the same kind plotFraction does.
+    {
+      const rect = el("chart").getBoundingClientRect();
+      const cx = event.clientX - rect.left;
+      const cy = event.clientY - rect.top;
+      const p = scene.plot;
+      const inside = cx >= p.x && cx <= p.x + p.w && cy >= p.y && cy <= p.y + p.h;
+      const next = inside ? { x: cx, y: cy } : null;
+      if ((next === null) !== (crosshair === null) || (next && (next.x !== crosshair.x || next.y !== crosshair.y))) {
+        crosshair = next;
+        scheduleHoverPaint();
+      }
+    }
     // Evidence tooltips: while no gesture is in flight, the pointer is tested
     // against the generated markers' positions -- every marker already knows
     // *why* it fired (`explanation`), and surfacing that on hover is the
@@ -5013,6 +5116,13 @@ function createChartPane(root, hooks = {}) {
     el("chart").addEventListener("wheel", onWheel, { passive: false });
     el("chart").addEventListener("pointerdown", onPointerDown);
     el("chart").addEventListener("pointermove", onPointerMove);
+    // The crosshair leaves with the pointer (docs/33) -- a chart that keeps
+    // showing where the cursor WAS reads as stale data.
+    el("chart").addEventListener("pointerleave", () => {
+      if (!crosshair) return;
+      crosshair = null;
+      scheduleHoverPaint();
+    });
     el("chart").addEventListener("pointerup", onPointerUp);
     // Not `onPointerUp`. A cancelled pointer is a gesture the user did not finish,
     // and committing a drawing from it would store a shape nobody drew.

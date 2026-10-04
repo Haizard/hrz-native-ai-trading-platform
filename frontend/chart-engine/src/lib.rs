@@ -161,6 +161,29 @@ mod abi {
         ERROR.with(|slot| slot.borrow().len())
     }
 
+    /// The price at a canvas y (docs/33): the crosshair's price tag.
+    ///
+    /// Pure -- five f64s in, one out, no buffers -- because a mousemove
+    /// cannot afford a scene rebuild, and the no-JS-math rule still wants
+    /// the mapping in engine code: the shell passes the scene's own plot
+    /// rect and price range back, and the arithmetic is `price_from_y`'s,
+    /// which the host tests cover.
+    #[no_mangle]
+    pub extern "C" fn price_at_y(
+        plot_y: f64,
+        plot_h: f64,
+        price_min: f64,
+        price_max: f64,
+        y: f64,
+    ) -> f64 {
+        super::scene::price_from_y(
+            y,
+            price_min,
+            price_max,
+            &super::Plot { x: 0.0, y: plot_y, w: 0.0, h: plot_h },
+        )
+    }
+
     /// The tool registry, as JSON, read through the scene's buffer accessors.
     ///
     /// Called once, at startup, so the toolbar is **built from the engine's own
