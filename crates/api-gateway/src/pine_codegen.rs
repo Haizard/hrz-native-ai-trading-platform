@@ -168,6 +168,43 @@ A change in the pooled `time` IS the higher timeframe's new bar: `ht != ht[1]` m
 
 That is a bullish 1h fair value gap: the just-closed 1h bar's low gapped above the high two closed 1h bars back. HTF zones can NOT use `box.new` -- a 1h bar's span is not a bar index on this chart. Use the time-anchored twins, which take unix-nanos timestamps (the pooled `time` values) instead of bar indexes: `box.new_time(t1, top, t2, bottom, color=...)`, `line.new_time(t1, price1, t2, price2, ...)`, `label.new_time(t, price, text, ...)`. Extend right with a large time offset (`ht + 10000000000000000.0`); the canvas clips at the plot edge. Mitigation tracking is the same array state machine as the chart-timeframe idiom, with `ht[1]` stored as the birth stamp instead of `bar_index - 2`.
 
+## Multi-timeframe synthesis (one pattern, several timeframes, one chart)
+When the request asks for confluence ("15m and 1h order blocks", "multi-timeframe FVGs"), run ONE boundary machine PER pooled timeframe -- each with its own `var` pair and its own color -- and tag every zone with its timeframe so the chart reads at a glance:
+
+    t15 = request.security("BTCUSDT", "15m", time)
+    h15 = request.security("BTCUSDT", "15m", high)
+    l15 = request.security("BTCUSDT", "15m", low)
+    t1h = request.security("BTCUSDT", "1h", time)
+    h1h = request.security("BTCUSDT", "1h", high)
+    l1h = request.security("BTCUSDT", "1h", low)
+    far = 10000000000000000.0
+    nb15 = t15 != t15[1]
+    var a1 = na
+    var a2 = na
+    if nb15 and not na(a2)
+        if l15[1] > a2
+            box.new_time(t15[1], l15[1], t15 + far, a2, color=color.aqua)
+            label.new_time(t15[1], l15[1], "15m FVG", color=color.aqua)
+    if nb15
+        a2 = a1
+        a1 = h15[1]
+    nb1h = t1h != t1h[1]
+    var b1 = na
+    var b2 = na
+    if nb1h and not na(b2)
+        if l1h[1] > b2
+            box.new_time(t1h[1], l1h[1], t1h + far, b2, color=color.teal)
+            label.new_time(t1h[1], l1h[1], "1h FVG", color=color.teal)
+    if nb1h
+        b2 = b1
+        b1 = h1h[1]
+
+The rules that keep it honest:
+- Each timeframe's machine is self-contained: its own pooled reads, its own `var`s, its own boundary flag. Never share `ph1`/`ph2` across timeframes -- a 15m shift and a 1h shift happen on different chart bars.
+- Higher timeframes are stronger: draw the HIGHER timeframe's zones first (they sit under), the lower's on top, and give the higher the stronger color. A zone confirmed on two timeframes is the confluence the trader asked for -- the overlapping bands ARE the synthesis; do not try to merge them into one box.
+- The pool caps at 8 keys: 2-3 timeframes x (time, high, low) reads fit comfortably. Keep the chart's own timeframe out of the pool -- its bars are just `time`/`high`/`low`.
+- Pick the timeframes from the request: "multi-timeframe" on a 5m chart means 15m + 1h; on a 1h chart, 4h + 1d. Two to three steps up, never sideways or down.
+
 ## Time of day (session filters)
 `hour` (0..23 UTC), `minute` (0..59), `dayofweek` (1=Sunday .. 7=Saturday, Pine's convention). London open is about `hour == 7`; New York is about `hour >= 12 and hour < 21`. An Asian-session level: capture the high/low while `hour >= 0 and hour < 7` into `var` scalars and reset at `hour == 0`.
 
@@ -1314,5 +1351,113 @@ mod tests {
         assert!(prompt.contains("box.new_time"), "the time-anchored twins ride the prompt");
         assert!(prompt.contains("request.security"), "pooled reads ride the prompt");
         assert!(prompt.contains("request.time()"), "the aligned-time read rides the prompt");
+    }
+
+    /// The multi-timeframe idiom the prompt teaches (docs/28), assembled as
+    /// the complete script the model is expected to write from it.
+    const MTF_SYNTHESIS_SCRIPT: &str = concat!(
+        "//@pine_lite version=1 overlay=true title=\"MTF FVG\"\n",
+        "t15 = request.security(\"BTCUSDT\", \"15m\", time)\n",
+        "h15 = request.security(\"BTCUSDT\", \"15m\", high)\n",
+        "l15 = request.security(\"BTCUSDT\", \"15m\", low)\n",
+        "t1h = request.security(\"BTCUSDT\", \"1h\", time)\n",
+        "h1h = request.security(\"BTCUSDT\", \"1h\", high)\n",
+        "l1h = request.security(\"BTCUSDT\", \"1h\", low)\n",
+        "far = 10000000000000000.0\n",
+        "nb15 = t15 != t15[1]\n",
+        "var a1 = na\n",
+        "var a2 = na\n",
+        "if nb15 and not na(a2)\n",
+        "    if l15[1] > a2\n",
+        "        box.new_time(t15[1], l15[1], t15 + far, a2, color=color.aqua)\n",
+        "        label.new_time(t15[1], l15[1], \"15m FVG\", color=color.aqua)\n",
+        "if nb15\n",
+        "    a2 = a1\n",
+        "    a1 = h15[1]\n",
+        "nb1h = t1h != t1h[1]\n",
+        "var b1 = na\n",
+        "var b2 = na\n",
+        "if nb1h and not na(b2)\n",
+        "    if l1h[1] > b2\n",
+        "        box.new_time(t1h[1], l1h[1], t1h + far, b2, color=color.teal)\n",
+        "        label.new_time(t1h[1], l1h[1], \"1h FVG\", color=color.teal)\n",
+        "if nb1h\n",
+        "    b2 = b1\n",
+        "    b1 = h1h[1]\n",
+        "plot(close)\n",
+    );
+
+    #[test]
+    fn the_taught_multi_timeframe_idiom_vets_and_runs_over_two_pools() {
+        let errs = pine_lite::vet(MTF_SYNTHESIS_SCRIPT);
+        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        let (_, parsed) = pine_lite::vet(MTF_SYNTHESIS_SCRIPT).ok().unwrap();
+        // The same fixture as the pine-lite integration test: 15m bars 4
+        // chart bars wide, 1h bars 10 wide, one qualifying gap each.
+        let mk = |i: i64| analytics_core::types::Candle {
+            symbol: "TEST".into(),
+            timeframe: analytics_core::types::Timeframe::M1,
+            open_time: i * 60_000_000_000,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.0,
+            volume: 1.0,
+            buy_volume: 0.5,
+            sell_volume: 0.5,
+        };
+        let candles: Vec<_> = (0..40).map(mk).collect();
+        let p15: [(f64, f64); 10] = [
+            (100.0, 90.0), (108.0, 94.0), (112.0, 104.0), (110.0, 103.0), (111.0, 102.0),
+            (112.0, 103.0), (113.0, 104.0), (114.0, 105.0), (115.0, 106.0), (116.0, 107.0),
+        ];
+        let pool15: Vec<_> = (0..40)
+            .map(|i| {
+                let b = (i / 4) as usize;
+                let mut c = mk(i);
+                c.open_time = (b as i64) * 4 * 60_000_000_000;
+                c.high = p15[b].0;
+                c.low = p15[b].1;
+                c
+            })
+            .collect();
+        let p1h: [(f64, f64); 4] = [(100.0, 90.0), (110.0, 95.0), (115.0, 105.0), (120.0, 110.0)];
+        let pool1h: Vec<_> = (0..40)
+            .map(|i| {
+                let b = (i / 10) as usize;
+                let mut c = mk(i);
+                c.open_time = (b as i64) * 10 * 60_000_000_000;
+                c.high = p1h[b].0;
+                c.low = p1h[b].1;
+                c
+            })
+            .collect();
+        let mut series_pool = std::collections::HashMap::new();
+        series_pool.insert("BTCUSDT@15M".to_string(), pool15);
+        series_pool.insert("BTCUSDT@1H".to_string(), pool1h);
+        let inputs = pine_lite::Inputs { series_pool, ..pine_lite::Inputs::default() };
+        let output = pine_lite::run(&parsed, &candles, &inputs).expect("the multi-TF idiom runs");
+        let boxes = output
+            .objects
+            .iter()
+            .filter(|o| matches!(o, pine_lite::interp::ScriptObject::BoxTime { .. }))
+            .count();
+        assert_eq!(boxes, 2, "one zone per timeframe: {:?}", output.objects);
+        let labels: Vec<_> = output
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                pine_lite::interp::ScriptObject::LabelTime { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, ["15m FVG", "1h FVG"], "each zone names its timeframe");
+    }
+
+    #[test]
+    fn the_prompt_teaches_multi_timeframe_synthesis() {
+        let prompt = script_system_prompt("BTCUSDT", "5m");
+        assert!(prompt.contains("## Multi-timeframe synthesis"), "the synthesis section rides the prompt");
+        assert!(prompt.contains("15m FVG"), "the tf-tagged zone labels ride the prompt");
     }
 }

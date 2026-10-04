@@ -67,11 +67,31 @@ the same "extend to now" look as `bar_index + 10000` on the bar-index path.
   shell paints.
 - Same heap, same cap (256 objects, `MAX_OBJECTS`), same truncation flag.
 
+## Multi-timeframe synthesis
+
+The same idiom, one boundary machine per pooled timeframe, is multi-TF
+synthesis (roadmap #7): each timeframe gets its own pooled reads, its own
+`var` pair, its own color, and a tf-tagged label on every zone. Zones never
+merge across timeframes — the overlapping bands ARE the confluence the trader
+asked for, and a merged box would hide which timeframe confirmed what. The
+higher timeframe draws first (under), the lower on top.
+
+- One pooled timeframe = 3 keys (time, high, low); the 8-key pool budget
+  covers the chart's TF plus two steps up comfortably (5m chart → 15m + 1h;
+  1h chart → 4h + 1d). Steps go UP from the chart, never sideways or down.
+- Never share boundary `var`s across timeframes: a 15m shift and a 1h shift
+  happen on different chart bars.
+- Pinned end-to-end:
+  `two_pooled_timeframes_synthesize_onto_one_chart`
+  (`pine-lite/tests/time_anchored_objects.rs`) — one zone per timeframe, each
+  born at its own timeframe's bar open, each labeled with its TF.
+
 ## What this is not
 
-- **Not simultaneous multi-TF detection.** The script detects on ONE pooled
-  timeframe per `request.security` call (pool cap 8). Synthesizing several
-  timeframes into one ranked zone set is the full #7, still open.
+- **Not a merged-zone ranker.** Synthesis is per-timeframe detection drawn
+  together; a confluence SCORE (a zone's strength as a function of how many
+  timeframes share its band) would need band-clustering in the engine and is
+  not built.
 - **Not lookahead.** The pooled read at a chart bar sees the HTF bar covering
   that moment — the aligned series the host carries forward — never the HTF
   bar's final values before it closes. The idiom's boundary vars read closed

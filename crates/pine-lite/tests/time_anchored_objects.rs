@@ -139,3 +139,106 @@ fn the_htf_fvg_idiom_draws_one_time_anchored_box() {
     assert_eq!(bottom, 100.0, "the gap's bottom is the high two closed bars back");
     assert!(right > 1e16, "the right edge extends into the future: {right}");
 }
+
+#[test]
+fn two_pooled_timeframes_synthesize_onto_one_chart() {
+    // docs/28 multi-TF synthesis: the same pattern detected independently on
+    // two pooled timeframes, drawn onto the one chart with tf-tagged colors
+    // and labels. One chart, two boundary machines, two zone sets -- the
+    // pool cap (8 keys) is the only budget, and the engine's absolute-time
+    // mapping puts every zone where its own timeframe's bars sit.
+    //
+    // 15m pool bars are 4 chart bars wide (P0..P9); 1h pool bars are 10
+    // chart bars wide (H0..H3). Each pool gets exactly one qualifying gap:
+    //   15m: P2.low (104) > P0.high (100) -- fires at chart bar 12
+    //   1h:  H2.low (105) > H0.high (100) -- fires at chart bar 30
+    let src = concat!(
+        "//@pine_lite version=1 overlay=true title=\"MTF FVG\"\n",
+        "t15 = request.security(\"BTCUSDT\", \"15m\", time)\n",
+        "h15 = request.security(\"BTCUSDT\", \"15m\", high)\n",
+        "l15 = request.security(\"BTCUSDT\", \"15m\", low)\n",
+        "t1h = request.security(\"BTCUSDT\", \"1h\", time)\n",
+        "h1h = request.security(\"BTCUSDT\", \"1h\", high)\n",
+        "l1h = request.security(\"BTCUSDT\", \"1h\", low)\n",
+        "far = 10000000000000000.0\n",
+        "nb15 = t15 != t15[1]\n",
+        "var a1 = na\n",
+        "var a2 = na\n",
+        "if nb15 and not na(a2)\n",
+        "    if l15[1] > a2\n",
+        "        box.new_time(t15[1], l15[1], t15 + far, a2, color=color.aqua)\n",
+        "        label.new_time(t15[1], l15[1], \"15m FVG\", color=color.aqua)\n",
+        "if nb15\n",
+        "    a2 = a1\n",
+        "    a1 = h15[1]\n",
+        "nb1h = t1h != t1h[1]\n",
+        "var b1 = na\n",
+        "var b2 = na\n",
+        "if nb1h and not na(b2)\n",
+        "    if l1h[1] > b2\n",
+        "        box.new_time(t1h[1], l1h[1], t1h + far, b2, color=color.teal)\n",
+        "        label.new_time(t1h[1], l1h[1], \"1h FVG\", color=color.teal)\n",
+        "if nb1h\n",
+        "    b2 = b1\n",
+        "    b1 = h1h[1]\n",
+        "plot(close)\n",
+    );
+    let (_, parsed) = vet(src).expect("vet");
+    let candles: Vec<Candle> = (0..40).map(chart_candle).collect();
+    // 15m levels: one gap at the P0..P2 triple; afterwards highs rise faster
+    // than lows so nothing else qualifies.
+    let p15: [(f64, f64); 10] = [
+        (100.0, 90.0), (108.0, 94.0), (112.0, 104.0), (110.0, 103.0), (111.0, 102.0),
+        (112.0, 103.0), (113.0, 104.0), (114.0, 105.0), (115.0, 106.0), (116.0, 107.0),
+    ];
+    let pool15: Vec<Candle> = (0..40)
+        .map(|i| {
+            let b = i / 4;
+            let mut c = chart_candle(i);
+            c.open_time = (b as i64) * 4 * 60_000_000_000;
+            c.high = p15[b].0;
+            c.low = p15[b].1;
+            c
+        })
+        .collect();
+    let p1h: [(f64, f64); 4] = [(100.0, 90.0), (110.0, 95.0), (115.0, 105.0), (120.0, 110.0)];
+    let pool1h: Vec<Candle> = (0..40)
+        .map(|i| {
+            let b = i / 10;
+            let mut c = chart_candle(i);
+            c.open_time = (b as i64) * 10 * 60_000_000_000;
+            c.high = p1h[b].0;
+            c.low = p1h[b].1;
+            c
+        })
+        .collect();
+    let mut series_pool = std::collections::HashMap::new();
+    series_pool.insert("BTCUSDT@15M".to_string(), pool15);
+    series_pool.insert("BTCUSDT@1H".to_string(), pool1h);
+    let inputs = Inputs { series_pool, ..Inputs::default() };
+    let output = run(&parsed, &candles, &inputs).expect("run");
+    let boxes: Vec<(f64, f64, f64)> = output
+        .objects
+        .iter()
+        .filter_map(|o| match o {
+            pine_lite::interp::ScriptObject::BoxTime { left_nanos, top, bottom, .. } => {
+                Some((*left_nanos, *top, *bottom))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(boxes.len(), 2, "one zone per timeframe: {boxes:?}");
+    // The 15m zone is born at P2's open (chart bar 8's slot); the 1h zone at
+    // H2's open (chart bar 20's slot) -- each timeframe's own birth time.
+    assert_eq!(boxes[0], (8.0 * 60_000_000_000.0, 104.0, 100.0), "15m zone");
+    assert_eq!(boxes[1], (20.0 * 60_000_000_000.0, 105.0, 100.0), "1h zone");
+    let labels: Vec<&str> = output
+        .objects
+        .iter()
+        .filter_map(|o| match o {
+            pine_lite::interp::ScriptObject::LabelTime { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels, ["15m FVG", "1h FVG"], "each zone names its timeframe");
+}
