@@ -1850,6 +1850,15 @@ fn indicator_parts(output: &IndicatorOutput, frame: &Frame) -> Result<SceneIndic
     let zones = output
         .zones
         .iter()
+        // Viewport culling (docs/27): a zone whose whole life lies outside
+        // the frame can never paint -- the canvas would clip it to nothing --
+        // so it never crosses the ABI. A zone that merely STARTED before the
+        // window, or runs past its right edge, intersects the frame and is
+        // kept whole: never clamped, because the inspector (docs/26) shows
+        // the band's true birth time and edges, and a clamped zone would lie
+        // about both. This is the discipline `region_rects` has always had,
+        // extended to generated zones.
+        .filter(|zone| zone.end_time >= frame.from && zone.start_time <= frame.to)
         .map(|zone| {
             let left = frame.x_at_nanos(zone.start_time);
             let right = frame.x_at_nanos(zone.end_time);
@@ -1882,6 +1891,12 @@ fn indicator_parts(output: &IndicatorOutput, frame: &Frame) -> Result<SceneIndic
     let markers = output
         .markers
         .iter()
+        // The same culling, for point events (docs/27): a marker whose time
+        // is outside the frame is a glyph the canvas cannot show. A zone
+        // kept by the filter above may still lose its birth marker this way
+        // -- the band the trader scrolled back for stays, its off-window
+        // glyph does not.
+        .filter(|marker| marker.time >= frame.from && marker.time <= frame.to)
         .map(|marker| {
             let explanation = evidence
                 .get(marker.evidence_id.as_str())
@@ -5367,8 +5382,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zone_nothing_explains_omits_the_explanation_key() {
-        // A pasted output may carry zones without an evidence graph. The key
+    fn a_zone_nothing_explains_omits_the_explanation_key() {        // A pasted output may carry zones without an evidence graph. The key
         // is *absent* then, not empty, so the inspector can tell "no reason
         // recorded" from a reason that happens to be blank.
         let output = IndicatorOutput {
@@ -5397,6 +5411,86 @@ mod tests {
         let wire = &json["indicator"]["zones"][0];
         assert_eq!(wire["explanation"], serde_json::Value::Null);
         assert_eq!(wire["price_low"], 99.0);
+    }
+
+    #[test]
+    fn zones_and_markers_outside_the_window_never_cross_the_abi() {
+        // docs/27: the canvas clips off-window geometry to nothing, so the
+        // scene does not serialize it at all. A window over bars 50..75 of
+        // 100: the zone living at bars 10..20 and the one at bars 90..99 are
+        // dropped; the one INSIDE the window stays; and the one that STARTED
+        // at bar 40 and runs to bar 55 stays WHOLE -- intersecting zones are
+        // never clamped, because the inspector shows their true birth time.
+        let bar = 300_000_000_000i64;
+        let zone = |id: &str, from_bar: i64, to_bar: i64| IndicatorZone {
+            id: id.into(),
+            start_time: from_bar * bar,
+            end_time: to_bar * bar,
+            price_low: 100.0,
+            price_high: 102.0,
+            label: id.into(),
+            state: ZoneState::Active,
+        };
+        let output = IndicatorOutput {
+            revision_id: "revision-cull".into(),
+            name: None,
+            concepts: Vec::new(),
+            trendlines: Vec::new(),
+            evidence: vec![
+                Evidence {
+                    id: "early".into(),
+                    event: "sweep".into(),
+                    time: 10 * bar,
+                    price: 101.0,
+                    explanation: "off-window event".into(),
+                },
+                Evidence {
+                    id: "late".into(),
+                    event: "sweep".into(),
+                    time: 60 * bar,
+                    price: 101.0,
+                    explanation: "in-window event".into(),
+                },
+            ],
+            zones: vec![
+                zone("before", 10, 20),
+                zone("inside", 60, 70),
+                zone("spanning", 40, 55),
+                zone("after", 90, 99),
+            ],
+            markers: vec![
+                IndicatorMarker {
+                    id: "early-marker".into(),
+                    evidence_id: "early".into(),
+                    time: 10 * bar,
+                    price: 101.0,
+                    label: "early".into(),
+                    kind: MarkerKind::Context,
+                },
+                IndicatorMarker {
+                    id: "late-marker".into(),
+                    evidence_id: "late".into(),
+                    time: 60 * bar,
+                    price: 101.0,
+                    label: "late".into(),
+                    kind: MarkerKind::Context,
+                },
+            ],
+            links: vec![],
+        };
+        let scene = build(&Request {
+            indicator: Some(output),
+            ..windowed(100, 50, 25)
+        });
+        let indicator = scene.indicator.expect("drawn");
+        let ids: Vec<&str> = indicator.zones.iter().map(|z| z.id.as_str()).collect();
+        assert_eq!(ids, ["inside", "spanning"], "off-window zones culled");
+        // The spanning zone keeps its TRUE left edge -- bar 40, not the
+        // window's bar 50 -- so the inspector's birth time stays honest.
+        let spanning = indicator.zones.iter().find(|z| z.id == "spanning").unwrap();
+        assert_eq!(spanning.start_time, 40 * bar);
+        let marker_ids: Vec<&str> = indicator.markers.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(marker_ids, ["late-marker"], "off-window markers culled");
     }
 
     #[test]
