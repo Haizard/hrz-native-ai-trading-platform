@@ -490,7 +490,7 @@ function buildScene(request) {
 /// that quietly answered for `#thesis` would be a bug nothing points at.
 const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartHint", "chartNote",
-  "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "fit",
+  "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "forecast", "fit",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
   "magnet", "aiLayer", "profileAnchor", "undo", "redo",
   // The pane's own chrome (title, zoom/collapse buttons) and the hidden bar
@@ -841,6 +841,9 @@ function createChartPane(root, hooks = {}) {
         break;
     }
 
+    // The forecast cone (docs/35): over the candles, under the levels and
+    // zones -- it occupies the future region, where nothing else draws.
+    drawForecast(ctx, scene);
     drawLevels(ctx, scene);
     // The answer's own levels, above the derived ones and below the user's own
     // marks. They arrive from the engine already positioned -- the shell picks a
@@ -1180,6 +1183,56 @@ function createChartPane(root, hooks = {}) {
       ctx.fillText(fmtNum(pane.value_max), pane.plot.x + pane.plot.w + 6, pane.plot.y + 9);
       ctx.fillText(fmtNum(pane.value_min), pane.plot.x + pane.plot.w + 6, pane.plot.y + pane.plot.h);
     }
+  }
+
+  /// The forecast cone (docs/35): the future region washed, the 5–95% and
+  /// 25–75% bands as nested fills, the median dashed, and a label that says
+  /// how many paths made it. Every point arrives positioned from the engine;
+  /// this fills polygons between the quantile lines and nothing more.
+  function drawForecast(ctx, scene) {
+    const cone = scene.forecast;
+    if (!cone || !cone.bands || cone.bands.length < 5) return;
+    const plot = scene.plot;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.x, plot.y, plot.w, plot.h);
+    ctx.clip();
+    const anchorX = cone.bands[0].points[0].x;
+    // The future wash: from the anchor to the plot's right edge, a
+    // barely-there blue -- "everything right of here has not happened".
+    ctx.fillStyle = "rgba(41, 98, 255, 0.045)";
+    ctx.fillRect(anchorX, plot.y, plot.x + plot.w - anchorX, plot.h);
+    // Nested bands, outer pair first. bands[0] is the 5% line (low prices,
+    // larger y), bands[4] the 95% -- the polygon walks the upper line
+    // forward and the lower one back.
+    const fillBetween = (upper, lower, fill) => {
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.moveTo(upper.points[0].x, upper.points[0].y);
+      for (const p of upper.points) ctx.lineTo(p.x, p.y);
+      for (let i = lower.points.length - 1; i >= 0; i--) ctx.lineTo(lower.points[i].x, lower.points[i].y);
+      ctx.closePath();
+      ctx.fill();
+    };
+    fillBetween(cone.bands[4], cone.bands[0], "rgba(41, 98, 255, 0.07)");
+    fillBetween(cone.bands[3], cone.bands[1], "rgba(41, 98, 255, 0.10)");
+    // The median, dashed: a path, not a prediction.
+    const median = cone.bands[2].points;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = "rgba(41, 98, 255, 0.85)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(median[0].x, median[0].y);
+    for (const p of median) ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+    // The label states the sample size: a cone that does not say how many
+    // paths made it is asking to be trusted on looks alone.
+    ctx.font = "9px ui-monospace, monospace";
+    ctx.fillStyle = "rgba(120, 130, 160, 0.85)";
+    const label = `forecast · ${cone.paths} paths · ${cone.steps} bars`;
+    ctx.fillText(label, Math.min(anchorX + 4, plot.x + plot.w - ctx.measureText(label).width - 4), plot.y + 12);
   }
 
   /// A packed-RGBA u32 (from a script's `color=`) to a CSS colour string.
@@ -2792,6 +2845,13 @@ function createChartPane(root, hooks = {}) {
   ///
   /// The button's `aria-pressed` is the state, rather than a second variable that
   /// can drift out of step with what the button says.
+  /// Whether the forecast cone is on (docs/35). Same `aria-pressed` shape as
+  /// the Zones toggle: one variable, so the button cannot disagree with the
+  /// state it describes.
+  function forecastOn() {
+    return el("forecast").getAttribute("aria-pressed") === "true";
+  }
+
   function zonesOn() {
     return el("zones").getAttribute("aria-pressed") === "true";
   }
@@ -2873,6 +2933,10 @@ function createChartPane(root, hooks = {}) {
       // The profile's edge, in the engine's own spelling. Assigned only when
       // set: absent means Right, which keeps every existing request byte-identical.
       ...(profileLeft ? { profile_anchor: "left" } : {}),
+      // The forecast cone (docs/35): present only when the toggle is on, so an
+      // off request is byte-identical to a pre-forecast one. The empty object
+      // asks for the engine's defaults (30 bars out, 500 paths).
+      ...(forecastOn() ? { forecast: {} } : {}),
       indicator,
       // The frozen older revision, drawn faded behind the live layer. Sent as
       // its own request field so the engine positions it with the same frame
@@ -5276,6 +5340,15 @@ function createChartPane(root, hooks = {}) {
     // A redraw, not a refetch: the zones are detected from the candles the engine
     // already has, so there is nothing new to ask the backend for.
     el("zones").addEventListener("click", (event) => {
+      const button = event.currentTarget;
+      const on = button.getAttribute("aria-pressed") !== "true";
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+      render();
+    });
+    // The forecast cone (docs/35). A redraw, not a refetch, for the same
+    // reason as Zones: the simulation runs on the candles the engine
+    // already has.
+    el("forecast").addEventListener("click", (event) => {
       const button = event.currentTarget;
       const on = button.getAttribute("aria-pressed") !== "true";
       button.setAttribute("aria-pressed", on ? "true" : "false");

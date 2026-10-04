@@ -53,6 +53,7 @@ pub mod delta;
 pub mod error;
 pub mod events;
 pub mod footprint;
+pub mod forecast;
 pub mod iceberg;
 pub mod imbalance;
 pub mod indicators;

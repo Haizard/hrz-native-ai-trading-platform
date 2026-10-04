@@ -297,6 +297,15 @@ pub struct Request {
     /// the user's pin is a statement about the *current* detection.
     #[serde(default)]
     pub zone_constraints: Vec<crate::indicator::ZoneConstraint>,
+    /// The forecast cone knob (docs/35). When present, the engine reserves
+    /// `steps` future slots past the last bar — the candles keep their width
+    /// in bars and the cone gets the space — simulates the window's own
+    /// returns, extends the price fit to the cone's envelope, and reports
+    /// the positioned bands in [`Scene::forecast`]. The reported viewport
+    /// never includes the future: an echo that did would grow the window a
+    /// horizon per frame.
+    #[serde(default)]
+    pub forecast: Option<ForecastRequest>,
     /// A second, **frozen** indicator output drawn faded beneath the main
     /// one -- the revision diff view. The shell strips the concepts before
     /// sending (a diff between two moving layers is noise), so this positions
@@ -397,6 +406,7 @@ impl Default for Request {
             indicator: None,
             live_indicator: None,
             zone_constraints: Vec::new(),
+            forecast: None,
             diff_indicator: None,
             follow: false,
             last_price: None,
@@ -751,6 +761,40 @@ pub struct Tick {
     pub price: f64,
 }
 
+/// The forecast request knob (docs/35): simulate the window's own returns
+/// into a cone this many bars out. Absent means no forecast, which keeps
+/// every pre-forecast request byte-identical.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct ForecastRequest {
+    /// Horizon in bars; 30 when absent, capped by analytics-core.
+    #[serde(default)]
+    pub steps: Option<usize>,
+    /// Path count; 500 when absent, capped by analytics-core.
+    #[serde(default)]
+    pub paths: Option<usize>,
+}
+
+/// One positioned quantile line of the forecast cone (docs/35).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ForecastBand {
+    /// Which quantile (0.05, 0.25, 0.50, 0.75, 0.95).
+    pub quantile: f64,
+    /// The polyline: the anchor at the last bar's close, then one point per
+    /// future step. Canvas coordinates, like every other positioned line.
+    pub points: Vec<Point>,
+}
+
+/// The positioned forecast cone (docs/35).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneForecast {
+    /// The five quantile polylines, widest first (5% .. 95%).
+    pub bands: Vec<ForecastBand>,
+    /// The path count actually simulated, for the drawing's label.
+    pub paths: usize,
+    /// The horizon in bars.
+    pub steps: usize,
+}
+
 /// The plot rectangle the scene was laid out in.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Plot {
@@ -861,6 +905,11 @@ pub struct Scene {
     /// Strategy equity curves, one dedicated pane per strategy (docs/24 S2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub equity_panes: Vec<crate::script::ScriptEquityPane>,
+    /// The forecast cone (docs/35), when the request asked and the window
+    /// had the returns to simulate. Absent otherwise -- and the scene note
+    /// says why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forecast: Option<SceneForecast>,
     /// Overlay scripts' plots, mapped through the price pane's scale. These
     /// draw *under* the user's drawings, with the levels and regions -- a
     /// script's opinion about a price is still an opinion about the pane the
@@ -1212,6 +1261,7 @@ pub fn build(request: &Request) -> Scene {
         equity_panes: Vec::new(),
         script_overlays: Vec::new(),
         diff_indicator: None,
+        forecast: None,
         last_price: None,
         snap_points: Vec::new(),
         note: None,
@@ -1271,10 +1321,51 @@ pub fn build(request: &Request) -> Scene {
         return scene;
     }
 
+    // The forecast cone (docs/35) is simulated now, before the price fit, so
+    // its envelope can join the range the axis shows. From the REAL closes of
+    // the window -- Heikin-Ashi closes are averages nobody traded at, and a
+    // cone grown from them would look plausible while being exactly wrong,
+    // the same promise the profile makes. The seed derives from the window's
+    // identity, so the same view draws the same cone on every frame.
+    let forecast = request.forecast.and_then(|req| {
+        let real = &request.candles[window.from..window.end()];
+        let closes: Vec<f64> = real.iter().map(|candle| candle.close).collect();
+        let seed = (window.from as u64)
+            .wrapping_mul(0x1000_0000_01B3)
+            .wrapping_add(real.first().map(|c| c.open_time as u64).unwrap_or(0))
+            .wrapping_mul(0x1000_0000_01B3)
+            .wrapping_add(real.last().map(|c| c.open_time as u64).unwrap_or(0));
+        analytics_core::forecast::bootstrap_forecast(
+            &closes,
+            &analytics_core::forecast::ForecastSpec {
+                steps: req.steps.unwrap_or(30),
+                paths: req.paths.unwrap_or(500),
+                seed,
+            },
+        )
+    });
+    if request.forecast.is_some() && forecast.is_none() {
+        add_note(
+            &mut scene.note,
+            "the forecast is not drawn: the window has too few usable returns to resample"
+                .to_string(),
+        );
+    }
+
     // The drawn range is the visible candles' own range, padded a little so a
     // wick touching the edge is not clipped -- unless the user has moved the
     // price axis, in which case their range is used exactly and unpadded.
-    let visible_fit = fitted_range(visible);
+    let mut visible_fit = fitted_range(visible);
+    // The cone's envelope joins the fitted range: a cone clipped at the
+    // plot's edge would read as "the future is flat", which is the one claim
+    // the simulation did not make. A user's own price range still wins
+    // exactly, the way it always has.
+    if let Some(cone) = &forecast {
+        for step in &cone.steps {
+            visible_fit.min = visible_fit.min.min(step[0]);
+            visible_fit.max = visible_fit.max.max(step[4]);
+        }
+    }
     if !visible_fit.is_usable() {
         scene.note = Some("candles have no usable prices".into());
         return scene;
@@ -1299,12 +1390,18 @@ pub fn build(request: &Request) -> Scene {
     let last = &visible[visible.len() - 1];
     let width_nanos = first.timeframe.nanos().max(1);
     scene.from = first.open_time;
-    scene.to = last.open_time + width_nanos;
+    // With a forecast, the axis reserves the cone's horizon past the last bar
+    // (docs/35): the slot count below grows by the same number of bars, so
+    // the time-to-pixel invariant -- a candle's open time maps to its slot's
+    // left edge -- holds across the extension.
+    let future_slots = forecast.as_ref().map(|cone| cone.steps.len()).unwrap_or(0);
+    scene.to = last.open_time + width_nanos * (1 + future_slots as i64);
 
-    // The slot is `plot.w / visible.len()`, so a candle keeps its width in *bars*
-    // and grows in pixels as the user zooms in. That is what zooming in means,
-    // and it is why the slot cannot be computed from the whole series.
-    let slot = plot.w / visible.len() as f64;
+    // The slot is `plot.w / (visible + future)`, so a candle keeps its width
+    // in *bars* and grows in pixels as the user zooms in. That is what
+    // zooming in means, and it is why the slot cannot be computed from the
+    // whole series.
+    let slot = plot.w / (visible.len() + future_slots) as f64;
     if request.mode.draws_bars() {
         scene.candles = candle_bars(visible, slot, &plot, scene.price_min, scene.price_max);
     }
@@ -1490,6 +1587,31 @@ pub fn build(request: &Request) -> Scene {
     };
     scene.regions = region_rects(request.zones, &concepts, &request.candles, &frame);
     scene.ticks = ticks(&plot, scene.price_min, scene.price_max);
+
+    // The cone, positioned through the same frame as everything else
+    // (docs/35). The anchor point is the last close at the last bar's
+    // center, so the bands grow out of the price line instead of floating.
+    scene.forecast = forecast.map(|cone| {
+        let anchor = crate::scene::Point {
+            x: frame.x_at_nanos(last.open_time) + slot / 2.0,
+            y: frame.y_at(cone.start),
+        };
+        let bands = analytics_core::forecast::FORECAST_QUANTILES
+            .iter()
+            .enumerate()
+            .map(|(q, quantile)| ForecastBand {
+                quantile: *quantile,
+                points: std::iter::once(anchor)
+                    .chain(cone.steps.iter().enumerate().map(|(k, step)| crate::scene::Point {
+                        x: frame.x_at_nanos(last.open_time + (k as i64 + 1) * frame.bar_nanos)
+                            + slot / 2.0,
+                        y: frame.y_at(step[q]),
+                    }))
+                    .collect(),
+            })
+            .collect();
+        SceneForecast { bands, paths: cone.paths, steps: cone.steps.len() }
+    });
 
     // The magnet's candidates, when the request asked. Built from the visible
     // **real** candles -- the same slice everything measured on screen uses --
@@ -5825,6 +5947,65 @@ mod tests {
         assert!(
             (untouched.y_top - detected_top).abs() < 1e-9,
             "the refused pin left the detected geometry alone"
+        );
+    }
+
+    #[test]
+    fn a_forecast_extends_the_time_axis_and_positions_its_cone() {
+        // docs/35: requesting a forecast reserves the horizon past the last
+        // bar, anchors the cone on the last close, and keeps the viewport
+        // echo free of the future -- an echo that included it would grow the
+        // window a horizon per frame.
+        let mut req = request(120);
+        req.forecast = Some(ForecastRequest { steps: Some(30), paths: Some(100) });
+        let scene = build(&req);
+        let cone = scene.forecast.as_ref().expect("the cone is drawn");
+        assert_eq!(cone.bands.len(), 5);
+        assert_eq!(cone.steps, 30);
+        for band in &cone.bands {
+            assert_eq!(band.points.len(), 31, "the anchor plus one point per step");
+        }
+        // The axis grew by exactly the horizon.
+        let bar = 300_000_000_000i64;
+        assert_eq!(scene.to - scene.from, (120 + 30) * bar, "visible + horizon");
+        // The anchor is the last close at the last bar's center.
+        let anchor = cone.bands[2].points[0];
+        let last_close = series(120)[119].close;
+        let anchor_y = price_to_y(last_close, scene.price_min, scene.price_max, &scene.plot);
+        assert!((anchor.y - anchor_y).abs() < 1e-9, "{} vs {anchor_y}", anchor.y);
+        // Every step keeps the quantiles ordered: y grows downward, so the
+        // 95% line never sits below the 5% line.
+        for k in 0..31 {
+            assert!(
+                cone.bands[4].points[k].y <= cone.bands[0].points[k].y + 1e-9,
+                "step {k} inverted"
+            );
+        }
+        // Determinism across frames, and the echo never includes the future.
+        let again = build(&req);
+        assert_eq!(scene.forecast, again.forecast, "the same view, the same cone");
+        let plain = build(&request(120));
+        assert_eq!(scene.viewport, plain.viewport, "the echo is the pre-extension window");
+        assert!(plain.forecast.is_none(), "no knob, no cone");
+        // Old scenes -- with no forecast key at all -- still deserialize.
+        let json = serde_json::to_value(&scene).expect("serializes");
+        let mut stripped = json.clone();
+        stripped.as_object_mut().unwrap().remove("forecast");
+        let _: Scene = serde_json::from_value(stripped).expect("the old shape parses");
+    }
+
+    #[test]
+    fn a_forecast_on_a_thin_window_is_refused_with_a_note() {
+        // docs/35: fewer than the resampling minimum of returns is a refusal,
+        // not a costume cone.
+        let mut req = request(6);
+        req.forecast = Some(ForecastRequest { steps: None, paths: None });
+        let scene = build(&req);
+        assert!(scene.forecast.is_none());
+        assert!(
+            scene.note.clone().unwrap_or_default().contains("forecast"),
+            "the refusal is explained: {:?}",
+            scene.note
         );
     }
 

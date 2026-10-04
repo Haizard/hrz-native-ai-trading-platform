@@ -567,7 +567,8 @@
   .modes button[aria-selected="true"] { color: var(--text); border-color: var(--accent); }
   /* The zones overlay, off by default. Same "pressed means active" treatment as
      the strategy editor's mode tabs, so one visual language covers both. */
-  #zones[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  #zones[aria-pressed="true"], .zones[aria-pressed="true"],
+  .forecast[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
   /* Attaching the chart to a question. `aria-pressed` again, for the same reason
      as the two above: one variable, so the button cannot disagree with the state
      it describes. The note beside it says what is being sent, because "attach
@@ -1251,6 +1252,13 @@
           nobody asked for is noise on top of the candles.
         -->
         <button class="zones" aria-pressed="false" title="Draw the supply and demand zones the engine detects">Zones</button>
+        <!--
+          The forecast cone (docs/35): a Monte Carlo resampling of the window's own
+          returns, drawn as percentile bands past the last bar. A toggle, like
+          Zones: an overlay nobody asked for is noise, and simulation is a real
+          cost on a long window. Off by default, for the same reason.
+        -->
+        <button class="forecast" aria-pressed="false" title="Simulate the window's own returns into a forecast cone past the last bar">Forecast</button>
         <!--
           Fit. The one zoom control that needs a button: a wheel and a drag are
           discoverable by trying them, but "put it back" has no gesture of its own.
