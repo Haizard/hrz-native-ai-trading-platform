@@ -52,7 +52,11 @@ engine, where `price_to_y` already is:
 
 ## What this is not
 
-Cross-pane tracking (the vertical guide continuing through script sub-panes,
-with each pane's own value tag) is the natural follow-up; it needs the pane
-stack's geometry shared with the pointer handler, which the current
-per-painter layout does not expose.
+The vertical guide **does** cross the stack — script panes and equity panes
+share the x axis, so hovering a sub-pane still snaps to the bar, and the
+horizontal guide and value tag then read that pane's own `value_min/max`
+through the same `price_at_y` export. The built-in RSI-style `sub_panes`
+stay out: their wire shape carries ticks but no direct value range, and
+interpolating between tick anchors would be the shell re-deriving a scale —
+the thing this doc exists to avoid. Giving `ScenePane` a `value_min/max`
+like its script sibling is a one-field engine change when it is wanted.

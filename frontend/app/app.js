@@ -868,8 +868,14 @@ function createChartPane(root, hooks = {}) {
   function drawCrosshair(ctx, scene) {
     if (!crosshair || !scene) return;
     const plot = scene.plot;
-    if (crosshair.x < plot.x || crosshair.x > plot.x + plot.w ||
-        crosshair.y < plot.y || crosshair.y > plot.y + plot.h) return;
+    // The pane under the pointer: the price plot, or one of the stacked
+    // script/equity panes (docs/33). The stack shares the x axis, so the
+    // vertical guide and the bar snap are pane-independent; the horizontal
+    // guide and value tag belong to the hovered pane's own scale.
+    const stacks = [...(scene.script_panes || []), ...(scene.equity_panes || [])];
+    const hovered = crosshair.pane == null ? null : stacks[crosshair.pane];
+    if (!hovered && (crosshair.x < plot.x || crosshair.x > plot.x + plot.w ||
+        crosshair.y < plot.y || crosshair.y > plot.y + plot.h)) return;
     // The hovered bar: the one whose span (body plus half the gap either
     // side) holds the pointer. A lookup over engine positions, not math on
     // prices. Bars without an open_time came from a pre-crosshair engine --
@@ -883,29 +889,43 @@ function createChartPane(root, hooks = {}) {
     if (bar && !bar.open_time) bar = null;
     const vx = bar ? bar.x + bar.w / 2 : crosshair.x;
     const vy = crosshair.y;
+    // The vertical guide crosses the whole stack, price plot through the
+    // last sub-pane: the x it marks is one moment in every pane.
+    let guideTop = plot.y;
+    let guideBottom = plot.y + plot.h;
+    for (const sp of stacks) {
+      guideTop = Math.min(guideTop, sp.plot.y);
+      guideBottom = Math.max(guideBottom, sp.plot.y + sp.plot.h);
+    }
     ctx.setLineDash([4, 4]);
     ctx.strokeStyle = "rgba(120, 123, 134, 0.6)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(Math.round(vx) + 0.5, plot.y);
-    ctx.lineTo(Math.round(vx) + 0.5, plot.y + plot.h);
+    ctx.moveTo(Math.round(vx) + 0.5, guideTop);
+    ctx.lineTo(Math.round(vx) + 0.5, guideBottom);
     ctx.stroke();
+    // The horizontal guide and its value tag belong to the hovered pane's
+    // own scale: the price range on the price plot, the pane's value range
+    // on a sub-pane -- both through the engine's one inverse mapping.
+    const hRect = hovered ? hovered.plot : plot;
+    const vMin = hovered ? hovered.value_min : scene.price_min;
+    const vMax = hovered ? hovered.value_max : scene.price_max;
     ctx.beginPath();
-    ctx.moveTo(plot.x, Math.round(vy) + 0.5);
-    ctx.lineTo(plot.x + plot.w, Math.round(vy) + 0.5);
+    ctx.moveTo(hRect.x, Math.round(vy) + 0.5);
+    ctx.lineTo(hRect.x + hRect.w, Math.round(vy) + 0.5);
     ctx.stroke();
     ctx.setLineDash([]);
-    // The price tag on the right axis, when the loaded module is new enough
+    // The value tag on the right axis, when the loaded module is new enough
     // to export the inverse mapping.
-    if (wasm && typeof wasm.price_at_y === "function") {
-      const price = wasm.price_at_y(plot.y, plot.h, scene.price_min, scene.price_max, vy);
+    if (wasm && typeof wasm.price_at_y === "function" && Number.isFinite(vMin) && Number.isFinite(vMax)) {
+      const value = wasm.price_at_y(hRect.y, hRect.h, vMin, vMax, vy);
       ctx.font = "10px ui-monospace, monospace";
-      const label = fmtNum(price);
+      const label = fmtNum(value);
       const w = ctx.measureText(label).width + 10;
       ctx.fillStyle = "#2a2e39";
-      ctx.fillRect(plot.x + plot.w + 1, vy - 8, w, 16);
+      ctx.fillRect(hRect.x + hRect.w + 1, vy - 8, w, 16);
       ctx.fillStyle = "#d1d4dc";
-      ctx.fillText(label, plot.x + plot.w + 6, vy + 4);
+      ctx.fillText(label, hRect.x + hRect.w + 6, vy + 4);
     }
     if (bar) {
       // The time tag on the bottom axis, centered on the bar and clamped to
@@ -3125,17 +3145,31 @@ function createChartPane(root, hooks = {}) {
 
   function onPointerMove(event) {
     if (!scene) return;
-    // The crosshair follows the pointer over the price plot (docs/33). This
-    // is tracking, not a gesture: repaint from the current scene, never a
-    // rebuild. The plot-rect test is layout, the same kind plotFraction does.
+    // The crosshair follows the pointer over the price plot AND the script
+    // and equity panes under it (docs/33): TradingView's guide crosses the
+    // whole stack. This is tracking, not a gesture: repaint from the current
+    // scene, never a rebuild. The plot-rect tests are layout, the same kind
+    // plotFraction does.
     {
       const rect = el("chart").getBoundingClientRect();
       const cx = event.clientX - rect.left;
       const cy = event.clientY - rect.top;
+      let next = null;
       const p = scene.plot;
-      const inside = cx >= p.x && cx <= p.x + p.w && cy >= p.y && cy <= p.y + p.h;
-      const next = inside ? { x: cx, y: cy } : null;
-      if ((next === null) !== (crosshair === null) || (next && (next.x !== crosshair.x || next.y !== crosshair.y))) {
+      if (cx >= p.x && cx <= p.x + p.w && cy >= p.y && cy <= p.y + p.h) {
+        next = { x: cx, y: cy, pane: null };
+      } else {
+        const stacks = [...(scene.script_panes || []), ...(scene.equity_panes || [])];
+        for (let i = 0; i < stacks.length; i++) {
+          const sp = stacks[i].plot;
+          if (cx >= sp.x && cx <= sp.x + sp.w && cy >= sp.y && cy <= sp.y + sp.h) {
+            next = { x: cx, y: cy, pane: i };
+            break;
+          }
+        }
+      }
+      if ((next === null) !== (crosshair === null) ||
+          (next && (next.x !== crosshair.x || next.y !== crosshair.y || next.pane !== crosshair.pane))) {
         crosshair = next;
         scheduleHoverPaint();
       }
