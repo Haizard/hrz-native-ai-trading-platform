@@ -232,6 +232,13 @@ pub enum ScriptObject {
         bottom: f64,
         /// Packed RGBA (fill).
         color: u32,
+        /// `border_color=` — packed RGBA when set; `None` draws fill only
+        /// (docs/31).
+        border_color: Option<u32>,
+        /// `border_width=` (1 when unset).
+        border_width: f64,
+        /// `border_style=` — "solid" | "dashed" | "dotted".
+        border_style: String,
     },
     /// `line.new_time(t1, price1, t2, price2, ...)` — the time-anchored twin
     /// (docs/28): the anchors are unix-nanos timestamps, so a script reading
@@ -280,6 +287,13 @@ pub enum ScriptObject {
         bottom: f64,
         /// Packed RGBA (fill).
         color: u32,
+        /// `border_color=` — packed RGBA when set; `None` draws fill only
+        /// (docs/31).
+        border_color: Option<u32>,
+        /// `border_width=` (1 when unset).
+        border_width: f64,
+        /// `border_style=` — "solid" | "dashed" | "dotted".
+        border_style: String,
     },
 }
 
@@ -910,7 +924,12 @@ impl<'a> Vm<'a> {
                     let right = self.arg_f(args, 2)?.unwrap_or(NA);
                     let bottom = self.arg_f(args, 3)?.unwrap_or(NA);
                     let color = self.arg_color(args).unwrap_or(0x33_94_A3_B8_u32);
-                    self.out.objects.push(ScriptObject::Box { left, top, right, bottom, color });
+                    // docs/31: the TradingView box look -- a visible border
+                    // distinct from the fill, off when unasked.
+                    let border_color = self.arg_color_named(args, "border_color");
+                    let border_width = self.arg_named_f(args, "border_width").unwrap_or(1.0);
+                    let border_style = self.arg_str(args, "border_style").unwrap_or_else(|| "solid".into());
+                    self.out.objects.push(ScriptObject::Box { left, top, right, bottom, color, border_color, border_width, border_style });
                 } else {
                     self.out.objects_truncated = true;
                 }
@@ -957,7 +976,11 @@ impl<'a> Vm<'a> {
                     let right_nanos = self.arg_f(args, 2)?.unwrap_or(NA);
                     let bottom = self.arg_f(args, 3)?.unwrap_or(NA);
                     let color = self.arg_color(args).unwrap_or(0x33_94_A3_B8_u32);
-                    self.out.objects.push(ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color });
+                    // docs/31: the same border knobs as the bar-index box.
+                    let border_color = self.arg_color_named(args, "border_color");
+                    let border_width = self.arg_named_f(args, "border_width").unwrap_or(1.0);
+                    let border_style = self.arg_str(args, "border_style").unwrap_or_else(|| "solid".into());
+                    self.out.objects.push(ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color, border_color, border_width, border_style });
                 } else {
                     self.out.objects_truncated = true;
                 }
@@ -2033,7 +2056,13 @@ impl<'a> Vm<'a> {
     }
 
     fn arg_color(&self, args: &[Arg]) -> Option<u32> {
-        let arg = args.iter().find(|a| a.name.as_deref() == Some("color"))?;
+        self.arg_color_named(args, "color")
+    }
+
+    /// A named color argument (`border_color=color.red`): the same accepted
+    /// spellings as `color=` -- a `#rrggbb` literal or a `color.*` name.
+    fn arg_color_named(&self, args: &[Arg], name: &str) -> Option<u32> {
+        let arg = args.iter().find(|a| a.name.as_deref() == Some(name))?;
         match &arg.value.kind {
             ExprKind::Color(c) => Some(*c),
             ExprKind::Ident(name) => named_color(name),

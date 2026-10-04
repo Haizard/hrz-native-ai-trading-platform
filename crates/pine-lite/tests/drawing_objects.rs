@@ -90,3 +90,35 @@ fn the_object_heap_stops_at_the_cap_without_failing() {
     assert_eq!(output.objects.len(), pine_lite::interp::MAX_OBJECTS, "exactly the cap");
     assert!(output.objects_truncated, "the scene must learn it was cut");
 }
+
+#[test]
+fn a_box_border_is_distinct_from_the_fill_and_optional() {
+    // docs/31: TradingView's box look -- the border is its own color, width
+    // and dash style, off when unasked. Both box forms take the same knobs.
+    let src = concat!(
+        "//@pine_lite version=1 overlay=true title=\"Draw\"\n",
+        "if bar_index == 0\n",
+        "    box.new(5, 103.0, 15, 98.0, color=color.green, border_color=color.lime, border_width=2, border_style=\"dashed\")\n",
+        "    box.new_time(60000000000.0, 104.0, 900000000000.0, 97.0, color=color.red)\n",
+        "plot(close)\n",
+    );
+    let (_, parsed) = vet(src).expect("vet");
+    let output = run(&parsed, &candles(30), &Inputs::default()).expect("run");
+    assert_eq!(output.objects.len(), 2, "{:?}", output.objects);
+    match &output.objects[0] {
+        pine_lite::interp::ScriptObject::Box { border_color, border_width, border_style, .. } => {
+            assert_eq!(*border_color, Some(0xFF_84_CC_16), "color.lime packed");
+            assert_eq!(*border_width, 2.0);
+            assert_eq!(border_style, "dashed");
+        }
+        other => panic!("expected a box: {other:?}"),
+    }
+    match &output.objects[1] {
+        pine_lite::interp::ScriptObject::BoxTime { border_color, border_width, border_style, .. } => {
+            assert_eq!(*border_color, None, "no border asked, none drawn");
+            assert_eq!(*border_width, 1.0, "the default width");
+            assert_eq!(border_style, "solid");
+        }
+        other => panic!("expected a time-anchored box: {other:?}"),
+    }
+}

@@ -90,7 +90,24 @@ pub enum ScriptDraw {
         y2: f64,
         /// Packed RGBA (fill).
         color: u32,
+        /// `border_color=` (docs/31): packed RGBA when the script asked for a
+        /// border; absent on the wire when it did not -- a fill-only box is
+        /// the pre-docs/31 shape, and old scenes deserialize unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        border_color: Option<u32>,
+        /// `border_width=` (1 when unset).
+        #[serde(default = "default_border_width")]
+        border_width: f64,
+        /// `border_style=` — "solid" | "dashed" | "dotted".
+        #[serde(default)]
+        border_style: String,
     },
+}
+
+/// The border width when the wire does not say (old scenes, scripts that
+/// set a color but no width).
+fn default_border_width() -> f64 {
+    1.0
 }
 
 /// Every drawing object of one overlay script, in creation order.
@@ -498,7 +515,7 @@ pub fn scene_overlay_objects(
                 }
                 Some(ScriptDraw::Label { x: bx(*bar), y: py(*price), text: text.clone(), color: *color })
             }
-            pine_lite::interp::ScriptObject::Box { left, top, right, bottom, color } => {
+            pine_lite::interp::ScriptObject::Box { left, top, right, bottom, color, border_color, border_width, border_style } => {
                 if !left.is_finite() || !right.is_finite() || !top.is_finite() || !bottom.is_finite() {
                     return None;
                 }
@@ -508,6 +525,9 @@ pub fn scene_overlay_objects(
                     x2: bx(*right),
                     y2: py(*bottom),
                     color: *color,
+                    border_color: *border_color,
+                    border_width: *border_width,
+                    border_style: border_style.clone(),
                 })
             }
             // docs/28: time-anchored twins. The anchors are unix-nanos
@@ -541,7 +561,7 @@ pub fn scene_overlay_objects(
                     color: *color,
                 })
             }
-            pine_lite::interp::ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color } => {
+            pine_lite::interp::ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color, border_color, border_width, border_style } => {
                 if !left_nanos.is_finite() || !right_nanos.is_finite() || !top.is_finite() || !bottom.is_finite() {
                     return None;
                 }
@@ -551,6 +571,9 @@ pub fn scene_overlay_objects(
                     x2: frame.x_at_nanos(*right_nanos as i64),
                     y2: py(*bottom),
                     color: *color,
+                    border_color: *border_color,
+                    border_width: *border_width,
+                    border_style: border_style.clone(),
                 })
             }
         })
@@ -1082,6 +1105,51 @@ mod tests {
                     (*x2 - right_edge).abs() <= 10.0,
                     "right edge anchored at the last bar: x2={x2} plot right={right_edge}"
                 );
+            }
+            other => panic!("expected a box: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_box_border_rides_the_wire_only_when_set() {
+        // docs/31: the shell strokes `border_color` when present and falls
+        // back to the fill-derived edge when it is absent -- so the wire
+        // omits the key entirely for a borderless box, and a scene built
+        // before borders existed still deserializes.
+        let frame = crate::scene::Frame {
+            plot: plot_rect(),
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 99.0,
+            price_max: 111.0,
+            bar_nanos: 60_000_000_000,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "if bar_index == 0\n",
+            "    box.new(5, 104.0, 15, 102.0, color=color.green, border_color=color.lime, border_width=2, border_style=\"dotted\")\n",
+            "    box.new(20, 108.0, 30, 106.0, color=color.red)\n",
+            "plot(close)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        let objects = scene_overlay_objects(&output, 10.0, &frame);
+        assert_eq!(objects.len(), 2);
+        let json = serde_json::to_value(&objects).expect("serializes");
+        let first = &json[0]["Box"];
+        assert!(first["border_color"].is_u64(), "the border rides the wire when set: {first}");
+        assert_eq!(first["border_width"], 2.0);
+        assert_eq!(first["border_style"], "dotted");
+        let second = &json[1]["Box"];
+        assert!(second.get("border_color").is_none(), "borderless boxes omit the key: {second}");
+        // And the old shape still deserializes into the new struct.
+        let old = serde_json::json!({"Box": {"x1": 1.0, "y1": 2.0, "x2": 3.0, "y2": 4.0, "color": 4294925568u32}});
+        let parsed_old: ScriptDraw = serde_json::from_value(old).expect("old scenes still parse");
+        match parsed_old {
+            ScriptDraw::Box { border_color, border_width, .. } => {
+                assert_eq!(border_color, None);
+                assert_eq!(border_width, 1.0);
             }
             other => panic!("expected a box: {other:?}"),
         }

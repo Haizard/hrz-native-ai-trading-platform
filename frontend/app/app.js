@@ -1224,14 +1224,25 @@ function createChartPane(root, hooks = {}) {
           if (w <= 0 || h <= 0) continue;
           ctx.fillStyle = rgbaFromPacked(b.color, 0.22);
           ctx.fillRect(x, y, w, h);
-          ctx.strokeStyle = rgbaFromPacked(b.color, 0.8);
-          ctx.lineWidth = 1;
-          ctx.strokeRect(
-            Math.round(x) + 0.5,
-            Math.round(y) + 0.5,
-            Math.max(1, Math.round(w) - 1),
-            Math.max(1, Math.round(h) - 1)
-          );
+          // docs/31: an explicit border_color= wins — TradingView's box look,
+          // the border distinct from the fill, with its width and dash style.
+          // Without one the fill color at 0.8 stays the derived border, so
+          // pre-border scripts draw unchanged.
+          const bx = Math.round(x) + 0.5;
+          const by = Math.round(y) + 0.5;
+          const bw = Math.max(1, Math.round(w) - 1);
+          const bh = Math.max(1, Math.round(h) - 1);
+          if (b.border_color != null) {
+            ctx.strokeStyle = rgbaFromPacked(b.border_color, 1.0);
+            ctx.lineWidth = b.border_width || 1;
+            ctx.setLineDash(b.border_style === "dashed" ? [6, 4] : b.border_style === "dotted" ? [2, 3] : []);
+            ctx.strokeRect(bx, by, bw, bh);
+            ctx.setLineDash([]);
+          } else {
+            ctx.strokeStyle = rgbaFromPacked(b.color, 0.8);
+            ctx.lineWidth = 1;
+            ctx.strokeRect(bx, by, bw, bh);
+          }
         } else if (o.Label) {
           const lb = o.Label;
           ctx.font = "600 10px ui-sans-serif, system-ui";

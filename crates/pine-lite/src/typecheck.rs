@@ -778,10 +778,12 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         // indexes, for drawings over pooled higher timeframes.
         "line.new" => (4, 7),
         "label.new" => (3, 4),
-        "box.new" => (4, 5),
+        // Boxes: 4 anchors + color + the docs/31 border knobs
+        // (border_color, border_width, border_style).
+        "box.new" => (4, 8),
         "line.new_time" => (4, 7),
         "label.new_time" => (3, 4),
-        "box.new_time" => (4, 5),
+        "box.new_time" => (4, 8),
         // Phase 14: platform-native data by name. The literal name is
         // vetted (the host cannot serve a computed name); the series itself
         // is host-supplied, so an unknown name is a RUNTIME report.

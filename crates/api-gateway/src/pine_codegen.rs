@@ -234,7 +234,7 @@ Statements that add to a drawing heap (cap 256 per script):
     if demand_zone
         box.new(zone_left, zone_top, zone_right, zone_bottom, color=color.green)
 
-Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~256 bars (past the cap the extra objects are dropped). `style=` is "solid"/"dashed"/"dotted". The `*_time` twins (`box.new_time`, `line.new_time`, `label.new_time`) take unix-nanos TIME anchors instead of bar indexes -- use them for anything read from a pooled timeframe (see "A higher timeframe"), where an edge is a timestamp, not one of this chart's bars.
+Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~256 bars (past the cap the extra objects are dropped). `style=` is "solid"/"dashed"/"dotted". Boxes take TradingView's border knobs -- `border_color=color.lime, border_width=2, border_style="dashed"`: a visible border distinct from the fill, which is how a zone reads as a zone and not a smear (leave them off for a soft fill-only band). The `*_time` twins (`box.new_time`, `line.new_time`, `label.new_time`) take unix-nanos TIME anchors instead of bar indexes -- use them for anything read from a pooled timeframe (see "A higher timeframe"), where an edge is a timestamp, not one of this chart's bars.
 
 ## SMC zones (order blocks, fair value gaps, breaker blocks): draw BOXES, never markers
 
