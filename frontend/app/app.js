@@ -9351,6 +9351,8 @@ async function loadWorkspaces() {
 // Leaving a conversation returns to the list and forgets the selection, so
 // reopening the tab never lands on a chat the user did not pick.
 function showWorkspaceList() {
+  // Leaving the conversation also stops waiting (docs/29).
+  if (wsGenAbort) wsGenAbort.abort();
   wsActiveId = null;
   el("wsActive").hidden = true;
   el("wsListView").hidden = false;
@@ -9358,6 +9360,10 @@ function showWorkspaceList() {
 }
 
 async function selectWorkspace(id) {
+  // Switching chats stops waiting for the previous chat's in-flight answer
+  // (docs/29): the generation may still finish server-side, and its message
+  // lands the next time that workspace loads.
+  if (wsGenAbort && id !== wsActiveId) wsGenAbort.abort();
   wsActiveId = id;
   // Re-fetch workspace list so active_revision_id is current (a new
   // revision may have been created since the last load).
@@ -9956,8 +9962,58 @@ async function viewRevision(wsId, revId) {
     });
   }
 
+  /// The in-flight generation, if any (docs/29): while a message is being
+  /// answered the send button becomes the stop button, and a pending bubble
+  /// in the transcript shows the elapsed time.
+  let wsGenAbort = null;
+  let wsGenTimer = null;
+
+  /// The pending bubble is honest about what is knowable mid-flight: that
+  /// the pipeline is running and how long it has taken. The stages (model
+  /// draft, vet, repair, preview) are NOT observable without streaming, so
+  /// the bubble describes the pipeline once and counts seconds -- never a
+  /// fake per-stage progress bar.
+  function wsGenBubbleShow(withImage) {
+    wsGenBubbleClear();
+    const stream = el("wsChat");
+    if (!stream) return;
+    const bubble = document.createElement("div");
+    bubble.className = "msg ai wsGenPending";
+    bubble.innerHTML =
+      `<div class="avatar" aria-hidden="true">✦</div>` +
+      `<div><div class="bubble">` +
+      `${withImage ? "Reading the screenshot and generating" : "Generating"} — the model drafts, the vet checks and repairs, usually 15–60s · <b class="wsGenElapsed">0s</b>` +
+      `</div><div class="meta">➤ is now ■ — click it (or press Enter) to stop waiting</div></div>`;
+    stream.appendChild(bubble);
+    stream.scrollTop = stream.scrollHeight;
+    const started = Date.now();
+    const elapsedEl = bubble.querySelector(".wsGenElapsed");
+    wsGenTimer = setInterval(() => {
+      // The element can be detached by a transcript re-render; stop then.
+      if (!elapsedEl.isConnected) {
+        clearInterval(wsGenTimer);
+        wsGenTimer = null;
+        return;
+      }
+      elapsedEl.textContent = `${Math.round((Date.now() - started) / 1000)}s`;
+    }, 1000);
+  }
+
+  function wsGenBubbleClear() {
+    if (wsGenTimer) {
+      clearInterval(wsGenTimer);
+      wsGenTimer = null;
+    }
+    document.querySelectorAll(".wsGenPending").forEach((n) => n.remove());
+  }
+
   async function sendWorkspaceMessage() {
   if (!wsActiveId) return;
+  // While a generation is in flight, sending means stopping.
+  if (wsGenAbort) {
+    wsGenAbort.abort();
+    return;
+  }
   const input = el("wsChatInput");
   const content = input.value.trim();
   if (!content && !wsPendingImages.length) return;
@@ -9971,12 +10027,18 @@ async function viewRevision(wsId, revId) {
   wsPendingImages = [];
   renderPendingImages();
   const msg = el("wsChatMsg");
-  msg.textContent = images.length ? "Reading the screenshot and generating…" : "Generating…";
+  const sendBtn = el("wsChatSend");
+  msg.textContent = "";
+  wsGenAbort = new AbortController();
+  wsGenBubbleShow(images.length > 0);
+  sendBtn.textContent = "■";
+  sendBtn.title = "Stop waiting — the generation may still finish server-side and appear on the next refresh";
   try {
     const resp = await api(`/indicator-workspaces/${wsActiveId}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content, images }),
+      signal: wsGenAbort.signal,
     });
     // Show the revision info from the response before refreshing.
     if (resp && resp.revision) {
@@ -9985,7 +10047,14 @@ async function viewRevision(wsId, revId) {
     await selectWorkspace(wsActiveId);
     msg.textContent = "Done.";
   } catch (e) {
-    msg.textContent = e.message;
+    msg.textContent = e.name === "AbortError"
+      ? "Stopped waiting — if the generation finishes server-side it appears on the next refresh."
+      : e.message;
+  } finally {
+    wsGenAbort = null;
+    wsGenBubbleClear();
+    sendBtn.textContent = "➤";
+    sendBtn.title = "Send (Enter)";
   }
 }
 

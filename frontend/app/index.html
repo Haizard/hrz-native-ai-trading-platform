@@ -695,6 +695,14 @@
   .msg.ai .bubble { background: var(--panel-2); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
   .msg .meta { font-size: 10px; color: var(--muted); margin-top: 3px; }
   .msg.user .meta { text-align: right; }
+  /* The generation pending bubble (docs/29): dashed border + a slow pulse so
+     the transcript reads "working" without inventing per-stage progress. */
+  @keyframes wsGenPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+  .wsGenPending .bubble {
+    border-style: dashed;
+    animation: wsGenPulse 2.2s ease-in-out infinite;
+  }
+  .wsGenPending .wsGenElapsed { color: var(--text); font-variant-numeric: tabular-nums; }
   /* The generated source folds away inside the AI bubble, like the rest of
      the transcript's reference material. */
   .msg .bubble details { margin-top: 6px; }
