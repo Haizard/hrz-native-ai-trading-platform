@@ -762,19 +762,26 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "array.pop" | "array.shift" | "array.clear" => (1, 1),
         "array.set" => (3, 3),
         // The second instrument (`sec=` in the header): the host fetches and
-        // aligns its candles; the script reads them through these.
+        // aligns its candles; the script reads them through these. `time` is
+        // the aligned bar's open time (docs/28) -- a change in it is the
+        // other market's new bar.
         "request.symbol" | "request.open" | "request.high" | "request.low"
-        | "request.close" | "request.volume" => (0, 0),
+        | "request.close" | "request.volume" | "request.time" => (0, 0),
         // Phase 11: the full Pine form, any pair, any timeframe. Arity is
         // checked in `call` (which also vets the literal strings and fills
         // the series pool); the entry here keeps `unknown()` away from it.
         "request.security" => (3, 3),
         // Phase 13 drawing objects: positional anchors + named knobs. They
         // are STATEMENTS (no value), so the checker's call path only vets
-        // arity here; the dispatch pushes to the object heap.
+        // arity here; the dispatch pushes to the object heap. The `_time`
+        // twins (docs/28) anchor by unix-nanos timestamps instead of bar
+        // indexes, for drawings over pooled higher timeframes.
         "line.new" => (4, 7),
         "label.new" => (3, 4),
         "box.new" => (4, 5),
+        "line.new_time" => (4, 7),
+        "label.new_time" => (3, 4),
+        "box.new_time" => (4, 5),
         // Phase 14: platform-native data by name. The literal name is
         // vetted (the host cannot serve a computed name); the series itself
         // is host-supplied, so an unknown name is a RUNTIME report.

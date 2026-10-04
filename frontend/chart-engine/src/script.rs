@@ -510,6 +510,49 @@ pub fn scene_overlay_objects(
                     color: *color,
                 })
             }
+            // docs/28: time-anchored twins. The anchors are unix-nanos
+            // timestamps (a pooled higher timeframe's bar times), mapped by
+            // absolute time -- the same mapping drawings and regions use --
+            // so an HTF zone lands exactly where its bars sit on this chart's
+            // axis. An anchor outside the window maps off-plot and the canvas
+            // clips, exactly as a bar-index object does.
+            pine_lite::interp::ScriptObject::LineTime { t1, price1, t2, price2, color, style, width } => {
+                if !t1.is_finite() || !t2.is_finite() || !price1.is_finite() || !price2.is_finite() {
+                    return None;
+                }
+                Some(ScriptDraw::Line {
+                    x1: frame.x_at_nanos(*t1 as i64),
+                    y1: py(*price1),
+                    x2: frame.x_at_nanos(*t2 as i64),
+                    y2: py(*price2),
+                    color: *color,
+                    style: style.clone(),
+                    width: *width,
+                })
+            }
+            pine_lite::interp::ScriptObject::LabelTime { nanos, price, text, color } => {
+                if !nanos.is_finite() || !price.is_finite() {
+                    return None;
+                }
+                Some(ScriptDraw::Label {
+                    x: frame.x_at_nanos(*nanos as i64),
+                    y: py(*price),
+                    text: text.clone(),
+                    color: *color,
+                })
+            }
+            pine_lite::interp::ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color } => {
+                if !left_nanos.is_finite() || !right_nanos.is_finite() || !top.is_finite() || !bottom.is_finite() {
+                    return None;
+                }
+                Some(ScriptDraw::Box {
+                    x1: frame.x_at_nanos(*left_nanos as i64),
+                    y1: py(*top),
+                    x2: frame.x_at_nanos(*right_nanos as i64),
+                    y2: py(*bottom),
+                    color: *color,
+                })
+            }
         })
         .collect()
 }
@@ -1041,6 +1084,83 @@ mod tests {
                 );
             }
             other => panic!("expected a box: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn time_anchored_objects_map_by_absolute_time_not_bar_index() {
+        // docs/28: a script that read a pooled higher timeframe holds its
+        // zone's edges as unix-nanos timestamps, which are not bar indexes
+        // on this chart. `box.new_time` / `line.new_time` / `label.new_time`
+        // map through x_at_nanos -- the same mapping drawings and regions
+        // use -- so the HTF zone lands exactly where its bars sit on this
+        // chart's axis. A far-future right edge maps off-plot; the canvas
+        // clips, exactly as the bar-index path does.
+        let bar_nanos = 60_000_000_000i64;
+        let bars = 40i64;
+        let from = 1_755_000_000_000_000_000i64;
+        let frame = crate::scene::Frame {
+            plot: plot_rect(),
+            from,
+            to: from + bars * bar_nanos,
+            price_min: 99.0,
+            price_max: 111.0,
+            bar_nanos,
+        };
+        // The script computes the anchors from its own `time` series (the
+        // run window's candle times are `from + i*bar_nanos`), then draws
+        // the zone from bar 8's open to a far-future edge, a trendline
+        // between two times, and a label at one.
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "if bar_index == 0\n",
+            "    t8 = time + 8.0 * 60000000000.0\n",
+            "    t18 = time + 18.0 * 60000000000.0\n",
+            "    far = time + 10000000000000000.0\n",
+            "    box.new_time(t8, 104.0, far, 102.0, color=color.green)\n",
+            "    line.new_time(t8, 100.0, t18, 110.0, color=color.blue)\n",
+            "    label.new_time(t18, 108.0, \"htf\", color=color.red)\n",
+            "plot(close)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..bars as usize)
+            .map(|i| {
+                let mut c = candle(i, 100.0);
+                c.open_time = from + (i as i64) * bar_nanos;
+                c
+            })
+            .collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        assert_eq!(output.objects.len(), 3);
+        let slot = 380.0 / bars as f64;
+        let objects = scene_overlay_objects(&output, slot, &frame);
+        assert_eq!(objects.len(), 3, "every finite time anchor maps");
+        let rect = plot_rect();
+        // x_at_nanos puts a bar-open timestamp at the slot's LEFT edge; the
+        // bar-index path centers it (+0.5). Bar 8's open: 8/40 across.
+        let x8 = rect.x + (8.0 / 40.0) * rect.w;
+        let x18 = rect.x + (18.0 / 40.0) * rect.w;
+        match &objects[0] {
+            ScriptDraw::Box { x1, y1, x2, y2, .. } => {
+                assert!((x1 - x8).abs() < 1.0, "left edge at bar 8's open: {x1} vs {x8}");
+                assert!(*x2 > rect.x + rect.w, "the far edge maps off-plot: {x2}");
+                assert!(*y1 < *y2, "top above bottom in canvas y");
+            }
+            other => panic!("expected a box: {other:?}"),
+        }
+        match &objects[1] {
+            ScriptDraw::Line { x1, x2, .. } => {
+                assert!((x1 - x8).abs() < 1.0, "{x1} vs {x8}");
+                assert!((x2 - x18).abs() < 1.0, "{x2} vs {x18}");
+            }
+            other => panic!("expected a line: {other:?}"),
+        }
+        match &objects[2] {
+            ScriptDraw::Label { x, text, .. } => {
+                assert!((x - x18).abs() < 1.0, "{x} vs {x18}");
+                assert_eq!(text, "htf");
+            }
+            other => panic!("expected a label: {other:?}"),
         }
     }
 

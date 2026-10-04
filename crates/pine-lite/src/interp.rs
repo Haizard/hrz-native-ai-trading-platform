@@ -233,6 +233,54 @@ pub enum ScriptObject {
         /// Packed RGBA (fill).
         color: u32,
     },
+    /// `line.new_time(t1, price1, t2, price2, ...)` — the time-anchored twin
+    /// (docs/28): the anchors are unix-nanos timestamps, so a script reading
+    /// a pooled higher timeframe can draw what it found there onto this
+    /// chart's time axis. Nanos ride in f64 like the VM's `time` series; the
+    /// ~256ns rounding is invisible inside a bar slot.
+    LineTime {
+        /// First anchor's time, unix nanos as f64.
+        t1: f64,
+        /// First anchor's price.
+        price1: f64,
+        /// Second anchor's time, unix nanos as f64.
+        t2: f64,
+        /// Second anchor's price.
+        price2: f64,
+        /// Packed RGBA.
+        color: u32,
+        /// "solid" | "dashed" | "dotted".
+        style: String,
+        /// Line width.
+        width: f64,
+    },
+    /// `label.new_time(t, price, text, ...)` — time-anchored (docs/28).
+    LabelTime {
+        /// Anchor time, unix nanos as f64.
+        nanos: f64,
+        /// Anchor price.
+        price: f64,
+        /// The label text.
+        text: String,
+        /// Packed RGBA.
+        color: u32,
+    },
+    /// `box.new_time(t1, top, t2, bottom, ...)` — time-anchored (docs/28).
+    /// The MTF zone shape: a higher-timeframe order block or gap spans its
+    /// birth bar's start to "now" in absolute time, which is not a bar index
+    /// on this chart.
+    BoxTime {
+        /// Left edge's time, unix nanos as f64.
+        left_nanos: f64,
+        /// Top price.
+        top: f64,
+        /// Right edge's time, unix nanos as f64.
+        right_nanos: f64,
+        /// Bottom price.
+        bottom: f64,
+        /// Packed RGBA (fill).
+        color: u32,
+    },
 }
 
 /// The drawing-object heap cap, per run (docs/23 Phase 13): the array cap's
@@ -863,6 +911,53 @@ impl<'a> Vm<'a> {
                     let bottom = self.arg_f(args, 3)?.unwrap_or(NA);
                     let color = self.arg_color(args).unwrap_or(0x33_94_A3_B8_u32);
                     self.out.objects.push(ScriptObject::Box { left, top, right, bottom, color });
+                } else {
+                    self.out.objects_truncated = true;
+                }
+                Ok(())
+            }
+            // ---- time-anchored drawing objects (docs/28): the same three
+            // shapes with unix-nanos anchors instead of bar indexes, so a
+            // script reading a pooled higher timeframe can draw what it found
+            // there onto this chart's time axis. Same heap, same cap.
+            "line.new_time" => {
+                self.tick()?;
+                if self.out.objects.len() < MAX_OBJECTS {
+                    let t1 = self.arg_f(args, 0)?.unwrap_or(NA);
+                    let price1 = self.arg_f(args, 1)?.unwrap_or(NA);
+                    let t2 = self.arg_f(args, 2)?.unwrap_or(NA);
+                    let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
+                    let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
+                    let style = self.arg_str(args, "style").unwrap_or_else(|| "solid".into());
+                    let width = self.arg_named_f(args, "width").unwrap_or(1.0);
+                    self.out.objects.push(ScriptObject::LineTime { t1, price1, t2, price2, color, style, width });
+                } else {
+                    self.out.objects_truncated = true;
+                }
+                Ok(())
+            }
+            "label.new_time" => {
+                self.tick()?;
+                if self.out.objects.len() < MAX_OBJECTS {
+                    let nanos = self.arg_f(args, 0)?.unwrap_or(NA);
+                    let price = self.arg_f(args, 1)?.unwrap_or(NA);
+                    let text = self.arg_str(args, "text").or_else(|| self.arg_str_pos(args, 2)).unwrap_or_default();
+                    let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
+                    self.out.objects.push(ScriptObject::LabelTime { nanos, price, text, color });
+                } else {
+                    self.out.objects_truncated = true;
+                }
+                Ok(())
+            }
+            "box.new_time" => {
+                self.tick()?;
+                if self.out.objects.len() < MAX_OBJECTS {
+                    let left_nanos = self.arg_f(args, 0)?.unwrap_or(NA);
+                    let top = self.arg_f(args, 1)?.unwrap_or(NA);
+                    let right_nanos = self.arg_f(args, 2)?.unwrap_or(NA);
+                    let bottom = self.arg_f(args, 3)?.unwrap_or(NA);
+                    let color = self.arg_color(args).unwrap_or(0x33_94_A3_B8_u32);
+                    self.out.objects.push(ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color });
                 } else {
                     self.out.objects_truncated = true;
                 }
@@ -1562,7 +1657,7 @@ impl<'a> Vm<'a> {
                 .map(|_| 1.0)
                 .unwrap_or(NA)),
             "request.open" | "request.high" | "request.low" | "request.close"
-            | "request.volume" => {
+            | "request.volume" | "request.time" => {
                 let slot = self
                     .inputs
                     .security
@@ -1579,6 +1674,11 @@ impl<'a> Vm<'a> {
                     "request.high" => slot.high,
                     "request.low" => slot.low,
                     "request.close" => slot.close,
+                    // docs/28: the aligned bar's open time, so a script can
+                    // see the second instrument's bar boundaries (a change in
+                    // this series IS the other market's new bar) and anchor
+                    // time-based drawing objects at them.
+                    "request.time" => slot.open_time as f64,
                     _ => slot.volume,
                 })
             }

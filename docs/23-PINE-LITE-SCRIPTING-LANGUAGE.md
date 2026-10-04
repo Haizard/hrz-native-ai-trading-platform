@@ -143,9 +143,11 @@ fix; `ta.stoch` alone still reads as its %K.
 A script can see one instrument besides its chart. The pair is declared once
 in the header — `sec="ETHUSDT"` — and read through **zero-argument** calls:
 `request.symbol()`, `request.open()`, `request.high()`, `request.low()`,
-`request.close()`, `request.volume()`. There is no per-call
-`request.security(...)`; TradingView's per-call form is deliberately not
-implemented.
+`request.close()`, `request.volume()`, `request.time()` (the aligned bar's
+open time — a change in it is the pair's new bar). The per-call form
+`request.security("SYM", "tf", expression)` (Phase 11) evaluates the
+expression over any pooled symbol+timeframe, aligned the same way; the symbol
+and timeframe must be quoted literals, the pool caps at 8 keys per script.
 
 - `request.*` values are **bar-aligned to the chart's own bars** by the host
   (`indicator_preview::align_security`): the secondary bar whose window covers
@@ -153,18 +155,22 @@ implemented.
   carries forward flat — indexes never drift, which is what spread and SMT
   math needs. The host fetches the pair's candles (store first, venue
   backfill when thin); the script never does I/O.
-- Every `request.*` call is vet-refused when the header has no `sec=`
-  (`typecheck::check_with_header`), and the runtime refuses again with the fix
-  in the message when the host supplies no series — the same honesty as the
-  rest of the vetting.
+- Every zero-argument `request.*` call is vet-refused when the header has no
+  `sec=` (`typecheck::check_with_header`), and the runtime refuses again with
+  the fix in the message when the host supplies no series — the same honesty
+  as the rest of the vetting. `request.security` instead names its pool key,
+  which the runtime reports when the host did not fill it.
 - `request.*` calls are plain series expressions: history applies after
   assignment (`rc = request.close()` then `rc[1]`), and they compose with all
   ta functions — spreads (`close - request.close()`), ratios, and SMT
   divergence (our new swing high while the pair makes a lower high) are
   ordinary arithmetic over them.
-- Scope note: `request.*` gives the pair **on the chart's own timeframe**
-  only; there is no per-call timeframe. Multi-timeframe reads are a future
-  extension, not a current capability.
+- **Multi-timeframe reads** go through `request.security` with a timeframe
+  literal: `request.security("BTCUSDT", "1h", high)` reads the 1h bar covering
+  each chart bar. A change in the pooled `time` marks the higher timeframe's
+  bar boundary, and the time-anchored drawing objects (`docs/28`) draw what
+  the script finds there: an HTF zone's edges are timestamps, not bar indexes
+  on this chart.
 
 ## Builtin namespaces
 
@@ -312,6 +318,7 @@ builtin table, the vet rules and the output contract — not a redesign.
 | 13 | **Drawing objects**: `line.new(bar1, price1, bar2, price2, color=, style=)`, `label.new(bar, price, text=)`, `box.new(left, top, right, bottom, color=)` into a VM heap (cap 256 objects — raised from 64 in v1.1, live object cap like arrays); engine positions them from bar/time coordinates; shell draws them under the user's own drawings | **done** — VM heap + dispatch + positioning tests (`tests/drawing_objects.rs`, chart-engine `drawing_objects_position_through_the_frame`), shell painter in `drawScriptOverlays` |
 | 14 | **External data**: first a platform-native feed (funding rates, OI from the existing market-data crate) as `request.data("funding")`, then generic HTTP behind a permission prompt and a size-capped cache | **done** — `request.data("NAME")` reads host-filled platform series (`Inputs.data_series`): ticker fields (`SYM.change_pct`, `SYM.quote_volume`, `SYM.high`, `SYM.low`, `SYM.last`), literal-name vetted, exempt from `sec=`, gateway fills from the ticker cache (`tests/request_data.rs`); generic HTTP stays a future phase behind permissions |
 | 15 | **v1.1 expressiveness** (`while` loops, user-function parameter defaults, object heap 64 → 256): `while cond` with a 4-space body, fuel-metered per iteration exactly like `for` (no static termination proof required); `f(a, b = 2) =>` trailing defaults, caller-scope series semantics (a default of `close[1]` is the caller's yesterday), min-arity checking, required-after-optional refused | **done** — interp while arm + limits/typecheck updates (`limits.rs`, `typecheck.rs`), defaults end-to-end parse→typecheck→VM, cap in `interp::MAX_OBJECTS`; pinned in `tests/model_ergonomics.rs` v1.1 section + `tests/drawing_objects.rs` cap test |
+| 16 | **Time-anchored drawing objects** (`docs/28`): `line.new_time`, `label.new_time`, `box.new_time` take unix-nanos timestamps instead of bar indexes, and `request.time()` exposes the aligned second instrument's open time — so a script reading a pooled higher timeframe (Phase 11) can draw what it found there onto this chart's time axis (the 1h FVG on the 5m chart) | **done** — VM variants + typecheck arities + engine mapping via `x_at_nanos`; pinned in `tests/time_anchored_objects.rs` (the HTF FVG idiom end-to-end) and chart-engine `time_anchored_objects_map_by_absolute_time_not_bar_index` |
 
 Order is value-first: 11 unblocks the most requested real strategies (MTF
 trend + multi-pair SMT), 12 removes the inline-length ceiling, 13 gives

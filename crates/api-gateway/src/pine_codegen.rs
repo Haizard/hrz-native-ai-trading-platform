@@ -144,8 +144,29 @@ The chart is {symbol}; a correlated second instrument rides along when the heade
     //@pine_lite version=1 overlay=false title="SMT" sec="ETHUSDT"
 
 With `sec=` set, these zero-argument calls give the pair's series, bar-aligned to the chart's own bars: `request.symbol()` (the pair's ticker, as a nonzero number), `request.open()`, `request.high()`, `request.low()`, `request.close()`, `request.volume()`. `request.close()` and `close` at the same bar are the same moment, so spreads (`close - request.close()`), ratios (`close / request.close()`) and SMT divergence (our new swing high while the pair makes a lower high) are plain arithmetic. History works as on any series -- assign first, then offset: `rc = request.close()` then `rc[1]`.
-- The pair trades on its own clock: where it printed no bar, its last bar carries forward flat (same OHLC repeats), so `request.*` values stall rather than gap. The host fetches and aligns the pair's candles automatically; the script never does.
-- Every `request.*` call requires `sec=` in the header -- the vet refuses `request.close()` without it. `request.security(...)` does NOT exist; the pair is chosen once in the header, not per-call.
+- The pair trades on its own clock: where it printed no bar, its last bar carries forward flat (same OHLC repeats), so `request.*` values stall rather than gap. The host fetches and aligns the pair's candles automatically; the script never does. `request.time()` gives the aligned pair bar's open time -- a change in it is the pair's new bar.
+- The zero-argument `request.*` calls (except `request.security`) require `sec=` in the header -- the vet refuses `request.close()` without it.
+
+## A higher timeframe (the 1h zone on the 5m chart)
+`request.security("BTCUSDT", "1h", expression)` evaluates the expression over the named symbol+timeframe's candles, aligned onto this chart's bars: at each chart bar you read the HTF bar covering that moment. The host fetches and aligns the pool; symbol and timeframe must be quoted literals. Bind the reads once:
+
+    ht = request.security("BTCUSDT", "1h", time)
+    hh = request.security("BTCUSDT", "1h", high)
+    hl = request.security("BTCUSDT", "1h", low)
+
+A change in the pooled `time` IS the higher timeframe's new bar: `ht != ht[1]` marks the chart bar where one 1h bar closed and the next opened. HTF patterns need CLOSED HTF bars, so shift levels into `var`s at each boundary and test the just-closed bar BEFORE shifting:
+
+    newbar = ht != ht[1]
+    var ph1 = na
+    var ph2 = na
+    if newbar and not na(ph2)
+        if hl[1] > ph2
+            box.new_time(ht[1], hl[1], ht + 10000000000000000.0, ph2, color=color.teal)
+    if newbar
+        ph2 = ph1
+        ph1 = hh[1]
+
+That is a bullish 1h fair value gap: the just-closed 1h bar's low gapped above the high two closed 1h bars back. HTF zones can NOT use `box.new` -- a 1h bar's span is not a bar index on this chart. Use the time-anchored twins, which take unix-nanos timestamps (the pooled `time` values) instead of bar indexes: `box.new_time(t1, top, t2, bottom, color=...)`, `line.new_time(t1, price1, t2, price2, ...)`, `label.new_time(t, price, text, ...)`. Extend right with a large time offset (`ht + 10000000000000000.0`); the canvas clips at the plot edge. Mitigation tracking is the same array state machine as the chart-timeframe idiom, with `ht[1]` stored as the birth stamp instead of `bar_index - 2`.
 
 ## Time of day (session filters)
 `hour` (0..23 UTC), `minute` (0..59), `dayofweek` (1=Sunday .. 7=Saturday, Pine's convention). London open is about `hour == 7`; New York is about `hour >= 12 and hour < 21`. An Asian-session level: capture the high/low while `hour >= 0 and hour < 7` into `var` scalars and reset at `hour == 0`.
@@ -176,7 +197,7 @@ Statements that add to a drawing heap (cap 256 per script):
     if demand_zone
         box.new(zone_left, zone_top, zone_right, zone_bottom, color=color.green)
 
-Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~256 bars (past the cap the extra objects are dropped). `style=` is "solid"/"dashed"/"dotted".
+Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~256 bars (past the cap the extra objects are dropped). `style=` is "solid"/"dashed"/"dotted". The `*_time` twins (`box.new_time`, `line.new_time`, `label.new_time`) take unix-nanos TIME anchors instead of bar indexes -- use them for anything read from a pooled timeframe (see "A higher timeframe"), where an edge is a timestamp, not one of this chart's bars.
 
 ## SMC zones (order blocks, fair value gaps, breaker blocks): draw BOXES, never markers
 
@@ -1222,5 +1243,76 @@ mod tests {
         assert!(prompt.contains(REFERENCE_SCRIPT), "the indicator reference rides the prompt");
         assert!(prompt.contains(REFERENCE_STRATEGY), "the strategy reference rides the prompt");
         assert!(prompt.contains("## Strategies"), "the strategy section exists");
+    }
+
+    /// The MTF idiom the prompt teaches (docs/28), assembled as the complete
+    /// script the model is expected to write from it.
+    const MTF_IDIOM_SCRIPT: &str = concat!(
+        "//@pine_lite version=1 overlay=true title=\"HTF FVG\"\n",
+        "ht = request.security(\"BTCUSDT\", \"1h\", time)\n",
+        "hh = request.security(\"BTCUSDT\", \"1h\", high)\n",
+        "hl = request.security(\"BTCUSDT\", \"1h\", low)\n",
+        "newbar = ht != ht[1]\n",
+        "var ph1 = na\n",
+        "var ph2 = na\n",
+        "if newbar and not na(ph2)\n",
+        "    if hl[1] > ph2\n",
+        "        box.new_time(ht[1], hl[1], ht + 10000000000000000.0, ph2, color=color.teal)\n",
+        "if newbar\n",
+        "    ph2 = ph1\n",
+        "    ph1 = hh[1]\n",
+        "plot(close)\n",
+    );
+
+    #[test]
+    fn the_taught_mtf_idiom_vets_runs_and_draws_the_gap() {
+        let errs = pine_lite::vet(MTF_IDIOM_SCRIPT);
+        assert!(errs.is_ok(), "{}", errs.expect_err("vet").iter().map(|e| format!("line {} col {}: {}", e.span.line, e.span.col, e.message)).collect::<Vec<_>>().join("\n"));
+        let (_, parsed) = pine_lite::vet(MTF_IDIOM_SCRIPT).ok().unwrap();
+        // The fixture mirrors the pine-lite integration test: 1h bars of 10
+        // chart bars each; B2's low (105) gaps above B0's high (100).
+        let mk = |i: i64| analytics_core::types::Candle {
+            symbol: "TEST".into(),
+            timeframe: analytics_core::types::Timeframe::M1,
+            open_time: i * 60_000_000_000,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.0,
+            volume: 1.0,
+            buy_volume: 0.5,
+            sell_volume: 0.5,
+        };
+        let candles: Vec<_> = (0..40).map(mk).collect();
+        let pool_levels: [(f64, f64); 4] = [(100.0, 90.0), (110.0, 95.0), (115.0, 105.0), (120.0, 110.0)];
+        let pool: Vec<_> = (0..40)
+            .map(|i| {
+                let b = (i / 10) as usize;
+                let mut c = mk(i);
+                c.open_time = (b as i64) * 10 * 60_000_000_000;
+                c.high = pool_levels[b].0;
+                c.low = pool_levels[b].1;
+                c
+            })
+            .collect();
+        let mut series_pool = std::collections::HashMap::new();
+        series_pool.insert("BTCUSDT@1H".to_string(), pool);
+        let inputs = pine_lite::Inputs { series_pool, ..pine_lite::Inputs::default() };
+        let output = pine_lite::run(&parsed, &candles, &inputs).expect("the MTF idiom runs");
+        let boxes = output
+            .objects
+            .iter()
+            .filter(|o| matches!(o, pine_lite::interp::ScriptObject::BoxTime { .. }))
+            .count();
+        assert_eq!(boxes, 1, "one HTF gap, one time-anchored box: {:?}", output.objects);
+    }
+
+    #[test]
+    fn the_prompt_teaches_the_mtf_section_and_time_anchored_drawing() {
+        let prompt = script_system_prompt("BTCUSDT", "15m");
+        assert!(prompt.contains("## A higher timeframe"), "the MTF section rides the prompt");
+        assert!(prompt.contains("box.new_time"), "the time-anchored twins ride the prompt");
+        assert!(prompt.contains("request.security"), "pooled reads ride the prompt");
+        assert!(prompt.contains("request.time()"), "the aligned-time read rides the prompt");
     }
 }

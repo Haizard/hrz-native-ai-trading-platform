@@ -1210,10 +1210,11 @@ function createChartPane(root, hooks = {}) {
         } else if (o.Box) {
           const b = o.Box;
           // Clip to the plot the way drawZoneSet does: a zone extended to
-          // "now" (bar_index + a large right coordinate) must stop at the
-          // price axis, not bleed into it. Coordinates are normalised so a
-          // script that passed bottom before top still draws the band it
-          // meant instead of a negative-height rect.
+          // "now" (bar_index + a large right coordinate, or a far-future
+          // timestamp from box.new_time -- docs/28) must stop at the price
+          // axis, not bleed into it. Coordinates are normalised so a script
+          // that passed bottom before top still draws the band it meant
+          // instead of a negative-height rect.
           const plot = scene.plot;
           const x = Math.max(Math.min(b.x1, b.x2), plot.x);
           const right = Math.min(Math.max(b.x1, b.x2), plot.x + plot.w);

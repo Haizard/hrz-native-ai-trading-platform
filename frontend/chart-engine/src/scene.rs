@@ -2239,8 +2239,9 @@ impl Frame {
     }
 
     /// A timestamp's canvas x, in **nanoseconds** -- what a candle or a region
-    /// carries.
-    fn x_at_nanos(&self, time_ns: i64) -> f64 {
+    /// carries. `pub(crate)` for `script.rs`: time-anchored drawing objects
+    /// (docs/28) map their pooled-timeframe anchors through the same path.
+    pub(crate) fn x_at_nanos(&self, time_ns: i64) -> f64 {
         let span = (self.to - self.from) as f64;
         self.plot.x + (time_ns - self.from) as f64 / span * self.plot.w
     }
