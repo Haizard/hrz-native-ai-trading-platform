@@ -10466,7 +10466,8 @@ async function viewRevision(wsId, revId) {
       `<div class="avatar" aria-hidden="true">✦</div>` +
       `<div><div class="bubble">` +
       `${withImage ? "Reading the screenshot and generating" : "Generating"} — the model drafts, the vet checks and repairs, usually 15–60s · <b class="wsGenElapsed">0s</b>` +
-      `</div><div class="meta">➤ is now ■ — click it (or press Enter) to stop waiting</div></div>`;
+      `</div><div class="meta wsGenStage"></div>` +
+      `<div class="meta">➤ is now ■ — click it (or press Enter) to stop waiting</div></div>`;
     stream.appendChild(bubble);
     stream.scrollTop = stream.scrollHeight;
     const started = Date.now();
@@ -10488,6 +10489,91 @@ async function viewRevision(wsId, revId) {
       wsGenTimer = null;
     }
     document.querySelectorAll(".wsGenPending").forEach((n) => n.remove());
+  }
+
+  /// One real pipeline event, shown in the pending bubble (docs/36): the
+  /// attempt count, the vet's own complaint, the preview replay. Never a
+  /// fabricated stage -- the stream carries only what the pipeline did.
+  function wsGenStageShow(event) {
+    const stage = document.querySelector(".wsGenPending .wsGenStage");
+    if (!stage) return;
+    let text = "";
+    if (event.stage === "drafting") text = `drafting · attempt ${event.attempt}/${event.max}`;
+    else if (event.stage === "repairing") {
+      const first = (event.errors && event.errors[0]) || "the draft did not pass the vet";
+      text = `repairing · attempt ${event.attempt} — ${first.length > 90 ? first.slice(0, 87) + "…" : first}`;
+    } else if (event.stage === "autofix") text = `autofix · ${event.detail}`;
+    else if (event.stage === "previewing") text = "previewing on the stored candles";
+    stage.textContent = text;
+  }
+
+  /// The streaming turn (docs/36): SSE over fetch, because EventSource
+  /// cannot POST. Each frame updates the pending bubble; `done` carries the
+  /// exact payload the plain route returns; `error` carries the plain
+  /// route's error body. A gateway without the route answers 404 before any
+  /// SSE begins, and the call falls back to the plain POST.
+  async function streamWorkspaceMessage(content, images, signal) {
+    const headers = { "content-type": "application/json" };
+    if (token()) headers.authorization = `Bearer ${token()}`;
+    const response = await fetch(`/indicator-workspaces/${wsActiveId}/messages/stream`, {
+      method: "POST", headers, body: JSON.stringify({ content, images }), signal,
+    });
+    const contentType = response.headers.get("content-type") || "";
+    if (!response.ok || !contentType.includes("text/event-stream")) {
+      if (response.status === 404) {
+        return await api(`/indicator-workspaces/${wsActiveId}/messages`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ content, images }),
+          signal,
+        });
+      }
+      const text = await response.text();
+      let body = null;
+      try { body = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
+      const error = body && body.error;
+      const thrown = new Error((error && (error.message || error.code)) || `${response.status} ${response.statusText}`);
+      thrown.status = response.status;
+      throw thrown;
+    }
+    // SSE frames are `event:`/`data:` line pairs separated by a blank line;
+    // keep-alive arrives as `: ping` comments and is ignored.
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let eventName = "";
+    let result = null, failure = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let cut;
+      while ((cut = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, cut);
+        buffer = buffer.slice(cut + 2);
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event:")) eventName = line.slice(6).trim();
+          else if (line.startsWith("data:")) {
+            let parsed = null;
+            try { parsed = JSON.parse(line.slice(5).trim()); } catch { /* noise, not the turn's end */ }
+            if (parsed && eventName === "progress") wsGenStageShow(parsed);
+            else if (parsed && eventName === "done") result = parsed;
+            else if (parsed && eventName === "error") failure = parsed;
+          }
+        }
+        eventName = "";
+      }
+    }
+    if (failure) {
+      let parsed = null;
+      try { parsed = JSON.parse(failure.body); } catch { /* a plain-text body */ }
+      const error = parsed && parsed.error;
+      const thrown = new Error((error && (error.message || error.code)) || `generation failed (${failure.status})`);
+      thrown.status = failure.status;
+      throw thrown;
+    }
+    if (result) return result;
+    throw new Error("the generation stream ended without a result");
   }
 
   async function sendWorkspaceMessage() {
@@ -10517,12 +10603,9 @@ async function viewRevision(wsId, revId) {
   sendBtn.textContent = "■";
   sendBtn.title = "Stop waiting — the generation may still finish server-side and appear on the next refresh";
   try {
-    const resp = await api(`/indicator-workspaces/${wsActiveId}/messages`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content, images }),
-      signal: wsGenAbort.signal,
-    });
+    // docs/36: stream the pipeline's real events while the turn runs; an old
+    // gateway without the route falls back to the plain POST inside.
+    const resp = await streamWorkspaceMessage(content, images, wsGenAbort.signal);
     // Show the revision info from the response before refreshing.
     if (resp && resp.revision) {
       msg.textContent = `Revision #${resp.revision.revision_number} created — attaching to chart…`;

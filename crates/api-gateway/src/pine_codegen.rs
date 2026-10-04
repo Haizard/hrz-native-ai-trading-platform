@@ -22,6 +22,42 @@
 use ai_agent::llm_client::{
     ContentBlock, LlmClient, LlmRequest, Message, Role, ToolChoice, ToolSpec,
 };
+use serde::Serialize;
+
+/// One observable step of the generation pipeline (docs/36): what the
+/// streaming route turns into SSE `progress` frames. The stage names are the
+/// contract the shell reads, so they are tagged and stable. Not token
+/// streaming, deliberately: the model produces a `submit_script` tool call,
+/// not prose, so there are no answer tokens to stream -- what streams is the
+/// *work* (the agent socket's precedent, `ws::agent`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum GenerationEvent {
+    /// An LLM round is starting -- the long, opaque wait.
+    Drafting { attempt: usize, max: usize },
+    /// The draft did not survive; the complaint goes back to the model
+    /// verbatim. `errors` is the vet list, or a one-line note for the shapes
+    /// vet never saw (no tool call, a non-string argument).
+    Repairing { attempt: usize, errors: Vec<String> },
+    /// The missing-`sec` header knob was fixed deterministically.
+    Autofix { detail: String },
+    /// The vetted script is replaying on the stored candles for its preview.
+    /// Emitted by the route, which owns the preview; declared here so the
+    /// frame vocabulary has one home.
+    Previewing,
+}
+
+/// Report one step, if anyone is listening. A closed receiver means the
+/// client disconnected mid-generation; the pipeline continues anyway so its
+/// result still persists, and the route discards the rest.
+fn report(
+    progress: &Option<&futures::channel::mpsc::UnboundedSender<GenerationEvent>>,
+    event: GenerationEvent,
+) {
+    if let Some(sink) = progress {
+        let _ = sink.unbounded_send(event);
+    }
+}
 
 /// How many repair rounds the model gets. The document loop uses 5; scripts
 /// fail on more specific, more fixable complaints (a missing import, a wrong
@@ -499,6 +535,7 @@ pub(crate) async fn generate_script(
     base_script: Option<&str>,
     max_tokens: u32,
     temperature: f32,
+    progress: Option<&futures::channel::mpsc::UnboundedSender<GenerationEvent>>,
 ) -> Result<GeneratedScript, ai_agent::AgentError> {
     let description = match base_script {
         // Edit mode: the current script rides the first message, so "make the
@@ -530,6 +567,7 @@ pub(crate) async fn generate_script(
     let mut last_report = String::from("no script was submitted");
 
     for attempt in 1..=MAX_ATTEMPTS {
+        report(&progress, GenerationEvent::Drafting { attempt, max: MAX_ATTEMPTS });
         let response = llm
             .complete(LlmRequest {
                 system: Some(system.clone()),
@@ -543,6 +581,10 @@ pub(crate) async fn generate_script(
         let calls = response.message.tool_calls();
         let Some(call) = calls.iter().find(|c| c.name == "submit_script") else {
             last_report = "the reply did not call submit_script".to_string();
+            report(
+                &progress,
+                GenerationEvent::Repairing { attempt, errors: vec![last_report.clone()] },
+            );
             messages.push(response.message.clone());
             messages.push(Message::user(
                 "Respond by calling submit_script with the complete pine-lite script.",
@@ -557,6 +599,10 @@ pub(crate) async fn generate_script(
             .or_else(|| extract_script(&response.message.text()));
         let Some(source) = source else {
             last_report = "`script` must be a string".to_string();
+            report(
+                &progress,
+                GenerationEvent::Repairing { attempt, errors: vec![last_report.clone()] },
+            );
             messages.push(response.message.clone());
             messages.push(Message::user(
                 "Call submit_script with the whole script as the string value of `script`.",
@@ -586,10 +632,12 @@ pub(crate) async fn generate_script(
                     if let Some(fixed) = autofix_sec(&source, user_request) {
                         let (header, _script) =
                             pine_lite::vet(&fixed).expect("autofix re-vet");
-                        repaired_errors.push(format!(
-                            "autofix: appended sec=\"{}\" to the header",
+                        let detail = format!(
+                            "appended sec=\"{}\" to the header",
                             header.sec.clone().unwrap_or_default()
-                        ));
+                        );
+                        report(&progress, GenerationEvent::Autofix { detail: detail.clone() });
+                        repaired_errors.push(format!("autofix: {detail}"));
                         return Ok(GeneratedScript {
                             source: fixed,
                             attempts: attempt,
@@ -600,6 +648,13 @@ pub(crate) async fn generate_script(
                 }
                 last_report = vet_report(&source);
                 repaired_errors.extend(errs.iter().map(|e| e.message.clone()));
+                report(
+                    &progress,
+                    GenerationEvent::Repairing {
+                        attempt,
+                        errors: errs.iter().map(|e| e.message.clone()).collect(),
+                    },
+                );
                 messages.push(response.message.clone());
                 messages.push(Message::tool_results(vec![ai_agent::llm_client::ToolResult {
                     tool_use_id: call.id.clone(),
@@ -1459,5 +1514,89 @@ mod tests {
         let prompt = script_system_prompt("BTCUSDT", "5m");
         assert!(prompt.contains("## Multi-timeframe synthesis"), "the synthesis section rides the prompt");
         assert!(prompt.contains("15m FVG"), "the tf-tagged zone labels ride the prompt");
+    }
+
+    /// A scripted LLM: each completion pops the next canned tool call, so a
+    /// test can run the whole attempt loop without a provider.
+    struct ScriptedLlm {
+        scripts: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for ScriptedLlm {
+        async fn complete(
+            &self,
+            _request: LlmRequest,
+        ) -> Result<ai_agent::llm_client::LlmResponse, ai_agent::AgentError> {
+            let script = self.scripts.lock().expect("scripts").remove(0);
+            Ok(ai_agent::llm_client::LlmResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "call-1".into(),
+                        name: "submit_script".into(),
+                        input: serde_json::json!({ "script": script }),
+                    }],
+                },
+                stop_reason: ai_agent::llm_client::StopReason::ToolUse,
+                usage: ai_agent::llm_client::Usage {
+                    input_tokens: None,
+                    output_tokens: None,
+                },
+            })
+        }
+        fn name(&self) -> &str {
+            "scripted"
+        }
+    }
+
+    #[tokio::test]
+    async fn the_progress_stream_reports_each_attempt_and_repair() {
+        // docs/36: a failing first draft then a passing one must stream
+        // drafting, the verbatim vet complaint, drafting again -- real events,
+        // no fake progress.
+        let bad = "//@pine_lite version=1\nplot(close"; // unparseable
+        let good = "//@pine_lite version=1\nplot(close)\n";
+        let llm = ScriptedLlm {
+            scripts: std::sync::Mutex::new(vec![bad.to_string(), good.to_string()]),
+        };
+        let (tx, rx) = futures::channel::mpsc::unbounded::<GenerationEvent>();
+        let generated = generate_script(&llm, "system".into(), "a plot", None, 4096, 0.2, Some(&tx))
+            .await
+            .expect("the second attempt passes");
+        assert_eq!(generated.attempts, 2);
+        drop(tx);
+        let events: Vec<GenerationEvent> = futures::StreamExt::collect(rx).await;
+        let stages: Vec<String> = events
+            .iter()
+            .map(|event| serde_json::to_value(event).expect("serializes")["stage"].to_string())
+            .collect();
+        assert_eq!(
+            stages,
+            vec![
+                "\"drafting\"".to_string(),
+                "\"repairing\"".to_string(),
+                "\"drafting\"".to_string()
+            ],
+            "draft, complaint, draft: {stages:?}"
+        );
+        // The repair frame carries the vet's own words.
+        let repair = serde_json::to_value(&events[1]).expect("serializes");
+        let errors = repair["errors"].as_array().expect("errors array");
+        assert!(!errors.is_empty(), "the vet complaint rides the frame");
+    }
+
+    #[tokio::test]
+    async fn no_listener_means_no_events_and_no_change() {
+        // The non-streaming route passes None: the pipeline must behave
+        // exactly as it did before the stream existed.
+        let good = "//@pine_lite version=1\nplot(close)\n";
+        let llm = ScriptedLlm {
+            scripts: std::sync::Mutex::new(vec![good.to_string()]),
+        };
+        let generated = generate_script(&llm, "system".into(), "a plot", None, 4096, 0.2, None)
+            .await
+            .expect("one attempt");
+        assert_eq!(generated.attempts, 1);
     }
 }

@@ -2,8 +2,12 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::IntoResponse;
 use axum::Json;
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 use trading_engine::Decisions;
 use uuid::Uuid;
 
@@ -431,6 +435,89 @@ pub async fn create_message(
     Path(id): Path<Uuid>,
     ApiJson(body): ApiJson<CreateMessageBody>,
 ) -> Result<(StatusCode, Json<WorkspaceTurnResponse>), ApiError> {
+    run_workspace_turn(state, user, id, body, None).await
+}
+
+/// `POST /indicator-workspaces/{id}/messages/stream` (docs/36).
+///
+/// The same pipeline as [`create_message`], with the *work* streamed as SSE
+/// while it happens -- drafting attempts, vet complaints going back for
+/// repair, the preview replay -- then one `done` event carrying exactly the
+/// payload the plain route returns, or one `error` event carrying the plain
+/// route's error body and status. Once streaming starts the HTTP status is
+/// 200, so the `error` event is the error channel; a rejection that happens
+/// before streaming (malformed JSON, auth) is still an ordinary HTTP error,
+/// which is how the shell decides between stream and fallback.
+pub async fn create_message_stream(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path(id): Path<Uuid>,
+    ApiJson(body): ApiJson<CreateMessageBody>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let (tx, rx) =
+        futures::channel::mpsc::unbounded::<crate::pine_codegen::GenerationEvent>();
+    let task = tokio::spawn(run_workspace_turn(state, user, id, body, Some(tx)));
+    let progress = rx.map(|event| {
+        Ok(event_frame(
+            "progress",
+            serde_json::to_value(&event).unwrap_or_default(),
+        ))
+    });
+    let final_frame = futures::stream::once(async move {
+        let frame = match task.await {
+            Ok(Ok((_, Json(response)))) => event_frame(
+                "done",
+                serde_json::to_value(&response).unwrap_or_default(),
+            ),
+            Ok(Err(err)) => {
+                // The plain route's own error shape rides along, so the
+                // shell's message is the one the plain path would have shown.
+                let response = err.into_response();
+                let status = response.status().as_u16();
+                let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                    .await
+                    .unwrap_or_default();
+                let body = String::from_utf8_lossy(&bytes).into_owned();
+                event_frame("error", serde_json::json!({ "status": status, "body": body }))
+            }
+            Err(join) => event_frame(
+                "error",
+                serde_json::json!({ "status": 500, "body": format!("the generation task failed: {join}") }),
+            ),
+        };
+        Ok(frame)
+    });
+    Sse::new(progress.chain(final_frame)).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("ping"),
+    )
+}
+
+/// One SSE frame: a named event with a JSON payload. A payload that cannot
+/// be encoded degrades to an empty object rather than killing the stream --
+/// the client treats an unreadable frame as noise, not as the turn's end.
+fn event_frame(name: &str, data: serde_json::Value) -> Event {
+    Event::default()
+        .event(name)
+        .json_data(&data)
+        .unwrap_or_else(|_| Event::default().data("{}"))
+}
+
+/// The workspace turn itself, shared by [`create_message`] (one response at
+/// the end) and [`create_message_stream`] (the same response, with the work
+/// streamed while it happens). `progress` is `None` on the plain route: a
+/// pipeline that behaved differently when observed would be a bug.
+async fn run_workspace_turn(
+    state: AppState,
+    user: UserContext,
+    id: Uuid,
+    body: CreateMessageBody,
+    progress: Option<
+        futures::channel::mpsc::UnboundedSender<crate::pine_codegen::GenerationEvent>,
+    >,
+) -> Result<(StatusCode, Json<WorkspaceTurnResponse>), ApiError> {
+    let progress = progress.as_ref();
     if body.content.trim().is_empty() {
         return Err(ApiError::bad_request(
             "WORKSPACE_MESSAGE_REQUIRED",
@@ -512,6 +599,7 @@ pub async fn create_message(
         .as_deref(),
         agent.max_tokens(),
         agent.temperature(),
+        progress,
     )
     .await
     .map_err(ApiError::from)?;
@@ -527,6 +615,10 @@ pub async fn create_message(
     // concepts, in code form).
     let title = header.title.clone().unwrap_or_else(|| "script".to_string());
     let revision_tag = format!("script:{}", title);
+    // The vet passed; the replay is the last wait before the answer (docs/36).
+    if let Some(sink) = progress {
+        let _ = sink.unbounded_send(crate::pine_codegen::GenerationEvent::Previewing);
+    }
     let (preview, preview_stats, preview_note) =
         match crate::indicator_preview::replay_script_preview(
             &state,

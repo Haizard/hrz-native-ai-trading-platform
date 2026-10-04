@@ -341,6 +341,10 @@ pub fn router(state: AppState) -> Router {
                 .post(indicator_workspace_routes::create_message),
         )
         .route(
+            "/indicator-workspaces/{id}/messages/stream",
+            post(indicator_workspace_routes::create_message_stream),
+        )
+        .route(
             "/indicator-workspaces/{id}/alerts",
             get(indicator_workspace_routes::list_alerts).put(indicator_workspace_routes::set_alert),
         )
