@@ -772,6 +772,12 @@ pub struct ForecastRequest {
     /// Path count; 500 when absent, capped by analytics-core.
     #[serde(default)]
     pub paths: Option<usize>,
+    /// The what-if knob: scale every sampled return by this (1.0 when
+    /// absent; analytics-core clamps 0..=3 and treats non-finite as 1.0).
+    /// The seed does not change with the scale, so 1x and 2x are the same
+    /// shuffled draws at two sizes -- the comparison stays honest.
+    #[serde(default)]
+    pub vol_scale: Option<f64>,
 }
 
 /// One positioned quantile line of the forecast cone (docs/35).
@@ -1341,6 +1347,7 @@ pub fn build(request: &Request) -> Scene {
                 steps: req.steps.unwrap_or(30),
                 paths: req.paths.unwrap_or(500),
                 seed,
+                vol_scale: req.vol_scale.unwrap_or(1.0),
             },
         )
     });
@@ -5957,7 +5964,7 @@ mod tests {
         // echo free of the future -- an echo that included it would grow the
         // window a horizon per frame.
         let mut req = request(120);
-        req.forecast = Some(ForecastRequest { steps: Some(30), paths: Some(100) });
+        req.forecast = Some(ForecastRequest { steps: Some(30), paths: Some(100), vol_scale: None });
         let scene = build(&req);
         let cone = scene.forecast.as_ref().expect("the cone is drawn");
         assert_eq!(cone.bands.len(), 5);
@@ -5999,7 +6006,7 @@ mod tests {
         // docs/35: fewer than the resampling minimum of returns is a refusal,
         // not a costume cone.
         let mut req = request(6);
-        req.forecast = Some(ForecastRequest { steps: None, paths: None });
+        req.forecast = Some(ForecastRequest { steps: None, paths: None, vol_scale: None });
         let scene = build(&req);
         assert!(scene.forecast.is_none());
         assert!(
@@ -6007,6 +6014,38 @@ mod tests {
             "the refusal is explained: {:?}",
             scene.note
         );
+    }
+
+    #[test]
+    fn the_what_if_scale_rides_the_request() {
+        // docs/35's what-if slice: 2x vol is the same shuffled draws at
+        // twice the size -- the cone widens, the time axis does not move,
+        // and an old-shaped request (no vol_scale key) still parses.
+        let mut one = request(120);
+        one.forecast =
+            Some(ForecastRequest { steps: Some(30), paths: Some(200), vol_scale: Some(1.0) });
+        let mut two = request(120);
+        two.forecast =
+            Some(ForecastRequest { steps: Some(30), paths: Some(200), vol_scale: Some(2.0) });
+        let a = build(&one).forecast.expect("a cone");
+        let b = build(&two).forecast.expect("a cone");
+        // Pixel spread between the 5% and 95% lines at the last step.
+        let spread = |cone: &SceneForecast| {
+            let last = cone.bands[0].points.len() - 1;
+            cone.bands[0].points[last].y - cone.bands[4].points[last].y
+        };
+        assert!(
+            spread(&b) > spread(&a) + 0.5,
+            "2x vol widens the cone: {} vs {}",
+            spread(&a),
+            spread(&b)
+        );
+        let last = a.bands[0].points.len() - 1;
+        assert_eq!(a.bands[0].points[last].x, b.bands[0].points[last].x, "same horizon");
+        // The old shape: a request without the key deserializes to 1.0.
+        let parsed: ForecastRequest =
+            serde_json::from_value(serde_json::json!({ "steps": 30 })).expect("parses");
+        assert_eq!(parsed.vol_scale, None);
     }
 
     #[test]

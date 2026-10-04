@@ -490,7 +490,7 @@ function buildScene(request) {
 /// that quietly answered for `#thesis` would be a bug nothing points at.
 const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartHint", "chartNote",
-  "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "forecast", "fit",
+  "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "forecast", "volScale", "fit",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
   "magnet", "aiLayer", "profileAnchor", "undo", "redo",
   // The pane's own chrome (title, zoom/collapse buttons) and the hidden bar
@@ -2852,6 +2852,12 @@ function createChartPane(root, hooks = {}) {
     return el("forecast").getAttribute("aria-pressed") === "true";
   }
 
+  /// The what-if slider's value (docs/35): 1.0 is the window as it traded.
+  function volScaleValue() {
+    const v = parseFloat(el("volScale").value);
+    return Number.isFinite(v) ? v : 1;
+  }
+
   function zonesOn() {
     return el("zones").getAttribute("aria-pressed") === "true";
   }
@@ -2936,7 +2942,7 @@ function createChartPane(root, hooks = {}) {
       // The forecast cone (docs/35): present only when the toggle is on, so an
       // off request is byte-identical to a pre-forecast one. The empty object
       // asks for the engine's defaults (30 bars out, 500 paths).
-      ...(forecastOn() ? { forecast: {} } : {}),
+      ...(forecastOn() ? { forecast: volScaleValue() === 1 ? {} : { vol_scale: volScaleValue() } } : {}),
       indicator,
       // The frozen older revision, drawn faded behind the live layer. Sent as
       // its own request field so the engine positions it with the same frame
@@ -5352,7 +5358,14 @@ function createChartPane(root, hooks = {}) {
       const button = event.currentTarget;
       const on = button.getAttribute("aria-pressed") !== "true";
       button.setAttribute("aria-pressed", on ? "true" : "false");
+      el("volScale").hidden = !on;
       render();
+    });
+    // The what-if knob (docs/35): the engine re-simulates with the scaled
+    // returns -- the same seed, so the cone stretches rather than reshuffles.
+    el("volScale").addEventListener("input", () => {
+      el("volScale").title = `What-if: scale the window's volatility — ×${volScaleValue()}`;
+      scheduleRender();
     });
     // Changing the chart type can change the *window* (a footprint uses the span
     // that has trades), so it refetches rather than just redrawing.

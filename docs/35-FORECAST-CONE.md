@@ -60,9 +60,27 @@ window a horizon to the right every frame.
   deserialization.
 - `scene::tests::a_forecast_on_a_thin_window_is_refused_with_a_note`.
 
+## The what-if knob (#4-full)
+
+With the cone on, the pane bar grows a volatility slider (×0.5–×2). Every
+sampled return is multiplied by the scale before a path takes it, so ×2 asks
+"what if the window's moves were twice as big" — without fitting anything.
+The seed does not change with the scale, so ×1 and ×2 draw the **same
+shuffled paths** at two sizes: an honest comparison, not two random cones.
+×0 freezes every path at the last price (the honest "no movement" case);
+non-finite input falls back to 1.0; 3× is the clamp, past which the cone
+stops being about this window. Request-side: `forecast: { vol_scale }`,
+omitted at 1.0 so the default request is unchanged.
+
+Tests: `the_what_if_scale_widens_the_cone_without_reshuffling_it` and
+`a_zero_scale_freezes_every_path_at_the_last_close` (analytics-core);
+`the_what_if_scale_rides_the_request` (scene: wider cone, same horizon,
+old-shape parse).
+
 ## What this is not
 
 Not a parametric model (no GBM drift/vol estimate — the bootstrap is the
 honest choice when the alternative is fitting two numbers and implying
-authority), and not the what-if slice of #4 ("drag the cone's assumptions"
-needs an interaction design of its own).
+authority), and not a full what-if scenario editor (regime mixing — "half
+this window's vol, half last month's" — needs a two-window resampling design
+of its own).

@@ -1260,6 +1260,15 @@
         -->
         <button class="forecast" aria-pressed="false" title="Simulate the window's own returns into a forecast cone past the last bar">Forecast</button>
         <!--
+          The what-if knob (docs/35): scales every sampled return, so x2 asks
+          "what if the window's moves were twice as big". Shown only while the
+          cone is on; 1.0 is the window as it actually traded. The seed does
+          not change with the scale, so two settings draw the SAME shuffled
+          paths at two sizes -- an honest comparison, not two random cones.
+        -->
+        <input class="volScale" type="range" min="0.5" max="2" step="0.25" value="1" hidden
+               title="What-if: scale the window's volatility" />
+        <!--
           Fit. The one zoom control that needs a button: a wheel and a drag are
           discoverable by trying them, but "put it back" has no gesture of its own.
 

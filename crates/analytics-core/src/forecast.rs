@@ -34,7 +34,7 @@ pub const MAX_FORECAST_PATHS: usize = 2000;
 pub const MIN_FORECAST_RETURNS: usize = 8;
 
 /// What to simulate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ForecastSpec {
     /// Horizon in bars.
     pub steps: usize,
@@ -43,6 +43,11 @@ pub struct ForecastSpec {
     /// The caller's seed. The engine derives it from the data window so the
     /// cone is stable across frames of the same view.
     pub seed: u64,
+    /// The what-if knob (docs/35's what-if slice): every sampled return is
+    /// multiplied by this before a path takes it, so 2.0 asks "what if the
+    /// window's moves were twice as big" without fitting anything. 1.0 is
+    /// the honest default; the clamp lives in [`bootstrap_forecast`].
+    pub vol_scale: f64,
 }
 
 /// One forecast cone: the starting price and, per step, the five quantile
@@ -98,6 +103,14 @@ pub fn bootstrap_forecast(closes: &[f64], spec: &ForecastSpec) -> Option<Forecas
     let start = *closes.last().filter(|last| last.is_finite() && **last > 0.0)?;
     let steps = spec.steps.clamp(1, MAX_FORECAST_STEPS);
     let paths = spec.paths.clamp(16, MAX_FORECAST_PATHS);
+    // The what-if scale: 0 freezes every path at the last price (the honest
+    // "no movement" case), 3x is the clamp -- past that the cone stops being
+    // about this window and starts being a fireworks show.
+    let vol_scale = if spec.vol_scale.is_finite() {
+        spec.vol_scale.clamp(0.0, 3.0)
+    } else {
+        1.0
+    };
 
     // Walk every path first, then read quantiles across paths per step: the
     // quantile is a statement about the paths' spread at a horizon, not
@@ -110,7 +123,7 @@ pub fn bootstrap_forecast(closes: &[f64], spec: &ForecastSpec) -> Option<Forecas
     for _ in 0..paths {
         let mut price = start;
         for (k, bucket) in at_step.iter_mut().enumerate() {
-            price *= returns[rng.below(returns.len())].exp();
+            price *= (returns[rng.below(returns.len())] * vol_scale).exp();
             let _ = k;
             bucket.push(price);
         }
@@ -138,7 +151,7 @@ mod tests {
     use super::*;
 
     fn spec() -> ForecastSpec {
-        ForecastSpec { steps: 30, paths: 200, seed: 42 }
+        ForecastSpec { steps: 30, paths: 200, seed: 42, vol_scale: 1.0 }
     }
 
     /// A gently rising series with realistic wiggle.
@@ -197,8 +210,50 @@ mod tests {
 
     #[test]
     fn the_caps_clamp_a_runaway_request() {
-        let big = ForecastSpec { steps: 99_999, paths: 99_999, seed: 1 };
+        let big = ForecastSpec { steps: 99_999, paths: 99_999, seed: 1, vol_scale: 1.0 };
         let cone = bootstrap_forecast(&closes(120), &big).expect("a cone");
         assert_eq!(cone.steps.len(), MAX_FORECAST_STEPS);
+    }
+
+    #[test]
+    fn the_what_if_scale_widens_the_cone_without_reshuffling_it() {
+        // docs/35's what-if slice: 2x vol is the SAME shuffled draws, each
+        // twice as big -- wider cone, same seed, so the comparison the user
+        // makes between the two settings is honest.
+        let base = bootstrap_forecast(&closes(120), &spec()).expect("a cone");
+        let doubled = bootstrap_forecast(&closes(120), &ForecastSpec { vol_scale: 2.0, ..spec() })
+            .expect("a cone");
+        assert_eq!(base.start, doubled.start);
+        let last = base.steps.len() - 1;
+        let base_spread = base.steps[last][4] - base.steps[last][0];
+        let doubled_spread = doubled.steps[last][4] - doubled.steps[last][0];
+        assert!(
+            doubled_spread > base_spread,
+            "2x vol widens the 5-95 spread: {base_spread} vs {doubled_spread}"
+        );
+        // And the same scale twice is still deterministic.
+        let again = bootstrap_forecast(&closes(120), &ForecastSpec { vol_scale: 2.0, ..spec() })
+            .expect("a cone");
+        assert_eq!(doubled, again);
+    }
+
+    #[test]
+    fn a_zero_scale_freezes_every_path_at_the_last_close() {
+        let frozen = bootstrap_forecast(&closes(120), &ForecastSpec { vol_scale: 0.0, ..spec() })
+            .expect("a cone");
+        for step in &frozen.steps {
+            for value in step {
+                assert_eq!(*value, frozen.start, "no movement means no movement");
+            }
+        }
+        // Non-finite input falls back to the honest default rather than NaN
+        // into every quantile.
+        let nan = bootstrap_forecast(
+            &closes(120),
+            &ForecastSpec { vol_scale: f64::NAN, ..spec() },
+        )
+        .expect("a cone");
+        let base = bootstrap_forecast(&closes(120), &spec()).expect("a cone");
+        assert_eq!(nan, base, "NaN scale behaves as 1.0");
     }
 }
