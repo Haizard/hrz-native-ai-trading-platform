@@ -122,3 +122,41 @@ fn a_box_border_is_distinct_from_the_fill_and_optional() {
         other => panic!("expected a time-anchored box: {other:?}"),
     }
 }
+
+#[test]
+fn a_fib_is_one_object_with_four_anchors() {
+    // docs/37: the VM stores the raw anchors; the decomposition into levels
+    // and labels is the engine registry's job, never the VM's.
+    let src = concat!(
+        "//@pine_lite version=1 overlay=true title=\"Fib\"\n",
+        "if bar_index == 0\n",
+        "    fib.new(5, 100.0, 25, 140.0)\n",
+        "plot(close)\n",
+    );
+    let (_, parsed) = vet(src).expect("vet");
+    let output = run(&parsed, &candles(30), &Inputs::default()).expect("run");
+    assert_eq!(output.objects.len(), 1, "{:?}", output.objects);
+    match &output.objects[0] {
+        pine_lite::interp::ScriptObject::Fib { bar1, price1, bar2, price2, color } => {
+            assert_eq!((*bar1, *price1, *bar2, *price2), (5.0, 100.0, 25.0, 140.0));
+            assert_eq!(*color, 0xFF_D4_A0_17_u32, "gold when unset");
+        }
+        other => panic!("expected a fib: {other:?}"),
+    }
+}
+
+#[test]
+fn a_fib_respects_the_heap_cap_and_arity() {
+    // The registry primitive is a drawing object like any other: capped on
+    // the same heap, arity-vetted like the rest.
+    let src = concat!(
+        "//@pine_lite version=1\n",
+        "for i = 0 to 300\n",
+        "    fib.new(5, 100.0, 25, 140.0)\n",
+    );
+    let (_, parsed) = vet(src).expect("vet");
+    let output = run(&parsed, &candles(10), &Inputs::default()).expect("run");
+    assert_eq!(output.objects.len(), pine_lite::interp::MAX_OBJECTS);
+    assert!(output.objects_truncated, "the cap reported itself");
+    assert!(vet("//@pine_lite version=1\nfib.new(5, 100.0, 25)\n").is_err(), "three args is too few");
+}

@@ -272,6 +272,8 @@ Statements that add to a drawing heap (cap 256 per script):
 
 Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~256 bars (past the cap the extra objects are dropped). `style=` is "solid"/"dashed"/"dotted". Boxes take TradingView's border knobs -- `border_color=color.lime, border_width=2, border_style="dashed"`: a visible border distinct from the fill, which is how a zone reads as a zone and not a smear (leave them off for a soft fill-only band). The `*_time` twins (`box.new_time`, `line.new_time`, `label.new_time`) take unix-nanos TIME anchors instead of bar indexes -- use them for anything read from a pooled timeframe (see "A higher timeframe"), where an edge is a timestamp, not one of this chart's bars.
 
+`fib.new(bar1, price1, bar2, price2, color=color.orange)` draws a Fibonacci retracement on a swing: the 0 line sits on the SECOND anchor (the swing's end), 100 on the first, and 23.6/38.2/50/61.8/78.6 between them, each with its price label. One call, one heap object -- the engine decomposes it into the levels, so a fib costs one object, not fourteen.
+
 ## SMC zones (order blocks, fair value gaps, breaker blocks): draw BOXES, never markers
 
 A zone is a price band with a birth bar, so the drawing is `box.new`: one box per LIVE zone, its right edge extended past the last bar (`bar_index + 10000`) so the canvas clips it at the plot edge -- TradingView's "extend to now" look. A `plotshape` triangle marks an EVENT (a CHoCH, a sweep, a BOS); it is never the drawing for a ZONE. An SMC indicator that renders zones as triangles or lines has failed the request.

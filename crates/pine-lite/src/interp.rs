@@ -295,6 +295,22 @@ pub enum ScriptObject {
         /// `border_style=` — "solid" | "dashed" | "dotted".
         border_style: String,
     },
+    /// `fib.new(bar1, price1, bar2, price2, color=...)` (docs/37): a
+    /// Fibonacci retracement anchored on two bars. One registry primitive --
+    /// the engine decomposes it into the level lines and labels the shell
+    /// already paints, so the shell never learns what a fib IS.
+    Fib {
+        /// First anchor's bar index (the swing's start).
+        bar1: f64,
+        /// First anchor's price.
+        price1: f64,
+        /// Second anchor's bar index (the swing's end).
+        bar2: f64,
+        /// Second anchor's price.
+        price2: f64,
+        /// Packed RGBA.
+        color: u32,
+    },
 }
 
 /// The drawing-object heap cap, per run (docs/23 Phase 13): the array cap's
@@ -981,6 +997,24 @@ impl<'a> Vm<'a> {
                     let border_width = self.arg_named_f(args, "border_width").unwrap_or(1.0);
                     let border_style = self.arg_str(args, "border_style").unwrap_or_else(|| "solid".into());
                     self.out.objects.push(ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color, border_color, border_width, border_style });
+                } else {
+                    self.out.objects_truncated = true;
+                }
+                Ok(())
+            }
+            // ---- the registry primitive (docs/37): the VM stores the raw
+            // anchors; the decomposition into levels and labels is the
+            // engine's, because positioning is the engine's.
+            "fib.new" => {
+                self.tick()?;
+                if self.out.objects.len() < MAX_OBJECTS {
+                    let bar1 = self.arg_f(args, 0)?.unwrap_or(NA);
+                    let price1 = self.arg_f(args, 1)?.unwrap_or(NA);
+                    let bar2 = self.arg_f(args, 2)?.unwrap_or(NA);
+                    let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
+                    // Gold, the TradingView fib color, in the VM's packing.
+                    let color = self.arg_color(args).unwrap_or(0xFF_D4_A0_17_u32);
+                    self.out.objects.push(ScriptObject::Fib { bar1, price1, bar2, price2, color });
                 } else {
                     self.out.objects_truncated = true;
                 }

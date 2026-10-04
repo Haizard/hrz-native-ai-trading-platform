@@ -505,12 +505,16 @@ pub fn scene_overlay_objects(
     output
         .objects
         .iter()
-        .filter_map(|o| match o {
+        // flat_map, not filter_map: a registry primitive (docs/37) is one
+        // object that decomposes into MANY parts -- a fib is seven lines and
+        // seven labels. The built-in shapes keep their one-to-one shape as a
+        // one-element Vec.
+        .flat_map(|o| match o {
             pine_lite::interp::ScriptObject::Line { bar1, price1, bar2, price2, color, style, width } => {
                 if !bar1.is_finite() || !bar2.is_finite() || !price1.is_finite() || !price2.is_finite() {
-                    return None;
+                    return Vec::new();
                 }
-                Some(ScriptDraw::Line {
+                vec![ScriptDraw::Line {
                     x1: bx(*bar1),
                     y1: py(*price1),
                     x2: bx(*bar2),
@@ -518,19 +522,19 @@ pub fn scene_overlay_objects(
                     color: *color,
                     style: style.clone(),
                     width: *width,
-                })
+                }]
             }
             pine_lite::interp::ScriptObject::Label { bar, price, text, color } => {
                 if !bar.is_finite() || !price.is_finite() {
-                    return None;
+                    return Vec::new();
                 }
-                Some(ScriptDraw::Label { x: bx(*bar), y: py(*price), text: text.clone(), color: *color })
+                vec![ScriptDraw::Label { x: bx(*bar), y: py(*price), text: text.clone(), color: *color }]
             }
             pine_lite::interp::ScriptObject::Box { left, top, right, bottom, color, border_color, border_width, border_style } => {
                 if !left.is_finite() || !right.is_finite() || !top.is_finite() || !bottom.is_finite() {
-                    return None;
+                    return Vec::new();
                 }
-                Some(ScriptDraw::Box {
+                vec![ScriptDraw::Box {
                     x1: bx(*left),
                     y1: py(*top),
                     x2: bx(*right),
@@ -539,7 +543,7 @@ pub fn scene_overlay_objects(
                     border_color: *border_color,
                     border_width: *border_width,
                     border_style: border_style.clone(),
-                })
+                }]
             }
             // docs/28: time-anchored twins. The anchors are unix-nanos
             // timestamps (a pooled higher timeframe's bar times), mapped by
@@ -549,9 +553,9 @@ pub fn scene_overlay_objects(
             // clips, exactly as a bar-index object does.
             pine_lite::interp::ScriptObject::LineTime { t1, price1, t2, price2, color, style, width } => {
                 if !t1.is_finite() || !t2.is_finite() || !price1.is_finite() || !price2.is_finite() {
-                    return None;
+                    return Vec::new();
                 }
-                Some(ScriptDraw::Line {
+                vec![ScriptDraw::Line {
                     x1: frame.x_at_nanos(*t1 as i64),
                     y1: py(*price1),
                     x2: frame.x_at_nanos(*t2 as i64),
@@ -559,24 +563,24 @@ pub fn scene_overlay_objects(
                     color: *color,
                     style: style.clone(),
                     width: *width,
-                })
+                }]
             }
             pine_lite::interp::ScriptObject::LabelTime { nanos, price, text, color } => {
                 if !nanos.is_finite() || !price.is_finite() {
-                    return None;
+                    return Vec::new();
                 }
-                Some(ScriptDraw::Label {
+                vec![ScriptDraw::Label {
                     x: frame.x_at_nanos(*nanos as i64),
                     y: py(*price),
                     text: text.clone(),
                     color: *color,
-                })
+                }]
             }
             pine_lite::interp::ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color, border_color, border_width, border_style } => {
                 if !left_nanos.is_finite() || !right_nanos.is_finite() || !top.is_finite() || !bottom.is_finite() {
-                    return None;
+                    return Vec::new();
                 }
-                Some(ScriptDraw::Box {
+                vec![ScriptDraw::Box {
                     x1: frame.x_at_nanos(*left_nanos as i64),
                     y1: py(*top),
                     x2: frame.x_at_nanos(*right_nanos as i64),
@@ -585,7 +589,15 @@ pub fn scene_overlay_objects(
                     border_color: *border_color,
                     border_width: *border_width,
                     border_style: border_style.clone(),
-                })
+                }]
+            }
+            // docs/37: registry primitives decompose into the wire geometry
+            // above. The registry's Placement shares this function's own
+            // frame and slot, so a primitive's bar index and a built-in
+            // line's bar index mean the same pixel.
+            pine_lite::interp::ScriptObject::Fib { .. } => {
+                let placement = crate::primitives::Placement { frame, slot };
+                crate::primitives::position(&placement, "fib", o)
             }
         })
         .collect()

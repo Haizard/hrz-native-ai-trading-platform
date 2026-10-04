@@ -784,6 +784,8 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "line.new_time" => (4, 7),
         "label.new_time" => (3, 4),
         "box.new_time" => (4, 8),
+        // The registry primitive (docs/37): 4 anchors + the named color.
+        "fib.new" => (4, 5),
         // Phase 14: platform-native data by name. The literal name is
         // vetted (the host cannot serve a computed name); the series itself
         // is host-supplied, so an unknown name is a RUNTIME report.
