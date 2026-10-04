@@ -398,6 +398,70 @@ impl IndicatorOutput {
         }
         self.cull_to_budget();
     }
+
+    /// Apply the user's pinned zone edges (docs/34) after detection.
+    ///
+    /// The zone stays a *detected* zone: a pin moves one edge of the band the
+    /// detector found, it does not invent a band the detector did not — a pin
+    /// whose `(label, start_time)` no longer matches any zone is dropped with
+    /// its reason, and a pin that would invert the band is refused the same
+    /// way. The lifecycle state is NOT re-derived against the pinned band:
+    /// the state describes the market's history with the detected band, and
+    /// re-scoring it here would be a second, weaker mitigation detector. What
+    /// changes instead is the evidence text, which gains "edge pinned by
+    /// you" — the inspector must never present a dragged edge as the
+    /// detector's own claim.
+    pub fn apply_zone_constraints(&mut self, constraints: &[ZoneConstraint]) -> ConstraintReport {
+        let mut report = ConstraintReport::default();
+        for constraint in constraints {
+            if !constraint.price.is_finite() {
+                report.dropped.push(format!(
+                    "pin on `{}` dropped: the pinned price was not a number",
+                    constraint.label
+                ));
+                continue;
+            }
+            let index = self
+                .zones
+                .iter()
+                .position(|zone| {
+                    zone.label == constraint.label && zone.start_time == constraint.start_time
+                })
+                .map(|index| (index, self.zones[index].id.clone()));
+            let Some((index, id)) = index else {
+                report.dropped.push(format!(
+                    "pin on `{}` dropped: no detected zone matches it any more",
+                    constraint.label
+                ));
+                continue;
+            };
+            let zone = &mut self.zones[index];
+            let ok = match constraint.edge {
+                ZoneEdge::Top if constraint.price > zone.price_low => {
+                    zone.price_high = constraint.price;
+                    true
+                }
+                ZoneEdge::Bottom if constraint.price < zone.price_high => {
+                    zone.price_low = constraint.price;
+                    true
+                }
+                _ => false,
+            };
+            if !ok {
+                report.dropped.push(format!(
+                    "pin on `{}` dropped: it would collapse the band",
+                    constraint.label
+                ));
+                continue;
+            }
+            if let Some(node) = self.evidence.iter_mut().find(|node| node.id == id) {
+                node.explanation =
+                    format!("{} · {} edge pinned by you", node.explanation, constraint.edge.name());
+            }
+            report.matched.insert(id, constraint.edge);
+        }
+        report
+    }
 }
 
 /// Map a detected region's mitigation to the chart's zone lifecycle.
@@ -636,6 +700,54 @@ fn exit_marker_kind(direction: SetupDirection, trigger: &str) -> MarkerKind {
         },
         _ => MarkerKind::Context,
     }
+}
+
+/// Which edge of a zone a pin holds (docs/34).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneEdge {
+    /// The band's upper boundary (`price_high`).
+    Top,
+    /// The band's lower boundary (`price_low`).
+    Bottom,
+}
+
+impl ZoneEdge {
+    /// The word the explanation suffix uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+}
+
+/// One user-pinned zone edge (docs/34): "the zone born at `start_time` with
+/// this label keeps the edge I dragged it to". The pin matches on
+/// `(label, start_time)` — the birth anchor, which survives the
+/// merge-extension that can move a live band's span — and never on the
+/// band's edges, because those are what the pin changes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ZoneConstraint {
+    /// The zone's label (its concept's name).
+    pub label: String,
+    /// The zone's birth time, unix nanos.
+    pub start_time: i64,
+    /// Which edge the pin holds.
+    pub edge: ZoneEdge,
+    /// The price the edge is pinned to.
+    pub price: f64,
+}
+
+/// What applying a set of pins did (docs/34).
+#[derive(Debug, Default)]
+pub struct ConstraintReport {
+    /// Zone id → the edge now pinned, for the scene to mark.
+    pub matched: std::collections::BTreeMap<String, ZoneEdge>,
+    /// One line per pin that found no zone or would invert its band. The
+    /// caller surfaces these in the scene note: a pin that silently did
+    /// nothing would read as the zone ignoring the user.
+    pub dropped: Vec<String>,
 }
 
 /// One named reason a generated indicator reached a conclusion.
@@ -1131,5 +1243,78 @@ mod tests {
         output.refresh_from_concepts(&[]);
         assert!(output.zones.is_empty());
         assert!(output.validate().is_ok(), "an empty layer is still valid");
+    }
+
+    #[test]
+    fn a_pin_moves_the_edge_and_says_so_in_the_evidence() {
+        // docs/34: the pin lands on the detected band, matched by birth
+        // anchor; the evidence text says the edge is the user's, never the
+        // detector's.
+        let mut output = IndicatorOutput {
+            revision_id: "live".into(),
+            name: Some("pin probe".into()),
+            concepts: vec![fvg_concept()],
+            ..IndicatorOutput::default()
+        };
+        output.refresh_from_concepts(&fvg_series());
+        let zone = output.zones[0].clone();
+        let report = output.apply_zone_constraints(&[ZoneConstraint {
+            label: zone.label.clone(),
+            start_time: zone.start_time,
+            edge: ZoneEdge::Bottom,
+            price: zone.price_low + 0.5,
+        }]);
+        assert!(report.dropped.is_empty(), "{:?}", report.dropped);
+        assert_eq!(report.matched.get(&zone.id), Some(&ZoneEdge::Bottom));
+        assert_eq!(output.zones[0].price_low, zone.price_low + 0.5);
+        assert_eq!(output.zones[0].price_high, zone.price_high, "the other edge is untouched");
+        assert!(
+            output.evidence[0].explanation.contains("bottom edge pinned by you"),
+            "{}",
+            output.evidence[0].explanation
+        );
+        output.validate().expect("a pinned zone is still valid output");
+    }
+
+    #[test]
+    fn a_pin_that_matches_nothing_or_inverts_or_is_not_a_number_is_dropped() {
+        // docs/34: a pin never invents a band and never collapses one. All
+        // three refusal kinds report, and the detection is untouched.
+        let mut output = IndicatorOutput {
+            revision_id: "live".into(),
+            name: Some("pin probe".into()),
+            concepts: vec![fvg_concept()],
+            ..IndicatorOutput::default()
+        };
+        output.refresh_from_concepts(&fvg_series());
+        let zone = output.zones[0].clone();
+        let report = output.apply_zone_constraints(&[
+            ZoneConstraint {
+                label: zone.label.clone(),
+                start_time: 999,
+                edge: ZoneEdge::Top,
+                price: 200.0,
+            },
+            ZoneConstraint {
+                label: zone.label.clone(),
+                start_time: zone.start_time,
+                edge: ZoneEdge::Top,
+                price: zone.price_low - 1.0,
+            },
+            ZoneConstraint {
+                label: zone.label.clone(),
+                start_time: zone.start_time,
+                edge: ZoneEdge::Bottom,
+                price: f64::NAN,
+            },
+        ]);
+        assert_eq!(report.dropped.len(), 3, "{:?}", report.dropped);
+        assert!(report.matched.is_empty());
+        assert!(report.dropped[0].contains("no detected zone matches"));
+        assert!(report.dropped[1].contains("collapse the band"));
+        assert!(report.dropped[2].contains("not a number"));
+        assert_eq!(output.zones[0].price_low, zone.price_low);
+        assert_eq!(output.zones[0].price_high, zone.price_high);
+        assert!(!output.evidence[0].explanation.contains("pinned"));
     }
 }

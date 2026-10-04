@@ -611,6 +611,38 @@ function createChartPane(root, hooks = {}) {
       draw();
     });
   }
+
+  // Pinned zone edges (docs/34): the constraints the user set by dragging a
+  // detected zone's top or bottom edge. They ride every scene request so
+  // each fresh re-detection gets them re-applied by birth anchor, and they
+  // persist per symbol+indicator in localStorage so a reload keeps them.
+  // Matched by (label, start_time) — never by the band's edges, which are
+  // the thing a pin changes.
+  let zonePins = [];
+  let zonePinsKey = "";
+  let hoverPin = null; // the grabbable edge under the pointer, when one is
+  function zonePinsForRequest() {
+    if (!indicator) return [];
+    const key = `atp.zonePins.${el("symbol").value}.${indicator.name || indicator.revision_id || "indicator"}`;
+    if (key !== zonePinsKey) {
+      zonePinsKey = key;
+      try {
+        const stored = JSON.parse(localStorage.getItem(key) || "[]");
+        zonePins = Array.isArray(stored) ? stored : [];
+      } catch {
+        zonePins = [];
+      }
+    }
+    return zonePins;
+  }
+  function persistZonePins() {
+    if (!zonePinsKey) return;
+    try {
+      localStorage.setItem(zonePinsKey, JSON.stringify(zonePins));
+    } catch {
+      // Storage full or denied: the pins stay live for the session either way.
+    }
+  }
   let socket = null; // this pane's live candle channel
   // The instruments this pane may show, as the page last read them. Held here
   // because the pane owns its selects and has to rebuild them when the symbol
@@ -853,9 +885,61 @@ function createChartPane(root, hooks = {}) {
 
     drawAxis(ctx, scene);
 
+    // Zone-edge affordances: the pinned-edge drag preview while a pin drag
+    // is live, the grabbable-edge highlight on hover (docs/34). Painted from
+    // the existing scene, so hover never triggers a rebuild.
+    drawZoneEdgeOverlay(ctx, scene);
+
     // The crosshair, last of all and over the axes too (docs/33): it reads
     // the pointer and the existing scene, so hover never triggers a rebuild.
     drawCrosshair(ctx, scene);
+  }
+
+  /// The zone-edge overlay (docs/34): while a pin drag is live, the
+  /// candidate band follows the pointer's y -- the shell never maps a price
+  /// to a pixel, so the preview is anchored on the pointer itself and the
+  /// zone's far edge, both wire data; between gestures, the grabbable edge
+  /// under the pointer brightens.
+  function drawZoneEdgeOverlay(ctx, scene) {
+    const plot = scene.plot;
+    if (drag && drag.mode === "zone-edge" && drag.pin && drag.y != null) {
+      const pin = drag.pin;
+      const zones = (scene.indicator && scene.indicator.zones) || [];
+      const zone = zones.find((z) => z.label === pin.label && z.start_time === pin.start_time);
+      if (!zone) return;
+      const otherY = pin.edge === "top" ? zone.y_top + zone.h : zone.y_top;
+      const x = Math.max(zone.x, plot.x);
+      const right = Math.min(zone.x + zone.w, plot.x + plot.w);
+      if (right <= x) return;
+      ctx.fillStyle = "rgba(41, 98, 255, 0.10)";
+      ctx.fillRect(x, Math.min(drag.y, otherY), right - x, Math.abs(otherY - drag.y));
+      ctx.strokeStyle = "rgba(41, 98, 255, 0.95)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, Math.round(drag.y) + 0.5);
+      ctx.lineTo(right, Math.round(drag.y) + 0.5);
+      ctx.stroke();
+      // The candidate price rides the line, engine-mapped.
+      if (wasm && typeof wasm.price_at_y === "function") {
+        const price = wasm.price_at_y(plot.y, plot.h, scene.price_min, scene.price_max, drag.y);
+        ctx.font = "600 10px ui-monospace, monospace";
+        const label = fmtNum(price);
+        const w = ctx.measureText(label).width + 10;
+        ctx.fillStyle = "#2962ff";
+        ctx.fillRect(plot.x + plot.w + 1, drag.y - 8, w, 16);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(label, plot.x + plot.w + 6, drag.y + 4);
+      }
+      return;
+    }
+    if (hoverPin) {
+      ctx.strokeStyle = "rgba(41, 98, 255, 0.9)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(hoverPin.x0, Math.round(hoverPin.y) + 0.5);
+      ctx.lineTo(hoverPin.x1, Math.round(hoverPin.y) + 0.5);
+      ctx.stroke();
+    }
   }
 
   /// The crosshair (docs/33): dashed guides snapped to the hovered bar, the
@@ -1664,6 +1748,23 @@ function createChartPane(root, hooks = {}) {
         Math.max(1, Math.round(zone.h) - 1)
       );
       ctx.setLineDash([]);
+
+      // A pinned edge is the user's own boundary (docs/34): it takes the
+      // accent treatment over the lifecycle's, so "this line is mine" reads
+      // before "this zone is fresh". The three dots at the left end are the
+      // grip -- the drag affordance -- and the release gesture (double-click)
+      // lives on the same line.
+      if (zone.pinned_edge && strength >= 1.0) {
+        const ey = zone.pinned_edge === "top" ? zone.y_top : zone.y_top + zone.h;
+        ctx.strokeStyle = "#2962ff";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x, Math.round(ey) + 0.5);
+        ctx.lineTo(right, Math.round(ey) + 0.5);
+        ctx.stroke();
+        ctx.fillStyle = "#2962ff";
+        for (let i = 0; i < 3; i++) ctx.fillRect(x + 4 + i * 6, ey - 1.5, 3, 3);
+      }
 
       // Only zones still in play carry their name, and only at full strength
       // -- a ghost labelled like a live layer would read as a second active
@@ -2791,6 +2892,11 @@ function createChartPane(root, hooks = {}) {
         concepts: indicator.concepts,
       };
       request.indicator = null;
+      // Pinned zone edges ride every rebuild (docs/34): detection runs per
+      // frame, so the constraint re-lands on each fresh detection by birth
+      // anchor, and the engine notes any pin that no longer matches.
+      const pins = zonePinsForRequest();
+      if (pins.length) request.zone_constraints = pins;
     }
     // Assigned rather than sent as `null`: a null is not a missing field, and the
     // engine's `Viewport` is a struct rather than an option, so `viewport: null`
@@ -3103,6 +3209,17 @@ function createChartPane(root, hooks = {}) {
       return;
     }
 
+    // A grabbable zone edge under the pointer starts a pin drag, not a pan
+    // (docs/34): the edge the user drags becomes a constraint the engine
+    // re-applies to every fresh detection until it is released.
+    if (hoverPin) {
+      drag = { mode: "zone-edge", pin: hoverPin, y: hoverPin.y };
+      hoverPin = null;
+      el("chart").setPointerCapture(event.pointerId);
+      el("chart").classList.add("moving");
+      return;
+    }
+
     const hit = hitTest(event);
     if (hit) {
       // A grab on a handle or a body selects that drawing and moves it. Selection
@@ -3136,7 +3253,10 @@ function createChartPane(root, hooks = {}) {
       // this is, and only one of them moves the view.
       el("chart").classList.add("moving");
     } else {
-      // Empty canvas: nothing is selected, and the drag pans.
+      // Empty canvas: nothing is selected, and the drag pans. The resize
+      // cursor from a hovering zone edge must not outlive the press.
+      hoverPin = null;
+      el("chart").style.cursor = "";
       select(null);
       drag = { mode: "pan", appliedX: event.clientX, appliedY: event.clientY };
       el("chart").classList.add("dragging");
@@ -3178,6 +3298,35 @@ function createChartPane(root, hooks = {}) {
         crosshair = next;
         scheduleHoverPaint();
       }
+      // A detected zone's top or bottom edge is grabbable (docs/34): the
+      // pointer near one gets the resize cursor and arms the pin drag. The
+      // edge is matched to the zone by birth anchor at commit time.
+      if (!drag) {
+        let edge = null;
+        if (tool === "cursor" && scene.indicator && scene.indicator.zones) {
+          for (const z of scene.indicator.zones) {
+            const x0 = Math.max(z.x, p.x), x1 = Math.min(z.x + z.w, p.x + p.w);
+            if (cx < x0 || cx > x1) continue;
+            const yTop = z.y_top, yBot = z.y_top + z.h;
+            if (Math.abs(cy - yTop) <= 5) {
+              edge = { label: z.label, start_time: z.start_time, edge: "top", price_low: z.price_low, price_high: z.price_high, y: yTop, x0, x1 };
+              break;
+            }
+            if (Math.abs(cy - yBot) <= 5) {
+              edge = { label: z.label, start_time: z.start_time, edge: "bottom", price_low: z.price_low, price_high: z.price_high, y: yBot, x0, x1 };
+              break;
+            }
+          }
+        }
+        const changed = (edge === null) !== (hoverPin === null) ||
+          (edge && hoverPin && (edge.start_time !== hoverPin.start_time || edge.edge !== hoverPin.edge || edge.y !== hoverPin.y));
+        if (changed) {
+          hoverPin = edge;
+          scheduleHoverPaint();
+        }
+        const want = hoverPin ? "ns-resize" : "";
+        if (el("chart").style.cursor !== want) el("chart").style.cursor = want;
+      }
     }
     // Evidence tooltips: while no gesture is in flight, the pointer is tested
     // against the generated markers' positions -- every marker already knows
@@ -3200,6 +3349,19 @@ function createChartPane(root, hooks = {}) {
       return;
     }
     if (!drag) return;
+
+    if (drag.mode === "zone-edge") {
+      // The preview follows the POINTER, never a computed y: the shell does
+      // not map prices to pixels (docs/14's rule). The committed price is
+      // read off the pointer's y at release through the engine's own inverse
+      // mapping -- one direction of the mapping lives in the engine, not two
+      // copies drifting apart.
+      const rect = el("chart").getBoundingClientRect();
+      const p = scene.plot;
+      drag.y = Math.min(Math.max(event.clientY - rect.top, p.y), p.y + p.h);
+      scheduleHoverPaint();
+      return;
+    }
 
     if (drag.mode === "pan") {
       // Measured from the last *applied* position rather than the last event, so a
@@ -3309,7 +3471,31 @@ function createChartPane(root, hooks = {}) {
       finishPlacing();
     } else if (finished.mode === "move") {
       finishMoving(finished.target.drawing, finished.movedFrom);
+    } else if (finished.mode === "zone-edge") {
+      commitZonePin(finished);
     }
+  }
+
+  /// The pin drag's release (docs/34): the pointer's y becomes the pinned
+  /// price through the engine's inverse mapping, the pin joins the pane's
+  /// constraints (persisted per symbol+indicator), and a full rebuild lets
+  /// the fresh detection re-draw with the edge held.
+  function commitZonePin(finished) {
+    if (!scene || finished.y == null || !wasm || typeof wasm.price_at_y !== "function") return;
+    const price = wasm.price_at_y(scene.plot.y, scene.plot.h, scene.price_min, scene.price_max, finished.y);
+    const pin = finished.pin;
+    // A pin that would collapse the band is refused here, from the zone's
+    // wire bounds -- the engine refuses it too, but its note arrives one
+    // rebuild later and the user is holding the gesture now.
+    if (pin.edge === "top" && price <= pin.price_low) { scheduleHoverPaint(); return; }
+    if (pin.edge === "bottom" && price >= pin.price_high) { scheduleHoverPaint(); return; }
+    zonePinsForRequest();
+    const next = { label: pin.label, start_time: pin.start_time, edge: pin.edge, price };
+    const at = zonePins.findIndex((c) => c.label === next.label && c.start_time === next.start_time && c.edge === next.edge);
+    if (at >= 0) zonePins[at] = next;
+    else zonePins.push(next);
+    persistZonePins();
+    scheduleRender();
   }
 
   /// A pointer the browser took away -- a touch that became a scroll, a window
@@ -3319,6 +3505,8 @@ function createChartPane(root, hooks = {}) {
     if (!drag) return;
     drag = null;
     el("chart").classList.remove("dragging", "moving");
+    // A cancelled pin drag leaves no preview behind.
+    scheduleHoverPaint();
     if (el("chart").hasPointerCapture(event.pointerId)) {
       el("chart").releasePointerCapture(event.pointerId);
     }
@@ -5154,6 +5342,28 @@ function createChartPane(root, hooks = {}) {
     // chart anyway -- which is the "I can't zoom" report, from the other end.
     el("chart").addEventListener("wheel", onWheel, { passive: false });
     el("chart").addEventListener("pointerdown", onPointerDown);
+    // Double-click a pinned edge to release the pin (docs/34): the constraint
+    // leaves the pane's list, and the next rebuild draws the detected band
+    // again. The release gesture lives on the accent line the pin drew.
+    el("chart").addEventListener("dblclick", (event) => {
+      if (!scene || !scene.indicator || !scene.indicator.zones) return;
+      const rect = el("chart").getBoundingClientRect();
+      const cx = event.clientX - rect.left;
+      const cy = event.clientY - rect.top;
+      const pins = zonePinsForRequest();
+      if (!pins.length) return;
+      for (const z of scene.indicator.zones) {
+        if (!z.pinned_edge) continue;
+        const x0 = Math.max(z.x, scene.plot.x), x1 = Math.min(z.x + z.w, scene.plot.x + scene.plot.w);
+        if (cx < x0 || cx > x1) continue;
+        const ey = z.pinned_edge === "top" ? z.y_top : z.y_top + z.h;
+        if (Math.abs(cy - ey) > 6) continue;
+        zonePins = pins.filter((c) => !(c.label === z.label && c.start_time === z.start_time && c.edge === z.pinned_edge));
+        persistZonePins();
+        scheduleRender();
+        return;
+      }
+    });
     el("chart").addEventListener("pointermove", onPointerMove);
     // The crosshair leaves with the pointer (docs/33) -- a chart that keeps
     // showing where the cursor WAS reads as stale data.

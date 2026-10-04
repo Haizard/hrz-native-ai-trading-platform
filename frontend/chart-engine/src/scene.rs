@@ -288,6 +288,15 @@ pub struct Request {
     /// Absent means the pane shows no generated indicator.
     #[serde(default)]
     pub live_indicator: Option<LiveIndicator>,
+    /// The user's pinned zone edges (docs/34): applied to the live layer
+    /// after each re-detection, matched on `(label, start_time)` — the birth
+    /// anchor, which survives the merge-extension that can move a live
+    /// band's span. A pin that matches nothing is dropped with its reason in
+    /// the scene note. Applied to the live layer only: the frozen
+    /// `indicator`/`diff_indicator` snapshots are historical documents and
+    /// the user's pin is a statement about the *current* detection.
+    #[serde(default)]
+    pub zone_constraints: Vec<crate::indicator::ZoneConstraint>,
     /// A second, **frozen** indicator output drawn faded beneath the main
     /// one -- the revision diff view. The shell strips the concepts before
     /// sending (a diff between two moving layers is noise), so this positions
@@ -387,6 +396,7 @@ impl Default for Request {
             overlays: Vec::new(),
             indicator: None,
             live_indicator: None,
+            zone_constraints: Vec::new(),
             diff_indicator: None,
             follow: false,
             last_price: None,
@@ -686,6 +696,11 @@ pub struct SceneIndicatorZone {
     /// names this zone.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub explanation: String,
+    /// The edge the user pinned (docs/34), when one is: the shell accents
+    /// that edge and offers the release gesture on it. Omitted when the zone
+    /// is purely the detector's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_edge: Option<crate::indicator::ZoneEdge>,
 }
 
 /// A generated evidence marker mapped into the chart's coordinate system.
@@ -1517,7 +1532,9 @@ pub fn build(request: &Request) -> Scene {
     }
 
     if let Some(output) = request.indicator.as_ref() {
-        match indicator_parts(output, &frame) {
+        // Frozen snapshots carry no pins (docs/34): a pin is a statement
+        // about the *current* detection, not a historical preview.
+        match indicator_parts(output, &frame, &Default::default()) {
             Ok(indicator) => scene.indicator = Some(indicator),
             Err(reason) => add_note(
                 &mut scene.note,
@@ -1531,7 +1548,7 @@ pub fn build(request: &Request) -> Scene {
     // main layer still draws: a broken comparison must not take the chart's
     // primary evidence down with it.
     if let Some(output) = request.diff_indicator.as_ref() {
-        match indicator_parts(output, &frame) {
+        match indicator_parts(output, &frame, &Default::default()) {
             Ok(diff) => scene.diff_indicator = Some(diff),
             Err(reason) => add_note(
                 &mut scene.note,
@@ -1557,7 +1574,18 @@ pub fn build(request: &Request) -> Scene {
             .filter(|concept| analytics_core::concepts::validate(concept).is_err())
             .count();
         output.refresh_from_concepts(&request.candles);
-        match indicator_parts(&output, &frame) {
+        // docs/34: the user's pinned edges land on the fresh detection, after
+        // the merge so the birth anchor they match on is the merged band's.
+        let pinned = if request.zone_constraints.is_empty() {
+            Default::default()
+        } else {
+            let report = output.apply_zone_constraints(&request.zone_constraints);
+            for reason in &report.dropped {
+                add_note(&mut scene.note, format!("zone pin: {reason}"));
+            }
+            report.matched
+        };
+        match indicator_parts(&output, &frame, &pinned) {
             Ok(indicator) => scene.indicator = Some(indicator),
             Err(reason) => add_note(
                 &mut scene.note,
@@ -1874,7 +1902,11 @@ fn overlay_parts(overlays: &[Overlay], frame: &Frame) -> (Vec<SceneOverlay>, Vec
 /// Generated code never gets a canvas coordinate. Its contract is market time
 /// and price; this is the one place those values become pixels, shared with
 /// candles, regions, hand drawings, and answer overlays.
-fn indicator_parts(output: &IndicatorOutput, frame: &Frame) -> Result<SceneIndicator, String> {
+fn indicator_parts(
+    output: &IndicatorOutput,
+    frame: &Frame,
+    pinned: &std::collections::BTreeMap<String, crate::indicator::ZoneEdge>,
+) -> Result<SceneIndicator, String> {
     output.validate()?;
 
     let evidence: BTreeMap<&str, (f64, f64, &str)> = output
@@ -1930,6 +1962,7 @@ fn indicator_parts(output: &IndicatorOutput, frame: &Frame) -> Result<SceneIndic
                     .get(zone.id.as_str())
                     .map(|(_, _, explanation)| (*explanation).to_owned())
                     .unwrap_or_default(),
+                pinned_edge: pinned.get(zone.id.as_str()).copied(),
             }
         })
         .collect();
@@ -5660,6 +5693,139 @@ mod tests {
         assert!(!scene.candles.is_empty(), "the candles survived");
         assert!(scene.overlays.is_empty());
         assert!(scene.note.is_some(), "and both refusals are explained");
+    }
+
+    /// The FVG fixture, as `indicator.rs`'s own tests state it: five candles,
+    /// one bullish gap in the middle, one detected band labelled `fvg`.
+    fn pin_series() -> Vec<Candle> {
+        (0..5)
+            .map(|i| {
+                let (open, close) = match i {
+                    0 => (100.0, 100.2),
+                    1 => (105.0, 106.0),
+                    2 => (107.0, 108.0),
+                    3 => (108.0, 108.5),
+                    _ => (108.2, 108.4),
+                };
+                candle(i, open, close)
+            })
+            .collect()
+    }
+
+    fn pin_concept() -> Concept {
+        serde_json::from_value(serde_json::json!({
+            "name": "bullish_gap",
+            "label": "fvg",
+            "side": "buy",
+            "window": 3,
+            "lower": { "high": 0 },
+            "upper": { "low": 2 },
+            "require": [{ "left": { "high": 0 }, "op": "below", "right": { "low": 2 } }]
+        }))
+        .expect("the fixture concept must parse")
+    }
+
+    #[test]
+    fn a_pinned_zone_edge_survives_re_detection_and_marks_the_wire() {
+        // docs/34: the pin lands on the fresh detection every frame, matched
+        // by birth anchor, and the wire says which edge is the user's.
+        use crate::indicator::{ZoneConstraint, ZoneEdge};
+        let mut probe = IndicatorOutput {
+            revision_id: "probe".into(),
+            name: None,
+            concepts: vec![pin_concept()],
+            ..IndicatorOutput::default()
+        };
+        probe.refresh_from_concepts(&pin_series());
+        let zone = probe.zones.first().expect("the fixture detects one zone").clone();
+
+        let scene = build(&Request {
+            candles: pin_series(),
+            live_indicator: Some(LiveIndicator {
+                name: "probe".into(),
+                concepts: vec![pin_concept()],
+            }),
+            zone_constraints: vec![ZoneConstraint {
+                label: zone.label.clone(),
+                start_time: zone.start_time,
+                edge: ZoneEdge::Top,
+                price: zone.price_high + 3.0,
+            }],
+            ..request(5)
+        });
+        let indicator = scene.indicator.expect("the live layer is drawn");
+        let pinned = indicator
+            .zones
+            .iter()
+            .find(|z| z.start_time == zone.start_time)
+            .expect("the zone is there");
+        assert_eq!(pinned.pinned_edge, Some(ZoneEdge::Top));
+        assert!(pinned.explanation.contains("pinned by you"), "{}", pinned.explanation);
+        // The geometry is the pinned band's: the top maps through the scene's
+        // own scale, ABOVE the detected band's (a higher price, a smaller y).
+        let expected = price_to_y(zone.price_high + 3.0, scene.price_min, scene.price_max, &scene.plot);
+        assert!((pinned.y_top - expected).abs() < 1e-9, "{} vs {expected}", pinned.y_top);
+        // The wire carries the edge marker; a scene without it still parses.
+        let json = serde_json::to_value(&indicator.zones).expect("serializes");
+        assert_eq!(json[0]["pinned_edge"], "top");
+        let mut old = json[0].clone();
+        old.as_object_mut().unwrap().remove("pinned_edge");
+        let parsed: SceneIndicatorZone = serde_json::from_value(old).expect("old scenes parse");
+        assert_eq!(parsed.pinned_edge, None);
+    }
+
+    #[test]
+    fn an_unmatched_or_inverting_pin_is_dropped_with_a_note() {
+        // docs/34: a pin that matches no zone, or that would collapse the
+        // band, does nothing -- and the scene note says so, because a silent
+        // pin reads as the zone ignoring the user.
+        use crate::indicator::{ZoneConstraint, ZoneEdge};
+        let mut probe = IndicatorOutput {
+            revision_id: "probe".into(),
+            name: None,
+            concepts: vec![pin_concept()],
+            ..IndicatorOutput::default()
+        };
+        probe.refresh_from_concepts(&pin_series());
+        let zone = probe.zones.first().expect("the fixture detects one zone").clone();
+
+        let scene = build(&Request {
+            candles: pin_series(),
+            live_indicator: Some(LiveIndicator {
+                name: "probe".into(),
+                concepts: vec![pin_concept()],
+            }),
+            zone_constraints: vec![
+                ZoneConstraint {
+                    label: "ghost".into(),
+                    start_time: 42,
+                    edge: ZoneEdge::Top,
+                    price: 1.0,
+                },
+                ZoneConstraint {
+                    label: zone.label.clone(),
+                    start_time: zone.start_time,
+                    edge: ZoneEdge::Top,
+                    price: zone.price_low - 1.0,
+                },
+            ],
+            ..request(5)
+        });
+        let note = scene.note.clone().unwrap_or_default();
+        assert!(note.contains("no detected zone matches"), "{note}");
+        assert!(note.contains("collapse the band"), "{note}");
+        let indicator = scene.indicator.expect("the live layer is drawn");
+        let untouched = indicator
+            .zones
+            .iter()
+            .find(|z| z.start_time == zone.start_time)
+            .expect("the zone is there");
+        assert_eq!(untouched.pinned_edge, None);
+        let detected_top = price_to_y(zone.price_high, scene.price_min, scene.price_max, &scene.plot);
+        assert!(
+            (untouched.y_top - detected_top).abs() < 1e-9,
+            "the refused pin left the detected geometry alone"
+        );
     }
 
     #[test]
