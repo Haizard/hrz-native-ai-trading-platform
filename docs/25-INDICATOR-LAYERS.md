@@ -57,6 +57,30 @@ string. The wire strings are pinned by a chart-engine test
 (`zone_state_wire_strings_are_the_shells_lifecycle_tiers`) because a rename
 compiles everywhere and silently turns the tiers off.
 
+## Layer settings: the declared inputs, as a form
+
+A pine-lite script declares its knobs with `input.int` / `input.float` /
+`input.bool` / ... (`docs/23`). The vet pipeline already records those
+declarations "for the settings UI"; this is that UI.
+
+- **Declarations travel with the revision.** Both revision-creation paths
+  (generated and hand-submitted) store the declarations in the revision's
+  validation record, and the vet route returns them with every check. The
+  defaults are JSON-typed the way the form sends values back: a number for
+  `int`/`float`, a bool for `bool`, a string for `string`, and a `#rrggbb`
+  string for a `color` literal (the packed value's alpha byte comes off).
+- **The ⚙ on a layer chip opens the form.** One popover per pane, rebuilt
+  from the layer's state on every open; fields apply on `change`, Reset
+  empties the layer's values so the declared defaults stand again.
+- **Values are typed end to end.** The scene request's `inputs` map is
+  JSON-typed, and the engine sorts each scalar into the VM's typed input maps.
+  A value whose kind disagrees with the declaration is not coerced — it lands
+  in a map the declaration never reads, and the default applies. Re-attaching
+  the same source (the editor's save-and-run) preserves the tuned values.
+- **String and color inputs render as "edited in code".** They typecheck, but
+  the VM has no string evaluator yet, so the form declines to offer a control
+  that would do nothing.
+
 ## Non-goals
 
 - No per-layer opacity sliders or blend modes (the eye is binary on purpose).

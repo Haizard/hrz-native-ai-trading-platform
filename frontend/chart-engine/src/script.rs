@@ -18,10 +18,13 @@ use pine_lite::{run, Inputs, Output};
 pub struct ScriptSpec {
     /// The script source, including its `//@pine_lite` header.
     pub source: String,
-    /// Input values by variable name. Anything the script declares but the
-    /// host does not supply runs on its declared default.
+    /// Input values by variable name, typed (docs/25 layer settings): JSON
+    /// numbers feed `input.int` / `input.float`, booleans feed `input.bool`.
+    /// Anything the script declares but the host does not supply runs on its
+    /// declared default. An older shell sending `{ "len": 14 }` deserializes
+    /// unchanged -- numbers were the whole of the old shape.
     #[serde(default)]
-    pub inputs: std::collections::HashMap<String, f64>,
+    pub inputs: std::collections::HashMap<String, serde_json::Value>,
     /// The second instrument (`sec=` in the header), time-aligned onto the
     /// chart's own bars: candle i covers the same window as candle i. The
     /// shell fills it by fetching the pair's klines; empty when absent, and
@@ -229,6 +232,45 @@ pub fn script_pane_full(
 /// The y-range is the union of the finite plot values (plus hlines), padded
 /// 5% -- an empty series yields the 0..1 fallback so a pane still draws its
 /// frame and the note says why it is empty.
+/// Build the VM's typed `Inputs` from a spec (docs/25 layer settings). The
+/// spec's values are JSON-typed; each scalar sorts into the map its kind
+/// belongs to. A value whose kind disagrees with the script's declaration
+/// (a bool sent for an `input.int`) lands in a map the declaration never
+/// reads, so the declared default applies -- the honest "that setting does
+/// not exist", not a coerced wrong-typed value. Non-scalar JSON (null,
+/// arrays, objects) is not an input value at all and is skipped.
+///
+/// Shared by the sub-pane path ([`run_script`]) and the scene's overlay path,
+/// so both spell the sorting the same way.
+#[must_use]
+pub fn inputs_from_spec(spec: &ScriptSpec) -> Inputs {
+    let mut inputs = Inputs {
+        security: spec.security.clone(),
+        series_pool: spec.series_pool.clone(),
+        data_series: spec.data_series.clone(),
+        ..Inputs::default()
+    };
+    for (name, value) in &spec.inputs {
+        match value {
+            serde_json::Value::Number(n) => {
+                if let Some(n) = n.as_f64() {
+                    inputs.numbers.insert(name.clone(), n);
+                }
+            }
+            serde_json::Value::Bool(b) => {
+                inputs.bools.insert(name.clone(), *b);
+            }
+            serde_json::Value::String(s) => {
+                // The VM grows a string evaluator when the language does; the
+                // map exists so that day needs no ABI change.
+                inputs.strings.insert(name.clone(), s.clone());
+            }
+            _ => {}
+        }
+    }
+    inputs
+}
+
 /// Vet and run one script: the shared front half of [`script_pane`] and
 /// [`script_pane_full`].
 fn run_script(
@@ -237,13 +279,7 @@ fn run_script(
 ) -> Result<(pine_lite::Header, Output), String> {
     let (header, parsed) =
         pine_lite::vet(&spec.source).map_err(|errs| format_script_errors(&errs))?;
-    let inputs = Inputs {
-        numbers: spec.inputs.clone(),
-        security: spec.security.clone(),
-        series_pool: spec.series_pool.clone(),
-        data_series: spec.data_series.clone(),
-        ..Inputs::default()
-    };
+    let inputs = inputs_from_spec(spec);
     let output: Output = run(&parsed, candles, &inputs).map_err(|err| err.to_string())?;
     Ok((header, output))
 }
@@ -823,6 +859,47 @@ mod tests {
         // The pooled close at bar 20 is 60.0, not the chart's 100.0: the
         // pane's value range must span the pair, not the chart.
         assert!(pane.value_max < 70.0, "max={} (pair, not chart)", pane.value_max);
+    }
+
+    #[test]
+    fn typed_inputs_reach_the_run_from_the_wire() {
+        // docs/25 layer settings: the settings popover sends JSON-typed
+        // values -- a number for `input.int`, a bool for `input.bool` -- and
+        // the run must see them in the VM's typed maps. The script plots
+        // `close * mult` only while `on` is true, so the wire values are
+        // legible in the pane's value range, not just in an internal map.
+        let src = concat!(
+            "//@pine_lite version=1 overlay=false title=\"settings\"\n",
+            "mult = input.int(defval=2)\n",
+            "on = input.bool(defval=0)\n",
+            "v = close\n",
+            "if on\n",
+            "    v = close * mult\n",
+            "plot(v)\n",
+        );
+        let candles: Vec<Candle> = (0..30).map(|i| candle(i, 100.0)).collect();
+        // The wire form: exactly what the shell's settings popover sends.
+        let spec: ScriptSpec = serde_json::from_value(serde_json::json!({
+            "source": src,
+            "inputs": { "mult": 3, "on": true },
+        }))
+        .expect("the wire shape deserializes");
+        let pane = script_pane(&spec, &candles, 10.0, &plot_rect()).expect("pane");
+        assert_eq!(pane.plots.len(), 1);
+        // close * 3 = 300 flat: the range spans 300 only if BOTH the bool
+        // (the branch ran) and the number (the multiplier) landed.
+        assert!(pane.value_max >= 300.0, "max={}", pane.value_max);
+
+        // A wrong-KIND value is not coerced: `"3"` the string is not the
+        // number 3, and `1` the number is not a bool, so both declared
+        // defaults apply and the branch stays closed (v = close = 100).
+        let spec: ScriptSpec = serde_json::from_value(serde_json::json!({
+            "source": src,
+            "inputs": { "mult": "3", "on": 1 },
+        }))
+        .expect("the wire shape deserializes");
+        let pane = script_pane(&spec, &candles, 10.0, &plot_rect()).expect("pane");
+        assert!(pane.value_max < 150.0, "max={} -- a wrong-typed input was coerced", pane.value_max);
     }
 
     #[test]

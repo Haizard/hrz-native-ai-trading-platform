@@ -1620,13 +1620,7 @@ pub fn build(request: &Request) -> Scene {
             match pine_lite::run(
                 &parsed,
                 visible_real,
-                &pine_lite::Inputs {
-                    numbers: spec.inputs.clone(),
-                    security: spec.security.clone(),
-                    series_pool: spec.series_pool.clone(),
-                    data_series: spec.data_series.clone(),
-                    ..pine_lite::Inputs::default()
-                },
+                &crate::script::inputs_from_spec(spec),
             ) {
                 Ok(output) => {
                     let plots = crate::script::scene_overlay_plots(&output, slot, &frame);

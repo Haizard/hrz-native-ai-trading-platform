@@ -193,7 +193,36 @@
     display: flex; align-items: center; gap: 6px;
     padding: 2px 10px; background: var(--panel); border-bottom: 1px solid var(--line);
     font-size: 11px; min-height: 28px;
+    /* Containing block for the layer-settings popover (docs/25). */
+    position: relative;
   }
+  /* Layer settings popover (docs/25): one form per layer's declared inputs,
+     dropped from the pane head. Fields apply on change; Reset restores the
+     script's declared defaults by emptying the layer's values. */
+  .layerSettings {
+    position: absolute; top: calc(100% + 4px); right: 10px; z-index: 50;
+    min-width: 230px; max-width: 300px; padding: 8px 10px; border-radius: 10px;
+    background: var(--panel); border: 1px solid color-mix(in srgb, #60a5fa 40%, transparent);
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .layerSettings[hidden] { display: none; }
+  .lsHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; color: var(--text); }
+  .lsHead button { border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; }
+  .lsHead button:hover { color: var(--text); }
+  .lsRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 11.5px; }
+  .lsRow input[type="number"] {
+    width: 84px; padding: 2px 6px; border-radius: 6px; font-size: 11.5px;
+    background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  }
+  .lsRow input[type="checkbox"] { accent-color: #60a5fa; }
+  .lsFoot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+  .lsFoot button {
+    padding: 3px 10px; border-radius: 6px; font-size: 11px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--text);
+  }
+  .lsFoot .lsDone { background: color-mix(in srgb, #60a5fa 18%, transparent); border-color: color-mix(in srgb, #60a5fa 45%, transparent); }
+  .lsFoot button:hover { border-color: var(--text); }
   .chartPane.active .paneHead { box-shadow: inset 0 2px 0 var(--accent); }
   .paneTitle {
     color: var(--text); font-family: var(--mono); font-weight: 700; letter-spacing: 0.03em; font-size: 12px;
@@ -246,6 +275,11 @@
     font-size: 10px; line-height: 1; padding: 1px 3px; border-radius: 50%;
   }
   .layerChipEye:hover { background: color-mix(in srgb, #60a5fa 25%, transparent); color: var(--text); }
+  .layerChipGear {
+    border: none; background: transparent; color: #60a5fa; cursor: pointer;
+    font-size: 10px; line-height: 1; padding: 1px 2px; border-radius: 50%;
+  }
+  .layerChipGear:hover { background: color-mix(in srgb, #60a5fa 25%, transparent); color: var(--text); }
   /* Auto-backtest card under a generated revision's chat message. */
   .ws-stats {
     display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
@@ -1139,6 +1173,13 @@
           from the teal concept-layer chip beside them.
         -->
         <span class="layerChips" hidden></span>
+        <!--
+          The layer-settings popover (docs/25): opened from a layer chip's ⚙,
+          one form of the layer's declared inputs. Rebuilt from the pane's
+          layer state on every open -- the DOM never holds a second copy of
+          the values.
+        -->
+        <div class="layerSettings" hidden></div>
         <span class="paneBtns">
           <button class="zoomOut" title="Zoom out (show more candles)">−</button>
           <button class="zoomIn" title="Zoom in (fewer candles, more detail)">+</button>

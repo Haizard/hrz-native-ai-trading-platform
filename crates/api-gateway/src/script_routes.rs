@@ -45,8 +45,11 @@ pub struct ScriptInput {
     pub name: String,
     /// The input kind (`int`, `float`, `bool`, `string`, `color`).
     pub kind: String,
-    /// The declared default.
-    pub default: Option<f64>,
+    /// The declared default, JSON-typed like the value the settings UI will
+    /// send back (docs/25): a number for `int`/`float`, a bool for `bool`, a
+    /// string for `string`, and a `#rrggbb` string for `color`. Absent when
+    /// the declaration carried no literal default.
+    pub default: Option<serde_json::Value>,
     /// The declared title, when any.
     pub title: Option<String>,
 }
@@ -139,20 +142,43 @@ pub fn vet_response(source: &str) -> VetResponse {
     }
 }
 
-/// Pull the `input.*` declarations out of a parsed script.
-fn collect_inputs(script: &pine_lite::parse::Script) -> Vec<ScriptInput> {
+/// Pull the `input.*` declarations out of a parsed script. Shared with the
+/// workspace revision routes, which store the declarations in the revision's
+/// validation record so an attach needs no re-vet (docs/25).
+pub(crate) fn collect_inputs(script: &pine_lite::parse::Script) -> Vec<ScriptInput> {
     let mut out = Vec::new();
     for item in &script.items {
         if let pine_lite::parse::Item::Assign { name, expr, .. } = item {
             if let pine_lite::parse::ExprKind::Call { callee, args } = &expr.kind {
                 if let Some(kind) = callee.strip_prefix("input.") {
+                    // The default, JSON-typed the way the settings UI will
+                    // send the value back: number, bool, string, and a
+                    // `#rrggbb` string for a color literal. A non-literal
+                    // default (an expression) is not a value the UI can
+                    // prefill, so the field stays absent and the script's own
+                    // evaluation of it stands.
                     let default = args.iter().find_map(|a| {
-                        if a.name.as_deref() == Some("defval") {
-                            if let pine_lite::parse::ExprKind::Num(n) = a.value.kind {
-                                return Some(n);
-                            }
+                        if a.name.as_deref() != Some("defval") {
+                            return None;
                         }
-                        None
+                        match &a.value.kind {
+                            pine_lite::parse::ExprKind::Num(n) => {
+                                Some(serde_json::Value::from(*n))
+                            }
+                            pine_lite::parse::ExprKind::Bool(b) => {
+                                Some(serde_json::Value::from(*b))
+                            }
+                            pine_lite::parse::ExprKind::Str(s) => {
+                                Some(serde_json::Value::from(s.clone()))
+                            }
+                            pine_lite::parse::ExprKind::Color(c) => {
+                                // Packed 0xAARRGGBB (the lexer's `| 0xFF000000`
+                                // for the 6-digit form); the UI speaks
+                                // `#rrggbb`, so the alpha byte comes off.
+                                Some(serde_json::Value::from(format!("#{:06x}", c & 0xFF_FFFF)))
+                            }
+                            _ => None,
+                        }
                     });
                     let title = args.iter().find_map(|a| {
                         if a.name.as_deref() == Some("title") {
@@ -192,8 +218,35 @@ mod tests {
         assert_eq!(response.header.as_ref().expect("header").title.as_deref(), Some("My RSI"));
         assert_eq!(response.inputs.len(), 1);
         assert_eq!(response.inputs[0].name, "len");
-        assert_eq!(response.inputs[0].default, Some(14.0));
+        assert_eq!(response.inputs[0].default, Some(serde_json::json!(14.0)));
         assert_eq!(response.overlay, Some(false));
+    }
+
+    #[test]
+    fn input_defaults_are_typed_the_way_the_settings_ui_sends_them() {
+        // docs/25: the settings popover prefills from `default` and sends the
+        // same JSON type back, so a bool default must arrive as a bool (not
+        // 1.0), a string as a string, and a color literal as `#rrggbb` with
+        // the packed alpha byte removed.
+        let src = concat!(
+            "//@pine_lite version=1 overlay=false title=\"typed\"\n",
+            "n = input.int(defval=14)\n",
+            "b = input.bool(defval=true)\n",
+            "s = input.string(defval=\"L\")\n",
+            "c = input.color(defval=#ff0000)\n",
+            "plot(close)\n",
+        );
+        let response = vet_response(src);
+        assert!(response.valid, "{:?}", response.issues);
+        let by_name: std::collections::HashMap<_, _> = response
+            .inputs
+            .iter()
+            .map(|i| (i.name.as_str(), &i.default))
+            .collect();
+        assert_eq!(by_name["n"], &Some(serde_json::json!(14.0)));
+        assert_eq!(by_name["b"], &Some(serde_json::json!(true)));
+        assert_eq!(by_name["s"], &Some(serde_json::json!("L")));
+        assert_eq!(by_name["c"], &Some(serde_json::json!("#ff0000")));
     }
 
     #[test]

@@ -552,7 +552,15 @@ pub async fn create_message(
         };
     let preview_json = serde_json::to_value(&preview)
         .map_err(|err| ApiError::internal(format!("could not store indicator preview: {err}")))?;
-    let validation = serde_json::json!({"valid": true, "engine": "pine-lite-v1", "representation": "code", "attempts": attempts, "repaired_errors": repaired_errors, "overlay": header.overlay, "preview_note": preview_note});
+    // The declared inputs ride the validation record (docs/25 layer
+    // settings): the source just vetted, so re-parsing it for the
+    // declarations is microseconds, and every later revision fetch -- the
+    // auto-attach, the picker -- then carries the settings form's shape with
+    // it, no re-vet needed.
+    let declared_inputs = pine_lite::vet(&source)
+        .map(|(_, parsed)| crate::script_routes::collect_inputs(&parsed))
+        .unwrap_or_default();
+    let validation = serde_json::json!({"valid": true, "engine": "pine-lite-v1", "representation": "code", "attempts": attempts, "repaired_errors": repaired_errors, "overlay": header.overlay, "preview_note": preview_note, "inputs": declared_inputs});
     let revision = db::create_indicator_revision(
         database.pool(),
         user.user_id,
@@ -628,6 +636,9 @@ pub async fn create_message(
         // S3: the zero-fill warning, so the shell can flag the stats card
         // even when the text row is not re-read.
         "simulation_note": simulation_note,
+        // docs/25: the settings form's shape, so attaching from the chat row
+        // needs no second fetch.
+        "inputs": declared_inputs,
     });
     let assistant_message = db::create_indicator_workspace_message(
         database.pool(),
@@ -1176,7 +1187,7 @@ pub async fn submit_script(
     // point -- the platform does not care who wrote the code. The 422's
     // issues array carries every refusal with line and column, so an editor
     // can show them all at once.
-    let (header, _parsed) = pine_lite::vet(&body.source).map_err(|errs| {
+    let (header, parsed) = pine_lite::vet(&body.source).map_err(|errs| {
         ApiError::from(strategy_dsl::DslError::Validation {
             issues: errs
                 .iter()
@@ -1219,6 +1230,11 @@ pub async fn submit_script(
         };
     let preview_json = serde_json::to_value(&preview)
         .map_err(|err| ApiError::internal(format!("could not store indicator preview: {err}")))?;
+    // The declared inputs ride the validation record (docs/25 layer
+    // settings): any later fetch of this revision -- the auto-attach, the
+    // picker -- carries the settings form's shape with it, so the shell never
+    // re-vets a stored revision just to learn its knobs.
+    let declared_inputs = crate::script_routes::collect_inputs(&parsed);
     let validation = serde_json::json!({
         "valid": true,
         "engine": "pine-lite-v1",
@@ -1228,6 +1244,7 @@ pub async fn submit_script(
         "overlay": header.overlay,
         "origin": body.origin.as_deref().unwrap_or("pasted"),
         "preview_note": preview_note,
+        "inputs": declared_inputs,
     });
     let origin = body.origin.unwrap_or_else(|| "Pasted script".to_string());
     let revision = db::create_indicator_revision(
@@ -1259,6 +1276,7 @@ pub async fn submit_script(
             "plots": plots,
             "markers": markers,
             "preview_stats": preview_stats,
+            "inputs": declared_inputs,
         })),
     ))
 }

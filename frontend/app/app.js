@@ -618,6 +618,10 @@ function createChartPane(root, hooks = {}) {
   // the AI drawing layer's does. Attached by the studio's "attach to chart"
   // action once the gateway has vetted the source.
   let attachedScripts = [];
+  // Which layer's settings popover is open (its index in attachedScripts), or
+  // null. Kept as the INDEX, not the layer object, so a re-attach replacing
+  // the layer in place leaves the popover pointing at the same layer.
+  let layerSettingsFor = null;
 
   // ---------------------------------------------------------------------------
   // Drawing
@@ -4740,6 +4744,87 @@ function createChartPane(root, hooks = {}) {
     menu.style.top = `${Math.min(y, window.innerHeight - box.height - 8)}px`;
   }
 
+  /// Rebuild the layer-settings popover from the pane's layer state
+  /// (docs/25). Derived, never stored: the form's controls are regenerated
+  /// from `attachedScripts[layerSettingsFor]` on every open and every layer
+  /// change, so the form and the request cannot disagree about what a layer
+  /// runs with.
+  function renderLayerSettingsPopover() {
+    const pop = root.querySelector(".layerSettings");
+    if (!pop) return;
+    const layer = layerSettingsFor !== null ? attachedScripts[layerSettingsFor] : null;
+    if (!layer || !layer.inputsSpec || !layer.inputsSpec.length) {
+      pop.hidden = true;
+      pop.innerHTML = "";
+      return;
+    }
+    pop.hidden = false;
+    const rows = layer.inputsSpec
+      .map((decl, i) => {
+        const label = escapeHtml(decl.title || decl.name);
+        const current = Object.prototype.hasOwnProperty.call(layer.inputs, decl.name)
+          ? layer.inputs[decl.name]
+          : decl.default;
+        if (decl.kind === "bool") {
+          const checked = current === true || current === 1;
+          return (
+            `<label class="lsRow"><span>${label}</span>` +
+            `<input type="checkbox" data-input="${i}"${checked ? " checked" : ""} /></label>`
+          );
+        }
+        if (decl.kind === "int" || decl.kind === "float") {
+          const step = decl.kind === "int" ? "1" : "any";
+          const value = typeof current === "number" ? current : "";
+          return (
+            `<label class="lsRow"><span>${label}</span>` +
+            `<input type="number" step="${step}" data-input="${i}" value="${value}" /></label>`
+          );
+        }
+        // string/color inputs typecheck but the VM has no string evaluator
+        // yet: the row says so instead of offering a control that does
+        // nothing.
+        return `<label class="lsRow"><span>${label}</span><span class="muted">edited in code</span></label>`;
+      })
+      .join("");
+    pop.innerHTML =
+      `<div class="lsHead"><span>${escapeHtml(layer.name || "script")} settings</span>` +
+      `<button type="button" class="lsClose" title="Close">×</button></div>` +
+      rows +
+      `<div class="lsFoot"><button type="button" class="lsReset" title="Every input back to its declared default">Reset</button>` +
+      `<button type="button" class="lsDone">Done</button></div>`;
+    // Field edits apply on `change` (checkbox at once, a number when it
+    // commits) -- per-keystroke re-renders would fight the user's typing.
+    pop.querySelectorAll("[data-input]").forEach((control) => {
+      control.addEventListener("change", () => {
+        const decl = layer.inputsSpec[parseInt(control.dataset.input, 10)];
+        if (!decl) return;
+        if (decl.kind === "bool") {
+          layer.inputs[decl.name] = control.checked;
+        } else {
+          const value = parseFloat(control.value);
+          // A half-typed number ("1e", "-") is not a value: keep the old one
+          // until the field commits something finite.
+          if (!Number.isFinite(value)) return;
+          layer.inputs[decl.name] = decl.kind === "int" ? Math.round(value) : value;
+        }
+        renderNow();
+      });
+    });
+    pop.querySelector(".lsClose").addEventListener("click", () => {
+      layerSettingsFor = null;
+      renderLayerSettingsPopover();
+    });
+    pop.querySelector(".lsDone").addEventListener("click", () => {
+      layerSettingsFor = null;
+      renderLayerSettingsPopover();
+    });
+    pop.querySelector(".lsReset").addEventListener("click", () => {
+      layer.inputs = {};
+      renderNow();
+      renderLayerSettingsPopover();
+    });
+  }
+
   /// The listeners for the pane's own chrome. Kept beside `wire()` but separate
   /// from it: `wire()` is about the chart and its series, this is about the
   /// pane as a panel.
@@ -4775,6 +4860,8 @@ function createChartPane(root, hooks = {}) {
           const layer = scripts[index];
           if (!layer) return;
           paneApi.setScriptVisible(index, layer.visible === false);
+        } else if (button.classList.contains("layerChipGear")) {
+          paneApi.toggleLayerSettings(index);
         } else if (button.classList.contains("layerChipRemove")) {
           const scripts = paneApi.attachedScripts();
           const name = scripts[index] ? scripts[index].name || "script" : "script";
@@ -4989,8 +5076,20 @@ function createChartPane(root, hooks = {}) {
     /// edit stays one gesture instead of stacking a duplicate per save.
     attachScript(spec) {
       if (!spec || !spec.source) return;
-      const layer = { source: spec.source, inputs: spec.inputs || {}, name: spec.name, visible: true };
       const existing = attachedScripts.findIndex((s) => s.source === spec.source);
+      // `inputsSpec` is the settings form's shape (docs/25): the input
+      // declarations the vet recorded, carried by the revision's validation
+      // record so an attach never re-vets just to learn the knobs.
+      const layer = {
+        source: spec.source,
+        // On a re-attach (re-saving the revision under edit) the tuned
+        // values survive -- wiping them would make the settings popover
+        // unusable with the editor's own save-and-run gesture.
+        inputs: existing >= 0 ? attachedScripts[existing].inputs : (spec.inputs || {}),
+        name: spec.name,
+        inputsSpec: Array.isArray(spec.inputsSpec) ? spec.inputsSpec : [],
+        visible: true,
+      };
       if (existing >= 0) attachedScripts[existing] = layer;
       else attachedScripts.push(layer);
       renderNow();
@@ -5017,16 +5116,36 @@ function createChartPane(root, hooks = {}) {
     removeScriptAt(index) {
       if (index < 0 || index >= attachedScripts.length) return;
       attachedScripts.splice(index, 1);
+      // The open popover follows its layer: removing the layer under it
+      // closes it, removing an earlier one shifts it.
+      if (layerSettingsFor === index) layerSettingsFor = null;
+      else if (layerSettingsFor !== null && layerSettingsFor > index) layerSettingsFor -= 1;
       renderNow();
       syncIndicatorChip();
+      renderLayerSettingsPopover();
     },
+
+    /// Open (or toggle) one layer's settings popover (docs/25). Only one is
+    /// open at a time -- two forms editing two layers at once is two sources
+    /// of truth for one chart.
+    toggleLayerSettings(index) {
+      const layer = attachedScripts[index];
+      if (!layer || !layer.inputsSpec || !layer.inputsSpec.length) return;
+      layerSettingsFor = layerSettingsFor === index ? null : index;
+      renderLayerSettingsPopover();
+    },
+
+    /// The index of the layer whose settings popover is open, or null.
+    layerSettingsOpen: () => layerSettingsFor,
 
     /// Take every attached script off this chart.
     clearScripts() {
       if (!attachedScripts.length) return;
       attachedScripts = [];
+      layerSettingsFor = null;
       renderNow();
       syncIndicatorChip();
+      renderLayerSettingsPopover();
     },
 
     /// Overlay an older revision under the attached one, for the diff view:
@@ -5561,11 +5680,15 @@ function syncIndicatorChip() {
       layersEl.innerHTML = scripts
         .map((s, i) => {
           const off = s.visible === false;
+          const hasSettings = Array.isArray(s.inputsSpec) && s.inputsSpec.length > 0;
           return (
             `<span class="layerChip${off ? " off" : ""}" title="A pine-lite layer — runs on this chart's candles every frame">` +
             `<button type="button" class="layerChipEye" data-layer="${i}" aria-pressed="${!off}" ` +
             `title="${off ? "Show this layer" : "Hide this layer"}">${off ? "○" : "●"}</button>` +
             `<span class="indicatorChipName">${escapeHtml(s.name || "script")} · live</span>` +
+            (hasSettings
+              ? `<button type="button" class="layerChipGear" data-layer="${i}" title="Layer settings (its declared inputs)">⚙</button>`
+              : "") +
             `<button type="button" class="indicatorChipRemove layerChipRemove" data-layer="${i}" title="Remove this layer">×</button>` +
             `</span>`
           );
@@ -9260,8 +9383,15 @@ async function selectWorkspace(id) {
       // engine, which re-runs it on this chart's candles every frame. A
       // document revision attaches as the concepts/preview pair, as before.
       if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
-        // A layer (docs/25): joins whatever is already on the chart.
-        activePane.attachScript({ source: rev.source, inputs: {}, name: (preview && preview.name) || ws.name });
+        // A layer (docs/25): joins whatever is already on the chart. The
+        // validation record carries the input declarations, so the layer's
+        // settings form needs no re-vet.
+        activePane.attachScript({
+          source: rev.source,
+          inputs: {},
+          name: (preview && preview.name) || ws.name,
+          inputsSpec: Array.isArray(rev.validation.inputs) ? rev.validation.inputs : [],
+        });
         syncIndicatorChip();
         pageToast(`Attached script "${(preview && preview.name) || ws.name}" to ${activePane.symbol()} ${activePane.timeframe()} — it re-runs on every candle`);
       } else {
@@ -9424,7 +9554,12 @@ async function saveCodeAsRevision() {
     // same source updates its own layer, and the layer chips toggle or remove
     // each one.
     if (activePane) {
-      activePane.attachScript({ source, inputs: {}, name: resp.title || "script" });
+      activePane.attachScript({
+        source,
+        inputs: {},
+        name: resp.title || "script",
+        inputsSpec: Array.isArray(resp.inputs) ? resp.inputs : [],
+      });
       syncIndicatorChip();
       pageToast(`Attached "${resp.title || "script"}" to ${activePane.symbol()} ${activePane.timeframe()} — it re-runs on every candle; manage it from the layer chips`);
     }
@@ -9510,7 +9645,12 @@ async function attachRevisionToChart(wsId, revId) {
     // concepts/preview pair -- see `selectWorkspace`'s same fork.
     if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
       // A layer (docs/25): joins whatever is already on the chart.
-      target.attachScript({ source: rev.source, inputs: {}, name: rev.preview.name || "script" });
+      target.attachScript({
+        source: rev.source,
+        inputs: {},
+        name: rev.preview.name || "script",
+        inputsSpec: Array.isArray(rev.validation.inputs) ? rev.validation.inputs : [],
+      });
     } else {
       target.attachIndicator(rev.preview);
     }
@@ -9560,7 +9700,12 @@ async function viewRevision(wsId, revId) {
     if (rev.preview && activePane) {
       if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
         // A layer (docs/25): joins whatever is already on the chart.
-        activePane.attachScript({ source: rev.source, inputs: {}, name: rev.preview.name || "script" });
+        activePane.attachScript({
+          source: rev.source,
+          inputs: {},
+          name: rev.preview.name || "script",
+          inputsSpec: Array.isArray(rev.validation.inputs) ? rev.validation.inputs : [],
+        });
       } else {
         activePane.attachIndicator(rev.preview);
       }
