@@ -872,8 +872,9 @@ function createChartPane(root, hooks = {}) {
     // script/equity panes (docs/33). The stack shares the x axis, so the
     // vertical guide and the bar snap are pane-independent; the horizontal
     // guide and value tag belong to the hovered pane's own scale.
-    const stacks = [...(scene.script_panes || []), ...(scene.equity_panes || [])];
-    const hovered = crosshair.pane == null ? null : stacks[crosshair.pane];
+    const stacks = [...(scene.sub_panes || []), ...(scene.script_panes || []), ...(scene.equity_panes || [])]
+      .sort((a, b) => a.plot.y - b.plot.y);
+    const hovered = crosshair.pane || null;
     if (!hovered && (crosshair.x < plot.x || crosshair.x > plot.x + plot.w ||
         crosshair.y < plot.y || crosshair.y > plot.y + plot.h)) return;
     // The hovered bar: the one whose span (body plus half the gap either
@@ -917,7 +918,7 @@ function createChartPane(root, hooks = {}) {
     ctx.setLineDash([]);
     // The value tag on the right axis, when the loaded module is new enough
     // to export the inverse mapping.
-    if (wasm && typeof wasm.price_at_y === "function" && Number.isFinite(vMin) && Number.isFinite(vMax)) {
+    if (wasm && typeof wasm.price_at_y === "function" && Number.isFinite(vMin) && Number.isFinite(vMax) && vMax > vMin) {
       const value = wasm.price_at_y(hRect.y, hRect.h, vMin, vMax, vy);
       ctx.font = "10px ui-monospace, monospace";
       const label = fmtNum(value);
@@ -3159,11 +3160,15 @@ function createChartPane(root, hooks = {}) {
       if (cx >= p.x && cx <= p.x + p.w && cy >= p.y && cy <= p.y + p.h) {
         next = { x: cx, y: cy, pane: null };
       } else {
-        const stacks = [...(scene.script_panes || []), ...(scene.equity_panes || [])];
+        // All stacked panes, sorted by their y: the built-in sub-panes, the
+        // script panes and the equity panes share the x axis and now all
+        // carry a value range (docs/33), so any of them can host the hover.
+        const stacks = [...(scene.sub_panes || []), ...(scene.script_panes || []), ...(scene.equity_panes || [])]
+          .sort((a, b) => a.plot.y - b.plot.y);
         for (let i = 0; i < stacks.length; i++) {
           const sp = stacks[i].plot;
           if (cx >= sp.x && cx <= sp.x + sp.w && cy >= sp.y && cy <= sp.y + sp.h) {
-            next = { x: cx, y: cy, pane: i };
+            next = { x: cx, y: cy, pane: sp };
             break;
           }
         }

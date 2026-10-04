@@ -52,11 +52,12 @@ engine, where `price_to_y` already is:
 
 ## What this is not
 
-The vertical guide **does** cross the stack — script panes and equity panes
-share the x axis, so hovering a sub-pane still snaps to the bar, and the
-horizontal guide and value tag then read that pane's own `value_min/max`
-through the same `price_at_y` export. The built-in RSI-style `sub_panes`
-stay out: their wire shape carries ticks but no direct value range, and
-interpolating between tick anchors would be the shell re-deriving a scale —
-the thing this doc exists to avoid. Giving `ScenePane` a `value_min/max`
-like its script sibling is a one-field engine change when it is wanted.
+The vertical guide **does** cross the whole stack — the built-in sub-panes
+(RSI), the script panes and the equity panes share the x axis, so hovering
+any of them still snaps to the bar, and the horizontal guide and value tag
+read the hovered pane's own range through the same `price_at_y` export.
+`ScenePane` gained `value_min/value_max` (the fixed 0..100 the RSI scale
+already used) so no pane's tag is interpolated between tick anchors — that
+would be the shell re-deriving a scale, the thing this doc exists to avoid.
+A pre-range scene deserializes to 0..0, which the shell's tag guard treats
+as "no range" (pinned in the RSI pane test).

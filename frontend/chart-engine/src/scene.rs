@@ -903,6 +903,14 @@ pub struct ScenePane {
     pub divergences: Vec<PaneDivergence>,
     /// The pane's own y-axis ticks, positioned and valued.
     pub ticks: Vec<PaneTick>,
+    /// The pane's value range (docs/33): the crosshair's value tag reads it
+    /// through the same `price_at_y` mapping every pane uses. Fixed 0..100
+    /// for the RSI pane today. Defaulted so a pre-crosshair scene parses.
+    #[serde(default)]
+    pub value_min: f64,
+    /// See `value_min`.
+    #[serde(default)]
+    pub value_max: f64,
 }
 
 /// A horizontal reference line inside a sub-pane.
@@ -1833,6 +1841,10 @@ fn rsi_pane(
         levels,
         divergences: marks,
         ticks,
+        // docs/33: the scale the ticks were built from, so the crosshair's
+        // value tag maps through the same range the ticks label.
+        value_min: PANE_MIN,
+        value_max: PANE_MAX,
     })
 }
 
@@ -5696,6 +5708,18 @@ mod tests {
         let overbought = pane.levels.iter().find(|l| l.value == 70.0).expect("70 band");
         assert!(oversold.y > overbought.y, "y grows downward");
         assert!(!pane.ticks.is_empty());
+        // docs/33: the pane carries the value range its ticks were built
+        // from, so the crosshair's value tag maps through it; and a scene
+        // built before the range existed still deserializes.
+        assert_eq!(pane.value_min, 0.0);
+        assert_eq!(pane.value_max, 100.0);
+        let old = serde_json::json!({
+            "kind": "rsi", "label": "RSI (14)",
+            "plot": { "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0 },
+            "line": [], "levels": [], "divergences": [], "ticks": [],
+        });
+        let parsed: ScenePane = serde_json::from_value(old).expect("old scenes still parse");
+        assert_eq!(parsed.value_max, 0.0, "the shell's tag guard treats 0..0 as no range");
     }
 
     #[test]
