@@ -483,12 +483,15 @@ pub async fn create_message(
             label: Some("user-attached chart screenshot".to_string()),
         });
     }
-    let memory = workspace.memory.to_string();
-    let _ = &memory; // compact memory rides the request text below.
+    // Standing preferences ride the request text (docs/30): the workspace
+    // memory's preference list is instructions the user gave by doing --
+    // tuning a layer's settings, removing a layer -- and the model must see
+    // them where it reads the ask.
+    let content = content_with_preferences(body.content.trim(), &workspace.memory);
     let generated = crate::pine_codegen::generate_script(
         agent.llm().as_ref(),
         crate::pine_codegen::script_system_prompt(&workspace.symbol, &workspace.timeframe),
-        body.content.trim(),
+        &content,
         // Iterative editing: a workspace with an active revision revises THAT
         // script instead of starting over -- "make the bands tighter" tightens
         // the bands and does not lose the user's other plots. Only pine-lite
@@ -575,7 +578,12 @@ pub async fn create_message(
     )
     .await?
     .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
-    let memory = serde_json::json!({"last_request": body.content.trim(), "representation": "pine-lite", "revision": revision.revision_number});
+    // The memory rewrite preserves the preference list (docs/30): a fresh
+    // document without it would forget everything the user ever tuned.
+    let mut memory = serde_json::json!({"last_request": body.content.trim(), "representation": "pine-lite", "revision": revision.revision_number});
+    if let Some(prefs) = workspace.memory.get("preferences") {
+        memory["preferences"] = prefs.clone();
+    }
     db::update_indicator_workspace_memory(database.pool(), user.user_id, id, &memory).await?;
     let plots = preview.zones.len();
     let markers = preview.markers.len();
@@ -711,6 +719,93 @@ pub async fn set_alert(
     if !saved {
         return Err(ApiError::not_found("indicator workspace not found"));
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Body of `POST /indicator-workspaces/{id}/preferences` (docs/30): one
+/// observed preference, in prose ("The user set Length to 21 on \"HTF FVG\"").
+#[derive(serde::Deserialize)]
+pub struct PreferenceBody {
+    /// The note to remember.
+    pub note: String,
+}
+
+/// The preference list's cap (docs/30): enough history to learn from, small
+/// enough to ride every generation prompt.
+const MAX_PREFERENCES: usize = 20;
+
+/// Merge one observed preference into a workspace memory document.
+///
+/// Preferences live under the `preferences` key as an array of prose notes,
+/// newest last; an exact duplicate is a no-op (tuning the same knob back and
+/// forth must not flood the list), and past the cap the oldest note falls
+/// off. Every other memory key is preserved.
+pub(crate) fn merge_preference(memory: &serde_json::Value, note: &str) -> serde_json::Value {
+    let mut merged = memory.clone();
+    let object = merged.as_object_mut();
+    let Some(object) = object else {
+        // A non-object memory is a legacy shape; start a clean document
+        // rather than drop the note.
+        return serde_json::json!({"preferences": [note]});
+    };
+    let mut prefs: Vec<serde_json::Value> = object
+        .get("preferences")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if !prefs.iter().any(|p| p.as_str() == Some(note)) {
+        prefs.push(serde_json::Value::String(note.to_string()));
+        if prefs.len() > MAX_PREFERENCES {
+            let overflow = prefs.len() - MAX_PREFERENCES;
+            prefs.drain(0..overflow);
+        }
+    }
+    object.insert("preferences".to_string(), serde_json::Value::Array(prefs));
+    merged
+}
+
+/// The generation request with the workspace's standing preferences folded
+/// in (docs/30). The preferences are INSTRUCTIONS the user gave by doing
+/// (tuning a setting, removing a layer), so they ride the request text where
+/// the model must see them -- a system-prompt mention would be advice about
+/// a workspace the prompt cannot name.
+pub(crate) fn content_with_preferences(content: &str, memory: &serde_json::Value) -> String {
+    let prefs: Vec<&str> = memory
+        .get("preferences")
+        .and_then(|p| p.as_array())
+        .map(|a| a.iter().filter_map(|p| p.as_str()).collect())
+        .unwrap_or_default();
+    if prefs.is_empty() {
+        return content.to_string();
+    }
+    format!(
+        "{content}\n\nStanding preferences on this workspace (the user set these by doing; honor them unless this request contradicts them):\n- {}",
+        prefs.join("\n- ")
+    )
+}
+
+/// `POST /indicator-workspaces/{id}/preferences` -- record one observed
+/// preference (docs/30). Fire-and-forget from the shell; a duplicate is a
+/// no-op, and the list caps at [`MAX_PREFERENCES`].
+pub async fn record_preference(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path(id): Path<Uuid>,
+    ApiJson(body): ApiJson<PreferenceBody>,
+) -> Result<StatusCode, ApiError> {
+    let note = body.note.trim();
+    if note.is_empty() || note.len() > 200 {
+        return Err(ApiError::bad_request(
+            "PREFERENCE_INVALID",
+            "a preference note is 1-200 characters of prose",
+        ));
+    }
+    let workspace = db::get_indicator_workspace(database(&state)?.pool(), user.user_id, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    let memory = merge_preference(&workspace.memory, note);
+    db::update_indicator_workspace_memory(database(&state)?.pool(), user.user_id, id, &memory)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1261,7 +1356,11 @@ pub async fn submit_script(
     )
     .await?
     .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
-    let memory = serde_json::json!({"representation": "pine-lite", "revision": revision.revision_number});
+    let mut memory = serde_json::json!({"representation": "pine-lite", "revision": revision.revision_number});
+    // Same preservation as the generation path (docs/30).
+    if let Some(prefs) = workspace.memory.get("preferences") {
+        memory["preferences"] = prefs.clone();
+    }
     db::update_indicator_workspace_memory(database.pool(), user.user_id, id, &memory).await?;
     let plots = preview.zones.len();
     let markers = preview.markers.len();
@@ -1279,4 +1378,51 @@ pub async fn submit_script(
             "inputs": declared_inputs,
         })),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    //! docs/30: preference learning's two pure pieces -- the merge into the
+    //! workspace memory and the injection into the generation request.
+
+    use super::{content_with_preferences, merge_preference, MAX_PREFERENCES};
+
+    #[test]
+    fn a_preference_merges_dedups_and_caps() {
+        let mut memory = serde_json::json!({"last_request": "an fvg indicator"});
+        memory = merge_preference(&memory, "The user set Length to 21 on \"RSI\"");
+        memory = merge_preference(&memory, "The user removed the \"HTF FVG\" layer");
+        // The merge preserves the memory's other keys.
+        assert_eq!(memory["last_request"], "an fvg indicator");
+        let prefs = memory["preferences"].as_array().expect("the list");
+        assert_eq!(prefs.len(), 2);
+        // An exact duplicate is a no-op -- tuning back and forth must not flood.
+        memory = merge_preference(&memory, "The user set Length to 21 on \"RSI\"");
+        assert_eq!(memory["preferences"].as_array().unwrap().len(), 2, "deduped");
+        // Past the cap the oldest note falls off.
+        for i in 0..MAX_PREFERENCES + 5 {
+            memory = merge_preference(&memory, &format!("note {i}"));
+        }
+        let prefs = memory["preferences"].as_array().unwrap();
+        assert_eq!(prefs.len(), MAX_PREFERENCES, "capped");
+        assert_eq!(prefs.last().unwrap(), &serde_json::json!(format!("note {}", MAX_PREFERENCES + 4)));
+    }
+
+    #[test]
+    fn a_non_object_memory_still_records() {
+        let memory = merge_preference(&serde_json::json!("legacy"), "note");
+        assert_eq!(memory["preferences"][0], "note");
+    }
+
+    #[test]
+    fn preferences_ride_the_generation_request() {
+        let memory = serde_json::json!({"preferences": ["The user set Length to 21 on \"RSI\""]});
+        let content = content_with_preferences("make it faster", &memory);
+        assert!(content.starts_with("make it faster"), "the ask comes first");
+        assert!(content.contains("Standing preferences"), "the block is labeled");
+        assert!(content.contains("Length to 21"), "the note rides along");
+        // No preferences: the content is untouched, not decorated.
+        let plain = content_with_preferences("make it faster", &serde_json::json!({}));
+        assert_eq!(plain, "make it faster");
+    }
 }

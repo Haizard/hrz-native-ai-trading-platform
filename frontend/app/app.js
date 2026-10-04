@@ -4799,16 +4799,23 @@ function createChartPane(root, hooks = {}) {
       control.addEventListener("change", () => {
         const decl = layer.inputsSpec[parseInt(control.dataset.input, 10)];
         if (!decl) return;
+        let applied;
         if (decl.kind === "bool") {
-          layer.inputs[decl.name] = control.checked;
+          applied = control.checked;
         } else {
           const value = parseFloat(control.value);
           // A half-typed number ("1e", "-") is not a value: keep the old one
           // until the field commits something finite.
           if (!Number.isFinite(value)) return;
-          layer.inputs[decl.name] = decl.kind === "int" ? Math.round(value) : value;
+          applied = decl.kind === "int" ? Math.round(value) : value;
         }
+        layer.inputs[decl.name] = applied;
         renderNow();
+        // Preference learning (docs/30): a deliberate tune is a standing
+        // instruction for the next generation on this workspace.
+        recordLayerPreference(
+          `The user set ${decl.title || decl.name} to ${JSON.stringify(applied)} on "${layer.name || "script"}"`
+        );
       });
     });
     pop.querySelector(".lsClose").addEventListener("click", () => {
@@ -4823,6 +4830,8 @@ function createChartPane(root, hooks = {}) {
       layer.inputs = {};
       renderNow();
       renderLayerSettingsPopover();
+      // A reset is a preference too (docs/30): the tuned values were wrong.
+      recordLayerPreference(`The user reset "${layer.name || "script"}" to its declared defaults`);
     });
   }
 
@@ -4868,6 +4877,9 @@ function createChartPane(root, hooks = {}) {
           const name = scripts[index] ? scripts[index].name || "script" : "script";
           paneApi.removeScriptAt(index);
           toast(`Removed ${name} from this chart`);
+          // Preference learning (docs/30): removing a layer is a rejection
+          // the next generation should remember.
+          recordLayerPreference(`The user removed the "${name}" layer`);
         }
       });
     }
@@ -9967,6 +9979,20 @@ async function viewRevision(wsId, revId) {
   /// in the transcript shows the elapsed time.
   let wsGenAbort = null;
   let wsGenTimer = null;
+
+  /// Record one observed preference against the active workspace (docs/30).
+  /// Fire-and-forget: preference recording never blocks the UI, never toasts,
+  /// never throws -- the chart interaction it observed already happened. No
+  /// active workspace means there is nowhere honest to attach the note, so
+  /// the observation is dropped.
+  function recordLayerPreference(note) {
+    if (!wsActiveId) return;
+    api(`/indicator-workspaces/${wsActiveId}/preferences`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ note }),
+    }).catch(() => {});
+  }
 
   /// The pending bubble is honest about what is knowable mid-flight: that
   /// the pipeline is running and how long it has taken. The stages (model

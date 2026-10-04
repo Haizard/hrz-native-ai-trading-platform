@@ -345,6 +345,10 @@ pub fn router(state: AppState) -> Router {
             get(indicator_workspace_routes::list_alerts).put(indicator_workspace_routes::set_alert),
         )
         .route(
+            "/indicator-workspaces/{id}/preferences",
+            post(indicator_workspace_routes::record_preference),
+        )
+        .route(
             "/indicator-workspaces/{id}/bot-drafts",
             get(indicator_workspace_routes::list_bot_drafts)
                 .post(indicator_workspace_routes::create_bot_draft),
