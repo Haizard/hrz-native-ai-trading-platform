@@ -130,6 +130,11 @@ pub struct ScriptPlot {
     pub color: u32,
     /// Line width in CSS pixels.
     pub linewidth: f64,
+    /// The series' last FINITE value (docs/32): what the legend shows next
+    /// to the title, TradingView-style. A series whose tail is `na` reports
+    /// its last real value, never a hole; an all-`na` series omits the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_value: Option<f64>,
 }
 
 /// One horizontal reference level inside a script pane (`hline()`).
@@ -360,6 +365,10 @@ pub fn pane_from_output(
                 .collect(),
             color: p.color,
             linewidth: p.linewidth,
+            // docs/32: the legend's value is the last FINITE one -- a
+            // trailing `na` is a hole the polyline already skips, and the
+            // legend must not show a hole either.
+            last_value: p.values.iter().rev().find(|v| v.is_finite()).copied(),
         })
         .collect();
 
@@ -434,6 +443,8 @@ pub fn scene_overlay_plots(
                 .collect(),
             color: p.color,
             linewidth: p.linewidth,
+            // docs/32: same legend contract as the pane path.
+            last_value: p.values.iter().rev().find(|v| v.is_finite()).copied(),
         })
         .collect()
 }
@@ -842,6 +853,37 @@ mod tests {
         }
         // The 70 level maps above the 30 level (canvas y grows downward).
         assert!(pane.levels[0].y < pane.levels[1].y);
+    }
+
+    #[test]
+    fn a_plots_legend_value_is_its_last_finite_value() {
+        // docs/32: the legend shows the last REAL value. A series whose tail
+        // went `na` reports its last finite value, never the hole; an all-na
+        // plot omits the key; an old scene without the key deserializes.
+        // The holes come from EXPRESSION plot arguments: a plotted bare
+        // identifier reads through `read_name`'s carry-forward (var handles
+        // must stay readable across bars), which masks na slots -- so the
+        // trailing-na fixture is a ternary expression, whose per-bar result
+        // stores holes directly.
+        let src = concat!(
+            "//@pine_lite version=1 overlay=false title=\"V\"\n",
+            "plot(bar_index > 34 ? na : close, title=\"v\")\n",
+            "plot(close * na, title=\"never\")\n",
+        );
+        let (header, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        let pane = pane_from_output(&header, &output, 10.0, &plot_rect()).expect("pane");
+        assert_eq!(pane.plots.len(), 2);
+        assert_eq!(pane.plots[0].last_value, Some(100.0), "the last finite value, not the na tail");
+        assert_eq!(pane.plots[0].points.len(), 35, "the polyline stops where the values do");
+        assert_eq!(pane.plots[1].last_value, None, "an all-na plot has nothing to show");
+        let json = serde_json::to_value(&pane).expect("serializes");
+        assert_eq!(json["plots"][0]["last_value"], 100.0);
+        assert!(json["plots"][1].get("last_value").is_none(), "the key is omitted, not null");
+        let old = serde_json::json!({"title": "t", "points": [], "color": 1u32, "linewidth": 1.0});
+        let parsed_old: ScriptPlot = serde_json::from_value(old).expect("old scenes still parse");
+        assert_eq!(parsed_old.last_value, None);
     }
 
     #[test]

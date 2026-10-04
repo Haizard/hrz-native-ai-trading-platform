@@ -963,10 +963,22 @@ function createChartPane(root, hooks = {}) {
       // is a measurement, not a price-pane event).
       drawScriptMarkers(ctx, pane.shapes, 0);
 
-      // Pane label, top-left, exactly like the built-in panes.
+      // Pane label, top-left, exactly like the built-in panes -- and beside
+      // it each plot's last value in the plot's own color (docs/32):
+      // TradingView's legend row, "RSI · RSI 61.3  RsiMA 58.1". The values
+      // are the engine's (the last finite one), never re-derived here.
       ctx.fillStyle = "rgba(226, 232, 240, 0.85)";
       ctx.font = "600 10px ui-sans-serif, system-ui";
       ctx.fillText(pane.title, pane.plot.x + 6, pane.plot.y + 12);
+      let legendX = pane.plot.x + 6 + ctx.measureText(pane.title).width;
+      ctx.font = "9px ui-monospace, monospace";
+      for (const p of pane.plots) {
+        if (p.last_value == null) continue;
+        const part = `  ${p.title} ${fmtNum(p.last_value)}`;
+        ctx.fillStyle = rgbaFromPacked(p.color, 0.95);
+        ctx.fillText(part, legendX, pane.plot.y + 12);
+        legendX += ctx.measureText(part).width;
+      }
 
       // The pane's own y-range at the right edge: top and bottom only. The
       // engine computed these from the script's own values.
@@ -1265,11 +1277,13 @@ function createChartPane(root, hooks = {}) {
         for (const pt of p.points) ctx.lineTo(pt.x, pt.y);
         ctx.stroke();
         // Label the plot at its right end, so two overlay scripts do not
-        // blur into one line set.
+        // blur into one line set. The last value rides the label (docs/32),
+        // TradingView's legend look: "RSI 61.3", not just "RSI".
         const lastPt = p.points[p.points.length - 1];
         ctx.fillStyle = rgbaFromPacked(p.color, 1.0);
         ctx.font = "600 9px ui-sans-serif, system-ui";
-        ctx.fillText(p.title, lastPt.x + 5, lastPt.y + 3);
+        const plotLabel = p.last_value != null ? `${p.title} ${fmtNum(p.last_value)}` : p.title;
+        ctx.fillText(plotLabel, lastPt.x + 5, lastPt.y + 3);
       }
       // plotshape() markers: the shared painter gives every marker a soft
       // glow and the newest bars' markers a pulsing halo -- a signal is an
