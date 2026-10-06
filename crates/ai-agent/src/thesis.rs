@@ -531,6 +531,7 @@ pub fn submit_thesis_spec() -> ToolSpec {
             verbatim from tool output -- never round, reformat or estimate them."
             .into(),
         input_schema: check_schema(),
+        exposed_tool: None, // Always exposed
     }
 }
 

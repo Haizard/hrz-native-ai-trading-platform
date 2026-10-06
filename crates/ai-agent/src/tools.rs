@@ -41,7 +41,6 @@ use crate::llm_client::ToolCall;
 use crate::user_drawings::{DrawingWriter, NewAgentDrawing, UserDrawingsSource};
 
 use crate::agent_memory::{MemorySource, MemoryWriter, NewMemory};
-use capabilities::Availability;
 
 /// Where market data comes from.
 ///

@@ -1006,6 +1006,7 @@ impl Agent {
             }]
         };
         let mut repaired_errors = Vec::new();
+        let max_attempts = request.max_attempts.unwrap_or(self.config.max_attempts);
 
         for attempt in 1..=max_attempts {
             let response = self
@@ -1859,6 +1860,7 @@ pub fn draft_strategy_spec() -> ToolSpec {
             },
             "required": ["yaml"]
         }),
+        exposed_tool: None, // Always exposed
     }
 }
 
