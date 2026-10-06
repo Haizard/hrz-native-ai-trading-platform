@@ -1389,6 +1389,7 @@
       <button role="tab" data-pane="scan" aria-selected="false">Scan</button>
       <button role="tab" data-pane="strategy" aria-selected="false">Strategy</button>
       <button role="tab" data-pane="indicator" aria-selected="false">Indicator</button>
+      <button role="tab" data-pane="skills" aria-selected="false">Skills</button>
       <button role="tab" data-pane="bots" aria-selected="false">Bots</button>
       <button role="tab" data-pane="book" aria-selected="false">Book</button>
       <button role="tab" data-pane="brokers" aria-selected="false">Brokers</button>
@@ -1543,6 +1544,46 @@
         </select>
       </div>
       <div id="backtestOut"></div>
+    </div>
+
+    <div class="pane" id="pane-skills" hidden>
+      <h2>Your Skills</h2>
+      <p class="muted">
+        Skills are your trading methodologies - rules, timeframes, risk parameters
+        that tell the AI agent how to trade. Create skills to codify your strategy.
+      </p>
+      
+      <h3 class="section">Create a new skill</h3>
+      <div class="ws-new">
+        <div class="row">
+          <input id="skillName" placeholder="Skill name, e.g. Liquidity Sweep Strategy" />
+        </div>
+        <div class="row">
+          <input id="skillCategory" placeholder="Category, e.g. liquidity" />
+        </div>
+        <div class="row">
+          <textarea id="skillKnowledge" rows="3" placeholder="Your knowledge/trading philosophy..."></textarea>
+        </div>
+        <div class="row">
+          <textarea id="skillRules" rows="4" placeholder="Rules, one per line (e.g., 'Break even after 2R profit')"></textarea>
+        </div>
+        <div class="row">
+          <input id="skillTimeframes" placeholder="Timeframes (comma-separated, e.g. 4h,1h,5m)" />
+        </div>
+        <div class="row">
+          <input id="skillMarkets" placeholder="Preferred markets (comma-separated, e.g. BTCUSDT,ETHUSDT)" />
+        </div>
+        <div class="row">
+          <input id="skillMaxRisk" type="number" step="0.1" placeholder="Max risk % (e.g. 1.0)" />
+        </div>
+        <div class="row">
+          <button id="skillCreate" class="primary">Create Skill</button>
+          <span id="skillCreateMsg" class="muted"></span>
+        </div>
+      </div>
+
+      <h3 class="section">Your saved skills</h3>
+      <div id="skillsList"><p class="empty">No skills yet. Create one above!</p></div>
     </div>
 
     <div class="pane" id="pane-bots" hidden>

@@ -9581,6 +9581,13 @@ async function main() {
   el("wsDelete").onclick = deleteWorkspace;
   el("wsBack").onclick = showWorkspaceList;
   el("wsChatSend").onclick = sendWorkspaceMessage;
+  // Skills event listeners
+  el("skillCreate").onclick = createSkill;
+  document.querySelectorAll("[data-pane]").forEach((tab) => {
+    if (tab.dataset.pane === "skills") {
+      tab.addEventListener("click", () => loadSkills());
+    }
+  });
   // Sweep buttons are rendered inside message bubbles, so the click is caught
   // on the stream and dispatched -- one listener instead of one per bubble.
   const chatStream = document.getElementById("wsChat");
@@ -10767,6 +10774,155 @@ async function deleteWorkspace() {
     showWorkspaceList();
   } catch (e) {
     alert(e.message);
+  }
+}
+
+// -----------------------------------------------------------
+// Skills management
+// -----------------------------------------------------------
+
+/// Load all skills and render them in the skills list.
+async function loadSkills() {
+  try {
+    const skills = await api("/skills");
+    
+    const list = el("skillsList");
+    if (!skills || skills.length === 0) {
+      list.innerHTML = '<p class="empty">No skills yet. Create one in the Skills tab!</p>';
+      return;
+    }
+    
+    // Group skills by name, show latest version
+    const latest = new Map();
+    skills.forEach(s => {
+      const key = s.name;
+      const existing = latest.get(key);
+      if (!existing || s.version > existing.version) {
+        latest.set(key, s);
+      }
+    });
+    
+    if (latest.size === 0) {
+      list.innerHTML = '<p class="empty">No skills yet. Create one in the Skills tab!</p>';
+      return;
+    }
+    
+    let html = '<div class="skills-list">';
+    for (const skill of latest.values()) {
+      html += `<div class="ws-item">
+        <strong>${escapeHtml(skill.name)}</strong>
+        <span class="muted">v${skill.version}</span>
+        <span class="skills-info">
+          <span class="muted">${escapeHtml(skill.category || 'uncategorized')}</span>
+        </span>
+      </div>`;
+    }
+    html += '</div>';
+    list.innerHTML = html;
+    
+    // Also update the skill dropdown in composer
+    updateSkillDropdown(skills);
+  } catch (e) {
+    el("skillsList").innerHTML = `<p class="error">Failed to load skills: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+/// Update the skill dropdown in the composer with loaded skills.
+function updateSkillDropdown(skills) {
+  const select = el("skillSelect");
+  if (!select) return;
+  
+  // Keep the first "No skill" option
+  const defaultOption = select.querySelector("option:first-child");
+  select.innerHTML = "";
+  if (defaultOption) select.appendChild(defaultOption);
+  
+  if (!skills || skills.length === 0) {
+    select.hidden = true;
+    return;
+  }
+  
+  // Add skills
+  skills.forEach(s => {
+    const option = document.createElement("option");
+    option.value = s.id;
+    option.textContent = `${s.name} v${s.version}`;
+    if (s.category) {
+      option.textContent += ` (${s.category})`;
+    }
+    select.appendChild(option);
+  });
+  
+  select.hidden = false;
+}
+
+/// Create a new skill.
+async function createSkill() {
+  const name = el("skillName").value.trim();
+  const category = el("skillCategory").value.trim() || "custom";
+  const knowledge = el("skillKnowledge").value.trim();
+  const rulesInput = el("skillRules").value.trim();
+  const timeframesInput = el("skillTimeframes").value.trim();
+  const marketsInput = el("skillMarkets").value.trim();
+  const maxRiskInput = el("skillMaxRisk").value.trim();
+  
+  if (!name) {
+    showSkillMessage("Name is required");
+    return;
+  }
+  
+  const rules = rulesInput.split("\n").map(r => r.trim()).filter(r => r);
+  const timeframes = timeframesInput.split(",").map(t => t.trim()).filter(t => t);
+  const markets = marketsInput.split(",").map(m => m.trim()).filter(m => m);
+  const maxRisk = maxRiskInput ? parseFloat(maxRiskInput) : 1.0;
+  
+  // Build the skill YAML document
+  const skillDoc = {
+    name,
+    version: "1.0",
+    category,
+    kind: "trading",
+    artifact_kind: "thesis",
+    knowledge: knowledge || "Custom trading methodology.",
+    rules: rules.length > 0 ? rules : ["Follow your trading methodology."],
+    conditions: {
+      timeframes: timeframes.length > 0 ? timeframes : ["4h", "1h", "5m"],
+      risk: {
+        max_risk_pct: maxRisk
+      }
+    },
+    preferred_markets: markets.length > 0 ? markets : ["BTCUSDT"],
+    preferred_timeframes: timeframes.length > 0 ? timeframes : ["4h", "1h", "5m"]
+  };
+  
+  try {
+    const created = await api("/skills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(skillDoc)
+    });
+    
+    showSkillMessage(`Skill created! ${created.id ? 'ID: ' + created.id : ''}`);
+    el("skillName").value = "";
+    el("skillCategory").value = "";
+    el("skillKnowledge").value = "";
+    el("skillRules").value = "";
+    el("skillTimeframes").value = "";
+    el("skillMarkets").value = "";
+    el("skillMaxRisk").value = "";
+    
+    await loadSkills();
+  } catch (e) {
+    showSkillMessage(`Error creating skill: ${e.message}`);
+  }
+}
+
+/// Show a temporary message in the skills pane.
+function showSkillMessage(msg) {
+  const elMsg = el("skillCreateMsg");
+  if (elMsg) {
+    elMsg.textContent = msg;
+    setTimeout(() => { elMsg.textContent = ""; }, 5000);
   }
 }
 
