@@ -6947,6 +6947,10 @@ function applyAgentFrame(frame, turn) {
     paintAsk();
     renderTranscript();
     redrawThesis();
+    // Update MCP status if capabilities are present
+    if (frame.payload.capabilities) {
+      updateMcpStatus(frame.payload.capabilities);
+    }
   } else if (frame.type === "notice") {
     // A notice is a refusal or a failure -- a rate limit, a bad request, a
     // model error -- and it ends this question.
@@ -7022,6 +7026,8 @@ async function ask() {
   const question = el("question").value.trim();
   if (!question || asking) return;
 
+  const skillId = el("skillSelect")?.value || null;
+
   const turn = { question, steps: [], answer: null, error: null };
   turns.push(turn);
   asking = true;
@@ -7036,6 +7042,10 @@ async function ask() {
       question,
       timeframes: [activeTimeframe()],
     };
+    
+    if (skillId) {
+      message.skill_id = skillId;
+    }
 
     // The viewport goes on every question while it is switched on. The images
     // are captured at send time rather than at attach time: the charts move
@@ -7300,6 +7310,71 @@ function setStrategyMode(mode) {
   el("nlPane").hidden = mode !== "nl";
   el("builderPane").hidden = mode !== "builder";
   el("dslPane").hidden = mode !== "dsl";
+}
+
+// ---------------------------------------------------------------------------
+// Skills and MCP integration
+// ---------------------------------------------------------------------------
+
+/// Load the user's skills into the skill selector dropdown.
+async function loadSkills() {
+  try {
+    const skills = await api("/skills");
+    const select = el("skillSelect");
+    // Keep the "No skill" option and clear others
+    const defaultOption = select.querySelector("option:first-child");
+    select.innerHTML = "";
+    select.appendChild(defaultOption);
+    
+    if (skills && skills.length > 0) {
+      skills.forEach(skill => {
+        const option = document.createElement("option");
+        option.value = skill.id;
+        option.textContent = `${skill.name} v${skill.version}`;
+        if (skill.category) {
+          option.textContent += ` (${skill.category})`;
+        }
+        select.appendChild(option);
+      });
+      select.hidden = false;
+    } else {
+      select.hidden = true;
+    }
+  } catch (e) {
+    // Skills endpoint might not be available or user might not have permission
+    // Silently skip - the agent will work without skill selection
+  }
+}
+
+/// Update MCP status indicators based on capabilities.
+function updateMcpStatus(capabilities) {
+  const mcpStatus = el("mcpStatus");
+  const capsContainer = el("mcpCapabilities");
+  
+  if (!capabilities || capabilities.length === 0) {
+    mcpStatus.hidden = true;
+    return;
+  }
+  
+  // Find the agent capability
+  const agent = capabilities.find(c => c.name === "agent");
+  
+  if (!agent || agent.readiness === "available") {
+    mcpStatus.hidden = true;
+    return;
+  }
+  
+  // Show MCP status
+  mcpStatus.hidden = false;
+  let html = "";
+  
+  if (agent.readiness === "degraded") {
+    html += '<span class="mcp-badge mcp-degraded">⚡ Agent (degraded)</span>';
+  } else if (agent.readiness === "not_configured") {
+    html += '<span class="mcp-badge mcp-unavailable">❌ Agent (not configured)</span>';
+  }
+  
+  capsContainer.innerHTML = html || "";
 }
 
 /// Ask the agent for a document, then show it in the editor.
@@ -9574,6 +9649,12 @@ async function main() {
   // Seed both selects once so the panes are ready before they are ever opened.
   paintAiProviderOptions("");
   paintAiModelHints();
+  
+  // Load skills for the skill selector dropdown
+  loadSkills();
+  
+  // Subscribe to capabilities updates to show MCP status
+  // The capabilities are available on /capabilities endpoint
 
   // The scanner. Run on the button, and on Enter in the symbols box, because a
   // field with one box beside it has to answer to Enter -- a user who types three

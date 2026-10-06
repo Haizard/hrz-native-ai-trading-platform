@@ -758,6 +758,21 @@
     color: var(--muted); white-space: nowrap;
   }
   .modelChip:hover { color: var(--text); }
+  /* Skill dropdown - styled like a model chip for consistency */
+  #skillSelect {
+    flex: 0 0 auto; padding: 4px 9px; font-size: 11px; border-radius: 8px;
+    color: var(--muted); white-space: nowrap; cursor: pointer;
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  #skillSelect option { background: var(--bg); }
+  #skillSelect:hover { color: var(--text); }
+  /* MCP status indicators */
+  .mcp-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 10px; margin-right: 6px;
+  }
+  .mcp-available { background: #dcfce7; color: #166534; }
+  .mcp-degraded { background: #fef3c7; color: #92400e; }
+  .mcp-unavailable { background: #fee2e2; color: #991b1b; }
   /* Wraps rather than clipping when the pane is narrow: the keyboard hint is
      the one line a beginner needs, so it must never be cut in half. */
   .chat-hint { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px; font-size: 10px; margin: 4px 2px 8px; }
@@ -1643,6 +1658,9 @@
 
         <div class="chat-composer">
           <button type="button" id="aiModelChip" class="aiChip modelChip" title="Which AI model answers your chats — change it in the AI Model tab">◇ Platform model</button>
+          <select id="skillSelect" class="aiChip modelChip" title="Pick a skill whose methodology to apply">
+            <option value="">No skill (default)</option>
+          </select>
           <button type="button" id="wsChatAttach" class="chat-send" title="Attach a chart screenshot — the AI will read the indicator off it" style="flex:0 0 auto">📎</button>
           <input type="file" id="wsChatImage" accept="image/png,image/jpeg,image/webp" multiple hidden>
           <textarea id="wsChatInput" rows="1" placeholder="Ask for an indicator… or attach a screenshot to copy"></textarea>
@@ -1652,6 +1670,10 @@
         <div class="chat-hint">
           <span id="wsChatMsg" class="muted"></span>
           <span class="muted">Enter to send · Shift+Enter for a new line</span>
+        </div>
+        <!-- MCP status indicator - shows tool availability -->
+        <div id="mcpStatus" class="chat-hint" hidden>
+          <span id="mcpCapabilities" class="muted"></span>
         </div>
       </div>
     </div>
