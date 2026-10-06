@@ -563,6 +563,7 @@ pub(crate) async fn generate_script(
             },
             "required": ["script"]
         }),
+        exposed_tool: None, // Always exposed
     };
     let tools = vec![tool];
     let mut repaired_errors = Vec::new();

@@ -387,6 +387,8 @@ pub struct StrategyRequest {
     /// edit-mode section. `None` keeps the original from-scratch behaviour,
     /// so a first generation is byte-identical in behaviour.
     pub base_document: Option<String>,
+    /// Capabilities the agent should use to determine tool availability.
+    pub capabilities: Option<crate::capability_view::CapabilityView>,
 }
 
 impl StrategyRequest {
@@ -405,6 +407,7 @@ impl StrategyRequest {
             max_attempts: None,
             images: Vec::new(),
             base_document: None,
+            capabilities: None,
         }
     }
 
@@ -419,6 +422,13 @@ impl StrategyRequest {
     #[must_use]
     pub fn with_base_document(mut self, source: impl Into<String>) -> Self {
         self.base_document = Some(source.into());
+        self
+    }
+
+    /// Attach capabilities for tool availability filtering.
+    #[must_use]
+    pub fn with_capabilities(mut self, capabilities: crate::capability_view::CapabilityView) -> Self {
+        self.capabilities = Some(capabilities);
         self
     }
 }
