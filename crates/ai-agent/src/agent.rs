@@ -683,6 +683,20 @@ impl Agent {
         let mut tools = self.registry.exposed_tools(request.capabilities.as_ref());
         tools.push(submit_thesis_spec());
 
+        // Drawing duty: a chart-analysis skill whose rules say DRAW and a host
+        // that attached a writer together mean the thesis is not the whole
+        // deliverable -- the patterns belong on the chart. The flag is hoisted
+        // so the submit gate below can enforce it, not just announce it.
+        let can_draw = request
+            .drawings
+            .as_ref()
+            .is_some_and(|d| d.writer().is_some());
+        let skill_requires_drawing = skill.is_some_and(|s| {
+            s.rules
+                .iter()
+                .any(|r| r.trim_start().to_ascii_uppercase().starts_with("DRAW"))
+        });
+
         let system = ask_system_prompt(
             &request.symbol,
             skill,
@@ -691,10 +705,7 @@ impl Agent {
             &view,
             request.chart.as_ref(),
             memories.as_deref(),
-            request
-                .drawings
-                .as_ref()
-                .is_some_and(|d| d.writer().is_some()),
+            can_draw,
         );
         // Screenshots ride on the first user message, primary view first. It is
         // attached here rather than as a separate message because Bedrock
@@ -762,6 +773,9 @@ impl Agent {
         // every one — the model has the rules from then on, and repeating
         // them would be prompt-stuffing by another door.
         let mut shown_doctrine = std::collections::HashSet::new();
+        // Whether any drawing-family call ran this analysis. The submit gate
+        // reads it when the loaded skill's rules say DRAW.
+        let mut drew_this_run = false;
 
         // `max_turns` turns of analysis, then `ANSWER_TURNS` that can only
         // answer. Reserving them matters: a question that ends on another data
@@ -770,7 +784,13 @@ impl Agent {
         let total = self.config.max_turns + ANSWER_TURNS;
         for turn in 0..total {
             turns = turn + 1;
-            let answering = turn >= self.config.max_turns;
+            // The answer phase starts late while a drawing duty is owed: the
+            // drawing tools are refused once `answering` begins, so entering it
+            // before the skill's patterns are on the chart would make the
+            // submit gate's correction impossible to follow. The loop bound
+            // still applies -- the last turn accepts the thesis regardless.
+            let drawing_owed = can_draw && skill_requires_drawing && !drew_this_run;
+            let answering = turn >= self.config.max_turns && !drawing_owed;
             let last = turn + 1 == total;
             // In the answer phase `submit_thesis` is the only tool announced
             // *and* the only one dispatched -- see the refusal below. Announcing
@@ -864,6 +884,12 @@ impl Agent {
                 progress.report(Progress::Tool {
                     name: call.name.clone(),
                 });
+                if matches!(
+                    call.name.as_str(),
+                    "create_drawing" | "update_drawing" | "delete_drawing"
+                ) {
+                    drew_this_run = true;
+                }
                 let result = self
                     .run_tool(call, &ctx, &mut range, &mut trace, &mut shown_doctrine)
                     .await;
@@ -881,6 +907,42 @@ impl Agent {
                 let mut thesis = parse_thesis(&call.input)?;
                 thesis.skill_used = skill.as_ref().map(|s| s.id());
                 thesis.provenance = trace.clone();
+
+                // Drawing duty (docs/46): a loaded chart-analysis skill whose
+                // rules say DRAW, on a host that allows writes, makes the
+                // chart objects part of the deliverable -- a thesis that only
+                // *describes* the order block the skill says to *draw* is
+                // half the answer. Same posture as the grounding correction
+                // below: rejected with the reason while a turn remains,
+                // accepted on the last turn rather than failing the question
+                // over a missing drawing.
+                if can_draw && skill_requires_drawing && !drew_this_run && !last {
+                    tracing::warn!(
+                        target: "ai_agent",
+                        skill = %skill.map_or("", |s| s.name.as_str()),
+                        "thesis submitted without drawing; asking for the chart objects"
+                    );
+                    progress.report(Progress::Correcting {
+                        reason: "the loaded skill requires its patterns drawn on the chart"
+                            .into(),
+                    });
+                    messages.push(Message::tool_results(vec![ToolResult {
+                        tool_use_id: call.id.clone(),
+                        content: json!({
+                            "accepted": false,
+                            "error": "the loaded skill's rules say DRAW, and no drawing \
+                                      tool has run yet -- the patterns must exist on the \
+                                      user's chart, not only in the thesis text",
+                            "instruction": "Draw what the analysis found with create_drawing \
+                                            (rect for zones, hline for levels, trendline for \
+                                            structure shifts, position_long/position_short \
+                                            for the trade), anchored to numbers the tools \
+                                            returned. Then call submit_thesis again.",
+                        }),
+                        is_error: true,
+                    }]));
+                    continue;
+                }
 
                 // A rejected thesis is a fixable one when the model still has
                 // a turn to fix it in: hand the exact reason back and let it
@@ -1429,6 +1491,23 @@ fn ask_system_prompt(
     if let Some(skill) = skill {
         out.push_str("## Skill\n");
         out.push_str(&skill.render());
+        // When the loaded skill carries DRAW rules and writes are possible,
+        // drawing is part of the contract, not a suggestion: the submit gate
+        // enforces it at runtime, and the prompt says so up front so the
+        // model plans the drawings instead of being surprised by the
+        // rejection.
+        if can_draw
+            && skill
+                .rules
+                .iter()
+                .any(|r| r.trim_start().to_ascii_uppercase().starts_with("DRAW"))
+        {
+            out.push_str(
+                "\nThis skill's DRAW rules are requirements: the thesis is not \
+                 complete until the patterns it names exist on the chart via \
+                 create_drawing. A submission with no drawing is sent back.\n",
+            );
+        }
         // The gaps the contract check surfaced (preferred/degraded misses)
         // belong next to the skill they qualify: the model must know which of
         // the skill's preferred reads are absent *before* it starts reasoning,
@@ -3065,5 +3144,178 @@ invalidation: []
             .run_tool(&other, &ctx, &mut range, &mut trace, &mut shown)
             .await;
         assert!(third.content.get("doctrine").is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Drawing duty (docs/46): a loaded skill whose rules say DRAW makes the
+    // chart objects part of the deliverable when the host allows writes.
+    // ------------------------------------------------------------------
+
+    struct NoDrawings;
+
+    #[async_trait::async_trait]
+    impl crate::user_drawings::UserDrawingsSource for NoDrawings {
+        async fn drawings(
+            &self,
+            _user_id: &str,
+            _symbol: &str,
+        ) -> Result<Vec<crate::user_drawings::UserDrawing>, AgentError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingWriter {
+        created: std::sync::Mutex<Vec<crate::user_drawings::NewAgentDrawing>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::user_drawings::DrawingWriter for RecordingWriter {
+        async fn create(
+            &self,
+            _user_id: &str,
+            symbol: &str,
+            drawing: &crate::user_drawings::NewAgentDrawing,
+        ) -> Result<crate::user_drawings::StoredDrawing, AgentError> {
+            self.created
+                .lock()
+                .expect("lock poisoned")
+                .push(drawing.clone());
+            Ok(crate::user_drawings::StoredDrawing {
+                id: "d1".into(),
+                symbol: symbol.to_string(),
+                kind: drawing.kind.clone(),
+            })
+        }
+
+        async fn update(
+            &self,
+            _user_id: &str,
+            _symbol: &str,
+            _id: &str,
+            _drawing: &crate::user_drawings::NewAgentDrawing,
+        ) -> Result<bool, AgentError> {
+            Ok(true)
+        }
+
+        async fn delete(&self, _user_id: &str, _symbol: &str, _id: &str) -> Result<bool, AgentError> {
+            Ok(true)
+        }
+    }
+
+    fn drawing_skill() -> Skill {
+        Skill {
+            name: "Zone Method".into(),
+            category: "order-blocks".into(),
+            rules: vec![
+                "Find the zone from the swing lists.".into(),
+                "DRAW the zone as a rect with the candle's open as anchor.".into(),
+            ],
+            preferred_timeframes: vec!["4h".into(), "1h".into(), "5m".into()],
+            ..Skill::default()
+        }
+    }
+
+    fn drawing_request(writer: Arc<RecordingWriter>) -> AskRequest {
+        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user")
+            .with_writer(writer);
+        AskRequest::new("BTCUSDT", "draw my zone method setup")
+            .with_drawings(drawings)
+            .with_skill(drawing_skill().id())
+    }
+
+    fn draw_call(id: &str) -> LlmResponse {
+        LlmResponse {
+            message: Message {
+                role: crate::llm_client::Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: id.into(),
+                    name: "create_drawing".into(),
+                    input: json!({
+                        "symbol": "BTCUSDT",
+                        "kind": "rect",
+                        "time1_ms": 1_700_000_000_000.0_f64,
+                        "price1": 100_000.0,
+                        "time2_ms": 1_700_000_060_000.0_f64,
+                        "price2": 100_050.0,
+                        "label": "Bullish OB 5m 100000-100050 (fresh)",
+                    }),
+                }],
+            },
+            stop_reason: StopReason::ToolUse,
+            usage: Usage::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_drawing_skill_rejects_a_thesis_until_the_patterns_are_on_the_chart() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let llm = Arc::new(ScriptedClient::new(vec![
+            // Submits without drawing: the gate must send it back.
+            thesis_call(100_100.0, 100_000.0, 100_400.0),
+            // Draws the zone, then resubmits the same thesis.
+            draw_call("d1"),
+            thesis_call(100_100.0, 100_000.0, 100_400.0),
+        ]));
+        let agent = Agent::new(
+            llm.clone(),
+            SkillLibrary::from_skills(vec![drawing_skill()]),
+            AgentConfig::default(),
+        );
+
+        let answer = agent
+            .ask(&drawing_request(writer.clone()), &source)
+            .await
+            .expect("the corrected run completes");
+
+        assert_eq!(
+            writer.created.lock().expect("lock poisoned").len(),
+            1,
+            "the zone must exist on the chart before the thesis was accepted"
+        );
+        // The correction is visible in the conversation: the first submission
+        // got a tool result naming the missing drawings.
+        let requests = llm.requests();
+        let correction_seen = requests.iter().any(|request| {
+            serde_json::to_string(&request.messages)
+                .unwrap_or_default()
+                .contains("no drawing tool has run yet")
+        });
+        assert!(
+            correction_seen,
+            "the rejection must tell the model why, so it can comply"
+        );
+        assert_eq!(answer.turns, 3);
+    }
+
+    #[tokio::test]
+    async fn a_skill_without_draw_rules_never_triggers_the_gate() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let plain = Skill {
+            name: "Plain Read".into(),
+            category: "liquidity".into(),
+            rules: vec!["cite the reclaim verdict".into()],
+            preferred_timeframes: vec!["4h".into(), "1h".into(), "5m".into()],
+            ..Skill::default()
+        };
+        let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
+            100_100.0, 100_000.0, 100_400.0,
+        )]));
+        let agent = Agent::new(
+            llm,
+            SkillLibrary::from_skills(vec![plain.clone()]),
+            AgentConfig::default(),
+        );
+        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user")
+            .with_writer(writer.clone());
+        let request = AskRequest::new("BTCUSDT", "any sweep?")
+            .with_drawings(drawings)
+            .with_skill(plain.id());
+
+        let answer = agent.ask(&request, &source).await.expect("one clean turn");
+        assert_eq!(answer.turns, 1);
+        assert!(writer.created.lock().expect("lock poisoned").is_empty());
     }
 }
