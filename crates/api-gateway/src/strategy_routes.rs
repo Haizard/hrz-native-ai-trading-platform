@@ -446,7 +446,11 @@ pub async fn create(
 }
 
 /// Where the shipped strategy documents live.
-const STRATEGY_DIR: &str = "strategies";
+///
+/// Public because the agent's backtest runner (`research.rs`) resolves skills
+/// against the same directory: one constant, or the routes and the runner
+/// would disagree about where reference strategies live.
+pub const STRATEGY_DIR: &str = "strategies";
 
 /// The document the editor starts with.
 ///

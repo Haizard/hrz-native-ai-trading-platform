@@ -96,6 +96,58 @@ impl Default for MarketStateConfig {
     }
 }
 
+/// What the volume profile was computed from.
+///
+/// The two are not the same answer: trades place real volume at real prices,
+/// while candles spread each bar's volume uniformly across its range -- fine
+/// for the value-area shape, not evidence for per-level order flow. Named in
+/// the state so a reader never has to guess which it is looking at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileBasis {
+    /// Built from the trades behind the window.
+    Trades,
+    /// Spread from candles, because no trades were in the window.
+    #[default]
+    Candles,
+}
+
+/// The data the state was actually built from (`docs/39`).
+///
+/// ## Why this block exists
+///
+/// Every section of a `MarketState` is a claim about the inputs, and two of
+/// the inputs are optional in practice: trades (often absent for older
+/// windows) and a candle buy/sell split that means something (a venue fact
+/// this crate cannot see -- attribution happens at the venue boundary, and
+/// `Candle` carries plain numbers). What this crate *can* see is presence:
+/// how many bars, how many trades, and therefore which sections could say
+/// anything at all. That is what the block records, computed in
+/// [`build_market_state`] where the slices are still in hand.
+///
+/// What it deliberately does **not** record is venue fidelity ("is this split
+/// real or attributed"): that is a declaration about the provider, not a
+/// property of a slice, and it lives in the capability registry
+/// (`capabilities` crate). The two meet at render time in the agent's tool
+/// layer -- this block says *what was read*, the registry says *what the
+/// provider can honestly supply*, and neither pretends to know the other's
+/// half.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateProvenance {
+    /// Candles in the window the state was built from.
+    pub window_bars: usize,
+    /// Trades in that window. Zero is the load-bearing case: it makes every
+    /// footprint-level section structurally empty rather than "quiet".
+    pub trades: usize,
+    /// What the volume profile rests on.
+    pub profile: ProfileBasis,
+    /// Whether footprint-level sections (imbalances, absorption) could detect
+    /// anything: exactly `trades > 0`. Carried rather than derived at the
+    /// render site so the label and the detector can never disagree about why
+    /// the list is empty.
+    pub footprint_level: bool,
+}
+
 /// A complete order-flow read of one symbol on one timeframe.
 ///
 /// All fields are finite: nothing in this crate emits `NaN` or an infinity into
@@ -191,6 +243,13 @@ pub struct MarketState {
     /// `None` while the volume baseline is still warming up.
     #[serde(default)]
     pub volume_score: Option<f64>,
+    /// What this state was built from (`docs/39`).
+    ///
+    /// `serde(default)` because the state is stored as JSON in places that
+    /// predate the block: an old row must still load, and reads as "provenance
+    /// unknown" rather than failing.
+    #[serde(default)]
+    pub provenance: StateProvenance,
 }
 
 impl MarketState {
@@ -373,6 +432,19 @@ pub fn build_market_state(
     let rsi_divergence = latest_rsi_divergence(candles, &config.rsi_divergence);
     let volume_score = latest_volume_score(candles, &config.volume_score);
 
+    // Computed here, where the input slices are still in hand: by the time
+    // `assemble` runs, how much data produced the state is otherwise lost.
+    let provenance = StateProvenance {
+        window_bars: candles.len(),
+        trades: trades.len(),
+        profile: if trades.is_empty() {
+            ProfileBasis::Candles
+        } else {
+            ProfileBasis::Trades
+        },
+        footprint_level: !trades.is_empty(),
+    };
+
     Some(assemble(
         last,
         cvd,
@@ -387,6 +459,7 @@ pub fn build_market_state(
         session_engine,
         rsi_divergence,
         volume_score,
+        provenance,
     ))
 }
 
@@ -413,7 +486,6 @@ fn recent_footprints(
 
 /// Assemble the state. Split out so the public function reads as a recipe.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn assemble(
     last: &Candle,
     cvd: f64,
@@ -428,6 +500,7 @@ fn assemble(
     session: SessionEngine,
     rsi_divergence: Option<RsiDivergence>,
     volume_score: Option<f64>,
+    provenance: StateProvenance,
 ) -> MarketState {
     // The newest break, and how far back it is. Computed here because this is
     // the last frame that knows how long the candle slice was; `index` alone
@@ -477,6 +550,7 @@ fn assemble(
             .map(|_| session.delta()),
         rsi_divergence,
         volume_score,
+        provenance,
     }
 }
 
@@ -549,6 +623,38 @@ mod tests {
     #[test]
     fn empty_candles_yield_no_state() {
         assert!(build_market_state(&[], &[], &config()).is_none());
+    }
+
+    #[test]
+    fn provenance_records_what_the_state_was_built_from() {
+        let candles = rising();
+        let without = build_market_state(&candles, &[], &config()).unwrap();
+        assert_eq!(without.provenance.window_bars, 4);
+        assert_eq!(without.provenance.trades, 0);
+        assert_eq!(without.provenance.profile, ProfileBasis::Candles);
+        assert!(
+            !without.provenance.footprint_level,
+            "no trades means footprint-level sections are structurally empty"
+        );
+
+        let trades = vec![trade(10.0, 1.0, true, 60), trade(11.0, 100.0, false, 61)];
+        let with = build_market_state(&candles, &trades, &config()).unwrap();
+        assert_eq!(with.provenance.trades, 2);
+        assert_eq!(with.provenance.profile, ProfileBasis::Trades);
+        assert!(with.provenance.footprint_level);
+    }
+
+    #[test]
+    fn a_state_stored_before_provenance_existed_still_loads() {
+        // The state is persisted as JSON in the bot lane; a row from before
+        // this block must read as "provenance unknown", not fail to parse.
+        let candles = rising();
+        let state = build_market_state(&candles, &[], &config()).unwrap();
+        let mut json = serde_json::to_value(&state).expect("serializes");
+        json.as_object_mut().unwrap().remove("provenance");
+        let loaded: MarketState = serde_json::from_value(json).expect("old rows still load");
+        assert_eq!(loaded.provenance, StateProvenance::default());
+        assert_eq!(loaded.provenance.profile, ProfileBasis::Candles);
     }
 
     #[test]

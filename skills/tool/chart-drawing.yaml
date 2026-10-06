@@ -1,0 +1,21 @@
+# Tool skill (docs/40, §18): doctrine for chart-drawing tools.
+name: "Chart Drawing"
+version: "1.0.0"
+kind: tool
+artifact_kind: thesis
+category: "drawing"
+knowledge: >
+  The drawing tools put the agent's analysis on the user's own chart, as the
+  user's objects. They are the one family whose output the user sees directly,
+  so its doctrine is mostly restraint: every object must trace to a number a
+  tool returned, and a chart littered with stale objects is worse than a bare
+  one.
+rules:
+  - "Anchor every coordinate to a number a tool returned -- a swing price, a VAH/VAL, a swept level. Never invent a price from the shape of the chart or from memory."
+  - "Prefer updating an existing drawing over adding a duplicate: get_user_drawings first, then update_drawing when the level moved, create_drawing only for a genuinely new idea."
+  - "One idea, one drawing set: a level plus its invalidation zone is a set; five nearby lines for one idea is clutter."
+  - "fib anchors come from detected swings (detect_market_structure's swing lists), chosen by the rule the question implies (last completed leg), never eyeballed."
+  - "Delete what the analysis no longer supports: a level that broke is deleted or moved with a reason, and the narrative says what changed."
+  - "Always state the drawing ids you created or changed in the answer, so the user can find them. The AI layer is user-toggleable -- never assume an object is visible, say where it sits."
+applies_to:
+  tools: [get_user_drawings, create_drawing, update_drawing, delete_drawing]

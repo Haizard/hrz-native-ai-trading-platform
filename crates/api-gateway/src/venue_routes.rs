@@ -53,6 +53,24 @@ use crate::AppState;
 /// it, which is the honest coupling.
 pub const KNOWN_VENUES: [&str; 1] = ["binance"];
 
+/// The (provider, symbol class) the deployment's market data comes from
+/// (`docs/39`).
+///
+/// Hardcoded to the one venue the platform speaks today: `KNOWN_VENUES` is
+/// binance-only, `MARKET_REST_URL` defaults to the Binance API, and the feed
+/// modes speak Binance streams. The Bybit codecs in market-data are venue
+/// plumbing without a deployment switch behind them yet. The day venue
+/// selection lands, this function is where per-symbol scope begins — and
+/// every fidelity label the agent shows flows from here, so the switch
+/// happens in exactly one place rather than in every tool result.
+#[must_use]
+pub fn market_scope() -> (::capabilities::Provider, ::capabilities::SymbolClass) {
+    (
+        ::capabilities::Provider::Binance,
+        ::capabilities::SymbolClass::Spot,
+    )
+}
+
 /// `POST /venues/{venue}/opt-in` and `/revoke`.
 #[derive(Debug, Default, Deserialize)]
 pub struct OptInRequest {

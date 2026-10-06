@@ -364,6 +364,18 @@ mod tests {
                 market_data::BackfillClient::new("http://127.0.0.1:1"),
             ),
             symbols: market_data::SymbolIndex::new(),
+            capability_registry: Arc::new(capabilities::Registry::new(
+                capabilities::descriptor::STANDARD,
+                market_data::exchanges::profile::standard(),
+            )),
+            research: Arc::new(crate::research::WindowBacktestRunner::new(
+                market_data::WindowService::new(
+                    supervisor.history(),
+                    supervisor.live(),
+                    market_data::BackfillClient::new("http://127.0.0.1:1"),
+                ),
+                crate::strategy_routes::STRATEGY_DIR,
+            )),
             agent_limits: Arc::new(crate::rate_limit::RateLimiter::new(
                 crate::rate_limit::RateLimit::default(),
             )),

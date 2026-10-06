@@ -1,0 +1,23 @@
+# Tool skill (docs/40, §18): doctrine for volume profile and value area.
+name: "Volume Profile and Value Area"
+version: "1.0.0"
+kind: tool
+artifact_kind: thesis
+category: "volume-profile"
+knowledge: >
+  A volume profile distributes traded volume across price levels; POC, VAH and
+  VAL are its landmarks. The profile's basis matters: built from the tape it is
+  a measurement of where size traded; built from candles it is an allocation of
+  bar volume across the bar's range -- an estimate.
+rules:
+  - "Check `provenance.profile` (or the result's `basis`) before describing a profile: `trades` means measured from the tape, `candles` means allocated from bar ranges. Say which, in the sentence that quotes POC/VAH/VAL."
+  - "On a candle-based profile, do not quote single-price precision as if measured: talk about the high-volume region, not the exact tick of the POC."
+  - "get_vwap answers a different question than the profile: VWAP is the session's mean trade price, not a value-area edge. Do not treat price-vs-VWAP as a value-area test."
+  - "A profile over a tiny window says little: if the lookback is short, say the profile is thin rather than reading structure into it."
+capability_requirements:
+  required: [{capability: volume_profile}]
+  fallback: [{needs: volume_profile, accept: derived}]
+applies_to:
+  tools: [get_volume_profile, get_vwap]
+conditions:
+  timeframes: ["15m", "1h", "4h", "1d"]

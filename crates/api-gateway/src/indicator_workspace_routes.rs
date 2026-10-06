@@ -15,6 +15,7 @@ use crate::auth::UserContext;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::AppState;
+use crate::venue_routes;
 
 const DEFAULT_LIMIT: i64 = 50;
 
@@ -1143,6 +1144,14 @@ pub async fn promote_revision(
         .as_ref()
         .ok_or_else(|| ApiError::unavailable("the agent is not configured"))?;
 
+    // The capability view (docs/39): tool results carry their provenance.
+    let (provider, symbol_class) = venue_routes::market_scope();
+    let capabilities = ai_agent::CapabilityView::new(
+        state.capability_registry.clone(),
+        provider,
+        symbol_class,
+    );
+
     // The revision's concepts come from the stored preview, which is where
     // the generator put them; a revision whose preview predates concepts is
     // promoted as a strategy the agent writes from its summary alone.
@@ -1177,6 +1186,8 @@ pub async fn promote_revision(
     let mut request =
         ai_agent::StrategyRequest::new(description, &workspace.symbol, &workspace.timeframe);
     request.max_attempts = Some(5);
+    request = request.with_capabilities(capabilities);
+
     let generated = agent.generate_strategy(&request).await.map_err(ApiError::from)?;
     let attempts = generated.attempts;
     let document = generated.document().clone();

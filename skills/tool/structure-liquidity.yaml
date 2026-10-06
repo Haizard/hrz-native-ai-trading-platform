@@ -1,0 +1,22 @@
+# Tool skill (docs/40, §18): doctrine for structure and liquidity reads.
+name: "Structure and Liquidity"
+version: "1.0.0"
+kind: tool
+artifact_kind: thesis
+category: "liquidity"
+knowledge: >
+  detect_market_structure reports trend, swings and breaks; detect_liquidity
+  reports where resting stops cluster and whether they were swept. Both are
+  candle-derived and therefore available wherever candles exist -- which makes
+  them the fallback lens when the tape is absent, not a substitute for it.
+rules:
+  - "These reads are candle-derived: they are available on every venue that serves candles, and they never substitute for tape reads. When the question is about aggression, reach for the delta or footprint family -- and if those are unavailable, say so rather than inferring aggression from candles."
+  - "Cite the verdict fields, never your own comparison: a reclaim is `reclaim.long_reclaim.reclaimed`, a sweep is `swept`. Comparing price against a level yourself is a number no tool produced."
+  - "Swing strength comes from the swing lists the tool returned. A level you did not get from swings, breaks or liquidity levels does not exist for the answer."
+  - "An empty liquidity list with plenty of bars means no clusters qualified; with few bars it means the window is thin. Check `provenance.window_bars` before saying which."
+capability_requirements:
+  required: [{capability: market_structure}]
+applies_to:
+  tools: [detect_market_structure, detect_liquidity]
+conditions:
+  timeframes: ["15m", "1h", "4h", "1d"]

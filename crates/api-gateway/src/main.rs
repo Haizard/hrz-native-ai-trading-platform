@@ -119,6 +119,15 @@ async fn main() -> anyhow::Result<()> {
     // to share what the routes read.
     let bots_events = bots.events();
 
+    // docs/38 Phase A: the agent's backtest runner, over the same window
+    // service the charts read — the agent's base rates and the user's chart
+    // come from one tape. Skills resolve to the shipped strategy documents.
+    // Built before the state struct because `windows` moves into it.
+    let research = Arc::new(api_gateway::research::WindowBacktestRunner::new(
+        windows.clone(),
+        api_gateway::strategy_routes::STRATEGY_DIR,
+    ));
+
     let state = AppState {
         db,
         agent,
@@ -129,6 +138,13 @@ async fn main() -> anyhow::Result<()> {
         backfill,
         windows,
         symbols,
+        // docs/38: catalog from the leaf crate, provider truth from
+        // market-data, assembled here once. Read-only for the process's life.
+        capability_registry: Arc::new(capabilities::Registry::new(
+            capabilities::descriptor::STANDARD,
+            market_data::exchanges::profile::standard(),
+        )),
+        research,
         agent_limits,
         metrics: Registry::global_handle(),
         binance_base_url: trading_engine::binance_base_url(),

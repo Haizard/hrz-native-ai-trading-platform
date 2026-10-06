@@ -345,10 +345,14 @@ pub(crate) async fn decrypted_config(
 /// /agent/ask`, `POST /agent/generate-strategy` and the agent socket -- so
 /// the precedence rule exists in exactly one place and cannot drift between
 /// transports.
+///
+/// Both branches run on [`merged_library`], so a user's own skills reach the
+/// agent whichever model answers.
 pub(crate) async fn resolve_agent(
     state: &AppState,
     user: &UserContext,
 ) -> Result<Arc<Agent>, ApiError> {
+    let skills = merged_library(state, user).await;
     match decrypted_config(state, user.user_id).await? {
         Some(config) => {
             let mut llm_config = OpenAiCompatConfig::for_provider(
@@ -376,20 +380,100 @@ pub(crate) async fn resolve_agent(
             );
             Ok(Arc::new(Agent::new(
                 Arc::new(client),
-                (*state.skills).clone(),
+                skills,
                 ai_agent::AgentConfig::default(),
             )))
         }
-        None => state.agent.clone().ok_or_else(|| {
-            ApiError::coded(
+        // The boot-time primary agent holds the shipped library; `with_skills`
+        // swaps in this user's merged view while keeping the same client,
+        // registry and config.
+        None => match &state.agent {
+            Some(agent) => Ok(Arc::new(agent.with_skills(skills))),
+            None => Err(ApiError::coded(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "AGENT_NOT_CONFIGURED",
                 "no AI model is available: you have not stored a provider configuration, and \
                  the deployment has no primary model (set AI_PROVIDER/AI_MODEL/AI_API_KEY, or \
                  add your own key in AI settings)",
-            )
-        }),
+            )),
+        },
     }
+}
+
+/// The skill library this user's agent runs on: shipped files merged with
+/// their stored skills.
+///
+/// The rule is `GET /skills`'s rule — **the user's copy wins by name** — and
+/// it is restated here rather than shared with `skills_routes` because the
+/// two consumers need different shapes (a listing vs a library) built from
+/// the same rule. If the rule ever changes, it changes in both places or the
+/// two views lie to each other: the tests on [`merge_skill_sets`] pin the
+/// rule itself.
+///
+/// Degradation is honest and logged: an unreadable row is skipped with a
+/// warning (the same policy the listing applies), and a failed query falls
+/// back to the shipped library with a warning — never to an empty library,
+/// which would turn "we could not load your skills" into "no skill matched".
+pub(crate) async fn merged_library(state: &AppState, user: &UserContext) -> ai_agent::SkillLibrary {
+    let shipped = || (*state.skills).clone();
+    let Some(database) = state.db.as_ref() else {
+        return shipped();
+    };
+    let rows =
+        match db::skills::list_skills(database.pool(), user.user_id, db::skills::MAX_SKILLS).await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(
+                    target: "api_gateway",
+                    user = %user.user_id,
+                    error = %e,
+                    "could not load the user's skills; the agent runs on the shipped library"
+                );
+                return shipped();
+            }
+        };
+    if rows.is_empty() {
+        return shipped();
+    }
+
+    let mut owned: Vec<ai_agent::Skill> = Vec::with_capacity(rows.len());
+    for row in rows {
+        match serde_json::from_value::<ai_agent::Skill>(row.document) {
+            Ok(skill) => owned.push(skill),
+            Err(e) => tracing::warn!(
+                target: "api_gateway",
+                skill_row = %row.id,
+                name = %row.name,
+                version = %row.version,
+                error = %e,
+                "a stored skill no longer parses and was left out of the agent's library"
+            ),
+        }
+    }
+    if owned.is_empty() {
+        return shipped();
+    }
+
+    merge_skill_sets(state.skills.all(), owned)
+}
+
+/// The merge rule, separated from the IO so a test can pin it without a
+/// database.
+///
+/// Every owned version is kept — `skill_id` pins a version — while a shipped
+/// skill whose name the user owns is dropped entirely, so the agent can never
+/// quote the shipped copy of a skill the user has revised.
+fn merge_skill_sets(shipped: &[ai_agent::Skill], owned: Vec<ai_agent::Skill>) -> ai_agent::SkillLibrary {
+    let owned_names: std::collections::BTreeSet<String> =
+        owned.iter().map(|skill| skill.name.clone()).collect();
+    let merged: Vec<ai_agent::Skill> = shipped
+        .iter()
+        .filter(|skill| !owned_names.contains(skill.name.as_str()))
+        .cloned()
+        .chain(owned)
+        .collect();
+    ai_agent::SkillLibrary::from_skills(merged)
 }
 
 /// The vault, or the 503 that says what to set.
@@ -436,4 +520,66 @@ fn parse_extra_headers(raw: &serde_json::Value) -> Result<Vec<(String, String)>,
         out.push((name.clone(), value.to_string()));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ai_agent::SkillLibrary;
+
+    fn skill(name: &str, version: &str) -> ai_agent::Skill {
+        SkillLibrary::parse_one(&format!(
+            "name: \"{name}\"\nversion: \"{version}\"\ncategory: \"liquidity\"\nknowledge: \"how {name} works\"\n"
+        ))
+        .expect("a parseable skill")
+    }
+
+    #[test]
+    fn the_users_copy_wins_by_name_not_by_id() {
+        let shipped = vec![skill("Liquidity Sweep", "2.0"), skill("Footprint Absorption", "1.0")];
+        // Same name (the merge key is the exact name string, as in
+        // `GET /skills`), a revision the user published for themselves.
+        let owned = vec![skill("Liquidity Sweep", "2.1")];
+
+        let library = merge_skill_sets(&shipped, owned);
+        // The shipped sweep is gone: retrieval must never quote the pre-revision copy.
+        assert!(
+            library.by_id("liquidity-sweep-v2").is_some(),
+            "the user's 2.1 is the sweep the agent knows"
+        );
+        let sweeps: Vec<_> = library
+            .all()
+            .iter()
+            .filter(|s| s.id().starts_with("liquidity-sweep-"))
+            .collect();
+        assert_eq!(sweeps.len(), 1, "one sweep, the user's: {sweeps:?}");
+        assert_eq!(sweeps[0].version, "2.1");
+        // Untouched shipped skills survive.
+        assert!(library.by_id("footprint-absorption-v1").is_some());
+    }
+
+    #[test]
+    fn every_owned_version_survives_so_skill_id_pinning_keeps_working() {
+        let shipped = vec![skill("Sweep", "1.0")];
+        let owned = vec![skill("Sweep", "2.0"), skill("Sweep", "2.1")];
+
+        let library = merge_skill_sets(&shipped, owned);
+        assert!(library.by_id("sweep-v2").is_some());
+        assert_eq!(
+            library
+                .by_id("sweep-v2")
+                .expect("v2 pinned")
+                .version,
+            "2.1",
+            "an id pins the newest of its major line"
+        );
+        assert!(library.by_id("sweep-v1").is_none(), "the shipped v1 is superseded");
+    }
+
+    #[test]
+    fn no_owned_skills_means_the_shipped_library_untouched() {
+        let shipped = vec![skill("Sweep", "1.0")];
+        let library = merge_skill_sets(&shipped, Vec::new());
+        assert_eq!(library.len(), 1);
+    }
 }

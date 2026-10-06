@@ -111,7 +111,7 @@ pub use sessions::{
 };
 pub use volume_score::{latest_volume_score, volume_scores, VolumeScoreConfig};
 pub use resample::{resample, resample_all};
-pub use state::{build_market_state, MarketState, MarketStateConfig};
+pub use state::{build_market_state, MarketState, MarketStateConfig, ProfileBasis, StateProvenance};
 pub use types::{Candle, FootprintCell, OrderBookLevel, OrderBookSnapshot, Side, Timeframe, Trade};
 pub use volume_profile::{
     calculate_volume_profile, calculate_volume_profile_from_candles, round_bucket, VolumeNode,

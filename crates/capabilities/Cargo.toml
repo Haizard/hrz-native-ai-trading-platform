@@ -1,0 +1,18 @@
+[package]
+name = "capabilities"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The capability vocabulary and registry: what an analysis needs, what a provider can honestly supply, and the resolver that joins the two (docs/38)"
+
+[dependencies]
+# The only internal edge this crate may have. The vocabulary mentions
+# `Timeframe` because a data scope is per resolution; everything else here is
+# its own types. No I/O, no async, and it must keep building for wasm32 like
+# every leaf.
+analytics-core = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

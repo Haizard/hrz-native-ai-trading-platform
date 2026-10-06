@@ -228,6 +228,23 @@ pub async fn ask(
         );
     }
 
+    // Backtests ride the deployment, not the database: the runner reads the
+    // window service and `strategies/`, both of which exist without one.
+    // Attached like every other capability — the tool reports its absence
+    // honestly when nothing is attached (docs/38, Phase A).
+    let backtests: Arc<dyn ai_agent::tools::BacktestRunner> = state.research.clone();
+    request = request.with_backtests(backtests);
+
+    // The capability view (docs/39): tool results carry their provenance, and
+    // the state render labels its sections. The scope names the deployment's
+    // venue — resolved from configuration, never from the request.
+    let (provider, symbol_class) = crate::venue_routes::market_scope();
+    request = request.with_capabilities(ai_agent::CapabilityView::new(
+        Arc::clone(&state.capability_registry),
+        provider,
+        symbol_class,
+    ));
+
     let started = std::time::Instant::now();
     state.metrics.count(
         observability::metrics::AGENT_REQUESTS,
@@ -284,6 +301,16 @@ pub async fn generate_strategy(
         body.timeframe.as_deref().unwrap_or("5m"),
     );
     request.skill_id = body.skill_id;
+
+    // The capability view (docs/39): tool results carry their provenance, and
+    // the state render labels its sections. The scope names the deployment's
+    // venue — resolved from configuration, never from the request.
+    let (provider, symbol_class) = crate::venue_routes::market_scope();
+    request = request.with_capabilities(ai_agent::CapabilityView::new(
+        Arc::clone(&state.capability_registry),
+        provider,
+        symbol_class,
+    ));
 
     let generated = agent
         .generate_strategy(&request)

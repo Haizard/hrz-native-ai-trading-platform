@@ -70,6 +70,9 @@ pub mod pine_cheatsheet;
 pub mod pine_codegen;
 pub mod provider_routes;
 pub mod rate_limit;
+// docs/38 Phase A: the host's BacktestRunner for the agent — backtests over
+// the window service, skills resolved to reference strategies.
+pub mod research;
 pub mod scan_routes;
 // docs/23 Phase 9: Pine-lite script vetting. No persistence here -- scripts
 // live in the indicator-workspace revision tables as a new representation.
@@ -130,6 +133,22 @@ pub struct AppState {
     // `::market_data` for the same reason as `backfill` above: this crate has
     // its own `market_data` module and a bare name would resolve to it.
     pub symbols: ::market_data::SymbolIndex,
+    /// The capability registry: what each provider can honestly supply, joined
+    /// against the analytical catalog (`docs/38`).
+    ///
+    /// Assembled once at boot from `capabilities::descriptor::STANDARD` and
+    /// `market_data`'s provider profiles, and immutable afterwards. The
+    /// deployment report's analysis view reads it; Phase 1's tool provenance
+    /// and the agent's prompt summary will read the same instance, so there is
+    /// one answer to "can this symbol support this analysis" rather than one
+    /// per consumer.
+    pub capability_registry: Arc<::capabilities::Registry>,
+    /// The agent's backtest runner (`docs/38`, Phase A).
+    ///
+    /// Held in state rather than built per request: it is a cheap handle over
+    /// the window service, and one construction site means every agent entry
+    /// point — REST and WebSocket — attaches the same runner.
+    pub research: Arc<research::WindowBacktestRunner>,
     /// Per-user limits on the endpoints that cost money (`docs/12`).
     pub agent_limits: Arc<rate_limit::RateLimiter>,
     /// The metric registry every handler records into, served at `/metrics`.

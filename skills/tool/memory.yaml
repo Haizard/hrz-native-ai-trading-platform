@@ -1,0 +1,19 @@
+# Tool skill (docs/40, §18): doctrine for the agent's memory tools.
+name: "Memory"
+version: "1.0.0"
+kind: tool
+artifact_kind: thesis
+category: "memory"
+knowledge: >
+  Memory is the user's own notebook, per symbol, written by past analyses and
+  by the user. It exists so a level found on Tuesday is still known on
+  Friday. It is context, not evidence: a remembered level is re-checked
+  against tools before it enters a thesis.
+rules:
+  - "Remember facts, not narratives: a level with its price and why it matters, a regime call with its date. Opinions age badly; levels keep."
+  - "recall_memories is already in the prompt when memories exist -- call it only to look beyond the current symbol or the automatic recall window."
+  - "A remembered level is a lead, not a fact: verify it against current tool output before citing it in a thesis, and forget_memory the ones the market has left behind."
+  - "Never store a price you did not get from a tool. Memory written from an inferred number is how a hallucination becomes next week's context."
+  - "When memory and the current tape disagree, the tape wins -- say that they disagreed, because a flipped regime is itself worth remembering."
+applies_to:
+  tools: [remember, recall_memories, forget_memory]

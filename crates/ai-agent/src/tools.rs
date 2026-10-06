@@ -41,6 +41,7 @@ use crate::llm_client::ToolCall;
 use crate::user_drawings::{DrawingWriter, NewAgentDrawing, UserDrawingsSource};
 
 use crate::agent_memory::{MemorySource, MemoryWriter, NewMemory};
+use capabilities::Availability;
 
 /// Where market data comes from.
 ///
@@ -137,6 +138,14 @@ pub trait BacktestRunner: Send + Sync {
     ) -> Result<BacktestSummary, AgentError>;
 }
 
+impl std::fmt::Debug for dyn BacktestRunner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The runner is a callback into the host's market data; printing it
+        // would print an address. Its presence is the fact worth logging.
+        f.write_str("BacktestRunner(..)")
+    }
+}
+
 /// Everything a tool needs in order to run.
 pub struct ToolContext<'a> {
     /// Where candles and trades come from.
@@ -182,6 +191,14 @@ pub struct ToolContext<'a> {
     /// set (the builders enforce it); a distinct field keeps each capability's
     /// builder signature self-contained the way `with_drawing_writer` does.
     pub memory_user_id: Option<&'a str>,
+    /// The capability registry scoped to this request's venue (`docs/39`).
+    ///
+    /// When attached, every capability-backed tool result gains a
+    /// `provenance` block at dispatch, and the state render labels its
+    /// sections available/derived/unavailable. `None` — tests, tools-only
+    /// builds — means no claims are made, the same posture as the other
+    /// sources.
+    pub capabilities: Option<crate::capability_view::CapabilityView>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -200,6 +217,7 @@ impl<'a> ToolContext<'a> {
             memory: None,
             memory_writer: None,
             memory_user_id: None,
+            capabilities: None,
         }
     }
 
@@ -241,6 +259,13 @@ impl<'a> ToolContext<'a> {
     #[must_use]
     pub fn with_backtests(mut self, backtests: &'a dyn BacktestRunner) -> Self {
         self.backtests = Some(backtests);
+        self
+    }
+
+    /// Attach the capability view for this request's venue (`docs/39`).
+    #[must_use]
+    pub fn with_capabilities(mut self, view: crate::capability_view::CapabilityView) -> Self {
+        self.capabilities = Some(view);
         self
     }
 
@@ -289,126 +314,151 @@ impl ToolRegistry {
                     name: "analyze_timeframe".into(),
                     description: ANALYZE_TIMEFRAME.into(),
                     input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: None, // base tool: always exposed
                 },
                 ToolSpec {
                     name: "analyze_multi_timeframe".into(),
                     description: ANALYZE_MULTI_TIMEFRAME.into(),
                     input_schema: multi_timeframe_schema(),
+                    exposed_tool: None,
                 },
                 ToolSpec {
                     name: "get_candles".into(),
                     description: GET_CANDLES.into(),
                     input_schema: symbol_timeframe_schema(Some("limit")),
+                    exposed_tool: None,
                 },
                 ToolSpec {
                     name: "get_volume_profile".into(),
                     description: GET_VOLUME_PROFILE.into(),
                     input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: Some("volume_profile"),
                 },
                 ToolSpec {
                     name: "get_footprint".into(),
                     description: GET_FOOTPRINT.into(),
                     input_schema: symbol_timeframe_schema(Some("count")),
+                    exposed_tool: Some("footprint"),
                 },
                 ToolSpec {
                     name: "get_delta_by_size".into(),
                     description: GET_DELTA_BY_SIZE.into(),
                     input_schema: symbol_timeframe_schema(Some("count")),
+                    exposed_tool: Some("delta"),
                 },
                 ToolSpec {
                     name: "get_bar_delta_stats".into(),
                     description: GET_BAR_DELTA_STATS.into(),
                     input_schema: symbol_timeframe_schema(Some("count")),
+                    exposed_tool: Some("delta"),
                 },
                 ToolSpec {
                     name: "get_vpin".into(),
                     description: GET_VPIN.into(),
                     input_schema: symbol_timeframe_schema(Some("count")),
+                    exposed_tool: Some("delta"),
                 },
                 ToolSpec {
                     name: "detect_size_divergence".into(),
                     description: DETECT_SIZE_DIVERGENCE.into(),
                     input_schema: symbol_timeframe_schema(Some("count")),
+                    exposed_tool: Some("delta"),
                 },
                 ToolSpec {
                     name: "get_delta".into(),
                     description: GET_DELTA.into(),
                     input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: Some("delta"),
                 },
                 ToolSpec {
                     name: "get_cvd".into(),
                     description: GET_CVD.into(),
                     input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: Some("delta"),
                 },
                 ToolSpec {
                     name: "get_vwap".into(),
                     description: GET_VWAP.into(),
                     input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: Some("vwap"),
                 },
                 ToolSpec {
                     name: "detect_liquidity".into(),
                     description: DETECT_LIQUIDITY.into(),
                     input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: Some("liquidity"),
                 },
                 ToolSpec {
                     name: "detect_absorption".into(),
                     description: DETECT_ABSORPTION.into(),
                     input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: Some("absorption"),
                 },
                 ToolSpec {
                     name: "detect_imbalance".into(),
                     description: DETECT_IMBALANCE.into(),
                     input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: Some("imbalance"),
                 },
                 ToolSpec {
                     name: "detect_market_structure".into(),
                     description: DETECT_MARKET_STRUCTURE.into(),
                     input_schema: symbol_timeframe_schema(Some("lookback")),
+                    exposed_tool: Some("market_structure"),
                 },
                 ToolSpec {
                     name: "backtest_strategy".into(),
                     description: BACKTEST_STRATEGY.into(),
                     input_schema: backtest_strategy_schema(),
+                    exposed_tool: None, // research tools always available
                 },
                 ToolSpec {
                     name: "backtest_similar_setups".into(),
                     description: BACKTEST_SIMILAR_SETUPS.into(),
                     input_schema: backtest_similar_schema(),
+                    exposed_tool: None,
                 },
                 ToolSpec {
                     name: "get_user_drawings".into(),
                     description: GET_USER_DRAWINGS.into(),
                     input_schema: get_user_drawings_schema(),
+                    exposed_tool: None, // drawing tools always available (if capacity)
                 },
                 ToolSpec {
                     name: "create_drawing".into(),
                     description: CREATE_DRAWING.into(),
                     input_schema: drawing_write_schema(false),
+                    exposed_tool: None,
                 },
                 ToolSpec {
                     name: "update_drawing".into(),
                     description: UPDATE_DRAWING.into(),
                     input_schema: drawing_write_schema(true),
+                    exposed_tool: None,
                 },
                 ToolSpec {
                     name: "delete_drawing".into(),
                     description: DELETE_DRAWING.into(),
                     input_schema: drawing_delete_schema(),
+                    exposed_tool: None,
                 },
                 ToolSpec {
                     name: "remember".into(),
                     description: REMEMBER.into(),
                     input_schema: remember_schema(),
+                    exposed_tool: None, // memory tools always available
                 },
                 ToolSpec {
                     name: "recall_memories".into(),
                     description: RECALL_MEMORIES.into(),
                     input_schema: recall_memories_schema(),
+                    exposed_tool: None,
                 },
                 ToolSpec {
                     name: "forget_memory".into(),
                     description: FORGET_MEMORY.into(),
                     input_schema: forget_memory_schema(),
+                    exposed_tool: None,
                 },
             ],
         }
@@ -424,6 +474,45 @@ impl ToolRegistry {
     #[must_use]
     pub fn names(&self) -> Vec<&str> {
         self.specs.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    /// The tool specs that should be exposed given the capability view
+    /// (Phase 3, docs/41).
+    ///
+    /// Tools without an `exposed_tool` are always exposed (base tools,
+    /// drawing, memory, backtests). Tools with an `exposed_tool` are exposed
+    /// only when their capability resolves (or when no view is attached,
+    /// which means the host has no registry to query).
+    #[must_use]
+    pub fn exposed_tools(
+        &self,
+        view: Option<&crate::capability_view::CapabilityView>,
+    ) -> Vec<crate::llm_client::ToolSpec> {
+        let mut exposed = Vec::new();
+        for spec in &self.specs {
+            match spec.exposed_tool {
+                None => {
+                    exposed.push(spec.clone());
+                }
+                Some(capability) => {
+                    if let Some(v) = view {
+                        let resolution = v.resolve(capability, "placeholder");
+                        match resolution.availability {
+                            capabilities::Availability::Available
+                            | capabilities::Availability::Degraded
+                            | capabilities::Availability::Derived => {
+                                exposed.push(spec.clone());
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        // No registry attached: behave as before, expose all.
+                        exposed.push(spec.clone());
+                    }
+                }
+            }
+        }
+        exposed
     }
 
     /// Whether a tool is registered.
@@ -479,6 +568,26 @@ impl ToolRegistry {
             other => return Err(AgentError::UnknownTool(other.to_string())),
         };
         let elapsed = started.elapsed();
+
+        // Provenance attaches here, once, at the seam every tool call passes
+        // through (docs/39): the registry's answer for the capability this
+        // tool exposes, named for the symbol the call was about. Plumbing
+        // tools (memory, drawings, backtests) have no capability row and get
+        // no block; a failed call gets none either — the error is already the
+        // honest statement.
+        let result = result.map(|mut value| {
+            if let (Some(view), Some(symbol)) = (
+                ctx.capabilities.as_ref(),
+                call.input.get("symbol").and_then(Value::as_str),
+            ) {
+                if let (Some(block), Some(object)) =
+                    (view.tool_provenance(&call.name, symbol), value.as_object_mut())
+                {
+                    object.insert("provenance".to_string(), block);
+                }
+            }
+            value
+        });
 
         match &result {
             Ok(_) => debug!(target: "ai_agent", tool = %call.name, ?elapsed, "tool ok"),
@@ -958,8 +1067,8 @@ async fn analyze_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
     let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
-    let (state, _, trades) = state_for(ctx, &symbol, timeframe, lookback).await?;
-    Ok(render_state(&state, trades.is_empty()))
+    let (state, _, _) = state_for(ctx, &symbol, timeframe, lookback).await?;
+    Ok(render_state(&state, ctx.capabilities.as_ref()))
 }
 
 async fn analyze_multi_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
@@ -999,7 +1108,7 @@ async fn analyze_multi_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<
     let mut frames = Vec::new();
     for timeframe in timeframes {
         match state_for(ctx, &symbol, timeframe, lookback).await {
-            Ok((state, _, trades)) => frames.push(render_state(&state, trades.is_empty())),
+            Ok((state, _, _)) => frames.push(render_state(&state, ctx.capabilities.as_ref())),
             // One missing timeframe must not sink the whole ladder: the higher
             // timeframes are still useful context. The gap is reported inline
             // so the model can see what it is missing.
@@ -2082,7 +2191,17 @@ fn top_nodes(histogram: &[VolumeNode], limit: usize) -> Vec<Value> {
 /// The event lists are capped on purpose. A 300-bar window can surface hundreds
 /// of imbalances; pasting them all in would bury the numbers that actually
 /// matter and burn the context window doing it.
-fn render_state(state: &MarketState, no_trades: bool) -> Value {
+///
+/// Every render carries a `provenance` block (docs/39): the observed facts
+/// from the state's own [`analytics_core::StateProvenance`], plus the
+/// registry's declared labels when the host attached a `CapabilityView`. This
+/// replaced the ad-hoc `data_note` patch: "absorption is empty because no
+/// trades exist" is now a labelled section, not a footnote.
+fn render_state(state: &MarketState, view: Option<&crate::capability_view::CapabilityView>) -> Value {
+    let provenance = match view {
+        Some(view) => view.state_provenance(state),
+        None => crate::capability_view::observed_provenance(state),
+    };
     let mut value = json!({
         "symbol": state.symbol,
         "timeframe": state.timeframe,
@@ -2128,8 +2247,8 @@ fn render_state(state: &MarketState, no_trades: bool) -> Value {
         })).collect::<Vec<_>>(),
     });
 
-    if no_trades {
-        value["data_note"] = json!(NO_TICK_DATA);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("provenance".to_string(), provenance);
     }
     value
 }
@@ -2435,8 +2554,86 @@ mod tests {
         );
         assert!(out["poc"].as_f64().unwrap() > 0.0);
         assert!(out["price"].as_f64().unwrap() > 0.0);
-        // No trades in the fixture, so the note must be present.
-        assert!(out["data_note"].is_string());
+        // No trades in the fixture: the structured provenance block says so,
+        // per section (docs/39) — the `data_note` footnote is gone.
+        assert_eq!(out["provenance"]["trades"], 0);
+        assert_eq!(out["provenance"]["sections"]["absorption"], "unavailable");
+        assert!(
+            out["provenance"]["why"]
+                .as_array()
+                .expect("a why list")
+                .iter()
+                .any(|w| w.as_str().is_some_and(|s| s.contains("no trades"))),
+            "{}",
+            out["provenance"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_capability_view_attaches_the_registrys_answer_to_tool_results() {
+        use capabilities::profile::{Channel, ClassProfile, KindSupport, ProviderDataProfile};
+        use capabilities::{DataKind, Provider, SplitQuality, SymbolClass};
+
+        // A Bybit-shaped registry: candles real live, attributed over REST,
+        // trades live-only. The fixture holds no trades, so the state's split
+        // sections must render *derived* — the audit's provenance-leak finding,
+        // pinned at the tool boundary.
+        let bybit = ProviderDataProfile::new(Provider::Bybit).with_class(
+            SymbolClass::Spot,
+            ClassProfile::new()
+                .with(
+                    DataKind::Candles,
+                    KindSupport::both(
+                        Channel::candles(SplitQuality::Real),
+                        Channel::candles(SplitQuality::Attributed)
+                            .with_note("attributed, not a measurement"),
+                    ),
+                )
+                .with(DataKind::Trades, KindSupport::live_only(Channel::plain())),
+        );
+        let registry = std::sync::Arc::new(capabilities::Registry::new(
+            capabilities::descriptor::STANDARD,
+            vec![bybit],
+        ));
+        let fixture = Fixture::rising(60);
+        let ctx = ToolContext::new(&fixture).with_capabilities(
+            crate::capability_view::CapabilityView::new(registry, Provider::Bybit, SymbolClass::Spot),
+        );
+        let out = ToolRegistry::market_analysis()
+            .execute(
+                &call(
+                    "analyze_timeframe",
+                    json!({"symbol": "BTCUSDT", "timeframe": "5m"}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // The render labels its sections...
+        assert_eq!(out["provenance"]["sections"]["delta"], "derived");
+        assert_eq!(out["provenance"]["sections"]["absorption"], "unavailable");
+        // ...and dispatch attached the registry's per-tool block. There is no
+        // catalogued `analyze_timeframe` capability (it is the aggregate), so
+        // the block comes from a tool that has one.
+        let out = ToolRegistry::market_analysis()
+            .execute(
+                &call("get_delta", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["provenance"]["capability"], "delta");
+        assert_eq!(out["provenance"]["availability"], "available");
+        assert!(
+            out["provenance"]["caveats"]
+                .as_array()
+                .expect("caveats")
+                .iter()
+                .any(|c| c.as_str().is_some_and(|s| s.contains("live-window only"))),
+            "{}",
+            out["provenance"]
+        );
     }
 
     #[tokio::test]

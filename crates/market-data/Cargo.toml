@@ -8,6 +8,11 @@ license.workspace = true
 
 [dependencies]
 analytics-core = { workspace = true }
+# The capability *vocabulary* only: this crate declares each venue's data
+# profile ("Bybit klines have no taker split") as `capabilities` values, and
+# the venue fact lives next to the codec that enforces it, so the two cannot
+# drift. The resolver itself stays in the leaf crate; nothing here resolves.
+capabilities = { workspace = true }
 # No `db` edge, deliberately. This crate publishes normalized data to its bus and
 # a binary (`xtask collect`) persists it; the collector itself never writes, so
 # the dependency sat here unused. It read as "the collector persists", which is

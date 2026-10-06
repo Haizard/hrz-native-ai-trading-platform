@@ -25,6 +25,7 @@ pub mod binance_codec;
 pub mod bybit_codec;
 pub mod codec;
 pub mod collector;
+pub mod profile;
 pub mod venue;
 pub mod wire;
 

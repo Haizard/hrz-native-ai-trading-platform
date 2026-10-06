@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 # IMPORTANT (docs/03-PROJECT-STRUCTURE.md):
-#   ai-agent depends on strategy-dsl and analytics-core ONLY.
+#   ai-agent depends on strategy-dsl, analytics-core and capabilities ONLY.
 #   It must NEVER depend on sandbox or trading-engine -- it emits DSL
 #   documents, which those layers consume independently.
 #
@@ -18,8 +18,15 @@ license.workspace = true
 # `agent-cli`. That is what keeps the agent's own dependency graph free of
 # execution and storage concerns -- and what makes it testable against a
 # fixture data source instead of a live database.
+#
+# `capabilities` (docs/38/39) is a leaf like analytics-core: it declares what
+# providers can honestly supply, computes nothing about markets, and holds no
+# I/O -- so this edge cannot drag storage, networking or execution in. What it
+# buys is that a tool result can say where its numbers rest (measured vs
+# derived vs unavailable) instead of letting the model assume.
 [dependencies]
 analytics-core = { workspace = true }
+capabilities = { workspace = true }
 # YAML is needed here (skills and generated strategies are authored in YAML).
 # This is safe: `sandbox-guest` does not depend on `ai-agent`, so nothing
 # links a YAML parser into the sandbox. See the workspace-level note.

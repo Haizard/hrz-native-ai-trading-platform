@@ -21,6 +21,14 @@ use serde_json::Value;
 use crate::error::AgentError;
 
 /// A tool the model may call.
+///
+/// Tools carry per-request filtering information in `exposed_tool`: the
+/// name of the capability in the registry that controls whether this tool
+/// should be offered to the model. When attached, only tools whose
+/// capability resolves (or tools with no exposure requirement) are
+/// included in the request. This is the core of Phase 3: tools the model
+/// doesn't need for a task are not offered every turn, reducing prompt
+/// budget and preventing selection degradation as the registry grows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolSpec {
     /// Tool name, as the model must spell it in a `tool_use`.
@@ -30,6 +38,12 @@ pub struct ToolSpec {
     pub description: String,
     /// JSON Schema for the tool's input object.
     pub input_schema: Value,
+    /// The registry's capability id this tool exposes, if any. When attached
+    /// to requests via `CapabilityView`, the agent filters by this — only
+    /// tools whose capability resolves are exposed. Tools without an
+    /// exposure (none, base tools, drawing/memory) are always available.
+    #[serde(default)]
+    pub exposed_tool: Option<&'static str>,
 }
 
 /// Who produced a message.

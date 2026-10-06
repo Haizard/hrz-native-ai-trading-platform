@@ -172,6 +172,29 @@ impl Harness {
             // index is also the *interesting* state, because it is what makes a
             // lookup say "we do not know" rather than inventing an answer.
             symbols: market_data::SymbolIndex::new(),
+            // The real catalog and profiles, same as main.rs: the analysis
+            // view is a pure function of them, so a test registry with
+            // fixtures would only prove the fixture.
+            capability_registry: Arc::new(capabilities::Registry::new(
+                capabilities::descriptor::STANDARD,
+                market_data::exchanges::profile::standard(),
+            )),
+            // Over the same supervisor lanes as `windows`, with the harness's
+            // own temp strategies directory: the resolution tests never touch
+            // the deployment's strategies/, and a backtest through this
+            // runner sees the same empty windows the routes do.
+            research: {
+                let dir = std::env::temp_dir().join("api-gateway-test-strategies");
+                let _ = std::fs::create_dir_all(&dir);
+                Arc::new(api_gateway::research::WindowBacktestRunner::new(
+                    market_data::WindowService::new(
+                        supervisor.history(),
+                        supervisor.live(),
+                        market_data::BackfillClient::new("http://127.0.0.1:1"),
+                    ),
+                    dir,
+                ))
+            },
             agent_limits: Arc::clone(&limits),
             metrics: Arc::clone(&metrics),
             // A fixed test key, not `build_vault()`. The value is irrelevant to

@@ -730,6 +730,21 @@ where
         );
     }
 
+    // Backtests, exactly as `POST /agent/ask` attaches them: the runner is a
+    // deployment capability, and the socket path must not be the quiet one
+    // where `backtest_strategy` answers "no runner attached".
+    let backtests: std::sync::Arc<dyn ai_agent::tools::BacktestRunner> = state.research.clone();
+    ask = ask.with_backtests(backtests);
+
+    // The capability view, exactly as on the HTTP path: a socket answer must
+    // not be the quiet one where provenance labels are missing (docs/39).
+    let (provider, symbol_class) = crate::venue_routes::market_scope();
+    ask = ask.with_capabilities(ai_agent::CapabilityView::new(
+        std::sync::Arc::clone(&state.capability_registry),
+        provider,
+        symbol_class,
+    ));
+
     // The same claim `POST /agent/ask` makes: asking about a symbol is a reason
     // for it to have a feed, and without one the buffer never fills and every
     // read costs a venue round trip.

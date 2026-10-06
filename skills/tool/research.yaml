@@ -1,0 +1,19 @@
+# Tool skill (docs/40, §18): doctrine for the backtest family.
+name: "Research and Backtests"
+version: "1.0.0"
+kind: tool
+artifact_kind: thesis
+category: "research"
+knowledge: >
+  The backtest tools answer "has this worked before" with numbers: a strategy
+  replayed over a window, or the base rate of similar historical setups. A
+  base rate is the discipline that keeps a good-looking chart read from
+  becoming a confident story about a coin flip.
+rules:
+  - "Quote assumptions verbatim with every backtest number: fees, slippage, window, sample size. A profit factor without its sample size is a story, not evidence."
+  - "Always attach a base rate before quoting a strategy's performance: backtest_similar_setups tells you what the pattern did generally; without it, one backtest is one path."
+  - "A sweep that shows one lucky spike is a warning, not a result: read the middle of the parameter surface, not its best cell. If only the best cell is green, say the result is fragile."
+  - "When the tools report no runner attached or no comparable setups, that is the answer: the honest claim is that no base rate exists here, not a narrative guess at one."
+  - "Small samples wear their size: under ~30 trades, report the count next to every percentage and call the read provisional."
+applies_to:
+  tools: [backtest_strategy, backtest_similar_setups]

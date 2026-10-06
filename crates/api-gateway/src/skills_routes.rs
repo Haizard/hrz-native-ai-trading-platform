@@ -204,7 +204,13 @@ pub async fn get(
 /// empty skill that would sort last and teach the model nothing. The three
 /// fields that have to be real are the ones the id, the ordering and retrieval
 /// are derived from.
-fn validate_skill(skill: &Skill) -> Result<(), ApiError> {
+///
+/// The schema-v2 references (docs/40) are validated against the vocabularies
+/// they name: capability ids against the registry's catalog, `applies_to`
+/// against the registered tools. An unknown capability id would otherwise be
+/// refused for a *typo* at runtime, indistinguishable from a real data gap;
+/// an unknown tool name is doctrine that could never attach to a result.
+fn validate_skill(skill: &Skill, registry: &capabilities::Registry) -> Result<(), ApiError> {
     if skill.name.trim().is_empty() {
         return Err(ApiError::bad_request(
             "SKILL_NAME_REQUIRED",
@@ -233,6 +239,46 @@ fn validate_skill(skill: &Skill) -> Result<(), ApiError> {
             "a skill needs a `knowledge` body or at least one `rule`: with neither there is \
              nothing for the model to apply",
         ));
+    }
+
+    let known: Vec<&str> = registry.catalog().iter().map(|d| d.id).collect();
+    let check_capability = |id: &str| -> Result<(), ApiError> {
+        if known.contains(&id) {
+            return Ok(());
+        }
+        Err(ApiError::bad_request(
+            "SKILL_CAPABILITY_UNKNOWN",
+            format!(
+                "`{id}` is not a registered capability. The catalog holds: {}",
+                known.join(", ")
+            ),
+        ))
+    };
+    for need in skill
+        .capability_requirements
+        .required
+        .iter()
+        .chain(&skill.capability_requirements.preferred)
+    {
+        check_capability(&need.capability)?;
+    }
+    for rule in &skill.capability_requirements.fallback {
+        check_capability(&rule.needs)?;
+    }
+
+    // Tool names come from the real registry, so a rename in `tools.rs` turns
+    // a stale skill into a 422 at write time rather than silent doctrine.
+    let tools = ai_agent::ToolRegistry::market_analysis();
+    for tool in &skill.applies_to.tools {
+        if !tools.contains(tool) {
+            return Err(ApiError::bad_request(
+                "SKILL_TOOL_UNKNOWN",
+                format!(
+                    "`{tool}` is not a registered tool: a tool skill's doctrine attaches by \
+                     tool name, and this one would never fire"
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -282,7 +328,7 @@ pub async fn create(
     user: UserContext,
     ApiJson(skill): ApiJson<Skill>,
 ) -> Result<(StatusCode, Json<SkillResponse>), ApiError> {
-    validate_skill(&skill)?;
+    validate_skill(&skill, &state.capability_registry)?;
     insert_skill(&state, &user, &skill).await?;
     Ok((StatusCode::CREATED, Json(SkillResponse::new(skill))))
 }
@@ -302,7 +348,7 @@ pub async fn create_version(
     Path(id): Path<String>,
     ApiJson(skill): ApiJson<Skill>,
 ) -> Result<(StatusCode, Json<SkillResponse>), ApiError> {
-    validate_skill(&skill)?;
+    validate_skill(&skill, &state.capability_registry)?;
     if skill.id() != id {
         return Err(ApiError::bad_request(
             "SKILL_ID_MISMATCH",
@@ -315,4 +361,72 @@ pub async fn create_version(
     }
     insert_skill(&state, &user, &skill).await?;
     Ok((StatusCode::CREATED, Json(SkillResponse::new(skill))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The real catalog over the real provider profiles — the point of the
+    /// validation is that it checks against what the deployment knows.
+    fn registry() -> capabilities::Registry {
+        capabilities::Registry::new(
+            capabilities::descriptor::STANDARD,
+            market_data::exchanges::profile::standard(),
+        )
+    }
+
+    fn valid_skill() -> Skill {
+        Skill {
+            name: "Test Skill".into(),
+            category: "liquidity".into(),
+            knowledge: "something real".into(),
+            ..Skill::default()
+        }
+    }
+
+    #[test]
+    fn an_unknown_capability_id_is_refused_with_the_catalog_listed() {
+        let mut skill = valid_skill();
+        skill.capability_requirements.required = vec![ai_agent::CapabilityNeed {
+            capability: "footprnt".into(),
+        }];
+        let err = validate_skill(&skill, &registry()).unwrap_err();
+        let body = format!("{err:?}");
+        assert!(body.contains("SKILL_CAPABILITY_UNKNOWN"), "{body}");
+        assert!(
+            body.contains("footprint"),
+            "the refusal lists the valid ids so the typo is fixable: {body}"
+        );
+    }
+
+    #[test]
+    fn a_fallback_rule_also_validates_its_capability() {
+        let mut skill = valid_skill();
+        skill.capability_requirements.fallback = vec![ai_agent::FallbackRule {
+            needs: "nonsense".into(),
+            accept: ai_agent::FallbackAccept::Derived,
+        }];
+        let err = validate_skill(&skill, &registry()).unwrap_err();
+        assert!(format!("{err:?}").contains("SKILL_CAPABILITY_UNKNOWN"));
+    }
+
+    #[test]
+    fn an_unknown_tool_name_is_refused_because_doctrine_would_never_attach() {
+        let mut skill = valid_skill();
+        skill.applies_to.tools = vec!["get_footprnt".into()];
+        let err = validate_skill(&skill, &registry()).unwrap_err();
+        assert!(format!("{err:?}").contains("SKILL_TOOL_UNKNOWN"));
+    }
+
+    #[test]
+    fn a_document_with_real_references_passes() {
+        let mut skill = valid_skill();
+        skill.kind = ai_agent::SkillKind::Tool;
+        skill.applies_to.tools = vec!["get_footprint".into()];
+        skill.capability_requirements.required = vec![ai_agent::CapabilityNeed {
+            capability: "footprint".into(),
+        }];
+        validate_skill(&skill, &registry()).expect("real vocabulary validates");
+    }
 }

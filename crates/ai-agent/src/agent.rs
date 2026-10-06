@@ -228,6 +228,17 @@ pub struct AskRequest {
     /// the model is never told "you have no memory", because that reads as
     /// an apology rather than a configuration fact.
     pub memory: Option<MemoryContext>,
+    /// Backtests, when the host provides them.
+    ///
+    /// `None` is what the two backtest tools report ("no backtest runner is
+    /// attached"), exactly like the other capabilities: a host that attaches
+    /// nothing gets an honest answer instead of a fabricated base rate.
+    pub backtests: Option<Arc<dyn crate::tools::BacktestRunner>>,
+    /// The capability registry scoped to this request's venue (`docs/39`).
+    ///
+    /// When attached, tool results carry a `provenance` block and the state
+    /// render labels its sections. `None` makes no claims — data facts only.
+    pub capabilities: Option<crate::capability_view::CapabilityView>,
 }
 
 impl AskRequest {
@@ -243,6 +254,8 @@ impl AskRequest {
             chart: None,
             drawings: None,
             memory: None,
+            backtests: None,
+            capabilities: None,
         }
     }
 
@@ -285,6 +298,28 @@ impl AskRequest {
     #[must_use]
     pub fn with_memory(mut self, memory: MemoryContext) -> Self {
         self.memory = Some(memory);
+        self
+    }
+
+    /// Attach the host's backtest runner.
+    ///
+    /// Host-only like the rest: a runner is a deployment capability (it costs
+    /// venue fetches and CPU), so it is attached from server state, never
+    /// parsed from a request body.
+    #[must_use]
+    pub fn with_backtests(mut self, runner: Arc<dyn crate::tools::BacktestRunner>) -> Self {
+        self.backtests = Some(runner);
+        self
+    }
+
+    /// Attach the capability view for the venue this symbol trades on.
+    ///
+    /// Host-only: the provider and symbol class are facts about the
+    /// deployment's data feed, which no request body may assert — a client
+    /// naming its own venue would be naming its own fidelity labels.
+    #[must_use]
+    pub fn with_capabilities(mut self, view: crate::capability_view::CapabilityView) -> Self {
+        self.capabilities = Some(view);
         self
     }
 }
@@ -479,6 +514,23 @@ impl Agent {
         &self.llm
     }
 
+    /// The same agent over a different skill library.
+    ///
+    /// The gateway's per-request library is the shipped files merged with the
+    /// asking user's own skills, so a deployment-primary agent built at boot
+    /// cannot carry it. Cloning the client and config is cheap (an `Arc` and
+    /// a small struct); the alternative — rebuilding the client per request —
+    /// would redo the provider's construction for nothing.
+    #[must_use]
+    pub fn with_skills(&self, skills: SkillLibrary) -> Self {
+        Self {
+            llm: Arc::clone(&self.llm),
+            registry: ToolRegistry::market_analysis(),
+            skills,
+            config: self.config.clone(),
+        }
+    }
+
     /// The configured completion budget, in tokens.
     #[must_use]
     pub fn max_tokens(&self) -> u32 {
@@ -521,7 +573,12 @@ impl Agent {
         data: &dyn crate::tools::MarketDataSource,
         progress: &dyn ProgressSink,
     ) -> Result<AgentAnswer, AgentError> {
-        let skill = self.select_skill(request)?;
+        let selection = self.select_skill(request)?;
+        let skill: Option<&Skill> = selection.as_ref().map(|(skill, _)| skill);
+        let skill_gaps: &[String] = selection
+            .as_ref()
+            .map(|(_, gaps)| gaps.as_slice())
+            .unwrap_or(&[]);
 
         // The user's own resolution anchors the ladder. A question asked while
         // looking at the 5m chart is about the 5m chart, and answering it from
@@ -610,9 +667,17 @@ impl Agent {
             });
         }
 
+        // Tools must be available before the prompt so the capability summary
+        // can be built. The prompt will receive the full list but filter it to
+        // exposed tools.
+        let mut tools = self.registry.exposed_tools(request.capabilities.as_ref());
+        tools.push(submit_thesis_spec());
+
         let system = ask_system_prompt(
             &request.symbol,
-            skill.as_ref(),
+            skill,
+            skill_gaps,
+            &tools,
             &view,
             request.chart.as_ref(),
             memories.as_deref(),
@@ -645,15 +710,19 @@ impl Agent {
             role: crate::llm_client::Role::User,
             content: first_content,
         }];
-        let mut tools = self.registry.specs();
-        tools.push(submit_thesis_spec());
 
-        // No backtest runner here: `backtest_*` tools stay registered and
-        // return a clear "not attached" error, which the model can report
-        // honestly rather than inventing a base rate. The drawings source is
-        // the same shape: absent unless the host attached one, and the tool
-        // says so rather than implying the chart is bare.
+        // Every capability rides the request and lands here: absent unless the
+        // host attached one, and the tool says so rather than implying the
+        // answer. The drawings source is the same shape, and so is the
+        // backtest runner -- attached by the gateway, absent in tests and
+        // tools-only builds, reported honestly either way.
         let mut ctx = ToolContext::new(data).with_config(self.config.market_state.clone());
+        if let Some(runner) = &request.backtests {
+            ctx = ctx.with_backtests(runner.as_ref());
+        }
+        if let Some(view) = &request.capabilities {
+            ctx = ctx.with_capabilities(view.clone());
+        }
         // The memory tools get the same grant the loop already holds, so the
         // model's explicit `remember` cannot write where the auto-store could
         // not: one identity, one door.
@@ -678,6 +747,11 @@ impl Agent {
             output_tokens: None,
         };
         let mut turns = 0_usize;
+        // Tool skills whose doctrine has already been injected this turn-set
+        // (docs/40): doctrine rides the *first* result from its family, not
+        // every one — the model has the rules from then on, and repeating
+        // them would be prompt-stuffing by another door.
+        let mut shown_doctrine = std::collections::HashSet::new();
 
         // `max_turns` turns of analysis, then `ANSWER_TURNS` that can only
         // answer. Reserving them matters: a question that ends on another data
@@ -780,7 +854,9 @@ impl Agent {
                 progress.report(Progress::Tool {
                     name: call.name.clone(),
                 });
-                let result = self.run_tool(call, &ctx, &mut range, &mut trace).await;
+                let result = self
+                    .run_tool(call, &ctx, &mut range, &mut trace, &mut shown_doctrine)
+                    .await;
                 progress.report(Progress::ToolDone {
                     name: call.name.clone(),
                     ok: !result.is_error,
@@ -889,13 +965,14 @@ impl Agent {
             None => None,
         };
 
+        let tools = vec![draft_strategy_spec()];
         let system = strategy_system_prompt(
             &request.market,
             &request.entry_timeframe,
             skill.as_ref(),
             request.base_document.is_some(),
+            &tools,
         );
-        let max_attempts = request.max_attempts.unwrap_or(self.config.max_attempts);
 
         let description = match &request.base_document {
             // Edit mode: the current source rides the first user message, so the
@@ -928,7 +1005,6 @@ impl Agent {
                 content,
             }]
         };
-        let tools = vec![draft_strategy_spec()];
         let mut repaired_errors = Vec::new();
 
         for attempt in 1..=max_attempts {
@@ -1131,32 +1207,108 @@ impl Agent {
         Ok(response.text())
     }
 
-    /// Pick the skill for a request: pinned by id, else by relevance.
-    fn select_skill(&self, request: &AskRequest) -> Result<Option<Skill>, AgentError> {
+    /// Pick the skill for a request: pinned by id, else by relevance — and in
+    /// both cases only when its data contract holds on this venue (docs/40).
+    ///
+    /// The filter runs after scoring and before selection: retrieval ranks,
+    /// then the first *eligible* candidate wins. A refusal is never silent —
+    /// a pinned skill that cannot run is an error naming the gap, and a
+    /// retrieval where every candidate was refused is an error listing each
+    /// refusal. Reporting "no skill matched" there would misreport a data
+    /// refusal as an absence of methodology.
+    ///
+    /// Returns the skill with its data gaps (preferred/degraded misses), for
+    /// the prompt to surface.
+    fn select_skill(
+        &self,
+        request: &AskRequest,
+    ) -> Result<Option<(Skill, Vec<String>)>, AgentError> {
+        let check = |skill: &Skill| -> Result<Vec<String>, Vec<String>> {
+            match &request.capabilities {
+                Some(view) => match view.check_skill(skill, &request.symbol) {
+                    crate::capability_view::SkillVerdict::Eligible { gaps } => Ok(gaps),
+                    crate::capability_view::SkillVerdict::Refused { reasons } => Err(reasons),
+                },
+                // No registry attached means no claims are made — the same
+                // posture as the tool layer, not a silent pass.
+                None => Ok(Vec::new()),
+            }
+        };
+
         if let Some(id) = &request.skill_id {
-            return Ok(Some(
-                self.skills
-                    .by_id(id)
-                    .ok_or_else(|| AgentError::NoMatchingSkill(id.clone()))?
-                    .clone(),
-            ));
+            let skill = self
+                .skills
+                .by_id(id)
+                .ok_or_else(|| AgentError::NoMatchingSkill(id.clone()))?;
+            // Pinning chooses the methodology; it does not license claims the
+            // venue cannot support.
+            return match check(skill) {
+                Ok(gaps) => Ok(Some((skill.clone(), gaps))),
+                Err(reasons) => Err(AgentError::NoMatchingSkill(format!(
+                    "{id} is pinned but its data contract refuses on this venue: {}",
+                    reasons.join("; ")
+                ))),
+            };
         }
+
         let query = SkillQuery::for_market(&request.symbol)
             .with_terms(request.question.split_whitespace().map(str::to_string));
-        Ok(self.skills.retrieve(&query).first().copied().cloned())
+        let mut refusals = Vec::new();
+        for candidate in self.skills.retrieve(&query) {
+            // Tool doctrine is not thesis methodology: a tool skill answers
+            // "how do I call this family well", not "what is the trade" — it
+            // reaches the prompt through `run_tool`, not through selection.
+            if candidate.kind != crate::skills::SkillKind::Trading {
+                continue;
+            }
+            match check(candidate) {
+                Ok(gaps) => return Ok(Some((candidate.clone(), gaps))),
+                Err(reasons) => refusals.push(format!("{}: {}", candidate.name, reasons.join("; "))),
+            }
+        }
+        if !refusals.is_empty() {
+            return Err(AgentError::NoMatchingSkill(format!(
+                "every matching skill is refused by its data contract on this venue: {}",
+                refusals.join(" | ")
+            )));
+        }
+        Ok(None)
     }
 
-    /// Run one non-terminal tool call, recording it for provenance and folding
-    /// any prices it reported into the grounding range.
+    /// Run one non-terminal tool call, recording it for provenance, folding
+    /// any prices it reported into the grounding range, and — the first time
+    /// a tool family is exercised — injecting that family's tool-skill rules
+    /// with the result (docs/40). Doctrine arrives exactly when it applies: a
+    /// turn that never touches the family never pays for its skill, and the
+    /// shown-set keeps a busy family from repeating itself.
     async fn run_tool(
         &self,
         call: &ToolCall,
         ctx: &ToolContext<'_>,
         range: &mut PriceRange,
         trace: &mut Vec<ToolTrace>,
+        shown_doctrine: &mut std::collections::HashSet<String>,
     ) -> ToolResult {
         match self.registry.execute(call, ctx).await {
             Ok(result) => {
+                let mut result = result;
+                for doctrine in self.skills.tool_doctrine(&call.name) {
+                    if shown_doctrine.insert(doctrine.id()) {
+                        if let Some(object) = result.as_object_mut() {
+                            object.insert(
+                                "doctrine".to_string(),
+                                json!({
+                                    "skill": doctrine.name,
+                                    "id": doctrine.id(),
+                                    "rules": doctrine.rules,
+                                }),
+                            );
+                        }
+                        // One family per call: two overlapping doctrines would
+                        // double the text for one tool result.
+                        break;
+                    }
+                }
                 range.observe_result(&result);
                 trace.push(ToolTrace {
                     tool: call.name.clone(),
@@ -1210,6 +1362,8 @@ fn add_tokens(a: Option<i32>, b: Option<i32>) -> Option<i32> {
 fn ask_system_prompt(
     symbol: &str,
     skill: Option<&Skill>,
+    skill_gaps: &[String],
+    tools: &[crate::llm_client::ToolSpec],
     ladder: &LadderView,
     chart: Option<&crate::chart_context::ChartContext>,
     memories: Option<&[crate::agent_memory::MemoryRow]>,
@@ -1264,10 +1418,45 @@ fn ask_system_prompt(
     if let Some(skill) = skill {
         out.push_str("## Skill\n");
         out.push_str(&skill.render());
+        // The gaps the contract check surfaced (preferred/degraded misses)
+        // belong next to the skill they qualify: the model must know which of
+        // the skill's preferred reads are absent *before* it starts reasoning,
+        // not discover it mid-answer.
+        if !skill_gaps.is_empty() {
+            out.push_str("\nDATA GAPS ON THIS VENUE (work around them; do not paper over them):\n");
+            for gap in skill_gaps {
+                out.push_str(&format!("  - {gap}\n"));
+            }
+        }
         out.push_str(
             "\nFollow this methodology. Do not invent rules that are not in it; \
              if the setup does not satisfy it, say which conditions failed.\n\n",
         );
+    }
+
+    // Capability summary: one line per tool that has a capability requirement
+    let exposed_tools: Vec<&ToolSpec> = tools
+        .iter()
+        .filter(|t| t.exposed_tool.is_some())
+        .collect();
+    if !exposed_tools.is_empty() {
+        out.push_str("## Tool availability\n");
+        out.push_str(
+            "The following tools are available on this venue. Tools without an \
+             availability note are always exposed; tools listed here require a \
+             capability that resolved to Available, Degraded, or Derived.\n\n",
+        );
+        for spec in exposed_tools {
+            let available = match spec.exposed_tool {
+                Some(name) => name,
+                None => continue,
+            };
+            out.push_str(&format!(
+                "  - `{}` ({} availability)\n",
+                spec.name, available
+            ));
+        }
+        out.push('\n');
     }
 
     out.push_str("## Timeframes already read\n");
@@ -1390,6 +1579,7 @@ fn strategy_system_prompt(
     entry_timeframe: &str,
     skill: Option<&Skill>,
     editing: bool,
+    tools: &[crate::llm_client::ToolSpec],
 ) -> String {
     let fields = strategy_dsl::ALL_FIELDS
         .iter()
@@ -1471,6 +1661,19 @@ fn strategy_system_prompt(
              request is genuinely a new feature rather than a change, still start from \
              the current source and add to it.\n\n",
         );
+    }
+
+    // Tool summary: expose the draft tool since it's the only one used here
+    let draft_tools: Vec<&ToolSpec> = tools
+        .iter()
+        .filter(|t| t.name == "draft_strategy")
+        .collect();
+    if !draft_tools.is_empty() {
+        out.push_str("## Available tools\n");
+        for spec in draft_tools {
+            out.push_str(&format!("  - `{}`\n", spec.name));
+        }
+        out.push('\n');
     }
 
     out.push_str("## Screenshots — reading an indicator off an image\n");
@@ -2532,7 +2735,7 @@ invalidation: []
     fn the_prompt_warns_about_the_mistake_the_model_actually_makes() {
         // A live generation put `value:` inside an `all_of` entry -- copied
         // from `risk.take_profit`. Naming it beats hoping.
-        let prompt = strategy_system_prompt("BTCUSDT", "5m", None, false);
+        let prompt = strategy_system_prompt("BTCUSDT", "5m", None, false, &[]);
         assert!(
             prompt.contains("no `value` here"),
             "prompt does not warn about `value` in conditions"
@@ -2541,7 +2744,7 @@ invalidation: []
 
     #[test]
     fn the_strategy_prompt_lists_the_real_vocabulary() {
-        let prompt = strategy_system_prompt("BTCUSDT", "5m", None, false);
+        let prompt = strategy_system_prompt("BTCUSDT", "5m", None, false, &[]);
         for func in strategy_dsl::ALL_FUNCS {
             assert!(
                 prompt.contains(func.name()),
@@ -2598,7 +2801,7 @@ invalidation: []
         // left out of the rendering. A part the model is never told about is a
         // part it will never write, and that failure is silent: documents keep
         // validating, they just never use the language.
-        let prompt = strategy_system_prompt("BTCUSDT", "5m", None, false);
+        let prompt = strategy_system_prompt("BTCUSDT", "5m", None, false, &[]);
 
         for part in ConceptPart::ALL {
             assert!(
@@ -2666,5 +2869,189 @@ invalidation: []
         let sum = a + b;
         assert_eq!(sum.input_tokens, Some(3));
         assert_eq!(sum.output_tokens, Some(3));
+    }
+
+    // -- capability-aware selection (docs/40) --------------------------------
+
+    /// A Deriv-*like* scope: the registry knows the provider, but the symbol
+    /// class serves no data at all — so anything requiring candles or trades
+    /// refuses statically, by name. (A live-tape venue would still resolve
+    /// `available` statically; the refusal case is a class with no data.)
+    fn deriv_like_view() -> crate::capability_view::CapabilityView {
+        use capabilities::profile::{ClassProfile, ProviderDataProfile};
+        use capabilities::{Provider, SymbolClass};
+        let profile = ProviderDataProfile::new(Provider::Bybit)
+            .with_class(SymbolClass::SyntheticIndex, ClassProfile::new());
+        crate::capability_view::CapabilityView::new(
+            Arc::new(capabilities::Registry::new(
+                capabilities::descriptor::STANDARD,
+                vec![profile],
+            )),
+            Provider::Bybit,
+            SymbolClass::SyntheticIndex,
+        )
+    }
+
+    fn footprint_skill() -> Skill {
+        Skill {
+            name: "Absorption Read".into(),
+            category: "footprint".into(),
+            capability_requirements: crate::skills::CapabilityRequirements {
+                required: vec![crate::skills::CapabilityNeed {
+                    capability: "footprint".into(),
+                }],
+                ..crate::skills::CapabilityRequirements::default()
+            },
+            rules: vec!["needs real trades".into()],
+            ..Skill::default()
+        }
+    }
+
+    fn agent_with(skills: SkillLibrary) -> Agent {
+        Agent::new(
+            Arc::new(ScriptedClient::new(Vec::new())),
+            skills,
+            AgentConfig::default(),
+        )
+    }
+
+    #[test]
+    fn a_pinned_skill_refused_by_its_contract_errors_with_the_gap_named() {
+        let agent = agent_with(SkillLibrary::from_skills(vec![footprint_skill()]));
+        let request = AskRequest::new("BTCUSDT", "absorption after the sweep?")
+            .with_skill(footprint_skill().id())
+            .with_capabilities(deriv_like_view());
+        let err = agent.select_skill(&request).unwrap_err();
+        let AgentError::NoMatchingSkill(message) = err else {
+            panic!("a refused pinned skill is a refusal, not another error: {err}")
+        };
+        assert!(
+            message.contains("footprint") && message.contains("trades"),
+            "the refusal must name the capability and the missing kind: {message}"
+        );
+    }
+
+    #[test]
+    fn retrieval_skips_a_refused_skill_for_the_eligible_one() {
+        let eligible = Skill {
+            name: "Sweep Read".into(),
+            category: "footprint".into(),
+            rules: vec!["candles only".into()],
+            ..Skill::default()
+        };
+        let agent = agent_with(SkillLibrary::from_skills(vec![footprint_skill(), eligible]));
+        let request =
+            AskRequest::new("BTCUSDT", "footprint setup?").with_capabilities(deriv_like_view());
+        let (skill, gaps) = agent
+            .select_skill(&request)
+            .expect("one candidate is eligible")
+            .expect("the eligible candidate is selected");
+        assert_eq!(skill.name, "Sweep Read");
+        assert!(gaps.is_empty());
+    }
+
+    #[test]
+    fn a_retrieval_where_everything_is_refused_says_so_instead_of_no_match() {
+        let agent = agent_with(SkillLibrary::from_skills(vec![footprint_skill()]));
+        let request =
+            AskRequest::new("BTCUSDT", "footprint setup?").with_capabilities(deriv_like_view());
+        let err = agent.select_skill(&request).unwrap_err();
+        let AgentError::NoMatchingSkill(message) = err else {
+            panic!("got {err}")
+        };
+        assert!(
+            message.contains("refused by its data contract"),
+            "a refusal must not masquerade as an absence: {message}"
+        );
+    }
+
+    #[test]
+    fn without_a_view_no_contract_is_checked_and_nothing_changes() {
+        // The absent-means-absent posture: a host with no registry gets the
+        // v1 behaviour exactly — top-ranked trading skill, no checks.
+        let agent = agent_with(SkillLibrary::from_skills(vec![footprint_skill()]));
+        let request = AskRequest::new("BTCUSDT", "footprint setup?");
+        let (skill, gaps) = agent
+            .select_skill(&request)
+            .expect("no view, no refusal")
+            .expect("the skill is selected");
+        assert_eq!(skill.name, "Absorption Read");
+        assert!(gaps.is_empty());
+    }
+
+    #[test]
+    fn a_tool_skill_is_never_selected_as_thesis_methodology() {
+        let tool_skill = Skill {
+            name: "Footprint Doctrine".into(),
+            category: "footprint".into(),
+            kind: crate::skills::SkillKind::Tool,
+            applies_to: crate::skills::AppliesTo {
+                tools: vec!["get_footprint".into()],
+            },
+            rules: vec!["call only with trades available".into()],
+            ..Skill::default()
+        };
+        let agent = agent_with(SkillLibrary::from_skills(vec![tool_skill]));
+        let request = AskRequest::new("BTCUSDT", "footprint setup?");
+        assert!(
+            agent.select_skill(&request).unwrap().is_none(),
+            "a tool skill answers 'how to call', not 'what is the trade'"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_doctrine_rides_the_first_result_of_its_family_only() {
+        let tool_skill = Skill {
+            name: "Delta Doctrine".into(),
+            kind: crate::skills::SkillKind::Tool,
+            applies_to: crate::skills::AppliesTo {
+                tools: vec!["get_delta".into()],
+            },
+            rules: vec!["read the split with suspicion on derived venues".into()],
+            ..Skill::default()
+        };
+        let agent = agent_with(SkillLibrary::from_skills(vec![tool_skill]));
+        let fixture = Fixture::new();
+        let ctx = ToolContext::new(&fixture);
+        let call = |id: &str| ToolCall {
+            id: id.into(),
+            name: "get_delta".into(),
+            input: json!({"symbol": "BTCUSDT", "timeframe": "5m"}),
+        };
+        let mut range = PriceRange::new();
+        let mut trace = Vec::new();
+        let mut shown = std::collections::HashSet::new();
+
+        let first = agent
+            .run_tool(&call("t1"), &ctx, &mut range, &mut trace, &mut shown)
+            .await;
+        assert_eq!(first.content["doctrine"]["skill"], "Delta Doctrine");
+        assert!(
+            first.content["doctrine"]["rules"][0]
+                .as_str()
+                .is_some_and(|rule| rule.contains("suspicion")),
+            "{}",
+            first.content["doctrine"]
+        );
+
+        let second = agent
+            .run_tool(&call("t2"), &ctx, &mut range, &mut trace, &mut shown)
+            .await;
+        assert!(
+            second.content.get("doctrine").is_none(),
+            "doctrine once, not on every call: {}",
+            second.content
+        );
+
+        // A tool with no covering skill never grows the field.
+        let other = ToolCall {
+            id: "t3".into(),
+            name: "get_cvd".into(),
+            input: json!({"symbol": "BTCUSDT", "timeframe": "5m"}),
+        };
+        let third = agent
+            .run_tool(&other, &ctx, &mut range, &mut trace, &mut shown)
+            .await;
+        assert!(third.content.get("doctrine").is_none());
     }
 }

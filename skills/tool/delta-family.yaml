@@ -1,0 +1,24 @@
+# Tool skill (docs/40, §18): doctrine for the delta/CVD family.
+name: "Delta Family"
+version: "1.0.0"
+kind: tool
+artifact_kind: thesis
+category: "delta"
+knowledge: >
+  Delta is signed aggressive volume per bar; CVD is its running sum; VPIN is
+  its volatility over a bucketed window. The family's honesty hinge is the
+  split: with a live tape the split is measured, over REST history on some
+  venues it is direction-ATTRIBUTED -- an estimate, not a measurement.
+rules:
+  - "Before quoting a delta or CVD number, read the result's provenance block: basis true means measured, derived means attributed. When it is derived, say so in the same sentence as the number."
+  - "A delta read over a window with no trades is candle history; on a venue whose REST candles are attributed, that history's split is an estimate. The render labels those sections `derived` -- never paraphrase them as measured."
+  - "VPIN needs live trades. If get_vpin reports the capability unavailable, do not approximate toxicity from delta -- report the gap."
+  - "Size-class reads (get_delta_by_size, detect_size_divergence) are tape-only. With no trades in the window their emptiness is not evidence of no whale activity; say the tape was absent."
+  - "Prefer get_cvd over summing get_delta output yourself: the running sum is the tool's job, and a hand-sum in prose is a number no tool produced."
+capability_requirements:
+  required: [{capability: delta}]
+  preferred: [{capability: vpin}]
+applies_to:
+  tools: [get_delta, get_cvd, get_vpin, get_delta_by_size, detect_size_divergence]
+conditions:
+  timeframes: ["5m", "15m", "1h", "4h"]

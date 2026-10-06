@@ -1,5 +1,11 @@
+# Schema v2 (docs/40): the data contract is what makes this skill honest.
+# Its central test is `detect_absorption`, which needs the tape — a venue or
+# window without trades cannot run this skill at all, and the resolver now
+# refuses it by name instead of letting the model read a silent empty list.
 name: "Absorption at a Level"
-version: "1.0"
+version: "1.1"
+kind: trading
+artifact_kind: thesis
 category: "footprint"
 knowledge: >
   Absorption is heavy volume at a price level that fails to move price
@@ -21,6 +27,11 @@ rules:
   - "`detect_absorption` must report absorption at that level."
   - "Delta must improve relative to the previous candle. For a long setup the delta is usually still negative; that is expected, not a failure."
   - "Price must hold the level: the candle must not close through it."
+capability_requirements:
+  # The central test reads the tape; without trades there is no honest version
+  # of this skill, so the requirement is hard and no derived fallback exists.
+  required: [{capability: absorption}]
+  preferred: [{capability: footprint}]
 conditions:
   timeframes: ["1h", "5m"]
   risk:

@@ -31,6 +31,9 @@
 
 pub mod agent;
 pub mod agent_memory;
+// docs/39: where the registry's declared answers meet the window's observed
+// facts, so a tool result can carry its provenance.
+pub mod capability_view;
 pub mod chart_context;
 pub mod error;
 pub mod llm_client;
@@ -53,6 +56,7 @@ pub use agent_memory::{
     facts_from_thesis, render_recall, MemoryRow, MemorySource, MemoryWriter, NewMemory,
     MAX_CONTENT_CHARS, RECALL_LIMIT,
 };
+pub use capability_view::{CapabilityView, SkillVerdict};
 pub use chart_context::{
     ChartContext, ChartScreenshot, DrawnLevel, MAX_DRAWINGS, MAX_SCREENSHOT_BYTES,
     SCREENSHOT_MEDIA_TYPES,
@@ -67,7 +71,10 @@ pub use progress::{NoProgress, Progress, ProgressSink};
 pub use providers::bedrock::{BedrockClient, BedrockConfig};
 pub use providers::openai_compat::{AuthStyle, OpenAiCompatClient, OpenAiCompatConfig};
 pub use providers::{from_deployment_env, ProviderId};
-pub use skills::{Skill, SkillLibrary, SkillQuery};
+pub use skills::{
+    AppliesTo, ArtifactKind, CapabilityNeed, CapabilityRequirements, FallbackAccept, FallbackRule,
+    Skill, SkillKind, SkillLibrary, SkillQuery,
+};
 pub use strategy_dsl::StrategyDocument;
 pub use thesis::{Bias, CheckStatus, ConditionCheck, PriceRange, ToolTrace};
 

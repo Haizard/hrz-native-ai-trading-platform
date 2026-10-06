@@ -180,6 +180,11 @@ pub struct CapabilityReport {
     pub instruments: InstrumentStatus,
     /// Live feed accounting, so a client can see the ceiling approaching.
     pub feeds: FeedStatus,
+    /// The analysis view (`docs/38`): every analytical capability resolved
+    /// against every declared provider and symbol class. Static truth — what
+    /// each provider *can* supply — with the deployment half above saying
+    /// what is configured and the freshness half saying what is current.
+    pub analysis: Vec<AnalysisCapability>,
     /// Whether every capability is ready. **Not** a claim that everything
     /// works: a configured-but-never-exercised capability is ready and can
     /// still fail on first use.
@@ -214,6 +219,69 @@ pub struct FeedStatus {
     pub max_active: usize,
     /// Symbols currently fed.
     pub symbols: Vec<String>,
+}
+
+/// One analytical capability's answer for one provider and symbol class
+/// (`docs/38`).
+///
+/// The analysis view sits next to the deployment view on purpose: "the
+/// database is configured" (the [`Capability`] half) and "footprint analysis
+/// is available on binance spot" (this half) are different questions, but
+/// they are the two halves of "can I trust what I am about to look at", and
+/// making a client join two endpoints is how one of them goes unread.
+#[derive(Debug, Clone, Serialize)]
+pub struct AnalysisCapability {
+    /// The capability id, e.g. `"footprint"`. Frozen in `capabilities`.
+    pub name: &'static str,
+    /// The provider this answer is about.
+    pub provider: &'static str,
+    /// The symbol class this answer is about.
+    pub symbol_class: &'static str,
+    /// available | derived | partial | degraded | unavailable.
+    pub availability: ::capabilities::Availability,
+    /// `true` (the measurement) or `derived` (a declared substitute), when the
+    /// capability can run at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub basis: Option<::capabilities::Basis>,
+    /// The data kinds whose absence blocks it, when unavailable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<::capabilities::DataKind>,
+    /// Caveats a consumer must see (channel fidelity, live-only windows).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub caveats: Vec<String>,
+    /// One sentence, written for a user or an agent prompt.
+    pub explanation: String,
+}
+
+/// The analysis view: every catalog capability resolved against every
+/// declared provider and symbol class.
+///
+/// Computed per request rather than cached: resolution is a pure walk over
+/// two small static tables, and a cached copy would be one more thing that
+/// can drift from the registry it came from.
+#[must_use]
+pub fn analysis_view(registry: &::capabilities::Registry) -> Vec<AnalysisCapability> {
+    let mut out = Vec::new();
+    for profile in registry.profiles() {
+        for (class, _) in &profile.classes {
+            // The class name stands in for the symbol: this view answers per
+            // (provider, class), not per instrument.
+            let scope = ::capabilities::DataScope::new(profile.provider, *class, class.as_str());
+            for resolution in registry.summary(&scope) {
+                out.push(AnalysisCapability {
+                    name: resolution.capability,
+                    provider: profile.provider.as_str(),
+                    symbol_class: class.as_str(),
+                    availability: resolution.availability,
+                    basis: resolution.basis,
+                    missing: resolution.missing,
+                    caveats: resolution.caveats,
+                    explanation: resolution.explanation,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Build the report from the live state.
@@ -324,6 +392,7 @@ pub fn report(state: &AppState, now_ns: i64) -> CapabilityReport {
         data,
         instruments,
         feeds,
+        analysis: analysis_view(&state.capability_registry),
         all_ready,
         warning,
     }
@@ -576,5 +645,73 @@ mod tests {
         assert_eq!(json["stale"], false);
         assert_eq!(json["timeframes"][0], "1m");
         assert_eq!(json["ticks"], true);
+    }
+
+    #[test]
+    fn the_analysis_view_covers_every_provider_class_and_capability() {
+        // Built from the real profiles, not a fixture: a provider profile that
+        // drifts from its codec should fail here, in the crate that serves the
+        // answer.
+        let registry = ::capabilities::Registry::new(
+            ::capabilities::descriptor::STANDARD,
+            ::market_data::exchanges::profile::standard(),
+        );
+        let view = analysis_view(&registry);
+
+        // One row per (provider, class, capability): binance spot + bybit
+        // spot/linear/inverse = 4 scopes against the whole catalog.
+        let catalog = ::capabilities::descriptor::STANDARD.len();
+        assert_eq!(view.len(), 4 * catalog);
+
+        let footprint_binance = view
+            .iter()
+            .find(|row| row.name == "footprint" && row.provider == "binance")
+            .expect("a binance footprint row");
+        assert_eq!(
+            footprint_binance.availability,
+            ::capabilities::Availability::Available
+        );
+
+        let greeks = view
+            .iter()
+            .find(|row| row.name == "greeks_exposure" && row.provider == "binance")
+            .expect("a greeks row");
+        assert_eq!(
+            greeks.availability,
+            ::capabilities::Availability::Unavailable,
+            "the declared gap must be visible, not absent"
+        );
+
+        let profile_bybit = view
+            .iter()
+            .find(|row| row.name == "volume_profile" && row.provider == "bybit")
+            .expect("a bybit volume profile row");
+        assert_eq!(
+            profile_bybit.availability,
+            ::capabilities::Availability::Available,
+            "bybit has live trades, so the true rule holds"
+        );
+        assert!(
+            profile_bybit
+                .caveats
+                .iter()
+                .any(|c| c.contains("live-window only")),
+            "the no-history caveat is what stops 'available' reading as 'backtestable': {:?}",
+            profile_bybit.caveats
+        );
+    }
+
+    #[test]
+    fn the_analysis_view_serializes() {
+        let registry = ::capabilities::Registry::new(
+            ::capabilities::descriptor::STANDARD,
+            ::market_data::exchanges::profile::standard(),
+        );
+        let json = serde_json::to_value(analysis_view(&registry)).expect("serializes");
+        let first = &json[0];
+        assert!(first["name"].is_string());
+        assert!(first["provider"].is_string());
+        assert!(first["availability"].is_string());
+        assert!(first["explanation"].is_string());
     }
 }

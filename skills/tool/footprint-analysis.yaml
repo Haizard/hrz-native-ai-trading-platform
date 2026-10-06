@@ -1,0 +1,25 @@
+# Tool skill (docs/40, §18): doctrine for the footprint family.
+# Never expresses market opinion; never restates what a number is beyond how
+# to call for it and read it honestly.
+name: "Footprint Family"
+version: "1.0.0"
+kind: tool
+artifact_kind: thesis
+category: "footprint"
+knowledge: >
+  The footprint family decomposes traded volume by aggressor side: per price
+  level within bars (get_footprint), per bar (get_bar_delta_stats), and as
+  detected events (detect_imbalance, detect_absorption). All of it rests on
+  the tape: no trades, no footprint, and no candle arithmetic substitutes.
+rules:
+  - "Call these tools only when the run's provenance shows trades present, or the capability `footprint` resolves available. The state render's `provenance.sections` says so explicitly -- read it before calling."
+  - "Footprint reads are heavy: keep `bars` at or below the default unless the question needs more, and prefer detect_imbalance / detect_absorption over scanning a raw footprint yourself."
+  - "When the result reports unavailable -- or the state render labels the footprint sections unavailable -- answer with the gap. Never substitute a candle-derived estimate and call it a footprint read."
+  - "A stacked imbalance is directional pressure repeated across adjacent price levels; one isolated level is noise. Cite the stacks, not the count."
+  - "An empty absorption list is evidence only when trades existed in the window. With trades: zero it. Without: say the window had no tape."
+capability_requirements:
+  required: [{capability: footprint}]
+applies_to:
+  tools: [get_footprint, get_bar_delta_stats, detect_imbalance, detect_absorption]
+conditions:
+  timeframes: ["1m", "5m", "15m"]

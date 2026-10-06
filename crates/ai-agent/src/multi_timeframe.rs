@@ -890,6 +890,10 @@ mod tests {
                 session_delta: None,
                 rsi_divergence: None,
                 volume_score: None,
+                // The factors under test never read provenance; the default
+                // (no trades, candle profile) is the honest claim for a
+                // hand-built fixture.
+                provenance: analytics_core::StateProvenance::default(),
             },
         }
     }

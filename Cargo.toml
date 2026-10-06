@@ -19,11 +19,16 @@ license = "MIT OR Apache-2.0"
 # Internal crates
 # Dependency rules from docs/03-PROJECT-STRUCTURE.md:
 #   analytics-core -> nothing internal (leaf, must build for wasm32)
-#   market-data, db -> analytics-core
+#   capabilities   -> analytics-core (leaf; the capability vocabulary and
+#                     resolver are pure, wasm32-clean, and compute nothing
+#                     about markets -- docs/38)
+#   market-data, db -> analytics-core (market-data also -> capabilities, to
+#                     declare provider profiles)
 #   strategy-dsl -> analytics-core
 #   strategy-runtime -> strategy-dsl, analytics-core
 #   backtester, sandbox -> strategy-runtime
-#   ai-agent -> strategy-dsl, analytics-core (NEVER sandbox / trading-engine)
+#   ai-agent -> strategy-dsl, analytics-core, capabilities
+#                (NEVER sandbox / trading-engine)
 #   trading-engine -> strategy-runtime, sandbox, db
 #   api-gateway -> everything; nothing depends on api-gateway
 #   observability -> nothing internal (SECOND leaf; anything may depend on it,
@@ -31,6 +36,7 @@ license = "MIT OR Apache-2.0"
 # ---------------------------------------------------------------------------
 [workspace.dependencies]
 analytics-core   = { path = "crates/analytics-core" }
+capabilities     = { path = "crates/capabilities" }
 market-data      = { path = "crates/market-data" }
 # docs/23: the Pine-like scripting language. A leaf like analytics-core --
 # its only internal dependency is the math crate, and it must keep building

@@ -23,6 +23,118 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AgentError;
 
+/// Schema v2 (docs/40): whether the document is trading methodology or tool
+/// doctrine.
+///
+/// The two never mix: tool skills never express market opinion, trading
+/// skills never restate tool mechanics. The field is deliberately **not**
+/// called `category` — that name already carries the topical grouping
+/// (`liquidity`, `footprint`) the retrieval scoring matches on, and
+/// repurposing it would silently de-scope every existing document.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillKind {
+    /// Market methodology: a setup, its rules, its invalidation.
+    #[default]
+    Trading,
+    /// Usage doctrine for one tool family: how to call it well, what it
+    /// costs, how to read its outputs, when to refuse.
+    Tool,
+}
+
+/// What a skill produces when it is followed (schema v2, docs/40).
+///
+/// The caller uses it, not the scorer: ask-mode prefers `Thesis` skills, the
+/// studio prefers the document kinds. Kept out of the scoring itself because
+/// a skill's *relevance* and its *product* are different questions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArtifactKind {
+    /// A trade thesis (the ask flow).
+    #[default]
+    Thesis,
+    /// A Strategy DSL document.
+    StrategyDsl,
+    /// A Pine-lite script.
+    PineScript,
+    /// A monitor definition.
+    Monitor,
+}
+
+/// One named capability a skill leans on (schema v2, docs/40).
+///
+/// The name is a `capabilities` catalog id (`footprint`, `delta`, ...) and is
+/// validated against the registry at write time — a skill that names a
+/// capability nobody registered would be refused for a typo, and the two
+/// would look identical at runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CapabilityNeed {
+    /// The catalog id.
+    pub capability: String,
+}
+
+impl Default for CapabilityNeed {
+    fn default() -> Self {
+        Self {
+            capability: String::new(),
+        }
+    }
+}
+
+/// What a shortfall may substitute for a required capability (schema v2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackAccept {
+    /// No substitute: unavailable means refused.
+    #[default]
+    None,
+    /// A `derived` answer is acceptable — the skill's rules must then treat
+    /// the number as the estimate it is, which is why this is opt-in per
+    /// document rather than a resolver default.
+    Derived,
+}
+
+/// A named exception to the required rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FallbackRule {
+    /// The capability this exception applies to.
+    pub needs: String,
+    /// What answer is acceptable in place of `available`.
+    pub accept: FallbackAccept,
+}
+
+/// The data-awareness contract of a skill (schema v2, docs/40).
+///
+/// Empty means "no data requirements beyond candles" — which is itself the
+/// honest declaration for a candle-only skill, and is what every v1 document
+/// means.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CapabilityRequirements {
+    /// Must resolve `available` (or a fallback must accept the answer) for
+    /// the skill to be eligible at all.
+    pub required: Vec<CapabilityNeed>,
+    /// Improve the read when present; a gap is surfaced, never refused.
+    pub preferred: Vec<CapabilityNeed>,
+    /// Per-capability exceptions to the required rule.
+    pub fallback: Vec<FallbackRule>,
+}
+
+/// What a tool skill covers (schema v2, docs/40).
+///
+/// The doctrine attaches **through the tools**: when the model calls a tool
+/// in the family, the skill's rules are injected with the result — doctrine
+/// arrives exactly when it applies, and a prompt that never touches the
+/// family never pays for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppliesTo {
+    /// Registered tool names, e.g. `get_footprint`.
+    pub tools: Vec<String>,
+}
+
 /// One versioned methodology document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -33,6 +145,10 @@ pub struct Skill {
     pub version: String,
     /// Category: `liquidity`, `footprint`, `market-structure`, `risk`, ...
     pub category: String,
+    /// Schema v2: trading methodology or tool doctrine.
+    pub kind: SkillKind,
+    /// Schema v2: what following the skill produces.
+    pub artifact_kind: ArtifactKind,
     /// Prose explanation of the edge. This is what teaches the model the
     /// concept; the rules below are what it must actually check.
     pub knowledge: String,
@@ -40,6 +156,10 @@ pub struct Skill {
     pub rules: Vec<String>,
     /// Machine-readable framing: which timeframes, what risk ceiling.
     pub conditions: SkillConditions,
+    /// Schema v2: the data-awareness contract.
+    pub capability_requirements: CapabilityRequirements,
+    /// Schema v2: the tool family a tool skill covers.
+    pub applies_to: AppliesTo,
     /// Worked historical examples.
     #[serde(default)]
     pub examples: Vec<SkillExample>,
@@ -60,9 +180,13 @@ impl Default for Skill {
             name: String::new(),
             version: "1.0".into(),
             category: "general".into(),
+            kind: SkillKind::default(),
+            artifact_kind: ArtifactKind::default(),
             knowledge: String::new(),
             rules: Vec::new(),
             conditions: SkillConditions::default(),
+            capability_requirements: CapabilityRequirements::default(),
+            applies_to: AppliesTo::default(),
             examples: Vec::new(),
             invalidation: Vec::new(),
             preferred_markets: Vec::new(),
@@ -189,6 +313,36 @@ impl Skill {
                 "\nTIMEFRAME LADDER: {}\n",
                 self.conditions.timeframes.join(" -> ")
             ));
+        }
+        // The data contract is part of the doctrine: a model following this
+        // skill without knowing it needs trades will quote footprint evidence
+        // that cannot exist. One terse line; the *resolution* is the tool
+        // layer's job, this line is the skill's own statement.
+        if !self.capability_requirements.required.is_empty()
+            || !self.capability_requirements.preferred.is_empty()
+        {
+            let names = |needs: &[CapabilityNeed]| {
+                needs
+                    .iter()
+                    .map(|need| need.capability.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let mut line = String::from("\nDATA CONTRACT:");
+            if !self.capability_requirements.required.is_empty() {
+                line.push_str(&format!(
+                    " requires {} available",
+                    names(&self.capability_requirements.required)
+                ));
+            }
+            if !self.capability_requirements.preferred.is_empty() {
+                line.push_str(&format!(
+                    "; prefers {}",
+                    names(&self.capability_requirements.preferred)
+                ));
+            }
+            line.push('\n');
+            out.push_str(&line);
         }
         out.push_str(&format!(
             "MAX RISK PER TRADE: {}%\n",
@@ -385,6 +539,22 @@ impl SkillLibrary {
                 .then_with(|| a.1.name.cmp(&b.1.name))
         });
         scored.into_iter().map(|(_, skill)| skill).collect()
+    }
+
+    /// The tool skills whose doctrine covers this tool (docs/40).
+    ///
+    /// Doctrine attaches *through* the tools: the agent calls this when a tool
+    /// executes and injects the skill's rules with the result, so the doctrine
+    /// costs prompt budget exactly when the family is in play and never
+    /// before. A tool is conventionally covered by one skill; returning a Vec
+    /// keeps a mis-authored overlap visible instead of silently dropping one.
+    #[must_use]
+    pub fn tool_doctrine(&self, tool: &str) -> Vec<&Skill> {
+        self.latest_versions()
+            .into_iter()
+            .filter(|skill| skill.kind == SkillKind::Tool)
+            .filter(|skill| skill.applies_to.tools.iter().any(|t| t == tool))
+            .collect()
     }
 }
 
@@ -666,5 +836,159 @@ preferred_timeframes: ["4h", "1h", "5m"]
     fn a_missing_directory_is_an_empty_library_not_an_error() {
         let library = SkillLibrary::load_dir("./definitely-not-here").unwrap();
         assert!(library.is_empty());
+    }
+
+    // -- schema v2 (docs/40) ------------------------------------------------
+
+    const TOOL_SKILL_V2: &str = r#"
+name: "Footprint Analysis"
+version: "1.0.0"
+kind: tool
+category: "footprint"
+artifact_kind: thesis
+knowledge: >
+  Footprint reads decompose each bar's volume by aggressor side per price.
+rules:
+  - "Call get_footprint only when provenance reports trades available."
+applies_to:
+  tools: [get_footprint, detect_imbalance, detect_absorption]
+capability_requirements:
+  required: [{capability: footprint}]
+  preferred: [{capability: orderbook_snapshots}]
+  fallback: [{needs: footprint, accept: none}]
+"#;
+
+    #[test]
+    fn a_v1_document_defaults_to_trading_thesis_with_no_data_contract() {
+        // The migration promise of schema v2: every document written before it
+        // parses unchanged and means what it always meant — candle-level
+        // methodology with no declared data requirements.
+        let skill = SkillLibrary::parse_one(SWEEP_V2).unwrap();
+        assert_eq!(skill.kind, SkillKind::Trading);
+        assert_eq!(skill.artifact_kind, ArtifactKind::Thesis);
+        assert!(skill.capability_requirements.required.is_empty());
+        assert!(skill.applies_to.tools.is_empty());
+    }
+
+    #[test]
+    fn a_v2_tool_skill_parses_with_its_contract_and_family() {
+        let skill = SkillLibrary::parse_one(TOOL_SKILL_V2).unwrap();
+        assert_eq!(skill.kind, SkillKind::Tool);
+        assert_eq!(skill.artifact_kind, ArtifactKind::Thesis);
+        assert_eq!(
+            skill.applies_to.tools,
+            vec!["get_footprint", "detect_imbalance", "detect_absorption"]
+        );
+        assert_eq!(
+            skill.capability_requirements.required[0].capability,
+            "footprint"
+        );
+        assert_eq!(
+            skill.capability_requirements.preferred[0].capability,
+            "orderbook_snapshots"
+        );
+        assert_eq!(
+            skill.capability_requirements.fallback[0].accept,
+            FallbackAccept::None
+        );
+        // A document with a contract says so in its render.
+        let rendered = skill.render();
+        assert!(
+            rendered.contains("requires footprint available"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("prefers orderbook_snapshots"), "{rendered}");
+    }
+
+    #[test]
+    fn tool_doctrine_attaches_through_the_tool_names_only() {
+        let library = SkillLibrary::from_skills(vec![
+            SkillLibrary::parse_one(TOOL_SKILL_V2).unwrap(),
+            SkillLibrary::parse_one(SWEEP_V2).unwrap(),
+        ]);
+        let doctrine = library.tool_doctrine("get_footprint");
+        assert_eq!(doctrine.len(), 1);
+        assert_eq!(doctrine[0].name, "Footprint Analysis");
+        // A tool nobody covers has no doctrine; a trading skill is never one.
+        assert!(library.tool_doctrine("get_cvd").is_empty());
+    }
+
+    #[test]
+    fn the_shipped_library_parses_and_references_real_vocabulary() {
+        // The shipped documents are the platform's own authors: if they drift
+        // from the vocabularies they reference (capability ids, tool names),
+        // every deployment drifts with them. Loaded from the real directory,
+        // not re-stated here, so this test fails the day a doc does.
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../skills");
+        let library = SkillLibrary::load_dir(dir).unwrap();
+
+        let latest = library.latest_versions();
+        let tools: Vec<_> = latest
+            .iter()
+            .filter(|s| s.kind == SkillKind::Tool)
+            .collect();
+        let trading: Vec<_> = latest
+            .iter()
+            .filter(|s| s.kind == SkillKind::Trading)
+            .collect();
+        assert_eq!(tools.len(), 7, "the seven tool families ship: {tools:?}");
+        assert_eq!(trading.len(), 2, "the two trading skills ship: {trading:?}");
+
+        // Every applies_to entry is a registered tool; every capability id is
+        // catalogued. The same checks the write route enforces, run against
+        // the shipped set.
+        let registry = crate::tools::ToolRegistry::market_analysis();
+        for skill in &latest {
+            for tool in &skill.applies_to.tools {
+                assert!(
+                    registry.contains(tool),
+                    "{} names an unregistered tool `{tool}`",
+                    skill.name
+                );
+            }
+            let ids = skill
+                .capability_requirements
+                .required
+                .iter()
+                .chain(&skill.capability_requirements.preferred)
+                .map(|need| need.capability.as_str())
+                .chain(
+                    skill
+                        .capability_requirements
+                        .fallback
+                        .iter()
+                        .map(|rule| rule.needs.as_str()),
+                );
+            for id in ids {
+                assert!(
+                    capabilities::descriptor::STANDARD
+                        .iter()
+                        .any(|d| d.id == id),
+                    "{} names an uncatalogued capability `{id}`",
+                    skill.name
+                );
+            }
+        }
+
+        // Both trading skills declare their data contract, and every covered
+        // tool belongs to exactly one family.
+        assert!(
+            trading
+                .iter()
+                .all(|s| !s.capability_requirements.required.is_empty()),
+            "a shipped trading skill without a data contract is pre-v2 methodology"
+        );
+        let mut covered: Vec<&str> = tools
+            .iter()
+            .flat_map(|s| s.applies_to.tools.iter().map(String::as_str))
+            .collect();
+        covered.sort_unstable();
+        covered.dedup();
+        let total: usize = tools.iter().map(|s| s.applies_to.tools.len()).sum();
+        assert_eq!(
+            covered.len(),
+            total,
+            "a tool is covered by two families: {covered:?}"
+        );
     }
 }

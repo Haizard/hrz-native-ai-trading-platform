@@ -1,5 +1,11 @@
+# Schema v2 (docs/40). The skill already said "absorption is UNKNOWN when tick
+# data is unavailable" — that tolerance is now machine-readable: absorption is
+# `preferred`, never `required`, so a candles-only venue still runs the skill
+# and the prompt names the gap.
 name: "Liquidity Sweep + Absorption"
-version: "2.1"
+version: "2.2"
+kind: trading
+artifact_kind: thesis
 category: "liquidity"
 knowledge: >
   A liquidity sweep occurs when price briefly breaks a prior swing high/low to
@@ -25,6 +31,9 @@ rules:
   - "Price must reclaim the swept level: for a long, `detect_liquidity.reclaim.long_reclaim.reclaimed` must be true and the stop belongs beyond its `swept_level` (mirror for a short with `short_reclaim`). A sweep with no reclaim is not a setup. Do not compare the price against a level yourself -- cite the verdict."
   - "Absorption at the sweep level should be present when tick data is available. When it is not available, mark the check UNKNOWN -- never failed, and never assumed."
   - "The stop sits beyond the swept level, not beyond an arbitrary swing: `below_sweep_low` for a long."
+capability_requirements:
+  required: [{capability: liquidity}]
+  preferred: [{capability: absorption}]
 conditions:
   timeframes: ["4h", "1h", "5m"]
   risk:

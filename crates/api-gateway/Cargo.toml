@@ -10,6 +10,10 @@ license.workspace = true
 db = { workspace = true }
 observability = { workspace = true }
 analytics-core = { workspace = true }
+# docs/38: the capability registry — this crate assembles it (catalog from the
+# leaf, profiles from market-data) and serves its answers through
+# /capabilities. Nothing here resolves by hand.
+capabilities = { workspace = true }
 ai-agent = { workspace = true }
 # Phase 7: the gateway now runs strategies and bots itself, so it depends on the
 # crates that do that work rather than shelling out to the CLIs.
@@ -53,6 +57,9 @@ dotenvy = { workspace = true }
 reqwest = { workspace = true }
 
 [dev-dependencies]
+# The research runner's resolution tests write strategy documents into a temp
+# directory rather than depending on the deployment's strategies/.
+tempfile = "3"
 # Integration tests build the real router and drive it in-process, so they need
 # a way to call a `tower` service with a request.
 tower = { version = "0.5", features = ["util"] }
