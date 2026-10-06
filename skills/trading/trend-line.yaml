@@ -1,0 +1,54 @@
+# Methodology skill: trendline construction and trade use.
+name: "Trendline Method"
+version: "1.0"
+kind: trading
+artifact_kind: thesis
+category: "trendlines"
+knowledge: >
+  A trendline is a slope drawn through confirmed swings: it visualises the
+  trend's rate of progress and marks where a pullback becomes a trade.
+
+  CONSTRUCTION:
+  - Uptrend line: through two or more ascending swing LOWS from
+    detect_market_structure's swing_lows (most recent list). More touches,
+    stronger line.
+  - Downtrend line: through descending swing HIGHS.
+  - The line is only as good as its anchors: both anchors must be confirmed
+    swings the tool returned, not candles picked by eye.
+
+  USE:
+  - A pullback TO the line in trend direction is the long (or short) zone.
+  - A close THROUGH the line is a warning, not a reversal signal by itself --
+    combine with a CHoCH from recent_breaks before calling the trend done.
+  - A third touch with a rejection candle is the highest-quality entry.
+
+  FAILURE MODES:
+  - Redrawing a broken line to fit new price action (curve-fitting). A broken
+    line is deleted or its break is acknowledged, never silently moved.
+  - Trading the line against the higher-timeframe trend.
+rules:
+  - "Build candidate anchors only from detect_market_structure swing lists; two ascending swing lows (uptrend) or two descending swing highs (downtrend), citing their prices."
+  - "Trade the pullback to the line only WITH the higher-timeframe trend (analyze_timeframe trend on the top ladder rung)."
+  - "Entry on the touch, stop beyond the line AND beyond the pullback's extreme, target the prior swing extreme. risk_reward >= 1.5."
+  - "A close through the line without a CHoCH = warning: tighten, do not reverse. A close through WITH a CHoCH from recent_breaks = trend over; delete the line and say why."
+  # --- Drawing doctrine ---
+  - "DRAW the line as trendline with anchor1 = the older swing's time/price and anchor2 = the newer swing's time/price, label 'Uptrend <tf> (<touches> touches)' or 'Downtrend <tf> (<touches> touches)'. Use ray instead of trendline when the trade needs the projection beyond the newest swing."
+  - "DRAW the pullback entry zone as a small rect around the touch area, label 'Pullback to uptrend line 1H'."
+  - "DRAW the trade as position_long / position_short at the touch price, label with entry/stop/target and R."
+  - "On a confirmed break (close through + CHoCH), delete_drawing the line with reason 'broken with CHoCH' -- never leave a dead trendline on the chart."
+  - "Candle times from get_candles are NANOSECONDS (field t); drawing anchors need MILLISECONDS -- divide by exactly 1,000,000."
+conditions:
+  timeframes: ["4h", "1h", "15m"]
+  risk:
+    max_risk_pct: 1.0
+capability_requirements:
+  required:
+    - {capability: market_structure}
+  preferred:
+    - {capability: chart_drawing}
+examples:
+  - description: "BTCUSDT 4H: uptrend line through swing lows 64,200 and 67,900 (2 touches); third touch at 69,050 with rejection; long 69,100, stop 68,700, target 71,800 (+3.4R)."
+invalidation:
+  - "Close through the line plus a CHoCH in recent_breaks (delete the line; trend over)."
+preferred_markets: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+preferred_timeframes: ["4h", "1h", "15m"]

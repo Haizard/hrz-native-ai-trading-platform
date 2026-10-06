@@ -1,0 +1,71 @@
+# The order block methodology -- the flagship chart-drawing skill.
+# Rectangles ARE the pattern representation: an OB is a zone, and a zone is a rect.
+name: "Order Block Analysis"
+version: "3.0"
+kind: trading
+artifact_kind: thesis
+category: "order-blocks"
+knowledge: >
+  An order block is the last opposing candle before an impulsive move that
+  breaks structure -- the candle where a large participant's orders filled,
+  leaving behind a zone price tends to respect on return.
+
+  BULLISH ORDER BLOCK: the last DOWN candle before a bullish break of
+  structure. Its zone is that candle's open (top) to its low (bottom).
+  Price returning into it is a potential long.
+
+  BEARISH ORDER BLOCK: the last UP candle before a bearish break. Zone is
+  that candle's open (bottom) to its high (top). Price returning into it is
+  a potential short.
+
+  VALIDITY:
+  - The move away from the OB must break structure (a BOS from
+    detect_market_structure's recent_breaks) -- a candle followed by drift is
+    not an OB, it is just a candle.
+  - An OB is fresh until mitigated: once price trades through the zone's
+    midpoint, the OB is spent. First touch is strongest; third touch is weak.
+  - An OB is invalidated by a CLOSE beyond its far extreme (below the low of
+    a bullish OB). A wick through is a sweep of the zone, not an invalidation.
+  - Confluence raises quality: an OB that overlaps an FVG, sits at a liquidity
+    pool (detect_liquidity), or shows absorption on the retest
+    (analyze_timeframe's absorption list) outranks a bare OB.
+
+  ENTRY MODELS (pick one and say which):
+  - Extreme: at the OB's far edge (low of bullish OB) -- best R, lowest fill rate.
+  - Mean: at the zone midpoint -- balanced.
+  - Confirmation: after the retest prints a rejection candle inside the zone.
+rules:
+  - "Find the structure break first: detect_market_structure recent_breaks must contain a BOS (kind and direction cited). No break, no order block -- a candle without a displacement leg is not one."
+  - "Identify the OB candle from get_candles: the last opposing-direction candle before the breaking leg. Quote its open/high/low and its t (nanoseconds) -- these are the rect's anchors, never eyeballed."
+  - "Classify every OB in the lookback as fresh / mitigated / invalidated: mitigated = price has traded through the zone midpoint; invalidated = close beyond the far extreme. Only fresh OBs are tradable."
+  - "Entry per the chosen model (extreme / mean / confirmation -- say which), stop beyond the OB's far extreme, target the nearest opposing liquidity pool from detect_liquidity or the prior structure swing. risk_reward >= 2."
+  - "Rate confluence explicitly in checks: FVG overlap, liquidity pool alignment, absorption on retest, higher-timeframe trend agreement -- one check each, cited to its tool."
+  # --- Drawing doctrine: rectangles are how an OB exists on the chart ---
+  - "DRAW every tradable OB as a rect: anchor1 = OB candle's open time at its extreme price (LOW for bullish, HIGH for bearish); anchor2 = the current candle's time at the candle's other extreme. The rectangle spans the full zone, never a fragment of it."
+  - "LABEL bullish OBs 'Bullish OB <tf> <low>-<high> (fresh)' and bearish OBs 'Bearish OB <tf> <high>-<low> (fresh)' -- the state word (fresh/mitigated) is part of the label."
+  - "DRAW an FVG overlapping the OB as its own rect, label 'FVG <tf> <bottom>-<top>'."
+  - "DRAW the BOS that birthed the OB as a trendline from the broken swing to the break candle, label 'BOS <tf> @ <level>'."
+  - "DRAW the trade as position_long / position_short at the chosen entry, label with entry/stop/target and R."
+  - "LIFECYCLE: when an OB is mitigated, update_drawing its rect label to '... (mitigated)' with reason; when invalidated, delete_drawing it and say why. A stale OB rectangle on the chart is a false claim."
+  - "Candle times from get_candles are NANOSECONDS (field t); drawing anchors need MILLISECONDS -- divide by exactly 1,000,000."
+conditions:
+  timeframes: ["4h", "1h", "15m"]
+  risk:
+    max_risk_pct: 1.0
+capability_requirements:
+  required:
+    - {capability: market_structure}
+    - {capability: candles}
+  preferred:
+    - {capability: liquidity}
+    - {capability: absorption}
+    - {capability: zones}
+    - {capability: chart_drawing}
+examples:
+  - description: "BTCUSDT 1H: bullish BOS at 69,200; OB candle 68,200-68,500 (open 68,500, low 68,200). rect drawn 68,200-68,500, mean entry 68,350, stop 68,150, target buyside pool 69,800 (+4.1R)."
+  - description: "ETHUSDT 15m: bearish OB 3,420-3,450 mitigated on second touch -- rect label updated to 'mitigated', no new entry, thesis explains the OB is spent."
+invalidation:
+  - "Close beyond the OB's far extreme on the entry timeframe (delete the rect; the OB is dead)."
+  - "Structure breaks against the trade before entry (bias flipped; stand down)."
+preferred_markets: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+preferred_timeframes: ["4h", "1h", "15m"]

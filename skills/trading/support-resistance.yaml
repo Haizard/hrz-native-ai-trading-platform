@@ -1,0 +1,54 @@
+# Methodology skill: horizontal support/resistance level trading.
+name: "Support & Resistance Levels"
+version: "1.0"
+kind: trading
+artifact_kind: thesis
+category: "levels"
+knowledge: >
+  Horizontal levels are the simplest and most durable structure: prices where
+  the market has reversed before tend to matter again. The platform's tools
+  produce four level sources, and confluence between them is the edge:
+
+  - SWING LEVELS: detect_market_structure's swing_highs / swing_lows.
+  - LIQUIDITY LEVELS: detect_liquidity's levels (touches >= 2, swept flag).
+  - VALUE EDGES: analyze_timeframe's poc / vah / val.
+  - VWAP: analyze_timeframe's vwap -- the intraday fair price.
+
+  ROLE FLIP: a broken support becomes resistance and vice versa. The flip is
+  confirmed by a retest that holds from the new side.
+
+  TRADING THE LEVEL:
+  - Fade the level only with a reaction (rejection candle or failed break) and
+    only toward the higher-timeframe trend.
+  - Trade the break only after acceptance (two closes beyond) and only on the
+    retest -- never chase the breakout candle.
+rules:
+  - "Build the level list from the four tool sources and cite each level's source: swing / liquidity / value edge / vwap."
+  - "Confluence decides confidence: a swing low that is also an untested liquidity pool and sits at VAL is three sources -- one check per source, each cited."
+  - "Fade entries need a reaction at the level (rejection or failed break from the last candles via get_candles); break entries need acceptance plus retest. No reaction, no acceptance -- no trade."
+  - "Stop beyond the level AND beyond the reaction extreme; target the next level on the list; risk_reward >= 1.5."
+  # --- Drawing doctrine ---
+  - "DRAW each active level as one hline at its exact price, label '<price> <sources>' -- e.g. '68,500 swing low + sellside + VAL'. One line per level: overlapping sources are named in the label, not drawn twice."
+  - "DRAW the role flip by update_drawing on the existing hline: label becomes '68,500 flipped: was support, now resistance'. Never draw a second line for a flip."
+  - "DRAW the trade as position_long / position_short at the entry, label with entry/stop/target and R."
+  - "Delete levels that acceptance has broken and price has left behind: a level three swings old that no longer attracts price is clutter."
+  - "Candle times from get_candles are NANOSECONDS (field t); drawing anchors need MILLISECONDS -- divide by exactly 1,000,000."
+conditions:
+  timeframes: ["4h", "1h", "15m"]
+  risk:
+    max_risk_pct: 1.0
+capability_requirements:
+  required:
+    - {capability: market_structure}
+    - {capability: candles}
+  preferred:
+    - {capability: liquidity}
+    - {capability: volume_profile}
+    - {capability: vwap}
+    - {capability: chart_drawing}
+examples:
+  - description: "BTCUSDT 4H: 68,500 = swing low + untested sellside pool + VAL (three sources). Rejection fade long 68,620, stop 68,340, target 69,400 VAH (+2.8R)."
+invalidation:
+  - "Acceptance beyond the level (two closes) -- the level flips or dies; update or delete its hline."
+preferred_markets: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+preferred_timeframes: ["4h", "1h", "15m"]

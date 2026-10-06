@@ -1,6 +1,6 @@
 # Tool skill (docs/40, §18): doctrine for chart-drawing tools.
 name: "Chart Drawing"
-version: "1.0.0"
+version: "2.0.0"
 kind: tool
 artifact_kind: thesis
 category: "drawing"
@@ -10,11 +10,35 @@ knowledge: >
   so its doctrine is mostly restraint: every object must trace to a number a
   tool returned, and a chart littered with stale objects is worse than a bare
   one.
+
+  WHICH KIND FOR WHICH IDEA (the engine's vocabulary is fixed; the gateway
+  refuses anything else):
+  - hline: a single price level -- support, resistance, swept liquidity, POC.
+  - trendline / ray / extended: a slope between two swings -- trend lines,
+    structure lines between a swing and its break.
+  - rect: a price zone -- order blocks, fair value gaps, supply/demand,
+    premium/discount bands. First anchor one corner (earlier time, zone edge),
+    second anchor the opposite corner (later time, other edge). For an OB:
+    anchor1 = OB candle open time at its extreme price, anchor2 = mitigation
+    time (or now) at the candle's other extreme.
+  - fib: a measured retracement between two detected swings; fib_extension
+    for projected targets beyond the swing.
+  - position_long / position_short: a trade setup with entry, stop and target
+    in one object -- the thesis's own prices.
+  - measure / dateprice_range: the price/time delta of a leg, for range
+    measurements and projection work.
+  - channel / triangle / arc / circle / angle / vline: the parity shapes, only
+    when the analysis genuinely has that geometry.
+
+  The label carries the meaning the kind cannot: "Bullish OB 4H 68200-68500",
+  "CHoCH 1H", "FVG 15m unfilled". Colour is per-kind and fixed by the shell --
+  meaning rides the label, not a colour you cannot set.
 rules:
-  - "Anchor every coordinate to a number a tool returned -- a swing price, a VAH/VAL, a swept level. Never invent a price from the shape of the chart or from memory."
+  - "Anchor every coordinate to a number a tool returned -- a swing price, a VAH/VAL, a swept level, an OB candle's open/extreme. Never invent a price from the shape of the chart or from memory."
   - "Prefer updating an existing drawing over adding a duplicate: get_user_drawings first, then update_drawing when the level moved, create_drawing only for a genuinely new idea."
   - "One idea, one drawing set: a level plus its invalidation zone is a set; five nearby lines for one idea is clutter."
   - "fib anchors come from detected swings (detect_market_structure's swing lists), chosen by the rule the question implies (last completed leg), never eyeballed."
+  - "rect zones span the full candle or gap that created them: an order block rectangle covers the OB candle's open-to-extreme range and extends right to now or to mitigation; a half-zone reads as a different idea."
   - "Delete what the analysis no longer supports: a level that broke is deleted or moved with a reason, and the narrative says what changed."
   - "Always state the drawing ids you created or changed in the answer, so the user can find them. The AI layer is user-toggleable -- never assume an object is visible, say where it sits."
 applies_to:

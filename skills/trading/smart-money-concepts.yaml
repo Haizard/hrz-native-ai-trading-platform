@@ -1,0 +1,84 @@
+# Flagship methodology skill: Smart Money Concepts (SMC).
+# The trader-facing strategy skill: the agent reads structure, liquidity and
+# order-flow tools, then DRAWS what it finds using create_drawing.
+name: "Smart Money Concepts"
+version: "1.0"
+kind: trading
+artifact_kind: thesis
+category: "smart-money"
+knowledge: >
+  Smart Money Concepts reads the chart as the footprint of large participants:
+  they need liquidity to fill size, so price is engineered toward resting stops
+  (liquidity pools), then reversed once filled. The tradable sequence is:
+
+  1. LIQUIDITY SWEEP -- price runs a prior swing high/low (equal highs/lows are
+     the strongest pools) and takes the stops resting there.
+  2. MARKET STRUCTURE SHIFT -- after the sweep, price breaks the opposite
+     internal swing (a CHoCH) or the range extreme (a BOS), confirming the
+     sweep was accumulation/distribution, not continuation.
+  3. RETURN TO THE ORIGIN -- price revisits the order block or fair value gap
+     the impulsive break left behind. That zone is the entry.
+  4. TARGET THE OPPOSING POOL -- the liquidity on the other side of the range.
+
+  ORDER BLOCKS: the last opposing candle before the impulsive break. Bullish OB
+  = last down candle before a bullish BOS; bearish OB = last up candle before a
+  bearish BOS. An OB is valid until mitigated (price trades through its mean)
+  or invalidated (close beyond its extreme).
+
+  FAIR VALUE GAPS: a three-candle imbalance where candle 2's range does not
+  overlap candles 1 and 3. FVGs act as magnets and entry zones; an FVG inside
+  an OB is the highest-confluence entry.
+
+  PREMIUM / DISCOUNT: split the dealing range (major swing low to major swing
+  high) at the 50% level. Longs only in discount (below 50%), shorts only in
+  premium (above 50%). Buying premium or selling discount is trading into the
+  smart money's exit.
+
+  INDUCEMENT: a minor pullback low/high engineered before the real zone to
+  trap early entries. Entries at the first pullback are weaker; the deeper
+  origin (OB/FVG) is the trade.
+
+  WHAT THIS SKILL IS NOT: it is not a candle-pattern strategy, and it is not
+  predictive. Every claim below must trace to detect_market_structure,
+  detect_liquidity, or the timeframe ladder -- never to the shape of the chart
+  as seen in a picture.
+rules:
+  # --- Analysis sequence (top-down) ---
+  - "Establish the higher-timeframe bias first: analyze_timeframe on the top ladder rung (4h or 1d). The trend field and swing lists are the dealing-range context; trade only with it."
+  - "Map the dealing range from detect_market_structure: the most recent major swing_high and swing_low on the bias timeframe are the range extremes."
+  - "Locate liquidity pools with detect_liquidity: levels with touches >= 2 and swept == false are resting liquidity; swept == true levels with a reclaim verdict are the fuel already taken."
+  - "Long setups require sell-side liquidity swept below the range and detect_liquidity reclaim.long_reclaim.reclaimed == true. Short setups mirror: buy-side swept, short_reclaim.reclaimed == true. A sweep with no reclaim is NO setup -- say so."
+  - "Confirm the shift with detect_market_structure on the entry timeframe: recent_breaks must contain a break whose direction matches the intended trade and whose level is an internal swing (CHoCH) or the range extreme (BOS). Cite the break's level and price."
+  - "Find the origin zone: the OB is the last opposing candle before the breaking leg -- read its open/high/low from get_candles on the entry timeframe (candle field t is NANOSECONDS; drawing anchors need MILLISECONDS, divide by exactly 1,000,000). An FVG inside the OB raises confidence_pct."
+  - "Entry at the OB extreme (or the FVG midpoint when present), stop beyond the OB's far extreme, target the opposing liquidity pool from detect_liquidity. risk_reward must be >= 2 or the thesis says 'no trade'."
+  - "Position the entry in the correct half of the dealing range: longs only below the range midpoint (discount), shorts only above it (premium). Compute nothing yourself -- the midpoint comes from the swing prices the structure tool returned."
+  # --- Drawing doctrine (this is a chart-analysis skill: draw what you find) ---
+  - "DRAW the dealing range: one hline at the major swing high and one at the major swing low, labels 'Range High 4H' / 'Range Low 4H'."
+  - "DRAW the order block as a rect: anchor1 = the OB candle's open time (ms) at its extreme price (low for a bullish OB), anchor2 = the current candle's time at the OB candle's other extreme, label 'Bullish OB 1H <low>-<high>' or 'Bearish OB 1H <high>-<low>'."
+  - "DRAW each FVG inside or near the OB as its own rect spanning the gap, label 'FVG 15m <bottom>-<top>'."
+  - "DRAW the structure shift as a trendline from the broken swing's time/price to the break candle's time/price, label 'BOS 1H' or 'CHoCH 1H' with the level it broke."
+  - "DRAW the trade as position_long or position_short: anchor1 at entry price on the signal candle, anchor2 forward in time, label with entry/stop/target and R multiple. This single object is the thesis on the chart."
+  - "DRAW the target pool as an hline at the opposing liquidity price, label 'Target: buyside <price>' (or sellside)."
+  - "Delete or update drawings that the market invalidates: a mitigated OB's rect gets updated with reason 'mitigated'; a broken range's hlines are deleted."
+conditions:
+  timeframes: ["1d", "4h", "1h", "15m"]
+  risk:
+    max_risk_pct: 1.0
+capability_requirements:
+  required:
+    - {capability: market_structure}
+    - {capability: liquidity}
+  preferred:
+    - {capability: absorption}
+    - {capability: zones}
+    - {capability: derived_events}
+    - {capability: chart_drawing}
+examples:
+  - description: "BTCUSDT: 4h range 64,800-72,400. Sell-side swept at 66,100 with reclaim; 1h CHoCH at 67,800; bullish OB 66,900-67,300 drawn as rect; entry 67,300, stop 66,850 below OB, target buyside pool 72,400 (+3.9R). All five objects drawn and cited by id."
+  - description: "ETHUSDT: buyside swept at 3,560, no reclaim on detect_liquidity -- answer is NO SETUP, no drawings, narrative explains the missing reclaim."
+invalidation:
+  - "Close beyond the order block's far extreme on the entry timeframe (OB invalidated -- update its rect and say so)."
+  - "The opposing pool is taken before the entry zone is reached (the move is done; do not chase)."
+  - "Higher-timeframe break against the trade direction (bias flipped)."
+preferred_markets: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+preferred_timeframes: ["4h", "1h", "15m"]

@@ -1,0 +1,54 @@
+# Methodology skill: Fibonacci retracement and extension usage.
+name: "Fibonacci Retracement"
+version: "1.0"
+kind: trading
+artifact_kind: thesis
+category: "fibonacci"
+knowledge: >
+  Fibonacci levels measure how deep a pullback goes within a leg. They are
+  not magic ratios -- they are a shared vocabulary for pullback depth, and
+  their value is confluence with structure.
+
+  THE LEVELS: 38.2% (shallow, strong trend), 50% (equilibrium), 61.8%
+  (the golden pocket -- the highest-probability reversal zone), 78.6% (deep,
+  last stand before the leg's origin).
+
+  THE RULE THAT MATTERS: a fib is anchored on a MEASURED LEG -- two confirmed
+  swings from detect_market_structure. The swing list is the anchor source;
+  a fib anchored on eyeballed candles is noise.
+
+  CONFLUENCE STACKS: 61.8% + an order block + a liquidity pool at the same
+  price is a zone, not a line -- and it is the entry this skill exists to find.
+
+  EXTENSIONS (fib_extension kind): beyond the 100% of the measured leg,
+  1.272 / 1.618 are the standard targets when trading the next leg.
+rules:
+  - "Anchor the fib on the last completed leg: the two most recent opposite-sign swings from detect_market_structure (uptrend: latest major swing low -> latest major swing high; downtrend mirrored). Cite both swing prices."
+  - "Read the retracement depth against the current price from analyze_timeframe: below 38.2% the pullback is shallow (trend strong, entries late); the 50%-61.8% band is the value zone; beyond 78.6% the leg's structure is failing."
+  - "Enter only in the 50%-61.8% band with structure confluence (OB, liquidity pool, or value edge at the same price -- each cited from its tool). A bare fib level is not a trade."
+  - "Stop beyond the 78.6% level (deep-pullback failure) or beyond the leg's origin for the tightest invalidation; target the leg's extreme, then the 1.272 extension. risk_reward >= 2."
+  # --- Drawing doctrine ---
+  - "DRAW the fib with kind fib: anchor1 = leg start (older swing time/price), anchor2 = leg end (newer swing time/price), label '<tf> fib <start>-<end>'."
+  - "DRAW the entry confluence zone as a rect spanning the 50%-61.8% band intersected with the structure zone, label 'Golden pocket + OB 1H <low>-<high>'."
+  - "DRAW targets with kind fib_extension on the same anchors, label 'Targets 1.272 / 1.618'."
+  - "DRAW the trade as position_long / position_short at the entry, label with entry/stop/target and R."
+  - "When the leg's origin breaks (close beyond it), delete the fib and the zone -- the measurement is dead."
+  - "Candle times from get_candles are NANOSECONDS (field t); drawing anchors need MILLISECONDS -- divide by exactly 1,000,000."
+conditions:
+  timeframes: ["4h", "1h", "15m"]
+  risk:
+    max_risk_pct: 1.0
+capability_requirements:
+  required:
+    - {capability: market_structure}
+  preferred:
+    - {capability: liquidity}
+    - {capability: zones}
+    - {capability: chart_drawing}
+examples:
+  - description: "BTCUSDT 4H leg 64,200->71,800: 61.8% at 67,100 overlapping bullish OB 66,900-67,300 and sellside pool 67,050. Long 67,150, stop 66,550 (78.6%), target 71,800 then 1.272 at 74,000 (+4.7R to first target)."
+invalidation:
+  - "Close beyond the leg's origin (the measured leg is negated; delete the fib)."
+  - "Acceptance below 78.6% without immediate recovery (the pullback is a reversal, not a retracement)."
+preferred_markets: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+preferred_timeframes: ["4h", "1h"]

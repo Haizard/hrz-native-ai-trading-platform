@@ -79,6 +79,8 @@
   button.danger { border-color: var(--down); color: var(--down); background: transparent; }
   button.danger:hover { background: var(--down); border-color: var(--down); color: #fff; }
   button:disabled { opacity: .5; cursor: default; }
+  #skillCaps label { display: block; font-size: 11px; padding: 2px 0; color: var(--text); }
+  #skillCaps input[type=checkbox] { margin-right: 6px; }
   h3.section { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
   .spacer { flex: 1; }
   #session { color: var(--muted); font-family: var(--mono); font-size: 11px; }
@@ -1556,6 +1558,15 @@
       <h3 class="section">Create a new skill</h3>
       <div class="ws-new">
         <div class="row">
+          <select id="skillTemplate" title="Start from a methodology template, then edit">
+            <option value="">Blank skill</option>
+            <option value="smc">Smart Money Concepts (sweeps, BOS/CHoCH, OB, FVG)</option>
+            <option value="pa">Price Action Levels (reactions at levels)</option>
+            <option value="ms">Market Structure Mapping (trend/range, BOS/CHoCH)</option>
+            <option value="ob">Order Block Analysis (rect zones)</option>
+          </select>
+        </div>
+        <div class="row">
           <input id="skillName" placeholder="Skill name, e.g. Liquidity Sweep Strategy" />
         </div>
         <div class="row">
@@ -1565,7 +1576,7 @@
           <textarea id="skillKnowledge" rows="3" placeholder="Your knowledge/trading philosophy..."></textarea>
         </div>
         <div class="row">
-          <textarea id="skillRules" rows="4" placeholder="Rules, one per line (e.g., 'Break even after 2R profit')"></textarea>
+          <textarea id="skillRules" rows="6" placeholder="Rules, one per line. Drawing rules start with 'DRAW' and use create_drawing kinds: hline, rect, trendline, fib, position_long..."></textarea>
         </div>
         <div class="row">
           <input id="skillTimeframes" placeholder="Timeframes (comma-separated, e.g. 4h,1h,5m)" />
@@ -1575,6 +1586,19 @@
         </div>
         <div class="row">
           <input id="skillMaxRisk" type="number" step="0.1" placeholder="Max risk % (e.g. 1.0)" />
+        </div>
+        <div class="row">
+          <fieldset id="skillCaps" style="border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin:0;">
+            <legend class="muted" style="font-size:10px; padding:0 4px;">Data this skill needs (required)</legend>
+            <label><input type="checkbox" value="market_structure" checked /> market structure (swings, BOS/CHoCH)</label>
+            <label><input type="checkbox" value="liquidity" /> liquidity pools &amp; sweeps</label>
+            <label><input type="checkbox" value="absorption" /> absorption</label>
+            <label><input type="checkbox" value="zones" /> zones (OB / FVG / supply-demand)</label>
+            <label><input type="checkbox" value="volume_profile" /> volume profile</label>
+            <label><input type="checkbox" value="vwap" /> vwap</label>
+            <label><input type="checkbox" value="delta" /> delta / CVD</label>
+            <label><input type="checkbox" value="chart_drawing" checked /> chart drawing</label>
+          </fieldset>
         </div>
         <div class="row">
           <button id="skillCreate" class="primary">Create Skill</button>

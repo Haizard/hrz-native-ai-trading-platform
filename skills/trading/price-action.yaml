@@ -1,0 +1,70 @@
+# Flagship methodology skill: pure price action -- candle behaviour at levels.
+name: "Price Action Levels"
+version: "1.0"
+kind: trading
+artifact_kind: thesis
+category: "price-action"
+knowledge: >
+  Price action trading reads what price DOES at a level, not what an indicator
+  says about it. The edge is the reaction: a level that holds with a decisive
+  rejection candle is information; a level that price drifts through is not a
+  level at all.
+
+  THE LEVELS THAT MATTER:
+  - Prior swing highs/lows (from detect_market_structure's swing lists)
+  - Untested liquidity (detect_liquidity levels with swept == false)
+  - Value-area edges (analyze_timeframe's vah / val / poc)
+  - Session VWAP (analyze_timeframe's vwap and above_vwap)
+
+  THE REACTIONS THAT MATTER:
+  - REJECTION (pin bar): the candle's wick beyond the level is at least twice
+    its body, and it closes back on the level's side. Sellers (or buyers)
+    were absorbed; the level held with force.
+  - ENGULFING: the reaction candle's body fully contains the prior candle's
+    body and closes beyond the level's side. Decisive sponsorship.
+  - FAILED BREAK: price closes beyond the level on one candle and closes back
+    inside within the next two. The break was a stop run, not sponsorship.
+  - ACCEPTANCE: two or more consecutive closes beyond the level. The level is
+    broken; do not fade it. Acceptance flips the level's role (support becomes
+    resistance).
+
+  CONTEXT RULES:
+  - A reaction at a level WITH the higher-timeframe trend is a trade; against
+    it is a scalp at best, and the thesis must say so.
+  - Confluence raises conviction: a swing level that is also an untested
+    liquidity pool and sits at the value-area edge is three reasons, not one.
+  - Volume confirms: buy_volume / sell_volume on the reaction candle (from
+    get_candles field bv/sv) should favour the reaction direction.
+rules:
+  - "Build the level list from tools only: detect_market_structure swing_highs/swing_lows, detect_liquidity levels, analyze_timeframe vah/val/poc/vwap. A level that no tool returned is not a level."
+  - "For each candidate level, read the last 3 candles from get_candles and classify the reaction: rejection (wick >= 2x body beyond the level, close back inside), engulfing, failed break, or acceptance. State the classification and the candle times you read."
+  - "Trade only rejection, engulfing, or failed break WITH the higher-timeframe trend (analyze_timeframe trend field on the ladder's top rung). Acceptance means the level is gone -- say so and delete its drawing if you drew one."
+  - "Entry: the reaction candle's close for rejection/engulfing, or the re-entry close for a failed break. Stop: beyond the reaction candle's extreme (the wick tip for a rejection), never an arbitrary distance. Target: the next level on the level list, and risk_reward must be >= 1.5."
+  - "Rate confluence in the thesis checks: swing + untested liquidity + value edge = three ✓ checks; one alone is one ✓. confidence_pct tracks the confluence count."
+  # --- Drawing doctrine ---
+  - "DRAW every level you evaluated as an hline, label '<price> <what it is>' -- e.g. '68,500 swing low + sellside pool'. Levels you rejected get deleted before the thesis ships."
+  - "DRAW the reaction zone as a rect around the reaction candle's range (its open time to the current candle's time, low to high), label 'Rejection 1H @ 68,500' or 'Failed break 15m @ 3,420'."
+  - "DRAW the trade as position_long or position_short with anchor1 at entry price on the reaction candle and anchor2 forward in time; label 'E 67,300 / S 66,850 / T 69,000 (2.6R)'."
+  - "DRAW an accepted level's flip by updating its hline label to 'flipped: was support, now resistance' rather than drawing a second line."
+  - "Candle times from get_candles are NANOSECONDS in field t; drawing anchors need MILLISECONDS -- divide by exactly 1,000,000."
+conditions:
+  timeframes: ["4h", "1h", "15m"]
+  risk:
+    max_risk_pct: 1.0
+capability_requirements:
+  required:
+    - {capability: market_structure}
+    - {capability: candles}
+  preferred:
+    - {capability: liquidity}
+    - {capability: vwap}
+    - {capability: volume_profile}
+    - {capability: chart_drawing}
+examples:
+  - description: "BTCUSDT 1H: 68,500 = swing low + untested sellside pool + VAL. Rejection candle wick 2.4x body, close back above. Long at close 68,620, stop 68,340 (wick tip), target 69,150 swing high (+1.9R). Drew hline, rejection rect, position_long."
+  - description: "ETHUSDT 15m: 3,420 level accepted -- two closes beyond. Answer: no fade, level flipped; updated its hline label and stood aside."
+invalidation:
+  - "Acceptance beyond the level (two consecutive closes) -- the level is broken; update or delete its drawing."
+  - "The reaction candle's extreme is traded through after entry (stop hit -- the reaction failed)."
+preferred_markets: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+preferred_timeframes: ["4h", "1h", "15m"]

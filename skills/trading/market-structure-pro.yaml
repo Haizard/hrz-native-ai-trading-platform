@@ -1,0 +1,69 @@
+# Flagship methodology skill: market structure mapping and trend phases.
+name: "Market Structure Mapping"
+version: "1.0"
+kind: trading
+artifact_kind: thesis
+category: "market-structure"
+knowledge: >
+  Market structure is the skeleton every other methodology hangs on: a market
+  is either trending (making directional progress) or ranging (rotating
+  between extremes), and every trade decision starts from which one it is.
+
+  SWING MAPPING:
+  - UPTREND: swing highs and swing lows both ascend (HH + HL). Longs are
+    pullbacks to the latest HL; shorts are counter-trend scalps.
+  - DOWNTREND: swing highs and swing lows both descend (LH + LL). Mirror image.
+  - RANGE: swing highs cluster together and swing lows cluster together with
+    no directional progress. Trade the extremes, not the middle.
+
+  BREAK OF STRUCTURE (BOS): a close beyond the most recent swing in the
+  DIRECTION of the trend -- trend continuation confirmed. In an uptrend, a
+  close above the last HH is a bullish BOS.
+
+  CHANGE OF CHARACTER (CHoCH): a close beyond the most recent swing AGAINST
+  the trend -- the first objective sign the trend may be ending. In an
+  uptrend, a close below the last HL is a bearish CHoCH. One CHoCH is a
+  warning; a CHoCH followed by a failed retest of the old extreme is a
+  reversal in progress.
+
+  TREND PHASES: accumulation (tight range at lows) -> expansion (BOS legs) ->
+  distribution (tight range at highs, sweeps of the range extreme) -> reversal
+  (CHoCH + failed retest). The phase decides the tactic: expansion = trade
+  pullbacks, distribution = stop fading highs, wait for the CHoCH.
+
+  detect_market_structure returns the trend field plus swing_highs,
+  swing_lows and recent_breaks (kind, direction, level, price) -- cite those
+  fields; never count swings off a screenshot.
+rules:
+  - "Classify the structure on each ladder timeframe from analyze_timeframe's trend field, and confirm with detect_market_structure: ascending swing_highs AND swing_lows = uptrend; both descending = downtrend; otherwise range. State the classification per timeframe in the checks."
+  - "Name the latest event from recent_breaks: BOS in trend direction (continuation), CHoCH against it (warning), or none (structure intact, no event). Cite the break's level and price."
+  - "In an uptrend, the only long zone is a pullback into the latest higher low region; the stop belongs below that HL, not below an arbitrary candle. Mirror for downtrends."
+  - "After a CHoCH, demand the failed retest before calling a reversal: price must fail to reclaim the broken swing. One CHoCH alone is a warning, not a short."
+  - "In a range, trades live at the extremes only: the swing-high cluster edge for shorts, the swing-low cluster edge for longs. The middle of the range is NO TRADE -- say so."
+  - "Multi-timeframe alignment: the thesis direction must agree with the top ladder rung's trend, or the thesis must say 'counter-trend scalp' and halve its confidence."
+  # --- Drawing doctrine ---
+  - "DRAW the swing map as trendlines connecting consecutive swing lows (uptrend) or swing highs (downtrend) from detect_market_structure's lists -- each line's two anchors are two consecutive swings' time/price. Label 'HL line 4H' / 'LH line 4H'."
+  - "DRAW each recent break as a trendline from the broken swing to the break candle, label 'BOS 1H @ 69,200' or 'CHoCH 1H @ 68,100'."
+  - "DRAW a range as a rect spanning the swing-cluster high to low from the first cluster touch to now, label 'Range 4H 66,800-69,400 -- extremes only'."
+  - "DRAW the active trade zone (pullback region to the latest HL, or the range extreme) as a rect, label with the zone's role: 'Pullback zone to HL 67,900'."
+  - "Update the map as structure evolves: a new HH extends the HL line's anchor with update_drawing; a CHoCH deletes the old trend line and says why in the narrative."
+  - "Candle times from get_candles are NANOSECONDS (field t); drawing anchors need MILLISECONDS -- divide by exactly 1,000,000."
+conditions:
+  timeframes: ["1d", "4h", "1h"]
+  risk:
+    max_risk_pct: 1.0
+capability_requirements:
+  required:
+    - {capability: market_structure}
+  preferred:
+    - {capability: liquidity}
+    - {capability: derived_events}
+    - {capability: chart_drawing}
+examples:
+  - description: "BTCUSDT 4H uptrend: swings 64.2k->71.8k HH, HLs ascending. Pullback to HL 67,900 drawn as rect, HL line drawn, long at 68,100, stop below 67,850, target prior HH 71,800 (+4.1R)."
+  - description: "ETHUSDT 1H: CHoCH at 3,480 after distribution; retest of 3,480 failed; short labelled counter-to-4H (halved confidence), target range low 3,320."
+invalidation:
+  - "A BOS against the thesis direction on the entry timeframe (structure flipped -- update the map and stand down)."
+  - "In a range, acceptance beyond an extreme (two closes) ends the range-read; the range rect is deleted or relabelled."
+preferred_markets: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+preferred_timeframes: ["1d", "4h", "1h"]

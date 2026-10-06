@@ -932,7 +932,11 @@ capability_requirements:
             .filter(|s| s.kind == SkillKind::Trading)
             .collect();
         assert_eq!(tools.len(), 7, "the seven tool families ship: {tools:?}");
-        assert_eq!(trading.len(), 2, "the two trading skills ship: {trading:?}");
+        assert_eq!(
+            trading.len(),
+            9,
+            "the nine trading methodologies ship: {trading:?}"
+        );
 
         // Every applies_to entry is a registered tool; every capability id is
         // catalogued. The same checks the write route enforces, run against

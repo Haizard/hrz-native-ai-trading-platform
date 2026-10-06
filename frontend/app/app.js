@@ -9583,6 +9583,7 @@ async function main() {
   el("wsChatSend").onclick = sendWorkspaceMessage;
   // Skills event listeners
   el("skillCreate").onclick = createSkill;
+  el("skillTemplate").onchange = applySkillTemplate;
   document.querySelectorAll("[data-pane]").forEach((tab) => {
     if (tab.dataset.pane === "skills") {
       tab.addEventListener("click", () => loadSkills());
@@ -10856,6 +10857,95 @@ function updateSkillDropdown(skills) {
   select.hidden = false;
 }
 
+/// Methodology starter templates for the skill form. Selecting one fills the
+/// form with that school of analysis -- the trader edits from there, so a
+/// template is a starting draft, not a locked document. The drawing rules
+/// teach the agent which create_drawing kinds express the methodology on the
+/// chart (hline levels, rect zones, trendline slopes, fib, position markers).
+const SKILL_TEMPLATES = {
+  smc: {
+    category: "smart-money",
+    knowledge:
+      "Smart Money Concepts: price is engineered toward resting stops (liquidity pools), " +
+      "then reversed once filled. The tradable sequence: liquidity sweep -> market structure " +
+      "shift (CHoCH/BOS) -> return to the origin order block or FVG -> target the opposing pool. " +
+      "Longs only in discount (below range midpoint), shorts only in premium.",
+    rules: [
+      "Establish HTF bias from analyze_timeframe on the top ladder rung; trade only with it.",
+      "Long setups require sell-side swept and detect_liquidity reclaim.long_reclaim.reclaimed == true; shorts mirror with short_reclaim.",
+      "Confirm the shift with detect_market_structure recent_breaks: cite the CHoCH/BOS level and price.",
+      "Entry at the OB extreme or FVG midpoint; stop beyond the OB far extreme; target the opposing liquidity pool; risk_reward >= 2.",
+      "DRAW the range as hlines, the OB as a rect (label 'Bullish OB 1H <low>-<high>'), the BOS as a trendline, and the trade as position_long/position_short.",
+      "Candle times from get_candles are NANOSECONDS (field t); drawing anchors need MILLISECONDS -- divide by exactly 1,000,000.",
+    ],
+    timeframes: "1d,4h,1h,15m",
+    caps: ["market_structure", "liquidity", "chart_drawing"],
+  },
+  pa: {
+    category: "price-action",
+    knowledge:
+      "Price action: the edge is the REACTION at a level -- rejection (wick >= 2x body, close back " +
+      "inside), engulfing, or failed break. Acceptance (two closes beyond) means the level is gone. " +
+      "Levels come from swings, untested liquidity, value edges (POC/VAH/VAL) and VWAP.",
+    rules: [
+      "Build the level list from tools only: swing lists, detect_liquidity levels, vah/val/poc/vwap. A level no tool returned is not a level.",
+      "Classify the reaction from the last 3 candles: rejection, engulfing, failed break, or acceptance -- and state the candle times.",
+      "Trade only rejection/engulfing/failed-break WITH the HTF trend; stop beyond the reaction extreme; target the next level; risk_reward >= 1.5.",
+      "DRAW each active level as one hline labelled '<price> <sources>'; DRAW the reaction zone as a rect; DRAW the trade as position_long/position_short.",
+      "Candle times from get_candles are NANOSECONDS (field t); drawing anchors need MILLISECONDS -- divide by exactly 1,000,000.",
+    ],
+    timeframes: "4h,1h,15m",
+    caps: ["market_structure", "chart_drawing"],
+  },
+  ms: {
+    category: "market-structure",
+    knowledge:
+      "Market structure mapping: uptrend = HH+HL, downtrend = LH+LL, range = clustered swings. " +
+      "BOS (break in trend direction) confirms continuation; CHoCH (break against it) is the first " +
+      "reversal warning -- demand a failed retest before calling the turn.",
+    rules: [
+      "Classify structure per ladder timeframe from analyze_timeframe trend, confirmed by detect_market_structure swing lists.",
+      "Name the latest recent_breaks event: BOS (continuation), CHoCH (warning), or none. Cite level and price.",
+      "Uptrend longs only at pullbacks to the latest HL, stop below that HL; ranges trade the extremes only -- the middle is NO TRADE.",
+      "DRAW the swing map as trendlines through consecutive swings, each break as a trendline labelled 'BOS/CHoCH <tf> @ <level>', and a range as a rect labelled 'extremes only'.",
+      "Candle times from get_candles are NANOSECONDS (field t); drawing anchors need MILLISECONDS -- divide by exactly 1,000,000.",
+    ],
+    timeframes: "1d,4h,1h",
+    caps: ["market_structure", "chart_drawing"],
+  },
+  ob: {
+    category: "order-blocks",
+    knowledge:
+      "Order blocks: the last opposing candle before an impulsive break of structure. Bullish OB = " +
+      "last down candle before a bullish BOS (zone = open to low); bearish OB = last up candle before " +
+      "a bearish BOS (zone = open to high). Fresh until mitigated (midpoint traded through); dead on a " +
+      "close beyond the far extreme.",
+    rules: [
+      "Find the BOS first in detect_market_structure recent_breaks -- no displacement leg, no order block.",
+      "Identify the OB candle from get_candles: quote its open/high/low and t -- those are the rect's anchors.",
+      "Entry per model (extreme / mean / confirmation -- say which); stop beyond the far extreme; target opposing liquidity; risk_reward >= 2.",
+      "DRAW the OB as a rect spanning the full zone (open time at extreme price -> now at other extreme), label 'Bullish OB <tf> <low>-<high> (fresh)'; update to '(mitigated)' when spent; delete when invalidated.",
+      "Candle times from get_candles are NANOSECONDS (field t); drawing anchors need MILLISECONDS -- divide by exactly 1,000,000.",
+    ],
+    timeframes: "4h,1h,15m",
+    caps: ["market_structure", "chart_drawing"],
+  },
+};
+
+/// Fill the skill form from a methodology template.
+function applySkillTemplate() {
+  const key = el("skillTemplate").value;
+  const t = SKILL_TEMPLATES[key];
+  if (!t) return;
+  el("skillCategory").value = t.category;
+  el("skillKnowledge").value = t.knowledge;
+  el("skillRules").value = t.rules.join("\n");
+  el("skillTimeframes").value = t.timeframes;
+  for (const box of document.querySelectorAll("#skillCaps input[type=checkbox]")) {
+    box.checked = t.caps.includes(box.value);
+  }
+}
+
 /// Create a new skill.
 async function createSkill() {
   const name = el("skillName").value.trim();
@@ -10875,8 +10965,11 @@ async function createSkill() {
   const timeframes = timeframesInput.split(",").map(t => t.trim()).filter(t => t);
   const markets = marketsInput.split(",").map(m => m.trim()).filter(m => m);
   const maxRisk = maxRiskInput ? parseFloat(maxRiskInput) : 1.0;
+  const caps = [...document.querySelectorAll("#skillCaps input[type=checkbox]:checked")]
+    .map(box => ({ capability: box.value }));
   
-  // Build the skill YAML document
+  // Build the skill document (schema v2: capability_requirements ride along,
+  // so the agent can tell the trader when a venue cannot support the method).
   const skillDoc = {
     name,
     version: "1.0",
@@ -10890,6 +10983,11 @@ async function createSkill() {
       risk: {
         max_risk_pct: maxRisk
       }
+    },
+    capability_requirements: {
+      required: caps,
+      preferred: [],
+      fallback: []
     },
     preferred_markets: markets.length > 0 ? markets : ["BTCUSDT"],
     preferred_timeframes: timeframes.length > 0 ? timeframes : ["4h", "1h", "5m"]
@@ -10910,6 +11008,7 @@ async function createSkill() {
     el("skillTimeframes").value = "";
     el("skillMarkets").value = "";
     el("skillMaxRisk").value = "";
+    el("skillTemplate").value = "";
     
     await loadSkills();
   } catch (e) {

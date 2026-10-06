@@ -507,6 +507,7 @@ mod tests {
                 name: "get_volume_profile".into(),
                 description: "POC/VAH/VAL".into(),
                 input_schema: json!({"type": "object", "properties": {"symbol": {"type": "string"}}}),
+                exposed_tool: None,
             }],
             tool_choice: Some(ToolChoice::Tool("submit_thesis".into())),
             max_tokens: 512,

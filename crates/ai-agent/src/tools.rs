@@ -1988,6 +1988,7 @@ async fn delete_drawing(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Ag
     }
 }
 
+
 /// What the memory tools need from the context: a source, optionally a
 /// writer, and whose memory it is.
 type MemoryParts<'a> = (&'a dyn MemorySource, Option<&'a dyn MemoryWriter>, &'a str);

@@ -351,6 +351,18 @@ pub static STANDARD: &[CapabilityDescriptor] = &[
         notes: &["surfaced through the chart scene and derived events"],
     },
     CapabilityDescriptor {
+        id: "chart_drawing",
+        summary: "Writing chart objects (levels, zones, trendlines) onto the user's chart",
+        category: Category::Structure,
+        implemented_by: Some("db::drawings"),
+        exposed_tool: Some("create_drawing"),
+        routes: &["/drawings"],
+        rules: TRUE_FROM_CANDLES,
+        notes: &[
+            "objects anchor on candle time/price coordinates, so candles are the only data need; the write itself is gated by the host attaching a DrawingWriter, which the agent prompt announces separately",
+        ],
+    },
+    CapabilityDescriptor {
         id: "derived_events",
         summary: "Closed-bar event stream: sweeps, BOS/CHoCH, FVGs, volume spikes, delta shifts",
         category: Category::Structure,
