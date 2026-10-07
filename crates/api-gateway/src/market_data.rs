@@ -401,6 +401,71 @@ impl ai_agent::DrawingWriter for DbDrawingWriter {
     }
 }
 
+/// The authoring interview's save door (`docs/47`), over the same `skills`
+/// table the Skills page writes.
+///
+/// The version check is done here rather than left to the model because the
+/// table is append-only: a second `1.0` row of the same name would silently
+/// fork the library, and "the newest wins" would then depend on clock
+/// precision. A collision comes back as a message the model relays -- the
+/// trader renames, or the interview bumps the version on purpose.
+#[derive(Debug, Clone)]
+pub struct DbSkillWriter {
+    db: Arc<db::Database>,
+}
+
+impl DbSkillWriter {
+    /// Wrap the shared database handle.
+    #[must_use]
+    pub fn new(db: Arc<db::Database>) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl ai_agent::SkillWriter for DbSkillWriter {
+    async fn save(&self, user_id: &str, skill: &ai_agent::Skill) -> Result<String, AgentError> {
+        const TOOL: &str = "save_skill_draft";
+        let Ok(id) = uuid::Uuid::parse_str(user_id) else {
+            return Err(AgentError::ToolFailed {
+                tool: TOOL.into(),
+                reason: "the request identity does not name a user".into(),
+            });
+        };
+        if db::skills::skill_version_exists(self.db.pool(), id, &skill.name, &skill.version)
+            .await
+            .map_err(|e| AgentError::ToolFailed {
+                tool: TOOL.into(),
+                reason: format!("the library could not be read: {e}"),
+            })?
+        {
+            return Err(AgentError::ToolFailed {
+                tool: TOOL.into(),
+                reason: format!(
+                    "a skill named `{}` at version `{}` already exists -- ask the trader whether \
+                     to rename it, or save it as a higher version on purpose",
+                    skill.name, skill.version
+                ),
+            });
+        }
+        let document = serde_json::to_value(skill).map_err(AgentError::Serialization)?;
+        db::skills::create_skill(
+            self.db.pool(),
+            id,
+            &skill.name,
+            &skill.version,
+            &skill.category,
+            &document,
+        )
+        .await
+        .map_err(|e| AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason: format!("the library refused the save: {e}"),
+        })?;
+        Ok(skill.id())
+    }
+}
+
 /// The agent's memory door, over the same Postgres the drawing doors use.
 ///
 /// One adapter for both traits, because the reader and the writer are one

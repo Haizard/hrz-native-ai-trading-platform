@@ -66,6 +66,24 @@ pub enum Progress {
         /// Why it was rejected.
         reason: String,
     },
+    /// The model asked for the screen to change (`docs/47`): open a chart,
+    /// switch the one being watched.
+    ///
+    /// Rides the progress channel rather than a frame of its own because that
+    /// is the channel already streamed live over the socket -- a command that
+    /// waited for the run to end would open the chart after the answer about
+    /// it, which is backwards. The client executes it; the server only ever
+    /// *relays* it, which is the confirmed-not-seen posture: the model learns
+    /// the command was issued, and confirms what the screen did from a later
+    /// screenshot, never from the relay.
+    UiCommand {
+        /// `open_chart` or `set_chart`.
+        action: String,
+        /// The symbol the command names, when it names one.
+        symbol: Option<String>,
+        /// The timeframe the command names, when it names one.
+        timeframe: Option<String>,
+    },
 }
 
 /// Somewhere to report [`Progress`] to.

@@ -570,6 +570,9 @@ async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, sessi
         }
 
         let reply = match serde_json::from_str::<AgentWsRequest>(&text) {
+            Ok(request) if request.mode.as_deref() == Some("author") => {
+                run_author(&state, &user, request).await
+            }
             Ok(request) => run_agent(&state, &user, request, &mut sink, &state.metrics).await,
             Err(e) => Some(Frame::Notice {
                 message: format!("expected {{\"symbol\": \"…\", \"question\": \"…\"}}: {e}"),
@@ -594,6 +597,16 @@ struct AgentWsRequest {
     symbol: String,
     question: String,
     skill_id: Option<String>,
+    /// Pin several skills at once (docs/47): the trader's stack.
+    #[serde(default)]
+    skill_ids: Vec<String>,
+    /// `"author"` runs the skill-authoring interview (docs/47) instead of a
+    /// thesis: the same socket, a different conversation.
+    mode: Option<String>,
+    /// The interview transcript so far, oldest first. The client keeps it;
+    /// the agent keeps nothing between calls.
+    #[serde(default)]
+    history: Vec<ai_agent::ChatTurn>,
     timeframes: Option<Vec<String>>,
     /// The chart the user is looking at, when the shell sent one.
     ///
@@ -665,6 +678,9 @@ where
     let mut ask = ai_agent::AskRequest::new(&request.symbol, &request.question);
     if let Some(skill) = request.skill_id {
         ask = ask.with_skill(skill);
+    }
+    if !request.skill_ids.is_empty() {
+        ask = ask.with_skill_ids(request.skill_ids.clone());
     }
     if let Some(timeframes) = request.timeframes {
         ask = ask.with_timeframes(timeframes);
@@ -828,6 +844,56 @@ where
             );
             Frame::Notice { message }
         }
+    })
+}
+
+/// One beat of the skill-authoring interview (`docs/47`).
+///
+/// A much smaller dance than `run_agent`: no market reads, no ladder, no
+/// progress frames -- the model either replies with the next question or
+/// saves the confirmed draft, and the whole beat is usually one model call.
+/// The frame carries `author` so the panel can tell the interview's reply
+/// from a thesis answer arriving on the same socket.
+async fn run_author(state: &AppState, user: &UserContext, request: AgentWsRequest) -> Option<Frame<'static>> {
+    let agent = match crate::provider_routes::resolve_agent(state, user).await {
+        Ok(agent) => agent,
+        Err(e) => return Some(Frame::Notice {
+            message: e.message().to_string(),
+        }),
+    };
+    // The interview's only write is the finished skill, and there is nothing
+    // to save into without a database -- said plainly, the same posture the
+    // unattached drawing writer takes.
+    let Some(database) = &state.db else {
+        return Some(Frame::Notice {
+            message: "skill authoring needs the platform database, which this deployment does \
+                      not report; the draft cannot be saved"
+                .into(),
+        });
+    };
+    let author_request = ai_agent::AuthorRequest {
+        message: request.question,
+        history: request.history,
+        authoring: ai_agent::AuthoringContext::new(
+            user.user_id.to_string(),
+            std::sync::Arc::new(crate::market_data::DbSkillWriter::new(
+                std::sync::Arc::clone(database),
+            )),
+        ),
+    };
+    Some(match agent.author_skill(&author_request).await {
+        Ok(answer) => Frame::Data {
+            payload: serde_json::json!({
+                "author": {
+                    "message": answer.message,
+                    "saved": answer.saved,
+                    "turns": answer.turns,
+                }
+            }),
+        },
+        Err(e) => Frame::Notice {
+            message: e.to_string(),
+        },
     })
 }
 

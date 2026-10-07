@@ -6336,6 +6336,39 @@ function addPane() {
   return pane;
 }
 
+/// Execute a screen command the agent issued (docs/47).
+///
+/// The agent can open a chart or retarget the one being watched; the server
+/// only relays the command, so the agent's own note says "issued, not
+/// confirmed" -- what the screen did is verified by a later screenshot, never
+/// by this function returning.
+function executeUiCommand(cmd) {
+  if (!cmd || !cmd.action) return;
+  if (cmd.action === "open_chart") {
+    const symbol = (cmd.symbol || "").toUpperCase();
+    const tf = cmd.timeframe || "";
+    // A pane already showing exactly this *is* the chart the command means;
+    // focusing it is the whole effect, and a duplicate would be clutter.
+    let pane = panes.find((p) => p.symbol() === symbol && p.timeframe() === tf);
+    if (!pane) {
+      pane = addPane();
+      // At the panel cap the command lands nowhere; the step line in the
+      // transcript still records that the agent asked, which is the honest
+      // trace of why the screen did not change.
+      if (!pane) return;
+      pane.fillSeries(coverage, symbol || pane.symbol(), tf || pane.timeframe());
+    }
+    setActive(pane);
+  } else if (cmd.action === "set_chart") {
+    if (!activePane) return;
+    activePane.fillSeries(
+      coverage,
+      cmd.symbol || activePane.symbol(),
+      cmd.timeframe || activePane.timeframe()
+    );
+  }
+}
+
 /// Take a pane off the page.
 function closePane(pane) {
   // The last chart is not closable. An empty page has no way back, and the button
@@ -6726,6 +6759,10 @@ const STAGE_TEXT = {
   tool: (p) => `calling ${p.name}`,
   tool_done: (p) => `${p.name} ${p.ok ? "returned" : "failed"}`,
   correcting: (p) => `rejected, asking for a correction: ${p.reason}`,
+  ui_command: (p) =>
+    p.action === "open_chart"
+      ? `opening a ${p.symbol || "chart"} ${p.timeframe || ""} chart`
+      : `switching the chart to ${[p.symbol, p.timeframe].filter(Boolean).join(" ")}`,
 };
 
 function progressText(step) {
@@ -6779,6 +6816,10 @@ function thesisHtml(t) {
 /// transcript keeps them, which is what a chat panel is for -- and it is the
 /// only place the agent's steps are ever recorded, since nothing stores them.
 function renderTranscript() {
+  if (authorMode) {
+    renderAuthorTranscript();
+    return;
+  }
   if (!turns.length) {
     el("thesis").innerHTML = `<p class="empty">Ask a question. The thesis's own levels are drawn on the chart.</p>`;
     return;
@@ -6952,9 +6993,20 @@ async function onAgentFrame(event) {
 
 function applyAgentFrame(frame, turn) {
   if (frame.type === "progress") {
+    // A screen command (docs/47) is executed as it arrives -- the panel's
+    // step line still records that the agent asked for it.
+    if (frame.payload && frame.payload.stage === "ui_command") {
+      executeUiCommand(frame.payload);
+    }
     turn.steps.push(frame.payload);
     renderTranscript();
   } else if (frame.type === "data") {
+    // An interview beat arrives on the same socket as a thesis; the `author`
+    // payload is what tells them apart (docs/47).
+    if (frame.payload && frame.payload.author) {
+      applyAuthorFrame(frame.payload.author);
+      return;
+    }
     turn.answer = frame.payload;
     // The levels go on the chart, which is the point of asking.
     thesis = frame.payload.thesis;
@@ -6972,6 +7024,15 @@ function applyAgentFrame(frame, turn) {
       updateMcpStatus(frame.payload.capabilities);
     }
   } else if (frame.type === "notice") {
+    // In the interview a notice is an answer in the conversation, not an
+    // error on a thesis turn.
+    if (authorMode) {
+      authorHistory.push({ role: "assistant", text: frame.message });
+      asking = false;
+      paintAsk();
+      renderTranscript();
+      return;
+    }
     // A notice is a refusal or a failure -- a rate limit, a bad request, a
     // model error -- and it ends this question.
     turn.error = frame.message;
@@ -7043,14 +7104,130 @@ function thesisOverlays(thesis) {
 function paintAsk() {
   const button = el("ask");
   button.disabled = asking;
-  button.textContent = asking ? "Working…" : "Ask";
+  button.textContent = asking ? "Working…" : authorMode ? "Send" : "Ask";
+}
+
+// ---------------------------------------------------------------------------
+// Skill authoring (docs/47)
+//
+// The composer becomes the interview: the trader describes the pattern they
+// trade, the AI asks one question at a time, and the confirmed skill is saved
+// to their library by the `save_skill_draft` tool. The transcript is kept
+// here and sent back whole with every message -- the server keeps nothing
+// between calls, so the interview survives a deploy or a re-login.
+// ---------------------------------------------------------------------------
+
+let authorMode = false;
+let authorHistory = [];
+
+/// Enter the interview: the pane switches, the banner explains the mode, and
+/// the opening message asks the trader what they trade.
+function enterAuthorMode() {
+  authorMode = true;
+  authorHistory = [];
+  selectPane("thesis");
+  el("authorBanner").hidden = false;
+  el("question").placeholder = "Describe the pattern or zone you trade…";
+  asking = false;
+  paintAsk();
+  renderTranscript();
+  el("question").focus();
+}
+
+/// Leave the interview. The transcript is kept so re-entering picks the
+/// conversation back up rather than starting cold.
+function exitAuthorMode() {
+  authorMode = false;
+  el("authorBanner").hidden = true;
+  el("question").placeholder = "find me a long setup using my liquidity-sweep skill";
+  paintAsk();
+  renderTranscript();
+}
+
+/// The interview transcript, in the same stream the thesis answers use.
+function renderAuthorTranscript() {
+  if (!authorHistory.length) {
+    el("thesis").innerHTML =
+      `<p class="empty">Describe the pattern you trade -- what it looks like on the candles, ` +
+      `when you enter, what kills it. The AI will interview you, then write the skill.</p>`;
+    return;
+  }
+  el("thesis").innerHTML = authorHistory
+    .map((turn) => {
+      const cls = turn.role === "assistant" ? "turn" : "turn q";
+      return `<div class="${cls}"><p class="${turn.role === "assistant" ? "" : "q"}">${
+        turn.role === "assistant" ? markdownish(turn.text) : escapeHtml(turn.text)
+      }</p></div>`;
+    })
+    .join("") + (asking ? `<p class="empty">Thinking…</p>` : "");
+}
+
+/// The assistant's text may carry markdown emphasis from the model; the
+/// minimum rendering that makes it readable without trusting it.
+function markdownish(text) {
+  return escapeHtml(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+
+/// One interview beat: the trader's message goes to the author endpoint with
+/// the whole transcript, and the reply lands in `applyAgentFrame`.
+async function askAuthor(question) {
+  authorHistory.push({ role: "user", text: question });
+  asking = true;
+  el("question").value = "";
+  paintAsk();
+  renderTranscript();
+
+  try {
+    const ws = await ensureAgentSocket();
+    ws.send(
+      JSON.stringify({
+        mode: "author",
+        symbol: activeSymbol(),
+        question,
+        history: authorHistory.slice(0, -1),
+      })
+    );
+  } catch (error) {
+    asking = false;
+    authorHistory.push({ role: "assistant", text: `The agent channel refused: ${error.message}` });
+    paintAsk();
+    renderTranscript();
+  }
+}
+
+/// The reply frame for an interview beat: the next question, or the saved
+/// skill. A save refreshes the library and pins the new skill so the very
+/// next analysis chat can use it.
+function applyAuthorFrame(payload) {
+  authorHistory.push({ role: "assistant", text: payload.message });
+  asking = false;
+  if (payload.saved) {
+    loadSkills().then(() => {
+      const select = el("skillSelect");
+      if (select && payload.saved.id) {
+        for (const option of select.options) option.selected = option.value === payload.saved.id;
+      }
+    });
+  }
+  paintAsk();
+  renderTranscript();
 }
 
 async function ask() {
   const question = el("question").value.trim();
   if (!question || asking) return;
 
-  const skillId = el("skillSelect")?.value || null;
+  // Author mode (docs/47): the composer is the skill interview, not a thesis.
+  if (authorMode) {
+    await askAuthor(question);
+    return;
+  }
+
+  // The pinned stack (docs/47): every selected skill governs the answer. The
+  // empty "No skill (auto)" option is a label, not a pin, so it never travels.
+  const skillIds = [...(el("skillSelect")?.selectedOptions || [])]
+    .map((o) => o.value)
+    .filter(Boolean);
 
   // The symbol rides the turn: the agent draws on it, and when the run ends
   // -- answer or notice -- the panes showing it must re-fetch their drawings.
@@ -7069,8 +7246,10 @@ async function ask() {
       timeframes: [activeTimeframe()],
     };
     
-    if (skillId) {
-      message.skill_id = skillId;
+    if (skillIds.length === 1) {
+      message.skill_id = skillIds[0];
+    } else if (skillIds.length > 1) {
+      message.skill_ids = skillIds;
     }
 
     // The viewport goes on every question while it is switched on. The images
@@ -9610,6 +9789,8 @@ async function main() {
   // Skills event listeners
   el("skillCreate").onclick = createSkill;
   el("skillTemplate").onchange = applySkillTemplate;
+  el("skillCreateAI").onclick = enterAuthorMode;
+  el("authorExit").onclick = exitAuthorMode;
   document.querySelectorAll("[data-pane]").forEach((tab) => {
     if (tab.dataset.pane === "skills") {
       tab.addEventListener("click", () => loadSkills());

@@ -28,8 +28,11 @@ the agent is the detector; the rect and the trendline are the renderers.
 
 ## Section 1 — The Skill Interview
 
-A new agent conversation **mode**, `author_skill`, started from the Skills
-page ("Create with AI") and living in the existing AI chat.
+A new agent conversation **mode** — `mode: "author"` on the agent socket —
+started from the Skills page ("Create with AI") and living in the existing AI
+chat. The transcript is kept by the client and sent back whole with every
+message (`history`), so the interview survives a deploy or a re-login and the
+server keeps no session table.
 
 The flow:
 
@@ -73,11 +76,11 @@ generator, but conversational.
 ## Section 3 — Skill composition
 
 Pin **multiple** skills on one chart: the pin dropdown becomes a
-multi-select, `AskRequest.skill_id` becomes `skill_ids: Vec<String>`, and
-every pinned skill's rules reach the prompt, prefixed with the skill's name
-so the thesis can name which skill each finding came from. Selection
-(automatic skill matching) stays single-skill; pinning is the trader's
-explicit stack.
+multi-select, `AskRequest` gains `skill_ids: Vec<String>` alongside the
+single `skill_id` (one pin is one pin, whichever field carried it), and every
+pinned skill's rules reach the prompt under its own name so the thesis can
+name which skill each finding came from. Selection (automatic skill matching)
+stays single-skill; pinning is the trader's explicit stack.
 
 ## Section 4 — AI platform control
 
@@ -87,15 +90,19 @@ watch the AI work instead of driving it:
 - New agent tools:
   - `open_chart(symbol, timeframe)` — open a new panel (or focus the
     matching existing one),
-  - `set_chart(symbol?, timeframe?)` — retarget the active panel,
-  - `list_charts` — what panels exist and what they show.
-- The tools record a **UI command** for the session; the gateway pushes a
-  `ui_command` frame over the session's agent socket; the frontend executes
-  it (add pane / set selects / refocus) and the next chart packet and
-  screenshots reflect it.
-- Commands are confirmed, not seen: the tool result tells the model the
-  command was delivered and executed; a fresh screenshot of the new panel is
-  a later axis (the capture path is ask-time today).
+  - `set_chart(symbol?, timeframe?)` — retarget the active panel (at least
+    one field required; a command that changes nothing is refused),
+  - `list_charts` — **deferred**: an honest answer needs the client to report
+    its open panes live; until the chart packet carries them, a
+    server-invented list would violate the absent-means-absent posture.
+- The tools return the command in their result (`ui_command`); the
+  orchestrator relays it as a `Progress::UiCommand` step over the session's
+  agent socket, so the panel changes *during* the run rather than after the
+  answer about it; the frontend executes it (add pane / set selects /
+  refocus) and the next chart packet and screenshots reflect it.
+- Commands are confirmed-not-seen: the tool result tells the model the
+  command was issued, never that it was seen; a fresh screenshot of the new
+  panel is a later axis (the capture path is ask-time today).
 
 This is the first brick of the end-state: the trader's skills live in the
 library, the AI opens the charts, draws the zones, narrates the thesis, and
@@ -112,14 +119,16 @@ the trader watches.
   knowledge.
 - **Mid-run screenshots** after a UI command (the agent re-photographing the
   panel it just opened).
+- **`list_charts`** once the chart packet carries the client's live pane set.
 
 ## Error handling
 
 - Interview abandonment (the trader closes the chat): nothing is saved; a
   skill exists only after `save_skill_draft` validates it.
-- UI command for a disconnected chart page: the command is dropped with a
-  WARN, and the tool result says so — the model is told the user cannot see
-  new panels right now.
+- UI command for a disconnected chart page: the relay rides the progress
+  channel, which drops silently when the client is gone; the tool result
+  already says "issued, not confirmed", so the model never believes a panel
+  exists that nobody saw.
 - Multi-pin with a missing skill id: the ask fails with `NoMatchingSkill`
   naming the id, as today.
 - A skill that no longer parses after a schema change: skipped with a WARN

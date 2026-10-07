@@ -66,6 +66,7 @@ pub mod resample;
 pub mod rsi_divergence;
 pub mod sessions;
 pub mod size_classes;
+pub mod sr_zones;
 pub mod state;
 pub mod types;
 pub mod volume_profile;
@@ -104,6 +105,7 @@ pub use market_structure::{
 };
 pub use patterns::{detect_patterns, PatternConfig, PatternDirection, PatternKind, PatternMatch};
 pub use regions::{detect_zones, Region, RegionKind, ZoneConfig};
+pub use sr_zones::{detect_sr_zones, SrKind, SrZone, SrZoneConfig};
 pub use rsi_divergence::{
     latest_rsi_divergence, rsi_divergences, rsi_series, RsiDivergence, RsiDivergenceConfig,
     RsiDivergenceKind, DEFAULT_OVERBOUGHT, DEFAULT_OVERSOLD,

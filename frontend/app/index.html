@@ -1403,6 +1403,11 @@
       aside, so nothing here selects it.
     -->
     <div class="pane" id="pane-thesis">
+      <!-- Author mode (docs/47): the composer becomes the skill interview. -->
+      <div id="authorBanner" class="row" hidden style="gap:8px; align-items:center; margin-bottom:6px;">
+        <span class="muted">✦ Authoring a skill — describe the pattern, answer the interview; it saves to your library.</span>
+        <button id="authorExit" type="button">Exit authoring</button>
+      </div>
       <div class="row">
         <input id="question" placeholder="find me a long setup using my liquidity-sweep skill" />
         <button id="ask" class="primary">Ask</button>
@@ -1556,6 +1561,10 @@
       </p>
       
       <h3 class="section">Create a new skill</h3>
+      <div class="row">
+        <button id="skillCreateAI" class="primary"
+                title="Describe the pattern you trade; the AI interviews you step by step and writes the skill for you">✦ Create with AI — describe your pattern</button>
+      </div>
       <div class="ws-new">
         <div class="row">
           <select id="skillTemplate" title="Start from a methodology template, then edit">
@@ -1723,8 +1732,9 @@
 
         <div class="chat-composer">
           <button type="button" id="aiModelChip" class="aiChip modelChip" title="Which AI model answers your chats — change it in the AI Model tab">◇ Platform model</button>
-          <select id="skillSelect" class="aiChip modelChip" title="Pick a skill whose methodology to apply">
-            <option value="">No skill (default)</option>
+          <select id="skillSelect" class="aiChip modelChip" multiple size="3"
+                  title="Pin one or more skills whose methodologies to apply — Ctrl/⌘-click to stack them; the AI follows them all">
+            <option value="">No skill (auto)</option>
           </select>
           <button type="button" id="wsChatAttach" class="chat-send" title="Attach a chart screenshot — the AI will read the indicator off it" style="flex:0 0 auto">📎</button>
           <input type="file" id="wsChatImage" accept="image/png,image/jpeg,image/webp" multiple hidden>

@@ -25,6 +25,9 @@ pub struct AskBody {
     pub question: String,
     /// Pin a skill by id instead of retrieving by relevance.
     pub skill_id: Option<String>,
+    /// Pin several skills at once (docs/47): the trader's stack.
+    #[serde(default)]
+    pub skill_ids: Vec<String>,
     /// Ladder override, coarse to fine, e.g. `["4h", "1h", "5m"]`.
     pub timeframes: Option<Vec<String>>,
     /// The chart the user is looking at when they ask.
@@ -171,6 +174,9 @@ pub async fn ask(
     let mut request = AskRequest::new(&body.symbol, &body.question);
     if let Some(id) = &body.skill_id {
         request = request.with_skill(id);
+    }
+    if !body.skill_ids.is_empty() {
+        request = request.with_skill_ids(body.skill_ids.clone());
     }
     if let Some(frames) = &body.timeframes {
         request = request.with_timeframes(frames.clone());

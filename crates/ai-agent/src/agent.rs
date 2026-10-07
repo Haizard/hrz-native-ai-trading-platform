@@ -260,6 +260,13 @@ pub struct AskRequest {
     pub timeframes: Option<Vec<String>>,
     /// Pin a specific skill instead of retrieving by relevance.
     pub skill_id: Option<String>,
+    /// Pin several skills at once (`docs/47`): the trader's stack.
+    ///
+    /// Combined with `skill_id` rather than replacing it -- the older field
+    /// is what existing clients send, and a pin is a pin whichever field
+    /// carried it. When both are empty the skill is retrieved by relevance,
+    /// and relevance still answers with one.
+    pub skill_ids: Vec<String>,
     /// Candles per timeframe; `None` uses the context default.
     pub lookback: Option<usize>,
     /// The chart the user is looking at, when the shell told us.
@@ -306,6 +313,7 @@ impl AskRequest {
             question: question.into(),
             timeframes: None,
             skill_id: None,
+            skill_ids: Vec::new(),
             lookback: None,
             chart: None,
             drawings: None,
@@ -320,6 +328,15 @@ impl AskRequest {
     #[must_use]
     pub fn with_skill(mut self, skill_id: impl Into<String>) -> Self {
         self.skill_id = Some(skill_id.into());
+        self
+    }
+
+    /// Pin several skills by id (docs/47): every one of them governs the
+    /// answer, so a trader can stack a liquidity skill on a structure skill
+    /// instead of choosing between them.
+    #[must_use]
+    pub fn with_skill_ids(mut self, skill_ids: Vec<String>) -> Self {
+        self.skill_ids = skill_ids;
         self
     }
 
@@ -654,12 +671,18 @@ impl Agent {
         data: &dyn crate::tools::MarketDataSource,
         progress: &dyn ProgressSink,
     ) -> Result<AgentAnswer, AgentError> {
-        let selection = self.select_skill(request)?;
-        let skill: Option<&Skill> = selection.as_ref().map(|(skill, _)| skill);
-        let skill_gaps: &[String] = selection
-            .as_ref()
-            .map(|(_, gaps)| gaps.as_slice())
-            .unwrap_or(&[]);
+        let selection = self.select_skills(request)?;
+        let skills: Vec<&Skill> = selection.iter().map(|(skill, _)| skill).collect();
+        // Every pinned skill's gaps, named: "FVG Scalp: tick data is absent"
+        // reads as what it is, and two skills' gaps never blur into one list.
+        let skill_gaps: Vec<String> = selection
+            .iter()
+            .flat_map(|(skill, gaps)| {
+                gaps.iter()
+                    .map(|gap| format!("{}: {gap}", skill.name))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
 
         // The user's own resolution anchors the ladder. A question asked while
         // looking at the 5m chart is about the 5m chart, and answering it from
@@ -674,7 +697,7 @@ impl Agent {
 
         let ladder = match &request.timeframes {
             Some(frame_strings) => TimeframeLadder::from_strs(frame_strings),
-            None => match &skill {
+            None => match skills.first() {
                 Some(s) => TimeframeLadder::from_skill(s),
                 None => TimeframeLadder::default(),
             },
@@ -762,16 +785,29 @@ impl Agent {
             .drawings
             .as_ref()
             .is_some_and(|d| d.writer().is_some());
-        let skill_requires_drawing = skill.is_some_and(|s| {
+        let skill_requires_drawing = skills.iter().any(|s| {
             s.rules
                 .iter()
                 .any(|r| r.trim_start().to_ascii_uppercase().starts_with("DRAW"))
         });
+        // The stack's name for the thesis: one id per pinned skill, joined.
+        // A single pin reads exactly as it always did.
+        let skill_used: Option<String> = if skills.is_empty() {
+            None
+        } else {
+            Some(
+                skills
+                    .iter()
+                    .map(|s| s.id())
+                    .collect::<Vec<_>>()
+                    .join(" + "),
+            )
+        };
 
         let system = ask_system_prompt(
             &request.symbol,
-            skill,
-            skill_gaps,
+            &skills,
+            &skill_gaps,
             &tools,
             &view,
             request.chart.as_ref(),
@@ -1071,6 +1107,29 @@ impl Agent {
                 if !result.is_error {
                     findings.note(&call.name, &result.content);
                 }
+                // A screen command (`docs/47`) is relayed the moment the tool
+                // issued it: the progress channel is the live one, and a
+                // command queued until the run ended would open the chart
+                // after the answer about it.
+                if !result.is_error {
+                    if let Some(command) = result.content.get("ui_command") {
+                        progress.report(Progress::UiCommand {
+                            action: command
+                                .get("action")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            symbol: command
+                                .get("symbol")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            timeframe: command
+                                .get("timeframe")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                        });
+                    }
+                }
                 results.push(result);
             }
 
@@ -1106,7 +1165,7 @@ impl Agent {
                         return Err(err);
                     }
                 };
-                thesis.skill_used = skill.as_ref().map(|s| s.id());
+                thesis.skill_used = skill_used.clone();
                 thesis.provenance = trace.clone();
 
                 // Drawing duty (docs/46): a loaded chart-analysis skill whose
@@ -1120,7 +1179,7 @@ impl Agent {
                 if can_draw && skill_requires_drawing && !drew_this_run && !last {
                     tracing::warn!(
                         target: "ai_agent",
-                        skill = %skill.map_or("", |s| s.name.as_str()),
+                        skill = %skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(" + "),
                         "thesis submitted without drawing; asking for the chart objects"
                     );
                     progress.report(Progress::Correcting {
@@ -1197,7 +1256,7 @@ impl Agent {
 
                 return Ok(AgentAnswer {
                     thesis,
-                    skill: skill.as_ref().map(|s| s.id()),
+                    skill: skill_used.clone(),
                     ladder: view,
                     trace,
                     turns,
@@ -1234,10 +1293,10 @@ impl Agent {
             &findings,
             trace.clone(),
         );
-        thesis.skill_used = skill.as_ref().map(|s| s.id());
+        thesis.skill_used = skill_used.clone();
         Ok(AgentAnswer {
             thesis,
-            skill: skill.as_ref().map(|s| s.id()),
+            skill: skill_used.clone(),
             ladder: view,
             trace,
             turns,
@@ -1512,8 +1571,9 @@ impl Agent {
         Ok(response.text())
     }
 
-    /// Pick the skill for a request: pinned by id, else by relevance — and in
-    /// both cases only when its data contract holds on this venue (docs/40).
+    /// Pick the skills for a request: pinned by id -- one or several
+    /// (docs/47), else one by relevance — and in both cases only when the
+    /// data contract holds on this venue (docs/40).
     ///
     /// The filter runs after scoring and before selection: retrieval ranks,
     /// then the first *eligible* candidate wins. A refusal is never silent —
@@ -1522,12 +1582,12 @@ impl Agent {
     /// refusal. Reporting "no skill matched" there would misreport a data
     /// refusal as an absence of methodology.
     ///
-    /// Returns the skill with its data gaps (preferred/degraded misses), for
-    /// the prompt to surface.
-    fn select_skill(
+    /// Returns each skill with its data gaps (preferred/degraded misses), for
+    /// the prompt to surface. An empty vec is "no skill governs this answer".
+    fn select_skills(
         &self,
         request: &AskRequest,
-    ) -> Result<Option<(Skill, Vec<String>)>, AgentError> {
+    ) -> Result<Vec<(Skill, Vec<String>)>, AgentError> {
         let check = |skill: &Skill| -> Result<Vec<String>, Vec<String>> {
             match &request.capabilities {
                 Some(view) => match view.check_skill(skill, &request.symbol) {
@@ -1540,20 +1600,34 @@ impl Agent {
             }
         };
 
+        // The pin set: `skill_ids` plus a `skill_id` that did not also arrive
+        // in it -- one pin is one pin, whichever field carried it.
+        let mut pins: Vec<String> = request.skill_ids.clone();
         if let Some(id) = &request.skill_id {
-            let skill = self
-                .skills
-                .by_id(id)
-                .ok_or_else(|| AgentError::NoMatchingSkill(id.clone()))?;
-            // Pinning chooses the methodology; it does not license claims the
-            // venue cannot support.
-            return match check(skill) {
-                Ok(gaps) => Ok(Some((skill.clone(), gaps))),
-                Err(reasons) => Err(AgentError::NoMatchingSkill(format!(
-                    "{id} is pinned but its data contract refuses on this venue: {}",
-                    reasons.join("; ")
-                ))),
-            };
+            if !pins.contains(id) {
+                pins.push(id.clone());
+            }
+        }
+        if !pins.is_empty() {
+            let mut out = Vec::with_capacity(pins.len());
+            for id in pins {
+                let skill = self
+                    .skills
+                    .by_id(&id)
+                    .ok_or_else(|| AgentError::NoMatchingSkill(id.clone()))?;
+                // Pinning chooses the methodology; it does not license claims
+                // the venue cannot support.
+                match check(skill) {
+                    Ok(gaps) => out.push((skill.clone(), gaps)),
+                    Err(reasons) => {
+                        return Err(AgentError::NoMatchingSkill(format!(
+                            "{id} is pinned but its data contract refuses on this venue: {}",
+                            reasons.join("; ")
+                        )))
+                    }
+                }
+            }
+            return Ok(out);
         }
 
         let query = SkillQuery::for_market(&request.symbol)
@@ -1567,7 +1641,7 @@ impl Agent {
                 continue;
             }
             match check(candidate) {
-                Ok(gaps) => return Ok(Some((candidate.clone(), gaps))),
+                Ok(gaps) => return Ok(vec![(candidate.clone(), gaps)]),
                 Err(reasons) => refusals.push(format!("{}: {}", candidate.name, reasons.join("; "))),
             }
         }
@@ -1577,7 +1651,7 @@ impl Agent {
                 refusals.join(" | ")
             )));
         }
-        Ok(None)
+        Ok(Vec::new())
     }
 
     /// Run one non-terminal tool call, recording it for provenance, folding
@@ -1666,7 +1740,7 @@ fn add_tokens(a: Option<i32>, b: Option<i32>) -> Option<i32> {
 /// is the only place the boundary in `docs/09` is enforced at runtime.
 fn ask_system_prompt(
     symbol: &str,
-    skill: Option<&Skill>,
+    skills: &[&Skill],
     skill_gaps: &[String],
     tools: &[crate::llm_client::ToolSpec],
     ladder: &LadderView,
@@ -1724,23 +1798,31 @@ fn ask_system_prompt(
         );
     }
 
-    if let Some(skill) = skill {
-        out.push_str("## Skill\n");
-        out.push_str(&skill.render());
-        // When the loaded skill carries DRAW rules and writes are possible,
+    if !skills.is_empty() {
+        // One header per skill, named: the trader pins a stack (docs/47), and
+        // the thesis has to be able to say which skill a finding came from --
+        // an anonymous merged blob could not answer that.
+        for skill in skills {
+            out.push_str(&format!("## Skill: {}\n", skill.name));
+            out.push_str(&skill.render());
+            out.push('\n');
+        }
+        // When a loaded skill carries DRAW rules and writes are possible,
         // drawing is part of the contract, not a suggestion: the submit gate
         // enforces it at runtime, and the prompt says so up front so the
         // model plans the drawings instead of being surprised by the
         // rejection.
         if can_draw
-            && skill
-                .rules
-                .iter()
-                .any(|r| r.trim_start().to_ascii_uppercase().starts_with("DRAW"))
+            && skills.iter().any(|skill| {
+                skill
+                    .rules
+                    .iter()
+                    .any(|r| r.trim_start().to_ascii_uppercase().starts_with("DRAW"))
+            })
         {
             out.push_str(
-                "\nThis skill's DRAW rules are requirements: the thesis is not \
-                 complete until the patterns it names exist on the chart via \
+                "\nThe DRAW rules above are requirements: the thesis is not \
+                 complete until the patterns they name exist on the chart via \
                  create_drawing. A submission with no drawing is sent back. \
                  Draw as you analyze -- the answer phase keeps the drawing tools \
                  available only until the first object lands, so leaving all \
@@ -1748,9 +1830,10 @@ fn ask_system_prompt(
             );
         }
         // The gaps the contract check surfaced (preferred/degraded misses)
-        // belong next to the skill they qualify: the model must know which of
-        // the skill's preferred reads are absent *before* it starts reasoning,
-        // not discover it mid-answer.
+        // belong next to the skills they qualify: each is already prefixed
+        // with its skill's name, so the model knows which of the stack's
+        // preferred reads are absent *before* it starts reasoning, not
+        // mid-answer.
         if !skill_gaps.is_empty() {
             out.push_str("\nDATA GAPS ON THIS VENUE (work around them; do not paper over them):\n");
             for gap in skill_gaps {
@@ -1758,8 +1841,8 @@ fn ask_system_prompt(
             }
         }
         out.push_str(
-            "\nFollow this methodology. Do not invent rules that are not in it; \
-             if the setup does not satisfy it, say which conditions failed.\n\n",
+            "\nFollow these methodologies. Do not invent rules that are not in them; \
+             if the setup does not satisfy one, say which conditions failed.\n\n",
         );
     }
 
@@ -2216,6 +2299,8 @@ pub fn draft_strategy_spec() -> ToolSpec {
 struct RunFindings {
     /// The latest `detect_pattern` result.
     patterns: Option<serde_json::Value>,
+    /// The latest `detect_zones` result.
+    zones: Option<serde_json::Value>,
     /// The latest `detect_liquidity` result.
     liquidity: Option<serde_json::Value>,
     /// The latest `detect_imbalance` result.
@@ -2229,6 +2314,7 @@ impl RunFindings {
     fn note(&mut self, tool: &str, content: &serde_json::Value) {
         match tool {
             "detect_pattern" => self.patterns = Some(content.clone()),
+            "detect_zones" => self.zones = Some(content.clone()),
             "detect_liquidity" => self.liquidity = Some(content.clone()),
             "detect_imbalance" => self.imbalance = Some(content.clone()),
             "detect_market_structure" => self.structure = Some(content.clone()),
@@ -2239,6 +2325,7 @@ impl RunFindings {
     /// Whether anything was found worth rendering or reporting.
     fn has_any(&self) -> bool {
         self.patterns.is_some()
+            || self.zones.is_some()
             || self.liquidity.is_some()
             || self.imbalance.is_some()
             || self.structure.is_some()
@@ -2301,7 +2388,7 @@ async fn auto_draw_findings(
     user_id: &str,
     trace: &mut Vec<ToolTrace>,
 ) -> usize {
-    const CAP: usize = 4;
+    const CAP: usize = 6;
     let mut drew = 0usize;
     // A horizontal level needs a time anchor only for where its label sits;
     // "now" is the honest answer for a level that spans the window.
@@ -2398,6 +2485,105 @@ async fn auto_draw_findings(
                         );
                     }
                 }
+            }
+        }
+    }
+
+    // Zones next (docs/47): order blocks as the rects a trader draws, then the
+    // support/resistance bands price keeps respecting. Fresh blocks first: a
+    // mitigated band is closer to history than to a level.
+    if let Some(result) = &findings.zones {
+        let mut blocks: Vec<&serde_json::Value> = result
+            .get("order_blocks")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().collect())
+            .unwrap_or_default();
+        blocks.sort_by_key(|b| !b.get("fresh").and_then(serde_json::Value::as_bool).unwrap_or(false));
+        for block in blocks.into_iter().take(2) {
+            if drew >= CAP {
+                break;
+            }
+            let (Some(bottom), Some(top), Some(from), Some(to)) = (
+                block.get("bottom").and_then(serde_json::Value::as_f64),
+                block.get("top").and_then(serde_json::Value::as_f64),
+                block.get("from_ms").and_then(serde_json::Value::as_f64),
+                block.get("to_ms").and_then(serde_json::Value::as_f64),
+            ) else {
+                continue;
+            };
+            let name = block
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("zone");
+            if top > bottom && to > from && bottom.is_finite() {
+                drew += usize::from(
+                    try_draw(
+                        writer,
+                        user_id,
+                        symbol,
+                        crate::user_drawings::NewAgentDrawing {
+                            kind: "rect".into(),
+                            label: Some(format!("{name} OB")),
+                            time1_ms: from,
+                            price1: bottom,
+                            time2_ms: Some(to),
+                            price2: Some(top),
+                            time3_ms: None,
+                            price3: None,
+                            provenance: auto_provenance("detect_zones: order block", None),
+                        },
+                        trace,
+                    )
+                    .await,
+                );
+            }
+        }
+        for zone in result
+            .get("sr_zones")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(2)
+        {
+            if drew >= CAP {
+                break;
+            }
+            let (Some(bottom), Some(top), Some(from)) = (
+                zone.get("bottom").and_then(serde_json::Value::as_f64),
+                zone.get("top").and_then(serde_json::Value::as_f64),
+                zone.get("first_time_ms").and_then(serde_json::Value::as_f64),
+            ) else {
+                continue;
+            };
+            let kind = zone
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("level");
+            let touches = zone
+                .get("touches")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            if top > bottom && bottom.is_finite() {
+                drew += usize::from(
+                    try_draw(
+                        writer,
+                        user_id,
+                        symbol,
+                        crate::user_drawings::NewAgentDrawing {
+                            kind: "rect".into(),
+                            label: Some(format!("{kind} ({touches} touches)")),
+                            time1_ms: from,
+                            price1: bottom,
+                            time2_ms: Some(now_ms),
+                            price2: Some(top),
+                            time3_ms: None,
+                            price3: None,
+                            provenance: auto_provenance("detect_zones: sr zone", None),
+                        },
+                        trace,
+                    )
+                    .await,
+                );
             }
         }
     }
@@ -2618,6 +2804,50 @@ fn synthesize_stand_aside(
                     price_or_dash(invalidation),
                 ));
             }
+        }
+    }
+
+    if let Some(zones) = &findings.zones {
+        let blocks: Vec<&serde_json::Value> = zones
+            .get("order_blocks")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().collect())
+            .unwrap_or_default();
+        let fresh = blocks
+            .iter()
+            .filter(|b| b.get("fresh").and_then(serde_json::Value::as_bool).unwrap_or(false))
+            .count();
+        if !blocks.is_empty() {
+            lines.push(format!(
+                "Zones: {} order block(s) on the window, {fresh} still fresh.",
+                blocks.len()
+            ));
+            for b in blocks.iter().take(2) {
+                let name = b.get("name").and_then(serde_json::Value::as_str).unwrap_or("zone");
+                let top = b.get("top").and_then(serde_json::Value::as_f64);
+                let bottom = b.get("bottom").and_then(serde_json::Value::as_f64);
+                lines.push(format!(
+                    "- {name} block: {} .. {}",
+                    price_or_dash(bottom),
+                    price_or_dash(top),
+                ));
+            }
+        }
+        let sr: Vec<&serde_json::Value> = zones
+            .get("sr_zones")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().collect())
+            .unwrap_or_default();
+        for z in sr.iter().take(2) {
+            let kind = z.get("kind").and_then(serde_json::Value::as_str).unwrap_or("level");
+            let touches = z.get("touches").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let top = z.get("top").and_then(serde_json::Value::as_f64);
+            let bottom = z.get("bottom").and_then(serde_json::Value::as_f64);
+            lines.push(format!(
+                "- {kind} zone ({touches} touches): {} .. {}",
+                price_or_dash(bottom),
+                price_or_dash(top),
+            ));
         }
     }
 
@@ -3044,6 +3274,43 @@ mod tests {
         // Announced before it ran, and answered after -- the order is what lets
         // a panel show a tool as in-flight rather than only as finished.
         assert!(called < done, "{steps:?}");
+    }
+
+    #[tokio::test]
+    async fn a_screen_command_is_relayed_as_it_is_issued() {
+        // docs/47: `open_chart`'s command must reach the client over the
+        // progress channel *during* the run -- queued to the end, the chart
+        // would open after the answer about it.
+        let source = Fixture::new();
+        let agent = agent(vec![
+            named_call("open_chart"),
+            thesis_call(100_100.0, 100_000.0, 100_400.0),
+        ]);
+        let progress = crate::progress::Collected::default();
+
+        agent
+            .ask_with_progress(
+                &AskRequest::new("BTCUSDT", "open the 5m chart and read it"),
+                &source,
+                &progress,
+            )
+            .await
+            .unwrap();
+
+        let steps = progress.steps();
+        let command = steps.iter().find_map(|s| match s {
+            Progress::UiCommand {
+                action,
+                symbol,
+                timeframe,
+            } => Some((action.clone(), symbol.clone(), timeframe.clone())),
+            _ => None,
+        });
+        let (action, symbol, timeframe) =
+            command.unwrap_or_else(|| panic!("no ui_command was relayed: {steps:?}"));
+        assert_eq!(action, "open_chart");
+        assert_eq!(symbol.as_deref(), Some("BTCUSDT"));
+        assert_eq!(timeframe.as_deref(), Some("5m"));
     }
 
     #[tokio::test]
@@ -3721,7 +3988,7 @@ invalidation: []
         let request = AskRequest::new("BTCUSDT", "absorption after the sweep?")
             .with_skill(footprint_skill().id())
             .with_capabilities(deriv_like_view());
-        let err = agent.select_skill(&request).unwrap_err();
+        let err = agent.select_skills(&request).unwrap_err();
         let AgentError::NoMatchingSkill(message) = err else {
             panic!("a refused pinned skill is a refusal, not another error: {err}")
         };
@@ -3742,12 +4009,93 @@ invalidation: []
         let agent = agent_with(SkillLibrary::from_skills(vec![footprint_skill(), eligible]));
         let request =
             AskRequest::new("BTCUSDT", "footprint setup?").with_capabilities(deriv_like_view());
-        let (skill, gaps) = agent
-            .select_skill(&request)
-            .expect("one candidate is eligible")
-            .expect("the eligible candidate is selected");
-        assert_eq!(skill.name, "Sweep Read");
-        assert!(gaps.is_empty());
+        let selected = agent
+            .select_skills(&request)
+            .expect("one candidate is eligible");
+        assert_eq!(selected.len(), 1, "retrieval answers with one skill");
+        assert_eq!(selected[0].0.name, "Sweep Read");
+        assert!(selected[0].1.is_empty());
+    }
+
+    #[test]
+    fn every_pinned_skill_is_selected_and_named() {
+        // docs/47: the trader's stack. Both pins govern the answer, in pin
+        // order, and a pin that does not exist names itself in the error.
+        let first = Skill {
+            name: "Sweep Read".into(),
+            category: "liquidity".into(),
+            ..Skill::default()
+        };
+        let second = Skill {
+            name: "Structure Read".into(),
+            category: "market-structure".into(),
+            ..Skill::default()
+        };
+        let agent = agent_with(SkillLibrary::from_skills(vec![first.clone(), second.clone()]));
+        let request = AskRequest::new("BTCUSDT", "setup?")
+            .with_skill_ids(vec![first.id(), second.id()]);
+        let selected = agent.select_skills(&request).expect("both pins resolve");
+        let names: Vec<&str> = selected.iter().map(|(s, _)| s.name.as_str()).collect();
+        assert_eq!(names, ["Sweep Read", "Structure Read"]);
+
+        let missing = AskRequest::new("BTCUSDT", "setup?")
+            .with_skill_ids(vec![first.id(), "no-such-skill-v1".into()]);
+        let err = agent.select_skills(&missing).unwrap_err();
+        assert!(
+            err.to_string().contains("no-such-skill-v1"),
+            "a missing pin names itself: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_pinned_skills_rules_reach_the_prompt_named() {
+        // docs/47: the trader's stack. Both skills govern the answer, each
+        // under its own name, so the thesis can say which skill a finding
+        // came from -- and the thesis names the stack it followed.
+        let source = Fixture::new();
+        let sweep = Skill {
+            name: "Sweep Read".into(),
+            category: "liquidity".into(),
+            rules: vec!["sweep the low first".into()],
+            preferred_timeframes: vec!["5m".into()],
+            ..Skill::default()
+        };
+        let zones = Skill {
+            name: "Zone Read".into(),
+            category: "zones".into(),
+            rules: vec!["DRAW the demand rect".into()],
+            preferred_timeframes: vec!["5m".into()],
+            ..Skill::default()
+        };
+        let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
+            100_100.0, 100_000.0, 100_400.0,
+        )]));
+        let agent = Agent::new(
+            llm.clone(),
+            SkillLibrary::from_skills(vec![sweep.clone(), zones.clone()]),
+            AgentConfig::default(),
+        );
+
+        let answer = agent
+            .ask(
+                &AskRequest::new("BTCUSDT", "setup?")
+                    .with_skill_ids(vec![sweep.id(), zones.id()]),
+                &source,
+            )
+            .await
+            .unwrap();
+
+        let prompt = system_prompt_of(&llm);
+        assert!(prompt.contains("## Skill: Sweep Read"), "{prompt}");
+        assert!(prompt.contains("## Skill: Zone Read"), "{prompt}");
+        assert!(prompt.contains("sweep the low first"), "{prompt}");
+        assert!(prompt.contains("DRAW the demand rect"), "{prompt}");
+        assert_eq!(
+            answer.skill.as_deref(),
+            Some("sweep-read-v1 + zone-read-v1"),
+            "the thesis names the stack it followed: {:?}",
+            answer.skill
+        );
     }
 
     #[test]
@@ -3755,7 +4103,7 @@ invalidation: []
         let agent = agent_with(SkillLibrary::from_skills(vec![footprint_skill()]));
         let request =
             AskRequest::new("BTCUSDT", "footprint setup?").with_capabilities(deriv_like_view());
-        let err = agent.select_skill(&request).unwrap_err();
+        let err = agent.select_skills(&request).unwrap_err();
         let AgentError::NoMatchingSkill(message) = err else {
             panic!("got {err}")
         };
@@ -3771,12 +4119,10 @@ invalidation: []
         // v1 behaviour exactly — top-ranked trading skill, no checks.
         let agent = agent_with(SkillLibrary::from_skills(vec![footprint_skill()]));
         let request = AskRequest::new("BTCUSDT", "footprint setup?");
-        let (skill, gaps) = agent
-            .select_skill(&request)
-            .expect("no view, no refusal")
-            .expect("the skill is selected");
-        assert_eq!(skill.name, "Absorption Read");
-        assert!(gaps.is_empty());
+        let selected = agent.select_skills(&request).expect("no view, no refusal");
+        assert_eq!(selected.len(), 1, "the skill is selected");
+        assert_eq!(selected[0].0.name, "Absorption Read");
+        assert!(selected[0].1.is_empty());
     }
 
     #[test]
@@ -3794,7 +4140,7 @@ invalidation: []
         let agent = agent_with(SkillLibrary::from_skills(vec![tool_skill]));
         let request = AskRequest::new("BTCUSDT", "footprint setup?");
         assert!(
-            agent.select_skill(&request).unwrap().is_none(),
+            agent.select_skills(&request).unwrap().is_empty(),
             "a tool skill answers 'how to call', not 'what is the trade'"
         );
     }

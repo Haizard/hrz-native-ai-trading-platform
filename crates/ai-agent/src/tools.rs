@@ -477,6 +477,27 @@ impl ToolRegistry {
                     exposed_tool: Some("patterns"),
                 },
                 ToolSpec {
+                    name: "detect_zones".into(),
+                    description: DETECT_ZONES.into(),
+                    input_schema: detect_zones_schema(),
+                    exposed_tool: Some("market_structure"),
+                },
+                ToolSpec {
+                    name: "open_chart".into(),
+                    description: OPEN_CHART.into(),
+                    input_schema: open_chart_schema(),
+                    // The screen belongs to the asking user, not to a venue
+                    // capability -- and a screen nobody is looking at is a
+                    // no-op the note already owns up to.
+                    exposed_tool: None,
+                },
+                ToolSpec {
+                    name: "set_chart".into(),
+                    description: SET_CHART.into(),
+                    input_schema: set_chart_schema(),
+                    exposed_tool: None,
+                },
+                ToolSpec {
                     name: "compare_timeframes".into(),
                     description: COMPARE_TIMEFRAMES.into(),
                     input_schema: confluence_schema(false),
@@ -662,6 +683,9 @@ impl ToolRegistry {
             "get_atr" => get_atr_tool(ctx, &call.input).await,
             "get_moving_average" => get_moving_average(ctx, &call.input).await,
             "detect_pattern" => detect_pattern_tool(ctx, &call.input).await,
+            "detect_zones" => detect_zones_tool(ctx, &call.input).await,
+            "open_chart" => open_chart_tool(ctx, &call.input).await,
+            "set_chart" => set_chart_tool(ctx, &call.input).await,
             "compare_timeframes" => compare_timeframes(ctx, &call.input).await,
             "cross_timeframe_confluence" => cross_timeframe_confluence(ctx, &call.input).await,
             "backtest_strategy" => backtest_strategy(ctx, &call.input).await,
@@ -834,6 +858,28 @@ fn detect_pattern_schema() -> Value {
             "description": "Only report matches at or above this confidence (default 0.5)",
         })),
     ])
+}
+
+fn detect_zones_schema() -> Value {
+    symbol_timeframe_schema(Some("lookback"))
+}
+
+fn open_chart_schema() -> Value {
+    symbol_timeframe_schema(None)
+}
+
+fn set_chart_schema() -> Value {
+    // Both fields optional at the schema level; the tool itself refuses a
+    // call that changes nothing, because the refusal carries the reason and
+    // an empty `required` list cannot.
+    json!({
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "The symbol to show, e.g. BTCUSDT."},
+            "timeframe": {"type": "string", "description": "The timeframe to show, e.g. 5m."},
+        },
+        "required": [],
+    })
 }
 
 fn confluence_schema(with_tolerance: bool) -> Value {
@@ -1158,8 +1204,11 @@ const ANALYZE_MULTI_TIMEFRAME: &str = "Run analyze_timeframe across several time
     once, ordered coarse to fine. Use it to check higher-timeframe context before \
     an entry trigger. Returns one state per timeframe.";
 
-const GET_CANDLES: &str = "Recent OHLCV candles with buy/sell split, oldest first. Use it \
-    to see the actual price path, not just the aggregate order-flow read.";
+const GET_CANDLES: &str = "Recent OHLCV candles with buy/sell split, oldest first. Each candle \
+    carries `i` (its index in this window, 0 = oldest) and `time_ms`, so a skill's drawing \
+    recipe can name a candle by position -- \"the third candle from the right\" is \
+    `count - 3` -- and its `time_ms` feeds create_drawing's anchors directly. Use it to see \
+    the actual price path, not just the aggregate order-flow read.";
 
 const GET_VOLUME_PROFILE: &str = "Volume profile over the window: point of control (POC), \
     value area high/low (VAH/VAL), total volume, and the highest-volume nodes.";
@@ -1243,10 +1292,29 @@ const DETECT_PATTERN: &str = "Detect a classical chart pattern over confirmed sw
     break activates it, the measured-move target, and the invalidation. A pattern that \
     is not reported did not form; do not describe near-misses as patterns.";
 
+const DETECT_ZONES: &str = "Detect the chart's zones -- the bands a skill's DRAW rules name. \
+    Order blocks: the supply/demand bands each structure-breaking impulse started from, with \
+    how much of each band price has traded back through (fresh = untouched). Support and \
+    resistance: the bands where confirmed swings keep clustering, with their touch counts. \
+    Every zone carries absolute anchors, so draw what you cite: create_drawing as a rect with \
+    time1/price1 = from_ms/bottom and time2/price2 = to_ms/top. A zone that is not reported \
+    did not form; do not sketch one from memory.";
+
 const COMPARE_TIMEFRAMES: &str = "Structural read of one symbol on several timeframes at \
     once: per-timeframe trend and latest swings, which pairs of timeframes agree, and \
     the aligned direction when they all do. Use it before trusting a fine-timeframe \
     signal: a 5m long against a bearish 4h is a counter-trend scalp, not a setup.";
+
+const OPEN_CHART: &str = "Open a chart panel on the user's screen showing `symbol` on \
+    `timeframe` (docs/47). Use it when the analysis moves somewhere the screen does not \
+    show yet -- a multi-panel read, a different timeframe's zones. The command is issued \
+    to the screen, not confirmed: if the analysis depends on what the panel shows, verify \
+    with a later screenshot rather than assuming.";
+
+const SET_CHART: &str = "Switch the chart the user is looking at to another `symbol` and/or \
+    `timeframe` (docs/47). At least one is required. Use it when the analysis should keep \
+    the same panel but look elsewhere. The command is issued, not confirmed -- verify with \
+    a later screenshot when it matters.";
 
 const CROSS_TIMEFRAME_CONFLUENCE: &str = "Price levels where several timeframes' swings \
     cluster within `tolerance_pct`: a level three timeframes share is confluence; one \
@@ -1386,11 +1454,24 @@ async fn get_candles(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Agent
     let timeframe = timeframe_arg(args, TOOL)?;
     let limit = ctx.clamp_lookback(optional_u64(args, "limit", TOOL)?);
     let (candles, _) = load_window(ctx, &symbol, timeframe, limit).await?;
+    // `i` and `time_ms` are the drawing bridge (docs/47): a skill's DRAW
+    // recipe names candles by position, and `time_ms` is the unit
+    // create_drawing's anchors take, so neither costs the model a conversion.
+    let rendered: Vec<Value> = candles
+        .iter()
+        .enumerate()
+        .map(|(i, candle)| {
+            let mut entry = candle_json(candle);
+            entry["i"] = json!(i);
+            entry["time_ms"] = json!(candle.open_time / 1_000_000);
+            entry
+        })
+        .collect();
     Ok(json!({
         "symbol": symbol,
         "timeframe": timeframe.to_string(),
         "count": candles.len(),
-        "candles": candles.iter().map(candle_json).collect::<Vec<_>>(),
+        "candles": rendered,
     }))
 }
 
@@ -2212,6 +2293,127 @@ async fn detect_pattern_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
         "patterns": matches.iter().map(render).collect::<Vec<_>>(),
         "note": "an empty list means no pattern formed on the confirmed swings; a near-miss is a miss",
     }))
+}
+
+/// The zones a chart is drawn in (`docs/47`): supply/demand bands from
+/// [`analytics_core::detect_zones`] — the order-block concept, the origin of
+/// each structure-breaking impulse — plus support/resistance bands from
+/// [`analytics_core::detect_sr_zones`], where confirmed swings keep
+/// clustering.
+///
+/// Every zone carries absolute anchors in both units, because the point of
+/// the tool is drawing: a rect from `from_ms`/`bottom` to `to_ms`/`top` is
+/// the zone on the user's chart, and the model should not have to convert
+/// anything to place it there.
+async fn detect_zones_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "detect_zones";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
+
+    let regions = analytics_core::detect_zones(&candles, Default::default());
+    let structure = detect_market_structure(&candles, ctx.config.structure);
+    let last_close = candles.last().map_or(0.0, |c| c.close);
+    let sr = analytics_core::detect_sr_zones(&structure, last_close, Default::default());
+
+    let order_blocks: Vec<Value> = regions
+        .iter()
+        .rev() // newest first: the fresh zone is the one worth trading
+        .map(|r| {
+            json!({
+                "name": r.name,
+                "direction": if r.side == analytics_core::Side::Buy { "bullish" } else { "bearish" },
+                "top": r.price_high,
+                "bottom": r.price_low,
+                "from_ms": r.from / 1_000_000,
+                "to_ms": r.to / 1_000_000,
+                "mitigated": r.mitigated,
+                "fresh": r.is_fresh(),
+                "broken_level": r.origin.broken_level(),
+            })
+        })
+        .collect();
+    let sr_zones: Vec<Value> = sr
+        .iter()
+        .map(|z| {
+            json!({
+                "kind": z.kind.name(),
+                "top": z.top,
+                "bottom": z.bottom,
+                "touches": z.touches,
+                "first_time_ms": z.first_time / 1_000_000,
+                "last_time_ms": z.last_time / 1_000_000,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "price": last_close,
+        "order_blocks": order_blocks,
+        "sr_zones": sr_zones,
+        "note": "draw what you cite: a rect with time1/price1 = from_ms/bottom and \
+                 time2/price2 = to_ms/top puts the zone on the chart. An empty list \
+                 means no zone formed; do not sketch one from memory.",
+    }))
+}
+
+/// `open_chart` / `set_chart` (`docs/47`): the tools do not touch a screen --
+/// they return the command, and the orchestrator relays it to the client over
+/// the progress channel. Confirmed-not-seen: the note the model gets back
+/// says the command was *issued*, and a model that needs to know what the
+/// screen did must look at a later screenshot rather than trust the relay.
+fn ui_command(action: &str, symbol: Option<String>, timeframe: Option<String>) -> Value {
+    json!({
+        "ok": true,
+        "ui_command": { "action": action, "symbol": symbol, "timeframe": timeframe },
+        "note": "the command was issued to the user's screen, not confirmed. If the analysis \
+                 depends on what the screen now shows, verify with a screenshot rather than \
+                 assuming the panel opened.",
+    })
+}
+
+async fn open_chart_tool(_ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "open_chart";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    Ok(ui_command(
+        "open_chart",
+        Some(symbol.to_uppercase()),
+        Some(timeframe.to_string()),
+    ))
+}
+
+async fn set_chart_tool(_ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "set_chart";
+    let symbol = args
+        .get("symbol")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_uppercase());
+    let timeframe = match args.get("timeframe").and_then(Value::as_str) {
+        None => None,
+        Some(raw) => Some(
+            raw.parse::<Timeframe>()
+                .map_err(|_| AgentError::InvalidToolArgs {
+                    tool: TOOL.into(),
+                    reason: format!("`timeframe` is not a resolution the engine accepts: `{raw}`"),
+                })?
+                .to_string(),
+        ),
+    };
+    if symbol.is_none() && timeframe.is_none() {
+        return Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: "at least one of `symbol` or `timeframe` is required -- a command that \
+                     changes nothing is not a command"
+                .into(),
+        });
+    }
+    Ok(ui_command("set_chart", symbol, timeframe))
 }
 
 /// The `timeframes` array both multi-timeframe tools take: 2 to 6 entries,
@@ -3389,6 +3591,9 @@ mod tests {
             "get_atr",
             "get_moving_average",
             "detect_pattern",
+            "detect_zones",
+            "open_chart",
+            "set_chart",
             "compare_timeframes",
             "cross_timeframe_confluence",
             "analyze_timeframe",
@@ -3696,6 +3901,33 @@ mod tests {
         assert_eq!(candles.len(), 25);
         let times: Vec<i64> = candles.iter().map(|c| c["t"].as_i64().unwrap()).collect();
         assert!(times.windows(2).all(|w| w[0] < w[1]), "must be ascending");
+    }
+
+    #[tokio::test]
+    async fn get_candles_indexes_each_candle_and_carries_drawing_ready_millis() {
+        // The drawing bridge (docs/47): a skill's DRAW recipe names a candle by
+        // position, and `time_ms` is the unit create_drawing's anchors take.
+        // Both are the tool's to compute -- a model counting a raw array
+        // miscounts, and a model converting nanoseconds drops zeros.
+        let fixture = Fixture::rising(40);
+        let ctx = ToolContext::new(&fixture);
+        let out = ToolRegistry::market_analysis()
+            .execute(
+                &call("get_candles", json!({"symbol": "BTCUSDT", "timeframe": "5m", "limit": 10})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let candles = out["candles"].as_array().unwrap();
+        assert_eq!(candles.len(), 10);
+        for (i, candle) in candles.iter().enumerate() {
+            assert_eq!(candle["i"].as_u64().unwrap(), i as u64, "index of candle {i}");
+            assert_eq!(
+                candle["time_ms"].as_i64().unwrap(),
+                candle["t"].as_i64().unwrap() / 1_000_000,
+                "time_ms is t in milliseconds"
+            );
+        }
     }
 
     #[test]
@@ -4677,6 +4909,73 @@ mod tests {
             .unwrap();
         assert!(out["atr"].as_f64().expect("atr") > 0.0);
         assert!(out["atr_percent"].as_f64().expect("atr percent") > 0.0);
+    }
+
+    #[tokio::test]
+    async fn detect_zones_reports_drawing_ready_bands() {
+        // The zones tool is the drawing bridge (docs/47): every band must
+        // carry the anchors a rect takes, in milliseconds, so the model can
+        // draw what it cites without converting anything.
+        let fixture = Fixture::oscillating(120);
+        let ctx = ToolContext::new(&fixture);
+        let out = registry()
+            .execute(
+                &call("detect_zones", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out["price"].as_f64().unwrap() > 0.0);
+        for zone in out["sr_zones"].as_array().unwrap() {
+            for key in ["kind", "top", "bottom", "touches", "first_time_ms", "last_time_ms"] {
+                assert!(zone.get(key).is_some(), "an sr zone lost `{key}`: {zone}");
+            }
+            assert!(zone["top"].as_f64().unwrap() >= zone["bottom"].as_f64().unwrap());
+        }
+        for block in out["order_blocks"].as_array().unwrap() {
+            for key in ["name", "direction", "top", "bottom", "from_ms", "to_ms", "mitigated", "fresh"] {
+                assert!(block.get(key).is_some(), "an order block lost `{key}`: {block}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_screen_tools_return_the_command_the_orchestrator_relays() {
+        // docs/47: the tools issue, the orchestrator relays, the screen
+        // executes -- and the note owns that issuance is not confirmation.
+        let fixture = Fixture::rising(10);
+        let ctx = ToolContext::new(&fixture);
+        let out = registry()
+            .execute(
+                &call("open_chart", json!({"symbol": "ethusdt", "timeframe": "1h"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let command = &out["ui_command"];
+        assert_eq!(command["action"], "open_chart");
+        assert_eq!(command["symbol"], "ETHUSDT", "symbols render as the venue spells them");
+        assert_eq!(command["timeframe"], "1h");
+        assert!(out["note"].as_str().unwrap().contains("not confirmed"));
+    }
+
+    #[tokio::test]
+    async fn set_chart_refuses_a_command_that_changes_nothing() {
+        let fixture = Fixture::rising(10);
+        let ctx = ToolContext::new(&fixture);
+        let err = registry()
+            .execute(&call("set_chart", json!({})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("at least one"), "{err}");
+        // ...and a partial command is fine: timeframe alone retargets the pane.
+        let out = registry()
+            .execute(&call("set_chart", json!({"timeframe": "4h"})), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out["ui_command"]["action"], "set_chart");
+        assert_eq!(out["ui_command"]["timeframe"], "4h");
+        assert!(out["ui_command"]["symbol"].is_null());
     }
 
     #[tokio::test]
