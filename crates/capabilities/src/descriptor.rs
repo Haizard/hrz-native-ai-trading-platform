@@ -140,14 +140,14 @@ pub static STANDARD: &[CapabilityDescriptor] = &[
     },
     CapabilityDescriptor {
         id: "classic_indicators",
-        summary: "EMA, SMA, RSI, ATR over closes/candles",
+        summary: "EMA, SMA, RSI, ATR, MACD and Bollinger Bands over closes/candles",
         category: Category::Statistical,
         implemented_by: Some("analytics_core::indicators"),
-        exposed_tool: None,
+        exposed_tool: Some("get_rsi"),
         routes: &[],
         rules: TRUE_FROM_CANDLES,
         notes: &[
-            "reached through pine-lite `ta.*` and DSL fields, not a per-indicator tool or route",
+            "agent tools get_rsi / get_macd / get_bollinger_bands / get_atr / get_moving_average all read this capability; get_rsi carries the provenance block as the family's representative",
         ],
     },
     CapabilityDescriptor {
@@ -351,6 +351,18 @@ pub static STANDARD: &[CapabilityDescriptor] = &[
         notes: &["surfaced through the chart scene and derived events"],
     },
     CapabilityDescriptor {
+        id: "patterns",
+        summary: "Classical chart patterns over confirmed swings: head-and-shoulders, double tops/bottoms, triangles, wedges, flags",
+        category: Category::Structure,
+        implemented_by: Some("analytics_core::patterns"),
+        exposed_tool: Some("detect_pattern"),
+        routes: &["/scan/patterns"],
+        rules: TRUE_FROM_CANDLES,
+        notes: &[
+            "patterns inherit the swing detector's confirmation delay: a pattern is only reported once its defining swings are confirmed, so the trailing edge of a forming pattern is invisible by design",
+        ],
+    },
+    CapabilityDescriptor {
         id: "chart_drawing",
         summary: "Writing chart objects (levels, zones, trendlines) onto the user's chart",
         category: Category::Structure,
@@ -511,6 +523,8 @@ mod tests {
             ("detect_absorption", "absorption"),
             ("detect_imbalance", "imbalance"),
             ("detect_market_structure", "market_structure"),
+            ("get_rsi", "classic_indicators"),
+            ("detect_pattern", "patterns"),
         ] {
             let descriptor = find(capability).unwrap_or_else(|| panic!("no row for {capability}"));
             assert_eq!(

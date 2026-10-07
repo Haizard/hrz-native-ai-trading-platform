@@ -59,6 +59,7 @@ pub mod imbalance;
 pub mod indicators;
 pub mod liquidity;
 pub mod market_structure;
+pub mod patterns;
 pub mod profile_memory;
 pub mod regions;
 pub mod resample;
@@ -101,6 +102,7 @@ pub use market_structure::{
     detect_market_structure, BreakKind, MarketStructure, StructureBreak, StructureConfig,
     SwingKind, SwingPoint, Trend,
 };
+pub use patterns::{detect_patterns, PatternConfig, PatternDirection, PatternKind, PatternMatch};
 pub use regions::{detect_zones, Region, RegionKind, ZoneConfig};
 pub use rsi_divergence::{
     latest_rsi_divergence, rsi_divergences, rsi_series, RsiDivergence, RsiDivergenceConfig,
@@ -131,9 +133,10 @@ pub mod prelude {
     pub use crate::error::AnalyticsError;
     pub use crate::footprint::{build_footprints, FootprintCandle};
     pub use crate::imbalance::{detect_imbalances, ImbalanceConfig, ImbalanceEvent};
-    pub use crate::indicators::{atr, ema, rsi, sma, true_range};
+    pub use crate::indicators::{atr, bollinger, ema, macd, rsi, sma, true_range};
     pub use crate::liquidity::{detect_liquidity_levels, LiquidityLevel};
     pub use crate::market_structure::{detect_market_structure, BreakKind, MarketStructure, Trend};
+    pub use crate::patterns::{detect_patterns, PatternKind, PatternMatch};
     pub use crate::resample::{resample, resample_all};
     pub use crate::state::{build_market_state, MarketState, MarketStateConfig};
     pub use crate::types::{Candle, FootprintCell, Side, Timeframe, Trade};

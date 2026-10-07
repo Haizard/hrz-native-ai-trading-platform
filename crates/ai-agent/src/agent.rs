@@ -830,14 +830,16 @@ impl Agent {
             if calls.is_empty() || answering {
                 // An empty or unsubmitted answer turn is the one failure a
                 // user actually sees, and it says nothing about why. Log what
-                // came back -- stop reason and text -- so it can be diagnosed
-                // without re-running against the live provider.
+                // came back -- stop reason, which tools it actually called,
+                // and the text -- so it can be diagnosed without re-running
+                // against the live provider.
                 tracing::warn!(
                     target: "ai_agent",
                     turn,
                     last,
                     stop_reason = ?response.stop_reason,
                     calls = calls.len(),
+                    tools = %calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(","),
                     text = %response.message.text().chars().take(200).collect::<String>(),
                     "no submit_thesis on this turn"
                 );
@@ -884,12 +886,10 @@ impl Agent {
                 progress.report(Progress::Tool {
                     name: call.name.clone(),
                 });
-                if matches!(
+                let is_drawing_call = matches!(
                     call.name.as_str(),
                     "create_drawing" | "update_drawing" | "delete_drawing"
-                ) {
-                    drew_this_run = true;
-                }
+                );
                 let result = self
                     .run_tool(call, &ctx, &mut range, &mut trace, &mut shown_doctrine)
                     .await;
@@ -897,6 +897,25 @@ impl Agent {
                     name: call.name.clone(),
                     ok: !result.is_error,
                 });
+                // The drawing duty is discharged by a drawing that actually
+                // landed, not by an attempt that failed validation: a model
+                // whose create_drawing errored still owes the chart its
+                // objects, and marking the duty done on the attempt would
+                // start the answer phase with drawing tools refused -- the
+                // exact live failure where the model "drew" nothing, was
+                // barred from retrying, and the run ended with no thesis.
+                if is_drawing_call && !result.is_error {
+                    drew_this_run = true;
+                }
+                if is_drawing_call && result.is_error {
+                    tracing::warn!(
+                        target: "ai_agent",
+                        tool = %call.name,
+                        args = %call.input,
+                        error = %result.content,
+                        "drawing call failed; the duty is still owed"
+                    );
+                }
                 results.push(result);
             }
 
@@ -904,7 +923,34 @@ impl Agent {
                 // Logged before parsing: if the thesis is rejected for bad
                 // numbers, this is the only record of what was actually sent.
                 tracing::debug!(target: "ai_agent", args = %call.input, "submit_thesis");
-                let mut thesis = parse_thesis(&call.input)?;
+                // A malformed submission is a fixable one, same posture as an
+                // ungrounded level: hand the parse error back while a turn
+                // remains. Aborting the whole run over a missing field throws
+                // away a minute of analysis the user already waited for -- and
+                // with a model that fumbles schemas, this path is the
+                // difference between a corrected answer and no answer.
+                let mut thesis = match parse_thesis(&call.input) {
+                    Ok(thesis) => thesis,
+                    Err(err) => {
+                        if !last {
+                            tracing::warn!(target: "ai_agent", %err, "malformed submit_thesis, asking for a correction");
+                            progress.report(Progress::Correcting {
+                                reason: err.to_string(),
+                            });
+                            messages.push(Message::tool_results(vec![ToolResult {
+                                tool_use_id: call.id.clone(),
+                                content: json!({
+                                    "accepted": false,
+                                    "error": err.to_string(),
+                                    "instruction": "Fix the fields and call submit_thesis again.",
+                                }),
+                                is_error: true,
+                            }]));
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                };
                 thesis.skill_used = skill.as_ref().map(|s| s.id());
                 thesis.provenance = trace.clone();
 

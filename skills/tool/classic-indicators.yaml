@@ -1,0 +1,40 @@
+# Tool skill (docs/40, §18): doctrine for the classic indicator tools.
+name: "Classic Indicators"
+version: "1.0.0"
+kind: tool
+artifact_kind: thesis
+category: "indicators"
+knowledge: >
+  The indicator tools (get_rsi, get_macd, get_bollinger_bands, get_atr,
+  get_moving_average) read the statistical layer of the market: momentum,
+  stretch, volatility, drift. They answer "how extended / how volatile / how
+  fast", never "which direction" alone -- an overbought RSI in an uptrend is
+  trend confirmation, not a short signal.
+
+  READINGS, NOT COMPUTATION: every tool returns the analytics core's numbers.
+  Cite the latest reading and the shape of the series (rising, falling,
+  flat); never compute an RSI or a band from candle data yourself, and never
+  quote a reading older than the ones the tool returned.
+
+  WHAT EACH ANSWERS:
+  - get_rsi: momentum 0-100. Overbought/oversold zones are regime-dependent;
+    in a strong trend RSI holds above 40 on dips (bull regime) or below 60 on
+    rallies (bear regime).
+  - get_macd: momentum change. The histogram rising/falling matters before
+    the line crosses the signal; the cross is the late confirmation.
+  - get_bollinger_bands: stretch and squeeze. bandwidth falling over several
+    bars is the squeeze that precedes expansion; percent_b > 1 is a close
+    outside the band -- continuation in a trend, exhaustion in a range.
+  - get_atr: volatility in price and percent. Stops and targets scale with
+    it; a stop tighter than one ATR is noise.
+  - get_moving_average: drift and dynamic level. Price above a rising EMA is
+    bullish context; the average is a level, not a wall.
+rules:
+  - "Warm-up is real: a window too short for the period returns nothing defined. If `latest` is null, say the window is too short and call again with a larger lookback -- never estimate the value from candles."
+  - "Read indicators against structure, never alone: detect_market_structure's trend qualifies every reading. RSI overbought in a bullish structure is not a short signal."
+  - "Cite the tool's numbers: latest value, and the series direction if the question is about change. An RSI you did not read from get_rsi does not exist."
+  - "get_atr scales risk language: translate it into the answer ('the stop sits 0.4 ATR from entry -- inside noise') instead of reporting a bare number."
+  - "Squeeze claims need the series: one low bandwidth reading is a state, not a squeeze; cite bandwidth falling across the returned readings."
+  - "These tools read closes. On a venue whose candles carry an attributed split, the values are still exact -- the split fidelity does not touch close prices -- but say nothing about order flow from them."
+applies_to:
+  tools: [get_rsi, get_macd, get_bollinger_bands, get_atr, get_moving_average]

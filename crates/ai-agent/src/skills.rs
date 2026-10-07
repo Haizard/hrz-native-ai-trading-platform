@@ -931,7 +931,7 @@ capability_requirements:
             .iter()
             .filter(|s| s.kind == SkillKind::Trading)
             .collect();
-        assert_eq!(tools.len(), 7, "the seven tool families ship: {tools:?}");
+        assert_eq!(tools.len(), 10, "the ten tool families ship: {tools:?}");
         assert_eq!(
             trading.len(),
             9,

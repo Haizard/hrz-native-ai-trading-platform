@@ -1,0 +1,35 @@
+# Tool skill (docs/40, §18): doctrine for multi-timeframe tools.
+name: "Multi-Timeframe Confluence"
+version: "1.0.0"
+kind: tool
+artifact_kind: thesis
+category: "multi-timeframe"
+knowledge: >
+  compare_timeframes and cross_timeframe_confluence answer the two questions
+  that decide whether a setup has backing: do the timeframes agree on
+  direction, and do they agree on where the levels are.
+
+  DIRECTION AGREEMENT (compare_timeframes): each timeframe's structural trend,
+  the pairwise agreement matrix, and the aligned direction when every frame
+  reads the same trend. The hierarchy is the doctrine: the coarsest timeframe
+  sets the context, the finest sets the trigger. A 5m signal against the 4h
+  trend is a counter-trend scalp -- it can be taken, but it is described as
+  one, with tighter targets and faster invalidation.
+
+  LEVEL AGREEMENT (cross_timeframe_confluence): swing levels clustered across
+  timeframes within tolerance. A level three timeframes share is where stops,
+  entries and profit-takes stack -- confluence. The tool only lists levels at
+  least two timeframes share; a level one timeframe has is a local level, and
+  calling it confluence inflates it.
+
+  ORDERING: list timeframes coarse to fine (["4h", "1h", "5m"], not the
+  reverse). The last entry is treated as the trading frame: its last close is
+  the "current price" the support/resistance labels are computed against.
+rules:
+  - "Coarse to fine, always: pass timeframes in that order and read them in that order -- the 4h answer is context, the 5m answer is trigger. A fine-timeframe read never overrides a coarse one; it times it."
+  - "When aligned_direction is null, say the timeframes disagree and name which pair disagrees from the agreements matrix; do not average disagreement into a mushy 'mixed'."
+  - "Confluence claims cite the cluster: the level, the timeframes sharing it, and the side. 'Strong level' without the contributing timeframes is an assertion, not a reading."
+  - "A counter-trend fine-timeframe signal is labeled counter-trend in the answer, with the coarse timeframe's trend named as the risk."
+  - "These tools read swings, not candles: on a symbol too young for confirmed swings they return little, and the honest answer is that structure has not printed yet."
+applies_to:
+  tools: [compare_timeframes, cross_timeframe_confluence]

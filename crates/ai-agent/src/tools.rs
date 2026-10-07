@@ -406,6 +406,69 @@ impl ToolRegistry {
                     exposed_tool: Some("market_structure"),
                 },
                 ToolSpec {
+                    name: "get_rsi".into(),
+                    description: GET_RSI.into(),
+                    input_schema: indicator_schema(&[("period", period_prop(14)), ("limit", limit_prop())]),
+                    exposed_tool: Some("classic_indicators"),
+                },
+                ToolSpec {
+                    name: "get_macd".into(),
+                    description: GET_MACD.into(),
+                    input_schema: indicator_schema(&[
+                        ("fast", period_prop(12)),
+                        ("slow", period_prop(26)),
+                        ("signal", period_prop(9)),
+                        ("limit", limit_prop()),
+                    ]),
+                    exposed_tool: Some("classic_indicators"),
+                },
+                ToolSpec {
+                    name: "get_bollinger_bands".into(),
+                    description: GET_BOLLINGER_BANDS.into(),
+                    input_schema: indicator_schema(&[
+                        ("period", period_prop(20)),
+                        ("mult", json!({"type": "number", "exclusiveMinimum": 0.0, "maximum": 5.0,
+                                        "description": "Band width in standard deviations (default 2)"})),
+                        ("limit", limit_prop()),
+                    ]),
+                    exposed_tool: Some("classic_indicators"),
+                },
+                ToolSpec {
+                    name: "get_atr".into(),
+                    description: GET_ATR.into(),
+                    input_schema: indicator_schema(&[("period", period_prop(14))]),
+                    exposed_tool: Some("classic_indicators"),
+                },
+                ToolSpec {
+                    name: "get_moving_average".into(),
+                    description: GET_MOVING_AVERAGE.into(),
+                    input_schema: indicator_schema(&[
+                        ("kind", json!({"type": "string", "enum": ["ema", "sma"],
+                                        "description": "Average kind (default ema)"})),
+                        ("period", period_prop(20)),
+                        ("limit", limit_prop()),
+                    ]),
+                    exposed_tool: Some("classic_indicators"),
+                },
+                ToolSpec {
+                    name: "detect_pattern".into(),
+                    description: DETECT_PATTERN.into(),
+                    input_schema: detect_pattern_schema(),
+                    exposed_tool: Some("patterns"),
+                },
+                ToolSpec {
+                    name: "compare_timeframes".into(),
+                    description: COMPARE_TIMEFRAMES.into(),
+                    input_schema: confluence_schema(false),
+                    exposed_tool: Some("market_structure"),
+                },
+                ToolSpec {
+                    name: "cross_timeframe_confluence".into(),
+                    description: CROSS_TIMEFRAME_CONFLUENCE.into(),
+                    input_schema: confluence_schema(true),
+                    exposed_tool: Some("market_structure"),
+                },
+                ToolSpec {
                     name: "backtest_strategy".into(),
                     description: BACKTEST_STRATEGY.into(),
                     input_schema: backtest_strategy_schema(),
@@ -555,6 +618,14 @@ impl ToolRegistry {
             "detect_absorption" => detect_absorption_tool(ctx, &call.input).await,
             "detect_imbalance" => detect_imbalance(ctx, &call.input).await,
             "detect_market_structure" => detect_market_structure_tool(ctx, &call.input).await,
+            "get_rsi" => get_rsi(ctx, &call.input).await,
+            "get_macd" => get_macd(ctx, &call.input).await,
+            "get_bollinger_bands" => get_bollinger_bands(ctx, &call.input).await,
+            "get_atr" => get_atr_tool(ctx, &call.input).await,
+            "get_moving_average" => get_moving_average(ctx, &call.input).await,
+            "detect_pattern" => detect_pattern_tool(ctx, &call.input).await,
+            "compare_timeframes" => compare_timeframes(ctx, &call.input).await,
+            "cross_timeframe_confluence" => cross_timeframe_confluence(ctx, &call.input).await,
             "backtest_strategy" => backtest_strategy(ctx, &call.input).await,
             "backtest_similar_setups" => backtest_similar_setups(ctx, &call.input).await,
             "get_user_drawings" => get_user_drawings(ctx, &call.input).await,
@@ -676,6 +747,63 @@ fn multi_timeframe_schema() -> Value {
         },
         "required": ["symbol", "timeframes"],
     })
+}
+
+/// Indicator tool schema: symbol + timeframe + lookback, with per-tool knobs
+/// merged in. Keeping the base shared means every indicator advertises the
+/// same timeframe vocabulary the engine accepts.
+fn indicator_schema(extra: &[(&str, Value)]) -> Value {
+    let mut schema = symbol_timeframe_schema(Some("lookback"));
+    let properties = schema["properties"]
+        .as_object_mut()
+        .expect("symbol_timeframe_schema is an object");
+    for (name, value) in extra {
+        properties.insert((*name).to_string(), value.clone());
+    }
+    schema
+}
+
+fn period_prop(default: u32) -> Value {
+    json!({"type": "integer", "minimum": 2, "maximum": 500,
+           "description": format!("Indicator period (default {default})")})
+}
+
+fn limit_prop() -> Value {
+    json!({"type": "integer", "minimum": 1, "maximum": 50,
+           "description": "How many recent readings to return (default 10)"})
+}
+
+fn detect_pattern_schema() -> Value {
+    let patterns: Vec<Value> = analytics_core::PatternKind::ALL
+        .iter()
+        .map(|k| Value::from(k.name()))
+        .collect();
+    indicator_schema(&[
+        ("pattern", json!({
+            "type": "string",
+            "enum": patterns,
+            "description": "The pattern to look for. Omit to detect every kind.",
+        })),
+        ("tolerance_pct", json!({
+            "type": "number", "exclusiveMinimum": 0.0, "maximum": 0.05,
+            "description": "How far 'equal' extremes may differ, as a fraction of price (default 0.004 = 0.4%)",
+        })),
+        ("min_confidence", json!({
+            "type": "number", "minimum": 0.0, "maximum": 1.0,
+            "description": "Only report matches at or above this confidence (default 0.5)",
+        })),
+    ])
+}
+
+fn confluence_schema(with_tolerance: bool) -> Value {
+    let mut schema = multi_timeframe_schema();
+    if with_tolerance {
+        schema["properties"]["tolerance_pct"] = json!({
+            "type": "number", "exclusiveMinimum": 0.0, "maximum": 0.02,
+            "description": "Cluster radius as a fraction of price (default 0.0015 = 0.15%)",
+        });
+    }
+    schema
 }
 
 fn backtest_strategy_schema() -> Value {
@@ -1007,6 +1135,45 @@ const DETECT_IMBALANCE: &str = "Footprint imbalances: price levels where one sid
 
 const DETECT_MARKET_STRUCTURE: &str = "Confirmed swing highs/lows, the structural trend, \
     and the most recent breaks of structure (BOS/CHoCH).";
+
+const GET_RSI: &str = "Relative Strength Index over closes: the last `limit` defined \
+    readings, oldest first. Values above 70 are overbought, below 30 oversold -- in a \
+    trend they can stay there, so read RSI against the structure, never alone. The \
+    numbers come from the analytics core; cite them, do not estimate your own.";
+
+const GET_MACD: &str = "MACD (fast 12 / slow 26 / signal 9 by default): the last `limit` \
+    readings of line, signal and histogram. A rising histogram is momentum building; a \
+    line crossing the signal is the classic trigger. Warm-up is long -- short windows \
+    may define nothing.";
+
+const GET_BOLLINGER_BANDS: &str = "Bollinger Bands (period 20, 2 standard deviations by \
+    default): middle/upper/lower, bandwidth and %b for the last `limit` bars. Falling \
+    bandwidth is the squeeze; %b above 1 or below 0 is a close outside the bands.";
+
+const GET_ATR: &str = "Average True Range: the latest ATR and ATR as a percent of price. \
+    Use it to size stops and targets -- a stop inside one ATR of entry is noise, not \
+    structure.";
+
+const GET_MOVING_AVERAGE: &str = "A simple or exponential moving average over closes \
+    (`kind`: sma or ema, default ema): the last `limit` defined readings, oldest first. \
+    The EMA is SMA-seeded, matching charting-platform convention.";
+
+const DETECT_PATTERN: &str = "Detect a classical chart pattern over confirmed swings: \
+    head_and_shoulders, inverse_head_and_shoulders, double_top, double_bottom, triangle, \
+    wedge, flag -- or every kind when `pattern` is omitted. Each match carries its \
+    anchor swings (`time_ms` values feed create_drawing directly), the entry level whose \
+    break activates it, the measured-move target, and the invalidation. A pattern that \
+    is not reported did not form; do not describe near-misses as patterns.";
+
+const COMPARE_TIMEFRAMES: &str = "Structural read of one symbol on several timeframes at \
+    once: per-timeframe trend and latest swings, which pairs of timeframes agree, and \
+    the aligned direction when they all do. Use it before trusting a fine-timeframe \
+    signal: a 5m long against a bearish 4h is a counter-trend scalp, not a setup.";
+
+const CROSS_TIMEFRAME_CONFLUENCE: &str = "Price levels where several timeframes' swings \
+    cluster within `tolerance_pct`: a level three timeframes share is confluence; one \
+    timeframe alone is not. Each cluster names its level, the timeframes contributing, \
+    and whether it sits above (resistance) or below (support) current price.";
 
 const BACKTEST_STRATEGY: &str = "Backtest a Strategy DSL document over a historical window \
     and return headline statistics in R. The document must be complete and valid; \
@@ -1697,6 +1864,405 @@ async fn detect_market_structure_tool(
             "level": b.level,
             "price": b.price,
         })).collect::<Vec<_>>(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Classic indicators and pattern tools (docs/45). Every value comes from the
+// analytics core -- the model cites readings, it never computes them.
+// ---------------------------------------------------------------------------
+
+fn optional_f64(args: &Value, key: &str, tool: &str) -> Result<Option<f64>, AgentError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_f64()
+            .map(Some)
+            .ok_or_else(|| AgentError::InvalidToolArgs {
+                tool: tool.into(),
+                reason: format!("`{key}` must be a number"),
+            }),
+    }
+}
+
+/// The closes of a loaded window, in order.
+fn closes_of(candles: &[Candle]) -> Vec<f64> {
+    candles.iter().map(|c| c.close).collect()
+}
+
+/// The last `limit` defined readings of a series, oldest first, each tagged
+/// with its candle's open time (ns) and the millisecond form drawing anchors
+/// take. Index `i` of the series is bar `i` of the window by construction.
+fn series_tail<T: Copy>(
+    series: &[Option<T>],
+    candles: &[Candle],
+    limit: usize,
+    render: impl Fn(i64, i64, T) -> Value,
+) -> Vec<Value> {
+    let defined: Vec<(usize, T)> = series
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| v.map(|v| (i, v)))
+        .collect();
+    defined
+        .iter()
+        .rev()
+        .take(limit)
+        .rev()
+        .map(|(i, v)| {
+            let t = candles[*i].open_time;
+            render(t, t / 1_000_000, *v)
+        })
+        .collect()
+}
+
+async fn get_rsi(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "get_rsi";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let period = optional_u64(args, "period", TOOL)?.unwrap_or(14).clamp(2, 500) as usize;
+    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
+
+    let series = analytics_core::indicators::rsi(&closes_of(&candles), period);
+    let readings = series_tail(&series, &candles, limit, |t, time_ms, v| {
+        json!({"t": t, "time_ms": time_ms, "value": v})
+    });
+    let latest = readings.last().cloned();
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "period": period,
+        "latest": latest,
+        "zone": readings.last().and_then(|r| r["value"].as_f64()).map(|v| {
+            if v >= 70.0 { "overbought" } else if v <= 30.0 { "oversold" } else { "neutral" }
+        }),
+        "readings": readings,
+    }))
+}
+
+async fn get_macd(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "get_macd";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let fast = optional_u64(args, "fast", TOOL)?.unwrap_or(12).clamp(2, 500) as usize;
+    let slow = optional_u64(args, "slow", TOOL)?.unwrap_or(26).clamp(2, 500) as usize;
+    let signal = optional_u64(args, "signal", TOOL)?.unwrap_or(9).clamp(2, 500) as usize;
+    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
+
+    let series = analytics_core::indicators::macd(&closes_of(&candles), fast, slow, signal);
+    let readings = series_tail(&series, &candles, limit, |t, time_ms, p| {
+        json!({"t": t, "time_ms": time_ms, "line": p.line, "signal": p.signal,
+               "histogram": p.histogram})
+    });
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "fast": fast,
+        "slow": slow,
+        "signal_period": signal,
+        "latest": readings.last().cloned(),
+        "readings": readings,
+    }))
+}
+
+async fn get_bollinger_bands(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "get_bollinger_bands";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let period = optional_u64(args, "period", TOOL)?.unwrap_or(20).clamp(2, 500) as usize;
+    let mult = optional_f64(args, "mult", TOOL)?.unwrap_or(2.0).clamp(0.1, 5.0);
+    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
+
+    let series = analytics_core::indicators::bollinger(&closes_of(&candles), period, mult);
+    let readings = series_tail(&series, &candles, limit, |t, time_ms, p| {
+        json!({"t": t, "time_ms": time_ms, "middle": p.middle, "upper": p.upper,
+               "lower": p.lower, "bandwidth": p.bandwidth, "percent_b": p.percent_b})
+    });
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "period": period,
+        "mult": mult,
+        "latest": readings.last().cloned(),
+        "readings": readings,
+    }))
+}
+
+async fn get_atr_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "get_atr";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let period = optional_u64(args, "period", TOOL)?.unwrap_or(14).clamp(2, 500) as usize;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
+
+    let atr_series = analytics_core::indicators::atr(&candles, period);
+    let pct_series = analytics_core::indicators::atr_percent(&candles, period);
+    let latest_atr = atr_series.iter().rev().flatten().next().copied();
+    let latest_pct = pct_series.iter().rev().flatten().next().copied();
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "period": period,
+        "atr": latest_atr,
+        "atr_percent": latest_pct,
+    }))
+}
+
+async fn get_moving_average(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "get_moving_average";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let kind = args
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("ema")
+        .to_string();
+    if kind != "ema" && kind != "sma" {
+        return Err(AgentError::InvalidToolArgs {
+            tool: TOOL.into(),
+            reason: format!("`kind` must be ema or sma; got `{kind}`"),
+        });
+    }
+    let period = optional_u64(args, "period", TOOL)?.unwrap_or(20).clamp(2, 500) as usize;
+    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
+
+    let closes = closes_of(&candles);
+    let series = if kind == "ema" {
+        analytics_core::indicators::ema(&closes, period)
+    } else {
+        analytics_core::indicators::sma(&closes, period)
+    };
+    let readings = series_tail(&series, &candles, limit, |t, time_ms, v| {
+        json!({"t": t, "time_ms": time_ms, "value": v})
+    });
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "kind": kind,
+        "period": period,
+        "latest": readings.last().cloned(),
+        "readings": readings,
+    }))
+}
+
+async fn detect_pattern_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "detect_pattern";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let pattern = match args.get("pattern").and_then(Value::as_str) {
+        None => None,
+        Some(raw) => Some(analytics_core::PatternKind::from_name(raw).ok_or_else(|| {
+            AgentError::InvalidToolArgs {
+                tool: TOOL.into(),
+                reason: format!(
+                    "`pattern` must be one of {}; got `{raw}`",
+                    analytics_core::PatternKind::ALL
+                        .iter()
+                        .map(|k| k.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }
+        })?),
+    };
+    let tolerance_pct = optional_f64(args, "tolerance_pct", TOOL)?
+        .unwrap_or(0.004)
+        .clamp(0.0005, 0.05);
+    let min_confidence = optional_f64(args, "min_confidence", TOOL)?
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.0);
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
+
+    let structure = detect_market_structure(&candles, ctx.config.structure);
+    let config = analytics_core::PatternConfig {
+        tolerance_pct,
+        ..analytics_core::PatternConfig::default()
+    };
+    let mut matches = analytics_core::detect_patterns(&candles, &structure, pattern, &config);
+    matches.retain(|m| m.confidence >= min_confidence);
+
+    // Anchor times arrive in the candles' own unit (ns from the store);
+    // `time_ms` is the form create_drawing's anchors take, so a detected
+    // pattern can be drawn without the model converting anything.
+    let render = |m: &analytics_core::PatternMatch| {
+        json!({
+            "kind": m.kind.name(),
+            "direction": serde_json::to_value(m.direction).unwrap_or_default(),
+            "confidence": m.confidence,
+            "anchors": m.anchors.iter().map(|p| json!({
+                "time_ms": p.timestamp / 1_000_000,
+                "price": p.price,
+                "kind": match p.kind {
+                    analytics_core::SwingKind::High => "high",
+                    analytics_core::SwingKind::Low => "low",
+                },
+            })).collect::<Vec<_>>(),
+            "entry_level": m.entry_level,
+            "target": m.target,
+            "invalidation": m.invalidation,
+            "summary": m.summary,
+        })
+    };
+    Ok(json!({
+        "symbol": symbol,
+        "timeframe": timeframe.to_string(),
+        "count": matches.len(),
+        "patterns": matches.iter().map(render).collect::<Vec<_>>(),
+        "note": "an empty list means no pattern formed on the confirmed swings; a near-miss is a miss",
+    }))
+}
+
+/// The `timeframes` array both multi-timeframe tools take: 2 to 6 entries,
+/// each a resolution the engine accepts.
+fn timeframes_arg(args: &Value, tool: &str) -> Result<Vec<Timeframe>, AgentError> {
+    let raw = args
+        .get("timeframes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AgentError::InvalidToolArgs {
+            tool: tool.into(),
+            reason: "`timeframes` is required and must be an array".into(),
+        })?;
+    let mut out = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let s = entry.as_str().ok_or_else(|| AgentError::InvalidToolArgs {
+            tool: tool.into(),
+            reason: "every `timeframes` entry must be a string".into(),
+        })?;
+        out.push(s.parse::<Timeframe>().map_err(|_| AgentError::InvalidToolArgs {
+            tool: tool.into(),
+            reason: format!(
+                "`timeframes` entries must be one of {}; got `{s}`",
+                Timeframe::all()
+                    .iter()
+                    .rev()
+                    .map(|tf| tf.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        })?);
+    }
+    if !(2..=6).contains(&out.len()) {
+        return Err(AgentError::InvalidToolArgs {
+            tool: tool.into(),
+            reason: format!("`timeframes` needs 2 to 6 entries; got {}", out.len()),
+        });
+    }
+    Ok(out)
+}
+
+async fn compare_timeframes(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "compare_timeframes";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframes = timeframes_arg(args, TOOL)?;
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+
+    let mut frames = Vec::with_capacity(timeframes.len());
+    for tf in &timeframes {
+        let (candles, _) = load_window(ctx, &symbol, *tf, lookback).await?;
+        let structure = detect_market_structure(&candles, ctx.config.structure);
+        frames.push(json!({
+            "timeframe": tf.to_string(),
+            "trend": format!("{:?}", structure.trend),
+            "latest_swing_high": structure.latest_swing_high(),
+            "latest_swing_low": structure.latest_swing_low(),
+            "last_close": candles.last().map(|c| c.close),
+        }));
+    }
+
+    // Pairwise agreement: which pairs of timeframes read the same trend.
+    let mut agreements = Vec::new();
+    for i in 0..frames.len() {
+        for j in (i + 1)..frames.len() {
+            agreements.push(json!({
+                "pair": [frames[i]["timeframe"], frames[j]["timeframe"]],
+                "agree": frames[i]["trend"] == frames[j]["trend"],
+            }));
+        }
+    }
+    let first_trend = frames[0]["trend"].clone();
+    let aligned = frames.iter().all(|f| f["trend"] == first_trend)
+        && first_trend != "Ranging";
+    Ok(json!({
+        "symbol": symbol,
+        "frames": frames,
+        "agreements": agreements,
+        "aligned_direction": if aligned { first_trend } else { Value::Null },
+    }))
+}
+
+async fn cross_timeframe_confluence(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "cross_timeframe_confluence";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframes = timeframes_arg(args, TOOL)?;
+    let tolerance_pct = optional_f64(args, "tolerance_pct", TOOL)?
+        .unwrap_or(0.0015)
+        .clamp(0.0002, 0.02);
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+
+    // Every confirmed swing on every timeframe, tagged with its timeframe.
+    let mut levels: Vec<(f64, String)> = Vec::new();
+    let mut current_price: Option<f64> = None;
+    for tf in &timeframes {
+        let (candles, _) = load_window(ctx, &symbol, *tf, lookback).await?;
+        let structure = detect_market_structure(&candles, ctx.config.structure);
+        for price in structure.swing_highs.iter().chain(&structure.swing_lows) {
+            levels.push((*price, tf.to_string()));
+        }
+        // The last timeframe listed is the finest the caller named; its last
+        // close is "current price" for the support/resistance label.
+        current_price = candles.last().map(|c| c.close);
+    }
+
+    // Greedy clustering over sorted prices: a new level joins the open cluster
+    // while it sits within tolerance of the cluster's running mean.
+    levels.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut clusters: Vec<(Vec<f64>, Vec<String>)> = Vec::new();
+    for (price, tf) in levels {
+        let joins = clusters.last().is_some_and(|(prices, _)| {
+            let mean = prices.iter().sum::<f64>() / prices.len() as f64;
+            price <= mean * (1.0 + tolerance_pct)
+        });
+        if joins {
+            let (prices, tfs) = clusters.last_mut().expect("checked above");
+            prices.push(price);
+            if !tfs.contains(&tf) {
+                tfs.push(tf);
+            }
+        } else {
+            clusters.push((vec![price], vec![tf]));
+        }
+    }
+
+    let confluent: Vec<Value> = clusters
+        .iter()
+        .filter(|(_, tfs)| tfs.len() >= 2)
+        .map(|(prices, tfs)| {
+            let level = prices.iter().sum::<f64>() / prices.len() as f64;
+            json!({
+                "level": level,
+                "timeframes": tfs,
+                "touches": prices.len(),
+                "side": current_price.map(|p| if level > p { "resistance" } else { "support" }),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "symbol": symbol,
+        "tolerance_pct": tolerance_pct,
+        "current_price": current_price,
+        "count": confluent.len(),
+        "clusters": confluent,
+        "note": "a level only one timeframe has is not listed; confluence means several timeframes share it",
     }))
 }
 
@@ -2419,6 +2985,14 @@ mod tests {
             "detect_absorption",
             "detect_imbalance",
             "detect_market_structure",
+            "get_rsi",
+            "get_macd",
+            "get_bollinger_bands",
+            "get_atr",
+            "get_moving_average",
+            "detect_pattern",
+            "compare_timeframes",
+            "cross_timeframe_confluence",
             "analyze_timeframe",
             "analyze_multi_timeframe",
             "backtest_strategy",
@@ -3626,6 +4200,219 @@ mod tests {
             .execute(&call("recall_memories", json!({"symbol": "BTCUSDT"})), &ctx)
             .await
             .expect_err("must refuse");
+        assert!(matches!(err, AgentError::InvalidToolArgs { .. }));
+    }
+
+    // ------------------------------------------------------------------
+    // Classic indicators and pattern tools (docs/45)
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_rsi_returns_defined_readings_once_warmed_up() {
+        let fixture = Fixture::rising(60);
+        let ctx = ToolContext::new(&fixture);
+        let out = registry()
+            .execute(
+                &call("get_rsi", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["period"], 14);
+        let readings = out["readings"].as_array().expect("a readings list");
+        assert_eq!(readings.len(), 10, "the default limit");
+        assert!(
+            readings.iter().all(|r| r["value"].is_f64() && r["time_ms"].is_i64()),
+            "every reading carries its value and its anchor-ready time: {readings:?}"
+        );
+        // A strictly rising series pins RSI at 100.
+        assert_eq!(out["zone"], "overbought");
+    }
+
+    #[tokio::test]
+    async fn get_macd_reports_line_signal_and_histogram() {
+        let fixture = Fixture::rising(60);
+        let ctx = ToolContext::new(&fixture);
+        let out = registry()
+            .execute(
+                &call("get_macd", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let latest = out["latest"].as_object().expect("60 bars warm the default MACD up");
+        assert!(latest["line"].is_f64() && latest["signal"].is_f64() && latest["histogram"].is_f64());
+    }
+
+    #[tokio::test]
+    async fn get_bollinger_bands_reports_ordered_bands() {
+        let fixture = Fixture::oscillating(60);
+        let ctx = ToolContext::new(&fixture);
+        let out = registry()
+            .execute(
+                &call("get_bollinger_bands", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let latest = &out["latest"];
+        assert!(latest["upper"].as_f64().unwrap() >= latest["middle"].as_f64().unwrap());
+        assert!(latest["middle"].as_f64().unwrap() >= latest["lower"].as_f64().unwrap());
+        assert!(latest["bandwidth"].as_f64().unwrap() > 0.0);
+    }
+
+    #[tokio::test]
+    async fn get_atr_reports_price_and_percent() {
+        let fixture = Fixture::rising(40);
+        let ctx = ToolContext::new(&fixture);
+        let out = registry()
+            .execute(
+                &call("get_atr", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out["atr"].as_f64().expect("atr") > 0.0);
+        assert!(out["atr_percent"].as_f64().expect("atr percent") > 0.0);
+    }
+
+    #[tokio::test]
+    async fn get_moving_average_rejects_an_unknown_kind() {
+        let fixture = Fixture::rising(40);
+        let ctx = ToolContext::new(&fixture);
+        let err = registry()
+            .execute(
+                &call(
+                    "get_moving_average",
+                    json!({"symbol": "BTCUSDT", "timeframe": "5m", "kind": "wma"}),
+                ),
+                &ctx,
+            )
+            .await
+            .expect_err("wma is not a kind this tool serves");
+        assert!(matches!(err, AgentError::InvalidToolArgs { .. }));
+
+        let out = registry()
+            .execute(
+                &call(
+                    "get_moving_average",
+                    json!({"symbol": "BTCUSDT", "timeframe": "5m", "kind": "sma"}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["kind"], "sma");
+    }
+
+    #[tokio::test]
+    async fn detect_pattern_rejects_an_unknown_pattern_by_name() {
+        let fixture = Fixture::oscillating(80);
+        let ctx = ToolContext::new(&fixture);
+        let err = registry()
+            .execute(
+                &call(
+                    "detect_pattern",
+                    json!({"symbol": "BTCUSDT", "timeframe": "5m", "pattern": "cup_and_handle"}),
+                ),
+                &ctx,
+            )
+            .await
+            .expect_err("must refuse");
+        let AgentError::InvalidToolArgs { reason, .. } = err else {
+            panic!("got {err}")
+        };
+        assert!(
+            reason.contains("head_and_shoulders") && reason.contains("double_top"),
+            "the refusal names the vocabulary: {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_pattern_reports_anchor_ready_matches_or_none() {
+        let fixture = Fixture::oscillating(80);
+        let ctx = ToolContext::new(&fixture);
+        let out = registry()
+            .execute(
+                &call("detect_pattern", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let patterns = out["patterns"].as_array().expect("a patterns list");
+        for m in patterns {
+            assert!(
+                m["entry_level"].is_f64() && m["target"].is_f64() && m["invalidation"].is_f64(),
+                "a match without its trade geometry is a label, not a signal: {m}"
+            );
+            for anchor in m["anchors"].as_array().expect("anchors") {
+                assert!(
+                    anchor["time_ms"].is_i64() && anchor["price"].is_f64(),
+                    "anchors must drop straight into create_drawing: {anchor}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn compare_timeframes_reports_every_frame_and_the_pairwise_agreements() {
+        let fixture = Fixture::oscillating(60);
+        let ctx = ToolContext::new(&fixture);
+        let out = registry()
+            .execute(
+                &call(
+                    "compare_timeframes",
+                    json!({"symbol": "BTCUSDT", "timeframes": ["5m", "15m", "1h"]}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["frames"].as_array().expect("frames").len(), 3);
+        // 3 frames make 3 pairs.
+        assert_eq!(out["agreements"].as_array().expect("agreements").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn cross_timeframe_confluence_lists_only_levels_several_timeframes_share() {
+        // The fixture serves the same series on every timeframe, so every
+        // swing is shared by construction -- the clusters must name both.
+        let fixture = Fixture::oscillating(60);
+        let ctx = ToolContext::new(&fixture);
+        let out = registry()
+            .execute(
+                &call(
+                    "cross_timeframe_confluence",
+                    json!({"symbol": "BTCUSDT", "timeframes": ["5m", "1h"]}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let clusters = out["clusters"].as_array().expect("clusters");
+        assert!(!clusters.is_empty(), "identical series must conflate");
+        for cluster in clusters {
+            let tfs = cluster["timeframes"].as_array().expect("timeframes");
+            assert!(tfs.len() >= 2, "confluence means shared: {cluster}");
+            assert!(cluster["level"].is_f64());
+            assert!(cluster["side"].is_string(), "support or resistance, named");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_single_timeframe_is_not_a_comparison() {
+        let fixture = Fixture::rising(40);
+        let ctx = ToolContext::new(&fixture);
+        let err = registry()
+            .execute(
+                &call(
+                    "compare_timeframes",
+                    json!({"symbol": "BTCUSDT", "timeframes": ["5m"]}),
+                ),
+                &ctx,
+            )
+            .await
+            .expect_err("one timeframe is not a comparison");
         assert!(matches!(err, AgentError::InvalidToolArgs { .. }));
     }
 }

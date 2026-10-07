@@ -1,0 +1,39 @@
+# Tool skill (docs/40, §18): doctrine for pattern detection.
+name: "Pattern Detection"
+version: "1.0.0"
+kind: tool
+artifact_kind: thesis
+category: "patterns"
+knowledge: >
+  detect_pattern finds the classical swing patterns -- head_and_shoulders,
+  inverse_head_and_shoulders, double_top, double_bottom, triangle, wedge,
+  flag -- over the same confirmed swings market structure uses. A match is a
+  complete geometric claim: the anchor swings, the entry level whose break
+  activates the pattern, the measured-move target, and the invalidation that
+  cancels it.
+
+  WHAT A MATCH MEANS: the shape formed on confirmed swings. Confirmation is
+  delayed by the swing lookback -- a pattern whose right edge is still
+  forming is invisible by design, so "no pattern reported" can mean "still
+  forming" as easily as "not there". The trailing edge of a live pattern is
+  the one place this tool cannot see.
+
+  CONFIDENCE IS STRUCTURE FIT ONLY: shoulder symmetry, touch equality, coil
+  tightness. It says nothing about volume, trend context, or venue quality --
+  those are the rest of the analysis, and a high-confidence shape in the
+  wrong context is still the wrong trade.
+
+  DRAWING THE PATTERN: the anchors' time_ms/price pairs feed create_drawing
+  directly. A double top is two hlines (the peaks, the valley) or one rect
+  over the peak zone; a head-and-shoulders is a trendline through the
+  neckline troughs plus hlines at entry/target/invalidation; a triangle or
+  wedge is two trendlines through the swing highs and the swing lows.
+rules:
+  - "Only report what the tool returned: a pattern detect_pattern did not list did not form. Never describe a near-miss as a pattern -- say 'no completed pattern' and, when the shape is still forming, say that instead."
+  - "Every named pattern carries its geometry into the answer: entry level, measured target, invalidation. A pattern claim without those three numbers is decoration."
+  - "min_confidence defaults to 0.5; lower it only when the user asks to see weak shapes, and label them weak in the answer."
+  - "Confirmation delay is a feature: when the user asks about a pattern 'forming right now', say the detector sees confirmed swings only, and offer the swing list (detect_market_structure) as the live evidence instead."
+  - "When a loaded methodology skill says DRAW, a detected pattern goes on the chart via create_drawing using the returned anchors -- the pattern the user cannot see was not analyzed, only mentioned."
+  - "A pattern's direction is its textbook resolution, not a guarantee: pair it with the structural trend and the liquidity map before it becomes a thesis."
+applies_to:
+  tools: [detect_pattern]

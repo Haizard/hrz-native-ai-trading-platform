@@ -17,12 +17,16 @@
 //! subtly wrong values.
 
 pub mod atr;
+pub mod bollinger;
 pub mod ema;
+pub mod macd;
 pub mod rsi;
 pub mod sma;
 
 pub use atr::{atr, atr_percent, true_range};
+pub use bollinger::{bollinger, BollingerPoint};
 pub use ema::ema;
+pub use macd::{macd, MacdPoint};
 pub use rsi::rsi;
 pub use sma::sma;
 
@@ -36,8 +40,8 @@ pub fn mean(values: &[f64]) -> Option<f64> {
     Some(values.iter().sum::<f64>() / values.len() as f64)
 }
 
-/// Fill a `Vec<Option<f64>>` with `None`.
-pub(crate) fn warmup(len: usize) -> Vec<Option<f64>> {
+/// Fill a `Vec<Option<T>>` with `None`.
+pub(crate) fn warmup<T: Clone>(len: usize) -> Vec<Option<T>> {
     vec![None; len]
 }
 
