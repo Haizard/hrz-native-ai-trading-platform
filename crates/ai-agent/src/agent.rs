@@ -784,24 +784,32 @@ impl Agent {
         let total = self.config.max_turns + ANSWER_TURNS;
         for turn in 0..total {
             turns = turn + 1;
-            // The answer phase starts late while a drawing duty is owed: the
-            // drawing tools are refused once `answering` begins, so entering it
-            // before the skill's patterns are on the chart would make the
-            // submit gate's correction impossible to follow. The loop bound
-            // still applies -- the last turn accepts the thesis regardless.
-            let drawing_owed = can_draw && skill_requires_drawing && !drew_this_run;
-            let answering = turn >= self.config.max_turns && !drawing_owed;
+            let answering = turn >= self.config.max_turns;
             let last = turn + 1 == total;
-            // In the answer phase `submit_thesis` is the only tool announced
-            // *and* the only one dispatched -- see the refusal below. Announcing
-            // it alone was tried first and was not enough: a live run called
-            // `detect_market_structure` anyway, and dispatching it let the
-            // model spend the reserved turn on data it already had.
+            // The drawing duty does NOT delay the answer phase (that was tried:
+            // a model that never submits early simply burned the whole budget
+            // on reads, the gate never fired, and the run ended thesis-less).
+            // Instead the answer phase keeps the drawing family on the table
+            // while the duty is owed, so the gate's "draw first" correction is
+            // one the model can still obey; once a drawing has landed, the
+            // phase collapses to submit-only as before.
+            let drawing_owed = can_draw && skill_requires_drawing && !drew_this_run;
             let (turn_tools, tool_choice) = if answering {
-                (
-                    vec![submit_thesis_spec()],
-                    Some(ToolChoice::Tool(SUBMIT_THESIS.into())),
-                )
+                if drawing_owed {
+                    let mut set = vec![submit_thesis_spec()];
+                    set.extend(tools.iter().filter(|s| {
+                        matches!(
+                            s.name.as_str(),
+                            "get_user_drawings" | "create_drawing" | "update_drawing" | "delete_drawing"
+                        )
+                    }).cloned());
+                    (set, Some(ToolChoice::Any))
+                } else {
+                    (
+                        vec![submit_thesis_spec()],
+                        Some(ToolChoice::Tool(SUBMIT_THESIS.into())),
+                    )
+                }
             } else {
                 (tools.clone(), None)
             };
@@ -866,22 +874,36 @@ impl Agent {
                     break;
                 }
                 if answering {
-                    // Refused rather than run. Executing it would be the whole
-                    // bug: the model asks for data out of habit, gets it, and
-                    // the turn reserved for the answer is gone.
-                    results.push(ToolResult {
-                        tool_use_id: call.id.clone(),
-                        content: json!({
-                            "accepted": false,
-                            "error": format!(
-                                "`{}` is not available now: the analysis phase is over.",
-                                call.name
-                            ),
-                            "instruction": "Call submit_thesis with the thesis you have.",
-                        }),
-                        is_error: true,
-                    });
-                    continue;
+                    // The drawing family still runs while the duty is owed --
+                    // the gate's correction names these tools, so refusing them
+                    // would make the correction impossible to follow. Every
+                    // other tool is refused rather than run: executing it would
+                    // be the whole bug, the model asking for data out of habit
+                    // and spending the turn reserved for the answer.
+                    let drawing_allowed = drawing_owed
+                        && matches!(
+                            call.name.as_str(),
+                            "get_user_drawings" | "create_drawing" | "update_drawing" | "delete_drawing"
+                        );
+                    if !drawing_allowed {
+                        results.push(ToolResult {
+                            tool_use_id: call.id.clone(),
+                            content: json!({
+                                "accepted": false,
+                                "error": format!(
+                                    "`{}` is not available now: the analysis phase is over.",
+                                    call.name
+                                ),
+                                "instruction": if drawing_owed {
+                                    "Draw the skill's objects with create_drawing, then call submit_thesis."
+                                } else {
+                                    "Call submit_thesis with the thesis you have."
+                                },
+                            }),
+                            is_error: true,
+                        });
+                        continue;
+                    }
                 }
                 progress.report(Progress::Tool {
                     name: call.name.clone(),
@@ -1530,7 +1552,11 @@ fn ask_system_prompt(
              `update_drawing` to reposition, and `delete_drawing` when the \
              analysis no longer supports it or the user asks you to remove it. \
              Draw few, draw precisely, and say in the narrative what you drew and \
-             why.\n\n",
+             why.\n\
+             Draw each object as soon as the analysis supports it -- do not save \
+             every drawing for the last turn. The analysis budget is finite, and \
+             a drawing that lands early can be refined later; one planned for \
+             'after one more read' may never happen.\n\n",
         );
     }
 
@@ -1551,7 +1577,10 @@ fn ask_system_prompt(
             out.push_str(
                 "\nThis skill's DRAW rules are requirements: the thesis is not \
                  complete until the patterns it names exist on the chart via \
-                 create_drawing. A submission with no drawing is sent back.\n",
+                 create_drawing. A submission with no drawing is sent back. \
+                 Draw as you analyze -- the answer phase keeps the drawing tools \
+                 available only until the first object lands, so leaving all \
+                 drawing to the end risks the budget.\n",
             );
         }
         // The gaps the contract check surfaced (preferred/degraded misses)
@@ -2002,7 +2031,7 @@ pub fn draft_strategy_spec() -> ToolSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm_client::{ContentBlock, LlmResponse, ScriptedClient, StopReason};
+    use crate::llm_client::{ContentBlock, LlmResponse, ScriptedClient, StopReason, ToolChoice};
     use crate::tools::MarketDataSource;
     use analytics_core::types::{Candle, Trade};
     use analytics_core::Timeframe;
@@ -3363,5 +3392,69 @@ invalidation: []
         let answer = agent.ask(&request, &source).await.expect("one clean turn");
         assert_eq!(answer.turns, 1);
         assert!(writer.created.lock().expect("lock poisoned").is_empty());
+    }
+
+    fn read_call(id: &str) -> LlmResponse {
+        LlmResponse {
+            message: Message {
+                role: crate::llm_client::Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: id.into(),
+                    name: "get_candles".into(),
+                    input: json!({"symbol": "BTCUSDT", "timeframe": "5m"}),
+                }],
+            },
+            stop_reason: StopReason::ToolUse,
+            usage: Usage::default(),
+        }
+    }
+
+    /// The exact live failure from the first field run: the model spent every
+    /// analysis turn reading, reached the answer phase with the drawing duty
+    /// still owed, and needed the drawing tools *there* -- refusing them in
+    /// the answer phase ends the run with no thesis and a bare chart.
+    #[tokio::test]
+    async fn the_answer_phase_still_allows_drawing_while_the_duty_is_owed() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let analysis_turns = AgentConfig::default().max_turns;
+        let mut responses: Vec<LlmResponse> = (0..analysis_turns)
+            .map(|i| read_call(&format!("r{i}")))
+            .collect();
+        // First answer-phase turn: the model draws. It must RUN, not refuse.
+        responses.push(draw_call("d1"));
+        // Second: it submits, and the duty discharged, the thesis lands.
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        let llm = Arc::new(ScriptedClient::new(responses));
+        let agent = Agent::new(
+            llm.clone(),
+            SkillLibrary::from_skills(vec![drawing_skill()]),
+            AgentConfig::default(),
+        );
+
+        let answer = agent
+            .ask(&drawing_request(writer.clone()), &source)
+            .await
+            .expect("the duty discharged in the answer phase, then the thesis");
+
+        assert_eq!(
+            writer.created.lock().expect("lock poisoned").len(),
+            1,
+            "the drawing made in the answer phase must land"
+        );
+        assert_eq!(answer.turns, analysis_turns + 2);
+
+        // The first answer-phase request announced submit + the drawing
+        // family, with Any choice -- not the forced submit-only set.
+        let requests = llm.requests();
+        let answer_phase = &requests[analysis_turns];
+        let announced: Vec<&str> = answer_phase.tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(announced.contains(&"submit_thesis"), "{announced:?}");
+        assert!(announced.contains(&"create_drawing"), "{announced:?}");
+        assert!(
+            matches!(answer_phase.tool_choice, Some(ToolChoice::Any)),
+            "owed duty keeps the choice open: {:?}",
+            answer_phase.tool_choice
+        );
     }
 }

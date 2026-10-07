@@ -10,6 +10,9 @@
 # Local visual brainstorming sessions and other agent scratch artifacts.
 .superpowers/
 
+# Browser-verification screenshots from local runs (evidence, not source).
+/test-shots/
+
 # Environment / secrets -- NEVER commit real credentials
 .env
 .env.*

@@ -164,6 +164,10 @@ async function authenticate(register, emailId, passwordId, msgId) {
     // The drawings belong to the account, so they arrive with it. Everything
     // else on the page is public market data and was already there.
     refresh();
+    // loadSkills ran at boot, unsigned, and 401'd silently -- without this the
+    // composer's skill pin stays empty until the user happens to open the
+    // Skills tab, which reads as "skills are broken" when they are not.
+    loadSkills();
   } catch (e) {
     msg.textContent = e.message;
   }
