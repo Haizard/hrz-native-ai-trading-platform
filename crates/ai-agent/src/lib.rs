@@ -42,6 +42,7 @@ pub mod progress;
 pub mod providers;
 pub mod sigv4;
 pub mod skills;
+pub mod snapshots;
 pub mod thesis;
 pub mod tools;
 pub mod user_drawings;
@@ -49,8 +50,8 @@ pub mod user_drawings;
 pub use agent::draft_strategy_spec;
 pub use agent::{
     Agent, AgentAnswer, AgentConfig, AskRequest, DrawingsContext, GeneratedStrategy,
-    MemoryContext, ReviewRequest, StrategyRequest, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TURNS,
-    DRAFT_STRATEGY,
+    MemoryContext, ReviewRequest, SnapshotsContext, StrategyRequest, DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
 };
 pub use agent_memory::{
     facts_from_thesis, render_recall, MemoryRow, MemorySource, MemoryWriter, NewMemory,
@@ -75,11 +76,15 @@ pub use skills::{
     AppliesTo, ArtifactKind, CapabilityNeed, CapabilityRequirements, FallbackAccept, FallbackRule,
     Skill, SkillKind, SkillLibrary, SkillQuery,
 };
+pub use snapshots::{ChartSnapshot, NewSnapshot, SnapshotStore};
 pub use strategy_dsl::StrategyDocument;
 pub use thesis::{Bias, CheckStatus, ConditionCheck, PriceRange, ToolTrace};
 
 pub use thesis::TradeThesis;
-pub use tools::{BacktestRunner, BacktestSummary, MarketDataSource, ToolContext, ToolRegistry};
+pub use tools::{
+    structure_digest, BacktestRunner, BacktestSummary, MarketDataSource, ToolContext,
+    ToolRegistry,
+};
 pub use user_drawings::{
     DrawingProvenance, DrawingWriter, NewAgentDrawing, StoredDrawing, UserDrawing,
     UserDrawingsSource,

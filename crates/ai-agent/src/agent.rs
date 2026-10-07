@@ -187,6 +187,57 @@ impl std::fmt::Debug for MemoryContext {
     }
 }
 
+/// The asking user's snapshot store, attached by the host (`docs/45`).
+///
+/// The same ownership argument as [`DrawingsContext`] and [`MemoryContext`]:
+/// the user id is resolved from the authenticated identity one layer up and
+/// never crosses the wire, and a host that attaches nothing gets snapshot
+/// tools that report the absence rather than captures that silently vanish.
+pub struct SnapshotsContext {
+    store: Arc<dyn crate::snapshots::SnapshotStore>,
+    user_id: String,
+}
+
+impl SnapshotsContext {
+    /// Bind a snapshot store to one authenticated user.
+    #[must_use]
+    pub fn new(store: Arc<dyn crate::snapshots::SnapshotStore>, user_id: impl Into<String>) -> Self {
+        Self {
+            store,
+            user_id: user_id.into(),
+        }
+    }
+
+    /// The user whose snapshots these are, opaque to the agent.
+    #[must_use]
+    pub fn user_id(&self) -> &str {
+        &self.user_id
+    }
+
+    /// The store itself, for the tool context.
+    pub(crate) fn store(&self) -> &Arc<dyn crate::snapshots::SnapshotStore> {
+        &self.store
+    }
+}
+
+impl Clone for SnapshotsContext {
+    fn clone(&self) -> Self {
+        Self {
+            store: Arc::clone(&self.store),
+            user_id: self.user_id.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for SnapshotsContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Same rule as the other contexts: log the identity, never the store.
+        f.debug_struct("SnapshotsContext")
+            .field("user_id", &self.user_id)
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for DrawingsContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The source is a callback into storage; printing it would print an
@@ -228,6 +279,11 @@ pub struct AskRequest {
     /// the model is never told "you have no memory", because that reads as
     /// an apology rather than a configuration fact.
     pub memory: Option<MemoryContext>,
+    /// The asking user's snapshot store, when the host attached it (`docs/45`).
+    ///
+    /// `None` makes `take_snapshot` report "no snapshot store is attached"
+    /// rather than capture into the void.
+    pub snapshots: Option<SnapshotsContext>,
     /// Backtests, when the host provides them.
     ///
     /// `None` is what the two backtest tools report ("no backtest runner is
@@ -254,6 +310,7 @@ impl AskRequest {
             chart: None,
             drawings: None,
             memory: None,
+            snapshots: None,
             backtests: None,
             capabilities: None,
         }
@@ -298,6 +355,16 @@ impl AskRequest {
     #[must_use]
     pub fn with_memory(mut self, memory: MemoryContext) -> Self {
         self.memory = Some(memory);
+        self
+    }
+
+    /// Attach the asking user's snapshot store, resolved by the host.
+    ///
+    /// Host-only like the rest of the capabilities: a store is a deployment
+    /// decision, never a request-body field.
+    #[must_use]
+    pub fn with_snapshots(mut self, snapshots: SnapshotsContext) -> Self {
+        self.snapshots = Some(snapshots);
         self
     }
 
@@ -555,11 +622,15 @@ impl Agent {
 
     /// Answer a question with a thesis.
     ///
+    /// The turn budget running out without a `submit_thesis` call is not an
+    /// error: the answer is a stand-aside thesis rendered from the run's own
+    /// tool results, because a failure banner after a minute of waiting is the
+    /// worst possible answer and the findings are grounded numbers.
+    ///
     /// # Errors
     /// [`AgentError::NoData`] when the ladder has no candles at all;
-    /// [`AgentError::NoThesis`] when the turn budget runs out without a
-    /// `submit_thesis` call; [`AgentError::Ungrounded`] when the thesis cites
-    /// numbers no tool reported.
+    /// [`AgentError::Ungrounded`] when the thesis cites numbers no tool
+    /// reported on its last turn.
     pub async fn ask(
         &self,
         request: &AskRequest,
@@ -762,6 +833,9 @@ impl Agent {
                 ctx = ctx.with_drawing_writer(writer.as_ref(), drawings.user_id());
             }
         }
+        if let Some(snapshots) = &request.snapshots {
+            ctx = ctx.with_snapshots(snapshots.store().as_ref(), snapshots.user_id());
+        }
 
         let mut usage = Usage {
             input_tokens: None,
@@ -776,6 +850,12 @@ impl Agent {
         // Whether any drawing-family call ran this analysis. The submit gate
         // reads it when the loaded skill's rules say DRAW.
         let mut drew_this_run = false;
+        // The run's own findings, kept for the auto-draw fallback: a model
+        // that reads everything and draws nothing still produced grounded
+        // analysis, and the chart deserves it. The fallback renders the
+        // detector's own anchors, never an invented coordinate.
+        let mut findings = RunFindings::default();
+        let mut auto_draw_attempted = false;
 
         // `max_turns` turns of analysis, then `ANSWER_TURNS` that can only
         // answer. Reserving them matters: a question that ends on another data
@@ -786,6 +866,45 @@ impl Agent {
             turns = turn + 1;
             let answering = turn >= self.config.max_turns;
             let last = turn + 1 == total;
+
+            // Auto-draw, once, at the answer phase's door: the analysis turns
+            // are spent and the model never drew, so the orchestrator renders
+            // what the tools established. A live model that narrates "I need
+            // to draw" and then re-reads instead cannot strand the chart blank
+            // any more. The drawings carry the detector's anchors and a reason
+            // that says they were auto-rendered, and the model is told, so it
+            // can name the objects rather than duplicate them.
+            if answering && can_draw && skill_requires_drawing && !drew_this_run && !auto_draw_attempted {
+                auto_draw_attempted = true;
+                if let (Some(writer), Some(user_id)) = (ctx.drawing_writer, ctx.user_id) {
+                    let drew = auto_draw_findings(
+                        &request.symbol,
+                        &findings,
+                        writer,
+                        user_id,
+                        &mut trace,
+                    )
+                    .await;
+                    if drew > 0 {
+                        drew_this_run = true;
+                        tracing::info!(
+                            target: "ai_agent",
+                            drew,
+                            "auto-rendered the run's findings onto the chart"
+                        );
+                        progress.report(Progress::Tool {
+                            name: format!("auto-draw ({drew} objects)"),
+                        });
+                        messages.push(Message::user(format!(
+                            "The analysis's findings were drawn on the chart for you: {drew} \
+                             object(s) from the detectors' own anchors (patterns framed with \
+                             their entry lines, or the nearest liquidity/structure levels). \
+                             Do not redraw them; name them in the thesis where they matter."
+                        )));
+                    }
+                }
+            }
+
             // The drawing duty does NOT delay the answer phase (that was tried:
             // a model that never submits early simply burned the whole budget
             // on reads, the gate never fired, and the run ended thesis-less).
@@ -796,11 +915,16 @@ impl Agent {
             let drawing_owed = can_draw && skill_requires_drawing && !drew_this_run;
             let (turn_tools, tool_choice) = if answering {
                 if drawing_owed {
+                    // submit + the write side of the drawing family. The read
+                    // side is deliberately absent: a live run stalled here
+                    // re-reading get_user_drawings twice instead of drawing,
+                    // and the drawings it might re-read were already listed in
+                    // the analysis phase.
                     let mut set = vec![submit_thesis_spec()];
                     set.extend(tools.iter().filter(|s| {
                         matches!(
                             s.name.as_str(),
-                            "get_user_drawings" | "create_drawing" | "update_drawing" | "delete_drawing"
+                            "create_drawing" | "update_drawing" | "delete_drawing"
                         )
                     }).cloned());
                     (set, Some(ToolChoice::Any))
@@ -874,16 +998,18 @@ impl Agent {
                     break;
                 }
                 if answering {
-                    // The drawing family still runs while the duty is owed --
-                    // the gate's correction names these tools, so refusing them
-                    // would make the correction impossible to follow. Every
-                    // other tool is refused rather than run: executing it would
-                    // be the whole bug, the model asking for data out of habit
-                    // and spending the turn reserved for the answer.
+                    // The write side of the drawing family still runs while the
+                    // duty is owed -- the gate's correction names these tools,
+                    // so refusing them would make the correction impossible to
+                    // follow. Every other tool is refused rather than run:
+                    // executing it would be the whole bug, the model asking for
+                    // data out of habit and spending the turn reserved for the
+                    // answer. The read side is refused too -- see the tool-set
+                    // comment above.
                     let drawing_allowed = drawing_owed
                         && matches!(
                             call.name.as_str(),
-                            "get_user_drawings" | "create_drawing" | "update_drawing" | "delete_drawing"
+                            "create_drawing" | "update_drawing" | "delete_drawing"
                         );
                     if !drawing_allowed {
                         results.push(ToolResult {
@@ -937,6 +1063,13 @@ impl Agent {
                         error = %result.content,
                         "drawing call failed; the duty is still owed"
                     );
+                }
+                // Keep the run's findings for the auto-draw fallback and the
+                // never-empty ending: only successful reads of the detector
+                // family, and only their results -- the anchors in them are
+                // the ones the fallback draws.
+                if !result.is_error {
+                    findings.note(&call.name, &result.content);
                 }
                 results.push(result);
             }
@@ -1078,7 +1211,38 @@ impl Agent {
             messages.push(Message::tool_results(results));
         }
 
-        Err(AgentError::NoThesis { turns })
+        // Never empty-handed. A model that spent every turn reading and never
+        // submitted -- the live failure this replaced -- left the user with an
+        // error after a minute of waiting. The run's own findings are grounded
+        // numbers, so the answer is a stand-aside thesis that says what the
+        // tools established and why no trade is being recommended, rather than
+        // a failure banner that says nothing.
+        tracing::warn!(
+            target: "ai_agent",
+            turns,
+            findings = findings.has_any(),
+            "the model never submitted; synthesizing a stand-aside thesis from the run's findings"
+        );
+        let timeframe = view
+            .frames
+            .last()
+            .map(|f| f.timeframe.to_string())
+            .unwrap_or_else(|| "1h".into());
+        let mut thesis = synthesize_stand_aside(
+            &request.symbol,
+            &timeframe,
+            &findings,
+            trace.clone(),
+        );
+        thesis.skill_used = skill.as_ref().map(|s| s.id());
+        Ok(AgentAnswer {
+            thesis,
+            skill: skill.as_ref().map(|s| s.id()),
+            ladder: view,
+            trace,
+            turns,
+            usage,
+        })
     }
 
     /// Turn a plain-language description into a validated strategy document.
@@ -2028,6 +2192,467 @@ pub fn draft_strategy_spec() -> ToolSpec {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The two floors under the model (docs/46): the auto-draw fallback and the
+// never-empty ending.
+//
+// A weak model has two failure modes that leave the user with nothing: it
+// reads everything and never draws, and it never calls `submit_thesis` (one
+// production model narrated "I need to submit the thesis now" and then called
+// another read tool, on a turn where provider-side forcing was already asking
+// for the submit). The orchestrator cannot fix the provider, so it floors both
+// outcomes itself: the chart gets the detectors' anchors, and the user gets a
+// stand-aside answer built from the run's own numbers. Both use only what the
+// tools returned — the grounding rule is not relaxed, it is enforced by doing
+// without the model.
+// ---------------------------------------------------------------------------
+
+/// The run's detector results, kept for the two fallbacks.
+///
+/// Only the detector family is kept — the anchors in these results are what
+/// [`auto_draw_findings`] renders, and what [`synthesize_stand_aside`] reads.
+/// The last successful result per tool wins: a re-run supersedes.
+#[derive(Default)]
+struct RunFindings {
+    /// The latest `detect_pattern` result.
+    patterns: Option<serde_json::Value>,
+    /// The latest `detect_liquidity` result.
+    liquidity: Option<serde_json::Value>,
+    /// The latest `detect_imbalance` result.
+    imbalance: Option<serde_json::Value>,
+    /// The latest `detect_market_structure` result.
+    structure: Option<serde_json::Value>,
+}
+
+impl RunFindings {
+    /// Keep a successful detector result; ignore everything else.
+    fn note(&mut self, tool: &str, content: &serde_json::Value) {
+        match tool {
+            "detect_pattern" => self.patterns = Some(content.clone()),
+            "detect_liquidity" => self.liquidity = Some(content.clone()),
+            "detect_imbalance" => self.imbalance = Some(content.clone()),
+            "detect_market_structure" => self.structure = Some(content.clone()),
+            _ => {}
+        }
+    }
+
+    /// Whether anything was found worth rendering or reporting.
+    fn has_any(&self) -> bool {
+        self.patterns.is_some()
+            || self.liquidity.is_some()
+            || self.imbalance.is_some()
+            || self.structure.is_some()
+    }
+}
+
+/// One best-effort write of the auto-draw set: a failure is logged and the
+/// budget is not spent on it.
+async fn try_draw(
+    writer: &dyn crate::user_drawings::DrawingWriter,
+    user_id: &str,
+    symbol: &str,
+    drawing: crate::user_drawings::NewAgentDrawing,
+    trace: &mut Vec<ToolTrace>,
+) -> bool {
+    let args = serde_json::to_value(&drawing).unwrap_or_default();
+    match writer.create(user_id, symbol, &drawing).await {
+        Ok(stored) => {
+            trace.push(ToolTrace {
+                tool: "auto_draw".into(),
+                args,
+                result: json!({"stored": true, "id": stored.id, "kind": stored.kind}),
+            });
+            true
+        }
+        Err(err) => {
+            tracing::warn!(target: "ai_agent", %err, "auto-draw write failed");
+            trace.push(ToolTrace {
+                tool: "auto_draw".into(),
+                args,
+                result: json!({"stored": false, "error": err.to_string()}),
+            });
+            false
+        }
+    }
+}
+
+/// The auto-draw provenance: every fallback object says, in its reason, both
+/// where its anchors came from and why it was drawn by the orchestrator.
+fn auto_provenance(from: &str, confidence: Option<f64>) -> Option<crate::user_drawings::DrawingProvenance> {
+    Some(crate::user_drawings::DrawingProvenance {
+        confidence,
+        reason: Some(format!(
+            "auto-rendered from {from}: the run ended without the model drawing"
+        )),
+    })
+}
+
+/// Render the run's findings onto the chart when the model never drew.
+///
+/// Order is information density: a detected pattern frames its anchors and
+/// marks its entry; the nearest liquidity levels and the two swings the whole
+/// read hangs on fill what remains of the budget. Every coordinate comes from
+/// a tool result — nothing is invented, which is the same grounding rule the
+/// model's own drawings follow. Returns how many objects landed.
+async fn auto_draw_findings(
+    symbol: &str,
+    findings: &RunFindings,
+    writer: &dyn crate::user_drawings::DrawingWriter,
+    user_id: &str,
+    trace: &mut Vec<ToolTrace>,
+) -> usize {
+    const CAP: usize = 4;
+    let mut drew = 0usize;
+    // A horizontal level needs a time anchor only for where its label sits;
+    // "now" is the honest answer for a level that spans the window.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0);
+
+    // Patterns first: each frames its anchors and marks its entry.
+    if let Some(result) = &findings.patterns {
+        for m in result
+            .get("patterns")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(2)
+        {
+            if drew >= CAP {
+                break;
+            }
+            let kind = m
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("pattern");
+            let direction = m
+                .get("direction")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("neutral");
+            let confidence = m.get("confidence").and_then(serde_json::Value::as_f64);
+            let anchors: Vec<(f64, f64)> = m
+                .get("anchors")
+                .and_then(serde_json::Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|a| {
+                            let t = a.get("time_ms").and_then(serde_json::Value::as_f64)?;
+                            let p = a.get("price").and_then(serde_json::Value::as_f64)?;
+                            Some((t, p))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let t_min = anchors.iter().map(|a| a.0).fold(f64::INFINITY, f64::min);
+            let t_max = anchors.iter().map(|a| a.0).fold(f64::NEG_INFINITY, f64::max);
+            let p_min = anchors.iter().map(|a| a.1).fold(f64::INFINITY, f64::min);
+            let p_max = anchors.iter().map(|a| a.1).fold(f64::NEG_INFINITY, f64::max);
+            if t_max > t_min && p_max > p_min && p_min.is_finite() {
+                drew += usize::from(
+                    try_draw(
+                        writer,
+                        user_id,
+                        symbol,
+                        crate::user_drawings::NewAgentDrawing {
+                            kind: "rect".into(),
+                            label: Some(format!("{kind} ({direction})")),
+                            time1_ms: t_min,
+                            price1: p_min,
+                            time2_ms: Some(t_max),
+                            price2: Some(p_max),
+                            time3_ms: None,
+                            price3: None,
+                            provenance: auto_provenance(&format!("detect_pattern: {kind}"), confidence),
+                        },
+                        trace,
+                    )
+                    .await,
+                );
+            }
+            if drew < CAP {
+                if let Some(entry) = m.get("entry_level").and_then(serde_json::Value::as_f64) {
+                    if entry.is_finite() && entry > 0.0 {
+                        drew += usize::from(
+                            try_draw(
+                                writer,
+                                user_id,
+                                symbol,
+                                crate::user_drawings::NewAgentDrawing {
+                                    kind: "hline".into(),
+                                    label: Some(format!("{kind} entry")),
+                                    time1_ms: if t_max.is_finite() { t_max } else { now_ms },
+                                    price1: entry,
+                                    time2_ms: None,
+                                    price2: None,
+                                    time3_ms: None,
+                                    price3: None,
+                                    provenance: auto_provenance(
+                                        &format!("detect_pattern: {kind} entry level"),
+                                        confidence,
+                                    ),
+                                },
+                                trace,
+                            )
+                            .await,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Liquidity next: the two levels the skill's DRAW rules name.
+    if let Some(result) = &findings.liquidity {
+        for (key, label) in [
+            ("nearest_above", "liquidity above"),
+            ("nearest_below", "liquidity below"),
+        ] {
+            if drew >= CAP {
+                break;
+            }
+            let price = result
+                .get(key)
+                .and_then(|l| l.get("price"))
+                .and_then(serde_json::Value::as_f64);
+            if let Some(price) = price {
+                if price.is_finite() && price > 0.0 {
+                    drew += usize::from(
+                        try_draw(
+                            writer,
+                            user_id,
+                            symbol,
+                            crate::user_drawings::NewAgentDrawing {
+                                kind: "hline".into(),
+                                label: Some(label.into()),
+                                time1_ms: now_ms,
+                                price1: price,
+                                time2_ms: None,
+                                price2: None,
+                                time3_ms: None,
+                                price3: None,
+                                provenance: auto_provenance("detect_liquidity", None),
+                            },
+                            trace,
+                        )
+                        .await,
+                    );
+                }
+            }
+        }
+    }
+
+    // Imbalances: the two most recent, as levels.
+    if let Some(result) = &findings.imbalance {
+        for imb in result
+            .get("imbalances")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .rev()
+            .take(2)
+        {
+            if drew >= CAP {
+                break;
+            }
+            let price = imb.get("price_level").and_then(serde_json::Value::as_f64);
+            if let Some(price) = price {
+                if price.is_finite() && price > 0.0 {
+                    let side = imb
+                        .get("side")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    drew += usize::from(
+                        try_draw(
+                            writer,
+                            user_id,
+                            symbol,
+                            crate::user_drawings::NewAgentDrawing {
+                                kind: "hline".into(),
+                                label: Some(format!("FVG ({side})")),
+                                time1_ms: now_ms,
+                                price1: price,
+                                time2_ms: None,
+                                price2: None,
+                                time3_ms: None,
+                                price3: None,
+                                provenance: auto_provenance("detect_imbalance", None),
+                            },
+                            trace,
+                        )
+                        .await,
+                    );
+                }
+            }
+        }
+    }
+
+    // Structure last: the two swings the whole read hangs on. The tool renders
+    // newest first, so index 0 is the latest swing.
+    if let Some(result) = &findings.structure {
+        for (key, label) in [("swing_highs", "swing high"), ("swing_lows", "swing low")] {
+            if drew >= CAP {
+                break;
+            }
+            let price = result
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(serde_json::Value::as_f64);
+            if let Some(price) = price {
+                if price.is_finite() && price > 0.0 {
+                    drew += usize::from(
+                        try_draw(
+                            writer,
+                            user_id,
+                            symbol,
+                            crate::user_drawings::NewAgentDrawing {
+                                kind: "hline".into(),
+                                label: Some(label.into()),
+                                time1_ms: now_ms,
+                                price1: price,
+                                time2_ms: None,
+                                price2: None,
+                                time3_ms: None,
+                                price3: None,
+                                provenance: auto_provenance("detect_market_structure", None),
+                            },
+                            trace,
+                        )
+                        .await,
+                    );
+                }
+            }
+        }
+    }
+
+    drew
+}
+
+/// One number for the stand-aside narrative, or a dash when it is absent.
+fn price_or_dash(value: Option<f64>) -> String {
+    value.map_or_else(|| "none".into(), |v| format!("{v}"))
+}
+
+/// The never-empty ending: a stand-aside thesis rendered from the run's own
+/// tool results.
+///
+/// The narrative says plainly that the model did not complete a structured
+/// thesis, then reports what the detectors established, in their numbers.
+/// `Bias::None` is the true direction of this answer — no validated trade was
+/// produced — and `finalize` zeroes the levels for a stand-aside thesis, so a
+/// consumer that skips the direction sees "no levels", not "levels at zero".
+fn synthesize_stand_aside(
+    symbol: &str,
+    timeframe: &str,
+    findings: &RunFindings,
+    trace: Vec<ToolTrace>,
+) -> TradeThesis {
+    let mut lines: Vec<String> = vec![format!(
+        "The model did not complete a structured thesis within the turn budget; \
+         what follows is what the tools established for {symbol} on {timeframe}, \
+         in their own numbers. No trade is recommended from this pass."
+    )];
+
+    if let Some(structure) = &findings.structure {
+        let trend = structure
+            .get("trend")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let high = structure
+            .get("swing_highs")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(serde_json::Value::as_f64);
+        let low = structure
+            .get("swing_lows")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(serde_json::Value::as_f64);
+        lines.push(format!(
+            "Structure: trend {trend}; latest swing high {}; latest swing low {}.",
+            price_or_dash(high),
+            price_or_dash(low),
+        ));
+    }
+
+    if let Some(liquidity) = &findings.liquidity {
+        let above = liquidity
+            .get("nearest_above")
+            .and_then(|l| l.get("price"))
+            .and_then(serde_json::Value::as_f64);
+        let below = liquidity
+            .get("nearest_below")
+            .and_then(|l| l.get("price"))
+            .and_then(serde_json::Value::as_f64);
+        lines.push(format!(
+            "Liquidity: nearest buy-side level above {}, nearest sell-side level below {}.",
+            price_or_dash(above),
+            price_or_dash(below),
+        ));
+    }
+
+    if let Some(patterns) = &findings.patterns {
+        let matches: Vec<&serde_json::Value> = patterns
+            .get("patterns")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().collect())
+            .unwrap_or_default();
+        if matches.is_empty() {
+            lines.push("Patterns: no confirmed pattern formed on the swings.".into());
+        } else {
+            lines.push(format!("Patterns: {} detected.", matches.len()));
+            for m in matches.iter().take(3) {
+                let kind = m.get("kind").and_then(serde_json::Value::as_str).unwrap_or("pattern");
+                let direction = m.get("direction").and_then(serde_json::Value::as_str).unwrap_or("neutral");
+                let confidence = m.get("confidence").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+                let entry = m.get("entry_level").and_then(serde_json::Value::as_f64);
+                let target = m.get("target").and_then(serde_json::Value::as_f64);
+                let invalidation = m.get("invalidation").and_then(serde_json::Value::as_f64);
+                let summary = m.get("summary").and_then(serde_json::Value::as_str).unwrap_or("");
+                lines.push(format!(
+                    "- {kind} ({direction}, confidence {confidence:.2}): entry {}, target {}, \
+                     invalidation {}. {summary}",
+                    price_or_dash(entry),
+                    price_or_dash(target),
+                    price_or_dash(invalidation),
+                ));
+            }
+        }
+    }
+
+    if let Some(imbalance) = &findings.imbalance {
+        if let Some(count) = imbalance.get("count").and_then(serde_json::Value::as_u64) {
+            if count > 0 {
+                lines.push(format!("Imbalance: {count} fair-value gap(s) on the window."));
+            }
+        }
+    }
+
+    if !findings.has_any() {
+        lines.push("No detector findings were gathered this run.".into());
+    }
+
+    TradeThesis {
+        symbol: symbol.into(),
+        timeframe: timeframe.into(),
+        direction: crate::thesis::Bias::None,
+        confidence_pct: 0.0,
+        higher_timeframe_checks: Vec::new(),
+        order_flow_checks: Vec::new(),
+        entry_price: 0.0,
+        stop_price: 0.0,
+        target_price: 0.0,
+        risk_reward: 0.0,
+        invalidation: "stand-aside: the run produced no structured thesis".into(),
+        skill_used: None, // set by the caller, which holds the loaded skill
+        historical_similar_setups: None,
+        historical_win_rate: None,
+        narrative: lines.join("\n"),
+        provenance: trace,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2549,7 +3174,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_model_that_only_writes_prose_never_yields_a_thesis() {
+    async fn a_model_that_only_writes_prose_still_yields_an_answer() {
+        // The never-empty ending: a model that never submits used to end the
+        // run with an error after a minute of waiting. Now the answer is a
+        // stand-aside thesis -- the true direction of a run with no validated
+        // trade -- whose narrative says the model did not complete one.
         let source = Fixture::new();
         let prose = LlmResponse {
             message: Message {
@@ -2561,11 +3190,16 @@ mod tests {
         };
         let agent = agent(vec![prose; 8]);
 
-        let err = agent
+        let answer = agent
             .ask(&AskRequest::new("BTCUSDT", "long setup"), &source)
             .await
-            .unwrap_err();
-        assert!(matches!(err, AgentError::NoThesis { .. }), "got {err}");
+            .expect("the ending synthesizes a stand-aside thesis");
+        assert_eq!(answer.thesis.direction, crate::thesis::Bias::None);
+        assert!(
+            answer.thesis.narrative.contains("did not complete"),
+            "the narrative must say what happened: {}",
+            answer.thesis.narrative
+        );
     }
 
     #[tokio::test]

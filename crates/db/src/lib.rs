@@ -22,6 +22,8 @@
 pub mod agent_memory;
 pub mod bots;
 pub mod broker_accounts;
+pub mod chart_sessions;
+pub mod chart_snapshots;
 pub mod config;
 pub mod drawings;
 pub mod error;
@@ -31,6 +33,7 @@ pub mod loading;
 pub mod market;
 pub mod models;
 pub mod paper;
+pub mod pattern_library;
 pub mod provider_configs;
 pub mod pump;
 pub mod repositories;
@@ -54,6 +57,15 @@ pub use broker_accounts::{
     create_broker_account, delete_broker_account, get_broker_account, list_broker_accounts,
     set_bot_broker_account, set_broker_account_status, BrokerAccountRow, NewBrokerAccount,
     SealedKeyMaterial, STATUSES as BROKER_ACCOUNT_STATUSES,
+};
+pub use chart_sessions::{
+    create_chart_session, delete_chart_session, get_chart_session, list_chart_panels,
+    list_chart_sessions, update_chart_session, ChartPanelRow, ChartSessionRow, NewChartPanel,
+    NewChartSession,
+};
+pub use chart_snapshots::{
+    get_chart_snapshot, insert_chart_snapshot, list_chart_snapshots, ChartSnapshotRow,
+    NewChartSnapshot,
 };
 pub use config::DatabaseConfig;
 pub use drawings::{
@@ -88,6 +100,9 @@ pub use paper::{
     list_bot_notifications, purge_bot, purge_owner, purge_owners_with_prefix, recent_decisions,
     set_bot_status, strategy_paper_record, AuditEvent, BotSummary, ExecutedTrade, Notification,
     StrategyPaperRecord,
+};
+pub use pattern_library::{
+    delete_pattern, insert_pattern, list_patterns, NewPattern, PatternRow,
 };
 pub use repositories::TradeCoverage;
 pub use repositories::{dt_to_ns, ns_to_dt};

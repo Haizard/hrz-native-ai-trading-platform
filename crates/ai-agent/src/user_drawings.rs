@@ -45,6 +45,14 @@ use serde::{Deserialize, Serialize};
 /// this type; nothing in `db` leaks here, because `ai-agent` cannot see `db`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserDrawing {
+    /// The storage's id, when the source carries one.
+    ///
+    /// Snapshots freeze drawings, and the compare tool's added/removed diff is
+    /// only as good as the identity it compares by: with an id the diff is
+    /// exact, without one it falls back to the kind-and-anchors signature.
+    /// `None` for sources that have no ids (tests, hand-built lists).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
     /// The mark's kind, in the storage's vocabulary: `trendline`, `hline`,
     /// `rect`, `fib`. Echoed verbatim, never branched on.
     pub kind: String,
@@ -249,6 +257,7 @@ mod tests {
 
     fn drawing(kind: &str, price1: f64, price2: Option<f64>) -> UserDrawing {
         UserDrawing {
+            id: None,
             kind: kind.into(),
             label: None,
             time1_ms: 1_767_225_600_000.0,

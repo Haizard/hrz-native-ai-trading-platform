@@ -728,6 +728,15 @@ where
                 std::sync::Arc::clone(database),
             ))),
         );
+        // Snapshots, the same grant again (`docs/45`): the socket is the
+        // frontend's path, so it is where a capture tool that does nothing
+        // would be discovered.
+        ask = ask.with_snapshots(ai_agent::SnapshotsContext::new(
+            std::sync::Arc::new(crate::market_data::DbSnapshotStore::new(
+                std::sync::Arc::clone(database),
+            )),
+            user.user_id.to_string(),
+        ));
     }
 
     // Backtests, exactly as `POST /agent/ask` attaches them: the runner is a

@@ -5788,6 +5788,17 @@ function createChartPane(root, hooks = {}) {
     /// rebuild. What the page's resize listener calls.
     redraw() { if (scene) scheduleRender(); },
 
+    /// Re-fetch this pane's drawings from the API and repaint, when the agent
+    /// may have drawn on this symbol. The pane's drawings come from the server,
+    /// so an object the run created -- the model's own, or the orchestrator's
+    /// auto-rendered findings -- is invisible until this runs: a `redraw()`
+    /// alone repaints the list the pane already had, which was exactly the
+    /// "the AI says it drew but the chart is empty" bug.
+    reloadDrawings(symbol) {
+      if (!symbol || el("symbol").value !== symbol) return;
+      loadDrawings().then(() => { if (scene) scheduleRender(); });
+    },
+
     /// Handle a key that is about this pane, and say whether it was used.
     key(event) {
       if (event.key === "Escape") {
@@ -6951,6 +6962,11 @@ function applyAgentFrame(frame, turn) {
     paintAsk();
     renderTranscript();
     redrawThesis();
+    // The run may have drawn on the chart (the model's own objects or the
+    // orchestrator's auto-rendered findings). The panes' drawings come from
+    // the API, so they must be re-fetched to show them.
+    const drawnSymbol = (thesis && thesis.symbol) || turn.symbol;
+    for (const pane of panes) pane.reloadDrawings(drawnSymbol);
     // Update MCP status if capabilities are present
     if (frame.payload.capabilities) {
       updateMcpStatus(frame.payload.capabilities);
@@ -6964,6 +6980,10 @@ function applyAgentFrame(frame, turn) {
     paintAsk();
     renderTranscript();
     redrawThesis();
+    // A failed run can still have drawn before it failed: the first live
+    // drawing run ended in an error and its trendline only appeared after a
+    // page reload.
+    for (const pane of panes) pane.reloadDrawings(turn.symbol);
   }
 }
 
@@ -7032,7 +7052,9 @@ async function ask() {
 
   const skillId = el("skillSelect")?.value || null;
 
-  const turn = { question, steps: [], answer: null, error: null };
+  // The symbol rides the turn: the agent draws on it, and when the run ends
+  // -- answer or notice -- the panes showing it must re-fetch their drawings.
+  const turn = { question, symbol: activeSymbol(), steps: [], answer: null, error: null };
   turns.push(turn);
   asking = true;
   el("question").value = "";

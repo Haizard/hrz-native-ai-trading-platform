@@ -41,6 +41,7 @@ use crate::llm_client::ToolCall;
 use crate::user_drawings::{DrawingWriter, NewAgentDrawing, UserDrawingsSource};
 
 use crate::agent_memory::{MemorySource, MemoryWriter, NewMemory};
+use crate::snapshots::{NewSnapshot, SnapshotStore};
 
 /// Where market data comes from.
 ///
@@ -198,6 +199,13 @@ pub struct ToolContext<'a> {
     /// builds — means no claims are made, the same posture as the other
     /// sources.
     pub capabilities: Option<crate::capability_view::CapabilityView>,
+    /// The asking user's snapshot store, when the host attached one
+    /// (`docs/45`).
+    ///
+    /// `None` makes the snapshot tools report "no snapshot store is attached"
+    /// rather than capture into the void -- a snapshot the model believes
+    /// exists and nothing can retrieve is worse than the refusal.
+    pub snapshots: Option<&'a dyn SnapshotStore>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -217,6 +225,7 @@ impl<'a> ToolContext<'a> {
             memory_writer: None,
             memory_user_id: None,
             capabilities: None,
+            snapshots: None,
         }
     }
 
@@ -265,6 +274,17 @@ impl<'a> ToolContext<'a> {
     #[must_use]
     pub fn with_capabilities(mut self, view: crate::capability_view::CapabilityView) -> Self {
         self.capabilities = Some(view);
+        self
+    }
+
+    /// Attach the asking user's snapshot store, and whose it is.
+    ///
+    /// The id takes the same argument the drawings and memory builders take:
+    /// one identity per capability, and no path by which they diverge.
+    #[must_use]
+    pub fn with_snapshots(mut self, store: &'a dyn SnapshotStore, user_id: &'a str) -> Self {
+        self.snapshots = Some(store);
+        self.user_id = Some(user_id);
         self
     }
 
@@ -522,6 +542,24 @@ impl ToolRegistry {
                     input_schema: forget_memory_schema(),
                     exposed_tool: None,
                 },
+                ToolSpec {
+                    name: "take_snapshot".into(),
+                    description: TAKE_SNAPSHOT.into(),
+                    input_schema: take_snapshot_schema(),
+                    exposed_tool: None, // snapshot tools always available (if capacity)
+                },
+                ToolSpec {
+                    name: "get_snapshot".into(),
+                    description: GET_SNAPSHOT.into(),
+                    input_schema: get_snapshot_schema(),
+                    exposed_tool: None,
+                },
+                ToolSpec {
+                    name: "compare_snapshots".into(),
+                    description: COMPARE_SNAPSHOTS.into(),
+                    input_schema: compare_snapshots_schema(),
+                    exposed_tool: None,
+                },
             ],
         }
     }
@@ -635,6 +673,9 @@ impl ToolRegistry {
             "remember" => remember(ctx, &call.input).await,
             "recall_memories" => recall_memories(ctx, &call.input).await,
             "forget_memory" => forget_memory(ctx, &call.input).await,
+            "take_snapshot" => take_snapshot(ctx, &call.input).await,
+            "get_snapshot" => get_snapshot_tool(ctx, &call.input).await,
+            "compare_snapshots" => compare_snapshots(ctx, &call.input).await,
             other => return Err(AgentError::UnknownTool(other.to_string())),
         };
         let elapsed = started.elapsed();
@@ -914,6 +955,43 @@ fn forget_memory_schema() -> Value {
             "key": {"type": "string", "description": "The key of the fact to drop, e.g. 4h_resistance"},
         },
         "required": ["key"],
+    })
+}
+
+fn take_snapshot_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
+            "timeframe": {"type": "string", "enum": timeframe_enum(), "description": timeframe_description()},
+            "note": {"type": "string", "description": "What this capture is for, in your own words -- 'before the FOMC print', 'the range as mapped'"},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Retrieval tags, e.g. [\"ny-open\", \"range\"]"},
+        },
+        "required": ["symbol", "timeframe"],
+    })
+}
+
+fn get_snapshot_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "The snapshot's id, from take_snapshot or compare_snapshots"},
+        },
+        "required": ["id"],
+    })
+}
+
+fn compare_snapshots_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id_a": {"type": "string", "description": "The earlier snapshot's id"},
+            "id_b": {"type": "string", "description": "The later snapshot's id"},
+            "symbol": {"type": "string", "description": "Or just the symbol: its two most recent snapshots are compared"},
+        },
+        // Either the two ids or the symbol; enforced in the tool, where the
+        // error can say so in a sentence a model recovers from.
+        "required": [],
     })
 }
 
@@ -1219,6 +1297,20 @@ const RECALL_MEMORIES: &str = "Re-read what you know about this user and symbol.
 const FORGET_MEMORY: &str = "Drop one stored fact, by key, when you can see it is no longer \
     true -- a level that was broken and confirmed, a preference the user has revised. \
     Forgetting a stale fact is better than contradicting it every session.";
+
+const TAKE_SNAPSHOT: &str = "Record what the chart shows right now: the last close, the \
+    structure digest (trend and swings), and the user's drawings on the symbol, frozen as one \
+    snapshot with your note and tags. Use it before acting on a read you may want to revisit -- \
+    'same chart tomorrow, what changed' is what snapshots answer. The capture is stored as yours \
+    (created_by: ai), like a drawing.";
+
+const GET_SNAPSHOT: &str = "Read back one snapshot by id, from take_snapshot or the user's own \
+    captures. Returns the frozen price, structure digest and drawings exactly as recorded.";
+
+const COMPARE_SNAPSHOTS: &str = "Diff two snapshots -- pass their ids, or just a symbol to \
+    compare its two most recent. Reports the price move, whether the structure trend changed, \
+    how the swings moved, and which drawings were added or removed between the two captures. \
+    This is 'what changed since' answered from records, not from memory.";
 
 /// Absence-of-tick-data message, shared so every affected tool says the same
 /// thing. The model needs to distinguish "no events occurred" from "events
@@ -2699,6 +2791,312 @@ async fn forget_memory(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Age
     }
 }
 
+// ---------------------------------------------------------------------------
+// Snapshot tools (docs/45). A snapshot freezes what the chart shows -- last
+// close, structure digest, the user's drawings -- so "what changed since" is
+// answered from records rather than from the model's memory of the last run.
+// ---------------------------------------------------------------------------
+
+/// The store and the identity it is scoped to, or the honest absence.
+fn snapshot_parts<'a>(
+    ctx: &'a ToolContext<'_>,
+    tool: &str,
+) -> Result<(&'a dyn SnapshotStore, &'a str), AgentError> {
+    match (ctx.snapshots, ctx.user_id) {
+        (Some(store), Some(user_id)) => Ok((store, user_id)),
+        _ => Err(AgentError::InvalidToolArgs {
+            tool: tool.into(),
+            reason: "no snapshot store is attached, so nothing can be captured \
+                     or read back. Say so rather than implying a snapshot exists."
+                .into(),
+        }),
+    }
+}
+
+/// The digest a snapshot freezes: the same shape `detect_market_structure`
+/// reports, plus the close. Built from the candles at capture time -- never
+/// from a previous run's memory of them.
+///
+/// Public because the gateway's `POST /chart-snapshots` freezes the user's
+/// own captures with it: two writers, one digest shape, or the compare tool
+/// would read the two kinds of snapshot differently.
+#[must_use]
+pub fn structure_digest(candles: &[Candle], config: MarketStateConfig) -> Value {
+    let structure = detect_market_structure(candles, config.structure);
+    json!({
+        "trend": format!("{:?}", structure.trend),
+        "swing_highs": structure.swing_highs.iter().rev().take(8).copied().collect::<Vec<_>>(),
+        "swing_lows": structure.swing_lows.iter().rev().take(8).copied().collect::<Vec<_>>(),
+        "recent_breaks": structure.breaks.iter().rev().take(8).map(|b| json!({
+            "kind": format!("{:?}", b.kind),
+            "direction": format!("{:?}", b.direction),
+            "level": b.level,
+            "price": b.price,
+        })).collect::<Vec<_>>(),
+        "bars": candles.len(),
+    })
+}
+
+/// `take_snapshot`: freeze the chart state and store it as the agent's own.
+async fn take_snapshot(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "take_snapshot";
+    let symbol = string_arg(args, "symbol", TOOL)?.to_uppercase();
+    let timeframe = timeframe_arg(args, TOOL)?;
+    let note = match args.get("note") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        Some(_) => {
+            return Err(AgentError::InvalidToolArgs {
+                tool: TOOL.into(),
+                reason: "`note` must be a non-empty string when given".into(),
+            })
+        }
+    };
+    let tags: Vec<String> = match args.get("tags") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(entries)) => entries
+            .iter()
+            .filter_map(|e| e.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+            .collect(),
+        Some(_) => {
+            return Err(AgentError::InvalidToolArgs {
+                tool: TOOL.into(),
+                reason: "`tags` must be an array of strings when given".into(),
+            })
+        }
+    };
+    let (store, user_id) = snapshot_parts(ctx, TOOL)?;
+
+    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
+    let price = candles.last().map(|c| c.close).ok_or_else(|| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: format!("no candles for {symbol} {timeframe}: a snapshot of nothing is not a snapshot"),
+    })?;
+    let structure = structure_digest(&candles, ctx.config.clone());
+
+    // The drawings are frozen as the read tool reports them, ids included --
+    // the compare tool's added/removed diff is by identity, and that identity
+    // is only there if the capture carried it.
+    let drawings: Vec<Value> = match ctx.drawings {
+        Some(source) => source
+            .drawings(user_id, &symbol)
+            .await?
+            .iter()
+            .map(|d| serde_json::to_value(d).unwrap_or_default())
+            .collect(),
+        // No drawings source: the snapshot still stands, and the frozen list
+        // is empty -- the same honest posture the read tool takes.
+        None => Vec::new(),
+    };
+    let drawing_count = drawings.len();
+
+    let captured = store
+        .capture(
+            user_id,
+            &NewSnapshot {
+                symbol: symbol.clone(),
+                timeframe: timeframe.to_string(),
+                price,
+                drawings: Value::Array(drawings),
+                structure: structure.clone(),
+                note: note.clone(),
+                tags,
+                created_by: "ai".into(),
+            },
+        )
+        .await?;
+
+    Ok(json!({
+        "captured": true,
+        "id": captured.id,
+        "symbol": captured.symbol,
+        "timeframe": captured.timeframe,
+        "price": price,
+        "trend": structure["trend"],
+        "drawings": drawing_count,
+        "note": note,
+        "created_at_ms": captured.created_at / 1_000_000,
+    }))
+}
+
+/// `get_snapshot`: read one capture back.
+async fn get_snapshot_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "get_snapshot";
+    let id = string_arg(args, "id", TOOL)?;
+    let (store, user_id) = snapshot_parts(ctx, TOOL)?;
+    match store.get(user_id, &id).await? {
+        Some(snapshot) => Ok(serde_json::to_value(snapshot).unwrap_or_default()),
+        None => Ok(json!({
+            "found": false,
+            "id": id,
+            "note": "no snapshot under that id for this user. If it was never captured, that is the answer.",
+        })),
+    }
+}
+
+/// How long between two captures, in the words a summary reads well in.
+fn gap_words(ns: i64) -> String {
+    let minutes = ns / 60_000_000_000;
+    if minutes < 90 {
+        format!("{minutes}m")
+    } else if minutes < 60 * 36 {
+        format!("{:.1}h", minutes as f64 / 60.0)
+    } else {
+        format!("{:.1}d", minutes as f64 / 1440.0)
+    }
+}
+
+/// One drawing's identity for the diff: its id when it has one, else the
+/// kind-and-anchors signature, which is what "the same shape" means for a
+/// source without ids.
+fn drawing_identity(drawing: &Value) -> String {
+    if let Some(id) = drawing.get("id").and_then(Value::as_str) {
+        return format!("id:{id}");
+    }
+    format!(
+        "sig:{}|{}|{}|{}|{}",
+        drawing.get("kind").and_then(Value::as_str).unwrap_or("?"),
+        drawing["time1_ms"],
+        drawing["price1"],
+        drawing["time2_ms"],
+        drawing["price2"],
+    )
+}
+
+/// A drawing's one-line description for the diff's added/removed lists.
+fn drawing_line(drawing: &Value) -> Value {
+    json!({
+        "kind": drawing.get("kind").and_then(Value::as_str).unwrap_or("?"),
+        "label": drawing.get("label").and_then(Value::as_str),
+        "price": drawing.get("price2").and_then(Value::as_f64)
+            .or_else(|| drawing.get("price1").and_then(Value::as_f64)),
+    })
+}
+
+/// `compare_snapshots`: two captures in, "what changed" out.
+async fn compare_snapshots(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "compare_snapshots";
+    let (store, user_id) = snapshot_parts(ctx, TOOL)?;
+
+    // Two ids, or a symbol whose two most recent captures are compared.
+    let (a, b) = match (
+        args.get("id_a").and_then(Value::as_str),
+        args.get("id_b").and_then(Value::as_str),
+        args.get("symbol").and_then(Value::as_str),
+    ) {
+        (Some(id_a), Some(id_b), _) => {
+            let a = store.get(user_id, id_a).await?;
+            let b = store.get(user_id, id_b).await?;
+            match (a, b) {
+                (Some(a), Some(b)) => (a, b),
+                (missing_a, missing_b) => {
+                    return Ok(json!({
+                        "compared": false,
+                        "note": format!(
+                            "one or both snapshots were not found for this user: \
+                             id_a {}, id_b {}",
+                            if missing_a.is_none() { "missing" } else { "found" },
+                            if missing_b.is_none() { "missing" } else { "found" },
+                        ),
+                    }));
+                }
+            }
+        }
+        (None, None, Some(symbol)) => {
+            let recent = store.list(user_id, &symbol.to_uppercase(), 2).await?;
+            if recent.len() < 2 {
+                return Ok(json!({
+                    "compared": false,
+                    "note": format!(
+                        "{} has {} snapshot(s); a compare needs two. Take one now \
+                         and another later, and this tool answers what changed.",
+                        symbol.to_uppercase(),
+                        recent.len()
+                    ),
+                }));
+            }
+            // Newest first: `b` is the later capture.
+            (recent[1].clone(), recent[0].clone())
+        }
+        _ => {
+            return Err(AgentError::InvalidToolArgs {
+                tool: TOOL.into(),
+                reason: "pass `id_a` and `id_b`, or just `symbol` for its two \
+                         most recent snapshots"
+                    .into(),
+            })
+        }
+    };
+
+    let price_change_pct = if a.price > 0.0 {
+        (b.price - a.price) / a.price * 100.0
+    } else {
+        0.0
+    };
+    let trend_a = a.structure.get("trend").and_then(Value::as_str).unwrap_or("?");
+    let trend_b = b.structure.get("trend").and_then(Value::as_str).unwrap_or("?");
+    let trend_changed = trend_a != trend_b;
+
+    let highs_a = a.structure.get("swing_highs").and_then(Value::as_array);
+    let highs_b = b.structure.get("swing_highs").and_then(Value::as_array);
+    let swing_high_moved = highs_a.and_then(|h| h.first())
+        != highs_b.and_then(|h| h.first());
+    let lows_a = a.structure.get("swing_lows").and_then(Value::as_array);
+    let lows_b = b.structure.get("swing_lows").and_then(Value::as_array);
+    let swing_low_moved = lows_a.and_then(|l| l.first())
+        != lows_b.and_then(|l| l.first());
+
+    let drawings_a = a.drawings.as_array().cloned().unwrap_or_default();
+    let drawings_b = b.drawings.as_array().cloned().unwrap_or_default();
+    let ids_a: std::collections::HashMap<String, &Value> = drawings_a
+        .iter()
+        .map(|d| (drawing_identity(d), d))
+        .collect();
+    let ids_b: std::collections::HashMap<String, &Value> = drawings_b
+        .iter()
+        .map(|d| (drawing_identity(d), d))
+        .collect();
+    let added: Vec<Value> = drawings_b
+        .iter()
+        .filter(|d| !ids_a.contains_key(&drawing_identity(d)))
+        .map(drawing_line)
+        .collect();
+    let removed: Vec<Value> = drawings_a
+        .iter()
+        .filter(|d| !ids_b.contains_key(&drawing_identity(d)))
+        .map(drawing_line)
+        .collect();
+
+    let gap = gap_words(b.created_at.saturating_sub(a.created_at));
+    let summary = format!(
+        "{} moved {:+.2}% between the captures ({} apart); trend {} -> {}{}; {} drawing(s) added, {} removed.",
+        b.symbol,
+        price_change_pct,
+        gap,
+        trend_a,
+        trend_b,
+        if trend_changed { " (changed)" } else { "" },
+        added.len(),
+        removed.len(),
+    );
+
+    Ok(json!({
+        "compared": true,
+        "symbol": b.symbol,
+        "timeframe": b.timeframe,
+        "from": {"id": a.id, "created_at_ms": a.created_at / 1_000_000},
+        "to": {"id": b.id, "created_at_ms": b.created_at / 1_000_000},
+        "gap": gap,
+        "price_change_pct": price_change_pct,
+        "trend": {"from": trend_a, "to": trend_b, "changed": trend_changed},
+        "swings": {"high_moved": swing_high_moved, "low_moved": swing_low_moved},
+        "drawings": {"added": added, "removed": removed},
+        "summary": summary,
+        "different_symbols": a.symbol != b.symbol,
+    }))
+}
+
 /// `[from, to)` covering the last `days` days, ending now.
 fn trailing_days(days: u64) -> (i64, i64) {
     const NS_PER_DAY: i64 = 86_400 * 1_000_000_000;
@@ -2998,6 +3396,9 @@ mod tests {
             "backtest_strategy",
             "backtest_similar_setups",
             "get_user_drawings",
+            "take_snapshot",
+            "get_snapshot",
+            "compare_snapshots",
         ] {
             assert!(registry.contains(name), "missing tool {name}");
         }
@@ -3600,6 +4001,7 @@ mod tests {
 
     fn hline(price: f64) -> crate::user_drawings::UserDrawing {
         crate::user_drawings::UserDrawing {
+            id: None,
             kind: "hline".into(),
             label: Some("the range low".into()),
             time1_ms: 1_767_225_600_000.0,
@@ -3625,6 +4027,7 @@ mod tests {
         let source = DrawingsFixture(vec![
             hline(45_000.0),
             crate::user_drawings::UserDrawing {
+                id: None,
                 kind: "trendline".into(),
                 label: None,
                 time1_ms: 1.0,
@@ -4413,6 +4816,243 @@ mod tests {
             )
             .await
             .expect_err("one timeframe is not a comparison");
+        assert!(matches!(err, AgentError::InvalidToolArgs { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Snapshot tools (docs/45)
+    // -----------------------------------------------------------------------
+
+    /// A store over an in-memory list, recording what it was asked to keep.
+    struct SnapshotFixture {
+        rows: std::sync::Mutex<Vec<crate::snapshots::ChartSnapshot>>,
+    }
+
+    impl SnapshotFixture {
+        fn new() -> Self {
+            Self {
+                rows: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        /// Seed a capture directly, for compare tests that should not depend
+        /// on what a fixture's candles happen to digest into.
+        fn seed(&self, id: &str, price: f64, trend: &str, drawing_ids: &[&str], at_ns: i64) {
+            let drawings: Vec<Value> = drawing_ids
+                .iter()
+                .map(|id| json!({"id": id, "kind": "hline", "price1": price}))
+                .collect();
+            self.rows.lock().expect("lock").push(crate::snapshots::ChartSnapshot {
+                id: id.into(),
+                symbol: "BTCUSDT".into(),
+                timeframe: "1h".into(),
+                price,
+                drawings: Value::Array(drawings),
+                structure: json!({"trend": trend, "swing_highs": [price + 100.0], "swing_lows": [price - 100.0]}),
+                note: None,
+                tags: vec![],
+                created_by: "ai".into(),
+                created_at: at_ns,
+            });
+        }
+
+        fn len(&self) -> usize {
+            self.rows.lock().expect("lock").len()
+        }
+    }
+
+    #[async_trait]
+    impl crate::snapshots::SnapshotStore for SnapshotFixture {
+        async fn capture(
+            &self,
+            _user_id: &str,
+            snapshot: &crate::snapshots::NewSnapshot,
+        ) -> Result<crate::snapshots::ChartSnapshot, AgentError> {
+            let n = self.rows.lock().expect("lock").len() + 1;
+            let row = crate::snapshots::ChartSnapshot {
+                id: format!("s{n}"),
+                symbol: snapshot.symbol.clone(),
+                timeframe: snapshot.timeframe.clone(),
+                price: snapshot.price,
+                drawings: snapshot.drawings.clone(),
+                structure: snapshot.structure.clone(),
+                note: snapshot.note.clone(),
+                tags: snapshot.tags.clone(),
+                created_by: snapshot.created_by.clone(),
+                created_at: 1_700_000_000_000_000_000 + i64::try_from(n).unwrap() * 3_600_000_000_000,
+            };
+            self.rows.lock().expect("lock").push(row.clone());
+            Ok(row)
+        }
+
+        async fn get(
+            &self,
+            _user_id: &str,
+            id: &str,
+        ) -> Result<Option<crate::snapshots::ChartSnapshot>, AgentError> {
+            Ok(self
+                .rows
+                .lock()
+                .expect("lock")
+                .iter()
+                .find(|r| r.id == id)
+                .cloned())
+        }
+
+        async fn list(
+            &self,
+            _user_id: &str,
+            symbol: &str,
+            limit: usize,
+        ) -> Result<Vec<crate::snapshots::ChartSnapshot>, AgentError> {
+            let rows = self.rows.lock().expect("lock");
+            let mut matched: Vec<_> = rows.iter().filter(|r| r.symbol == symbol).cloned().collect();
+            matched.sort_by_key(|r| std::cmp::Reverse(r.created_at));
+            matched.truncate(limit);
+            Ok(matched)
+        }
+    }
+
+    #[tokio::test]
+    async fn take_snapshot_freezes_price_structure_and_the_users_drawings() {
+        let fixture = Fixture::rising(30);
+        let drawings = DrawingsFixture(vec![hline(45_000.0)]);
+        let store = SnapshotFixture::new();
+        let ctx = ToolContext::new(&fixture)
+            .with_drawings(&drawings, "user-1")
+            .with_snapshots(&store, "user-1");
+
+        let out = registry()
+            .execute(
+                &call(
+                    "take_snapshot",
+                    json!({
+                        "symbol": "BTCUSDT",
+                        "timeframe": "5m",
+                        "note": "the range as mapped",
+                        "tags": ["range"],
+                    }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["captured"], true);
+        assert_eq!(out["drawings"], 1, "the user's marks ride the capture");
+        assert_eq!(out["note"], "the range as mapped");
+        let stored = store.rows.lock().expect("lock");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].created_by, "ai", "the agent's capture is marked as its own");
+        assert_eq!(stored[0].price, 129.5, "the last close of the fixture");
+        assert_eq!(stored[0].drawings.as_array().expect("drawings").len(), 1);
+        assert!(stored[0].structure.get("trend").is_some());
+    }
+
+    #[tokio::test]
+    async fn take_snapshot_without_a_store_says_so_rather_than_pretending() {
+        let fixture = Fixture::rising(10);
+        let ctx = ToolContext::new(&fixture);
+        let err = registry()
+            .execute(
+                &call("take_snapshot", json!({"symbol": "BTCUSDT", "timeframe": "5m"})),
+                &ctx,
+            )
+            .await
+            .expect_err("no store must refuse, honestly");
+        match err {
+            AgentError::InvalidToolArgs { reason, .. } => {
+                assert!(reason.contains("no snapshot store"), "{reason}");
+            }
+            other => panic!("expected InvalidToolArgs, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_snapshot_reads_back_what_was_captured_and_misses_honestly() {
+        let fixture = Fixture::rising(10);
+        let store = SnapshotFixture::new();
+        store.seed("s-old", 100.0, "Ranging", &[], 1_700_000_000_000_000_000);
+        let ctx = ToolContext::new(&fixture).with_snapshots(&store, "user-1");
+
+        let found = registry()
+            .execute(&call("get_snapshot", json!({"id": "s-old"})), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(found["id"], "s-old");
+        assert_eq!(found["price"], 100.0);
+
+        let missed = registry()
+            .execute(&call("get_snapshot", json!({"id": "nope"})), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(missed["found"], false, "a miss is a fact, not an error");
+    }
+
+    #[tokio::test]
+    async fn compare_snapshots_reports_price_trend_and_drawing_changes() {
+        let fixture = Fixture::rising(10);
+        let store = SnapshotFixture::new();
+        store.seed("s1", 100.0, "Ranging", &["a", "b"], 1_700_000_000_000_000_000);
+        store.seed("s2", 102.0, "Up", &["b", "c"], 1_700_000_003_600_000_000);
+        let ctx = ToolContext::new(&fixture).with_snapshots(&store, "user-1");
+
+        let out = registry()
+            .execute(
+                &call("compare_snapshots", json!({"symbol": "BTCUSDT"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out["compared"], true);
+        assert_eq!(out["from"]["id"], "s1");
+        assert_eq!(out["to"]["id"], "s2");
+        assert!((out["price_change_pct"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+        assert_eq!(out["trend"]["from"], "Ranging");
+        assert_eq!(out["trend"]["to"], "Up");
+        assert_eq!(out["trend"]["changed"], true);
+        // Drawing "b" is in both; "a" left and "c" arrived.
+        let added = out["drawings"]["added"].as_array().expect("added");
+        let removed = out["drawings"]["removed"].as_array().expect("removed");
+        assert_eq!(added.len(), 1);
+        assert_eq!(removed.len(), 1);
+        assert!(out["summary"].as_str().unwrap().contains("+2.00%"));
+    }
+
+    #[tokio::test]
+    async fn compare_snapshots_by_id_and_the_missing_pair_case() {
+        let fixture = Fixture::rising(10);
+        let store = SnapshotFixture::new();
+        store.seed("only", 100.0, "Up", &[], 1_700_000_000_000_000_000);
+        let ctx = ToolContext::new(&fixture).with_snapshots(&store, "user-1");
+
+        // One snapshot is not a comparison.
+        let lonely = registry()
+            .execute(
+                &call("compare_snapshots", json!({"symbol": "BTCUSDT"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(lonely["compared"], false);
+        assert!(lonely["note"].as_str().unwrap().contains("needs two"));
+
+        // By id with one missing: also a neutral answer, not an error.
+        let missing = registry()
+            .execute(
+                &call("compare_snapshots", json!({"id_a": "only", "id_b": "nope"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing["compared"], false);
+
+        // No ids and no symbol: the model hears what the tool takes.
+        let err = registry()
+            .execute(&call("compare_snapshots", json!({})), &ctx)
+            .await
+            .expect_err("no selector must be refused");
         assert!(matches!(err, AgentError::InvalidToolArgs { .. }));
     }
 }

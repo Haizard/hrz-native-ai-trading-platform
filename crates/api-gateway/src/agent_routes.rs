@@ -226,6 +226,12 @@ pub async fn ask(
                 Arc::clone(database),
             ))),
         );
+        // Snapshots ride the same grant (`docs/45`): the agent's captures land
+        // under the asking user's id, stamped created_by = ai at the door.
+        request = request.with_snapshots(ai_agent::SnapshotsContext::new(
+            Arc::new(crate::market_data::DbSnapshotStore::new(Arc::clone(database))),
+            user.user_id.to_string(),
+        ));
     }
 
     // Backtests ride the deployment, not the database: the runner reads the

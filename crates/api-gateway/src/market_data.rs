@@ -191,6 +191,10 @@ impl ai_agent::UserDrawingsSource for DbUserDrawings {
         Ok(rows
             .iter()
             .map(|row| ai_agent::UserDrawing {
+                // The id rides along so a snapshot's compare can tell "moved"
+                // from "removed and redrawn" -- the diff is by identity, not by
+                // coordinates.
+                id: Some(row.id.to_string()),
                 kind: row.kind.clone(),
                 label: row.label.clone(),
                 time1_ms: row.a1_time_ms,
@@ -484,6 +488,113 @@ impl ai_agent::MemoryWriter for DbAgentMemory {
                 tool: "forget_memory".into(),
                 reason: format!("storage could not answer: {e}"),
             })
+    }
+}
+
+/// The snapshot store over the same Postgres, for the agent's snapshot tools
+/// (`docs/45`).
+///
+/// Same shape as every other adapter in this module: the agent carries an
+/// opaque user id, the store keys on `Uuid`, and `created_by` is stamped
+/// `ai` at this door -- a caller through it cannot forge a user's capture,
+/// which is the same rule the drawing writer stamps.
+#[derive(Debug, Clone)]
+pub struct DbSnapshotStore {
+    db: Arc<db::Database>,
+}
+
+impl DbSnapshotStore {
+    /// Wrap the shared database handle.
+    #[must_use]
+    pub fn new(db: Arc<db::Database>) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl ai_agent::SnapshotStore for DbSnapshotStore {
+    async fn capture(
+        &self,
+        user_id: &str,
+        snapshot: &ai_agent::NewSnapshot,
+    ) -> Result<ai_agent::ChartSnapshot, AgentError> {
+        let user_id = parse_user(user_id)?;
+        db::chart_snapshots::insert_chart_snapshot(
+            self.db.pool(),
+            user_id,
+            &db::chart_snapshots::NewChartSnapshot {
+                symbol: snapshot.symbol.clone(),
+                timeframe: snapshot.timeframe.clone(),
+                price: snapshot.price,
+                drawings: snapshot.drawings.clone(),
+                structure: snapshot.structure.clone(),
+                note: snapshot.note.clone(),
+                tags: snapshot.tags.clone(),
+                created_by: snapshot.created_by.clone(),
+            },
+        )
+        .await
+        .map(|row| snapshot_from_row(&row))
+        .map_err(|e| AgentError::ToolFailed {
+            tool: "take_snapshot".into(),
+            reason: format!("storage refused the capture: {e}"),
+        })
+    }
+
+    async fn get(
+        &self,
+        user_id: &str,
+        id: &str,
+    ) -> Result<Option<ai_agent::ChartSnapshot>, AgentError> {
+        let user_id = parse_user(user_id)?;
+        // A malformed id is "no such snapshot", the same neutral answer the
+        // drawings store gives a stale id: the model may be quoting a capture
+        // from a conversation that predates a reset.
+        let Ok(id) = Uuid::parse_str(id) else {
+            return Ok(None);
+        };
+        db::chart_snapshots::get_chart_snapshot(self.db.pool(), user_id, id)
+            .await
+            .map(|row| row.map(|r| snapshot_from_row(&r)))
+            .map_err(|e| AgentError::ToolFailed {
+                tool: "get_snapshot".into(),
+                reason: format!("storage could not answer: {e}"),
+            })
+    }
+
+    async fn list(
+        &self,
+        user_id: &str,
+        symbol: &str,
+        limit: usize,
+    ) -> Result<Vec<ai_agent::ChartSnapshot>, AgentError> {
+        let user_id = parse_user(user_id)?;
+        let limit = i64::try_from(limit.clamp(1, 50)).unwrap_or(10);
+        db::chart_snapshots::list_chart_snapshots(self.db.pool(), user_id, symbol, limit)
+            .await
+            .map(|rows| rows.iter().map(snapshot_from_row).collect())
+            .map_err(|e| AgentError::ToolFailed {
+                tool: "compare_snapshots".into(),
+                reason: format!("storage could not answer: {e}"),
+            })
+    }
+}
+
+/// The agent's snapshot shape from a stored row. The id stringifies because
+/// the model quotes it back to `get_snapshot` and `compare_snapshots`, and a
+/// model handles a string more reliably than a byte form.
+fn snapshot_from_row(row: &db::chart_snapshots::ChartSnapshotRow) -> ai_agent::ChartSnapshot {
+    ai_agent::ChartSnapshot {
+        id: row.id.to_string(),
+        symbol: row.symbol.clone(),
+        timeframe: row.timeframe.clone(),
+        price: row.price,
+        drawings: row.drawings.clone(),
+        structure: row.structure.clone(),
+        note: row.note.clone(),
+        tags: row.tags.clone(),
+        created_by: row.created_by.clone(),
+        created_at: row.created_at,
     }
 }
 

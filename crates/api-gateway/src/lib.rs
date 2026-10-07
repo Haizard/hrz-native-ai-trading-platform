@@ -32,7 +32,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 use tracing::warn;
@@ -52,6 +52,7 @@ pub mod bots;
 pub mod broker_routes;
 pub mod capabilities;
 pub mod dom;
+pub mod chart_routes;
 pub mod drawing_routes;
 pub mod error;
 pub mod event_engine;
@@ -421,6 +422,42 @@ pub fn router(state: AppState) -> Router {
             "/drawings/{id}",
             put(drawing_routes::update).delete(drawing_routes::remove),
         )
+        // The workspace, kept (`docs/45`): sessions are the multi-panel grid,
+        // named; templates are sessions nobody trades from until restored.
+        .route(
+            "/chart-sessions",
+            get(chart_routes::list_sessions).post(chart_routes::create_session),
+        )
+        .route(
+            "/chart-sessions/{id}",
+            get(chart_routes::get_session)
+                .put(chart_routes::update_session)
+                .delete(chart_routes::delete_session),
+        )
+        .route(
+            "/chart-sessions/{id}/restore",
+            post(chart_routes::restore_session),
+        )
+        // Point-in-time captures. The agent's take_snapshot tool and this
+        // route write the same table; `created_by` says which door.
+        .route(
+            "/chart-snapshots",
+            get(chart_routes::list_snapshots).post(chart_routes::capture_snapshot),
+        )
+        .route("/chart-snapshots/{id}", get(chart_routes::get_snapshot))
+        // The kept detections. Explicit saves only -- the route validates the
+        // detector's vocabulary and levels at the door.
+        .route(
+            "/pattern-library",
+            get(chart_routes::list_library).post(chart_routes::save_pattern),
+        )
+        .route(
+            "/pattern-library/{id}",
+            delete(chart_routes::delete_saved_pattern),
+        )
+        // Patterns over many symbols, on demand. Public like `/scan`: candles
+        // are market data, and nothing about the answer is the caller's own.
+        .route("/scan/patterns", post(chart_routes::scan_patterns))
         .route("/events", get(event_engine::events))
         .route("/ws/events/{symbol}", get(event_engine::stream))
         .route("/agent/ask", post(agent_routes::ask))
