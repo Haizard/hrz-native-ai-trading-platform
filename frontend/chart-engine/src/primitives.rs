@@ -48,7 +48,7 @@ impl Placement<'_> {
 
     /// Canvas y of a price.
     pub fn py(&self, price: f64) -> f64 {
-        crate::scene::price_to_y(price, self.frame.price_min, self.frame.price_max, &self.frame.plot)
+        crate::scene::price_to_y(price, self.frame.price_min, self.frame.price_max, &self.frame.plot, self.frame.scale)
     }
 }
 
@@ -148,6 +148,7 @@ mod tests {
             price_min: 90.0,
             price_max: 110.0,
             bar_nanos: 300_000_000_000,
+        scale: crate::scene::ScaleMap::Linear,
         };
         (frame, 10.0)
     }

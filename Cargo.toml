@@ -167,6 +167,16 @@ panic = "abort"
 [profile.dev]
 opt-level = 1
 
+# Workaround (machine-specific): on this Windows/MSVC 14.44 setup, cc-rs passing
+# the -Z7 flag to cl.exe for dependency C sources (ring) deterministically fails
+# with 'cl : Command line error D8050 : cannot execute c1.dll: failed to get
+# command line into debug records' when cl is spawned from a Rust build script
+# (the identical command line works from cmd). Dependencies do not need embedded
+# debug records, so turn debuginfo off for registry packages only; workspace
+# crates keep full debug info.
+[profile.dev.package."*"]
+debug = false
+
 # The sandbox guest is built by `sandbox`'s build.rs and then embedded, so its
 # artifact size is not something anyone reads. Splitting it into more codegen
 # units buys nothing for a module this small and costs real seconds on every

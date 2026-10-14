@@ -423,7 +423,7 @@ pub fn scene_overlay_plots(
     frame: &crate::scene::Frame,
 ) -> Vec<ScriptPlot> {
     let price_to_y = |v: f64| {
-        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot)
+        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot, frame.scale)
     };
     output
         .plots
@@ -469,7 +469,7 @@ pub fn scene_overlay_shapes(
             let value = if s.value.is_finite() { s.value } else { lo + (hi - lo) * 0.04 };
             ScriptShape {
                 x: frame.plot.x + slot * (s.bar as f64 + 0.5),
-                y: crate::scene::price_to_y(value, lo, hi, &frame.plot),
+                y: crate::scene::price_to_y(value, lo, hi, &frame.plot, frame.scale),
                 glyph: s.glyph.clone(),
                 color: s.color,
                 bar: s.bar,
@@ -501,7 +501,7 @@ pub fn scene_overlay_objects(
         let idx = if bar < 0.0 { last + bar } else { bar };
         frame.plot.x + slot * (idx + 0.5)
     };
-    let py = |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot) };
+    let py = |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot, frame.scale) };
     output
         .objects
         .iter()
@@ -704,7 +704,7 @@ pub fn scene_strategy_layer(
 ) -> Option<ScriptStrategyLayer> {
     let sim = output.simulation.as_ref()?;
     let (lo, hi) = (frame.price_min, frame.price_max);
-    let py = |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot) };
+    let py = |price: f64| -> f64 { crate::scene::price_to_y(price, lo, hi, &frame.plot, frame.scale) };
     let fill = |o: &pine_lite::sim::SimOrder| ScriptFill {
         // The sim's `bar` is the decision bar; the fill is the next open, so
         // the marker sits one slot right, on the bar that actually filled.
@@ -1032,6 +1032,7 @@ mod tests {
             price_min: 99.0,
             price_max: 101.0,
             bar_nanos: 60_000_000_000,
+        scale: crate::scene::ScaleMap::Linear,
         };
         let (header, parsed) =
             pine_lite::vet("//@pine_lite version=1 overlay=true\nplot(close)\n").expect("vet");
@@ -1057,6 +1058,7 @@ mod tests {
             price_min: 99.0,
             price_max: 101.0,
             bar_nanos: 60_000_000_000,
+        scale: crate::scene::ScaleMap::Linear,
         };
         let src = "//@pine_lite version=1 overlay=true\nplot(close)\nmark = close == close\nplotshape(mark, color=color.green, location_value=high)\n";
         let (_, parsed) = pine_lite::vet(src).expect("vet");
@@ -1083,6 +1085,7 @@ mod tests {
             price_min: 99.0,
             price_max: 111.0,
             bar_nanos: 60_000_000_000,
+        scale: crate::scene::ScaleMap::Linear,
         };
         let src = concat!(
             "//@pine_lite version=1 overlay=true\n",
@@ -1135,6 +1138,7 @@ mod tests {
             price_min: 99.0,
             price_max: 111.0,
             bar_nanos,
+            scale: crate::scene::ScaleMap::Linear,
         };
         let src = concat!(
             "//@pine_lite version=1 overlay=true\n",
@@ -1177,6 +1181,7 @@ mod tests {
             price_min: 99.0,
             price_max: 111.0,
             bar_nanos: 60_000_000_000,
+        scale: crate::scene::ScaleMap::Linear,
         };
         let src = concat!(
             "//@pine_lite version=1 overlay=true\n",
@@ -1228,6 +1233,7 @@ mod tests {
             price_min: 99.0,
             price_max: 111.0,
             bar_nanos,
+            scale: crate::scene::ScaleMap::Linear,
         };
         // The script computes the anchors from its own `time` series (the
         // run window's candle times are `from + i*bar_nanos`), then draws
@@ -1295,6 +1301,7 @@ mod tests {
             price_min: 99.0,
             price_max: 101.0,
             bar_nanos: 60_000_000_000,
+        scale: crate::scene::ScaleMap::Linear,
         };
         let src = "//@pine_lite version=1 overlay=true\nplot(close)\nmark = close == close\nplotshape(mark, color=color.green)\n";
         let (_, parsed) = pine_lite::vet(src).expect("vet");
@@ -1332,6 +1339,7 @@ mod tests {
             price_min: 99.0,
             price_max: 108.0,
             bar_nanos: 60_000_000_000,
+        scale: crate::scene::ScaleMap::Linear,
         }
     }
 

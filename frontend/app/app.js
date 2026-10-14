@@ -494,7 +494,7 @@ function buildScene(request) {
 /// that quietly answered for `#thesis` would be a bug nothing points at.
 const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartHint", "chartNote",
-  "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "forecast", "volScale", "fit",
+  "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "forecast", "volScale", "fit", "logScale", "pctScale",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
   "magnet", "aiLayer", "profileAnchor", "undo", "redo",
   // The pane's own chrome (title, zoom/collapse buttons) and the hidden bar
@@ -928,7 +928,7 @@ function createChartPane(root, hooks = {}) {
       ctx.stroke();
       // The candidate price rides the line, engine-mapped.
       if (wasm && typeof wasm.price_at_y === "function") {
-        const price = wasm.price_at_y(plot.y, plot.h, scene.price_min, scene.price_max, drag.y);
+        const price = wasm.price_at_y(plot.y, plot.h, scene.price_min, scene.price_max, drag.y, scene.scale === "log" ? 1 : scene.scale === "percent" ? 2 : 0, scene.ref_price || 0);
         ctx.font = "600 10px ui-monospace, monospace";
         const label = fmtNum(price);
         const w = ctx.measureText(label).width + 10;
@@ -1010,7 +1010,8 @@ function createChartPane(root, hooks = {}) {
     // The value tag on the right axis, when the loaded module is new enough
     // to export the inverse mapping.
     if (wasm && typeof wasm.price_at_y === "function" && Number.isFinite(vMin) && Number.isFinite(vMax) && vMax > vMin) {
-      const value = wasm.price_at_y(hRect.y, hRect.h, vMin, vMax, vy);
+      // Sub-panes (RSI and friends) keep their own linear scale -- the log toggle is the price axis', not theirs.
+      const value = wasm.price_at_y(hRect.y, hRect.h, vMin, vMax, vy, 0, 0);
       ctx.font = "10px ui-monospace, monospace";
       const label = fmtNum(value);
       const w = ctx.measureText(label).width + 10;
@@ -2368,7 +2369,10 @@ function createChartPane(root, hooks = {}) {
       ctx.moveTo(scene.plot.x, tick.y);
       ctx.lineTo(scene.plot.x + scene.plot.w, tick.y);
       ctx.stroke();
-      ctx.fillText(tick.price.toFixed(2), scene.plot.x + scene.plot.w + 6, tick.y + 3);
+      // Percent ticks carry percentages, not prices: label them as what they
+      // are. The crosshair keeps reading prices through the engine's inverse.
+      const label = scene.scale === "percent" ? tick.price.toFixed(2) + "%" : tick.price.toFixed(2);
+      ctx.fillText(label, scene.plot.x + scene.plot.w + 6, tick.y + 3);
     }
   }
 
@@ -2666,6 +2670,14 @@ function createChartPane(root, hooks = {}) {
   /// not want the chart yanked to the right edge under them. The Fit button
   /// turns it back on: "show everything again" includes what arrives next.
   let followLive = true;
+  // TradingView's scale toggle: linear, or log (equal ratios, equal pixels).
+  // A view preference, so it survives a reset -- like the timeframe, not
+  // like the window position.
+  let logScale = false;
+  // The percent sibling of the log toggle: the axis reads % change from the
+  // first visible bar's close. Mutually exclusive with log -- a scale is one
+  // mapping, and two pressed buttons would have to pick one anyway.
+  let pctScale = false;
   // How often the footprint poll refetches, in milliseconds. The feed's own
   // redraw cadence is ~1s (the collector's forming-bar snapshots); the ladder
   // changes meaningfully on trades, not on every frame, so 2s keeps the forming
@@ -2886,6 +2898,11 @@ function createChartPane(root, hooks = {}) {
       // detecting, on the candles this request already carries, so switching this
       // on costs no extra round trip.
       zones: zonesOn(),
+      // The price-scale toggle: absent is linear, so every request from
+      // before the toggle existed is byte-identical. Under `log` the engine
+      // maps through logarithms and echoes the scale back on the scene, and
+      // the crosshair's price tag inverts through the same one.
+      ...(logScale ? { price_scale: "log" } : pctScale ? { price_scale: "percent" } : {}),
       // Whether the window stays pinned to the newest bar. On while the user has
       // not scrolled or panned back; any pan or drag along the time axis turns it
       // off, and the Fit button turns it back on. Without it the engine re-resolves
@@ -3228,6 +3245,13 @@ function createChartPane(root, hooks = {}) {
 
   function onWheel(event) {
     if (!scene) return;
+    stopKinetic();
+    // Over an axis the wheel scales that axis (TradingView): the price axis
+    // zooms price, the time axis zooms time -- no Shift needed.
+    const rect = el("chart").getBoundingClientRect();
+    const p = scene.plot;
+    const onPriceAxis = event.clientX - rect.left > p.x + p.w;
+    const onTimeAxis = event.clientY - rect.top > p.y + p.h;
     const at = plotFraction(event);
     if (!at) return;
     // Ours now: the page must not scroll behind the chart.
@@ -3241,8 +3265,12 @@ function createChartPane(root, hooks = {}) {
 
     // Shift is the price axis, which is the convention every charting package
     // uses and therefore the one a trader will try first.
-    if (event.shiftKey) {
+    if (onPriceAxis || event.shiftKey) {
       applyGesture({ kind: "zoom_price", factor, anchor: at.y });
+      return;
+    }
+    if (onTimeAxis) {
+      applyGesture({ kind: "zoom_time", factor, anchor: at.x });
       return;
     }
     // A sideways wheel -- a trackpad's two-finger slide, or a tilt wheel --
@@ -3277,6 +3305,8 @@ function createChartPane(root, hooks = {}) {
 
   function onPointerDown(event) {
     if (!scene || event.button !== 0) return;
+    // A new gesture interrupts the glide, whatever it is.
+    stopKinetic();
 
     if (tool !== "cursor") {
       startPlacing(event);
@@ -3292,6 +3322,26 @@ function createChartPane(root, hooks = {}) {
       el("chart").setPointerCapture(event.pointerId);
       el("chart").classList.add("moving");
       return;
+    }
+
+    // A press on an axis strip scales that axis (TradingView): the price
+    // axis lives right of the plot, the time axis below it. Detected before
+    // the hit test because no drawing can live outside the plot.
+    {
+      const rect = el("chart").getBoundingClientRect();
+      const cx = event.clientX - rect.left;
+      const cy = event.clientY - rect.top;
+      const p = scene.plot;
+      if (cx > p.x + p.w && cy >= p.y && cy <= p.y + p.h) {
+        drag = { mode: "scale-price", appliedY: event.clientY };
+        el("chart").setPointerCapture(event.pointerId);
+        return;
+      }
+      if (cy > p.y + p.h && cx >= p.x && cx <= p.x + p.w) {
+        drag = { mode: "scale-time", appliedX: event.clientX };
+        el("chart").setPointerCapture(event.pointerId);
+        return;
+      }
     }
 
     const hit = hitTest(event);
@@ -3332,7 +3382,7 @@ function createChartPane(root, hooks = {}) {
       hoverPin = null;
       el("chart").style.cursor = "";
       select(null);
-      drag = { mode: "pan", appliedX: event.clientX, appliedY: event.clientY };
+      drag = { mode: "pan", appliedX: event.clientX, appliedY: event.clientY, samples: [{ t: performance.now(), x: event.clientX, y: event.clientY }] };
       el("chart").classList.add("dragging");
     }
     el("chart").setPointerCapture(event.pointerId);
@@ -3398,7 +3448,16 @@ function createChartPane(root, hooks = {}) {
           hoverPin = edge;
           scheduleHoverPaint();
         }
-        const want = hoverPin ? "ns-resize" : "";
+        let want = hoverPin ? "ns-resize" : "";
+        if (!hoverPin) {
+          // The axis strips hint their drag-to-scale with a resize cursor.
+          const rect = el("chart").getBoundingClientRect();
+          const cx = event.clientX - rect.left;
+          const cy = event.clientY - rect.top;
+          const p = scene.plot;
+          if (cx > p.x + p.w && cy >= p.y && cy <= p.y + p.h) want = "ns-resize";
+          else if (cy > p.y + p.h && cx >= p.x && cx <= p.x + p.w) want = "ew-resize";
+        }
         if (el("chart").style.cursor !== want) el("chart").style.cursor = want;
       }
     }
@@ -3437,7 +3496,32 @@ function createChartPane(root, hooks = {}) {
       return;
     }
 
+    if (drag.mode === "scale-price") {
+      // Pulling the price axis down stretches the scale (zoom in); pushing it
+      // up compresses. Anchored at the strip's centre, holding the pane's
+      // middle still the way TradingView's axis drag does.
+      const dy = event.clientY - drag.appliedY;
+      if (dy === 0) return;
+      drag.appliedY = event.clientY;
+      applyGesture({ kind: "zoom_price", factor: Math.exp(dy * 0.004), anchor: 0.5 });
+      return;
+    }
+
+    if (drag.mode === "scale-time") {
+      // Dragging the time axis right compresses (zoom out); left stretches.
+      const dx = event.clientX - drag.appliedX;
+      if (dx === 0) return;
+      drag.appliedX = event.clientX;
+      applyGesture({ kind: "zoom_time", factor: Math.exp(-dx * 0.004), anchor: 0.5 });
+      return;
+    }
+
     if (drag.mode === "pan") {
+      // Kinetic bookkeeping: the last few pointer positions, for the flick.
+      if (drag.samples) {
+        drag.samples.push({ t: performance.now(), x: event.clientX, y: event.clientY });
+        if (drag.samples.length > 12) drag.samples.shift();
+      }
       // Measured from the last *applied* position rather than the last event, so a
       // move that gets coalesced into the next frame does not lose its pixels --
       // otherwise a fast drag visibly lags behind the pointer.
@@ -3535,7 +3619,13 @@ function createChartPane(root, hooks = {}) {
       el("chart").releasePointerCapture(event.pointerId);
     }
 
-    if (finished.mode === "place") {
+    if (finished.mode === "pan" && finished.samples) {
+      // A flick keeps gliding after the release (TradingView's momentum
+      // scroll); a slow drag stops dead, because a "glide" at walking speed
+      // reads as the chart wandering off on its own.
+      const v = panVelocity(finished.samples);
+      if (v && Math.hypot(v.vx, v.vy) > 250) startKinetic(v.vx, v.vy);
+    } else if (finished.mode === "place") {
       // A click-click-click tool is only *finished* by its last click. Every
       // earlier release just fixes the current anchor and leaves `placing`
       // armed -- the pointer keeps drawing the next anchor, and the placement
@@ -3556,7 +3646,7 @@ function createChartPane(root, hooks = {}) {
   /// the fresh detection re-draw with the edge held.
   function commitZonePin(finished) {
     if (!scene || finished.y == null || !wasm || typeof wasm.price_at_y !== "function") return;
-    const price = wasm.price_at_y(scene.plot.y, scene.plot.h, scene.price_min, scene.price_max, finished.y);
+    const price = wasm.price_at_y(scene.plot.y, scene.plot.h, scene.price_min, scene.price_max, finished.y, scene.scale === "log" ? 1 : scene.scale === "percent" ? 2 : 0, scene.ref_price || 0);
     const pin = finished.pin;
     // A pin that would collapse the band is refused here, from the zone's
     // wire bounds -- the engine refuses it too, but its note arrives one
@@ -3642,6 +3732,56 @@ function createChartPane(root, hooks = {}) {
   function applyGesture(gesture) {
     waitingGesture = foldGesture(waitingGesture, gesture);
     scheduleRender();
+  }
+
+  // The glide after a flicked pan, or null. Its own rAF chain, separate
+  // from the gesture coalescing: the coalescer folds the *pans it is given*,
+  // this decides when to stop giving them.
+  let kinetic = null;
+
+  function stopKinetic() {
+    if (kinetic) cancelAnimationFrame(kinetic);
+    kinetic = null;
+  }
+
+  /// Launch the glide, with the drag's release velocity in px/s. The decay is
+  /// tuned so a flick settles in about a second: 6% of the launch speed
+  /// remains after one second, and the glide dies below the speed where it
+  /// would read as drift rather than momentum. The engine's own clamps bound
+  /// the ride at the series edges, so a hard flick cannot lose the chart.
+  function startKinetic(vx, vy) {
+    stopKinetic();
+    let last = performance.now();
+    const step = (now) => {
+      kinetic = null;
+      if (!scene) return;
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+      const decay = Math.pow(0.06, dt);
+      vx *= decay;
+      vy *= decay;
+      if (Math.hypot(vx, vy) < 15) return;
+      applyGesture({ kind: "pan", time: -(vx * dt) / scene.plot.w, price: (vy * dt) / scene.plot.h });
+      kinetic = requestAnimationFrame(step);
+    };
+    kinetic = requestAnimationFrame(step);
+  }
+
+  /// The drag's release velocity from its last ~120ms of movement, in px/s.
+  /// Measured over a window rather than the last two events: the final event
+  /// pair alone is one coalescing stall away from reading zero on a fast
+  /// flick, and the whole drag's average would miss that the flick happened.
+  function panVelocity(samples) {
+    if (!samples || samples.length < 2) return null;
+    const end = samples[samples.length - 1];
+    let start = samples[0];
+    for (let i = samples.length - 2; i >= 0; i--) {
+      start = samples[i];
+      if (end.t - start.t > 120) break;
+    }
+    const dt = (end.t - start.t) / 1000;
+    if (dt < 0.03) return null;
+    return { vx: (end.x - start.x) / dt, vy: (end.y - start.y) / dt };
   }
 
   /// Rebuild and repaint *now*, cancelling anything waiting for a frame.
@@ -4016,6 +4156,14 @@ function createChartPane(root, hooks = {}) {
     const resolved = resolvedDrawing(pending.id);
     const reason = scene ? scene.note : null;
     placing = null;
+
+    // Single-shot tools, TradingView's default: one drawing per arming. The
+    // alternative -- the tool staying armed until changed -- traps the user
+    // who drew once and now wants to drag the chart: every pan places another
+    // shape, and "the chart cannot be controlled" is the report that comes
+    // back. Re-arming is one toolbar click; Escape already reverts too, so
+    // this only changes what a *finished* placement leaves armed.
+    selectTool("cursor");
 
     if (!resolved) {
       // The engine refused it, and its note says why. The shape leaves with
@@ -4534,6 +4682,13 @@ function createChartPane(root, hooks = {}) {
         button.setAttribute("aria-pressed", String(tool === entry.kind));
         flyout.appendChild(button);
       }
+      // Presses inside this group are its own business: the page-level
+      // pointerdown closer hides every flyout on any press it did not start,
+      // and a press on a flyout button would hide the flyout *before* the
+      // click fires -- the click then lands on nothing and the tool never
+      // arms. Stopping the press here is what lets the click below exist.
+      trigger.addEventListener("pointerdown", (event) => event.stopPropagation());
+      flyout.addEventListener("pointerdown", (event) => event.stopPropagation());
       // Open on the trigger, close on any pick inside the same click.
       trigger.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -5064,6 +5219,10 @@ function createChartPane(root, hooks = {}) {
     const mode = el("mode");
     const modeLabel = mode.selectedOptions[0] ? mode.selectedOptions[0].textContent : "";
     el("paneTitle").textContent = `${symbol} · ${timeframe}${modeLabel ? " · " + modeLabel.trim() : ""}`;
+    // The global toolbar names the chart it acts on; a series change that
+    // does not reach it leaves the row naming the wrong instrument -- or, on
+    // a fresh page, naming nothing ("— · —") while clearly bound.
+    if (typeof refreshGlobalTools === "function" && globalTools.built) refreshGlobalTools();
   }
 
   /// One button press worth of zoom.
@@ -5415,6 +5574,23 @@ function createChartPane(root, hooks = {}) {
       startFootprintPoll();
       applyGesture({ kind: "fit" });
     });
+    // The scale toggle. Like the zones toggle: one request knob, the engine
+    // does everything else. `aria-pressed` *is* the button's state, the
+    // same arrangement the zones button uses.
+    el("logScale").addEventListener("click", () => {
+      logScale = !logScale;
+      if (logScale) pctScale = false;
+      el("logScale").setAttribute("aria-pressed", String(logScale));
+      el("pctScale").setAttribute("aria-pressed", String(pctScale));
+      scheduleRender();
+    });
+    el("pctScale").addEventListener("click", () => {
+      pctScale = !pctScale;
+      if (pctScale) logScale = false;
+      el("logScale").setAttribute("aria-pressed", String(logScale));
+      el("pctScale").setAttribute("aria-pressed", String(pctScale));
+      scheduleRender();
+    });
     for (const button of root.querySelectorAll(".tools button[data-tool]")) {
       button.addEventListener("click", () => selectTool(button.dataset.tool));
     }
@@ -5436,10 +5612,26 @@ function createChartPane(root, hooks = {}) {
     // leaves the pane's list, and the next rebuild draws the detected band
     // again. The release gesture lives on the accent line the pin drew.
     el("chart").addEventListener("dblclick", (event) => {
-      if (!scene || !scene.indicator || !scene.indicator.zones) return;
+      if (!scene) return;
       const rect = el("chart").getBoundingClientRect();
       const cx = event.clientX - rect.left;
       const cy = event.clientY - rect.top;
+      // The TradingView reset gesture: double-click an axis and the view
+      // refits. It lives ahead of the zone pins because an axis press can
+      // never be on a pinned edge -- the pins all lie inside the plot -- and
+      // a lost chart (panned until no candle is visible) recovers here, the
+      // same place a TradingView user would look. Fit also resumes following
+      // the live edge: a reset chart is a chart watching the market again.
+      const plot = scene.plot;
+      const onPriceAxis = cx > plot.x + plot.w;
+      const onTimeAxis = cy > plot.y + plot.h;
+      if (onPriceAxis || onTimeAxis) {
+        followLive = true;
+        startFootprintPoll();
+        applyGesture({ kind: "fit" });
+        return;
+      }
+      if (!scene.indicator || !scene.indicator.zones) return;
       const pins = zonePinsForRequest();
       if (!pins.length) return;
       for (const z of scene.indicator.zones) {
@@ -5795,9 +5987,23 @@ function createChartPane(root, hooks = {}) {
     /// alone repaints the list the pane already had, which was exactly the
     /// "the AI says it drew but the chart is empty" bug.
     reloadDrawings(symbol) {
-      if (!symbol || el("symbol").value !== symbol) return;
+      const mine = (el("symbol").value || "").toUpperCase();
+      const want = (symbol || "").toUpperCase();
+      if (!want || mine !== want) return;
       loadDrawings().then(() => { if (scene) scheduleRender(); });
     },
+
+    /// The last scene the engine answered with, and the viewport it echoed
+    /// (read-only). The chart tests and the console need to *see* what was
+    /// drawn; both are already plain data, and read-only means this can
+    /// never become a second place the view is changed from.
+    scene: () => scene,
+    viewport: () => viewport,
+    logScaleOn: () => logScale,
+    /// Total bars in this pane's series, and whether a flick glide is running
+    /// -- both read-only, both for the chart tests.
+    barCount: () => candles.length,
+    gliding: () => kinetic !== null,
 
     /// Handle a key that is about this pane, and say whether it was used.
     key(event) {
@@ -5820,6 +6026,54 @@ function createChartPane(root, hooks = {}) {
         event.preventDefault();
         deleteSelected();
         return true;
+      }
+
+      // Chart navigation (TradingView's keyboard layer): arrows walk the
+      // window one bar at a time, + and - zoom, Alt+R refits. The bar step is
+      // derived from the reported window, the one place that knows how wide a
+      // bar is right now.
+      if (event.altKey && (event.key === "r" || event.key === "R")) {
+        event.preventDefault();
+        followLive = true;
+        startFootprintPoll();
+        applyGesture({ kind: "fit" });
+        return true;
+      }
+      if (scene) {
+        const count = (viewport && viewport.count) || candles.length || 1;
+        const bar = 1 / count;
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          followLive = false;
+          stopFootprintPoll();
+          applyGesture({ kind: "pan", time: -bar, price: 0 });
+          return true;
+        }
+        if (event.key === "ArrowRight") {
+          event.preventDefault();
+          // Rightward is the one key that can rejoin the live edge: once the
+          // window's end reaches the series, following resumes. The engine
+          // reports the resolved window, so that check is exact.
+          applyGesture({ kind: "pan", time: bar, price: 0 });
+          // The echoed viewport lags the pan by a frame, so the rejoin check
+          // runs against where this key press *lands*, not where the last
+          // frame reported.
+          if (viewport && viewport.from + 1 + count >= candles.length) {
+            followLive = true;
+            startFootprintPoll();
+          }
+          return true;
+        }
+        if (event.key === "ArrowUp" || event.key === "+" || event.key === "=") {
+          event.preventDefault();
+          applyGesture({ kind: "zoom_time", factor: 1.2, anchor: 0.5 });
+          return true;
+        }
+        if (event.key === "ArrowDown" || event.key === "-" || event.key === "_") {
+          event.preventDefault();
+          applyGesture({ kind: "zoom_time", factor: 1 / 1.2, anchor: 0.5 });
+          return true;
+        }
       }
       return false;
     },
@@ -5852,6 +6106,15 @@ function createChartPane(root, hooks = {}) {
     },
     toggleMagnet,
     toggleAiLayer,
+    /// Force the AI drawing layer on after a skill run: objects the agent just
+    /// placed are `created_by: "ai"` and stay invisible while this is off.
+    setAiLayerOn(on) {
+      aiLayerOn = !!on;
+      const button = el("aiLayer");
+      if (button) button.setAttribute("aria-pressed", String(aiLayerOn));
+      refreshAiLayerButton();
+      scheduleRender();
+    },
     toggleProfileAnchor,
     /// Swap this pane's fallback buttons for the registry's set. Called by the
     /// page once the engine has loaded; a no-op before that.
@@ -6051,6 +6314,11 @@ const globalTools = {
         button.title = entry.title || entry.label;
         flyout.appendChild(button);
       }
+      // Same press-order fix as the pane toolbars: the page-level pointerdown
+      // closer would hide this flyout between pointerdown and click, so a real
+      // mouse could open the group but never pick a tool from it.
+      trigger.addEventListener("pointerdown", (event) => event.stopPropagation());
+      flyout.addEventListener("pointerdown", (event) => event.stopPropagation());
       trigger.addEventListener("click", (event) => {
         event.stopPropagation();
         const open = !flyout.hidden;
@@ -6091,7 +6359,13 @@ const globalTools = {
     // generated, so binding each would be a rebuild away from drifting.
     node.addEventListener("click", (event) => {
       const button = event.target.closest("button");
-      if (!button || !activePane) return;
+      if (!button) return;
+      // A row that does nothing until a chart has been pressed reads as
+      // broken: on a fresh page nothing has been touched yet, so aim at the
+      // first pane -- the same pane the aside and the keyboard shortcuts
+      // would already mean.
+      if (!activePane && panes.length) setActive(panes[0]);
+      if (!activePane) return;
       if (button.dataset.tool) {
         activePane.selectTool(button.dataset.tool);
         refreshGlobalTools();
@@ -6821,7 +7095,7 @@ function renderTranscript() {
     return;
   }
   if (!turns.length) {
-    el("thesis").innerHTML = `<p class="empty">Ask a question. The thesis's own levels are drawn on the chart.</p>`;
+    el("thesis").innerHTML = `<p class="empty">Pin a skill and Ask — the agent applies it to this chart and draws the patterns it finds.</p>`;
     return;
   }
 
@@ -6968,6 +7242,34 @@ async function onAgentFrame(event) {
     return;
   }
 
+  // The interview never pushes a thesis `turns` row. Those replies must land
+  // anyway — otherwise the first "Create with AI" sits on Thinking… forever.
+  if (authorMode) {
+    try {
+      if (frame.type === "progress") return;
+      if (frame.type === "data" && frame.payload && frame.payload.author) {
+        applyAuthorFrame(frame.payload.author);
+        return;
+      }
+      if (frame.type === "notice") {
+        authorHistory.push({ role: "assistant", text: frame.message });
+        asking = false;
+        paintAsk();
+        renderTranscript();
+        return;
+      }
+    } catch (e) {
+      authorHistory.push({
+        role: "assistant",
+        text: `The interview reply could not be shown: ${e && e.message ? e.message : e}`,
+      });
+      asking = false;
+      paintAsk();
+      renderTranscript();
+      return;
+    }
+  }
+
   const turn = turns[turns.length - 1];
   if (!turn) return;
 
@@ -7018,6 +7320,7 @@ function applyAgentFrame(frame, turn) {
     // orchestrator's auto-rendered findings). The panes' drawings come from
     // the API, so they must be re-fetched to show them.
     const drawnSymbol = (thesis && thesis.symbol) || turn.symbol;
+    showAiDrawingsOnCharts();
     for (const pane of panes) pane.reloadDrawings(drawnSymbol);
     // Update MCP status if capabilities are present
     if (frame.payload.capabilities) {
@@ -7044,6 +7347,7 @@ function applyAgentFrame(frame, turn) {
     // A failed run can still have drawn before it failed: the first live
     // drawing run ended in an error and its trendline only appeared after a
     // page reload.
+    showAiDrawingsOnCharts();
     for (const pane of panes) pane.reloadDrawings(turn.symbol);
   }
 }
@@ -7063,6 +7367,17 @@ function applyAgentFrame(frame, turn) {
 /// nothing drawn.
 function redrawThesis() {
   for (const pane of panes) pane.redraw();
+}
+
+/// AI drawings are filtered out of the engine request while the layer is off
+/// (`aiLayerOn` defaults false). A skill run that just wrote objects would
+/// otherwise look like a blank chart. Turn the layer on on every pane that
+/// can show them, and sync the toolbar so the AI button reads as pressed.
+function showAiDrawingsOnCharts() {
+  for (const pane of panes) {
+    if (typeof pane.setAiLayerOn === "function") pane.setAiLayerOn(true);
+  }
+  if (typeof refreshGlobalTools === "function") refreshGlobalTools();
 }
 
 /// The thesis's own prices, as the overlays a chart request carries.
@@ -7105,6 +7420,8 @@ function paintAsk() {
   const button = el("ask");
   button.disabled = asking;
   button.textContent = asking ? "Working…" : authorMode ? "Send" : "Ask";
+  const analyze = el("analyzePinned");
+  if (analyze) analyze.disabled = asking || authorMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -7127,6 +7444,12 @@ function enterAuthorMode() {
   authorHistory = [];
   selectPane("thesis");
   el("authorBanner").hidden = false;
+  const select = el("skillSelect");
+  if (select) select.hidden = true;
+  const analyze = el("analyzePinned");
+  if (analyze) analyze.hidden = true;
+  const hint = el("skillHint");
+  if (hint) hint.hidden = true;
   el("question").placeholder = "Describe the pattern or zone you trade…";
   asking = false;
   paintAsk();
@@ -7139,6 +7462,12 @@ function enterAuthorMode() {
 function exitAuthorMode() {
   authorMode = false;
   el("authorBanner").hidden = true;
+  const analyze = el("analyzePinned");
+  if (analyze) analyze.hidden = false;
+  const hint = el("skillHint");
+  if (hint) hint.hidden = false;
+  const select = el("skillSelect");
+  if (select && select.options.length > 1) select.hidden = false;
   el("question").placeholder = "find me a long setup using my liquidity-sweep skill";
   paintAsk();
   renderTranscript();
@@ -7201,16 +7530,63 @@ async function askAuthor(question) {
 function applyAuthorFrame(payload) {
   authorHistory.push({ role: "assistant", text: payload.message });
   asking = false;
-  if (payload.saved) {
-    loadSkills().then(() => {
-      const select = el("skillSelect");
-      if (select && payload.saved.id) {
-        for (const option of select.options) option.selected = option.value === payload.saved.id;
-      }
-    });
-  }
   paintAsk();
   renderTranscript();
+  if (payload.saved && payload.saved.id) {
+    const saved = payload.saved;
+    exitAuthorMode();
+    loadSkills().then(() => analyzeWithSkill(saved.id, saved.name));
+  }
+}
+
+/// Select exactly one skill in the Thesis pin list.
+function pinSkill(id) {
+  const select = el("skillSelect");
+  if (!select || !id) return;
+  select.hidden = false;
+  for (const option of select.options) option.selected = option.value === id;
+}
+
+function enableChartAttach() {
+  if (!attachChart) {
+    attachChart = true;
+    paintAttach();
+  }
+}
+
+function analysisQuestionFor(name) {
+  const label = name ? `"${name}"` : "the pinned";
+  return (
+    `Apply ${label} skill to this chart. Find the pattern on the candles, ` +
+    `DRAW every zone/line/level the skill's DRAW rules name with create_drawing ` +
+    `(anchors from get_candles time_ms in milliseconds, never the nanosecond field t), ` +
+    `then submit the thesis.`
+  );
+}
+
+/// Pin a skill, attach the open chart, and start an analysis run that is
+/// supposed to draw. Used after create/save so the library is not a dead end.
+async function analyzeWithSkill(id, name) {
+  if (asking) return;
+  if (authorMode) exitAuthorMode();
+  selectPane("thesis");
+  enableChartAttach();
+  pinSkill(id);
+  el("question").value = analysisQuestionFor(name);
+  await ask();
+}
+
+/// The Thesis "Analyze chart" button: run whatever is pinned, or a generic
+/// chart read if nothing is.
+async function analyzePinnedSkills() {
+  if (asking || authorMode) return;
+  const selected = [...(el("skillSelect")?.selectedOptions || [])].filter((o) => o.value);
+  const names = selected.map((o) => o.textContent.replace(/\s+v[\d.]+.*$/, "").trim());
+  enableChartAttach();
+  el("question").value = selected.length
+    ? analysisQuestionFor(names.join(", "))
+    : "Analyze this chart. Find the active structure, zones and levels, DRAW them with create_drawing using get_candles time_ms (milliseconds), then submit the thesis.";
+  await ask();
 }
 
 async function ask() {
@@ -7520,36 +7896,6 @@ function setStrategyMode(mode) {
 // ---------------------------------------------------------------------------
 // Skills and MCP integration
 // ---------------------------------------------------------------------------
-
-/// Load the user's skills into the skill selector dropdown.
-async function loadSkills() {
-  try {
-    const skills = await api("/skills");
-    const select = el("skillSelect");
-    // Keep the "No skill" option and clear others
-    const defaultOption = select.querySelector("option:first-child");
-    select.innerHTML = "";
-    select.appendChild(defaultOption);
-    
-    if (skills && skills.length > 0) {
-      skills.forEach(skill => {
-        const option = document.createElement("option");
-        option.value = skill.id;
-        option.textContent = `${skill.name} v${skill.version}`;
-        if (skill.category) {
-          option.textContent += ` (${skill.category})`;
-        }
-        select.appendChild(option);
-      });
-      select.hidden = false;
-    } else {
-      select.hidden = true;
-    }
-  } catch (e) {
-    // Skills endpoint might not be available or user might not have permission
-    // Silently skip - the agent will work without skill selection
-  }
-}
 
 /// Update MCP status indicators based on capabilities.
 function updateMcpStatus(capabilities) {
@@ -10005,7 +10351,13 @@ async function main() {
     for (const pane of panes) pane.redraw();
   });
   el("ask").addEventListener("click", ask);
+  el("analyzePinned").addEventListener("click", analyzePinnedSkills);
   el("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
+  el("skillsList").addEventListener("click", (e) => {
+    const btn = e.target.closest(".skill-run");
+    if (!btn) return;
+    analyzeWithSkill(btn.dataset.skillId, btn.dataset.skillName);
+  });
   // A toggle rather than a one-shot: the follow-up question is the common case,
   // and re-pressing a button before every message is a habit users drop.
   el("attachChart").addEventListener("click", () => {
@@ -10989,49 +11341,52 @@ async function deleteWorkspace() {
 // Skills management
 // -----------------------------------------------------------
 
-/// Load all skills and render them in the skills list.
+/// Load all skills, fill the Thesis pin list, and render the Skills library
+/// with an Analyze-on-chart action per skill.
 async function loadSkills() {
   try {
     const skills = await api("/skills");
-    
     const list = el("skillsList");
     if (!skills || skills.length === 0) {
-      list.innerHTML = '<p class="empty">No skills yet. Create one in the Skills tab!</p>';
-      return;
+      if (list) list.innerHTML = '<p class="empty">No skills yet. Create one above, then Analyze on chart.</p>';
+      updateSkillDropdown([]);
+      return [];
     }
-    
-    // Group skills by name, show latest version
+
     const latest = new Map();
-    skills.forEach(s => {
+    skills.forEach((s) => {
       const key = s.name;
       const existing = latest.get(key);
-      if (!existing || s.version > existing.version) {
-        latest.set(key, s);
-      }
+      if (!existing || s.version > existing.version) latest.set(key, s);
     });
-    
-    if (latest.size === 0) {
-      list.innerHTML = '<p class="empty">No skills yet. Create one in the Skills tab!</p>';
-      return;
+
+    if (list) {
+      let html = '<div class="skills-list">';
+      for (const skill of latest.values()) {
+        html += `<div class="ws-item skill-row">
+          <strong>${escapeHtml(skill.name)}</strong>
+          <span class="muted">v${escapeHtml(skill.version)}</span>
+          <span class="skills-info">
+            <span class="muted">${escapeHtml(skill.category || "uncategorized")}</span>
+          </span>
+          <button type="button" class="skill-run primary"
+                  data-skill-id="${escapeHtml(skill.id)}"
+                  data-skill-name="${escapeHtml(skill.name)}"
+                  title="Pin this skill, attach the open chart, and have the agent draw what it finds">
+            Analyze on chart
+          </button>
+        </div>`;
+      }
+      html += "</div>";
+      list.innerHTML = html;
     }
-    
-    let html = '<div class="skills-list">';
-    for (const skill of latest.values()) {
-      html += `<div class="ws-item">
-        <strong>${escapeHtml(skill.name)}</strong>
-        <span class="muted">v${skill.version}</span>
-        <span class="skills-info">
-          <span class="muted">${escapeHtml(skill.category || 'uncategorized')}</span>
-        </span>
-      </div>`;
-    }
-    html += '</div>';
-    list.innerHTML = html;
-    
-    // Also update the skill dropdown in composer
+
     updateSkillDropdown(skills);
+    return skills;
   } catch (e) {
-    el("skillsList").innerHTML = `<p class="error">Failed to load skills: ${escapeHtml(e.message)}</p>`;
+    const list = el("skillsList");
+    if (list) list.innerHTML = `<p class="error">Failed to load skills: ${escapeHtml(e.message)}</p>`;
+    return [];
   }
 }
 
@@ -11039,29 +11394,27 @@ async function loadSkills() {
 function updateSkillDropdown(skills) {
   const select = el("skillSelect");
   if (!select) return;
-  
-  // Keep the first "No skill" option
+
+  const pinned = [...select.selectedOptions].map((o) => o.value).filter(Boolean);
   const defaultOption = select.querySelector("option:first-child");
   select.innerHTML = "";
   if (defaultOption) select.appendChild(defaultOption);
-  
+
   if (!skills || skills.length === 0) {
     select.hidden = true;
     return;
   }
-  
-  // Add skills
-  skills.forEach(s => {
+
+  skills.forEach((s) => {
     const option = document.createElement("option");
     option.value = s.id;
     option.textContent = `${s.name} v${s.version}`;
-    if (s.category) {
-      option.textContent += ` (${s.category})`;
-    }
+    if (s.category) option.textContent += ` (${s.category})`;
+    option.selected = pinned.includes(s.id);
     select.appendChild(option);
   });
-  
-  select.hidden = false;
+
+  select.hidden = !!authorMode;
 }
 
 /// Methodology starter templates for the skill form. Selecting one fills the
@@ -11169,6 +11522,11 @@ async function createSkill() {
   }
   
   const rules = rulesInput.split("\n").map(r => r.trim()).filter(r => r);
+  if (!rules.some((r) => r.toUpperCase().startsWith("DRAW"))) {
+    rules.push(
+      "DRAW each identified zone as a rect, structure as trendlines, levels as hlines, and the setup as position_long or position_short. Anchors from get_candles time_ms (milliseconds), never the nanosecond field t."
+    );
+  }
   const timeframes = timeframesInput.split(",").map(t => t.trim()).filter(t => t);
   const markets = marketsInput.split(",").map(m => m.trim()).filter(m => m);
   const maxRisk = maxRiskInput ? parseFloat(maxRiskInput) : 1.0;
@@ -11207,7 +11565,11 @@ async function createSkill() {
       body: JSON.stringify(skillDoc)
     });
     
-    showSkillMessage(`Skill created! ${created.id ? 'ID: ' + created.id : ''}`);
+    showSkillMessage(
+      created.id
+        ? "Skill created — analyzing the open chart and drawing what it finds…"
+        : "Skill created."
+    );
     el("skillName").value = "";
     el("skillCategory").value = "";
     el("skillKnowledge").value = "";
@@ -11216,8 +11578,9 @@ async function createSkill() {
     el("skillMarkets").value = "";
     el("skillMaxRisk").value = "";
     el("skillTemplate").value = "";
-    
+
     await loadSkills();
+    if (created.id) await analyzeWithSkill(created.id, name);
   } catch (e) {
     showSkillMessage(`Error creating skill: ${e.message}`);
   }

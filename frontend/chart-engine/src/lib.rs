@@ -176,12 +176,25 @@ mod abi {
         price_min: f64,
         price_max: f64,
         y: f64,
+        scale_kind: f64,
+        reference: f64,
     ) -> f64 {
+        // Raw f64s rather than an enum the ABI has no spelling for: 0.0 is
+        // linear, 1.0 log, 2.0 percent anchored at `reference` -- the shell
+        // reads both straight off the scene it is mapping against.
+        let scale = if scale_kind == 1.0 {
+            super::scene::ScaleMap::Log
+        } else if scale_kind == 2.0 && reference > 0.0 {
+            super::scene::ScaleMap::Percent(reference)
+        } else {
+            super::scene::ScaleMap::Linear
+        };
         super::scene::price_from_y(
             y,
             price_min,
             price_max,
             &super::Plot { x: 0.0, y: plot_y, w: 0.0, h: plot_h },
+            scale,
         )
     }
 

@@ -765,9 +765,13 @@
     flex: 0 0 auto; padding: 4px 9px; font-size: 11px; border-radius: 8px;
     color: var(--muted); white-space: nowrap; cursor: pointer;
     background: var(--panel-2); border: 1px solid var(--line);
+    max-width: 200px;
   }
   #skillSelect option { background: var(--bg); }
   #skillSelect:hover { color: var(--text); }
+  #skillPinRow { flex-wrap: wrap; }
+  #skillPinRow #question { flex: 1; min-width: 140px; }
+  #analyzePinned { flex: 0 0 auto; }
   /* MCP status indicators */
   .mcp-badge {
     display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 10px; margin-right: 6px;
@@ -802,6 +806,8 @@
   .ws-item:hover { border-color: var(--accent); }
   .ws-item strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ws-item .up { color: var(--up); }
+  .ws-item.skill-row { cursor: default; flex-wrap: wrap; }
+  .ws-item .skill-run { flex: 0 0 auto; padding: 4px 10px; font-size: 11px; cursor: pointer; }
 
   /* Collapsible history bars above the stream, so the composer keeps the
      bottom of the pane to itself. */
@@ -1294,6 +1300,16 @@
           button or by a client with no UI at all.
         -->
         <button class="fit" title="Show the whole series again (all the bars, and a price axis fitted to them)">Fit</button>
+        <!--
+          TradingView's scale toggle. Log maps equal *ratios* to equal pixels,
+          so a 10% move reads the same at any price level -- the honest axis
+          for a long-range chart. The mapping itself is the engine's
+          (`price_to_y` over logarithms); this button only flips the request
+          knob, and the scene echoes the scale back so the shell's own
+          crosshair readout inverts through the same curve.
+        -->
+        <button class="logScale" aria-pressed="false" title="Logarithmic price scale: equal percentage moves are equal pixels">Log</button>
+        <button class="pctScale" aria-pressed="false" title="Percentage price scale: the axis reads % change from the first visible bar's close">%</button>
         <button class="load">Reload</button>
         <!--
           Whether live candles are arriving, and the evidence for the answer: the
@@ -1405,13 +1421,22 @@
     <div class="pane" id="pane-thesis">
       <!-- Author mode (docs/47): the composer becomes the skill interview. -->
       <div id="authorBanner" class="row" hidden style="gap:8px; align-items:center; margin-bottom:6px;">
-        <span class="muted">✦ Authoring a skill — describe the pattern, answer the interview; it saves to your library.</span>
+        <span class="muted">✦ Authoring a skill — describe the pattern, answer the interview; it saves to your library, then runs on this chart.</span>
         <button id="authorExit" type="button">Exit authoring</button>
       </div>
-      <div class="row">
+      <div class="row" id="skillPinRow" style="align-items:flex-start;">
+        <select id="skillSelect" class="aiChip modelChip" multiple size="3"
+                title="Pin one or more skills — the agent applies them to this chart and draws what they find. Ctrl/⌘-click to stack.">
+          <option value="">No skill (auto)</option>
+        </select>
         <input id="question" placeholder="find me a long setup using my liquidity-sweep skill" />
+        <button id="analyzePinned" type="button"
+                title="Run the pinned skill on this chart and draw the patterns it finds">Analyze chart</button>
         <button id="ask" class="primary">Ask</button>
       </div>
+      <p class="muted" id="skillHint" style="margin:4px 0 8px; font-size:11px;">
+        Pin a skill (or create one in Skills), then Analyze chart. The agent uses that methodology on the open chart and draws zones, lines, and setup markers for you.
+      </p>
       <!--
         Attaching the chart is a *mode*, not a one-shot action. It stays on until
         it is switched off, because the question that follows is usually a
@@ -1426,7 +1451,7 @@
         </button>
         <span id="attachNote" class="muted"></span>
       </div>
-      <div id="thesis"><p class="empty">Ask a question. The thesis's own levels are drawn on the chart.</p></div>
+      <div id="thesis"><p class="empty">Pin a skill and Analyze chart — the agent applies it here and draws the patterns it finds.</p></div>
     </div>
 
     <!--
@@ -1556,8 +1581,11 @@
     <div class="pane" id="pane-skills" hidden>
       <h2>Your Skills</h2>
       <p class="muted">
-        Skills are your trading methodologies - rules, timeframes, risk parameters
-        that tell the AI agent how to trade. Create skills to codify your strategy.
+        A skill is the way you read a chart — the patterns you hunt, the zones you
+        mark, the lines you would draw by hand. Define it once. The agent applies
+        it to the open chart and draws the result with the same tools (rects,
+        trendlines, levels, fibs, position boxes) so you do not have to sit on
+        the chart doing that work yourself.
       </p>
       
       <h3 class="section">Create a new skill</h3>
@@ -1732,10 +1760,6 @@
 
         <div class="chat-composer">
           <button type="button" id="aiModelChip" class="aiChip modelChip" title="Which AI model answers your chats — change it in the AI Model tab">◇ Platform model</button>
-          <select id="skillSelect" class="aiChip modelChip" multiple size="3"
-                  title="Pin one or more skills whose methodologies to apply — Ctrl/⌘-click to stack them; the AI follows them all">
-            <option value="">No skill (auto)</option>
-          </select>
           <button type="button" id="wsChatAttach" class="chat-send" title="Attach a chart screenshot — the AI will read the indicator off it" style="flex:0 0 auto">📎</button>
           <input type="file" id="wsChatImage" accept="image/png,image/jpeg,image/webp" multiple hidden>
           <textarea id="wsChatInput" rows="1" placeholder="Ask for an indicator… or attach a screenshot to copy"></textarea>

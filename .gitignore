@@ -65,3 +65,10 @@ reports/*-soak.log
 # Local agent harness state (same class as .workbuddy-ai/ and .superpowers/).
 .agents/
 .commandcode/
+
+# Local tooling/runtime artifacts (never commit)
+.chrome-profile/
+.pgsql/
+.freebuff/
+_ctmp/
+.cargo-tmp/

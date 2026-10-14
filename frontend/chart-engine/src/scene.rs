@@ -183,6 +183,10 @@ pub struct Request {
     /// ABI check found it.
     #[serde(default = "default_lines")]
     pub lines: Vec<String>,
+    /// How the price axis maps values to pixels. Absent means linear, which
+    /// keeps every pre-scale request byte-identical.
+    #[serde(default)]
+    pub price_scale: PriceScale,
     /// Which edge the overlay volume profile grows from. Absent means the
     /// right edge, which is where every existing caller's profile already
     /// sits -- the same reason `lines` defaults rather than demands.
@@ -397,6 +401,7 @@ impl Default for Request {
             footprint_trades: 0,
             lines: default_lines(),
             profile_anchor: ProfileAnchor::default(),
+            price_scale: PriceScale::Linear,
             zones: false,
             concepts: Vec::new(),
             viewport: crate::viewport::Viewport::default(),
@@ -829,6 +834,13 @@ pub struct Scene {
     pub price_min: f64,
     /// Highest price shown.
     pub price_max: f64,
+    /// The scale the price axis maps through. Reported so the shell's own
+    /// inverse-mapping calls (the crosshair's price tag) can take the same
+    /// one, instead of assuming linear and disagreeing under log.
+    pub scale: PriceScale,
+    /// The percent scale's zero: the first visible bar's close. Echoed so the
+    /// shell's inverse-mapping calls anchor where the axis anchored.
+    pub ref_price: f64,
     /// First visible candle's open time.
     pub from: i64,
     /// One past the last visible candle's close time.
@@ -1126,8 +1138,82 @@ fn snap_anchor(anchor: Anchor, plot: &Plot, points: &[SnapPoint]) -> Anchor {
     }
 }
 
+/// How the price axis maps values to pixels (TradingView's scale toggle).
+///
+/// The mapping functions take this as a parameter rather than the scene
+/// carrying it implicitly, so the *test* call sites say out loud which scale
+/// they exercise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PriceScale {
+    /// Equal price steps are equal pixels.
+    #[default]
+    Linear,
+    /// Equal *ratios* are equal pixels: a 10% move reads the same at any
+    /// price level, which is the only honest way to read a long-range chart.
+    Log,
+    /// Percentage of the window's first visible close (TradingView's percent
+    /// scale): equal *percentages* are equal pixels, anchored at zero.
+    Percent,
+}
+
+/// The mapping a scene actually draws with: the request's [`PriceScale`] plus
+/// the one value a percent scale needs and a request cannot know -- the
+/// reference price, the window's first visible close, resolved while the
+/// window is in hand. Baked here so every call site maps identically and none
+/// of them has to carry the reference around.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ScaleMap {
+    Linear,
+    Log,
+    /// Zero is the reference price.
+    Percent(f64),
+}
+
+impl ScaleMap {
+    /// The request knob plus the reference a percent scale anchors to.
+    fn from_request(scale: PriceScale, reference: f64) -> Self {
+        match scale {
+            PriceScale::Linear => ScaleMap::Linear,
+            PriceScale::Log => ScaleMap::Log,
+            // A reference at or below zero cannot anchor a percentage; the
+            // linear fallback keeps a degenerate input drawable.
+            PriceScale::Percent if reference > 0.0 => ScaleMap::Percent(reference),
+            PriceScale::Percent => ScaleMap::Linear,
+        }
+    }
+}
+
 /// Map a price into canvas y, given the range and the plot.
-pub(crate) fn price_to_y(price: f64, price_min: f64, price_max: f64, plot: &Plot) -> f64 {
+///
+/// Log scale is linear mapping over the logarithms: transforming the three
+/// inputs upstream of the one mapping keeps every caller on the same
+/// arithmetic, and keeps the inverse in [`price_from_y`] the exact mirror.
+/// Prices at or below zero have no logarithm; they cannot occur in market
+/// data, and the linear fallback keeps a degenerate input drawable rather
+/// than NaN.
+pub(crate) fn price_to_y(
+    price: f64,
+    price_min: f64,
+    price_max: f64,
+    plot: &Plot,
+    scale: ScaleMap,
+) -> f64 {
+    let (price, price_min, price_max) = match scale {
+        ScaleMap::Log if price_min > 0.0 => (
+            price.max(f64::MIN_POSITIVE).ln(),
+            price_min.ln(),
+            price_max.ln(),
+        ),
+        // A percentage is an affine change of units: transform the triple and
+        // the linear mapping below draws it.
+        ScaleMap::Percent(reference) => (
+            100.0 * (price - reference) / reference,
+            100.0 * (price_min - reference) / reference,
+            100.0 * (price_max - reference) / reference,
+        ),
+        _ => (price, price_min, price_max),
+    };
     let span = price_max - price_min;
     if span <= 0.0 {
         // A flat series: draw everything on the middle line rather than
@@ -1145,12 +1231,31 @@ pub(crate) fn price_to_y(price: f64, price_min: f64, price_max: f64, plot: &Plot
 /// lands on this. Mirrors [`Frame::price_at`] exactly: a flat span collapses
 /// to the one price the range still knows, and a zero-height plot does the
 /// same rather than dividing by zero.
-pub(crate) fn price_from_y(y: f64, price_min: f64, price_max: f64, plot: &Plot) -> f64 {
+pub(crate) fn price_from_y(
+    y: f64,
+    price_min: f64,
+    price_max: f64,
+    plot: &Plot,
+    scale: ScaleMap,
+) -> f64 {
     if plot.h <= 0.0 {
         return price_max;
     }
     let fraction = (y - plot.y) / plot.h;
-    price_max - fraction * (price_max - price_min)
+    match scale {
+        ScaleMap::Log if price_min > 0.0 => {
+            (price_max.ln() - fraction * (price_max.ln() - price_min.ln())).exp()
+        }
+        // The inverse of the affine change above, so the crosshair's price
+        // tag reads a price even while the axis reads percentages.
+        ScaleMap::Percent(reference) => {
+            let percent = 100.0 * (price_max - reference) / reference
+                - fraction * (100.0 * (price_max - reference) / reference
+                    - 100.0 * (price_min - reference) / reference);
+            reference * (1.0 + percent / 100.0)
+        }
+        _ => price_max - fraction * (price_max - price_min),
+    }
 }
 
 /// Choose a bucket size that yields a readable number of rows.
@@ -1248,6 +1353,8 @@ pub fn build(request: &Request) -> Scene {
         style: request.mode,
         price_min: 0.0,
         price_max: 0.0,
+        scale: request.price_scale,
+        ref_price: 0.0,
         from: 0,
         to: 0,
         viewport: crate::viewport::Viewport::default(),
@@ -1302,7 +1409,7 @@ pub fn build(request: &Request) -> Scene {
     // The range of what is visible *before* the gesture, because that is what a
     // price zoom starts from: it anchors on a price the user can actually see.
     let before = request.viewport.resolve(plotted.len());
-    let fitted = fitted_range(&plotted[before.from..before.end()]);
+    let fitted = fitted_range(&plotted[before.from..before.end().min(plotted.len())]);
 
     let viewport = match request.gesture {
         Some(gesture) => request.viewport.apply(gesture, plotted.len(), fitted),
@@ -1321,11 +1428,20 @@ pub fn build(request: &Request) -> Scene {
     };
     scene.viewport = window.as_viewport();
 
-    let visible = &plotted[window.from..window.end()];
+    // The window may extend past the last bar into the right margin
+    // (viewport.rs), so every slice of the series clamps at the series end --
+    // the margin is empty space the axis spans, not bars that exist.
+    let visible = &plotted[window.from..window.end().min(plotted.len())];
     if visible.is_empty() {
         scene.note = Some("no candles in this window".into());
         return scene;
     }
+
+    // The mapping everything below draws through. The percent scale's anchor
+    // is the first visible bar's close (TradingView's zero), resolved here --
+    // the one place the window is in hand -- so no call site carries it.
+    scene.ref_price = visible[0].close;
+    let scale_map = ScaleMap::from_request(request.price_scale, scene.ref_price);
 
     // The forecast cone (docs/35) is simulated now, before the price fit, so
     // its envelope can join the range the axis shows. From the REAL closes of
@@ -1334,7 +1450,7 @@ pub fn build(request: &Request) -> Scene {
     // the same promise the profile makes. The seed derives from the window's
     // identity, so the same view draws the same cone on every frame.
     let forecast = request.forecast.and_then(|req| {
-        let real = &request.candles[window.from..window.end()];
+        let real = &request.candles[window.from..window.end().min(request.candles.len())];
         let closes: Vec<f64> = real.iter().map(|candle| candle.close).collect();
         let seed = (window.from as u64)
             .wrapping_mul(0x1000_0000_01B3)
@@ -1402,18 +1518,23 @@ pub fn build(request: &Request) -> Scene {
     // the time-to-pixel invariant -- a candle's open time maps to its slot's
     // left edge -- holds across the extension.
     let future_slots = forecast.as_ref().map(|cone| cone.steps.len()).unwrap_or(0);
-    scene.to = last.open_time + width_nanos * (1 + future_slots as i64);
+    // `to` spans the window's slots, not the last real bar: with a right
+    // margin the axis keeps going into the empty space, and a time-to-pixel
+    // mapping that stopped at the last bar would disagree with the candles'
+    // x positions the moment the margin existed.
+    scene.to = first.open_time + width_nanos * (window.count + future_slots) as i64;
 
-    // The slot is `plot.w / (visible + future)`, so a candle keeps its width
-    // in *bars* and grows in pixels as the user zooms in. That is what
-    // zooming in means, and it is why the slot cannot be computed from the
-    // whole series.
-    let slot = plot.w / (visible.len() + future_slots) as f64;
+    // The slot is `plot.w / window width`, where the window width is the
+    // window's own `count` -- NOT `visible.len()`: past the right margin the
+    // visible slice shrinks while the window does not, and sizing from the
+    // slice would stretch the remaining candles to fill the plot, which is
+    // the margin vanishing at exactly the moment it was asked for.
+    let slot = plot.w / (window.count + future_slots) as f64;
     if request.mode.draws_bars() {
-        scene.candles = candle_bars(visible, slot, &plot, scene.price_min, scene.price_max);
+        scene.candles = candle_bars(visible, slot, &plot, scene.price_min, scene.price_max, scale_map);
     }
     if matches!(request.mode, Mode::Line | Mode::Area) {
-        scene.line = close_path(visible, slot, &plot, scene.price_min, scene.price_max);
+        scene.line = close_path(visible, slot, &plot, scene.price_min, scene.price_max, scale_map);
     }
 
     // The profile and the levels describe **what is on screen**, so they follow
@@ -1424,7 +1545,7 @@ pub fn build(request: &Request) -> Scene {
     //
     // Indexing `request.candles` with the window is sound because `plotted` is
     // the same length -- the Heikin-Ashi transform maps one candle to one candle.
-    let visible_real = &request.candles[window.from..window.end()];
+    let visible_real = &request.candles[window.from..window.end().min(request.candles.len())];
     let bucket_size = request
         .bucket_size
         .filter(|size| size.is_finite() && *size > 0.0)
@@ -1444,6 +1565,7 @@ pub fn build(request: &Request) -> Scene {
             scene.price_min,
             scene.price_max,
             request.profile_anchor,
+            scale_map,
         );
     }
 
@@ -1475,6 +1597,7 @@ pub fn build(request: &Request) -> Scene {
                     scene.price_min,
                     scene.price_max,
                     request.profile_anchor,
+                    scale_map,
                 );
                 scene.note = Some(
                     "no trades are stored for this window, so there is no ladder to draw. This is \
@@ -1570,6 +1693,7 @@ pub fn build(request: &Request) -> Scene {
         &plot,
         scene.price_min,
         scene.price_max,
+        scale_map,
     );
     // The zones keep the **whole** series, unlike the profile and the levels: a
     // zone that formed before the window is still a zone, and clipping it to the
@@ -1591,9 +1715,10 @@ pub fn build(request: &Request) -> Scene {
         // the bars its span actually covers. `first` is the window's oldest
         // candle, and a `Candle` carries its timeframe.
         bar_nanos: first.timeframe.nanos(),
+        scale: scale_map,
     };
     scene.regions = region_rects(request.zones, &concepts, &request.candles, &frame);
-    scene.ticks = ticks(&plot, scene.price_min, scene.price_max);
+    scene.ticks = ticks(&plot, scene.price_min, scene.price_max, scale_map);
 
     // The cone, positioned through the same frame as everything else
     // (docs/35). The anchor point is the last close at the last bar's
@@ -1654,7 +1779,7 @@ pub fn build(request: &Request) -> Scene {
             let close = visible[visible.len() - 1].close;
             scene.last_price = Some(LastPrice {
                 price,
-                y: price_to_y(price, scene.price_min, scene.price_max, &plot),
+                y: price_to_y(price, scene.price_min, scene.price_max, &plot, scale_map),
                 up: price >= close,
             });
         }
@@ -2248,6 +2373,7 @@ fn candle_bars(
     plot: &Plot,
     price_min: f64,
     price_max: f64,
+    scale: ScaleMap,
 ) -> Vec<Bar> {
     let body = (slot * BODY_FRACTION).max(1.0);
 
@@ -2256,15 +2382,15 @@ fn candle_bars(
         .enumerate()
         .map(|(index, candle)| {
             let centre = plot.x + slot * (index as f64 + 0.5);
-            let open_y = price_to_y(candle.open, price_min, price_max, plot);
-            let close_y = price_to_y(candle.close, price_min, price_max, plot);
+            let open_y = price_to_y(candle.open, price_min, price_max, plot, scale);
+            let close_y = price_to_y(candle.close, price_min, price_max, plot, scale);
             Bar {
                 x: centre - body / 2.0,
                 w: body,
                 body_top: open_y.min(close_y),
                 body_bottom: open_y.max(close_y),
-                wick_top: price_to_y(candle.high, price_min, price_max, plot),
-                wick_bottom: price_to_y(candle.low, price_min, price_max, plot),
+                wick_top: price_to_y(candle.high, price_min, price_max, plot, scale),
+                wick_bottom: price_to_y(candle.low, price_min, price_max, plot, scale),
                 open_y,
                 close_y,
                 up: candle.close >= candle.open,
@@ -2288,13 +2414,14 @@ fn close_path(
     plot: &Plot,
     price_min: f64,
     price_max: f64,
+    scale: ScaleMap,
 ) -> Vec<Point> {
     candles
         .iter()
         .enumerate()
         .map(|(index, candle)| Point {
             x: plot.x + slot * (index as f64 + 0.5),
-            y: price_to_y(candle.close, price_min, price_max, plot),
+            y: price_to_y(candle.close, price_min, price_max, plot, scale),
         })
         .collect()
 }
@@ -2305,6 +2432,7 @@ fn profile_bars(
     price_min: f64,
     price_max: f64,
     anchor: ProfileAnchor,
+    scale: ScaleMap,
 ) -> Vec<ProfileBar> {
     let peak = profile
         .histogram
@@ -2328,7 +2456,7 @@ fn profile_bars(
         .iter()
         .filter(|node| node.price_level >= price_min && node.price_level <= price_max)
         .map(|node| {
-            let y = price_to_y(node.price_level, price_min, price_max, plot);
+            let y = price_to_y(node.price_level, price_min, price_max, plot, scale);
             let w = node.volume / peak * PROFILE_WIDTH;
             let total = node.buy_volume + node.sell_volume;
             ProfileBar {
@@ -2365,6 +2493,7 @@ fn levels(
     plot: &Plot,
     price_min: f64,
     price_max: f64,
+    scale: ScaleMap,
 ) -> Vec<Level> {
     let mut out = Vec::new();
     let wanted = |name: &str| request.lines.iter().any(|line| line == name);
@@ -2372,7 +2501,7 @@ fn levels(
     if wanted("vwap") {
         if let Some(vwap) = calculate_vwap(candles) {
             out.push(Level {
-                y: price_to_y(vwap, price_min, price_max, plot),
+                y: price_to_y(vwap, price_min, price_max, plot, scale),
                 price: vwap,
                 kind: "vwap".into(),
             });
@@ -2386,7 +2515,7 @@ fn levels(
         ] {
             if wanted(name) {
                 out.push(Level {
-                    y: price_to_y(price, price_min, price_max, plot),
+                    y: price_to_y(price, price_min, price_max, plot, scale),
                     price,
                     kind: name.into(),
                 });
@@ -2445,12 +2574,15 @@ pub(crate) struct Frame {
     /// One candle's width, in nanoseconds: the series' own timeframe, so a
     /// measurement's bar count is the bars it spans and not a guess.
     pub(crate) bar_nanos: i64,
+    /// The price scale the frame maps through -- the scene's own, so a
+    /// drawing and a candle agree about where a price lands under log.
+    pub(crate) scale: ScaleMap,
 }
 
 impl Frame {
     /// A price's canvas y.
     fn y_at(&self, price: f64) -> f64 {
-        price_to_y(price, self.price_min, self.price_max, &self.plot)
+        price_to_y(price, self.price_min, self.price_max, &self.plot, self.scale)
     }
 
     /// A timestamp's canvas x, in **nanoseconds** -- what a candle or a region
@@ -3266,15 +3398,77 @@ fn shapes(
     parts
 }
 
-fn ticks(plot: &Plot, price_min: f64, price_max: f64) -> Vec<Tick> {
+fn ticks(plot: &Plot, price_min: f64, price_max: f64, scale: ScaleMap) -> Vec<Tick> {
+    if scale == ScaleMap::Log && price_min > 0.0 {
+        return log_ticks(plot, price_min, price_max);
+    }
+    if let ScaleMap::Percent(reference) = scale {
+        return percent_ticks(plot, price_min, price_max, reference);
+    }
     const COUNT: usize = 6;
     let step = (price_max - price_min) / COUNT as f64;
     (0..=COUNT)
         .map(|i| {
             let price = price_min + step * i as f64;
             Tick {
-                y: price_to_y(price, price_min, price_max, plot),
+                y: price_to_y(price, price_min, price_max, plot, scale),
                 price,
+            }
+        })
+        .collect()
+}
+
+/// Log-scale axis ticks: the 1/2/5 grid within each decade the range spans,
+/// which is the grid a log reader's eye already knows. A range too narrow to
+/// hold two grid points falls back to even spacing in log space -- the labels
+/// are then not round numbers, but the *gaps* staying equal is the property a
+/// log axis exists to show.
+fn log_ticks(plot: &Plot, price_min: f64, price_max: f64) -> Vec<Tick> {
+    let mut prices = Vec::new();
+    let mut decade = price_min.log10().floor();
+    while decade <= price_max.log10().ceil() {
+        for mult in [1.0_f64, 2.0, 5.0] {
+            let price = mult * 10f64.powf(decade);
+            if price >= price_min && price <= price_max {
+                prices.push(price);
+            }
+        }
+        decade += 1.0;
+    }
+    if prices.len() < 3 {
+        const COUNT: usize = 6;
+        prices = (0..=COUNT)
+            .map(|i| {
+                let fraction = i as f64 / COUNT as f64;
+                (price_min.ln() + fraction * (price_max.ln() - price_min.ln())).exp()
+            })
+            .collect();
+    }
+    prices
+        .into_iter()
+        .map(|price| Tick {
+            y: price_to_y(price, price_min, price_max, plot, ScaleMap::Log),
+            price,
+        })
+        .collect()
+}
+
+/// Percent-scale axis ticks: even steps over the percentage range, labelled
+/// with the percentage itself (TradingView's % axis). The *position* is the
+/// real price at that percentage, mapped through the percent scale, so the
+/// gridlines and the candles agree.
+fn percent_ticks(plot: &Plot, price_min: f64, price_max: f64, reference: f64) -> Vec<Tick> {
+    const COUNT: usize = 6;
+    let lo = 100.0 * (price_min - reference) / reference;
+    let hi = 100.0 * (price_max - reference) / reference;
+    let step = (hi - lo) / COUNT as f64;
+    (0..=COUNT)
+        .map(|i| {
+            let percent = lo + step * i as f64;
+            let price = reference * (1.0 + percent / 100.0);
+            Tick {
+                y: price_to_y(price, price_min, price_max, plot, ScaleMap::Percent(reference)),
+                price: percent,
             }
         })
         .collect()
@@ -3336,19 +3530,122 @@ mod tests {
     }
 
     #[test]
+    fn a_log_scale_maps_equal_ratios_to_equal_pixels() {
+        // The whole point of log: doubling reads as the same distance
+        // anywhere on the axis. 100->200 and 200->400 are both one doubling.
+        let plot = Plot { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let low = price_to_y(100.0, 50.0, 800.0, &plot, ScaleMap::Log);
+        let mid = price_to_y(200.0, 50.0, 800.0, &plot, ScaleMap::Log);
+        let high = price_to_y(400.0, 50.0, 800.0, &plot, ScaleMap::Log);
+        assert!((mid - low - (high - mid)).abs() < 1e-9, "{low} {mid} {high}");
+    }
+
+    #[test]
+    fn the_log_mapping_inverts_back_to_the_price() {
+        let plot = Plot { x: 0.0, y: 10.0, w: 100.0, h: 300.0 };
+        for price in [83_000.0, 0.42, 12_345.678] {
+            let y = price_to_y(price, 0.1, 100_000.0, &plot, ScaleMap::Log);
+            let back = price_from_y(y, 0.1, 100_000.0, &plot, ScaleMap::Log);
+            assert!((back - price).abs() / price < 1e-9, "{price} -> {back}");
+        }
+    }
+
+    #[test]
+    fn log_ticks_land_on_the_decade_grid() {
+        // A range spanning a decade gets the 1/2/5 grid a log reader's eye
+        // already knows, not evenly spaced prices in strange places.
+        let plot = Plot { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let got = ticks(&plot, 90.0, 9000.0, ScaleMap::Log);
+        let prices: Vec<f64> = got.iter().map(|tick| tick.price).collect();
+        assert!(prices.contains(&100.0), "{prices:?}");
+        assert!(prices.contains(&200.0), "{prices:?}");
+        assert!(prices.contains(&500.0), "{prices:?}");
+        assert!(prices.contains(&1000.0), "{prices:?}");
+        // Equal ratios are equal pixels on the axis too: 100->200 and
+        // 1000->2000 are both one doubling, so they land equally far apart.
+        let y_of = |p: f64| got.iter().find(|tick| tick.price == p).unwrap().y;
+        assert!((y_of(200.0) - y_of(100.0) - (y_of(2000.0) - y_of(1000.0))).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_percent_scale_is_linear_in_price_with_zero_at_the_reference() {
+        // Percent scale is an affine change of units (equal *percentage
+        // points* are equal pixels -- the ratio property is log's, not its),
+        // and its zero sits exactly at the reference price: that is the whole
+        // difference from a linear axis -- the anchor and the % labels.
+        let plot = Plot { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let map = ScaleMap::Percent(100.0);
+        let at = |p: f64| price_to_y(p, 80.0, 130.0, &plot, map);
+        assert!(((at(100.0) - at(110.0)) - (at(110.0) - at(120.0))).abs() < 1e-9);
+        // Zero percent -- the reference -- sits where the linear map puts it:
+        // the transform never moves the anchor itself.
+        let linear = price_to_y(100.0, 80.0, 130.0, &plot, ScaleMap::Linear);
+        assert!((at(100.0) - linear).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_percent_mapping_inverts_back_to_the_price() {
+        // The crosshair reads prices even while the axis reads percentages.
+        let plot = Plot { x: 0.0, y: 10.0, w: 100.0, h: 300.0 };
+        let map = ScaleMap::Percent(100.0);
+        for price in [95.5, 101.25, 128.75] {
+            let y = price_to_y(price, 80.0, 130.0, &plot, map);
+            let back = price_from_y(y, 80.0, 130.0, &plot, map);
+            assert!((back - price).abs() / price < 1e-9, "{price} -> {back}");
+        }
+    }
+
+    #[test]
+    fn percent_ticks_label_percentages() {
+        // The axis reads percentages (TradingView's % labels), with zero at
+        // the reference -- while the crosshair keeps reading prices.
+        let plot = Plot { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let got = ticks(&plot, 90.0, 110.0, ScaleMap::Percent(100.0));
+        assert!(got.iter().any(|tick| tick.price.abs() < 1e-6), "{got:?}");
+        assert!(got.iter().all(|tick| tick.price >= -10.0 && tick.price <= 10.0), "{got:?}");
+    }
+
+    #[test]
+    fn a_percent_request_reports_the_reference() {
+        // The shell's inverse-mapping calls anchor where the axis anchored,
+        // so the scene must say where that is: the first visible bar's close.
+        let scene = build(&Request {
+            candles: series(50),
+            price_scale: PriceScale::Percent,
+            ..Request::default()
+        });
+        assert_eq!(scene.scale, PriceScale::Percent);
+        assert!(scene.ref_price > 0.0, "ref_price={}", scene.ref_price);
+    }
+
+    #[test]
+    fn a_linear_request_reports_a_linear_scene() {
+        // The toggle is a request knob: the scene must echo the scale back so
+        // the shell's own inverse-mapping calls take the same one.
+        let scene = build(&Request { candles: series(50), ..Request::default() });
+        assert_eq!(scene.scale, PriceScale::Linear);
+        let scene = build(&Request {
+            candles: series(50),
+            price_scale: PriceScale::Log,
+            ..Request::default()
+        });
+        assert_eq!(scene.scale, PriceScale::Log);
+    }
+
+    #[test]
     fn price_from_y_inverts_price_to_y() {
         // docs/33: the crosshair's price tag is the inverse of the mapping
         // every candle already went through. Round-trips at the range's ends
         // and middle; a flat span collapses to the one price it knows.
         let plot = Plot { x: 8.0, y: 10.0, w: 400.0, h: 300.0 };
         for price in [95.0, 100.0, 105.0] {
-            let y = price_to_y(price, 95.0, 105.0, &plot);
-            let back = price_from_y(y, 95.0, 105.0, &plot);
+            let y = price_to_y(price, 95.0, 105.0, &plot, ScaleMap::Linear);
+            let back = price_from_y(y, 95.0, 105.0, &plot, ScaleMap::Linear);
             assert!((back - price).abs() < 1e-9, "{price} -> {y} -> {back}");
         }
-        assert_eq!(price_from_y(123.0, 100.0, 100.0, &plot), 100.0, "a flat range");
+        assert_eq!(price_from_y(123.0, 100.0, 100.0, &plot, ScaleMap::Linear), 100.0, "a flat range");
         assert_eq!(
-            price_from_y(123.0, 95.0, 105.0, &Plot { x: 0.0, y: 0.0, w: 1.0, h: 0.0 }),
+            price_from_y(123.0, 95.0, 105.0, &Plot { x: 0.0, y: 0.0, w: 1.0, h: 0.0 }, ScaleMap::Linear),
             105.0,
             "a zero-height plot cannot divide"
         );
@@ -4575,13 +4872,14 @@ mod tests {
             // What the scene *says* it is showing, resolved against the series it
             // was given -- the shell's next request, in other words.
             let reported = scene.viewport.resolve(500);
+            let margin = (reported.count as f64 * crate::viewport::RIGHT_MARGIN_FRACTION) as usize;
             assert!(
-                reported.end() <= 500,
-                "{from}/{count} ran past the series: {reported:?}"
+                reported.end() <= 500 + margin,
+                "{from}/{count} ran past the margin: {reported:?}"
             );
             assert_eq!(
                 scene.candles.len(),
-                reported.count,
+                (500_usize.saturating_sub(reported.from)).min(reported.count),
                 "{from}/{count}: the scene must draw what it says it is showing"
             );
         }
@@ -4821,7 +5119,7 @@ mod tests {
         // The price it resolved to is the one that lands there: the round trip
         // in one line, and the thing the shell is trusting the engine with.
         assert!(
-            (price_to_y(price, scene.price_min, scene.price_max, &scene.plot) - y1).abs() < 1e-6
+            (price_to_y(price, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear) - y1).abs() < 1e-6
         );
     }
 
@@ -4902,7 +5200,7 @@ mod tests {
             "and reaches its right edge, whatever x the user clicked"
         );
         assert!((y1 - y2).abs() < 1e-9, "and it is horizontal");
-        let expected = price_to_y(110.0, scene.price_min, scene.price_max, &scene.plot);
+        let expected = price_to_y(110.0, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear);
         assert!(
             (y1 - expected).abs() < 1e-6,
             "at the anchor's price: {y1} vs {expected}"
@@ -4931,7 +5229,7 @@ mod tests {
             .collect();
         assert_eq!(levels.len(), FIB_LEVELS.len());
 
-        let y_of = |price: f64| price_to_y(price, scene.price_min, scene.price_max, &scene.plot);
+        let y_of = |price: f64| price_to_y(price, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear);
         // Level 0 is the first anchor and level 1 is the second. Swapping those
         // two still draws a plausible Fibonacci, which is exactly why it is
         // asserted rather than eyeballed.
@@ -5484,6 +5782,7 @@ mod tests {
             price_max: scene.price_max,
             // Timeframe::M5 is what the test series itself carries.
             bar_nanos: analytics_core::types::Timeframe::M5.nanos(),
+        scale: ScaleMap::Linear,
         };
         for placed in &scene.overlays {
             assert!(
@@ -5892,7 +6191,7 @@ mod tests {
         assert!(pinned.explanation.contains("pinned by you"), "{}", pinned.explanation);
         // The geometry is the pinned band's: the top maps through the scene's
         // own scale, ABOVE the detected band's (a higher price, a smaller y).
-        let expected = price_to_y(zone.price_high + 3.0, scene.price_min, scene.price_max, &scene.plot);
+        let expected = price_to_y(zone.price_high + 3.0, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear);
         assert!((pinned.y_top - expected).abs() < 1e-9, "{} vs {expected}", pinned.y_top);
         // The wire carries the edge marker; a scene without it still parses.
         let json = serde_json::to_value(&indicator.zones).expect("serializes");
@@ -5950,7 +6249,7 @@ mod tests {
             .find(|z| z.start_time == zone.start_time)
             .expect("the zone is there");
         assert_eq!(untouched.pinned_edge, None);
-        let detected_top = price_to_y(zone.price_high, scene.price_min, scene.price_max, &scene.plot);
+        let detected_top = price_to_y(zone.price_high, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear);
         assert!(
             (untouched.y_top - detected_top).abs() < 1e-9,
             "the refused pin left the detected geometry alone"
@@ -5978,7 +6277,7 @@ mod tests {
         // The anchor is the last close at the last bar's center.
         let anchor = cone.bands[2].points[0];
         let last_close = series(120)[119].close;
-        let anchor_y = price_to_y(last_close, scene.price_min, scene.price_max, &scene.plot);
+        let anchor_y = price_to_y(last_close, scene.price_min, scene.price_max, &scene.plot, ScaleMap::Linear);
         assert!((anchor.y - anchor_y).abs() < 1e-9, "{} vs {anchor_y}", anchor.y);
         // Every step keeps the quantiles ordered: y grows downward, so the
         // 95% line never sits below the 5% line.

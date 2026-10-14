@@ -47,6 +47,29 @@ pub const MIN_BARS: usize = 10;
 /// [`fitted`]: Viewport::apply
 const MIN_PRICE_FRACTION: f64 = 1.0e-6;
 
+/// How much of the window's own fitted price span must stay on screen after a
+/// vertical pan.
+///
+/// An unbounded price drag can slide the visible range past the bars it
+/// frames until the chart shows empty space with no candles anywhere -- and
+/// nothing on the canvas says how to get back. TradingView's rule for the
+/// same gesture is that the data may run to the edge of the screen but never
+/// past it; this clamp is that rule. Fit and the axis double-click remain the
+/// explicit reset -- the clamp makes sure they are never *needed* to find the
+/// series again.
+const MIN_VISIBLE_PRICE_OVERLAP: f64 = 0.10;
+
+/// How much empty space the user may drag in past the newest bar, as a
+/// fraction of the window's own width.
+///
+/// TradingView's right margin: the live candle is not meant to sit glued to
+/// the price axis -- a little whitespace ahead of it is where the next bar
+/// will form, and where the eye expects it. The window's `from` may run this
+/// far past the last bar, and no further: past the margin the series would
+/// slide off the left edge entirely, which is the time-axis twin of the
+/// price clamp above.
+pub(crate) const RIGHT_MARGIN_FRACTION: f64 = 0.25;
+
 /// Largest factor a single gesture may apply.
 ///
 /// A client can send anything. This is the difference between a wheel tick and a
@@ -275,8 +298,14 @@ impl Viewport {
         // whole rather than padded with bars that are not there.
         let floor = MIN_BARS.min(total);
         let count = self.count.unwrap_or(total).clamp(floor, total);
+        // The window may hang past the newest bar by up to
+        // RIGHT_MARGIN_FRACTION of its own width -- TradingView's right
+        // margin. Slicing clamps at the series end, so the margin reads as
+        // empty space; the *window* still extends into it, which is what
+        // keeps the bars' width steady while the margin grows.
+        let margin = (count as f64 * RIGHT_MARGIN_FRACTION) as usize;
         Window {
-            from: self.from.min(total - count),
+            from: self.from.min(total - count + margin),
             count,
             total,
             price: self.price,
@@ -380,10 +409,30 @@ impl Viewport {
                     match self.price.unwrap_or(fitted) {
                         base if base.is_usable() => {
                             let shift = price * base.span();
-                            Some(PriceRange {
-                                min: base.min + shift,
-                                max: base.max + shift,
-                            })
+                            let mut min = base.min + shift;
+                            let mut max = base.max + shift;
+                            // The drag may carry the bars to the screen's edge
+                            // but not past it: keep at least
+                            // MIN_VISIBLE_PRICE_OVERLAP of the window's fitted
+                            // span in view, so the series is always where a
+                            // small drag back finds it. `fitted` is stable
+                            // across a vertical drag (a price pan never moves
+                            // the time window), so the clamp cannot fight the
+                            // gesture mid-drag.
+                            if fitted.is_usable() {
+                                let keep = fitted.span() * MIN_VISIBLE_PRICE_OVERLAP;
+                                if max < fitted.min + keep {
+                                    let deficit = fitted.min + keep - max;
+                                    min += deficit;
+                                    max += deficit;
+                                }
+                                if min > fitted.max - keep {
+                                    let excess = min - (fitted.max - keep);
+                                    min -= excess;
+                                    max -= excess;
+                                }
+                            }
+                            Some(PriceRange { min, max })
                         }
                         // A flat window has no price axis to move, so that half
                         // of the drag is dropped. The time half still happens:
@@ -493,15 +542,16 @@ mod tests {
     }
 
     #[test]
-    fn from_is_clamped_so_the_window_never_runs_past_the_end() {
+    fn from_is_clamped_so_the_window_stops_at_the_right_margin() {
         let viewport = Viewport {
             from: 9_999,
             count: Some(100),
             price: None,
         };
         let window = viewport.resolve(TOTAL);
-        assert_eq!(window.from, TOTAL - 100);
-        assert_eq!(window.end(), TOTAL);
+        let margin = (100.0 * RIGHT_MARGIN_FRACTION) as usize;
+        assert_eq!(window.from, TOTAL - 100 + margin);
+        assert_eq!(window.end(), TOTAL + margin);
     }
 
     #[test]
@@ -645,7 +695,63 @@ mod tests {
                 fitted(),
             )
             .resolve(TOTAL);
-        assert_eq!(forward.end(), TOTAL, "and past the newest bar stops there");
+        // Past the newest bar it stops at the margin, not at the bar: the
+        // right edge keeps a quarter-window of whitespace, TradingView-style.
+        let margin = (100.0 * RIGHT_MARGIN_FRACTION) as usize;
+        assert_eq!(
+            forward.end(),
+            TOTAL + margin,
+            "and past the newest bar it stops at the margin"
+        );
+    }
+
+    #[test]
+    fn a_price_pan_cannot_leave_the_series_visible() {
+        // The vertical half of the same rule: a drag may carry the bars to the
+        // screen's edge but never past it, or the chart shows empty space with
+        // no way back short of knowing about Fit.
+        let mut viewport = Viewport {
+            from: 0,
+            count: Some(100),
+            price: None,
+        };
+        for _ in 0..100 {
+            viewport = viewport.apply(
+                Gesture::Pan {
+                    time: 0.0,
+                    price: 5.0,
+                },
+                TOTAL,
+                fitted(),
+            );
+        }
+        let range = viewport.price.expect("a price drag sets the axis");
+        let keep = fitted().span() * MIN_VISIBLE_PRICE_OVERLAP;
+        assert!(
+            range.min <= fitted().max - keep,
+            "the series' top stays on screen no matter how far the drag runs"
+        );
+
+        let mut viewport = Viewport {
+            from: 0,
+            count: Some(100),
+            price: None,
+        };
+        for _ in 0..100 {
+            viewport = viewport.apply(
+                Gesture::Pan {
+                    time: 0.0,
+                    price: -5.0,
+                },
+                TOTAL,
+                fitted(),
+            );
+        }
+        let range = viewport.price.expect("a price drag sets the axis");
+        assert!(
+            range.max >= fitted().min + keep,
+            "and the series' bottom stays on screen dragging the other way"
+        );
     }
 
     #[test]
@@ -891,9 +997,10 @@ mod tests {
                             "{gesture:?} produced only {} bars",
                             window.count
                         );
+                        let margin = (window.count as f64 * RIGHT_MARGIN_FRACTION) as usize;
                         assert!(
-                            window.end() <= TOTAL,
-                            "{gesture:?} ran past the series: {window:?}"
+                            window.end() <= TOTAL + margin,
+                            "{gesture:?} ran past the margin: {window:?}"
                         );
                         if let Some(price) = viewport.price {
                             assert!(
@@ -941,7 +1048,9 @@ mod tests {
                 fitted(),
             )
             .resolve(TOTAL);
-        assert_eq!(forward.end(), TOTAL);
+        // Capped at the margin now: resolve() lets the window hang a
+        // quarter-width past the newest bar, and no further.
+        assert_eq!(forward.end(), TOTAL + (100.0 * RIGHT_MARGIN_FRACTION) as usize);
 
         let backward = viewport
             .apply(
