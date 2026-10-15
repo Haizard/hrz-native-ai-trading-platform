@@ -1176,6 +1176,64 @@
   .err, .bad { color: var(--down); }
   .warn { color: var(--warn); }
 
+
+  /* ---- Aside collapse (the watchlist rail's mirror) ---- */
+  #asideHide {
+    flex: none; padding: 6px 8px; font-size: 12px; color: var(--muted);
+    background: transparent; border-color: transparent; border-radius: 0;
+  }
+  #asideHide:hover { color: var(--text); background: var(--bg-overlay); }
+  aside.hideAside, #splitAside.hideAside { display: none; }
+  #asideShow {
+    position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 40;
+    height: 64px; width: 14px; padding: 0;
+    font-size: 10px; color: var(--muted); background: var(--bg-elev);
+    border: 1px solid var(--line); border-right: 0; border-radius: 6px 0 0 6px;
+    cursor: pointer;
+  }
+  #asideShow:hover { color: var(--text); border-color: var(--accent); }
+
+  /* ---- Motion: panes arrive, they do not pop ---- */
+  @keyframes paneIn {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: none; }
+  }
+  .pane:not([hidden]) { animation: paneIn 160ms ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    .pane:not([hidden]) { animation: none; }
+    * { transition-duration: 0.01ms !important; }
+  }
+
+  /* ---- Tabs: the active edge glides ---- */
+  .tabs button, .tab, [role="tab"] {
+    transition: color 120ms ease, border-color 160ms ease, background 120ms ease;
+  }
+  .tabs button[aria-selected="true"] {
+    color: var(--text); border-bottom: 2px solid var(--accent);
+  }
+
+  /* ---- Density: market rows read like a tape ---- */
+  #wlRows { font-variant-numeric: tabular-nums; }
+  #wlRows .wlRow, #wlRows > * {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border-subtle);
+    transition: background 100ms ease;
+  }
+  #wlRows .wlRow:hover, #wlRows > *:hover { background: var(--bg-overlay); }
+
+  /* ---- Skeleton: loading that respects the eye ---- */
+  @keyframes shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  .skeleton {
+    border-radius: var(--radius-s);
+    background: linear-gradient(90deg, var(--bg-elev) 25%, var(--bg-overlay) 50%, var(--bg-elev) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s linear infinite;
+    min-height: 12px;
+  }
+
   </style>
 </head>
 <body>
@@ -1576,6 +1634,7 @@
       <button role="tab" data-pane="book" aria-selected="false">Book</button>
       <button role="tab" data-pane="brokers" aria-selected="false">Brokers</button>
       <button role="tab" data-pane="aimodel" aria-selected="false">AI Model</button>
+      <button type="button" id="asideHide" title="Hide the side panel" aria-label="Hide the side panel">»</button>
     </div>
 
     <!--
@@ -2042,6 +2101,10 @@
       </div>
     </div>
   </aside>
+
+  <!-- The side panel's restore sliver: the mirror of the watchlist rail's,
+       hugging the screen's right edge only while the aside is hidden. -->
+  <button type="button" id="asideShow" hidden title="Show the side panel" aria-label="Show the side panel">«</button>
 </main>
 
 <!--

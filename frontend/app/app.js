@@ -10642,6 +10642,34 @@ el("authorChips").addEventListener("click", (event) => {
       railShow.hidden = false;
     }
   } catch { /* private mode: the rail just starts visible */ }
+  // The side panel: hide it, and bring it back -- the watchlist rail's mirror.
+  // Full-width charting is one click away, and the sliver keeps the panel one
+  // click from returning.
+  const aside = document.querySelector("aside");
+  const asideSplit = el("splitAside");
+  const asideShow = el("asideShow");
+  try {
+    if (localStorage.getItem("aside.hidden") === "1") {
+      aside.classList.add("hideAside");
+      asideSplit.classList.add("hideAside");
+      asideShow.hidden = false;
+    }
+  } catch { /* private mode: the panel just starts visible */ }
+  el("asideHide").addEventListener("click", () => {
+    aside.classList.add("hideAside");
+    asideSplit.classList.add("hideAside");
+    asideShow.hidden = false;
+    try { localStorage.setItem("aside.hidden", "1"); } catch { /* the drag still worked */ }
+    for (const pane of panes) pane.redraw();
+  });
+  asideShow.addEventListener("click", () => {
+    aside.classList.remove("hideAside");
+    asideSplit.classList.remove("hideAside");
+    asideShow.hidden = true;
+    try { localStorage.removeItem("aside.hidden"); } catch { /* as above */ }
+    for (const pane of panes) pane.redraw();
+  });
+
   document.getElementById("railHide").addEventListener("click", () => {
     rail.classList.add("hideRail");
     railSplit.classList.add("hideRail");
