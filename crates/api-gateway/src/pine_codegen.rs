@@ -154,7 +154,7 @@ Reply with ONE fenced code block tagged pine_lite containing the whole script. N
 9. `//` starts a comment.
 
 ## Built-in series (bare names)
-`open`, `high`, `low`, `close`, `volume`, `hl2`, `hlc3`, `ohlc4`, `bar_index`, `time`
+`open`, `high`, `low`, `close`, `volume`, `hl2`, `hlc3`, `ohlc4`, `bar_index`, `last_bar_index` (the window's final bar; the draw pass keys on it), `time`
 
 ## Functions (these are ALL of them; a function not listed here does not exist)
 Averages and oscillators: `ta.sma(source, length)`, `ta.ema(source, length)`, `ta.rma(source, length)`, `ta.wma(source, length)`, `ta.rsi(source, length)`, `ta.highest(source, length)`, `ta.lowest(source, length)`, `ta.mom(source, length)`, `ta.roc(source, length)`, `ta.change(source)`, `ta.atr(length)`, `ta.tr()`, `ta.vwap()`, `ta.stoch(source, length)` (returns 0..100).
@@ -276,7 +276,7 @@ Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `b
 
 ## SMC zones (order blocks, fair value gaps, breaker blocks): draw BOXES, never markers
 
-A zone is a price band with a birth bar, so the drawing is `box.new`: one box per LIVE zone, its right edge extended past the last bar (`bar_index + 10000`) so the canvas clips it at the plot edge -- TradingView's "extend to now" look. A `plotshape` triangle marks an EVENT (a CHoCH, a sweep, a BOS); it is never the drawing for a ZONE. An SMC indicator that renders zones as triangles or lines has failed the request.
+A zone is a price band with a birth bar, so the drawing is `box.new`: one box per LIVE zone, its right edge extended past the last bar (`bar_index + 10000`) so the canvas clips it at the plot edge -- TradingView's "extend to now" look. A `plotshape` triangle marks an EVENT (a CHoCH, a sweep, a BOS); it is never the drawing for a ZONE. Zones default to BOXES; when the request explicitly asks for zone LINES, the 'Zones drawn with LINES' section below is the law -- an SMC indicator that renders a zone as a trail of triangles or a price-following line has failed the request.
 
 The complete fair-value-gap idiom -- detection, mitigation, and the draw pass. A bullish FVG is a 3-candle gap: today's low above the high 2 bars back; the zone is the gap itself (top = low, bottom = high[2]), born at the pattern's first candle (`bar_index - 2`). It dies when a later bar's low trades through its bottom. Bearish mirrors it (high < low[2]; the zone is low[2]..high; it dies when a later high clears its top):
 
@@ -328,6 +328,65 @@ The rules that make it work:
 - Mark a dead zone by writing `na` into its edge array (`array.set(bull_bot, i, na)`) and guard every read with `not na(...)`.
 - Keep at most ~25 zones per side in the loops; the heap caps at 256 objects and older zones matter less.
 - An order block is the same shape with different detection: the LAST opposing candle before a displacement (for a bullish OB, the last down candle before a strong 2-3 bar rally); top/bottom are that candle's high/low, born at that candle's bar. A breaker block is an order block that failed and flipped side -- same box, other color.
+
+## Zones drawn with LINES (when the user asks for lines, not boxes)
+
+A zone drawn as a line is a HORIZONTAL line at a FIXED price, born at the zone's birth bar:
+
+    line.new(birth_bar, zone_price, bar_index + 10000, zone_price, color=color.red, width=2)
+
+The two prices are the SAME number -- the line is a level, and a level does not move.
+
+The failure you must NOT produce: a "zone line" that follows price. That happens two ways, and both are banned:
+1. `plot(zone_level)` where `zone_level` is recomputed from the current bar every bar (`zone_level = ta.highest(high, 10)` or `zone_level := close * 1.002`). `plot()` connects the value at EVERY bar, so a level that is re-derived per bar renders as a wiggly line hugging price -- indistinguishable from a moving average, and useless as a zone. `plot()` is for CONTINUOUS series only (RSI, averages, momentum): a value that genuinely exists at every bar.
+2. `line.new(bar_index, ...)` at the top level or with today's bar as both anchors: a fresh tiny line stamped at each bar, crawling along with price.
+
+The architecture is the same state-then-draw pattern as boxes. Detection stamps the level ONCE (pivot confirmed, sweep taken, session ended) and pushes (price, birth_bar) into `var` arrays; the draw pass runs ONLY on `last_bar_index` and emits one anchored `line.new` per live level plus its `label.new`. A two-boundary zone (top + bottom) is two such lines with the label between them:
+
+    var zt = array.new()
+    var zb = array.new()
+    var zbar = array.new()
+    if sweep_confirmed
+        array.push(zt, zone_top)
+        array.push(zb, zone_bot)
+        array.push(zbar, bar_index - 2)
+    if bar_index == last_bar_index
+        nz_ = array.size(zt)
+        for i = 0 to 19
+            if i < nz_
+                t = array.get(zt, i)
+                b = array.get(zb, i)
+                if not na(t) and not na(b)
+                    line.new(array.get(zbar, i), t, bar_index + 10000, t, color=color.maroon, width=2)
+                    line.new(array.get(zbar, i), b, bar_index + 10000, b, color=color.maroon, width=2)
+                    label.new(array.get(zbar, i), (t + b) / 2, "zone", color=color.maroon)
+
+A level DIES by invalidation, not by expiring: sweep the live levels every bar (as the box idiom does) and write `na` into a dead level's array slot -- a level that price already traded through is not resistance any more.
+
+## Triangles are events, never zones
+
+`plotshape(cond, shape="triangleup", location_value=low)` stamps a glyph at EVERY bar where `cond` is true. That makes it a marker for an EVENT at one bar: a CHoCH, a sweep, a breakout, an entry. It is NEVER the drawing for a zone -- and a "triangle zone" (a trail of triangles under each bar while a zone condition holds, crawling along with price) is the same price-following failure in another costume. When the request says "zone", the output is a box or a pair of anchored horizontal lines, whatever marker vocabulary the request used. If a zone ALSO wants its break marked, mark the BREAK bar once, where the invalidation fires -- one triangle, one event.
+
+## Large indicator architecture (many concepts, one script)
+
+A big request ("liquidity sweeps + order blocks + FVGs + session levels, multi-timeframe, labeled") is several SELF-CONTAINED machines in one script, not one tangle. The rules:
+
+1. ONE CONCEPT = ONE MACHINE. Each concept owns its pooled reads, its `var` state (arrays or scalars), its detection, its mitigation sweep, its draw pass, its color family and its label prefix. Never share state arrays across concepts; a 15m FVG shift and a sweep are different events on different bars.
+2. SCRIPT LAYOUT, top to bottom: header -> inputs -> helper functions -> per-concept blocks (pooled reads if any, `var` state, detection, mitigation) -> the draw passes -> the `plot()/hline()/plotshape()` calls for continuous series and event markers, at the top level.
+3. EVERY ZONE IS LABELED. `label.new` at the zone's birth bar, at the zone's price, naming the concept -- "15m OB", "1h FVG", "Asia High", "Swept 81236". An unlabeled zone is an unexplained rectangle. Prefix with the timeframe when the script pools more than one.
+4. BUDGETS ARE TOTAL. The drawing heap caps at 256 objects ACROSS ALL CONCEPTS: cap each concept's live zones (~10-25, pop/shift the oldest), count lines and labels against the same heap, and keep mitigation loops bounded (`for i = 0 to 24` with `i < n` guards). The security pool caps at 8 keys; 2-3 timeframes x (time, high, low) fits.
+5. MATH STAYS SCALE-FREE. Thresholds in ATR, never absolute prices; destructure multi-value calls; never bracket a function result (assign first).
+6. ONE DRAW PASS PER CONCEPT, all inside `if bar_index == last_bar_index`. Detection and mitigation run on EVERY bar; drawing runs on the LAST bar only -- that is what keeps the heap at one object per zone per run.
+
+## Pre-flight checklist (run it BEFORE submit_script)
+
+- The FIRST line is the `//@pine_lite` header; `overlay=true` iff anything draws in price units.
+- Every zone is a birth-anchored box or a horizontal `line.new` from its birth bar -- NOT a `plot()` of a per-bar-recomputed level, NOT a trail of triangles, NOT a line stamped at `bar_index`.
+- `plot()` carries only continuous series; `plotshape/plotchar/plotarrow` mark one-bar events only.
+- Every zone has a `label.new` naming it (timeframe-prefixed when pooled).
+- Draw passes sit inside `if bar_index == last_bar_index`; detection and mitigation run every bar; dead zones are `na`-stamped and guarded.
+- Live zones per concept are capped; loops are bounded; the total object count respects the 256 heap.
+- Pivots are stamped at `bar_index - w`, the bar the swing happened, not the confirmation bar.
 
 ## Pattern detection WITHOUT arrays (there is no `a[i] = v` assignment)
 You cannot build lists or arrays -- not with brackets, not any other way. Track state with `var` scalars that persist across bars and reassign inside `if` blocks. The two idioms you need:
