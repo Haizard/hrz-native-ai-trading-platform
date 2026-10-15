@@ -1408,6 +1408,42 @@
   .chat-attach-menu .ico { font-size: 16px; }
   .chat-attach-menu b { display: block; font-size: 12px; font-weight: 600; color: var(--text); }
   .chat-attach-menu small { display: block; font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+
+  /* ================= COMPOSER TOOLBAR: textarea on top, buttons in a row ================= */
+  .chat-compose { display: flex; flex-direction: column; padding: 8px 10px 6px; }
+  .chat-toolbar { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+  .chat-toolbar-spacer { flex: 1; }
+  #chatAttach, #chatAgent, #chatModel, #chatSend {
+    position: static; width: 30px; height: 30px; padding: 0; border-radius: 8px;
+    display: grid; place-items: center; line-height: 1; flex: 0 0 auto;
+  }
+  #chatAgent, #chatModel { background: transparent; border-color: transparent; color: var(--muted); font-size: 14px; }
+  #chatAgent:hover, #chatModel:hover { background: var(--bg); border-color: var(--line); color: var(--text); }
+  #chatAgent.on, #chatModel.open, #chatAttach.open { background: var(--bg); border-color: var(--line); color: var(--accent); }
+  .chat-agent-label { font-size: 10.5px; color: var(--faint); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-agent-label.pinned { color: var(--accent); }
+  /* Menus anchor above the toolbar now */
+  .chat-attach-menu { bottom: 44px; }
+  #chatAgentMenu { max-height: 300px; overflow-y: auto; min-width: 280px; }
+  #chatAgentMenu button .check { margin-left: auto; color: var(--accent); font-size: 12px; }
+  /* The model card */
+  .chat-model-card {
+    position: absolute; right: 10px; bottom: 44px; z-index: 30;
+    width: 280px; background: var(--bg-overlay); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: var(--shadow-2); padding: 10px;
+  }
+  .chat-model-card h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+  .chat-model-card .cm-mode {
+    display: block; width: 100%; text-align: left; padding: 8px 10px;
+    background: none; border: 1px solid transparent; border-radius: 8px; margin-bottom: 4px;
+  }
+  .chat-model-card .cm-mode:hover { background: var(--bg); border-color: var(--line); }
+  .chat-model-card .cm-mode.on { border-color: var(--accent); background: var(--accent-dim); }
+  .chat-model-card .cm-mode b { display: block; font-size: 12px; color: var(--text); }
+  .chat-model-card .cm-mode small { display: block; font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+  #cmOwnFields { display: grid; gap: 6px; margin-top: 6px; }
+  #cmOwnFields[hidden] { display: none; }
+  #cmMsg { font-size: 11px; margin-top: 6px; min-height: 14px; }
   </style>
 </head>
 <body>
@@ -1825,14 +1861,34 @@
   <div class="chat-compose">
     <div id="chatChips" class="chat-chips" hidden></div>
     <textarea id="chatInput" rows="2" placeholder="Ask anything — analyze this chart, build an indicator, scan the market, create a strategy…"></textarea>
-    <button id="chatAttach" type="button" title="Attach an image or a document">＋</button>
-    <div id="chatAttachMenu" class="chat-attach-menu" hidden>
-      <button type="button" data-kind="image"><span class="ico">🖼</span><span><b>Image</b><small>A chart screenshot or pattern photo — up to 3 per message</small></span></button>
-      <button type="button" data-kind="doc"><span class="ico">📄</span><span><b>Document</b><small>PDF or text for the agent to read — one per message</small></span></button>
-    </div>
     <input type="file" id="chatFileImage" hidden multiple accept="image/png,image/jpeg,image/webp,image/gif" />
     <input type="file" id="chatFileDoc" hidden accept=".pdf,.txt,.md,.markdown,.log" />
-    <button id="chatSend" class="primary" type="button" title="Send (Enter)">➤</button>
+    <div class="chat-toolbar">
+      <button id="chatAttach" type="button" title="Attach an image or a document">＋</button>
+      <div id="chatAttachMenu" class="chat-attach-menu" hidden>
+        <button type="button" data-kind="image"><span class="ico">🖼</span><span><b>Image</b><small>A chart screenshot or pattern photo — up to 3 per message</small></span></button>
+        <button type="button" data-kind="doc"><span class="ico">📄</span><span><b>Document</b><small>PDF or text for the agent to read — one per message</small></span></button>
+      </div>
+      <button id="chatAgent" type="button" title="Choose which agent answers">◈</button>
+      <span id="chatAgentLabel" class="chat-agent-label">any</span>
+      <div id="chatAgentMenu" class="chat-attach-menu" hidden></div>
+      <span class="chat-toolbar-spacer"></span>
+      <button id="chatModel" type="button" title="Model settings">◇</button>
+      <div id="chatModelCard" class="chat-model-card" hidden>
+        <h4>Model</h4>
+        <button type="button" class="cm-mode" id="cmPlatform"><b>Platform model</b><small>The deployment's primary — nothing to set up</small></button>
+        <button type="button" class="cm-mode" id="cmOwn"><b>My own model</b><small>Your provider, your API key, your bill</small></button>
+        <div id="cmOwnFields" hidden>
+          <select id="cmProvider"></select>
+          <input id="cmModelId" placeholder="Model id" />
+          <input id="cmBaseUrl" placeholder="Base URL (custom only)" hidden />
+          <input id="cmKey" type="password" placeholder="API key" autocomplete="off" />
+          <button type="button" id="cmSave" class="primary">Save model</button>
+        </div>
+        <div id="cmMsg" class="muted"></div>
+      </div>
+      <button id="chatSend" class="primary" type="button" title="Send (Enter)">➤</button>
+    </div>
   </div>
 </div>
 <div class="pane" id="pane-thesis">

@@ -8097,6 +8097,96 @@ async function chatRunStrategy(description) {
   }
   el("chatStream").scrollTop = el("chatStream").scrollHeight;
 }
+
+/// ---------------------------------------------------------------------------
+/// The composer toolbar: agent picker and model card.
+///
+/// The agent menu pins a skill agent (the same pin the thesis composer
+/// reads); the model card remote-controls the AI Model pane's own fields
+/// and save path, so there is one source of truth for provider config.
+/// ---------------------------------------------------------------------------
+
+function chatAgentMenuPaint() {
+  const menu = el("chatAgentMenu");
+  const pinned = [...(el("skillSelect")?.selectedOptions || [])].map((o) => o.value).filter(Boolean);
+  const opts = [...(el("skillSelect")?.options || [])].filter((o) => o.value);
+  const rows = [`<button type="button" data-skill=""><span class="ico">✦</span><span><b>Any agent</b><small>The router picks from the request</small></span>${!pinned.length ? '<span class="check">✓</span>' : ""}</button>`];
+  for (const o of opts) {
+    const on = pinned.includes(o.value);
+    rows.push(`<button type="button" data-skill="${escapeHtml(o.value)}"><span class="ico">◈</span><span><b>${escapeHtml(o.textContent)}</b><small>Skill agent — governs the answer</small></span>${on ? '<span class="check">✓</span>' : ""}</button>`);
+  }
+  menu.innerHTML = rows.join("");
+}
+
+function chatAgentLabelPaint() {
+  const pinned = [...(el("skillSelect")?.selectedOptions || [])].filter((o) => o.value);
+  const label = el("chatAgentLabel");
+  if (!pinned.length) { label.textContent = "any"; label.classList.remove("pinned"); el("chatAgent").classList.remove("on"); return; }
+  label.textContent = pinned.length === 1 ? pinned[0].textContent : `${pinned.length} agents`;
+  label.classList.add("pinned");
+  el("chatAgent").classList.add("on");
+}
+
+function chatAgentMenuPick(skillId) {
+  const select = el("skillSelect");
+  if (select) for (const o of select.options) o.selected = !!skillId && o.value === skillId;
+  chatAgentLabelPaint();
+  chatAgentMenuPaint();
+}
+
+/// The model card mirrors the AI Model pane's fields and reuses its save.
+async function chatModelCardPaint() {
+  const select = el("cmProvider");
+  if (!select.options.length) {
+    for (const p of AI_PROVIDERS.filter((p) => p.id)) {
+      select.append(Object.assign(document.createElement("option"), { value: p.id, textContent: p.name }));
+    }
+  }
+  try {
+    const cfg = await api("/agent/provider-config");
+    const own = cfg && cfg.provider;
+    el("cmPlatform").classList.toggle("on", !own);
+    el("cmOwn").classList.toggle("on", !!own);
+    if (own) {
+      el("cmOwnFields").hidden = false;
+      select.value = cfg.provider;
+      el("cmModelId").value = cfg.model_id || "";
+      el("cmBaseUrl").value = cfg.base_url || "";
+      el("cmMsg").textContent = `using your ${cfg.provider} model`;
+    } else {
+      el("cmMsg").textContent = "using the platform primary";
+    }
+  } catch (e) {
+    // No stored config is the platform-mode state, not a failure.
+    el("cmPlatform").classList.toggle("on", e.code === "NO_PROVIDER_CONFIG");
+    el("cmOwn").classList.remove("on");
+    el("cmMsg").textContent = e.code === "NO_PROVIDER_CONFIG" ? "using the platform primary" : e.message;
+  }
+}
+
+function chatModelSyncProvider() {
+  const p = AI_PROVIDERS.find((x) => x.id === el("cmProvider").value);
+  el("cmBaseUrl").hidden = !(p && p.id === "openai-compat");
+  if (!el("cmModelId").value && p && p.models && p.models.length) el("cmModelId").placeholder = `e.g. ${p.models[0]}`;
+}
+
+async function chatModelSave() {
+  el("aiProvider").value = el("cmProvider").value;
+  el("aiModelId").value = el("cmModelId").value;
+  el("aiBaseUrl").value = el("cmBaseUrl").value;
+  el("aiKey").value = el("cmKey").value;
+  el("cmMsg").textContent = "saving…";
+  await saveAiModel();
+  el("cmMsg").textContent = el("aiMsg").textContent;
+  chatModelCardPaint();
+}
+
+async function chatModelUsePlatform() {
+  el("cmMsg").textContent = "removing…";
+  await clearAiModel();
+  el("cmMsg").textContent = el("aiMsg").textContent;
+  chatModelCardPaint();
+}
 /// ---------------------------------------------------------------------------
 /// The trade ticket (paper): practice orders on live prices.
 ///
@@ -11117,10 +11207,10 @@ el("authorChips").addEventListener("click", (event) => {
     el("chatAttach").classList.toggle("open", !menu.hidden);
   });
   document.addEventListener("click", (e) => {
-    const menu = el("chatAttachMenu");
-    if (!menu.hidden && !e.target.closest(".chat-compose")) {
-      menu.hidden = true;
-      el("chatAttach").classList.remove("open");
+    if (e.target.closest(".chat-compose")) return;
+    for (const [menuId, btnId] of [["chatAttachMenu", "chatAttach"], ["chatAgentMenu", "chatAgent"], ["chatModelCard", "chatModel"]]) {
+      const menu = el(menuId);
+      if (menu && !menu.hidden) { menu.hidden = true; el(btnId).classList.remove("open"); }
     }
   });
   el("chatAttachMenu").addEventListener("click", (e) => {
@@ -11135,6 +11225,34 @@ el("authorChips").addEventListener("click", (event) => {
     el("chatFileImage").value = "";
     if (files.length) await chatAttachFiles(files);
   });
+  el("chatAgent").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const menu = el("chatAgentMenu");
+    const opening = menu.hidden;
+    chatAgentMenuPaint();
+    menu.hidden = !opening;
+    el("chatAgent").classList.toggle("open", opening);
+  });
+  el("chatAgentMenu").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-skill]");
+    if (!btn) return;
+    chatAgentMenuPick(btn.dataset.skill || null);
+    el("chatAgentMenu").hidden = true;
+    el("chatAgent").classList.remove("open");
+  });
+  el("chatModel").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const card = el("chatModelCard");
+    const opening = card.hidden;
+    if (opening) chatModelCardPaint();
+    card.hidden = !opening;
+    el("chatModel").classList.toggle("open", opening);
+  });
+  el("cmPlatform").addEventListener("click", chatModelUsePlatform);
+  el("cmOwn").addEventListener("click", () => { el("cmOwnFields").hidden = false; chatModelSyncProvider(); });
+  el("cmProvider").addEventListener("change", chatModelSyncProvider);
+  el("cmSave").addEventListener("click", chatModelSave);
+  chatAgentLabelPaint();
   el("chatFileDoc").addEventListener("change", async () => {
     const files = [...el("chatFileDoc").files];
     el("chatFileDoc").value = "";
