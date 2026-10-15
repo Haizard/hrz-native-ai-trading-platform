@@ -8213,14 +8213,19 @@ async function chatModelCardPaint() {
       select.value = cfg.provider;
       el("cmModelId").value = cfg.model_id || "";
       el("cmBaseUrl").value = cfg.base_url || "";
+      const p = AI_PROVIDERS.find((x) => x.id === cfg.provider);
+      el("cmCurrent").innerHTML = `<b>${escapeHtml(p ? p.name : cfg.provider)}</b> · ${escapeHtml(cfg.model_id || "")}` +
+        `<span class="muted">key stored: ${cfg.has_key ? "yes" : "no"}${cfg.base_url ? ` · endpoint: ${escapeHtml(cfg.base_url)}` : ""}</span>`;
       el("cmMsg").textContent = `using your ${cfg.provider} model`;
     } else {
+      el("cmCurrent").innerHTML = "";
       el("cmMsg").textContent = "using the platform primary";
     }
   } catch (e) {
     // No stored config is the platform-mode state, not a failure.
     el("cmPlatform").classList.toggle("on", e.code === "NO_PROVIDER_CONFIG");
     el("cmOwn").classList.remove("on");
+    if (e.code === "NO_PROVIDER_CONFIG") el("cmCurrent").innerHTML = "";
     el("cmMsg").textContent = e.code === "NO_PROVIDER_CONFIG" ? "using the platform primary" : e.message;
   }
 }
@@ -8229,6 +8234,18 @@ function chatModelSyncProvider() {
   const p = AI_PROVIDERS.find((x) => x.id === el("cmProvider").value);
   el("cmBaseUrl").hidden = !(p && p.id === "openai-compat");
   if (!el("cmModelId").value && p && p.models && p.models.length) el("cmModelId").placeholder = `e.g. ${p.models[0]}`;
+  // The per-provider model suggestions, same as the retired pane's datalist.
+  const model = el("cmModelId");
+  model.setAttribute("list", "cmModelList");
+  let datalist = document.getElementById("cmModelList");
+  if (!datalist) {
+    datalist = Object.assign(document.createElement("datalist"), { id: "cmModelList" });
+    document.body.append(datalist);
+  }
+  datalist.innerHTML = "";
+  for (const id of p && p.models ? p.models : []) {
+    datalist.append(Object.assign(document.createElement("option"), { value: id }));
+  }
 }
 
 async function chatModelSave() {
@@ -10983,7 +11000,12 @@ async function main() {
   );
   // The model chip is a shortcut to the AI Model tab, where the choice lives.
   const modelChip = document.getElementById("aiModelChip");
-  if (modelChip) modelChip.addEventListener("click", () => selectPane("aimodel"));
+  if (modelChip) modelChip.addEventListener("click", () => {
+  selectPane("chat");
+  chatModelCardPaint();
+  el("chatModelCard").hidden = false;
+  el("chatModel").classList.add("open");
+});
   el("wsDelete").onclick = deleteWorkspace;
   el("wsBack").onclick = showWorkspaceList;
   el("wsChatSend").onclick = sendWorkspaceMessage;

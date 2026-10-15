@@ -1444,6 +1444,16 @@
   #cmOwnFields { display: grid; gap: 6px; margin-top: 6px; }
   #cmOwnFields[hidden] { display: none; }
   #cmMsg { font-size: 11px; margin-top: 6px; min-height: 14px; }
+
+  /* The model card's current-config line, mirroring the retired pane's. */
+  .cm-current {
+    font-size: 11px; color: var(--text-dim); line-height: 1.5;
+    border: 1px solid var(--border-subtle); border-radius: 7px;
+    padding: 6px 9px; margin-bottom: 8px;
+  }
+  .cm-current:empty { display: none; }
+  .cm-current b { color: var(--text); }
+  .cm-current .muted { display: block; font-size: 10.5px; }
   </style>
 </head>
 <body>
@@ -1844,7 +1854,7 @@
       
       <button role="tab" data-pane="book" aria-selected="false">Book</button>
       <button role="tab" data-pane="brokers" aria-selected="false">Brokers</button>
-      <button role="tab" data-pane="aimodel" aria-selected="false">AI Model</button>
+      
       <button role="tab" data-pane="trade" aria-selected="false">Trade</button>
       <button type="button" id="asideHide" title="Hide the side panel" aria-label="Hide the side panel">»</button>
     </div>
@@ -1876,6 +1886,7 @@
       <button id="chatModel" type="button" title="Model settings">⚙️</button>
       <div id="chatModelCard" class="chat-model-card" hidden>
         <h4>Model</h4>
+        <div id="cmCurrent" class="cm-current"></div>
         <button type="button" class="cm-mode" id="cmPlatform"><b>Platform model</b><small>The deployment's primary — nothing to set up</small></button>
         <button type="button" class="cm-mode" id="cmOwn"><b>My own model</b><small>Your provider, your API key, your bill</small></button>
         <div id="cmOwnFields" hidden>
