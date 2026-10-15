@@ -1777,8 +1777,8 @@
 
         <div class="chat-composer">
           <button type="button" id="aiModelChip" class="aiChip modelChip" title="Which AI model answers your chats — change it in the AI Model tab">◇ Platform model</button>
-          <button type="button" id="wsChatAttach" class="chat-send" title="Attach a chart screenshot — the AI will read the indicator off it" style="flex:0 0 auto">📎</button>
-          <input type="file" id="wsChatImage" accept="image/png,image/jpeg,image/webp" multiple hidden>
+          <button type="button" id="wsChatAttach" class="chat-send" title="Attach chart screenshots or a document (PDF/txt/md) describing the indicator — the AI reads both before it builds" style="flex:0 0 auto">📎</button>
+          <input type="file" id="wsChatImage" accept="image/png,image/jpeg,image/webp,.pdf,.txt,.md,.markdown,.text,.log" multiple hidden>
           <textarea id="wsChatInput" rows="1" placeholder="Ask for an indicator… or attach a screenshot to copy"></textarea>
           <button id="wsChatSend" class="chat-send primary" title="Send (Enter)">➤</button>
         </div>

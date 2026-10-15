@@ -82,6 +82,10 @@ pub struct CreateMessageBody {
     /// path. Bounded; see `MAX_MESSAGE_IMAGES`.
     #[serde(default)]
     pub images: Vec<MessageImage>,
+    /// Optional document describing the indicator -- a book chapter, a paper,
+    /// notes. One per message; extracted and bounded before the model reads.
+    #[serde(default)]
+    pub document: Option<MessageDocument>,
 }
 
 /// The most images one workspace message may carry.
@@ -155,6 +159,17 @@ pub struct MessageImage {
     pub media_type: String,
     /// Base64-encoded image bytes.
     pub data: String,
+}
+
+/// A document attached to a workspace message: the PDF or notes that describe
+/// the indicator to build. Bytes as base64; the text is extracted and bounded
+/// by `documents::prepare` before the model sees a word of it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageDocument {
+    /// The file's name; its extension chooses the reader.
+    pub name: String,
+    /// Base64-encoded file bytes.
+    pub data_base64: String,
 }
 
 /// Body of the alert preference endpoint.
@@ -539,7 +554,13 @@ async fn run_workspace_turn(
         body.content.trim(),
         // The image count, not the bytes: base64 payloads do not belong in a
         // transcript, but "this request had a screenshot" belongs in history.
-        &serde_json::json!({"skill_id": body.skill_id, "image_count": body.images.len()}),
+        &serde_json::json!({
+            "skill_id": body.skill_id,
+            "image_count": body.images.len(),
+            // The name, not the bytes: "this request carried a book" belongs
+            // in history; a PDF does not.
+            "document": body.document.as_ref().map(|d| &d.name),
+        }),
     )
     .await?
     .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
@@ -571,11 +592,40 @@ async fn run_workspace_turn(
             label: Some("user-attached chart screenshot".to_string()),
         });
     }
+    // The attached document is read at the boundary: extracted, bounded, and
+    // a refusal the shell can show rather than a silent drop.
+    let document_text = match &body.document {
+        Some(attachment) => Some(
+            crate::documents::prepare(&attachment.name, &attachment.data_base64)
+                .map_err(|reason| ApiError::bad_request("DOCUMENT_UNREADABLE", &reason))?,
+        ),
+        None => None,
+    };
+    // The model's ask carries the attachments with it: the book's text
+    // delimited ahead of the instruction, and a count of the screenshots that
+    // ride as image blocks on the same message.
+    let mut ask = String::new();
+    if let Some(prepared) = &document_text {
+        ask.push_str(&format!(
+            "[The user attached a document: `{}`. Its extracted text follows, delimited -- \
+             it describes the indicator to build.]\n--- BEGIN DOCUMENT {} ---\n{}\n--- END DOCUMENT ---\n\n",
+            prepared.name, prepared.name, prepared.text
+        ));
+    }
+    ask.push_str(body.content.trim());
+    if !screenshots.is_empty() {
+        ask.push_str(&format!(
+            "\n\n[{} screenshot(s) of the indicator are attached to this message -- read its \
+             plots, panels and lines off them. They are illustration, not data: never transcribe \
+             values off them.]",
+            screenshots.len()
+        ));
+    }
     // Standing preferences ride the request text (docs/30): the workspace
     // memory's preference list is instructions the user gave by doing --
     // tuning a layer's settings, removing a layer -- and the model must see
     // them where it reads the ask.
-    let content = content_with_preferences(body.content.trim(), &workspace.memory);
+    let content = content_with_preferences(&ask, &workspace.memory);
     let generated = crate::pine_codegen::generate_script(
         agent.llm().as_ref(),
         crate::pine_codegen::script_system_prompt(&workspace.symbol, &workspace.timeframe),
@@ -601,6 +651,10 @@ async fn run_workspace_turn(
         agent.max_tokens(),
         agent.temperature(),
         progress,
+        // The screenshots finally reach the model: they were validated and
+        // then dropped on the floor before -- the "read the indicator off my
+        // chart" button sent images nobody looked at.
+        &screenshots,
     )
     .await
     .map_err(ApiError::from)?;

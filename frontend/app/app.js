@@ -10263,11 +10263,19 @@ el("authorChips").addEventListener("click", (event) => {
   if (attachBtn && imageInput) {
     attachBtn.onclick = () => imageInput.click();
     imageInput.onchange = async () => {
-      const files = Array.from(imageInput.files || []).slice(0, 4);
+      const files = Array.from(imageInput.files || []);
       for (const file of files) {
+        const extension = (file.name.split(".").pop() || "").toLowerCase();
         try {
-          const shot = await readImageFile(file);
-          if (wsPendingImages.length < 4) wsPendingImages.push(shot);
+          if (WS_DOC_EXTS.includes(extension)) {
+            if (file.size > 20 * 1024 * 1024) { pageToast(`${file.name} is over the 20 MB attachment limit`); continue; }
+            const read = await readImageFile(file);
+            wsPendingDocument = { name: file.name, data_base64: read.data };
+          } else if (file.size > 4 * 1024 * 1024) {
+            pageToast(`${file.name} is over the 4 MB image limit`);
+          } else if (wsPendingImages.length < 4) {
+            wsPendingImages.push(await readImageFile(file));
+          }
         } catch {
           pageToast(`Could not read ${file.name}`);
         }
@@ -11163,6 +11171,10 @@ async function viewRevision(wsId, revId) {
   /// shape the chart-capture path already sends.
   let wsPendingImages = [];
 
+  /// The document pending attachment: the book/paper/notes describing the
+  /// indicator to build. One per message, like the server takes.
+  let wsPendingDocument = null;
+
   function readImageFile(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -11176,20 +11188,29 @@ async function viewRevision(wsId, revId) {
     });
   }
 
+  /// The extension lists mirror the server's readers -- a refusal the client
+  /// could have avoided is a bug in the client.
+  const WS_DOC_EXTS = ["pdf", "txt", "md", "markdown", "text", "log"];
+
   function renderPendingImages() {
     const row = el("wsImageRow");
-    if (!wsPendingImages.length) {
+    if (!wsPendingImages.length && !wsPendingDocument) {
       row.hidden = true;
       row.innerHTML = "";
       return;
     }
     row.hidden = false;
-    row.innerHTML = wsPendingImages
-      .map((img, i) => `<span>📎 ${escapeHtml(img.name || "screenshot")} <button type="button" data-idx="${i}" class="ws-img-remove" title="Remove">✕</button></span>`)
-      .join(" ");
+    row.innerHTML =
+      (wsPendingDocument
+        ? `<span>📕 ${escapeHtml(wsPendingDocument.name)} <button type="button" data-doc="1" class="ws-img-remove" title="Remove">✕</button></span> `
+        : "") +
+      wsPendingImages
+        .map((img, i) => `<span>📎 ${escapeHtml(img.name || "screenshot")} <button type="button" data-idx="${i}" class="ws-img-remove" title="Remove">✕</button></span>`)
+        .join(" ");
     row.querySelectorAll(".ws-img-remove").forEach((btn) => {
       btn.onclick = () => {
-        wsPendingImages.splice(Number(btn.dataset.idx), 1);
+        if (btn.dataset.doc) wsPendingDocument = null;
+        else wsPendingImages.splice(Number(btn.dataset.idx), 1);
         renderPendingImages();
       };
     });
@@ -11276,11 +11297,12 @@ async function viewRevision(wsId, revId) {
   /// exact payload the plain route returns; `error` carries the plain
   /// route's error body. A gateway without the route answers 404 before any
   /// SSE begins, and the call falls back to the plain POST.
-  async function streamWorkspaceMessage(content, images, signal) {
+  async function streamWorkspaceMessage(content, images, document, signal) {
     const headers = { "content-type": "application/json" };
     if (token()) headers.authorization = `Bearer ${token()}`;
+    const payload = { content, images, ...(document ? { document } : {}) };
     const response = await fetch(`/indicator-workspaces/${wsActiveId}/messages/stream`, {
-      method: "POST", headers, body: JSON.stringify({ content, images }), signal,
+      method: "POST", headers, body: JSON.stringify(payload), signal,
     });
     const contentType = response.headers.get("content-type") || "";
     if (!response.ok || !contentType.includes("text/event-stream")) {
@@ -11288,7 +11310,7 @@ async function viewRevision(wsId, revId) {
         return await api(`/indicator-workspaces/${wsActiveId}/messages`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ content, images }),
+          body: JSON.stringify(payload),
           signal,
         });
       }
@@ -11349,15 +11371,17 @@ async function viewRevision(wsId, revId) {
   }
   const input = el("wsChatInput");
   const content = input.value.trim();
-  if (!content && !wsPendingImages.length) return;
+  if (!content && !wsPendingImages.length && !wsPendingDocument) return;
   if (!content) {
-    el("wsChatMsg").textContent = "Describe what to build along with the screenshot.";
+    el("wsChatMsg").textContent = "Describe what to build along with the attachment.";
     return;
   }
   input.value = "";
   input.style.height = "auto";
   const images = wsPendingImages.map(({ media_type, data }) => ({ media_type, data }));
   wsPendingImages = [];
+  const document = wsPendingDocument;
+  wsPendingDocument = null;
   renderPendingImages();
   const msg = el("wsChatMsg");
   const sendBtn = el("wsChatSend");
@@ -11369,7 +11393,7 @@ async function viewRevision(wsId, revId) {
   try {
     // docs/36: stream the pipeline's real events while the turn runs; an old
     // gateway without the route falls back to the plain POST inside.
-    const resp = await streamWorkspaceMessage(content, images, wsGenAbort.signal);
+    const resp = await streamWorkspaceMessage(content, images, document, wsGenAbort.signal);
     // Show the revision info from the response before refreshing.
     if (resp && resp.revision) {
       msg.textContent = `Revision #${resp.revision.revision_number} created — attaching to chart…`;

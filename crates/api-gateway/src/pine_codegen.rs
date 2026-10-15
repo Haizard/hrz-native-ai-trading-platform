@@ -538,6 +538,7 @@ pub(crate) async fn generate_script(
     max_tokens: u32,
     temperature: f32,
     progress: Option<&futures::channel::mpsc::UnboundedSender<GenerationEvent>>,
+    images: &[ai_agent::chart_context::ChartScreenshot],
 ) -> Result<GeneratedScript, ai_agent::AgentError> {
     let description = match base_script {
         // Edit mode: the current script rides the first message, so "make the
@@ -548,9 +549,20 @@ pub(crate) async fn generate_script(
         ),
         None => user_request.to_string(),
     };
+    // Attached screenshots ride the first message as image blocks: the model
+    // reads the indicator's look off them (illustration, not data), and the
+    // repair loop re-sends them on every attempt so a correction never goes
+    // blind. The text says how many arrived, since the blocks carry no label.
+    let mut first_content = vec![ContentBlock::Text(description)];
+    for image in images {
+        first_content.push(ContentBlock::Image {
+            media_type: image.media_type.clone(),
+            data: image.data.clone(),
+        });
+    }
     let mut messages = vec![Message {
         role: Role::User,
-        content: vec![ContentBlock::Text(description)],
+        content: first_content,
     }];
     let tool = ToolSpec {
         name: "submit_script".to_string(),
@@ -1564,7 +1576,7 @@ mod tests {
             scripts: std::sync::Mutex::new(vec![bad.to_string(), good.to_string()]),
         };
         let (tx, rx) = futures::channel::mpsc::unbounded::<GenerationEvent>();
-        let generated = generate_script(&llm, "system".into(), "a plot", None, 4096, 0.2, Some(&tx))
+        let generated = generate_script(&llm, "system".into(), "a plot", None, 4096, 0.2, Some(&tx), &[])
             .await
             .expect("the second attempt passes");
         assert_eq!(generated.attempts, 2);
@@ -1597,7 +1609,7 @@ mod tests {
         let llm = ScriptedLlm {
             scripts: std::sync::Mutex::new(vec![good.to_string()]),
         };
-        let generated = generate_script(&llm, "system".into(), "a plot", None, 4096, 0.2, None)
+        let generated = generate_script(&llm, "system".into(), "a plot", None, 4096, 0.2, None, &[])
             .await
             .expect("one attempt");
         assert_eq!(generated.attempts, 1);
