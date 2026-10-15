@@ -1345,6 +1345,31 @@
   .tt-pos-row .pnl.down { color: var(--down); }
   .tt-close { padding: 2px 8px; font-size: 10px; }
 
+
+  /* ================= THE CHAT COMPOSER: docked, button inside ================= */
+  #pane-chat { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+  #pane-chat[hidden] { display: none; }
+  #pane-chat .chat-stream { flex: 1; min-height: 0; padding: 12px 12px 4px; }
+  .chat-compose {
+    position: relative; flex: 0 0 auto;
+    margin: 4px 12px 12px; padding: 8px 46px 8px 12px;
+    background: var(--bg-overlay); border: 1px solid var(--line); border-radius: 12px;
+    transition: border-color 120ms ease;
+  }
+  .chat-compose:focus-within { border-color: var(--accent); }
+  .chat-compose textarea {
+    width: 100%; min-height: 22px; max-height: 140px; resize: none;
+    background: transparent; border: 0; padding: 4px 2px;
+    font-family: inherit; font-size: 13px; line-height: 1.45; color: var(--text);
+  }
+  .chat-compose textarea:focus { outline: none; box-shadow: none; border-color: transparent; }
+  .chat-compose textarea:hover { border-color: transparent; }
+  /* The send button lives INSIDE the input frame, bottom-right. */
+  #chatSend {
+    position: absolute; right: 8px; bottom: 8px;
+    width: 30px; height: 30px; padding: 0; border-radius: 8px;
+    display: grid; place-items: center; font-size: 13px; line-height: 1;
+  }
   </style>
 </head>
 <body>
