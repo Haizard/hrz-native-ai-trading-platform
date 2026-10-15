@@ -7672,6 +7672,11 @@ async function askAuthor(question) {
 /// next analysis chat can use it.
 function applyAuthorFrame(payload) {
   authorHistory.push({ role: "assistant", text: payload.message });
+  // The skill agent's interview answers land in the chat too: in skill env
+  // the composer drove this interview, and the conversation belongs there.
+  if (typeof chatEnv !== "undefined" && chatEnv === "skill") {
+    chatBubble(escapeHtml(payload.message).split(/\n{2,}/).map((p) => `<p>${p}</p>`).join(""));
+  }
   asking = false;
   paintAsk();
   renderTranscript();
@@ -7960,8 +7965,39 @@ async function chatSend() {
   chatPendingImages = [];
   chatPendingDocument = null;
   renderChatChips();
-  el("question").value = question || "What do you see in the attachment?";
-  await ask();
+  const attachments = pendingAskAttachments;
+  pendingAskAttachments = null;
+  if (chatEnv === "any") {
+    pendingAskAttachments = attachments;
+    el("question").value = question || "What do you see in the attachment?";
+    await ask();
+    return;
+  }
+  // A picked environment owns the message: the user bubble lands here, the
+  // pipeline's report follows in its own bubble.
+  chatUserBubble(question || "(attachment)");
+  if (chatEnv === "indicator") {
+    await chatRunIndicator(question || "Build what the attachment shows", attachments);
+  } else if (chatEnv === "strategy") {
+    await chatRunStrategy(question);
+  } else if (chatEnv === "scan") {
+    // Plain words to the scanner's metric: the env has no router, so the
+    // obvious words pick the obvious measurement.
+    const q = question.toLowerCase();
+    const metric = /gainer|loser|mover|pump|dump|change|up most|down most/.test(q) ? "change_percent"
+      : /volatil|atr|range|choppy/.test(q) ? "atr_percent"
+      : /rsi|overbought|oversold/.test(q) ? "rsi" : null;
+    const timeframe = /\b(15m|5m|1m)\b/.test(q) ? (q.match(/\b(15m|5m|1m)\b/) || [])[1]
+      : /\b(4h|1h|1d)\b/.test(q) ? (q.match(/\b(4h|1h|1d)\b/) || [])[1] : null;
+    await chatRunScan(question, metric, timeframe);
+  } else if (chatEnv === "skill") {
+    if (!authorMode) enterAuthorMode();
+    el("question").value = question;
+    await ask();
+  } else if (chatEnv === "bot") {
+    el("question").value = "[The user is working with trading bots and live execution — answer in that context] " + question;
+    await ask();
+  }
 }
 
 
@@ -8024,7 +8060,7 @@ async function chatAttachFiles(files) {
 }
 /// The agent asked the studio to build an indicator. The build runs in the
 /// workspace pipeline; the report lands as a bubble here.
-async function chatRunIndicator(description) {
+async function chatRunIndicator(description, attachments) {
   const working = chatBubble(`<p>Building your indicator — drafting, validating, previewing…</p><div class="skl-line skeleton w70"></div><div class="skl-line skeleton w45"></div>`, "working");
   try {
     // A chat-scoped studio per symbol+timeframe: find it or create it.
@@ -8043,7 +8079,7 @@ async function chatRunIndicator(description) {
     const resp = await api(`/indicator-workspaces/${ws.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: description }),
+      body: JSON.stringify({ content: description, ...(attachments && attachments.images && attachments.images.length ? { images: attachments.images } : {}), ...(attachments && attachments.document ? { document: attachments.document } : {}) }),
     });
     // Attach the new revision to the chart, then report.
     if (resp && resp.assistant_message && resp.assistant_message.payload && resp.assistant_message.payload.source && activePane) {
@@ -8106,34 +8142,59 @@ async function chatRunStrategy(description) {
 /// and save path, so there is one source of truth for provider config.
 /// ---------------------------------------------------------------------------
 
+
+
+
+
+/// ---------------------------------------------------------------------------
+/// The environment agents: the picker chooses WHICH pipeline the chat is in.
+///
+/// "Any" leaves routing to the agent; a picked environment sends every
+/// message straight to that pipeline — the indicator studio, strategy
+/// generation, the skill-authoring interview, bot context, or the scanner.
+/// ---------------------------------------------------------------------------
+const CHAT_ENVS = [
+  { id: "any",       icon: "✦",  name: "Any agent",      desc: "The router picks the capability from your request" },
+  { id: "indicator", icon: "📊", name: "Indicator agent", desc: "Build and refine chart indicators — every message goes to the studio" },
+  { id: "strategy",  icon: "📈", name: "Strategy agent",  desc: "Create backtestable strategies from plain language" },
+  { id: "skill",     icon: "📚", name: "Skill agent",     desc: "Author a reusable skill through the interview" },
+  { id: "bot",       icon: "🤖", name: "Bot agent",       desc: "Ask about bots and live execution — answers in bot context" },
+  { id: "scan",      icon: "🔎", name: "Scan agent",      desc: "Rank the market by what you describe" },
+];
+let chatEnv = "any";
+
+function chatEnvOf(id) { return CHAT_ENVS.find((e) => e.id === id) || CHAT_ENVS[0]; }
+
 function chatAgentMenuPaint() {
   const menu = el("chatAgentMenu");
-  const pinned = [...(el("skillSelect")?.selectedOptions || [])].map((o) => o.value).filter(Boolean);
-  const opts = [...(el("skillSelect")?.options || [])].filter((o) => o.value);
-  const rows = [`<button type="button" data-skill=""><span class="ico">✦</span><span><b>Any agent</b><small>The router picks from the request</small></span>${!pinned.length ? '<span class="check">✓</span>' : ""}</button>`];
-  for (const o of opts) {
-    const on = pinned.includes(o.value);
-    rows.push(`<button type="button" data-skill="${escapeHtml(o.value)}"><span class="ico">◈</span><span><b>${escapeHtml(o.textContent)}</b><small>Skill agent — governs the answer</small></span>${on ? '<span class="check">✓</span>' : ""}</button>`);
-  }
-  menu.innerHTML = rows.join("");
+  menu.innerHTML = CHAT_ENVS.map((env) =>
+    `<button type="button" data-env="${env.id}"><span class="ico">${env.icon}</span><span><b>${env.name}</b><small>${env.desc}</small></span>${chatEnv === env.id ? '<span class="check">✓</span>' : ""}</button>`
+  ).join("");
 }
 
 function chatAgentLabelPaint() {
-  const pinned = [...(el("skillSelect")?.selectedOptions || [])].filter((o) => o.value);
+  const env = chatEnvOf(chatEnv);
   const label = el("chatAgentLabel");
-  if (!pinned.length) { label.textContent = "any"; label.classList.remove("pinned"); el("chatAgent").classList.remove("on"); return; }
-  label.textContent = pinned.length === 1 ? pinned[0].textContent : `${pinned.length} agents`;
-  label.classList.add("pinned");
-  el("chatAgent").classList.add("on");
+  el("chatAgent").textContent = env.icon;
+  if (chatEnv === "any") { label.textContent = "any"; label.classList.remove("pinned"); el("chatAgent").classList.remove("on"); }
+  else { label.textContent = env.name.replace(" agent", ""); label.classList.add("pinned"); el("chatAgent").classList.add("on"); }
 }
 
-function chatAgentMenuPick(skillId) {
-  const select = el("skillSelect");
-  if (select) for (const o of select.options) o.selected = !!skillId && o.value === skillId;
+function chatAgentMenuPick(envId) {
+  chatEnv = envId || "any";
   chatAgentLabelPaint();
   chatAgentMenuPaint();
 }
 
+/// A user bubble outside the transcript (pipeline-mode messages).
+function chatUserBubble(text) {
+  const stream = el("chatStream");
+  const row = document.createElement("div");
+  row.className = "msg user pipeline";
+  row.innerHTML = `<div class="avatar">🧑</div><div class="bubble"><p>${escapeHtml(text)}</p></div></div>`;
+  stream.appendChild(row);
+  stream.scrollTop = stream.scrollHeight;
+}
 /// The model card mirrors the AI Model pane's fields and reuses its save.
 async function chatModelCardPaint() {
   const select = el("cmProvider");
@@ -11234,9 +11295,9 @@ el("authorChips").addEventListener("click", (event) => {
     el("chatAgent").classList.toggle("open", opening);
   });
   el("chatAgentMenu").addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-skill]");
+    const btn = e.target.closest("[data-env]");
     if (!btn) return;
-    chatAgentMenuPick(btn.dataset.skill || null);
+    chatAgentMenuPick(btn.dataset.env || "any");
     el("chatAgentMenu").hidden = true;
     el("chatAgent").classList.remove("open");
   });
