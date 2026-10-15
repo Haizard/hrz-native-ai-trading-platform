@@ -146,6 +146,20 @@ impl std::fmt::Debug for dyn BacktestRunner {
     }
 }
 
+/// The chart window the user was looking at when they asked, in the units
+/// the tools already speak.
+#[derive(Debug, Clone)]
+pub struct ViewportWindow {
+    /// The chart's symbol; a viewport for BTCUSDT must not steer an ETHUSDT call.
+    pub symbol: String,
+    /// The chart's timeframe; the bar count only converts on a match.
+    pub timeframe: Timeframe,
+    /// Open time of the oldest visible bar, unix nanoseconds.
+    pub from_ns: i64,
+    /// Open time of the newest visible bar, unix nanoseconds.
+    pub to_ns: i64,
+}
+
 /// Everything a tool needs in order to run.
 pub struct ToolContext<'a> {
     /// Where candles and trades come from.
@@ -160,6 +174,14 @@ pub struct ToolContext<'a> {
     /// Upper bound on bars per call, so a model asking for `limit: 100000`
     /// gets a bounded answer instead of a 60-second query.
     pub max_lookback: usize,
+    /// The chart viewport the question arrived with, when the shell sent one.
+    ///
+    /// Drives the DEFAULT window only: a tool call without an explicit
+    /// `limit`/`lookback` on the viewport's own symbol and timeframe reads
+    /// the bars the user is looking at -- leftmost visible candle through the
+    /// newest one -- instead of a blind default. An explicit model choice
+    /// still wins: a viewport is a hint, never an instruction.
+    pub viewport: Option<ViewportWindow>,
     /// The asking user's drawings, when the host provided them.
     ///
     /// `None` is a fact the tool reports ("no drawings source is attached"),
@@ -218,6 +240,7 @@ impl<'a> ToolContext<'a> {
             config: MarketStateConfig::default(),
             default_lookback: 300,
             max_lookback: 2000,
+            viewport: None,
             drawings: None,
             user_id: None,
             drawing_writer: None,
@@ -302,6 +325,53 @@ impl<'a> ToolContext<'a> {
             .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(self.default_lookback);
         requested.clamp(1, self.max_lookback)
+    }
+
+    /// Attach the chart viewport the question arrived with.
+    #[must_use]
+    pub fn with_viewport(mut self, symbol: &str, timeframe: Timeframe, from_ns: i64, to_ns: i64) -> Self {
+        self.viewport = Some(ViewportWindow {
+            symbol: symbol.to_string(),
+            timeframe,
+            from_ns,
+            to_ns,
+        });
+        self
+    }
+
+    /// The lookback a tool should use: the model's explicit request when it
+    /// made one, otherwise the chart's visible range when this call is about
+    /// the chart the user is looking at, otherwise the standing default.
+    ///
+    /// "The visible range" means the bar count between the leftmost visible
+    /// candle and the newest one, so the agent reads the same candles the
+    /// user sees; the window itself still anchors at the latest stored bar.
+    #[must_use]
+    pub fn window_lookback(
+        &self,
+        requested: Option<u64>,
+        symbol: &str,
+        timeframe: Timeframe,
+    ) -> usize {
+        if requested.is_some() {
+            return self.clamp_lookback(requested);
+        }
+        match &self.viewport {
+            Some(viewport)
+                if viewport.symbol.eq_ignore_ascii_case(symbol)
+                    && viewport.timeframe == timeframe =>
+            {
+                let span_ns = viewport.to_ns.saturating_sub(viewport.from_ns);
+                if span_ns <= 0 {
+                    return self.default_lookback;
+                }
+                let bars = span_ns / timeframe.nanos() + 1;
+                usize::try_from(bars)
+                    .unwrap_or(usize::MAX)
+                    .clamp(1, self.max_lookback)
+            }
+            _ => self.default_lookback,
+        }
     }
 }
 
@@ -1392,7 +1462,7 @@ async fn analyze_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
     const TOOL: &str = "analyze_timeframe";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (state, _, _) = state_for(ctx, &symbol, timeframe, lookback).await?;
     Ok(render_state(&state, ctx.capabilities.as_ref()))
 }
@@ -1430,6 +1500,10 @@ async fn analyze_multi_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<
         });
     }
 
+    // One bar-count for every rung of the ladder: the chart viewport does
+    // not steer multi-timeframe reads, because its span converts to a
+    // different bar count on each timeframe and the comparison needs them
+    // uniform. The standing default keeps the ladder honest.
     let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
     let mut frames = Vec::new();
     for timeframe in timeframes {
@@ -1452,7 +1526,7 @@ async fn get_candles(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Agent
     const TOOL: &str = "get_candles";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let limit = ctx.clamp_lookback(optional_u64(args, "limit", TOOL)?);
+    let limit = ctx.window_lookback(optional_u64(args, "limit", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, limit).await?;
     // `i` and `time_ms` are the drawing bridge (docs/47): a skill's DRAW
     // recipe names candles by position, and `time_ms` is the unit
@@ -1479,7 +1553,7 @@ async fn get_volume_profile(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
     const TOOL: &str = "get_volume_profile";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     // Both branches call analytics-core; this only chooses the input the
@@ -1517,7 +1591,7 @@ async fn get_footprint(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Age
     let timeframe = timeframe_arg(args, TOOL)?;
     // Footprints are verbose; 20 is plenty and keeps the result readable.
     let count = ctx
-        .clamp_lookback(optional_u64(args, "count", TOOL)?)
+        .window_lookback(optional_u64(args, "count", TOOL)?, &symbol, timeframe)
         .min(20);
     let (candles, trades) = load_window(ctx, &symbol, timeframe, count).await?;
 
@@ -1573,7 +1647,7 @@ async fn get_delta_by_size(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
     const TOOL: &str = "get_delta_by_size";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "count", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "count", TOOL)?, &symbol, timeframe);
     let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
     if trades.is_empty() {
         return Ok(json!({
@@ -1619,7 +1693,7 @@ async fn get_bar_delta_stats(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
     const TOOL: &str = "get_bar_delta_stats";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "count", TOOL)?).min(50);
+    let lookback = ctx.window_lookback(optional_u64(args, "count", TOOL)?, &symbol, timeframe).min(50);
     let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
     if trades.is_empty() {
         return Ok(json!({
@@ -1659,7 +1733,7 @@ async fn get_vpin(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentErr
     const TOOL: &str = "get_vpin";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "count", TOOL)?).min(200);
+    let lookback = ctx.window_lookback(optional_u64(args, "count", TOOL)?, &symbol, timeframe).min(200);
     let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
     if trades.is_empty() {
         return Ok(json!({
@@ -1701,7 +1775,7 @@ async fn detect_size_divergence(ctx: &ToolContext<'_>, args: &Value) -> Result<V
     const TOOL: &str = "detect_size_divergence";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "count", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "count", TOOL)?, &symbol, timeframe);
     let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
     if trades.is_empty() {
         return Ok(json!({
@@ -1764,7 +1838,7 @@ async fn get_delta(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentEr
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
     let lookback = ctx
-        .clamp_lookback(optional_u64(args, "lookback", TOOL)?)
+        .window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe)
         .min(50);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
@@ -1794,7 +1868,7 @@ async fn get_cvd(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentErro
     const TOOL: &str = "get_cvd";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (state, candles, _) = state_for(ctx, &symbol, timeframe, lookback).await?;
     let series = analytics_core::calculate_cvd(&candles, ctx.config.cvd_reset_at_session);
 
@@ -1812,7 +1886,7 @@ async fn get_vwap(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentErr
     const TOOL: &str = "get_vwap";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, trades) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     let series =
@@ -1845,7 +1919,7 @@ async fn detect_liquidity(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, 
     const TOOL: &str = "detect_liquidity";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     let levels = detect_liquidity_levels_with(&candles, ctx.config.liquidity);
@@ -1930,7 +2004,7 @@ async fn detect_absorption_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<V
     const TOOL: &str = "detect_absorption";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (state, candles, trades) = state_for(ctx, &symbol, timeframe, lookback).await?;
 
     if trades.is_empty() {
@@ -1975,7 +2049,7 @@ async fn detect_imbalance(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, 
     const TOOL: &str = "detect_imbalance";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (state, candles, trades) = state_for(ctx, &symbol, timeframe, lookback).await?;
 
     if trades.is_empty() {
@@ -2021,7 +2095,7 @@ async fn detect_market_structure_tool(
     const TOOL: &str = "detect_market_structure";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
     let structure = detect_market_structure(&candles, ctx.config.structure);
 
@@ -2095,7 +2169,7 @@ async fn get_rsi(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentErro
     let timeframe = timeframe_arg(args, TOOL)?;
     let period = optional_u64(args, "period", TOOL)?.unwrap_or(14).clamp(2, 500) as usize;
     let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     let series = analytics_core::indicators::rsi(&closes_of(&candles), period);
@@ -2123,7 +2197,7 @@ async fn get_macd(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentErr
     let slow = optional_u64(args, "slow", TOOL)?.unwrap_or(26).clamp(2, 500) as usize;
     let signal = optional_u64(args, "signal", TOOL)?.unwrap_or(9).clamp(2, 500) as usize;
     let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     let series = analytics_core::indicators::macd(&closes_of(&candles), fast, slow, signal);
@@ -2149,7 +2223,7 @@ async fn get_bollinger_bands(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
     let period = optional_u64(args, "period", TOOL)?.unwrap_or(20).clamp(2, 500) as usize;
     let mult = optional_f64(args, "mult", TOOL)?.unwrap_or(2.0).clamp(0.1, 5.0);
     let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     let series = analytics_core::indicators::bollinger(&closes_of(&candles), period, mult);
@@ -2172,7 +2246,7 @@ async fn get_atr_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Agen
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
     let period = optional_u64(args, "period", TOOL)?.unwrap_or(14).clamp(2, 500) as usize;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     let atr_series = analytics_core::indicators::atr(&candles, period);
@@ -2205,7 +2279,7 @@ async fn get_moving_average(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
     }
     let period = optional_u64(args, "period", TOOL)?.unwrap_or(20).clamp(2, 500) as usize;
     let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(10).clamp(1, 50) as usize;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     let closes = closes_of(&candles);
@@ -2253,7 +2327,7 @@ async fn detect_pattern_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
     let min_confidence = optional_f64(args, "min_confidence", TOOL)?
         .unwrap_or(0.5)
         .clamp(0.0, 1.0);
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     let structure = detect_market_structure(&candles, ctx.config.structure);
@@ -2309,7 +2383,7 @@ async fn detect_zones_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
     const TOOL: &str = "detect_zones";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
 
     let regions = analytics_core::detect_zones(&candles, Default::default());
@@ -2458,6 +2532,7 @@ async fn compare_timeframes(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
     const TOOL: &str = "compare_timeframes";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframes = timeframes_arg(args, TOOL)?;
+    // Uniform across the ladder, so no viewport steering (see above).
     let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
 
     let mut frames = Vec::with_capacity(timeframes.len());
@@ -2501,6 +2576,7 @@ async fn cross_timeframe_confluence(ctx: &ToolContext<'_>, args: &Value) -> Resu
     let tolerance_pct = optional_f64(args, "tolerance_pct", TOOL)?
         .unwrap_or(0.0015)
         .clamp(0.0002, 0.02);
+    // Uniform across the ladder, so no viewport steering (see above).
     let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
 
     // Every confirmed swing on every timeframe, tagged with its timeframe.
@@ -3069,7 +3145,7 @@ async fn take_snapshot(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Age
     };
     let (store, user_id) = snapshot_parts(ctx, TOOL)?;
 
-    let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
+    let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (candles, _) = load_window(ctx, &symbol, timeframe, lookback).await?;
     let price = candles.last().map(|c| c.close).ok_or_else(|| AgentError::ToolFailed {
         tool: TOOL.into(),
@@ -3937,6 +4013,63 @@ mod tests {
         assert_eq!(ctx.clamp_lookback(Some(10_000_000)), ctx.max_lookback);
         assert_eq!(ctx.clamp_lookback(Some(0)), 1);
         assert_eq!(ctx.clamp_lookback(None), ctx.default_lookback);
+    }
+
+    #[test]
+    fn a_matching_viewport_sets_the_default_window_to_the_visible_range() {
+        let fixture = Fixture::rising(10);
+        // A 5m chart showing 400 visible bars.
+        let tf = Timeframe::M5;
+        let to_ns = 400 * tf.nanos();
+        let ctx = ToolContext::new(&fixture).with_viewport("BTCUSDT", tf, 0, to_ns);
+        // The span covers 400 bars; +1 includes the candle that opens the range.
+        assert_eq!(
+            ctx.window_lookback(None, "BTCUSDT", tf),
+            401,
+            "the default follows the chart the user is looking at"
+        );
+    }
+
+    #[test]
+    fn an_explicit_limit_beats_the_viewport() {
+        let fixture = Fixture::rising(10);
+        let tf = Timeframe::M5;
+        let ctx = ToolContext::new(&fixture).with_viewport("BTCUSDT", tf, 0, 400 * tf.nanos());
+        assert_eq!(
+            ctx.window_lookback(Some(150), "BTCUSDT", tf),
+            150,
+            "a viewport is a hint, never an instruction"
+        );
+    }
+
+    #[test]
+    fn a_viewport_only_steers_its_own_symbol_and_timeframe() {
+        let fixture = Fixture::rising(10);
+        let tf = Timeframe::M5;
+        let ctx = ToolContext::new(&fixture).with_viewport("BTCUSDT", tf, 0, 400 * tf.nanos());
+        assert_eq!(
+            ctx.window_lookback(None, "ETHUSDT", tf),
+            ctx.default_lookback,
+            "a BTC chart must not steer an ETH question"
+        );
+        assert_eq!(
+            ctx.window_lookback(None, "BTCUSDT", Timeframe::H1),
+            ctx.default_lookback,
+            "a 5m viewport says nothing about a 1h read"
+        );
+    }
+
+    #[test]
+    fn an_inverted_or_huge_viewport_falls_back_or_clamps() {
+        let fixture = Fixture::rising(10);
+        let tf = Timeframe::M5;
+        let inverted = ToolContext::new(&fixture).with_viewport("BTCUSDT", tf, 100, 0);
+        assert_eq!(
+            inverted.window_lookback(None, "BTCUSDT", tf),
+            inverted.default_lookback
+        );
+        let huge = ToolContext::new(&fixture).with_viewport("BTCUSDT", tf, 0, i64::MAX / 2);
+        assert_eq!(huge.window_lookback(None, "BTCUSDT", tf), huge.max_lookback);
     }
 
     #[tokio::test]

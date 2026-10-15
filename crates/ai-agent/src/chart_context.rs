@@ -405,6 +405,18 @@ impl ChartContext {
              it means this viewport, not the market's latest bar. Read the window \
              with a tool if you need its contents.\n",
         );
+        if let Some(bars) = self.visible_bars() {
+            out.push_str(&format!(
+                "\n### The data window follows the chart\n\
+                 A data tool called WITHOUT a limit on this symbol and timeframe reads \
+                 exactly this visible range (~{bars} bars: leftmost visible candle through \
+                 the newest one). When the question is about this chart, call the tools \
+                 with NO limit so the analysis covers the same candles the user sees -- \
+                 a smaller explicit limit silently analyzes less chart than they are \
+                 looking at. Pass an explicit limit only for deliberately deeper history; \
+                 it always wins.\n"
+            ));
+        }
 
         Some(out)
     }

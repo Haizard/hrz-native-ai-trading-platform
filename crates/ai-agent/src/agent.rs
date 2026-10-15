@@ -845,6 +845,19 @@ impl Agent {
         // backtest runner -- attached by the gateway, absent in tests and
         // tools-only builds, reported honestly either way.
         let mut ctx = ToolContext::new(data).with_config(self.config.market_state.clone());
+        // The chart the user is looking at sets the DEFAULT data window: a
+        // tool call without its own limit on this symbol+timeframe reads the
+        // candles the user sees -- leftmost visible bar through the newest --
+        // so "analyze my chart" and "the chart" name the same data.
+        if let Some(chart) = &request.chart {
+            if let (Some(timeframe), Some(from_ns), Some(to_ns)) = (
+                chart.timeframe,
+                chart.visible_from_ns,
+                chart.visible_to_ns,
+            ) {
+                ctx = ctx.with_viewport(&request.symbol, timeframe, from_ns, to_ns);
+            }
+        }
         if let Some(runner) = &request.backtests {
             ctx = ctx.with_backtests(runner.as_ref());
         }
