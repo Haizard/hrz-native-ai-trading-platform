@@ -7904,7 +7904,10 @@ function renderChatMirror() {
   }
   const html = turns.map((turn, index) => {
     const parts = [];
-    parts.push(`<div class="msg user"><div class="avatar">🧑</div><div class="bubble"><p>${escapeHtml(turn.question)}</p></div></div>`);
+    const attachLine = turn.attachments
+      ? `<div class="meta">📎 ${escapeHtml([...(turn.attachments.images || []), turn.attachments.document].filter(Boolean).join(", "))}</div>`
+      : "";
+    parts.push(`<div class="msg user"><div class="avatar">🧑</div><div class="bubble"><p>${escapeHtml(turn.question)}</p>${attachLine}</div></div>`);
     const running = index === turns.length - 1 && !turn.answer && !turn.error;
     if (turn.answer) {
       const checks = (turn.answer.conditions || []).filter((c) => c.status === "pass").length;
@@ -7946,14 +7949,79 @@ function chatBubble(html, cls) {
 async function chatSend() {
   const input = el("chatInput");
   const question = input.value.trim();
-  if (!question) return;
+  if (!question && !chatPendingImages.length && !chatPendingDocument) return;
   input.value = "";
   input.style.height = "auto";
-  // The ask pipeline owns the run; the mirror shows it as bubbles.
-  el("question").value = question;
+  // Attachments park here; ask() consumes them into the socket message.
+  pendingAskAttachments = {
+    images: chatPendingImages.map((img) => ({ name: img.name, media_type: img.media_type, data_base64: img.data })),
+    document: chatPendingDocument,
+  };
+  chatPendingImages = [];
+  chatPendingDocument = null;
+  renderChatChips();
+  el("question").value = question || "What do you see in the attachment?";
   await ask();
 }
 
+
+/// ---------------------------------------------------------------------------
+/// Chat attachments: images and a document ride the ask.
+///
+/// The composer stashes them; chatSend parks them for ask() to consume into
+/// the socket message; the server validates and the model sees them as image
+/// blocks and document text ahead of the question.
+/// ---------------------------------------------------------------------------
+let chatPendingImages = [];
+let chatPendingDocument = null;
+let pendingAskAttachments = null;
+
+const CHAT_MAX_IMAGES = 3;
+const CHAT_DOC_EXTS = ["pdf", "txt", "md", "markdown", "text", "log"];
+
+function renderChatChips() {
+  const row = el("chatChips");
+  if (!chatPendingImages.length && !chatPendingDocument) {
+    row.hidden = true;
+    row.innerHTML = "";
+    return;
+  }
+  row.hidden = false;
+  row.innerHTML =
+    (chatPendingDocument
+      ? `<span class="chip">📕 ${escapeHtml(chatPendingDocument.name)} <button type="button" data-doc="1" title="Remove">✕</button></span>`
+      : "") +
+    chatPendingImages.map((img, i) =>
+      `<span class="chip"><img src="data:${img.media_type};base64,${img.data}" alt="" /> ${escapeHtml(img.name)} <button type="button" data-idx="${i}" title="Remove">✕</button></span>`
+    ).join("");
+  row.querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => {
+      if (btn.dataset.doc) chatPendingDocument = null;
+      else chatPendingImages.splice(Number(btn.dataset.idx), 1);
+      renderChatChips();
+    };
+  });
+}
+
+async function chatAttachFiles(files) {
+  for (const file of files) {
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (file.type.startsWith("image/")) {
+      if (chatPendingImages.length >= CHAT_MAX_IMAGES) { pageToast(`at most ${CHAT_MAX_IMAGES} images per message`); continue; }
+      chatPendingImages.push(await readImageFile(file));
+    } else if (CHAT_DOC_EXTS.includes(ext)) {
+      chatPendingDocument = { name: file.name, data_base64: await new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = () => res(String(reader.result).split(",")[1] || "");
+        reader.onerror = () => rej(reader.error);
+        reader.readAsDataURL(file);
+      }) };
+    } else {
+      pageToast(`${file.name}: images, or pdf/txt/md only`);
+    }
+  }
+  renderChatChips();
+}
 /// The agent asked the studio to build an indicator. The build runs in the
 /// workspace pipeline; the report lands as a bubble here.
 async function chatRunIndicator(description) {
@@ -8239,6 +8307,17 @@ async function ask() {
       question,
       timeframes: [activeTimeframe()],
     };
+    // Chat attachments ride the same socket message the author interview uses;
+    // the server validates them and the model sees them ahead of the question.
+    if (pendingAskAttachments) {
+      if (pendingAskAttachments.images.length) message.images = pendingAskAttachments.images;
+      if (pendingAskAttachments.document) message.document = pendingAskAttachments.document;
+      turn.attachments = {
+        images: pendingAskAttachments.images.map((i) => i.name),
+        document: pendingAskAttachments.document ? pendingAskAttachments.document.name : null,
+      };
+      pendingAskAttachments = null;
+    }
     
     if (skillIds.length === 1) {
       message.skill_id = skillIds[0];
@@ -11031,6 +11110,12 @@ el("authorChips").addEventListener("click", (event) => {
   selectPane("chat");
   renderChatMirror();
   el("chatSend").addEventListener("click", chatSend);
+  el("chatAttach").addEventListener("click", () => el("chatFile").click());
+  el("chatFile").addEventListener("change", async () => {
+    const files = [...el("chatFile").files];
+    el("chatFile").value = "";
+    if (files.length) await chatAttachFiles(files);
+  });
   el("chatInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(); }
   });

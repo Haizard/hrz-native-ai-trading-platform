@@ -34,6 +34,7 @@ use serde_json::json;
 use strategy_dsl::expr::ConceptPart;
 
 use crate::error::AgentError;
+use crate::authoring::{AuthorDocument, AuthorImage};
 use crate::llm_client::{
     ContentBlock, LlmClient, LlmRequest, Message, ToolCall, ToolChoice, ToolResult, ToolSpec, Usage,
 };
@@ -306,6 +307,13 @@ pub struct AskRequest {
     /// When attached, tool results carry a `provenance` block and the state
     /// render labels its sections. `None` makes no claims — data facts only.
     pub capabilities: Option<crate::capability_view::CapabilityView>,
+    /// Images the user attached to the question: a chart photo, a book page,
+    /// a drawing. They ride the first user message as image blocks, ahead of
+    /// the question text, exactly like chart screenshots.
+    pub attachments: Vec<AuthorImage>,
+    /// A document the user attached (PDF, text): its extracted text precedes
+    /// the question, named, so the model can quote it against the market.
+    pub attachment_document: Option<AuthorDocument>,
 }
 
 impl AskRequest {
@@ -326,7 +334,21 @@ impl AskRequest {
             captures: None,
             backtests: None,
             capabilities: None,
+            attachments: Vec::new(),
+            attachment_document: None,
         }
+    }
+
+    /// Attach images and an optional document to the question.
+    #[must_use]
+    pub fn with_attachments(
+        mut self,
+        attachments: Vec<AuthorImage>,
+        attachment_document: Option<AuthorDocument>,
+    ) -> Self {
+        self.attachments = attachments;
+        self.attachment_document = attachment_document;
+        self
     }
 
     /// Pin a skill by id.
@@ -848,7 +870,23 @@ impl Agent {
                 data: shot.data.clone(),
             });
         }
-        first_content.push(ContentBlock::Text(request.question.clone()));
+        // The user's own attachments ride ahead of the question, after the
+        // chart screenshots: the prompt's image list pairs captions to blocks
+        // in order, and chart captions come first.
+        for image in &request.attachments {
+            first_content.push(ContentBlock::Image {
+                media_type: image.media_type.clone(),
+                data: image.data_base64.clone(),
+            });
+        }
+        let question_text = match &request.attachment_document {
+            Some(doc) => format!(
+                "Attached document ({}):\n\n{}\n\n---\n\n{}",
+                doc.name, doc.text, request.question
+            ),
+            None => request.question.clone(),
+        };
+        first_content.push(ContentBlock::Text(question_text));
         let mut messages = vec![Message {
             role: crate::llm_client::Role::User,
             content: first_content,

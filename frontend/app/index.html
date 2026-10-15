@@ -1370,6 +1370,26 @@
     width: 30px; height: 30px; padding: 0; border-radius: 8px;
     display: grid; place-items: center; font-size: 13px; line-height: 1;
   }
+
+  /* Attachments: the clip lives inside the frame too, bottom-left. */
+  .chat-compose { padding-left: 46px; }
+  #chatAttach {
+    position: absolute; left: 8px; bottom: 8px;
+    width: 30px; height: 30px; padding: 0; border-radius: 8px;
+    display: grid; place-items: center; font-size: 14px; line-height: 1;
+    background: transparent; border: 1px solid transparent; color: var(--muted);
+  }
+  #chatAttach:hover { background: var(--bg); border-color: var(--line); color: var(--text); }
+  .chat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .chat-chips .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--text-dim);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 3px 6px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .chat-chips .chip img { width: 22px; height: 22px; object-fit: cover; border-radius: 4px; }
+  .chat-chips .chip button { padding: 0 4px; font-size: 10px; background: none; border: 0; color: var(--faint); }
+  .chat-chips .chip button:hover { color: var(--down); }
   </style>
 </head>
 <body>
@@ -1785,7 +1805,10 @@
 <div class="pane" id="pane-chat">
   <div class="chat-stream" id="chatStream"></div>
   <div class="chat-compose">
+    <div id="chatChips" class="chat-chips" hidden></div>
     <textarea id="chatInput" rows="2" placeholder="Ask anything — analyze this chart, build an indicator, scan the market, create a strategy…"></textarea>
+    <button id="chatAttach" type="button" title="Attach images or a document">📎</button>
+    <input type="file" id="chatFile" hidden multiple accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.markdown,.log" />
     <button id="chatSend" class="primary" type="button" title="Send (Enter)">➤</button>
   </div>
 </div>

@@ -743,6 +743,42 @@ where
         }
     }
 
+    // User attachments on a plain ask: the same boundary treatment the author
+    // interview gives them -- validated here, plain notices for anything the
+    // model cannot be shown.
+    if request.images.len() > crate::documents::MAX_IMAGES {
+        return Some(Frame::Notice {
+            message: format!(
+                "one question carries at most {} images; the best example or two is plenty",
+                crate::documents::MAX_IMAGES
+            ),
+        });
+    }
+    let mut ask_images = Vec::with_capacity(request.images.len());
+    for image in &request.images {
+        match crate::documents::prepare_image(&image.name, &image.media_type, &image.data_base64) {
+            Ok(prepared) => ask_images.push(ai_agent::AuthorImage {
+                name: prepared.name,
+                media_type: prepared.media_type,
+                data_base64: prepared.data_base64,
+            }),
+            Err(reason) => return Some(Frame::Notice { message: reason }),
+        }
+    }
+    let ask_document = match &request.document {
+        Some(attachment) => match crate::documents::prepare(&attachment.name, &attachment.data_base64) {
+            Ok(prepared) => Some(ai_agent::AuthorDocument {
+                name: prepared.name,
+                text: prepared.text,
+            }),
+            Err(reason) => return Some(Frame::Notice { message: reason }),
+        },
+        None => None,
+    };
+    if !ask_images.is_empty() || ask_document.is_some() {
+        ask = ask.with_attachments(ask_images, ask_document);
+    }
+
     // The same attachment `POST /agent/ask` makes, from the same authenticated
     // identity: a socket is not a way around per-user scoping either. Without a
     // database the source stays unattached, and the tool reports that rather
