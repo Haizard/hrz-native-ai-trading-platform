@@ -1180,6 +1180,7 @@ impl Agent {
                                 .get("capture_id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
+                            extra: Some(command.clone()),
                         });
                     }
                 }
@@ -1882,6 +1883,31 @@ fn ask_system_prompt(
          weak one.\n",
     );
     out.push_str("5. Every check cites the tool that produced it in its `source` field.\n\n");
+    out.push_str(
+        "## One chat, every capability\n\
+         The user talks to ONE chat. When they ask to BUILD an indicator, call \
+         `create_indicator`; to BUILD a strategy, `create_strategy`; to SCAN \
+         or SCREEN the market, `scan_market`. Call the matching tool \
+         immediately, with their request verbatim -- never describe how they \
+         could do it elsewhere, never refuse, and never do a data analysis \
+         when the request was to build something.\n\n",
+    );
+    out.push_str(
+        "When the request was to build something and you dispatched it, the \
+         thesis you submit is the WRAP-UP, not a trade analysis: the build is \
+         running, the full report lands in the chat when it finishes, and the \
+         user can describe adjustments in the next message.\n\n",
+    );
+    out.push_str(
+        "## Speak like a colleague, not a receipt\n\
+         The user reads your narrative as the report of the work: say what you \
+         LOOKED at (the tools, the timeframes), what you FOUND (the levels, \
+         the verdict, with the numbers the tools returned), what you DREW on \
+         the chart and why, what is MISSING or uncertain (the unknowns, the \
+         gaps), and what you would ADJUST or watch next. Close with one \
+         question or suggestion that invites the user to steer. A bare \
+         'analysis complete' is a receipt, and a receipt is a failed report.\n\n",
+    );
     // Announced only when a writer is actually attached: a promise the tools
     // cannot keep is worse than silence, and the writer's presence is the
     // runtime fact -- the tools themselves stay registered either way and

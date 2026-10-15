@@ -135,7 +135,7 @@ pub(crate) fn script_system_prompt(symbol: &str, timeframe: &str) -> String {
         r#"You write indicators as **pine-lite** scripts: TradingView-Pine-style imperative code the platform compiles and runs bar-by-bar. The user's chart is {symbol} on the {timeframe} timeframe; write for that.
 
 ## Output contract
-Reply with ONE fenced code block tagged pine_lite containing the whole script. No prose outside the block. The FIRST line must be the header:
+Call `submit_script` with `script` (the whole pine-lite source) AND `report` (the user-facing write-up). The report is what the user actually reads: what the script detects, what it draws and where, the parameters and their defaults, what it deliberately does not do, and suggested adjustments -- written like a colleague explaining the build, ending with one question that invites feedback. Never a bare "generated and validated" receipt. The FIRST line must be the header:
 
 //@pine_lite version=1 overlay=false title="My Indicator"
 
@@ -516,6 +516,8 @@ pub(crate) struct GeneratedScript {
     pub repaired_errors: Vec<String>,
     /// The vetted header, for display and overlay routing.
     pub header: pine_lite::Header,
+    /// The model's user-facing write-up, when it wrote one.
+    pub report: Option<String>,
 }
 
 /// One generation attempt's failure, verbatim from the vet pipeline.
@@ -630,9 +632,10 @@ pub(crate) async fn generate_script(
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "script": {"type": "string", "description": "The complete pine-lite script source, including the //@pine_lite header line."}
+                "script": {"type": "string", "description": "The complete pine-lite script source, including the //@pine_lite header line."},
+                "report": {"type": "string", "description": "The conversational report the user reads. Cover, in plain trader language: what the script DETECTS (the pattern's logic in one sentence), what it DRAWS and where (zones, lines, markers, labels -- named), the PARAMETERS and their defaults (so the user knows what to tune), what it deliberately does NOT do (the gaps), and 2-3 suggested adjustments or next steps. End with one question inviting feedback. 5-10 sentences, no code, no jargon the request did not use."}
             },
-            "required": ["script"]
+            "required": ["script", "report"]
         }),
         exposed_tool: None, // Always exposed
     };
@@ -671,6 +674,11 @@ pub(crate) async fn generate_script(
             .as_str()
             .map(str::to_string)
             .or_else(|| extract_script(&response.message.text()));
+        let report_text = call.input["report"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let Some(source) = source else {
             last_report = "`script` must be a string".to_string();
             report(
@@ -688,6 +696,7 @@ pub(crate) async fn generate_script(
             Ok((header, _script)) => {
                 return Ok(GeneratedScript {
                     source,
+                    report: report_text.clone(),
                     attempts: attempt,
                     repaired_errors,
                     header,
@@ -714,6 +723,7 @@ pub(crate) async fn generate_script(
                         repaired_errors.push(format!("autofix: {detail}"));
                         return Ok(GeneratedScript {
                             source: fixed,
+                            report: report_text.clone(),
                             attempts: attempt,
                             repaired_errors,
                             header,

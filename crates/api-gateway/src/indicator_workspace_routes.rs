@@ -766,15 +766,21 @@ async fn run_workspace_turn(
     let simulation_note = preview_stats
         .as_ref()
         .and_then(|s| s.simulation_note.clone());
-    let assistant_text = format!(
-        "Generated and validated revision {} (pine-lite script, {} model attempt(s)). Attached to the chart: {} plot(s) and {} marker(s) in its preview window; {}{}. The source is stored as code -- open the Code panel to read or edit it.",
-        revision.revision_number,
-        attempts,
-        plots,
-        markers,
-        kind_note,
-        strategy_note,
-    );
+    // The model's own report is the message when it wrote one: what the
+    // script detects, what it draws, the knobs, the gaps, and the suggested
+    // adjustments. The old receipt is the fallback for a reply that skipped
+    // the report field.
+    let assistant_text = generated.report.clone().unwrap_or_else(|| {
+        format!(
+            "Generated and validated revision {} (pine-lite script, {} model attempt(s)). Attached to the chart: {} plot(s) and {} marker(s) in its preview window; {}{}. The source is stored as code -- open the Code panel to read or edit it.",
+            revision.revision_number,
+            attempts,
+            plots,
+            markers,
+            kind_note,
+            strategy_note,
+        )
+    });
     let assistant_payload = serde_json::json!({
         "revision_id": revision.id,
         "revision_number": revision.revision_number,

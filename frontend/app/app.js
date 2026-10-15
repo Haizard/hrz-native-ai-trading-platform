@@ -6640,6 +6640,12 @@ function executeUiCommand(cmd) {
       cmd.symbol || activePane.symbol(),
       cmd.timeframe || activePane.timeframe()
     );
+  } else if (cmd.action === "generate_indicator") {
+    chatRunIndicator((cmd.extra && cmd.extra.description) || cmd.description || "");
+  } else if (cmd.action === "scan_market") {
+    chatRunScan((cmd.extra && cmd.extra.criteria) || "", (cmd.extra && cmd.extra.metric), (cmd.extra && cmd.extra.timeframe));
+  } else if (cmd.action === "generate_strategy") {
+    chatRunStrategy((cmd.extra && cmd.extra.description) || cmd.description || "");
   } else if (cmd.action === "capture_chart") {
     // A capture request from a run in flight (docs/48): switch the screen if
     // the command names somewhere else, wait for the redraw, then upload the
@@ -7138,6 +7144,7 @@ function renderTranscript() {
   }
   if (!turns.length) {
     el("thesis").innerHTML = `<p class="empty">Pin a skill and Ask — the agent applies it to this chart and draws the patterns it finds.</p>`;
+    renderChatMirror();
     return;
   }
 
@@ -7167,6 +7174,7 @@ function renderTranscript() {
       </div>`;
     })
     .join("");
+  renderChatMirror();
 }
 
 /// Why the agent channel refused to open.
@@ -7496,7 +7504,7 @@ function enterAuthorMode() {
   authorMode = true;
   authorHistory = [];
   clearAuthorAttachments();
-  selectPane("thesis");
+  selectPane("chat");
   el("authorBanner").hidden = false;
   el("authorDocRow").hidden = false;
   const select = el("skillSelect");
@@ -7704,7 +7712,8 @@ function analysisQuestionFor(name) {
 async function analyzeWithSkill(id, name) {
   if (asking) return;
   if (authorMode) exitAuthorMode();
-  selectPane("thesis");
+  selectPane("chat");
+  renderChatMirror();
   enableChartAttach();
   pinSkill(id);
   el("question").value = analysisQuestionFor(name);
@@ -7874,6 +7883,152 @@ function startWatchPolling() {
 }
 
 
+
+/// ---------------------------------------------------------------------------
+/// The unified chat: ONE conversation that routes itself.
+///
+/// The composer delegates to the agent ask pipeline; the stream mirrors the
+/// transcript as bubbles (user question, working state, the answer as the
+/// report). Pipeline commands from the agent (create_indicator, scan_market,
+/// create_strategy) render their own bubbles here.
+/// ---------------------------------------------------------------------------
+
+/// Render the transcript as chat bubbles. Called from renderTranscript so
+/// questions sent from either composer stay in sync.
+function renderChatMirror() {
+  const stream = el("chatStream");
+  if (!stream) return;
+  if (!turns.length) {
+    stream.innerHTML = `<div class="msg ai"><div class="avatar">✦</div><div class="bubble"><p>Ask me anything — I can analyze this chart, build indicators and strategies, and scan the market. What are we looking at?</p></div></div>`;
+    return;
+  }
+  const html = turns.map((turn, index) => {
+    const parts = [];
+    parts.push(`<div class="msg user"><div class="avatar">🧑</div><div class="bubble"><p>${escapeHtml(turn.question)}</p></div></div>`);
+    const running = index === turns.length - 1 && !turn.answer && !turn.error;
+    if (turn.answer) {
+      const checks = (turn.answer.conditions || []).filter((c) => c.status === "pass").length;
+      const total = (turn.answer.conditions || []).length;
+      parts.push(`<div class="msg ai"><div class="avatar">✦</div><div class="bubble">`);
+      parts.push(thesisHtml(turn.answer.thesis));
+      if (total) parts.push(`<div class="meta">${checks}/${total} checks passed · bias: ${escapeHtml(turn.answer.bias || "—")}</div>`);
+      parts.push(`</div></div>`);
+    } else if (turn.error) {
+      parts.push(`<div class="msg ai"><div class="avatar">✦</div><div class="bubble"><p class="fail">${escapeHtml(turn.error)}</p></div></div>`);
+    } else if (running) {
+      const steps = turn.steps.map((step) => `<li>${escapeHtml(progressText(step))}</li>`).join("");
+      parts.push(`<div class="msg ai"><div class="avatar">✦</div><div class="bubble">`);
+      parts.push(`<div class="skl-line skeleton w70"></div><div class="skl-line skeleton w45"></div>`);
+      if (steps) parts.push(`<ul class="steps">${steps}</ul>`);
+      parts.push(`</div></div>`);
+    }
+    return parts.join("");
+  }).join("");
+  // Pipeline bubbles (indicator builds, scans) are not transcript state:
+  // lift them out before the rebuild and put them back after.
+  const keep = [...stream.querySelectorAll(".msg.pipeline")];
+  stream.innerHTML = html;
+  for (const row of keep) stream.appendChild(row);
+  stream.scrollTop = stream.scrollHeight;
+}
+
+/// A pipeline bubble outside the transcript (indicator builds, scans).
+function chatBubble(html, cls) {
+  const stream = el("chatStream");
+  const row = document.createElement("div");
+  row.className = "msg ai pipeline" + (cls ? " " + cls : "");
+  row.innerHTML = `<div class="avatar">✦</div><div class="bubble">${html}</div>`;
+  stream.appendChild(row);
+  stream.scrollTop = stream.scrollHeight;
+  return row;
+}
+
+async function chatSend() {
+  const input = el("chatInput");
+  const question = input.value.trim();
+  if (!question) return;
+  input.value = "";
+  input.style.height = "auto";
+  // The ask pipeline owns the run; the mirror shows it as bubbles.
+  el("question").value = question;
+  await ask();
+}
+
+/// The agent asked the studio to build an indicator. The build runs in the
+/// workspace pipeline; the report lands as a bubble here.
+async function chatRunIndicator(description) {
+  const working = chatBubble(`<p>Building your indicator — drafting, validating, previewing…</p><div class="skl-line skeleton w70"></div><div class="skl-line skeleton w45"></div>`, "working");
+  try {
+    // A chat-scoped studio per symbol+timeframe: find it or create it.
+    const symbol = activeSymbol();
+    const timeframe = activeTimeframe();
+    const list = await api("/indicator-workspaces");
+    const wss = Array.isArray(list) ? list : (list.workspaces || []);
+    let ws = wss.find((w) => w.name === "Chat Studio" && w.symbol === symbol && w.timeframe === timeframe);
+    if (!ws) {
+      ws = await api("/indicator-workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Chat Studio", symbol, timeframe }),
+      });
+    }
+    const resp = await api(`/indicator-workspaces/${ws.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: description }),
+    });
+    // Attach the new revision to the chart, then report.
+    if (resp && resp.assistant_message && resp.assistant_message.payload && resp.assistant_message.payload.source && activePane) {
+      const p = resp.assistant_message.payload;
+      activePane.attachScript({ source: p.source, inputs: {}, name: "Chat Studio", inputsSpec: Array.isArray(p.inputs) ? p.inputs : [] });
+      syncIndicatorChip();
+    }
+    const report = resp && resp.assistant_message ? resp.assistant_message.content : "Built — see the chart.";
+    working.querySelector(".bubble").innerHTML = report.split(/\n{2,}/).map((para) => `<p>${escapeHtml(para)}</p>`).join("");
+  } catch (e) {
+    working.querySelector(".bubble").innerHTML = `<p class="fail">The build failed: ${escapeHtml(e.message)}</p>`;
+  }
+  el("chatStream").scrollTop = el("chatStream").scrollHeight;
+}
+
+/// The agent asked for a market scan: rank and table it.
+async function chatRunScan(criteria, metric, timeframe) {
+  const working = chatBubble(`<p>Scanning the market — ${escapeHtml(criteria)}…</p><div class="skl-line skeleton w70"></div>`, "working");
+  try {
+    const params = new URLSearchParams();
+    if (metric) params.set("metric", metric);
+    if (timeframe) params.set("timeframe", timeframe);
+    const res = await api("/scan" + (params.toString() ? "?" + params.toString() : ""));
+    const rows = (res.rows || []).filter((r) => r.value !== null && r.value !== undefined).slice(0, 10);
+    const table = rows.map((r) => `<div class="ladder-row"><span>${escapeHtml(r.symbol)}</span><span>${typeof r.value === "number" ? r.value.toFixed(2) : "—"}</span><span><button type="button" class="tt-close" data-open="${escapeHtml(r.symbol)}">open</button></span></div>`).join("");
+    working.querySelector(".bubble").innerHTML = `<p>Top ${rows.length} by ${escapeHtml(res.metric)} (${escapeHtml(res.timeframe)}):</p><div class="ladder">${table}</div>`;
+  } catch (e) {
+    working.querySelector(".bubble").innerHTML = `<p class="fail">The scan failed: ${escapeHtml(e.message)}</p>`;
+  }
+  el("chatStream").scrollTop = el("chatStream").scrollHeight;
+}
+
+/// The agent asked for a strategy: generate, then report.
+async function chatRunStrategy(description) {
+  const working = chatBubble(`<p>Building your strategy — generating and validating…</p><div class="skl-line skeleton w70"></div>`, "working");
+  try {
+    const result = await api("/agent/generate-strategy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ description, market: activeSymbol(), timeframe: activeTimeframe() }),
+    });
+    el("strategySource").value = result.yaml;
+    sourceOrigin = "ai_agent";
+    sourceDirty = true;
+    savedStrategyId = null;
+    paintStrategyActions();
+    const repairs = (result.repaired_errors || []).length;
+    working.querySelector(".bubble").innerHTML = `<p>Strategy <b>${escapeHtml(result.document.name)}</b> v${escapeHtml(result.document.version)} is generated and loaded into the Strategy tab — ${result.attempts} attempt(s)` + (repairs ? `, the validator rejected ${repairs} thing(s) and they were repaired` : "") + `. Open the Strategy tab to read the rules, save it as yours, and run a backtest.</p>`;
+  } catch (e) {
+    working.querySelector(".bubble").innerHTML = `<p class="fail">Strategy generation failed: ${escapeHtml(e.message)}</p>`;
+  }
+  el("chatStream").scrollTop = el("chatStream").scrollHeight;
+}
 /// ---------------------------------------------------------------------------
 /// The trade ticket (paper): practice orders on live prices.
 ///
@@ -10873,6 +11028,21 @@ el("authorChips").addEventListener("click", (event) => {
   el("ask").addEventListener("click", ask);
   el("analyzePinned").addEventListener("click", analyzePinnedSkills);
   el("watchToggle").addEventListener("click", toggleWatch);
+  selectPane("chat");
+  renderChatMirror();
+  el("chatSend").addEventListener("click", chatSend);
+  el("chatInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(); }
+  });
+  el("chatInput").addEventListener("input", () => {
+    const t = el("chatInput");
+    t.style.height = "auto";
+    t.style.height = Math.min(t.scrollHeight, 160) + "px";
+  });
+  el("chatStream").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-open]");
+    if (btn && activePane) activePane.fillSeries(coverage, btn.dataset.open, activePane.timeframe());
+  });
   ttWire();
   el("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
   el("skillsList").addEventListener("click", (e) => {

@@ -595,6 +595,44 @@ impl ToolRegistry {
                     exposed_tool: None,
                 },
                 ToolSpec {
+                    name: "create_indicator".into(),
+                    description: CREATE_INDICATOR.into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string", "description": "What to build, in the user's own words: the pattern or logic to detect, what to draw (zones, lines, markers, labels), colours, and any parameters."}
+                        },
+                        "required": ["description"]
+                    }),
+                    exposed_tool: None,
+                },
+                ToolSpec {
+                    name: "create_strategy".into(),
+                    description: CREATE_STRATEGY.into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string", "description": "The strategy to build and backtest, in the user's own words: entries, exits, stops, sizing."}
+                        },
+                        "required": ["description"]
+                    }),
+                    exposed_tool: None,
+                },
+                ToolSpec {
+                    name: "scan_market".into(),
+                    description: SCAN_MARKET.into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "criteria": {"type": "string", "description": "What to look for, in the user's own words (e.g. 'biggest gainers', 'RSI extremes', 'highest volatility')."},
+                            "metric": {"type": "string", "description": "rsi | atr_percent | change_percent -- pick the one matching the criteria; omit for the default."},
+                            "timeframe": {"type": "string", "description": "The resolution to measure on, e.g. '1h'; omit for the default."}
+                        },
+                        "required": ["criteria"]
+                    }),
+                    exposed_tool: None,
+                },
+                ToolSpec {
                     name: "compare_timeframes".into(),
                     description: COMPARE_TIMEFRAMES.into(),
                     input_schema: confluence_schema(false),
@@ -784,6 +822,9 @@ impl ToolRegistry {
             "open_chart" => open_chart_tool(ctx, &call.input).await,
             "set_chart" => set_chart_tool(ctx, &call.input).await,
                 "look_at_chart" => look_at_chart_tool(ctx, &call.input).await,
+        "create_indicator" => create_pipeline_tool("create_indicator", &call.input, "description").await,
+        "create_strategy" => create_pipeline_tool("create_strategy", &call.input, "description").await,
+        "scan_market" => scan_market_tool(&call.input).await,
             "compare_timeframes" => compare_timeframes(ctx, &call.input).await,
             "cross_timeframe_confluence" => cross_timeframe_confluence(ctx, &call.input).await,
             "backtest_strategy" => backtest_strategy(ctx, &call.input).await,
@@ -1421,6 +1462,29 @@ const LOOK_AT_CHART: &str = "Capture a fresh image of the chart on the user's sc
     first; omit both to capture what the user is looking at. The image arrives with the tool \
     result when the screen answers; if no screen is attached (the user is away, a server-side \
     run) the result says so instead. Budget a few captures per run, not one per turn.";
+
+/// `create_indicator` — build a chart indicator from a description.
+const CREATE_INDICATOR: &str = "Create a chart indicator from a natural-language \
+    description. Call this the moment the user asks to BUILD, CREATE, or MAKE an \
+    indicator, signal, or drawing tool -- never describe how they could do it \
+    themselves elsewhere. The studio's pipeline drafts the script, validates it \
+    against the real grammar, previews it on live candles, attaches it to the \
+    user's chart, and reports back what it detects, what it drew, and what to \
+    tune. Pass the user's request verbatim as `description`.";
+
+/// `create_strategy` — build a backtestable strategy from a description.
+const CREATE_STRATEGY: &str = "Create a backtestable trading strategy from a \
+    natural-language description. Call this when the user asks to BUILD a \
+    strategy, entries and exits, or a backtest. The pipeline generates the \
+    strategy, simulates it, and reports the result. Pass the user's request \
+    verbatim as `description`.";
+
+/// `scan_market` — rank the market by one measurement.
+const SCAN_MARKET: &str = "Scan the market: rank many symbols by one measurement \
+    (RSI, volatility, percent change) and report the leaders. Call this when the \
+    user asks to SCAN, SCREEN, or FIND markets -- 'what is moving', 'overbought \
+    coins', 'highest volume'. The results land as a ranked table the user can \
+    open straight onto a chart.";
 
 const CROSS_TIMEFRAME_CONFLUENCE: &str = "Price levels where several timeframes' swings \
     cluster within `tolerance_pct`: a level three timeframes share is confluence; one \
@@ -2580,6 +2644,53 @@ async fn look_at_chart_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value
         "note": "the capture was requested from the user's screen; when it answers, the image \
                  arrives with this turn's results. If nothing arrives, answer from the data \
                  you already have.",
+    }))
+}
+
+/// One builder for the pipeline tools: the description rides to the shell,
+/// which runs the generation flow the user watches.
+async fn create_pipeline_tool(tool: &str, args: &Value, field: &str) -> Result<Value, AgentError> {
+    let description = args
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AgentError::InvalidToolArgs {
+            tool: tool.into(),
+            reason: format!("`{field}` must be a non-empty string"),
+        })?;
+    let action = match tool {
+        "create_indicator" => "generate_indicator",
+        "create_strategy" => "generate_strategy",
+        _ => unreachable!(),
+    };
+    Ok(json!({
+        "ok": true,
+        "ui_command": { "action": action, "description": description },
+        "note": "the request was handed to the studio; the user watches it build and gets the full report in the chat"
+    }))
+}
+
+/// `scan_market`: the ranked table lands in the chat.
+async fn scan_market_tool(args: &Value) -> Result<Value, AgentError> {
+    let criteria = args
+        .get("criteria")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AgentError::InvalidToolArgs {
+            tool: "scan_market".into(),
+            reason: "`criteria` must be a non-empty string".into(),
+        })?;
+    Ok(json!({
+        "ok": true,
+        "ui_command": {
+            "action": "scan_market",
+            "criteria": criteria,
+            "metric": args.get("metric").and_then(Value::as_str),
+            "timeframe": args.get("timeframe").and_then(Value::as_str)
+        },
+        "note": "the scan is running; the ranked table lands in the chat"
     }))
 }
 

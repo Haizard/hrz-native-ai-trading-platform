@@ -87,6 +87,12 @@ pub enum Progress {
         /// the shell uploads the image under it, the run picks it up.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capture_id: Option<String>,
+        /// The command's remaining fields verbatim (description, criteria,
+        /// ...): the typed fields above serve the chart commands; pipeline
+        /// commands carry their own payload, and a typed struct per command
+        /// would make the relay know more than it needs to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extra: Option<serde_json::Value>,
     },
 }
 
