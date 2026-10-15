@@ -60,7 +60,7 @@ pub use agent_memory::{
     facts_from_thesis, render_recall, MemoryRow, MemorySource, MemoryWriter, NewMemory,
     MAX_CONTENT_CHARS, RECALL_LIMIT,
 };
-pub use authoring::{AuthorAnswer, AuthorRequest, AuthoringContext, ChatTurn, SavedSkill, SkillWriter};
+pub use authoring::{AuthorAnswer, AuthorDocument, AuthorImage, AuthorRequest, AuthoringContext, ChatTurn, SavedSkill, SkillWriter};
 pub use capability_view::{CapabilityView, SkillVerdict};
 pub use chart_context::{
     ChartContext, ChartScreenshot, DrawnLevel, MAX_DRAWINGS, MAX_SCREENSHOT_BYTES,

@@ -590,6 +590,26 @@ async fn agent_loop(socket: WebSocket, state: AppState, user: UserContext, sessi
     connection.closed(&session_id, reason);
 }
 
+/// The wire shape of an author-mode image attachment.
+#[derive(Debug, Deserialize)]
+struct AuthorImagePayload {
+    /// The file's name.
+    name: String,
+    /// Media type, e.g. `image/png`.
+    media_type: String,
+    /// The image's bytes, base64.
+    data_base64: String,
+}
+
+/// The wire shape of an author-mode document attachment.
+#[derive(Debug, Deserialize)]
+struct AuthorDocumentPayload {
+    /// The file's name; its extension chooses the reader.
+    name: String,
+    /// The file's bytes, base64.
+    data_base64: String,
+}
+
 /// The same fields `POST /agent/ask` accepts, minus `include_trace`: a socket
 /// is for watching, not for pulling a full audit payload.
 #[derive(Debug, Deserialize)]
@@ -607,6 +627,15 @@ struct AgentWsRequest {
     /// the agent keeps nothing between calls.
     #[serde(default)]
     history: Vec<ai_agent::ChatTurn>,
+    /// A document attached to an author beat: the book the skill comes from.
+    /// Bytes as base64 -- a PDF cannot travel as JSON text -- decoded and read
+    /// by `documents::prepare` before the interview sees it.
+    document: Option<AuthorDocumentPayload>,
+    /// Images attached to an author beat: the pattern shown, not described.
+    /// Validated by `documents::prepare_image`; the model sees them as image
+    /// blocks on the user's message.
+    #[serde(default)]
+    images: Vec<AuthorImagePayload>,
     timeframes: Option<Vec<String>>,
     /// The chart the user is looking at, when the shell sent one.
     ///
@@ -871,9 +900,45 @@ async fn run_author(state: &AppState, user: &UserContext, request: AgentWsReques
                 .into(),
         });
     };
+    // The attachment is read here, at the boundary: bytes in, bounded text
+    // out, and an unreadable file is a plain notice rather than a failed run.
+    let document = match request.document {
+        Some(attachment) => match crate::documents::prepare(&attachment.name, &attachment.data_base64) {
+            Ok(prepared) => Some(ai_agent::AuthorDocument {
+                name: prepared.name,
+                text: prepared.text,
+            }),
+            Err(reason) => return Some(Frame::Notice { message: reason }),
+        },
+        None => None,
+    };
+    // Images get the same boundary treatment: type and size checked here,
+    // with a plain notice for anything the model cannot be shown. Too many is
+    // said once rather than silently dropping the extras.
+    if request.images.len() > crate::documents::MAX_IMAGES {
+        return Some(Frame::Notice {
+            message: format!(
+                "one beat carries at most {} images; the pattern's best example or two is plenty",
+                crate::documents::MAX_IMAGES
+            ),
+        });
+    }
+    let mut images = Vec::with_capacity(request.images.len());
+    for image in &request.images {
+        match crate::documents::prepare_image(&image.name, &image.media_type, &image.data_base64) {
+            Ok(prepared) => images.push(ai_agent::AuthorImage {
+                name: prepared.name,
+                media_type: prepared.media_type,
+                data_base64: prepared.data_base64,
+            }),
+            Err(reason) => return Some(Frame::Notice { message: reason }),
+        }
+    }
     let author_request = ai_agent::AuthorRequest {
         message: request.question,
         history: request.history,
+        document,
+        images,
         authoring: ai_agent::AuthoringContext::new(
             user.user_id.to_string(),
             std::sync::Arc::new(crate::market_data::DbSkillWriter::new(

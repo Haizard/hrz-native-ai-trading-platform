@@ -7437,13 +7437,26 @@ function paintAsk() {
 let authorMode = false;
 let authorHistory = [];
 
+/// The document attached to the next interview beat, if any: the book the
+/// skill comes from. Sent exactly once -- after the send, the chip clears and
+/// the distillation lives on in the transcript, so a whole book is not
+/// re-uploaded with every answer.
+let authorDocument = null;
+
+/// Images attached to the next beat: chart screenshots and diagrams of the
+/// pattern, shown to the model rather than described in prose. Capped with
+/// the server's budget; cleared with the document after the send.
+let authorImages = [];
+
 /// Enter the interview: the pane switches, the banner explains the mode, and
 /// the opening message asks the trader what they trade.
 function enterAuthorMode() {
   authorMode = true;
   authorHistory = [];
+  clearAuthorAttachments();
   selectPane("thesis");
   el("authorBanner").hidden = false;
+  el("authorDocRow").hidden = false;
   const select = el("skillSelect");
   if (select) select.hidden = true;
   const analyze = el("analyzePinned");
@@ -7462,6 +7475,8 @@ function enterAuthorMode() {
 function exitAuthorMode() {
   authorMode = false;
   el("authorBanner").hidden = true;
+  el("authorDocRow").hidden = true;
+  clearAuthorAttachments();
   const analyze = el("analyzePinned");
   if (analyze) analyze.hidden = false;
   const hint = el("skillHint");
@@ -7484,8 +7499,9 @@ function renderAuthorTranscript() {
   el("thesis").innerHTML = authorHistory
     .map((turn) => {
       const cls = turn.role === "assistant" ? "turn" : "turn q";
+      const marker = turn.doc ? `📎 ${escapeHtml(turn.doc)} — ` : "";
       return `<div class="${cls}"><p class="${turn.role === "assistant" ? "" : "q"}">${
-        turn.role === "assistant" ? markdownish(turn.text) : escapeHtml(turn.text)
+        turn.role === "assistant" ? markdownish(turn.text) : marker + escapeHtml(turn.text)
       }</p></div>`;
     })
     .join("") + (asking ? `<p class="empty">Thinking…</p>` : "");
@@ -7497,10 +7513,84 @@ function markdownish(text) {
   return escapeHtml(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 }
 
+async function onAuthorFile() {
+  const file = el("authorFile").files && el("authorFile").files[0];
+  if (!file) return;
+  const extension = (file.name.split(".").pop() || "").toLowerCase();
+  const isDocument = ["pdf", "txt", "md", "markdown", "text", "log"].includes(extension);
+  const isImage = ["png", "jpg", "jpeg", "webp", "gif"].includes(extension);
+  if (!isDocument && !isImage) {
+    note(`the interview reads PDF, txt and markdown files and PNG/JPEG/WebP/GIF images -- ${file.name} is none of those`);
+    el("authorFile").value = "";
+    return;
+  }
+  const limit = isImage ? 4 * 1024 * 1024 : 20 * 1024 * 1024;
+  if (file.size > limit) {
+    note(`${file.name} is over the ${isImage ? "4 MB image" : "20 MB attachment"} limit`);
+    el("authorFile").value = "";
+    return;
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+  const data_base64 = String(dataUrl).split(",", 2)[1] || "";
+  if (isImage) {
+    if (authorImages.length >= 3) {
+      note("one beat carries at most 3 images; the pattern's best example or two is plenty");
+    } else {
+      const media_type =
+        file.type && file.type.startsWith("image/")
+          ? file.type
+          : { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" }[extension];
+      authorImages.push({ name: file.name, media_type, data_base64 });
+    }
+  } else {
+    authorDocument = { name: file.name, data_base64 };
+  }
+  renderAuthorChips();
+  el("authorFile").value = "";
+}
+
+/// One chip per attachment, each with its own remove. The chips are the whole
+/// of what the next beat carries, so they must be exactly right.
+function renderAuthorChips() {
+  const chips = el("authorChips");
+  const pretty = (size) => (size >= 1024 * 1024 ? (size / (1024 * 1024)).toFixed(1) + " MB" : Math.ceil(size / 1024) + " KB");
+  const chip = (label, remove) =>
+    `<span class="aiChip" style="gap:6px; align-items:center;">${escapeHtml(label)}` +
+    `<button type="button" data-remove="${remove}" title="Remove the attachment" style="padding:0 4px; cursor:pointer;">×</button></span>`;
+  let html = "";
+  if (authorDocument) {
+    html += chip(`📕 ${authorDocument.name} (${pretty(authorDocument.data_base64.length * 0.75)})`, "doc");
+  }
+  authorImages.forEach((image, i) => {
+    html += chip(`🖼 ${image.name} (${pretty(image.data_base64.length * 0.75)})`, `img-${i}`);
+  });
+  chips.innerHTML = html;
+}
+
+/// Take every attachment off the next beat. The file input is reset too, or
+/// picking the same file twice in a row would fire no change event at all.
+function clearAuthorAttachments() {
+  authorDocument = null;
+  authorImages = [];
+  renderAuthorChips();
+  const file = el("authorFile");
+  if (file) file.value = "";
+}
+
 /// One interview beat: the trader's message goes to the author endpoint with
 /// the whole transcript, and the reply lands in `applyAgentFrame`.
 async function askAuthor(question) {
-  authorHistory.push({ role: "user", text: question });
+  // The document rides this one beat and is marked on the turn so the
+  // transcript shows which message the book arrived with.
+  const document = authorDocument;
+  const images = authorImages;
+  const attachments = [...(document ? [document.name] : []), ...images.map((image) => image.name)];
+  authorHistory.push({ role: "user", text: question, doc: attachments.length ? attachments.join(", ") : null });
   asking = true;
   el("question").value = "";
   paintAsk();
@@ -7513,9 +7603,12 @@ async function askAuthor(question) {
         mode: "author",
         symbol: activeSymbol(),
         question,
-        history: authorHistory.slice(0, -1),
+        history: authorHistory.slice(0, -1).map(({ role, text }) => ({ role, text })),
+        ...(document ? { document } : {}),
+        ...(images.length ? { images } : {}),
       })
     );
+    if (document || images.length) clearAuthorAttachments();
   } catch (error) {
     asking = false;
     authorHistory.push({ role: "assistant", text: `The agent channel refused: ${error.message}` });
@@ -10137,6 +10230,16 @@ async function main() {
   el("skillTemplate").onchange = applySkillTemplate;
   el("skillCreateAI").onclick = enterAuthorMode;
   el("authorExit").onclick = exitAuthorMode;
+el("authorAttach").addEventListener("click", () => el("authorFile").click());
+el("authorFile").addEventListener("change", onAuthorFile);
+el("authorChips").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-remove]");
+  if (!button) return;
+  const what = button.dataset.remove;
+  if (what === "doc") authorDocument = null;
+  else if (what.startsWith("img-")) authorImages.splice(Number(what.slice(4)), 1);
+  renderAuthorChips();
+});
   document.querySelectorAll("[data-pane]").forEach((tab) => {
     if (tab.dataset.pane === "skills") {
       tab.addEventListener("click", () => loadSkills());

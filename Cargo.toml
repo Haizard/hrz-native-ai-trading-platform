@@ -94,6 +94,12 @@ serde      = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 serde_yaml = "0.9"
 
+# --- documents ---
+# Skill authoring accepts book/note attachments (docs/47): the gateway extracts
+# their text before the interview sees them. Pure-Rust PDF text extraction --
+# no native library -- so the gateway builds the same on every target.
+pdf-extract = "0.9"
+
 # --- errors ---
 thiserror = "2"
 anyhow    = "1"

@@ -223,6 +223,13 @@ impl Default for SkillRisk {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkillExample {
     /// What happened, with numbers where they are known.
+    ///
+    /// The alias is load-bearing: the authoring interview's tool schema spent
+    /// a while asking models for `walkthrough`, and a required field with
+    /// another name is a draft that can never validate -- the model obeys the
+    /// schema it sees, serde insists on the one it knows, and the user gets
+    /// "missing field `description`" five times in a row.
+    #[serde(default, alias = "walkthrough")]
     pub description: String,
 }
 

@@ -52,6 +52,7 @@ pub mod bots;
 pub mod broker_routes;
 pub mod capabilities;
 pub mod dom;
+pub mod documents;
 pub mod chart_routes;
 pub mod drawing_routes;
 pub mod error;

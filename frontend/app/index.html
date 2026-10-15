@@ -1424,6 +1424,23 @@
         <span class="muted">✦ Authoring a skill — describe the pattern, answer the interview; it saves to your library, then runs on this chart.</span>
         <button id="authorExit" type="button">Exit authoring</button>
       </div>
+      <!--
+        The book way into a skill (docs/47): a trader's methodology often
+        already exists as a PDF or as notes. The file's bytes go to the
+        gateway, its text comes back into the interview, and the agent's
+        first reply is the summary plus the skill it proposes to write --
+        confirmed by the trader before anything is saved. The chip is the
+        reminder of which document the current beat carries; the document is
+        sent once, because its distillation lives on in the transcript.
+      -->
+      <div id="authorDocRow" class="row" hidden style="gap:8px; align-items:center; margin-bottom:6px;">
+        <button id="authorAttach" type="button"
+                title="Attach a trading book or notes (PDF, txt, markdown) or images of the pattern (PNG, JPEG…) — the agent reads and summarizes the book, looks at your images, and proposes a skill you confirm before it is saved">
+          📎 Attach book / image
+        </button>
+        <input id="authorFile" type="file" accept=".pdf,.txt,.md,.markdown,.text,.log,.png,.jpg,.jpeg,.webp,.gif" hidden />
+        <span id="authorChips" style="display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap;"></span>
+      </div>
       <div class="row" id="skillPinRow" style="align-items:flex-start;">
         <select id="skillSelect" class="aiChip modelChip" multiple size="3"
                 title="Pin one or more skills — the agent applies them to this chart and draws what they find. Ctrl/⌘-click to stack.">

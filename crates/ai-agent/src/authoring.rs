@@ -81,6 +81,39 @@ pub struct ChatTurn {
     pub text: String,
 }
 
+/// A document the trader attached to this beat of the interview.
+///
+/// The text is extracted one layer up -- the gateway parses the PDF or reads
+/// the text file, and this crate stays parser-free -- and already bounded,
+/// with the cut marked when an excerpt is all that fit. The interview treats
+/// the document as source material: read it, summarize what it teaches,
+/// propose the skill it implies, and confirm before saving, exactly like a
+/// spoken description.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorDocument {
+    /// The file's name, e.g. `ict-concepts.pdf`.
+    pub name: String,
+    /// The extracted text. May be an excerpt; the gateway marks the cut, and
+    /// the model must own that rather than claim coverage it did not read.
+    pub text: String,
+}
+
+/// An image the trader attached to this beat: a chart screenshot, a diagram
+/// from the book, a hand-drawn sketch of the pattern.
+///
+/// Images are *illustration*, not data -- the same posture the chart-context
+/// screenshot takes. The model is told to read the pattern off them, never to
+/// transcribe prices. The base64 arrives already encoded from the browser.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorImage {
+    /// The file's name, e.g. `fvg-example.png`.
+    pub name: String,
+    /// Media type, e.g. `image/png`.
+    pub media_type: String,
+    /// Base64-encoded image data.
+    pub data_base64: String,
+}
+
 /// One user message in an authoring interview.
 pub struct AuthorRequest {
     /// What the user just said.
@@ -88,6 +121,10 @@ pub struct AuthorRequest {
     /// The interview so far, oldest first. The caller keeps it; the agent
     /// keeps nothing between calls.
     pub history: Vec<ChatTurn>,
+    /// A document attached to this beat, when the trader sent one.
+    pub document: Option<AuthorDocument>,
+    /// Images attached to this beat: the pattern, shown rather than described.
+    pub images: Vec<AuthorImage>,
     /// Where a finished draft is saved.
     pub authoring: AuthoringContext,
 }
@@ -147,6 +184,23 @@ which drawing kind (rect for a zone, hline for a level, trendline for a slope) a
 names the recipe, e.g. \"DRAW a rect from the gap candle's time_ms at its high to the current \
 candle's time_ms at its low\".\n\
 - `invalidation` says what kills the zone or setup; `examples` walk through one real occurrence.\n\n\
+## Documents: books and notes the trader attaches\n\
+- The trader may attach a document -- a trading book, course notes, their own journal. Its\n\
+  extracted text arrives delimited inside their message.\n\
+- READ it. The first reply after a document arrives is NOT a question: it is a summary of what\n\
+  the document teaches -- the core concepts, the setup mechanics, the entries, the risk rules --\n\
+  in a few tight paragraphs, followed by the skill you propose to write from it: its name, what\n\
+  it would detect, and what it would DRAW on the chart.\n\
+- Then ask the trader to confirm or correct the proposal, exactly like the confirm step of a\n\
+  spoken interview. Only save after they confirm -- or when they tell you to save.\n\
+- If the document is marked as an excerpt, say plainly that you read an excerpt and propose from\n\
+  what you saw; never claim to have read the parts that were cut.\n\
+- Images may arrive alongside the message: chart screenshots, diagrams, the trader's own\n\
+  sketches of the pattern. LOOK at them and name what you see -- the candles that make the\n\
+  pattern, the zone's shape, where the entry sits -- and use that as the pattern's definition.\n\
+  Never transcribe prices off an image: it is illustration, not data.\n\
+- A book usually holds MORE than one skill. Propose the single skill that captures its core\n\
+  setup first, and offer to author the rest one at a time after.\n\
 ## Saving\n\
 Call `save_skill_draft` with the complete document. Validation is strict; if it comes back with \
 an error, fix the named field and call again -- never describe a skill you have not saved. After \
@@ -184,10 +238,9 @@ fn save_draft_spec() -> ToolSpec {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "title": {"type": "string"},
-                            "walkthrough": {"type": "string"}
+                            "description": {"type": "string", "description": "What happened, with numbers where they are known."}
                         },
-                        "required": ["title", "walkthrough"]
+                        "required": ["description"]
                     },
                     "description": "Worked occurrences, optional."
                 },
@@ -278,13 +331,46 @@ impl Agent {
             };
             push_merged(&mut messages, role, turn.text.clone());
         }
-        push_merged(&mut messages, Role::User, request.message.clone());
+                // The document rides the user's own message, delimited, so the
+        // transcript stays text-only and a resumed interview still reads: the
+        // distillation lives on in the assistant's summary turn.
+        let message = match &request.document {
+            Some(document) => format!(
+                "[The trader attached a document: `{}`. Its extracted text follows, delimited; \
+                 treat it as the interview's source material.]\n\
+                 --- BEGIN DOCUMENT {} ---\n{}\n--- END DOCUMENT ---\n\n{}",
+                document.name, document.name, document.text, request.message
+            ),
+            None => request.message.clone(),
+        };
+        // Images ride the same user message as Image blocks, merged into the
+        // previous user turn when there is one -- providers reject consecutive
+        // same-role messages, so a fresh Message is only for a clean role edge.
+        if request.images.is_empty() {
+            push_merged(&mut messages, Role::User, message);
+        } else {
+            let mut content = vec![ContentBlock::Text(message)];
+            for image in &request.images {
+                content.push(ContentBlock::Image {
+                    media_type: image.media_type.clone(),
+                    data: image.data_base64.clone(),
+                });
+            }
+            match messages.last_mut() {
+                Some(last) if last.role == Role::User => last.content.extend(content),
+                _ => messages.push(Message {
+                    role: Role::User,
+                    content,
+                }),
+            }
+        }
 
         let mut usage = Usage {
             input_tokens: None,
             output_tokens: None,
         };
         let mut turns = 0_usize;
+        let mut last_problems: Option<Vec<String>> = None;
         // One user message should cost at most a few round trips: a text
         // reply is one; a draft that failed validation twice is the unusual
         // case the budget exists for.
@@ -351,6 +437,11 @@ impl Agent {
                         });
                     }
                     Err(errors) => {
+                        // The problems go to the model as the tool result, but the interview's
+                        // own log needs them too: "the draft kept failing validation" is
+                        // undebuggable without what kept failing.
+                        tracing::warn!(problems = ?errors, "skill draft failed validation");
+                        last_problems = Some(errors.clone());
                         results.push(ToolResult {
                             tool_use_id: call.id.clone(),
                             content: json!({
@@ -370,9 +461,16 @@ impl Agent {
         }
 
         Ok(AuthorAnswer {
-            message: "The draft kept failing validation. Tell me the pattern's name and its \
-                      rules once more, plainly, and I will write it up cleanly."
-                .into(),
+            message: last_problems.map_or_else(
+                || "The draft kept failing validation. Tell me the pattern's name and its \
+                    rules once more, plainly, and I will write it up cleanly."
+                    .into(),
+                |problems| format!(
+                    "I could not save the draft -- the validator said: {}. Let me fix that; \
+                     confirm once more and I will save it right.",
+                    problems.join("; ")
+                ),
+            ),
             saved: None,
             turns,
             usage,
@@ -492,6 +590,8 @@ mod tests {
         AuthorRequest {
             message: message.into(),
             history,
+            document: None,
+            images: vec![],
             authoring: AuthoringContext::new("user-1", writer),
         }
     }
