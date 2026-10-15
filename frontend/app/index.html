@@ -1449,11 +1449,17 @@
         <input id="question" placeholder="find me a long setup using my liquidity-sweep skill" />
         <button id="analyzePinned" type="button"
                 title="Run the pinned skill on this chart and draw the patterns it finds">Analyze chart</button>
+        <button id="watchToggle" type="button" aria-pressed="false"
+                title="Watch this chart's AI zones around the clock — when price touches one, the agent wakes with the pinned skill and re-reads the chart">👁 Watch</button>
         <button id="ask" class="primary">Ask</button>
       </div>
       <p class="muted" id="skillHint" style="margin:4px 0 8px; font-size:11px;">
         Pin a skill (or create one in Skills), then Analyze chart. The agent uses that methodology on the open chart and draws zones, lines, and setup markers for you.
       </p>
+      <details id="watchPanel" class="ws-extra" hidden>
+        <summary>👁 Watcher <span id="watchState" class="muted"></span></summary>
+        <div id="watchEvents"><p class="empty">No zone touches yet.</p></div>
+      </details>
       <!--
         Attaching the chart is a *mode*, not a one-shot action. It stays on until
         it is switched off, because the question that follows is usually a

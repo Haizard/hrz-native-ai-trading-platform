@@ -83,6 +83,10 @@ pub enum Progress {
         symbol: Option<String>,
         /// The timeframe the command names, when it names one.
         timeframe: Option<String>,
+        /// The upload rendezvous id, when the command asks for a capture:
+        /// the shell uploads the image under it, the run picks it up.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capture_id: Option<String>,
     },
 }
 

@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
@@ -368,4 +369,57 @@ pub(crate) fn to_response_with_chart(
             .map(ChartSummary::from_context),
         trace: include_trace.then_some(answer.trace),
     }
+}
+
+
+/// Body of `POST /agent/captures`: the shell's half of the capture
+/// rendezvous (`docs/48`).
+#[derive(Debug, Deserialize)]
+pub struct CaptureUploadBody {
+    /// The rendezvous id from the `capture_chart` command the shell answered.
+    pub capture_id: String,
+    /// The image's media type; only what the provider accepts travels further.
+    pub media_type: String,
+    /// Base64-encoded image bytes.
+    pub data: String,
+}
+
+/// `POST /agent/captures` (`docs/48`).
+///
+/// The shell uploads the canvas capture a run asked for. The run polls the
+/// buffer from its own side; this handler's whole job is to store the image
+/// under the rendezvous id, tagged with the authenticated user so no upload
+/// can feed another user's run. Nothing is confirmed to the shell beyond the
+/// store: the run reports an unanswered capture itself.
+pub async fn upload_capture(
+    State(state): State<AppState>,
+    user: UserContext,
+    ApiJson(body): ApiJson<CaptureUploadBody>,
+) -> Result<StatusCode, ApiError> {
+    if !ai_agent::chart_context::SCREENSHOT_MEDIA_TYPES.contains(&body.media_type.as_str()) {
+        return Err(ApiError::bad_request(
+            "UNSUPPORTED_IMAGE_TYPE",
+            &format!(
+                "{} is not accepted; use one of {}",
+                body.media_type,
+                ai_agent::chart_context::SCREENSHOT_MEDIA_TYPES.join(", ")
+            ),
+        ));
+    }
+    if body.data.len() > 8 * 1024 * 1024 {
+        return Err(ApiError::bad_request(
+            "CAPTURE_TOO_LARGE",
+            "a capture over 8 MB of base64 is not a chart, it is a photo album",
+        ));
+    }
+    state.captures.put(
+        &user.user_id.to_string(),
+        &body.capture_id,
+        ai_agent::chart_context::ChartScreenshot {
+            media_type: body.media_type,
+            data: body.data,
+            label: Some("on-demand chart capture".to_string()),
+        },
+    );
+    Ok(StatusCode::NO_CONTENT)
 }

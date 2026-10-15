@@ -228,6 +228,12 @@ pub struct ToolContext<'a> {
     /// rather than capture into the void -- a snapshot the model believes
     /// exists and nothing can retrieve is worse than the refusal.
     pub snapshots: Option<&'a dyn SnapshotStore>,
+    /// The rendezvous for on-demand chart captures, when the run has a screen.
+    ///
+    /// `None` -- a server-side run, the user away, tests -- makes
+    /// `look_at_chart` report "no screen is attached" rather than request a
+    /// capture nothing will ever answer.
+    pub captures: Option<&'a dyn crate::captures::ChartCaptureSource>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -249,6 +255,7 @@ impl<'a> ToolContext<'a> {
             memory_user_id: None,
             capabilities: None,
             snapshots: None,
+            captures: None,
         }
     }
 
@@ -325,6 +332,13 @@ impl<'a> ToolContext<'a> {
             .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(self.default_lookback);
         requested.clamp(1, self.max_lookback)
+    }
+
+    /// Attach the capture rendezvous for a run that has a screen behind it.
+    #[must_use]
+    pub fn with_captures(mut self, captures: &'a dyn crate::captures::ChartCaptureSource) -> Self {
+        self.captures = Some(captures);
+        self
     }
 
     /// Attach the chart viewport the question arrived with.
@@ -568,6 +582,19 @@ impl ToolRegistry {
                     exposed_tool: None,
                 },
                 ToolSpec {
+                    name: "look_at_chart".into(),
+                    description: LOOK_AT_CHART.into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string", "description": "Switch the screen to this symbol before capturing; omit to capture what the user is looking at."},
+                            "timeframe": {"type": "string", "description": "Switch the screen to this resolution before capturing; omit to keep the user's own."}
+                        },
+                        "required": []
+                    }),
+                    exposed_tool: None,
+                },
+                ToolSpec {
                     name: "compare_timeframes".into(),
                     description: COMPARE_TIMEFRAMES.into(),
                     input_schema: confluence_schema(false),
@@ -756,6 +783,7 @@ impl ToolRegistry {
             "detect_zones" => detect_zones_tool(ctx, &call.input).await,
             "open_chart" => open_chart_tool(ctx, &call.input).await,
             "set_chart" => set_chart_tool(ctx, &call.input).await,
+                "look_at_chart" => look_at_chart_tool(ctx, &call.input).await,
             "compare_timeframes" => compare_timeframes(ctx, &call.input).await,
             "cross_timeframe_confluence" => cross_timeframe_confluence(ctx, &call.input).await,
             "backtest_strategy" => backtest_strategy(ctx, &call.input).await,
@@ -1385,6 +1413,14 @@ const SET_CHART: &str = "Switch the chart the user is looking at to another `sym
     `timeframe` (docs/47). At least one is required. Use it when the analysis should keep \
     the same panel but look elsewhere. The command is issued, not confirmed -- verify with \
     a later screenshot when it matters.";
+
+const LOOK_AT_CHART: &str = "Capture a fresh image of the chart on the user's screen and see it \
+    yourself, mid-analysis. Use it when the numbers are not enough -- you need to SEE the \
+    pattern, the wicks, how price is treating a zone -- or to verify what an open_chart / \
+    set_chart command actually produced. Optional `symbol` / `timeframe` switch the screen \
+    first; omit both to capture what the user is looking at. The image arrives with the tool \
+    result when the screen answers; if no screen is attached (the user is away, a server-side \
+    run) the result says so instead. Budget a few captures per run, not one per turn.";
 
 const CROSS_TIMEFRAME_CONFLUENCE: &str = "Price levels where several timeframes' swings \
     cluster within `tolerance_pct`: a level three timeframes share is confluence; one \
@@ -2488,6 +2524,63 @@ async fn set_chart_tool(_ctx: &ToolContext<'_>, args: &Value) -> Result<Value, A
         });
     }
     Ok(ui_command("set_chart", symbol, timeframe))
+}
+
+/// `look_at_chart`: a capture request, not a capture. The command rides the
+/// progress channel like `open_chart`; the image comes back over the upload
+/// rendezvous and the loop hands it to the model with the tool results. When
+/// no screen is attached the tool says so plainly, the same posture as the
+/// other host capabilities.
+async fn look_at_chart_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "look_at_chart";
+    if ctx.captures.is_none() {
+        return Err(AgentError::ToolFailed {
+            tool: TOOL.into(),
+            reason: "no screen is attached to this run -- the user is away or this is a \
+                     server-side analysis. Answer from the data tools instead."
+                .into(),
+        });
+    }
+    let symbol = args
+        .get("symbol")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_uppercase());
+    let timeframe = match args.get("timeframe").and_then(Value::as_str) {
+        None => None,
+        Some(raw) => Some(
+            raw.parse::<Timeframe>()
+                .map_err(|_| AgentError::InvalidToolArgs {
+                    tool: TOOL.into(),
+                    reason: format!("`timeframe` is not a resolution the engine accepts: `{raw}`"),
+                })?
+                .to_string(),
+        ),
+    };
+    // No uuid dependency in this crate: millis + a process-wide counter is
+    // collision-free for a per-run, per-user rendezvous.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let capture_id = format!(
+        "cap-{millis:x}-{}",
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    Ok(json!({
+        "ok": true,
+        "ui_command": {
+            "action": "capture_chart",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "capture_id": capture_id,
+        },
+        "note": "the capture was requested from the user's screen; when it answers, the image \
+                 arrives with this turn's results. If nothing arrives, answer from the data \
+                 you already have.",
+    }))
 }
 
 /// The `timeframes` array both multi-timeframe tools take: 2 to 6 entries,

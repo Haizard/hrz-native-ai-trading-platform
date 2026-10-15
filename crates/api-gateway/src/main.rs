@@ -135,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         auth,
         bots,
         events: Arc::clone(&bots_events),
+        captures: api_gateway::captures::CaptureBuffer::default(),
         backfill,
         windows,
         symbols,
@@ -180,6 +181,10 @@ async fn main() -> anyhow::Result<()> {
             events_rx,
             market_rx,
         );
+
+    // The zone watcher (docs/48): monitors check in from their own task, so a
+    // slow tick never holds the market loops.
+    api_gateway::watcher::spawn(state.clone());
 
         // Retention: the market tables have no other bound. `xtask collect`
         // and the backfills write candles, trades and book snapshots; without

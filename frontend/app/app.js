@@ -6640,6 +6640,48 @@ function executeUiCommand(cmd) {
       cmd.symbol || activePane.symbol(),
       cmd.timeframe || activePane.timeframe()
     );
+  } else if (cmd.action === "capture_chart") {
+    // A capture request from a run in flight (docs/48): switch the screen if
+    // the command names somewhere else, wait for the redraw, then upload the
+    // canvas over HTTP -- the agent socket is busy running the ask, so the
+    // image takes the plain route back. A failure is silent here by design:
+    // the run reports an unanswered capture itself, with better words than a
+    // toast mid-analysis would.
+    (async () => {
+      try {
+        if (!activePane) return;
+        if (cmd.symbol || cmd.timeframe) {
+          activePane.fillSeries(
+            coverage,
+            (cmd.symbol || activePane.symbol()).toUpperCase(),
+            cmd.timeframe || activePane.timeframe()
+          );
+          // fillSeries is async: a capture taken now would photograph the old
+          // chart and the model would reason about a view nobody is on.
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+        } else {
+          // Still a beat: the pane repaints continuously, and mid-frame
+          // captures read as smears to a vision model.
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        const shot = captureChart(activePane.canvas, activePane.timeframe());
+        if (!shot) return;
+        await fetch("/agent/captures", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(token() ? { authorization: "Bearer " + token() } : {}),
+          },
+          body: JSON.stringify({
+            capture_id: cmd.capture_id,
+            media_type: shot.media_type,
+            data: shot.data,
+          }),
+        });
+      } catch {
+        /* the run's own timeout message owns this failure */
+      }
+    })();
   }
 }
 
@@ -7680,6 +7722,155 @@ async function analyzePinnedSkills() {
     ? analysisQuestionFor(names.join(", "))
     : "Analyze this chart. Find the active structure, zones and levels, DRAW them with create_drawing using get_candles time_ms (milliseconds), then submit the thesis.";
   await ask();
+}
+
+
+/// ---------------------------------------------------------------------------
+/// The zone watcher (docs/48)
+///
+/// The server watches the agent's drawings around the clock; this section is
+/// the toggle and the events feed. The toggle is per symbol+timeframe scope:
+/// one monitor covers every AI drawing on it, so a zone the agent draws next
+/// week is watched from the next tick on.
+/// ---------------------------------------------------------------------------
+
+let watchMonitors = [];
+/// Event ids the panel has already shown: a poll that re-toasts the same
+/// touch every minute would be the watcher's own spam filter failing upward.
+const watchEventsSeen = new Set();
+let watchPollTimer = null;
+
+/// The monitor covering the chart on screen right now, when one exists.
+function watchMonitorForScope() {
+  if (!activePane) return null;
+  const symbol = activePane.symbol();
+  const tf = activePane.timeframe();
+  return watchMonitors.find((m) => m.symbol === symbol && m.timeframe === tf) || null;
+}
+
+function paintWatchToggle() {
+  const btn = el("watchToggle");
+  if (!btn) return;
+  const monitor = watchMonitorForScope();
+  const watching = !!(monitor && monitor.enabled);
+  btn.setAttribute("aria-pressed", watching ? "true" : "false");
+  btn.textContent = watching ? "👁 Watching" : "👁 Watch";
+  btn.classList.toggle("primary", watching);
+  btn.title = watching
+    ? "Watching this chart's AI zones 24/7 — click to pause"
+    : "Watch this chart's AI zones around the clock — when price touches one, the agent wakes with the pinned skill and re-reads the chart";
+  const panel = el("watchPanel");
+  if (panel) panel.hidden = false;
+  const state = el("watchState");
+  if (state) {
+    const active = watchMonitors.filter((m) => m.enabled);
+    state.textContent = active.length
+      ? "— watching " + active.map((m) => m.symbol + " " + m.timeframe).join(", ")
+      : "— nothing watched";
+  }
+}
+
+async function loadWatchMonitors() {
+  if (!token()) return;
+  try {
+    const res = await api("/watch-monitors");
+    watchMonitors = res.monitors || [];
+  } catch {
+    watchMonitors = [];
+  }
+  paintWatchToggle();
+}
+
+async function toggleWatch() {
+  if (!activePane) { pageToast("Open a chart first"); return; }
+  const symbol = activePane.symbol();
+  const tf = activePane.timeframe();
+  const existing = watchMonitorForScope();
+  try {
+    if (existing && existing.enabled) {
+      await api("/watch-monitors/" + existing.id, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: false }),
+      });
+      pageToast("Watcher paused for " + symbol + " " + tf);
+    } else if (existing) {
+      await api("/watch-monitors/" + existing.id, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      });
+      pageToast("Watching " + symbol + " " + tf + " — the agent wakes when price touches its zones");
+    } else {
+      // The pinned skill rides the monitor: the woken run plays by the same
+      // doctrine the user last analyzed with, not a stranger's.
+      const pinned = [...(el("skillSelect")?.selectedOptions || [])].map((o) => o.value).filter(Boolean);
+      await api("/watch-monitors", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          symbol,
+          timeframe: tf,
+          ...(pinned.length ? { skill_id: pinned[0] } : {}),
+        }),
+      });
+      pageToast("Watching " + symbol + " " + tf + " — the agent wakes when price touches its zones");
+    }
+  } catch (e) {
+    pageToast(e.message);
+  }
+  await loadWatchMonitors();
+}
+
+function renderWatchEvents(events) {
+  const out = el("watchEvents");
+  if (!out) return;
+  if (!events.length) {
+    out.innerHTML = '<p class="empty">No zone touches yet.</p>';
+    return;
+  }
+  out.innerHTML = events.map((ev) => {
+    const when = new Date(ev.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    const icon = ev.status === "done" ? "✅" : "⚠️";
+    const summary = (ev.summary || "").slice(0, 220);
+    return '<div class="watchEvent" style="margin:6px 0; font-size:12px;">' +
+      "<div>" + icon + " <b>" + escapeHtml(when) + "</b> · " + escapeHtml(ev.symbol + " " + ev.timeframe) + " — " + escapeHtml(ev.reason) + "</div>" +
+      (summary ? '<div class="muted" style="margin-left:18px;">' + escapeHtml(summary) + "</div>" : "") +
+      "</div>";
+  }).join("");
+}
+
+async function loadWatchEvents(announce) {
+  if (!token()) return;
+  let events = [];
+  try {
+    const res = await api("/watch-events?limit=30");
+    events = res.events || [];
+  } catch {
+    return;
+  }
+  renderWatchEvents(events);
+  // Toast the firings that landed since the last poll, newest last so the
+  // freshest sits on top; and refresh the chart's drawings, because the woken
+  // run may have moved its zones.
+  const fresh = announce ? events.filter((ev) => !watchEventsSeen.has(ev.id)) : [];
+  for (const ev of events) watchEventsSeen.add(ev.id);
+  for (const ev of fresh.reverse()) {
+    pageToast("👁 Watch: " + ev.reason);
+  }
+  if (fresh.length && activePane && typeof activePane.reloadDrawings === "function") {
+    activePane.reloadDrawings(activePane.symbol());
+  }
+}
+
+function startWatchPolling() {
+  if (watchPollTimer) return;
+  loadWatchMonitors();
+  loadWatchEvents(false);
+  watchPollTimer = setInterval(() => {
+    loadWatchMonitors();
+    loadWatchEvents(true);
+  }, 60000);
 }
 
 async function ask() {
@@ -10324,6 +10515,10 @@ el("authorChips").addEventListener("click", (event) => {
   
   // Load skills for the skill selector dropdown
   loadSkills();
+
+  // A returning session (the token outlived the page) starts the watcher's
+  // feed immediately; a fresh sign-in starts it from the sign-in handler.
+  if (token()) startWatchPolling();
   
   // Subscribe to capabilities updates to show MCP status
   // The capabilities are available on /capabilities endpoint
@@ -10463,6 +10658,7 @@ el("authorChips").addEventListener("click", (event) => {
   });
   el("ask").addEventListener("click", ask);
   el("analyzePinned").addEventListener("click", analyzePinnedSkills);
+  el("watchToggle").addEventListener("click", toggleWatch);
   el("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
   el("skillsList").addEventListener("click", (e) => {
     const btn = e.target.closest(".skill-run");

@@ -41,6 +41,7 @@ pub mod retention;
 pub mod skills;
 pub mod strategies;
 pub mod users;
+pub mod watch;
 
 pub use agent_memory::{
     forget as forget_memory, recall as recall_memories, remember, MemoryRow, NewMemory,

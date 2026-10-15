@@ -291,6 +291,10 @@ pub struct AskRequest {
     /// `None` makes `take_snapshot` report "no snapshot store is attached"
     /// rather than capture into the void.
     pub snapshots: Option<SnapshotsContext>,
+    /// The capture rendezvous, when the ask has a live screen behind it.
+    /// `None` -- server-side runs, tests -- makes `look_at_chart` report the
+    /// absence rather than wait on nothing.
+    pub captures: Option<crate::captures::CapturesContext>,
     /// Backtests, when the host provides them.
     ///
     /// `None` is what the two backtest tools report ("no backtest runner is
@@ -319,6 +323,7 @@ impl AskRequest {
             drawings: None,
             memory: None,
             snapshots: None,
+            captures: None,
             backtests: None,
             capabilities: None,
         }
@@ -382,6 +387,16 @@ impl AskRequest {
     #[must_use]
     pub fn with_snapshots(mut self, snapshots: SnapshotsContext) -> Self {
         self.snapshots = Some(snapshots);
+        self
+    }
+
+    /// Attach the capture rendezvous for an ask with a screen behind it.
+    ///
+    /// Host-only like the rest: which screen a capture comes from is a fact
+    /// about the authenticated connection, never a request-body field.
+    #[must_use]
+    pub fn with_captures(mut self, captures: crate::captures::CapturesContext) -> Self {
+        self.captures = Some(captures);
         self
     }
 
@@ -885,6 +900,9 @@ impl Agent {
         if let Some(snapshots) = &request.snapshots {
             ctx = ctx.with_snapshots(snapshots.store().as_ref(), snapshots.user_id());
         }
+        if let Some(captures) = &request.captures {
+            ctx = ctx.with_captures(captures.source().as_ref());
+        }
 
         let mut usage = Usage {
             input_tokens: None,
@@ -896,6 +914,10 @@ impl Agent {
         // every one — the model has the rules from then on, and repeating
         // them would be prompt-stuffing by another door.
         let mut shown_doctrine = std::collections::HashSet::new();
+        // Images dominate a turn's token cost the way attached screenshots
+        // do, so a run gets the same budget the question itself gets.
+        const MAX_CAPTURES_PER_RUN: usize = 3;
+        let mut captures_used = 0_usize;
         // Whether any drawing-family call ran this analysis. The submit gate
         // reads it when the loaded skill's rules say DRAW.
         let mut drew_this_run = false;
@@ -1041,6 +1063,10 @@ impl Agent {
 
             let mut results = Vec::new();
             let mut submitted = None;
+            // Capture requests issued this turn, in issue order: the commands
+            // ride the progress channel the moment they are dispatched, and the
+            // uploads are collected after the call loop, before the results go.
+            let mut pending_captures: Vec<String> = Vec::new();
             for call in &calls {
                 if call.name == SUBMIT_THESIS {
                     submitted = Some(call);
@@ -1126,18 +1152,32 @@ impl Agent {
                 // after the answer about it.
                 if !result.is_error {
                     if let Some(command) = result.content.get("ui_command") {
-                        progress.report(Progress::UiCommand {
-                            action: command
-                                .get("action")
+                        let action = command
+                            .get("action")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        if action == "capture_chart" {
+                            if let Some(id) = command
+                                .get("capture_id")
                                 .and_then(serde_json::Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
+                                .map(str::to_string)
+                            {
+                                pending_captures.push(id);
+                            }
+                        }
+                        progress.report(Progress::UiCommand {
+                            action,
                             symbol: command
                                 .get("symbol")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
                             timeframe: command
                                 .get("timeframe")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            capture_id: command
+                                .get("capture_id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
                         });
@@ -1277,10 +1317,66 @@ impl Agent {
                 });
             }
 
-            if results.is_empty() {
+            // The capture rendezvous (`look_at_chart`): the commands have
+            // been on the screen's progress channel since dispatch, so the
+            // uploads are usually already waiting. Each request gets a short
+            // poll; an unanswered one becomes an honest note, never a hang.
+            let mut visual_blocks: Vec<ContentBlock> = Vec::new();
+            if !pending_captures.is_empty() {
+                if let Some(source) = ctx.captures {
+                    for capture_id in pending_captures.drain(..) {
+                        if captures_used >= MAX_CAPTURES_PER_RUN {
+                            visual_blocks.push(ContentBlock::Text(
+                                "the capture budget for this run is spent; answer from the \
+                                 data you have."
+                                    .into(),
+                            ));
+                            continue;
+                        }
+                        captures_used += 1;
+                        let mut shot = None;
+                        for _ in 0..24 {
+                            if let Some(found) = source.take(&capture_id).await {
+                                shot = Some(found);
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        }
+                        match shot {
+                            Some(found) => {
+                                let label = found
+                                    .label
+                                    .clone()
+                                    .unwrap_or_else(|| "chart capture".to_string());
+                                visual_blocks.push(ContentBlock::Text(format!(
+                                    "The chart capture you requested ({label}) is attached \
+                                     below -- read it like the screenshots that ride a \
+                                     question: illustration, not data."
+                                )));
+                                visual_blocks.push(ContentBlock::Image {
+                                    media_type: found.media_type.clone(),
+                                    data: found.data.clone(),
+                                });
+                            }
+                            None => visual_blocks.push(ContentBlock::Text(
+                                "the screen did not answer the capture request in time -- no \
+                                 image is attached; answer from the data you have."
+                                    .into(),
+                            )),
+                        }
+                    }
+                } else {
+                    // The tool already told the model there is no screen; drop
+                    // the ids so a later turn does not wait on them.
+                    pending_captures.clear();
+                }
+            }
+            if results.is_empty() && visual_blocks.is_empty() {
                 continue;
             }
-            messages.push(Message::tool_results(results));
+            let mut results_message = Message::tool_results(results);
+            results_message.content.extend(visual_blocks);
+            messages.push(results_message);
         }
 
         // Never empty-handed. A model that spent every turn reading and never
@@ -3316,6 +3412,7 @@ mod tests {
                 action,
                 symbol,
                 timeframe,
+                ..
             } => Some((action.clone(), symbol.clone(), timeframe.clone())),
             _ => None,
         });

@@ -52,6 +52,9 @@ pub mod bots;
 pub mod broker_routes;
 pub mod capabilities;
 pub mod dom;
+pub mod captures;
+pub mod watch_routes;
+pub mod watcher;
 pub mod documents;
 pub mod chart_routes;
 pub mod drawing_routes;
@@ -105,6 +108,10 @@ pub struct AppState {
     /// Shared at the top level so the REST and socket routes read the *same*
     /// lanes the watchers write, exactly as `bots` is shared for the raw lanes.
     pub events: Arc<event_engine::EventEngine>,
+    /// On-demand chart captures the shell uploads and runs collect
+    /// (`docs/48`). Shared so the upload route and the socket's run builder
+    /// rendezvous on the same buffer.
+    pub captures: captures::CaptureBuffer,
     /// REST client for the history the in-memory buffer does not cover.
     ///
     /// Chart history is **not** persisted -- the database is a free tier with
@@ -462,6 +469,13 @@ pub fn router(state: AppState) -> Router {
         .route("/events", get(event_engine::events))
         .route("/ws/events/{symbol}", get(event_engine::stream))
         .route("/agent/ask", post(agent_routes::ask))
+        .route("/agent/captures", post(agent_routes::upload_capture))
+        .route("/watch-monitors", get(watch_routes::list_monitors).post(watch_routes::create_monitor))
+        .route(
+            "/watch-monitors/{id}",
+            axum::routing::patch(watch_routes::patch_monitor).delete(watch_routes::delete_monitor),
+        )
+        .route("/watch-events", get(watch_routes::list_events))
         .route(
             "/agent/generate-strategy",
             post(agent_routes::generate_strategy),

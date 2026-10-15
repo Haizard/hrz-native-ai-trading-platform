@@ -790,6 +790,13 @@ where
     let backtests: std::sync::Arc<dyn ai_agent::tools::BacktestRunner> = state.research.clone();
     ask = ask.with_backtests(backtests);
 
+    // The capture rendezvous (`docs/48`): this socket IS the screen, so the
+    // run may ask it for fresh images mid-analysis. The upload comes back
+    // over HTTP because this socket is busy running the ask.
+    ask = ask.with_captures(ai_agent::CapturesContext::new(
+        state.captures.for_user(&user.user_id.to_string()),
+    ));
+
     // The capability view, exactly as on the HTTP path: a socket answer must
     // not be the quiet one where provenance labels are missing (docs/39).
     let (provider, symbol_class) = crate::venue_routes::market_scope();

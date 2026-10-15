@@ -25,6 +25,7 @@ license.workspace = true
 # buys is that a tool result can say where its numbers rest (measured vs
 # derived vs unavailable) instead of letting the model assume.
 [dependencies]
+tokio = { workspace = true }
 analytics-core = { workspace = true }
 capabilities = { workspace = true }
 # YAML is needed here (skills and generated strategies are authored in YAML).
@@ -45,4 +46,3 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }

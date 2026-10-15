@@ -34,6 +34,7 @@ pub mod agent_memory;
 // docs/47: the skill-authoring interview -- pure-language skills the agent
 // itself detects with at runtime.
 pub mod authoring;
+pub mod captures;
 // docs/39: where the registry's declared answers meet the window's observed
 // facts, so a tool result can carry its provenance.
 pub mod capability_view;
@@ -61,6 +62,7 @@ pub use agent_memory::{
     MAX_CONTENT_CHARS, RECALL_LIMIT,
 };
 pub use authoring::{AuthorAnswer, AuthorDocument, AuthorImage, AuthorRequest, AuthoringContext, ChatTurn, SavedSkill, SkillWriter};
+pub use captures::{CapturesContext, ChartCaptureSource};
 pub use capability_view::{CapabilityView, SkillVerdict};
 pub use chart_context::{
     ChartContext, ChartScreenshot, DrawnLevel, MAX_DRAWINGS, MAX_SCREENSHOT_BYTES,

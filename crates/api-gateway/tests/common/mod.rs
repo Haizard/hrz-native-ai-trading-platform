@@ -156,6 +156,7 @@ impl Harness {
             // The same lanes the supervisor's feed watchers write into, so a
             // test that publishes candles sees its events on both surfaces.
             events: supervisor.events(),
+            captures: api_gateway::captures::CaptureBuffer::default(),
             // Nothing in a test may reach a venue. Port 1 refuses instantly, so
             // a route that tries to fetch history fails fast rather than
             // hanging -- and `GET /candles` degrades to what RAM can answer.
