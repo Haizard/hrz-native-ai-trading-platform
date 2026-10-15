@@ -684,20 +684,20 @@ function createChartPane(root, hooks = {}) {
   // same blue accent the chrome uses -- the chart and its frame are one
   // product, not two palettes that happen to share a screen.
   const COLORS = {
-    up: "#089981",
-    down: "#f23645",
-    wick: "#6b7280",
-    profile: "#2a2e39",
-    value: "#2962ff",
-    grid: "#1e222d",
-    text: "#787b86",
-    vwap: "#e3b341",
-    poc: "#d1d4dc",
+    up: "#2ebd85",
+    down: "#f6465d",
+    wick: "#7a8499",
+    profile: "#232a38",
+    value: "#4a9eff",
+    grid: "#161b26",
+    text: "#8a93a6",
+    vwap: "#edb541",
+    poc: "#d6dbe4",
     vah: "#787b86",
     val: "#787b86",
-    entry: "#2962ff",
-    stop: "#f23645",
-    target: "#089981",
+    entry: "#4a9eff",
+    stop: "#f6465d",
+    target: "#2ebd85",
     // The rest of the engine's overlay vocabulary. A level an answer *cited*
     // rather than one of the three trade prices is deliberately the quiet
     // grey-blue the other reference levels use -- it is context, not a plan --
@@ -707,47 +707,47 @@ function createChartPane(root, hooks = {}) {
     other: "#787b86",
     // The drawing tools, one colour per kind so two shapes on the same chart are
     // told apart by what they are rather than by which was drawn first.
-    trendline: "#2962ff",
-    hline: "#e3b341",
+    trendline: "#4a9eff",
+    hline: "#edb541",
     rect: "#9564e2",
     fib: "#4caf8e",
     fib_extension: "#26a69a",
     // The kinds the registry added. Distinct hues, one per kind, so a ray and
     // a trendline on the same chart are told apart by what they are; the
     // ruler is the value-area blue because it measures, like the fib.
-    vline: "#d1d4dc",
-    ray: "#e3b341",
+    vline: "#d6dbe4",
+    ray: "#edb541",
     extended: "#787b86",
-    measure: "#2962ff",
+    measure: "#4a9eff",
     // The 2026-09 parity kinds. Distinct hues again, one per kind; the
     // position boxes take the entry/stop/target vocabulary above because
     // that is what they *are* drawn from.
     channel: "#4caf8e",
-    angle: "#d1d4dc",
-    arc: "#e3b341",
+    angle: "#d6dbe4",
+    arc: "#edb541",
     circle: "#9564e2",
     triangle: "#f59e0b",
-    position_long: "#089981",
-    position_short: "#f23645",
-    dateprice_range: "#2962ff",
+    position_long: "#2ebd85",
+    position_short: "#f6465d",
+    dateprice_range: "#4a9eff",
     // The footprint ladder. Buy-aggressed volume is the ask side winning and
     // sell-aggressed is the bid side winning, which is the same convention the
     // level colours above already follow -- a level drawn green means the same
     // thing in both panels. `footValue` is the value area, and is the profile
     // blue rather than a new colour, because it is the same concept.
     footBuy: "#9564e2",
-    footSell: "#2962ff",
-    footValue: "#2962ff",
+    footSell: "#4a9eff",
+    footValue: "#4a9eff",
     // The two bands the engine ships with. A concept a client defined has no
     // entry here -- it cannot, we have never heard of it -- which is what the
     // side fallback below is for.
-    demand: "#089981",
-    supply: "#f23645",
+    demand: "#2ebd85",
+    supply: "#f6465d",
     // Keyed by the region's `side`, the direction expected to react from the
     // band. Every region carries one, so an unfamiliar band reads as a direction
     // instead of as grey.
-    buy: "#089981",
-    sell: "#f23645",
+    buy: "#2ebd85",
+    sell: "#f6465d",
   };
 
   // The static-layer cache: everything that only changes when the *scene*
@@ -932,7 +932,7 @@ function createChartPane(root, hooks = {}) {
         ctx.font = "600 10px ui-monospace, monospace";
         const label = fmtNum(price);
         const w = ctx.measureText(label).width + 10;
-        ctx.fillStyle = "#2962ff";
+        ctx.fillStyle = "#4a9eff";
         ctx.fillRect(plot.x + plot.w + 1, drag.y - 8, w, 16);
         ctx.fillStyle = "#ffffff";
         ctx.fillText(label, plot.x + plot.w + 6, drag.y + 4);
@@ -1015,9 +1015,9 @@ function createChartPane(root, hooks = {}) {
       ctx.font = "10px ui-monospace, monospace";
       const label = fmtNum(value);
       const w = ctx.measureText(label).width + 10;
-      ctx.fillStyle = "#2a2e39";
+      ctx.fillStyle = "#1c2230";
       ctx.fillRect(hRect.x + hRect.w + 1, vy - 8, w, 16);
-      ctx.fillStyle = "#d1d4dc";
+      ctx.fillStyle = "#e8ebf0";
       ctx.fillText(label, hRect.x + hRect.w + 6, vy + 4);
     }
     if (bar) {
@@ -1027,9 +1027,9 @@ function createChartPane(root, hooks = {}) {
       ctx.font = "10px ui-monospace, monospace";
       const w = ctx.measureText(label).width + 10;
       const tx = Math.min(Math.max(vx - w / 2, plot.x), plot.x + plot.w - w);
-      ctx.fillStyle = "#2a2e39";
+      ctx.fillStyle = "#1c2230";
       ctx.fillRect(tx, scene.height - 22, w, 16);
-      ctx.fillStyle = "#d1d4dc";
+      ctx.fillStyle = "#e8ebf0";
       ctx.fillText(label, tx + 5, scene.height - 10);
       // The bar's OHLC, top-left, in the bar's own direction colour.
       ctx.fillStyle = bar.up ? COLORS.up : COLORS.down;
@@ -1583,7 +1583,7 @@ function createChartPane(root, hooks = {}) {
     const y = Math.min(Math.max(lp.y, 8), scene.height - 20);
     ctx.fillStyle = colour;
     ctx.fillRect(x, y - 8, w, 16);
-    ctx.fillStyle = "#131722";
+    ctx.fillStyle = "#0b0e13";
     ctx.textAlign = "left";
     ctx.fillText(text, x + 4, y + 3.5);
   }
@@ -1814,13 +1814,13 @@ function createChartPane(root, hooks = {}) {
       // lives on the same line.
       if (zone.pinned_edge && strength >= 1.0) {
         const ey = zone.pinned_edge === "top" ? zone.y_top : zone.y_top + zone.h;
-        ctx.strokeStyle = "#2962ff";
+        ctx.strokeStyle = "#4a9eff";
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(x, Math.round(ey) + 0.5);
         ctx.lineTo(right, Math.round(ey) + 0.5);
         ctx.stroke();
-        ctx.fillStyle = "#2962ff";
+        ctx.fillStyle = "#4a9eff";
         for (let i = 0; i < 3; i++) ctx.fillRect(x + 4 + i * 6, ey - 1.5, 3, 3);
       }
 
@@ -2049,7 +2049,7 @@ function createChartPane(root, hooks = {}) {
         // The dominant side gets the bright half of the pair and the other side
         // a dim one: the eye finds the aggressor without reading either number.
         // One measurement still -- the pair is measured as a whole.
-        ctx.fillStyle = "#d1d4dc";
+        ctx.fillStyle = "#e8ebf0";
         ctx.fillText(pair, cell.x + cell.w / 2, cell.y + cell.h / 2);
       }
 
@@ -2084,7 +2084,7 @@ function createChartPane(root, hooks = {}) {
           ctx.stroke();
         }
         rows.forEach(([text, colour], row) => {
-          ctx.fillStyle = colour || "#d1d4dc";
+          ctx.fillStyle = colour || "#e8ebf0";
           ctx.fillText(text, summary.x + summary.w / 2, summary.y + lineH * (row + 0.5));
         });
       }
@@ -8011,7 +8011,7 @@ function captureChart(canvas, timeframeLabel = "") {
       opaque.width = canvas.width;
       opaque.height = canvas.height;
       const octx = opaque.getContext("2d");
-      octx.fillStyle = "#131722";
+      octx.fillStyle = "#0b0e13";
       octx.fillRect(0, 0, opaque.width, opaque.height);
       octx.drawImage(canvas, 0, 0);
       return screenshotFromUrl(opaque.toDataURL("image/png"), timeframeLabel);
@@ -8024,7 +8024,7 @@ function captureChart(canvas, timeframeLabel = "") {
     // A chart is drawn on a transparent background, so without this the PNG has
     // transparent pixels where the model expects a plot. A screenshot that looks
     // like a dark void reads to a vision model as "there is no chart here".
-    ctx.fillStyle = "#131722";
+    ctx.fillStyle = "#0b0e13";
     ctx.fillRect(0, 0, scaled.width, scaled.height);
     ctx.drawImage(canvas, 0, 0, scaled.width, scaled.height);
     return screenshotFromUrl(scaled.toDataURL("image/png"), timeframeLabel);

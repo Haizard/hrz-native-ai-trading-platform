@@ -24,16 +24,47 @@
     the canvas palette in app.js uses, so the chart and its chrome agree.
   */
   :root {
-    --bg: #131722;
-    --panel: #171b26;
-    --panel-2: #1e222d;
-    --line: #262b36;
-    --text: #d1d4dc;
-    --muted: #7a7f8a;
-    --up: #089981;
-    --down: #f23645;
-    --accent: #2962ff;
-    --warn: #e3b341;
+    /* ---- Grounds: layered elevation on a near-black base ---- */
+    --bg: #0b0e13;            /* the app's floor */
+    --bg-elev: #10141c;       /* panels sit on this */
+    --bg-overlay: #151a24;    /* popovers, toasts, raised cards */
+    --panel: #10141c;         /* alias of --bg-elev (legacy name) */
+    --panel-2: #151a24;       /* alias of --bg-overlay */
+
+    /* ---- Lines: 1px borders do the separating, not shadows ---- */
+    --line: #1c2230;          /* standard border */
+    --border-subtle: #161b26; /* hairlines inside panels */
+    --border-strong: #2a3242; /* hover, active edges */
+
+    /* ---- Text ---- */
+    --text: #e8ebf0;          /* primary */
+    --text-dim: #b3bccb;      /* labels */
+    --muted: #8a93a6;         /* secondary */
+    --faint: #5b6577;         /* hints, placeholders */
+
+    /* ---- Market accents: emerald / rose, never neon ---- */
+    --up: #2ebd85;
+    --up-dim: rgba(46, 189, 133, 0.14);
+    --down: #f6465d;
+    --down-dim: rgba(246, 70, 93, 0.14);
+    --buy: #2ebd85;
+    --sell: #f6465d;
+
+    /* ---- UI accents ---- */
+    --accent: #4a9eff;        /* links, focus, primary actions */
+    --accent-dim: rgba(74, 158, 255, 0.14);
+    --warn: #edb541;
+
+    /* ---- Geometry ---- */
+    --radius-s: 4px;          /* controls */
+    --radius-m: 6px;          /* panels */
+    --radius-l: 10px;         /* overlays */
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-2: 0 4px 14px rgba(0, 0, 0, 0.45);
+    --shadow-3: 0 12px 40px rgba(0, 0, 0, 0.6);
+
+    /* ---- Type ---- */
+    --font-ui: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
     --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -865,11 +896,11 @@
     border: 1px solid var(--line); border-radius: 4px;
     color: var(--muted); white-space: nowrap;
   }
-  .feedStatus[data-state="live"] { color: #089981; border-color: #089981; }
+  .feedStatus[data-state="live"] { color: var(--up); border-color: var(--up); }
   .feedStatus[data-state="stale"],
   .feedStatus[data-state="behind"],
-  .feedStatus[data-state="nofeed"] { color: #e3b341; border-color: #e3b341; }
-  .feedStatus[data-state="offline"] { color: #f23645; border-color: #f23645; }
+  .feedStatus[data-state="nofeed"] { color: var(--warn); border-color: var(--warn); }
+  .feedStatus[data-state="offline"] { color: var(--down); border-color: var(--down); }
 
   /*
     Responsive layout.
@@ -1012,7 +1043,140 @@
     margin-bottom: 10px; background: var(--panel-2);
   }
   .aiCurrent .muted { display: block; font-size: 11.5px; }
-</style>
+
+  /* ================= DESIGN LAYER: institutional dark =================
+     Token-driven restyle. Appended last so equal-specificity rules here win.
+     References: Coinbase Prime / Voltrex — near-black ground, 1px borders,
+     emerald/rose accents, compact type, depth through shadow not glow. */
+
+  ::selection { background: var(--accent-dim); color: var(--text); }
+
+  body {
+    font: 13px/1.5 var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    letter-spacing: 0.005em;
+  }
+
+  /* ---- Header: the command strip ---- */
+  header {
+    padding: 8px 14px;
+    background: linear-gradient(180deg, var(--bg-elev), var(--bg));
+    border-bottom: 1px solid var(--line);
+    box-shadow: var(--shadow-1);
+  }
+  h1 {
+    font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text);
+  }
+  h1 span { color: var(--muted); font-weight: 500; text-transform: none; letter-spacing: 0.02em; }
+
+  /* ---- Controls: inset wells with a quiet edge ---- */
+  select, input, button, textarea {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-s);
+    padding: 6px 9px;
+    transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, color 120ms ease;
+  }
+  select:hover, input:hover, button:hover, textarea:hover { border-color: var(--border-strong); }
+  select:focus-visible, input:focus-visible, button:focus-visible, textarea:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-dim);
+  }
+  input, textarea { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+  input::placeholder, textarea::placeholder { color: var(--faint); }
+
+  /* ---- Buttons: flat, weighted, pressed feel ---- */
+  button {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.015em;
+    color: var(--text-dim);
+  }
+  button:hover { color: var(--text); background: var(--bg-overlay); }
+  button:active { transform: translateY(0.5px); }
+  button.primary {
+    background: var(--accent); border-color: transparent; color: #ffffff;
+    box-shadow: 0 1px 3px rgba(74, 158, 255, 0.35);
+  }
+  button.primary:hover { background: #5ea9ff; color: #ffffff; box-shadow: 0 2px 8px rgba(74, 158, 255, 0.45); }
+  button.danger { background: var(--down); border-color: transparent; color: #ffffff; }
+  button.danger:hover { background: #ff5a6e; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  button[aria-pressed="true"] {
+    background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
+  }
+
+  /* ---- Panels: 1px borders do the separating ---- */
+  aside, .chartPane, #signin, .ws-extra, .card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-m);
+    background: var(--bg-elev);
+    box-shadow: var(--shadow-1);
+  }
+  .splitter { background: var(--border-subtle); }
+  .splitter:hover, .splitter.dragging { background: var(--accent-dim); }
+  .splitter::after { background: var(--border-strong); }
+
+  /* ---- Tabs: underline, not pills ---- */
+  .tab, [role="tab"] {
+    font-weight: 600; letter-spacing: 0.02em; color: var(--muted);
+    border-bottom: 2px solid transparent; border-radius: 0;
+    padding: 6px 10px;
+  }
+  .tab:hover, [role="tab"]:hover { color: var(--text); background: transparent; }
+  .tab.active, .tab[aria-selected="true"], [role="tab"][aria-selected="true"] {
+    color: var(--text); border-bottom-color: var(--accent); background: transparent;
+  }
+
+  /* ---- Scrollbars: thin and quiet ---- */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--faint); }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+
+  /* ---- Toast: raised overlay ---- */
+  .pageToast {
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-l);
+    box-shadow: var(--shadow-3);
+    color: var(--text);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    padding: 10px 16px;
+  }
+
+  /* ---- Chat: messaging, not log ---- */
+  .msg, .bubble, .turn {
+    border-radius: var(--radius-m);
+    border: 1px solid var(--line);
+    background: var(--bg-elev);
+    box-shadow: var(--shadow-1);
+  }
+
+  /* ---- Data: numbers line up ---- */
+  table, .grid, .kv, .stat { font-variant-numeric: tabular-nums; }
+  td, th { border-color: var(--border-subtle); }
+
+  /* ---- Chips ---- */
+  .aiChip, .modelChip {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-s);
+    background: var(--bg);
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  .aiChip:hover, .modelChip:hover { border-color: var(--border-strong); background: var(--bg-overlay); }
+
+  /* ---- Links & status ---- */
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: #5ea9ff; }
+  .muted { color: var(--muted); }
+  .ok { color: var(--up); }
+  .err, .bad { color: var(--down); }
+  .warn { color: var(--warn); }
+
+  </style>
 </head>
 <body>
 
