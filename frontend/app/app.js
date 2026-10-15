@@ -7158,7 +7158,7 @@ function renderTranscript() {
         ? thesisHtml(turn.answer.thesis)
         : turn.error
           ? `<p class="fail">${escapeHtml(turn.error)}</p>`
-          : `<p class="empty">Working…</p>`;
+          : `<div class="skl-line skeleton w70"></div><div class="skl-line skeleton"></div><div class="skl-line skeleton w45"></div>`;
 
       return `<div class="turn">
         <p class="q">${escapeHtml(turn.question)}</p>
@@ -7871,6 +7871,185 @@ function startWatchPolling() {
     loadWatchMonitors();
     loadWatchEvents(true);
   }, 60000);
+}
+
+
+/// ---------------------------------------------------------------------------
+/// The trade ticket (paper): practice orders on live prices.
+///
+/// The ledger is deliberately CLIENT-SIDE: positions and resting limit orders
+/// live in localStorage, fills are the live mark, and the banner says every
+/// time that nothing here touches an exchange. A server-side paper ledger can
+/// replace the store later without the UX changing.
+/// ---------------------------------------------------------------------------
+
+const TT_POS_KEY = "paper.positions.v1";
+const TT_ORD_KEY = "paper.orders.v1";
+const ttState = { side: "buy", type: "market", leverage: 5, mark: null, marks: {} };
+let ttTimer = null;
+
+function ttLoad(key) {
+  try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch { return []; }
+}
+function ttSave(key, rows) {
+  try { localStorage.setItem(key, JSON.stringify(rows)); } catch { /* practice money is not worth a crash */ }
+}
+
+function ttActiveSymbol() {
+  return (typeof activeSymbol === "function" ? activeSymbol() : null) || "BTCUSDT";
+}
+
+/// One ticker's price, whatever the row calls it.
+function ttPriceOf(t) {
+  return t ? (t.price ?? t.last ?? t.last_price ?? t.lastPrice ?? null) : null;
+}
+
+async function ttRefreshMarks() {
+  const positions = ttLoad(TT_POS_KEY);
+  const orders = ttLoad(TT_ORD_KEY);
+  const symbols = [...new Set([ttActiveSymbol(), ...positions.map(p => p.symbol), ...orders.map(o => o.symbol)])];
+  try {
+    const res = await api("/tickers?symbols=" + encodeURIComponent(symbols.join(",")));
+    for (const t of res.tickers || []) {
+      const p = ttPriceOf(t);
+      if (Number.isFinite(p)) ttState.marks[t.symbol] = p;
+    }
+  } catch { /* the last marks stand */ }
+  ttState.mark = ttState.marks[ttActiveSymbol()] ?? null;
+  ttCheckTriggers();
+  ttPaint();
+}
+
+/// Limit fills, liquidations: the resting-order sweep, one pass per poll.
+function ttCheckTriggers() {
+  // Limit orders: a long limit fills at or BELOW its price; a short at or above.
+  const orders = ttLoad(TT_ORD_KEY);
+  const stillResting = [];
+  for (const o of orders) {
+    const mark = ttState.marks[o.symbol];
+    if (!Number.isFinite(mark)) { stillResting.push(o); continue; }
+    const fills = o.side === "buy" ? mark <= o.limit : mark >= o.limit;
+    if (fills) {
+      ttOpenPosition(o.symbol, o.side, o.size, o.limit, o.leverage);
+      pageToast(`limit ${o.side} filled: ${o.size} ${o.symbol} @ ${o.limit}`);
+    } else stillResting.push(o);
+  }
+  ttSave(TT_ORD_KEY, stillResting);
+
+  // Liquidations: mark through the estimated liq closes the position at a loss.
+  const positions = ttLoad(TT_POS_KEY);
+  const survivors = [];
+  for (const p of positions) {
+    const mark = ttState.marks[p.symbol];
+    if (Number.isFinite(mark) && Number.isFinite(p.liq)) {
+      const dead = p.side === "buy" ? mark <= p.liq : mark >= p.liq;
+      if (dead) {
+        pageToast(`liquidated: ${p.side === "buy" ? "long" : "short"} ${p.size} ${p.symbol}`);
+        continue;
+      }
+    }
+    survivors.push(p);
+  }
+  ttSave(TT_POS_KEY, survivors);
+}
+
+function ttOpenPosition(symbol, side, size, entry, leverage) {
+  const positions = ttLoad(TT_POS_KEY);
+  const liq = side === "buy" ? entry * (1 - 0.9 / leverage) : entry * (1 + 0.9 / leverage);
+  positions.push({ id: "p" + Date.now().toString(36) + Math.floor(Math.random() * 1e4), symbol, side, size, entry, leverage, liq, at: Date.now() });
+  ttSave(TT_POS_KEY, positions);
+}
+
+function ttPaint() {
+  const sym = ttActiveSymbol();
+  const mark = ttState.marks[sym];
+  el("ttSymbol").textContent = sym;
+  el("ttMark").textContent = "mark " + (Number.isFinite(mark) ? fmtPrice(mark) : "—");
+  // Facts
+  const size = parseFloat(el("ttSize").value);
+  const px = ttState.type === "limit" ? parseFloat(el("ttLimit").value) : mark;
+  const notional = Number.isFinite(size) && Number.isFinite(px) ? size * px : null;
+  el("ttNotional").textContent = notional ? "$" + notional.toLocaleString("en-US", { maximumFractionDigits: 2 }) : "—";
+  el("ttMargin").textContent = notional ? "$" + (notional / ttState.leverage).toLocaleString("en-US", { maximumFractionDigits: 2 }) : "—";
+  if (Number.isFinite(px)) {
+    const liq = ttState.side === "buy" ? px * (1 - 0.9 / ttState.leverage) : px * (1 + 0.9 / ttState.leverage);
+    el("ttLiq").textContent = fmtPrice(liq);
+  } else el("ttLiq").textContent = "—";
+  // Positions
+  const positions = ttLoad(TT_POS_KEY);
+  el("ttPosRows").innerHTML = positions.map(p => {
+    const m = ttState.marks[p.symbol];
+    const pnl = Number.isFinite(m) ? (m - p.entry) * p.size * (p.side === "buy" ? 1 : -1) : null;
+    const pnlCls = pnl === null ? "" : pnl >= 0 ? "up" : "down";
+    return `<div class="tt-pos-row">
+      <span>${p.symbol}</span>
+      <span class="${p.side === "buy" ? "long" : "short"}">${p.side === "buy" ? "LONG" : "SHORT"} ${p.leverage}×</span>
+      <span>${p.size}</span>
+      <span>${fmtPrice(p.entry)}</span>
+      <span class="pnl ${pnlCls}">${pnl === null ? "—" : (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
+      <span><button type="button" class="tt-close" data-pos="${p.id}">close</button></span>
+    </div>`;
+  }).join("") || '<div class="tt-pos-row"><span class="muted">no open positions</span></div>';
+}
+
+function ttSubmit() {
+  const sym = ttActiveSymbol();
+  const size = parseFloat(el("ttSize").value);
+  if (!Number.isFinite(size) || size <= 0) { pageToast("size must be a positive number"); return; }
+  if (ttState.type === "market") {
+    const mark = ttState.marks[sym];
+    if (!Number.isFinite(mark)) { pageToast("no mark for " + sym + " yet"); return; }
+    ttOpenPosition(sym, ttState.side, size, mark, ttState.leverage);
+    pageToast(`${ttState.side === "buy" ? "long" : "short"} ${size} ${sym} @ ${fmtPrice(mark)}`);
+  } else {
+    const limit = parseFloat(el("ttLimit").value);
+    if (!Number.isFinite(limit) || limit <= 0) { pageToast("limit price must be a positive number"); return; }
+    const orders = ttLoad(TT_ORD_KEY);
+    orders.push({ symbol: sym, side: ttState.side, size, limit, leverage: ttState.leverage, at: Date.now() });
+    ttSave(TT_ORD_KEY, orders);
+    pageToast(`resting: ${ttState.side} ${size} ${sym} @ ${fmtPrice(limit)}`);
+  }
+  ttPaint();
+}
+
+function ttWire() {
+  el("ttBuy").addEventListener("click", () => { ttState.side = "buy"; ttPaintSide(); ttPaint(); });
+  el("ttSell").addEventListener("click", () => { ttState.side = "sell"; ttPaintSide(); ttPaint(); });
+  el("ttTypeMarket").addEventListener("click", () => { ttState.type = "market"; ttPaintType(); ttPaint(); });
+  el("ttTypeLimit").addEventListener("click", () => { ttState.type = "limit"; ttPaintType(); ttPaint(); });
+  el("ttLev").addEventListener("input", () => { ttState.leverage = parseInt(el("ttLev").value, 10); el("ttLevVal").textContent = ttState.leverage + "×"; ttPaint(); });
+  el("ttSize").addEventListener("input", ttPaint);
+  el("ttLimit").addEventListener("input", ttPaint);
+  el("ttSubmit").addEventListener("click", ttSubmit);
+  el("ttPosRows").addEventListener("click", (e) => {
+    const btn = e.target.closest(".tt-close");
+    if (!btn) return;
+    const positions = ttLoad(TT_POS_KEY);
+    const i = positions.findIndex(p => p.id === btn.dataset.pos);
+    if (i < 0) return;
+    const p = positions[i];
+    const m = ttState.marks[p.symbol];
+    const pnl = Number.isFinite(m) ? (m - p.entry) * p.size * (p.side === "buy" ? 1 : -1) : 0;
+    positions.splice(i, 1);
+    ttSave(TT_POS_KEY, positions);
+    pageToast(`closed ${p.symbol}: ${(pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toLocaleString("en-US", { maximumFractionDigits: 2 })}`);
+    ttPaint();
+  });
+  ttPaintSide(); ttPaintType();
+  // The mark loop ticks only while the ticket is on screen.
+  ttRefreshMarks();
+  if (!ttTimer) ttTimer = setInterval(() => { if (!el("pane-trade").hidden) ttRefreshMarks(); }, 3000);
+}
+function ttPaintSide() {
+  el("ttBuy").classList.toggle("on", ttState.side === "buy");
+  el("ttSell").classList.toggle("on", ttState.side === "sell");
+  el("ttSubmit").className = "tt-submit " + ttState.side;
+  el("ttSubmit").textContent = ttState.side === "buy" ? "BUY / LONG" : "SELL / SHORT";
+}
+function ttPaintType() {
+  el("ttTypeMarket").classList.toggle("on", ttState.type === "market");
+  el("ttTypeLimit").classList.toggle("on", ttState.type === "limit");
+  el("ttLimitRow").hidden = ttState.type !== "limit";
 }
 
 async function ask() {
@@ -9908,6 +10087,13 @@ function renderWatchlist() {
   }
 
   rowsEl.innerHTML = "";
+  // First load: shimmer rows stand in for a list that has not arrived.
+  if (!rows.length && !watchlistSearch && !watchlistUniverse.length) {
+    rowsEl.innerHTML = Array.from({ length: 12 }, () =>
+      '<div class="skl-row"><div class="skeleton"></div><div class="skeleton"></div></div>').join("");
+    empty.hidden = true;
+    return;
+  }
   empty.hidden = rows.length > 0;
   if (!rows.length) {
     empty.textContent = watchlistSearch
@@ -10687,6 +10873,7 @@ el("authorChips").addEventListener("click", (event) => {
   el("ask").addEventListener("click", ask);
   el("analyzePinned").addEventListener("click", analyzePinnedSkills);
   el("watchToggle").addEventListener("click", toggleWatch);
+  ttWire();
   el("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
   el("skillsList").addEventListener("click", (e) => {
     const btn = e.target.closest(".skill-run");

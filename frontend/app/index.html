@@ -1234,6 +1234,117 @@
     min-height: 12px;
   }
 
+
+  /* ================= CHAT AS MESSAGING (token pass) ================= */
+  .chat-stream { gap: 12px; padding: 14px 8px; }
+  .msg .avatar {
+    width: 24px; height: 24px; font-size: 12px;
+    border-radius: 50%;
+  }
+  .msg.ai .avatar {
+    background: var(--accent-dim); border: 1px solid var(--accent);
+    color: var(--accent);
+  }
+  .msg.user .avatar {
+    background: var(--bg-overlay); border: 1px solid var(--line); color: var(--muted);
+  }
+  .msg .bubble {
+    border-radius: var(--radius-l); padding: 9px 13px;
+    line-height: 1.55; font-size: 12.5px;
+    box-shadow: var(--shadow-1);
+  }
+  .msg.user .bubble {
+    background: var(--accent-dim); border: 1px solid var(--accent);
+    color: var(--text); border-bottom-right-radius: var(--radius-s);
+  }
+  .msg.ai .bubble {
+    background: var(--bg-elev); border: 1px solid var(--line);
+    color: var(--text); border-bottom-left-radius: var(--radius-s);
+  }
+  .msg .meta { font-size: 10px; color: var(--faint); margin-top: 4px; letter-spacing: 0.02em; }
+  .msg .bubble pre.ws-source {
+    background: var(--bg); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-m); font-size: 11px;
+  }
+  .msg .bubble summary { color: var(--faint); }
+  .msg .bubble summary:hover { color: var(--accent); }
+
+  /* ================= THE BOOK, AS A DESK LADDER ================= */
+  .ladder { font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .ladder-head {
+    display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
+    color: var(--faint); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 6px 6px 3px; border-bottom: 1px solid var(--border-subtle);
+  }
+  .ladder-head span:not(:first-child) { text-align: right; }
+  .ladder-row {
+    display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
+    padding: 2px 6px; position: relative; cursor: default;
+    border-bottom: 1px solid transparent;
+    transition: background 90ms ease;
+  }
+  .ladder-row:hover { background: var(--bg-overlay); }
+  .ladder-row > span { position: relative; z-index: 1; }
+  .ladder-row > span:not(:first-child) { text-align: right; color: var(--text-dim); }
+  .ladder-row.ask > span:first-child { color: var(--down); }
+  .ladder-row.bid > span:first-child { color: var(--up); }
+  .ladder-bar { position: absolute; top: 1px; bottom: 1px; left: 0; z-index: 0; border-radius: 2px; }
+  .ladder-row.bid .ladder-bar { background: var(--up-dim); }
+  .ladder-row.ask .ladder-bar { background: var(--down-dim); }
+
+  /* ================= SKELETON ROWS ================= */
+  .skl-row { display: flex; gap: 8px; padding: 5px 8px; align-items: center; }
+  .skl-row .skeleton:nth-child(1) { width: 34%; height: 11px; }
+  .skl-row .skeleton:nth-child(2) { width: 26%; height: 11px; margin-left: auto; }
+  .skl-line { height: 11px; margin: 6px 0; }
+  .skl-line.w70 { width: 70%; }
+  .skl-line.w45 { width: 45%; }
+
+  /* ================= THE TRADE TICKET (paper) ================= */
+  .tt-banner {
+    font-size: 11px; color: var(--warn); background: rgba(237, 181, 65, 0.08);
+    border: 1px solid rgba(237, 181, 65, 0.3); border-radius: var(--radius-s);
+    padding: 6px 9px; margin-bottom: 10px; line-height: 1.4;
+  }
+  .tt-symbol { font-family: var(--mono); font-size: 15px; font-weight: 700; margin-bottom: 2px; }
+  .tt-mark { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+  .tt-side { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+  .tt-side button {
+    padding: 9px 0; font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
+    border-radius: var(--radius-s);
+  }
+  .tt-side button.buy.on { background: var(--up); border-color: var(--up); color: #06130d; }
+  .tt-side button.sell.on { background: var(--down); border-color: var(--down); color: #fff; }
+  .tt-types { display: flex; gap: 0; margin-bottom: 10px; border: 1px solid var(--line); border-radius: var(--radius-s); overflow: hidden; }
+  .tt-types button { flex: 1; border: 0; border-radius: 0; padding: 6px 0; font-size: 11.5px; }
+  .tt-types button.on { background: var(--accent-dim); color: var(--accent); }
+  .tt-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .tt-row label { flex: 0 0 64px; font-size: 11px; color: var(--muted); }
+  .tt-row input { flex: 1; min-width: 0; text-align: right; }
+  .tt-lev { margin: 4px 0 10px; }
+  .tt-lev .tt-lev-head { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .tt-lev input[type="range"] { width: 100%; accent-color: var(--accent); }
+  .tt-facts { font-family: var(--mono); font-size: 11px; color: var(--text-dim); margin: 8px 0; display: grid; gap: 3px; }
+  .tt-facts .row { display: flex; justify-content: space-between; }
+  .tt-submit { width: 100%; padding: 10px 0; font-size: 13px; font-weight: 700; letter-spacing: 0.05em; border-radius: var(--radius-s); }
+  .tt-submit.buy { background: var(--up); border-color: var(--up); color: #06130d; }
+  .tt-submit.sell { background: var(--down); border-color: var(--down); color: #fff; }
+  .tt-positions { margin-top: 14px; }
+  .tt-positions h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin: 0 0 6px; }
+  .tt-pos-grid { font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .tt-pos-head, .tt-pos-row {
+    display: grid; grid-template-columns: 1.1fr 0.7fr 1fr 1fr 0.9fr auto; gap: 8px;
+    padding: 4px 6px; align-items: center;
+  }
+  .tt-pos-head { color: var(--faint); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.07em; border-bottom: 1px solid var(--border-subtle); }
+  .tt-pos-row { border-bottom: 1px solid var(--border-subtle); }
+  .tt-pos-row > span:not(:first-child) { text-align: right; }
+  .tt-pos-row .long { color: var(--up); }
+  .tt-pos-row .short { color: var(--down); }
+  .tt-pos-row .pnl.up { color: var(--up); }
+  .tt-pos-row .pnl.down { color: var(--down); }
+  .tt-close { padding: 2px 8px; font-size: 10px; }
+
   </style>
 </head>
 <body>
@@ -1634,6 +1745,7 @@
       <button role="tab" data-pane="book" aria-selected="false">Book</button>
       <button role="tab" data-pane="brokers" aria-selected="false">Brokers</button>
       <button role="tab" data-pane="aimodel" aria-selected="false">AI Model</button>
+      <button role="tab" data-pane="trade" aria-selected="false">Trade</button>
       <button type="button" id="asideHide" title="Hide the side panel" aria-label="Hide the side panel">»</button>
     </div>
 
@@ -2038,7 +2150,49 @@
       connect form, verify, disconnect. The API never returns a key, so the
       form is write-only by construction.
     -->
-    <div class="pane" id="pane-brokers" hidden>
+    
+  <!-- The trade ticket: practice orders on live prices. The ledger is
+       client-side on purpose -- nothing here touches an exchange, and the
+       banner says so every time the pane is open. -->
+  <div class="pane" id="pane-trade" hidden>
+    <div class="tt-banner">Paper trading — practice on live prices. Nothing here touches an exchange; positions live in this browser.</div>
+    <div class="tt-symbol" id="ttSymbol">—</div>
+    <div class="tt-mark" id="ttMark">mark —</div>
+    <div class="tt-side">
+      <button type="button" id="ttBuy" class="buy on">BUY / LONG</button>
+      <button type="button" id="ttSell" class="sell">SELL / SHORT</button>
+    </div>
+    <div class="tt-types">
+      <button type="button" id="ttTypeMarket" class="on">Market</button>
+      <button type="button" id="ttTypeLimit">Limit</button>
+    </div>
+    <div class="tt-row" id="ttLimitRow" hidden>
+      <label for="ttLimit">Limit price</label>
+      <input id="ttLimit" inputmode="decimal" placeholder="0.00" />
+    </div>
+    <div class="tt-row">
+      <label for="ttSize">Size (base)</label>
+      <input id="ttSize" inputmode="decimal" placeholder="0.001" />
+    </div>
+    <div class="tt-lev">
+      <div class="tt-lev-head"><span>Leverage</span><span id="ttLevVal" style="font-family:var(--mono)">5×</span></div>
+      <input type="range" id="ttLev" min="1" max="20" step="1" value="5" />
+    </div>
+    <div class="tt-facts">
+      <div class="row"><span>Notional</span><span id="ttNotional">—</span></div>
+      <div class="row"><span>Margin</span><span id="ttMargin">—</span></div>
+      <div class="row"><span>Est. liquidation</span><span id="ttLiq">—</span></div>
+    </div>
+    <button type="button" id="ttSubmit" class="tt-submit buy">BUY / LONG</button>
+    <div class="tt-positions">
+      <h3>Open positions</h3>
+      <div class="tt-pos-grid" id="ttPosGrid">
+        <div class="tt-pos-head"><span>Symbol</span><span>Side</span><span>Size</span><span>Entry</span><span>P&amp;L</span><span></span></div>
+        <div id="ttPosRows"></div>
+      </div>
+    </div>
+  </div>
+  <div class="pane" id="pane-brokers" hidden>
       <h2>Broker connections</h2>
       <p class="muted">
         Connect your exchange API keys. They are sealed with the platform's
