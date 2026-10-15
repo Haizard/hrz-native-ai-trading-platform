@@ -11110,10 +11110,34 @@ el("authorChips").addEventListener("click", (event) => {
   selectPane("chat");
   renderChatMirror();
   el("chatSend").addEventListener("click", chatSend);
-  el("chatAttach").addEventListener("click", () => el("chatFile").click());
-  el("chatFile").addEventListener("change", async () => {
-    const files = [...el("chatFile").files];
-    el("chatFile").value = "";
+  el("chatAttach").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const menu = el("chatAttachMenu");
+    menu.hidden = !menu.hidden;
+    el("chatAttach").classList.toggle("open", !menu.hidden);
+  });
+  document.addEventListener("click", (e) => {
+    const menu = el("chatAttachMenu");
+    if (!menu.hidden && !e.target.closest(".chat-compose")) {
+      menu.hidden = true;
+      el("chatAttach").classList.remove("open");
+    }
+  });
+  el("chatAttachMenu").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-kind]");
+    if (!btn) return;
+    el("chatAttachMenu").hidden = true;
+    el("chatAttach").classList.remove("open");
+    el(btn.dataset.kind === "image" ? "chatFileImage" : "chatFileDoc").click();
+  });
+  el("chatFileImage").addEventListener("change", async () => {
+    const files = [...el("chatFileImage").files];
+    el("chatFileImage").value = "";
+    if (files.length) await chatAttachFiles(files);
+  });
+  el("chatFileDoc").addEventListener("change", async () => {
+    const files = [...el("chatFileDoc").files];
+    el("chatFileDoc").value = "";
     if (files.length) await chatAttachFiles(files);
   });
   el("chatInput").addEventListener("keydown", (e) => {

@@ -1390,6 +1390,24 @@
   .chat-chips .chip img { width: 22px; height: 22px; object-fit: cover; border-radius: 4px; }
   .chat-chips .chip button { padding: 0 4px; font-size: 10px; background: none; border: 0; color: var(--faint); }
   .chat-chips .chip button:hover { color: var(--down); }
+
+  /* The + attach button and its two-option menu. */
+  #chatAttach { font-size: 17px; font-weight: 600; color: var(--text-dim); }
+  #chatAttach:hover { color: var(--text); }
+  #chatAttach.open { background: var(--bg); border-color: var(--line); color: var(--accent); }
+  .chat-attach-menu {
+    position: absolute; left: 8px; bottom: 46px; z-index: 30;
+    background: var(--bg-overlay); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: var(--shadow-2); padding: 4px; min-width: 260px;
+  }
+  .chat-attach-menu button {
+    display: flex; gap: 10px; align-items: center; width: 100%; text-align: left;
+    padding: 8px 10px; background: none; border: 0; border-radius: 7px;
+  }
+  .chat-attach-menu button:hover { background: var(--bg); }
+  .chat-attach-menu .ico { font-size: 16px; }
+  .chat-attach-menu b { display: block; font-size: 12px; font-weight: 600; color: var(--text); }
+  .chat-attach-menu small { display: block; font-size: 10.5px; color: var(--muted); margin-top: 1px; }
   </style>
 </head>
 <body>
@@ -1807,8 +1825,13 @@
   <div class="chat-compose">
     <div id="chatChips" class="chat-chips" hidden></div>
     <textarea id="chatInput" rows="2" placeholder="Ask anything — analyze this chart, build an indicator, scan the market, create a strategy…"></textarea>
-    <button id="chatAttach" type="button" title="Attach images or a document">📎</button>
-    <input type="file" id="chatFile" hidden multiple accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.markdown,.log" />
+    <button id="chatAttach" type="button" title="Attach an image or a document">＋</button>
+    <div id="chatAttachMenu" class="chat-attach-menu" hidden>
+      <button type="button" data-kind="image"><span class="ico">🖼</span><span><b>Image</b><small>A chart screenshot or pattern photo — up to 3 per message</small></span></button>
+      <button type="button" data-kind="doc"><span class="ico">📄</span><span><b>Document</b><small>PDF or text for the agent to read — one per message</small></span></button>
+    </div>
+    <input type="file" id="chatFileImage" hidden multiple accept="image/png,image/jpeg,image/webp,image/gif" />
+    <input type="file" id="chatFileDoc" hidden accept=".pdf,.txt,.md,.markdown,.log" />
     <button id="chatSend" class="primary" type="button" title="Send (Enter)">➤</button>
   </div>
 </div>
