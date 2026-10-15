@@ -8127,7 +8127,7 @@ async function chatRunStrategy(description) {
     savedStrategyId = null;
     paintStrategyActions();
     const repairs = (result.repaired_errors || []).length;
-    working.querySelector(".bubble").innerHTML = `<p>Strategy <b>${escapeHtml(result.document.name)}</b> v${escapeHtml(result.document.version)} is generated and loaded into the Strategy tab — ${result.attempts} attempt(s)` + (repairs ? `, the validator rejected ${repairs} thing(s) and they were repaired` : "") + `. Open the Strategy tab to read the rules, save it as yours, and run a backtest.</p>`;
+    working.querySelector(".bubble").innerHTML = `<p>Strategy <b>${escapeHtml(result.document.name)}</b> v${escapeHtml(result.document.version)} is generated and loaded into the Strategy tab — ${result.attempts} attempt(s)` + (repairs ? `, the validator rejected ${repairs} thing(s) and they were repaired` : "") + ` — it is loaded as your working draft; say the word and I will adjust the rules.</p>`;
   } catch (e) {
     working.querySelector(".bubble").innerHTML = `<p class="fail">Strategy generation failed: ${escapeHtml(e.message)}</p>`;
   }
