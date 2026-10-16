@@ -7684,6 +7684,7 @@ function applyAuthorFrame(payload) {
     const saved = payload.saved;
     exitAuthorMode();
     loadSkills().then(() => analyzeWithSkill(saved.id, saved.name));
+    loadLibrary();
   }
 }
 
@@ -8088,6 +8089,7 @@ async function chatRunIndicator(description, attachments) {
       syncIndicatorChip();
     }
     const report = resp && resp.assistant_message ? resp.assistant_message.content : "Built — see the chart.";
+    loadLibrary();
     working.querySelector(".bubble").innerHTML = report.split(/\n{2,}/).map((para) => `<p>${escapeHtml(para)}</p>`).join("");
   } catch (e) {
     working.querySelector(".bubble").innerHTML = `<p class="fail">The build failed: ${escapeHtml(e.message)}</p>`;
@@ -8126,6 +8128,7 @@ async function chatRunStrategy(description) {
     sourceDirty = true;
     savedStrategyId = null;
     paintStrategyActions();
+    loadLibrary();
     const repairs = (result.repaired_errors || []).length;
     working.querySelector(".bubble").innerHTML = `<p>Strategy <b>${escapeHtml(result.document.name)}</b> v${escapeHtml(result.document.version)} is generated and loaded into the Strategy tab — ${result.attempts} attempt(s)` + (repairs ? `, the validator rejected ${repairs} thing(s) and they were repaired` : "") + ` — it is loaded as your working draft; say the word and I will adjust the rules.</p>`;
   } catch (e) {
@@ -8264,6 +8267,84 @@ async function chatModelUsePlatform() {
   await clearAiModel();
   el("cmMsg").textContent = el("aiMsg").textContent;
   chatModelCardPaint();
+}
+
+/// ---------------------------------------------------------------------------
+/// The Library: everything the chat agents built, one click to use.
+///
+/// Indicators attach to the active chart, skills pin for the next question,
+/// strategies load as the working draft. Filters pick which kinds show.
+/// ---------------------------------------------------------------------------
+let libItems = [];
+let libFilter = "all";
+
+async function loadLibrary() {
+  try {
+    const [workspaces, skills, strategies] = await Promise.all([
+      api("/indicator-workspaces").catch(() => []),
+      api("/skills").catch(() => []),
+      api("/strategies").catch(() => []),
+    ]);
+    const items = [];
+    for (const w of (Array.isArray(workspaces) ? workspaces : (workspaces.workspaces || []))) {
+      items.push({ type: "indicator", id: w.id, name: w.name, meta: `${w.symbol || ""} · ${w.timeframe || ""}`, built: !!w.active_revision_id });
+    }
+    const latest = new Map();
+    for (const s of skills) { const ex = latest.get(s.name); if (!ex || s.version > ex.version) latest.set(s.name, s); }
+    for (const s of latest.values()) items.push({ type: "skill", id: s.id, name: s.name, meta: `v${s.version}` });
+    for (const s of strategies) items.push({ type: "strategy", id: s.id, name: s.name, meta: `v${s.version} · ${(s.created_by || "").replace(/_/g, " ")}` });
+    libItems = items;
+    renderLibrary();
+  } catch { /* unsigned or down: the empty line says it */ }
+}
+
+function renderLibrary() {
+  const icons = { indicator: "📊", skill: "📚", strategy: "📈" };
+  const shown = libItems.filter((i) => libFilter === "all" || i.type === libFilter);
+  el("libEmpty").hidden = shown.length > 0;
+  el("libCount").textContent = libItems.length ? `${libItems.length}` : "";
+  el("libRows").innerHTML = shown.map((i) => `
+    <div class="libRow" data-type="${i.type}" data-id="${i.id}" title="${i.type === "indicator" ? "Attach to the active chart" : i.type === "skill" ? "Pin for the next question" : "Load as the working draft"}">
+      <span class="libIcon">${icons[i.type]}</span>
+      <div class="libBody">
+        <div class="libName">${escapeHtml(i.name)}</div>
+        <div class="libMeta">${escapeHtml(i.meta || "")}</div>
+      </div>
+      <span class="libType">${i.type === "indicator" ? "ind" : i.type === "skill" ? "skl" : "str"}</span>
+    </div>`).join("");
+}
+
+async function libRowUse(type, id) {
+  try {
+    if (type === "indicator") {
+      const ws = await api(`/indicator-workspaces/${id}`);
+      if (!ws.active_revision_id || !activePane) { pageToast("no built revision yet — ask the chat to build it"); return; }
+      const rev = await api(`/indicator-workspaces/${id}/revisions/${ws.active_revision_id}`);
+      if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
+        activePane.attachScript({
+          source: rev.source,
+          inputs: {},
+          name: (rev.preview && rev.preview.name) || ws.name,
+          inputsSpec: Array.isArray(rev.validation.inputs) ? rev.validation.inputs : [],
+        });
+        syncIndicatorChip();
+        pageToast(`Attached "${ws.name}" to ${activePane.symbol()} — it re-runs on every candle`);
+      }
+    } else if (type === "skill") {
+      pinSkill(id);
+      pageToast("Skill pinned — your next chat question uses it");
+    } else if (type === "strategy") {
+      const strategies = await api("/strategies");
+      const s = strategies.find((x) => x.id === id);
+      if (!s) return;
+      el("strategySource").value = JSON.stringify(s.document, null, 2);
+      sourceOrigin = s.created_by || "developer_sdk";
+      sourceDirty = false;
+      savedStrategyId = s.id;
+      paintStrategyActions();
+      pageToast(`Loaded "${s.name}" v${s.version} as the working draft`);
+    }
+  } catch (e) { pageToast(e.message); }
 }
 /// ---------------------------------------------------------------------------
 /// The trade ticket (paper): practice orders on live prices.
@@ -11349,6 +11430,18 @@ el("authorChips").addEventListener("click", (event) => {
     t.style.height = "auto";
     t.style.height = Math.min(t.scrollHeight, 160) + "px";
   });
+  el("libFilters").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-filter]");
+    if (!btn) return;
+    libFilter = btn.dataset.filter;
+    el("libFilters").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+    renderLibrary();
+  });
+  el("libRows").addEventListener("click", (e) => {
+    const row = e.target.closest(".libRow");
+    if (row) libRowUse(row.dataset.type, row.dataset.id);
+  });
+  loadLibrary();
   el("chatStream").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-open]");
     if (btn && activePane) activePane.fillSeries(coverage, btn.dataset.open, activePane.timeframe());

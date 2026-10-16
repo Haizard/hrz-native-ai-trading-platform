@@ -1454,6 +1454,23 @@
   .cm-current:empty { display: none; }
   .cm-current b { color: var(--text); }
   .cm-current .muted { display: block; font-size: 10.5px; }
+
+  /* ================= THE LIBRARY CARD ================= */
+  #sideWatch { display: flex; flex-direction: column; min-height: 0; }
+  #sideWatch .pane { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  #sideWatch .pane > #wlRows, #sideWatch .pane > #libRows { flex: 1; min-height: 0; overflow-y: auto; }
+  .libCard { border-top: 1px solid var(--line); }
+  .libFilters { display: flex; gap: 4px; padding: 4px 10px 6px; }
+  .libFilters button { padding: 2px 8px; font-size: 11px; border-radius: 10px; background: transparent; border-color: var(--line); color: var(--muted); }
+  .libFilters button:hover { border-color: var(--border-strong); color: var(--text); }
+  .libFilters button.on { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+  .libRow { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer; border-bottom: 1px solid var(--border-subtle); }
+  .libRow:hover { background: var(--bg-overlay); }
+  .libRow .libIcon { flex: 0 0 auto; font-size: 12px; }
+  .libRow .libBody { flex: 1; min-width: 0; }
+  .libRow .libName { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .libRow .libMeta { font-size: 10px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .libRow .libType { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; flex: 0 0 auto; }
   </style>
 </head>
 <body>
@@ -1574,6 +1591,21 @@
       </div>
       <div id="wlRows"></div>
       <p class="empty" id="wlEmpty" hidden></p>
+    </div>
+    <!-- The Library: everything the chat agents built, one click to use. -->
+    <div class="pane libCard" id="libCard">
+      <div class="row wlHead">
+        <span>Library</span>
+        <span id="libCount" class="muted"></span>
+      </div>
+      <div class="libFilters" id="libFilters">
+        <button type="button" data-filter="all" class="on">All</button>
+        <button type="button" data-filter="indicator">📊</button>
+        <button type="button" data-filter="skill">📚</button>
+        <button type="button" data-filter="strategy">📈</button>
+      </div>
+      <div id="libRows"></div>
+      <p class="empty" id="libEmpty" hidden>Nothing built yet — ask the chat to create an indicator, a skill, or a strategy.</p>
     </div>
   </section>
   <button type="button" id="railShow" title="Show the watchlist rail" hidden>◀</button>
