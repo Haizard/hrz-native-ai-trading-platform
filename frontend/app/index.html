@@ -137,8 +137,8 @@
     their splitter rewrites the custom property below, so one rule and one JS
     writer own each width instead of the media queries fighting a handler.
   */
-  #sideWatch { width: var(--watch-w, 250px); flex: 0 0 var(--watch-w, 250px); }
-  aside { width: var(--aside-w, 380px); flex: 0 0 var(--aside-w, 380px); }
+  #sideWatch { width: var(--watch-w, 300px); flex: 0 0 var(--watch-w, 300px); }
+  aside { width: var(--aside-w, 460px); flex: 0 0 var(--aside-w, 460px); }
   /*
     The chart panes. A row, each pane an equal share, and a floor of zero so a
     pane can be narrower than its content -- without `min-width: 0` a flex item
@@ -747,6 +747,58 @@
     max-height: 240px; font-size: 11px; white-space: pre; user-select: text;
   }
 
+  /*
+    A thesis inside a chat bubble is a report, not a line of chat. The plain
+    bubble rules are written for sentences (narrow, pre-wrap), and they crush
+    the answer's structure: the kv rail right-aligns into nothing, section
+    headings inherit page margins, and the narrative's <pre> becomes a
+    panel-in-panel. Everything below is scoped to `.msg .bubble` so the
+    Thesis tab keeps its own, roomier layout.
+  */
+  .msg.ai .bubble:has(.kv) {
+    max-width: min(94%, 62ch);
+    padding: 10px 14px 12px;
+    white-space: normal;
+  }
+  /* The kv block reads as a spec sheet: two label/value pairs per row, the
+     values beside their labels instead of railed to the far edge. */
+  .msg .bubble .kv {
+    grid-template-columns: repeat(2, auto 1fr);
+    gap: 3px 8px; font-size: 11.5px;
+    padding: 7px 9px; background: var(--bg);
+    border: 1px solid var(--border-subtle); border-radius: 8px;
+  }
+  .msg .bubble .kv dd { text-align: left; }
+  /* Section headings get quiet rules between them, not page margins. */
+  .msg .bubble h2 {
+    font-size: 10px; margin: 10px 0 5px; padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .msg .bubble .kv + h2, .msg .bubble h2:first-child {
+    margin-top: 0; padding-top: 0; border-top: 0;
+  }
+  /* Checks as compact rows; the status pill stays colored text. */
+  .msg .bubble .checks { margin: 4px 0; font-size: 12px; }
+  .msg .bubble .checks li { border-bottom: 0; padding: 2px 0; gap: 6px; align-items: baseline; }
+  .msg .bubble .checks .status { min-width: 44px; }
+  /* The narrative is prose, not a code dump: the shell's font, wrapped, on a
+     ground that separates it from the bubble rather than duplicating it. */
+  .msg .bubble pre {
+    margin: 0; background: var(--bg); border: 1px solid var(--border-subtle);
+    border-radius: 8px; font-family: inherit; font-size: 12.5px;
+    line-height: 1.55; white-space: pre-wrap; max-height: 260px;
+  }
+  /* A refusal reads as a card of its own, not a red sentence. */
+  .msg .bubble p.fail {
+    margin: 0; padding: 7px 10px;
+    background: color-mix(in srgb, var(--down) 9%, transparent);
+    border: 1px solid color-mix(in srgb, var(--down) 35%, transparent);
+    border-radius: 8px;
+  }
+  /* The steps trail under an answer: quieter than the body it fed. */
+  .msg .bubble .steps { margin: 6px 0 0; font-size: 11px; color: var(--muted); }
+  .msg .bubble .steps-wrap summary { font-size: 10.5px; }
+
   /* The code panel's vet errors: one red line per refusal, TradingView
      editor style -- fix, resubmit, no model needed. */
   ul.ws-vet-errors {
@@ -907,7 +959,7 @@
 
     The page is a fixed-height column -- a header, a chart that takes what is
     left, and a panel beside it -- and that fails on a narrow screen in one
-    specific way: the panel is a fixed 380px, so at 800px the chart is already
+    specific way: the panel defaults to 460px, so at 800px the chart is already
     under half the width and at 500px it is nothing at all. The chart is the
     surface the page exists for, so the panel is what gives way, in two steps.
 
@@ -927,11 +979,12 @@
     independent.
   */
   @media (max-width: 1100px) {
-    aside { width: 300px; }
-    /* The media queries set the *defaults* for narrow screens; a drag rewrites
-       the same custom properties, so a resized layout survives a window that
-       crosses 1100px with the narrowed defaults. */
-    :root { --watch-w: 210px; }
+    /* The media queries set the *defaults* for narrow screens through the same
+       custom properties the splitters write -- a hard `width` here would
+       outrank `var(--aside-w)` and silently break the drag below 1100px. A
+       drag writes the property inline on :root, which beats this rule, so a
+       resized layout survives a window that crosses 1100px either way. */
+    :root { --aside-w: 300px; --watch-w: 210px; }
   }
 
   @media (max-width: 900px) {
@@ -943,7 +996,7 @@
       lives back inside the aside's tab: the rail's pane is hidden there and
       the pane's original tab shows the same ids in the same code path.
     */
-    #sideWatch { display: none; }
+    #sideWatch, #splitWatch { display: none; }
     /*
       The panes stack too. Side by side at 900px is 450px each, which is under
       the width a candlestick chart stops being readable at -- and the panel
@@ -1455,6 +1508,65 @@
   .cm-current b { color: var(--text); }
   .cm-current .muted { display: block; font-size: 10.5px; }
 
+  /* ================= THE CHAT HEAD: new chat + history ================= */
+  /*
+    A slim bar at the pane's top, same height language as the pane title bars.
+    The history card anchors to it (position: relative) and drops over the
+    stream, the way the model card rises over the composer.
+  */
+  .chat-head {
+    position: relative; flex: 0 0 auto;
+    display: flex; align-items: center; gap: 4px;
+    padding: 6px 10px; border-bottom: 1px solid var(--border-subtle);
+  }
+  .chat-head button {
+    padding: 4px 9px; font-size: 11px; font-weight: 550;
+    background: transparent; border: 1px solid transparent; border-radius: 7px;
+    color: var(--muted);
+  }
+  .chat-head button:hover { background: var(--bg); border-color: var(--line); color: var(--text); }
+  .chat-head #chatHistory.open { background: var(--bg); border-color: var(--line); color: var(--accent); }
+  .chat-history-card {
+    position: absolute; top: calc(100% + 4px); right: 8px; z-index: 35;
+    width: 300px; max-height: 380px; display: flex; flex-direction: column;
+    background: var(--bg-overlay); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: var(--shadow-2); padding: 8px;
+  }
+  .chat-history-card h4 {
+    margin: 2px 4px 8px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.07em; color: var(--muted);
+  }
+  /* `display: flex` above outranks the UA's `[hidden]` rule -- without this
+     the card ignores the attribute and reads as stuck open. */
+  .chat-history-card[hidden] { display: none; }
+  .chat-history-card .muted { padding: 6px 8px; font-size: 11.5px; }
+  .chat-history-rows { overflow-y: auto; min-height: 0; }
+  /* Rows read like the library's: name left, quiet meta under, × on hover. */
+  .chat-hist-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 9px; cursor: pointer; border-radius: 8px;
+    border-left: 2px solid transparent;
+  }
+  .chat-hist-row:hover { background: var(--bg); }
+  .chat-hist-row.on { border-left-color: var(--accent); background: var(--accent-dim); }
+  .chat-hist-row .chBody { flex: 1; min-width: 0; }
+  .chat-hist-row .chTitle {
+    font-size: 12px; font-weight: 550; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .chat-hist-row .chMeta {
+    font-family: var(--mono); font-size: 10px; color: var(--faint); margin-top: 1px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .chat-hist-del {
+    flex: 0 0 auto; width: 18px; height: 18px; padding: 0;
+    background: transparent; border: 1px solid transparent; border-radius: 4px;
+    color: var(--faint); font-size: 13px; line-height: 1; cursor: pointer;
+    opacity: 0; transition: opacity 100ms ease;
+  }
+  .chat-hist-row:hover .chat-hist-del, .chat-hist-del:focus-visible { opacity: 1; }
+  .chat-hist-del:hover { color: var(--down); border-color: var(--down); }
+
   /* ================= THE LIBRARY CARD ================= */
   #sideWatch { display: flex; flex-direction: column; min-height: 0; }
   #sideWatch .pane { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -1572,6 +1684,20 @@
   .libRow .type-indicator { color: var(--accent); background: var(--accent-dim); }
   .libRow .type-skill { color: var(--warn); background: rgba(237, 181, 65, 0.10); }
   .libRow .type-strategy { color: var(--up); background: var(--up-dim); }
+  /*
+    The row's delete: a quiet × that only surfaces when the row is under the
+    pointer -- a permanently visible one on every row reads as clutter, and a
+    destructive control should be found where it acts, not scan-read. Shipped
+    skills render without it (they are the deployment's, not the user's).
+  */
+  .libDel {
+    flex: 0 0 auto; width: 18px; height: 18px; padding: 0;
+    background: transparent; border: 1px solid transparent; border-radius: 4px;
+    color: var(--faint); font-size: 13px; line-height: 1; cursor: pointer;
+    opacity: 0; transition: opacity 100ms ease;
+  }
+  .libRow:hover .libDel, .libDel:focus-visible { opacity: 1; }
+  .libDel:hover { color: var(--down); border-color: var(--down); }
   </style>
 </head>
 <body>
@@ -1673,11 +1799,9 @@
     that used to show it stays in the aside and shows this pane's content in
     the rail instead, so one list exists and two places cannot disagree about it.
   -->
-  <!-- Width splitter for the watchlist rail; the drag logic is `wireSplitters`. -->
   <!-- Hide handle for the watchlist rail, and the sliver that brings it back.
        The sliver sits at the screen's left edge (off-screen when the rail is
        out), so a removed list is one click from returning. -->
-  <button type="button" class="splitter" id="splitWatch" aria-label="Drag to resize the watchlist rail"></button>
   <section id="sideWatch" aria-label="Watchlist">
     <button type="button" class="railHide" id="railHide" title="Hide the watchlist rail">×</button>
     <div class="pane" id="pane-watchlist" hidden>
@@ -1709,6 +1833,10 @@
       <p class="empty" id="libEmpty" hidden>Nothing built yet — ask the chat to create an indicator, a skill, or a strategy.</p>
     </div>
   </section>
+  <!-- Width splitter for the watchlist rail, on the rail's INNER edge -- the
+       strip between the rail and the charts, where a resize handle is looked
+       for. The drag logic is `wireSplitters`; dragging right widens (+1). -->
+  <button type="button" class="splitter" id="splitWatch" aria-label="Drag to resize the watchlist rail"></button>
   <button type="button" id="railShow" title="Show the watchlist rail" hidden>◀</button>
 
   <!--
@@ -2000,6 +2128,21 @@
      indicator building, strategy building, market scans -- the agent
      picks the capability from the request; the user never picks a tab. -->
 <div class="pane" id="pane-chat">
+  <!--
+    The chat's head: new chat + history, the same quiet bar the pane titles
+    use. The history list is a popover card like the model card's -- it opens
+    over the stream and closes on any click elsewhere.
+  -->
+  <div class="chat-head">
+    <button id="chatNew" type="button" title="Start a new chat">＋ New chat</button>
+    <span class="chat-toolbar-spacer"></span>
+    <button id="chatHistory" type="button" title="Past conversations" aria-haspopup="true">🕘 History</button>
+    <div id="chatHistoryCard" class="chat-history-card" hidden>
+      <h4>Conversations</h4>
+      <div id="chatHistoryRows" class="chat-history-rows"></div>
+      <p id="chatHistoryEmpty" class="muted" hidden>No past conversations yet — they save as you chat.</p>
+    </div>
+  </div>
   <div class="chat-stream" id="chatStream"></div>
   <div class="chat-compose">
     <div id="chatChips" class="chat-chips" hidden></div>

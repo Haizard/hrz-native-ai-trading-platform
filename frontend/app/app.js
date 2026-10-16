@@ -6848,8 +6848,8 @@ function wireSplitters() {
       ? fromVar
       : panel.getBoundingClientRect().width || fallback;
   };
-  wireWidth(el("splitWatch"), "--watch-w", 180, 460, +1, () => currentWidth(el("sideWatch"), "--watch-w", 250));
-  wireWidth(el("splitAside"), "--aside-w", 280, 640, -1, () => currentWidth(document.querySelector("main > aside"), "--aside-w", 380));
+  wireWidth(el("splitWatch"), "--watch-w", 200, 560, +1, () => currentWidth(el("sideWatch"), "--watch-w", 300));
+  wireWidth(el("splitAside"), "--aside-w", 280, 860, -1, () => currentWidth(document.querySelector("main > aside"), "--aside-w", 460));
 
   // Row splitters are created with their row (`addPane`), so they are delegated:
   // one listener on the container covers every row that ever exists.
@@ -7142,6 +7142,11 @@ function renderTranscript() {
     renderAuthorTranscript();
     return;
   }
+  // Every completion path -- answer, notice, socket drop, thrown frame --
+  // ends here, so this is the one hook that saves a finished turn to the
+  // history. In-flight turns have neither field and pass through unsaved.
+  const lastTurn = turns[turns.length - 1];
+  if (lastTurn && (lastTurn.answer || lastTurn.error)) saveChatTurn(lastTurn);
   if (!turns.length) {
     el("thesis").innerHTML = `<p class="empty">Pin a skill and Ask — the agent applies it to this chart and draws the patterns it finds.</p>`;
     renderChatMirror();
@@ -8001,6 +8006,134 @@ async function chatSend() {
   }
 }
 
+/// ---------------------------------------------------------------------------
+/// Chat history: the transcript persists per user (`/chats`).
+///
+/// A turn is saved when it FINISHES -- an answer or a refusal -- hooked from
+/// renderTranscript, the one function every completion path already calls. A
+/// reload mid-run loses only the in-flight question. The conversation row is
+/// created lazily on the first finished turn, so a chat that was opened and
+/// never used never clutters the list.
+/// ---------------------------------------------------------------------------
+let activeChatId = null;
+
+/// Save a finished turn. History is a nicety: a failure here must never
+/// break the chat it records, so every error is a quiet one. A failed save
+/// is NOT marked done -- `_saved` lands only on success, so the next render
+/// after a database hiccup retries the write. `_saving` keeps two renders
+/// fired during one in-flight POST from racing the position index.
+async function saveChatTurn(turn) {
+  if (turn._saved || turn._saving || !token()) return;
+  if (!turn.answer && !turn.error) return; // still running
+  turn._saving = true;
+  try {
+    if (!activeChatId) {
+      const created = await api("/chats", { method: "POST" });
+      activeChatId = created && created.id;
+      if (!activeChatId) return;
+    }
+    await api(`/chats/${activeChatId}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        question: turn.question,
+        attachments: turn.attachments || null,
+        answer: turn.answer || null,
+        error: turn.error || null,
+        symbol: turn.symbol || null,
+      }),
+    });
+    turn._saved = true;
+    // The title lands with the first turn and the ordering moves with every
+    // one -- the open card (and the next open) should read the new state.
+    loadChatList();
+  } catch { /* history is a nicety, not a gate */ }
+  finally { turn._saving = false; }
+}
+
+/// The history card's list. Signed out, it says so rather than failing.
+async function loadChatList() {
+  const rows = el("chatHistoryRows");
+  const empty = el("chatHistoryEmpty");
+  if (!rows || !empty) return;
+  if (!token()) {
+    rows.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Sign in to keep conversations across reloads and devices.";
+    return;
+  }
+  try {
+    const chats = await api("/chats");
+    empty.hidden = chats.length > 0;
+    if (!chats.length) empty.textContent = "No past conversations yet — they save as you chat.";
+    rows.innerHTML = chats.map((c) => {
+      const date = new Date(c.updated_at / 1e6); // the server stores unix nanos
+      const stamp = `${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+      const meta = `${c.turn_count} turn${c.turn_count === 1 ? "" : "s"} · ${stamp}`;
+      return `<div class="chat-hist-row${c.id === activeChatId ? " on" : ""}" data-id="${c.id}">
+        <div class="chBody">
+          <div class="chTitle">${escapeHtml(c.title || "New chat")}</div>
+          <div class="chMeta">${escapeHtml(meta)}</div>
+        </div>
+        <button type="button" class="chat-hist-del" title="Delete this conversation" aria-label="Delete ${escapeHtml(c.title || "chat")}">×</button>
+      </div>`;
+    }).join("");
+  } catch {
+    rows.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "History could not be loaded.";
+  }
+}
+
+/// Open a past conversation: the transcript replaces the live one.
+async function openChat(id) {
+  if (asking) { pageToast("the agent is still answering — wait for it before switching chats"); return; }
+  try {
+    const convo = await api(`/chats/${id}`);
+    activeChatId = id;
+    turns = (convo.turns || []).map((t) => ({
+      question: t.question,
+      steps: [],
+      answer: t.answer || null,
+      error: t.error || null,
+      symbol: t.symbol || null,
+      attachments: t.attachments || null,
+      _saved: true,
+    }));
+    // The chart's thesis overlay belongs to the live run, not a restored
+    // transcript -- clear it rather than drawing yesterday's levels.
+    thesis = null;
+    renderTranscript();
+    redrawThesis();
+    el("chatHistoryCard").hidden = true;
+    el("chatHistory").classList.remove("open");
+    loadChatList();
+  } catch (e) { pageToast(e.message); }
+}
+
+/// Start fresh. The conversation row appears when the first turn finishes.
+function newChat() {
+  if (asking) { pageToast("the agent is still answering — wait for it before starting a new chat"); return; }
+  turns = [];
+  activeChatId = null;
+  thesis = null;
+  renderTranscript();
+  redrawThesis();
+  el("chatInput").focus();
+}
+
+async function deleteChat(id) {
+  if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
+  try {
+    await api(`/chats/${id}`, { method: "DELETE" });
+    // Deleting the open chat leaves a fresh transcript behind, the way
+    // closing a document you just shredded should.
+    if (activeChatId === id) newChat();
+    await loadChatList();
+    pageToast("Conversation deleted");
+  } catch (e) { pageToast(e.message); }
+}
+
 
 /// ---------------------------------------------------------------------------
 /// Chat attachments: images and a document ride the ask.
@@ -8291,7 +8424,7 @@ async function loadLibrary() {
     }
     const latest = new Map();
     for (const s of skills) { const ex = latest.get(s.name); if (!ex || s.version > ex.version) latest.set(s.name, s); }
-    for (const s of latest.values()) items.push({ type: "skill", id: s.id, name: s.name, meta: `v${s.version}` });
+    for (const s of latest.values()) items.push({ type: "skill", id: s.id, name: s.name, meta: `v${s.version}`, owned: !!s.owned });
     for (const s of strategies) items.push({ type: "strategy", id: s.id, name: s.name, meta: `v${s.version} · ${(s.created_by || "").replace(/_/g, " ")}` });
     libItems = items;
     renderLibrary();
@@ -8302,14 +8435,46 @@ function renderLibrary() {
   const shown = libItems.filter((i) => libFilter === "all" || i.type === libFilter);
   el("libEmpty").hidden = shown.length > 0;
   el("libCount").textContent = libItems.length ? `${libItems.length}` : "";
-  el("libRows").innerHTML = shown.map((i) => `
+  el("libRows").innerHTML = shown.map((i) => {
+    // Shipped skills are the deployment's, not the user's: they get no delete.
+    const deletable = !(i.type === "skill" && !i.owned);
+    return `
     <div class="libRow" data-type="${i.type}" data-id="${i.id}" title="${i.type === "indicator" ? "Attach to the active chart" : i.type === "skill" ? "Pin for the next question" : "Load as the working draft"}">
       <div class="libBody">
         <div class="libName">${escapeHtml(i.name)}</div>
         <div class="libMeta">${escapeHtml(i.meta || "")}</div>
       </div>
       <span class="libType type-${i.type}">${i.type}</span>
-    </div>`).join("");
+      ${deletable ? `<button type="button" class="libDel" title="Delete this ${i.type}" aria-label="Delete ${escapeHtml(i.name)}">×</button>` : ""}
+    </div>`;
+  }).join("");
+}
+
+/// The × on a library row. Indicators, skills and strategies each have their
+/// own DELETE route; a skill delete takes every version of the name with it,
+/// so the row cannot resurrect as the version underneath.
+async function libRowDelete(type, id) {
+  const item = libItems.find((x) => x.type === type && x.id === id);
+  const label = item ? `${item.type} "${item.name}"` : "this item";
+  if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
+  const path = type === "indicator" ? `/indicator-workspaces/${id}`
+    : type === "skill" ? `/skills/${id}`
+    : `/strategies/${id}`;
+  try {
+    await api(path, { method: "DELETE" });
+    libItems = libItems.filter((x) => !(x.type === type && x.id === id));
+    renderLibrary();
+    pageToast(`Deleted ${label}`);
+    // The deletion has readers beyond the rail: the Thesis pin list holds
+    // skills, and the working draft holds a strategy id.
+    if (type === "skill") loadSkills();
+    if (type === "strategy" && savedStrategyId === id) {
+      savedStrategyId = null;
+      sourceDirty = true;
+      paintStrategyActions();
+      refreshBacktestRuns();
+    }
+  } catch (e) { pageToast(e.message); }
 }
 
 async function libRowUse(type, id) {
@@ -11363,6 +11528,23 @@ el("authorChips").addEventListener("click", (event) => {
   selectPane("chat");
   renderChatMirror();
   el("chatSend").addEventListener("click", chatSend);
+  el("chatNew").addEventListener("click", newChat);
+  el("chatHistory").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const card = el("chatHistoryCard");
+    const opening = card.hidden;
+    if (opening) loadChatList();
+    card.hidden = !opening;
+    el("chatHistory").classList.toggle("open", opening);
+  });
+  el("chatHistoryCard").addEventListener("click", (e) => {
+    // Internal clicks are never the document handler's "outside".
+    e.stopPropagation();
+    const row = e.target.closest(".chat-hist-row");
+    if (!row) return;
+    if (e.target.closest(".chat-hist-del")) { deleteChat(row.dataset.id); return; }
+    openChat(row.dataset.id);
+  });
   el("chatAttach").addEventListener("click", (e) => {
     e.stopPropagation();
     const menu = el("chatAttachMenu");
@@ -11371,7 +11553,7 @@ el("authorChips").addEventListener("click", (event) => {
   });
   document.addEventListener("click", (e) => {
     if (e.target.closest(".chat-compose")) return;
-    for (const [menuId, btnId] of [["chatAttachMenu", "chatAttach"], ["chatAgentMenu", "chatAgent"], ["chatModelCard", "chatModel"]]) {
+    for (const [menuId, btnId] of [["chatAttachMenu", "chatAttach"], ["chatAgentMenu", "chatAgent"], ["chatModelCard", "chatModel"], ["chatHistoryCard", "chatHistory"]]) {
       const menu = el(menuId);
       if (menu && !menu.hidden) { menu.hidden = true; el(btnId).classList.remove("open"); }
     }
@@ -11438,9 +11620,16 @@ el("authorChips").addEventListener("click", (event) => {
   });
   el("libRows").addEventListener("click", (e) => {
     const row = e.target.closest(".libRow");
-    if (row) libRowUse(row.dataset.type, row.dataset.id);
+    if (!row) return;
+    // The × deletes; anywhere else on the row uses the item.
+    if (e.target.closest(".libDel")) {
+      libRowDelete(row.dataset.type, row.dataset.id);
+      return;
+    }
+    libRowUse(row.dataset.type, row.dataset.id);
   });
   loadLibrary();
+  loadChatList();
   el("chatStream").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-open]");
     if (btn && activePane) activePane.fillSeries(coverage, btn.dataset.open, activePane.timeframe());

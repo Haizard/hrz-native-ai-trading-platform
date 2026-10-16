@@ -24,6 +24,7 @@ pub mod bots;
 pub mod broker_accounts;
 pub mod chart_sessions;
 pub mod chart_snapshots;
+pub mod chats;
 pub mod config;
 pub mod drawings;
 pub mod error;
@@ -67,6 +68,11 @@ pub use chart_sessions::{
 pub use chart_snapshots::{
     get_chart_snapshot, insert_chart_snapshot, list_chart_snapshots, ChartSnapshotRow,
     NewChartSnapshot,
+};
+pub use chats::{
+    append_turn, conversation_owned, create_conversation, delete_conversation,
+    get_conversation, list_conversations, list_turns, ConversationSummary, NewTurn, TurnRow,
+    MAX_CONVERSATIONS,
 };
 pub use config::DatabaseConfig;
 pub use drawings::{

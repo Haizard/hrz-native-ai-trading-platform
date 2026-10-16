@@ -363,6 +363,55 @@ pub async fn create_version(
     Ok((StatusCode::CREATED, Json(SkillResponse::new(skill))))
 }
 
+/// `DELETE /skills/{id}` -- remove every version of the caller's own copy.
+///
+/// The id is the derived slug (`{name-slug}-v{major}`) that `GET /skills`
+/// hands out, and it resolves to a *name*: every stored version of that name
+/// goes together. The library lists one row per skill -- its newest version --
+/// so deleting only that version would resurrect the one under it and the row
+/// would appear to survive its own delete. A past thesis keeps the version
+/// string it recorded; `docs/10`'s explainability rests on versions being
+/// immutable while they exist, not on every version existing forever.
+///
+/// Shipped skills (the YAML under `SKILLS_DIR`) are the deployment's, shared
+/// by every user, and are not deletable per user: an id that only a shipped
+/// skill answers to is a 404 here, the same "not yours" the other routes say
+/// with.
+///
+/// # Errors
+/// 404 when the caller owns no skill with this id, 401 without a token,
+/// 503 without a database.
+pub async fn remove(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let database = state
+        .db
+        .as_ref()
+        .ok_or_else(|| ApiError::unavailable("no database configured; skills cannot be stored"))?;
+    let rows =
+        db::skills::list_skills(database.pool(), user.user_id, db::skills::MAX_SKILLS).await?;
+
+    // Resolve the slug id to the skill name it belongs to. A row whose
+    // document no longer parses cannot answer to an id, so it is skipped the
+    // same way `list` skips it.
+    let target_name = rows.iter().find_map(|row| {
+        serde_json::from_value::<Skill>(row.document.clone())
+            .ok()
+            .filter(|skill| skill.id() == id)
+            .map(|skill| skill.name)
+    });
+    let Some(name) = target_name else {
+        return Err(ApiError::not_found(format!("no skill of yours with id `{id}`")));
+    };
+
+    for row in rows.iter().filter(|row| row.name == name) {
+        db::skills::delete_skill(database.pool(), row.id).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
