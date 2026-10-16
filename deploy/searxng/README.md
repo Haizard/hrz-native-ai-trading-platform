@@ -9,19 +9,23 @@ instance itself.
 The stock SearXNG image serves **HTML only** — `GET /search?format=json`
 answers `403 Forbidden`, because the default `settings.yml` allows only the
 `html` format. The gateway's client uses the JSON API, so the instance needs
-one setting changed. Since Koyeb cannot mount config files into a Docker Hub
-image, the fix is this tiny image: stock SearXNG plus the settings file.
+one setting changed. The Dockerfile here bakes that settings file into the
+image at build time, which keeps the whole thing self-contained: **no build
+context to configure, no files to mount** — the Dockerfile alone is the
+service.
 
 ## Redeploy on Koyeb
 
-1. Push this repo (or just this folder) to GitHub.
+1. Push this repo to GitHub (the Dockerfile must be visible to Koyeb).
 2. In the Koyeb dashboard, edit the SearXNG service:
-   - Change the source from **Docker Hub** (`searxng/searxng`) to **GitHub**,
-     pick the repository, and set the build context / Dockerfile path to
-     `deploy/searxng/`.
+   - Source: **GitHub** → `Haizard/hrz-native-ai-trading-platform`, branch `main`.
+   - Under the build settings, set **Dockerfile location** to
+     `deploy/searxng/Dockerfile`.
+   - Leave **Entrypoint, Command, Target, and Work directory untouched** —
+     the image carries everything it needs.
    - Keep the same public port (SearXNG listens on **8080** inside the
      container) and the same domain.
-3. Redeploy. The URL stays
+3. Deploy. The URL stays
    `https://thick-sephira-haizard-de9fd6cd.koyeb.app`, so nothing in the
    platform's `.env` changes.
 
