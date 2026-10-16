@@ -8299,18 +8299,16 @@ async function loadLibrary() {
 }
 
 function renderLibrary() {
-  const icons = { indicator: "📊", skill: "📚", strategy: "📈" };
   const shown = libItems.filter((i) => libFilter === "all" || i.type === libFilter);
   el("libEmpty").hidden = shown.length > 0;
   el("libCount").textContent = libItems.length ? `${libItems.length}` : "";
   el("libRows").innerHTML = shown.map((i) => `
     <div class="libRow" data-type="${i.type}" data-id="${i.id}" title="${i.type === "indicator" ? "Attach to the active chart" : i.type === "skill" ? "Pin for the next question" : "Load as the working draft"}">
-      <span class="libIcon">${icons[i.type]}</span>
       <div class="libBody">
         <div class="libName">${escapeHtml(i.name)}</div>
         <div class="libMeta">${escapeHtml(i.meta || "")}</div>
       </div>
-      <span class="libType">${i.type === "indicator" ? "ind" : i.type === "skill" ? "skl" : "str"}</span>
+      <span class="libType type-${i.type}">${i.type}</span>
     </div>`).join("");
 }
 
@@ -10631,6 +10629,7 @@ function renderWatchlist() {
       change.className = "wlChange";
     }
 
+    if (row.symbol === activeSymbol()) line.classList.add("active");
     line.onclick = () => chartFromWatchlist(row.symbol);
     line.append(star, sym, price, change);
     rowsEl.appendChild(line);
