@@ -316,6 +316,11 @@ async fn run_for_touch(
     ));
     let backtests: Arc<dyn ai_agent::tools::BacktestRunner> = state.research.clone();
     ask = ask.with_backtests(backtests);
+    // Web search, the same grant the socket and REST paths attach: a watched
+    // symbol's context is news as much as it is bars.
+    if let Some(searcher) = &state.web_search {
+        ask = ask.with_web_search(searcher.clone());
+    }
     let (provider, symbol_class) = crate::venue_routes::market_scope();
     ask = ask.with_capabilities(ai_agent::CapabilityView::new(
         std::sync::Arc::clone(&state.capability_registry),

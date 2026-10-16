@@ -826,6 +826,13 @@ where
     let backtests: std::sync::Arc<dyn ai_agent::tools::BacktestRunner> = state.research.clone();
     ask = ask.with_backtests(backtests);
 
+    // Web search, exactly as `POST /agent/ask` attaches it: the socket is the
+    // path the chat UI actually uses, so it is where an unconfigured
+    // `search_web` would be discovered first.
+    if let Some(searcher) = &state.web_search {
+        ask = ask.with_web_search(searcher.clone());
+    }
+
     // The capture rendezvous (`docs/48`): this socket IS the screen, so the
     // run may ask it for fresh images mid-analysis. The upload comes back
     // over HTTP because this socket is busy running the ask.

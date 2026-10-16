@@ -234,6 +234,12 @@ pub struct ToolContext<'a> {
     /// `look_at_chart` report "no screen is attached" rather than request a
     /// capture nothing will ever answer.
     pub captures: Option<&'a dyn crate::captures::ChartCaptureSource>,
+    /// The host's web search (the deployment's SearXNG), when attached.
+    ///
+    /// `None` makes `search_web` report "web search is not configured" rather
+    /// than answer from the model's training data and call it current -- the
+    /// same honest-absence posture as every other capability here.
+    pub web_search: Option<&'a dyn crate::web_search::WebSearcher>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -256,6 +262,7 @@ impl<'a> ToolContext<'a> {
             capabilities: None,
             snapshots: None,
             captures: None,
+            web_search: None,
         }
     }
 
@@ -338,6 +345,17 @@ impl<'a> ToolContext<'a> {
     #[must_use]
     pub fn with_captures(mut self, captures: &'a dyn crate::captures::ChartCaptureSource) -> Self {
         self.captures = Some(captures);
+        self
+    }
+
+    /// Attach the host's web search.
+    ///
+    /// Host-only like the rest: a search backend is a deployment capability
+    /// (it costs outbound requests against the instance's engines), so it is
+    /// attached from server state, never parsed from a request body.
+    #[must_use]
+    pub fn with_web_search(mut self, searcher: &'a dyn crate::web_search::WebSearcher) -> Self {
+        self.web_search = Some(searcher);
         self
     }
 
@@ -716,6 +734,12 @@ impl ToolRegistry {
                     input_schema: compare_snapshots_schema(),
                     exposed_tool: None,
                 },
+                ToolSpec {
+                    name: "search_web".into(),
+                    description: SEARCH_WEB.into(),
+                    input_schema: search_web_schema(),
+                    exposed_tool: None, // base tool: the handler reports when no searcher is attached
+                },
             ],
         }
     }
@@ -839,6 +863,7 @@ impl ToolRegistry {
             "take_snapshot" => take_snapshot(ctx, &call.input).await,
             "get_snapshot" => get_snapshot_tool(ctx, &call.input).await,
             "compare_snapshots" => compare_snapshots(ctx, &call.input).await,
+            "search_web" => search_web_tool(ctx, &call.input).await,
             other => return Err(AgentError::UnknownTool(other.to_string())),
         };
         let elapsed = started.elapsed();
@@ -1129,6 +1154,18 @@ fn recall_memories_schema() -> Value {
             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "How many facts to read (default 24)"},
         },
         "required": ["symbol"],
+    })
+}
+
+fn search_web_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "The search query, in plain language. Be specific: 'volume profile initial balance definition' beats 'volume profile'."},
+            "categories": {"type": "string", "description": "Optional comma-separated SearXNG categories, e.g. \"general,news\". Omit for the instance's default set."},
+            "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "Optional freshness filter; use it for news, never for reference material."},
+        },
+        "required": ["query"],
     })
 }
 
@@ -1549,6 +1586,19 @@ const COMPARE_SNAPSHOTS: &str = "Diff two snapshots -- pass their ids, or just a
     compare its two most recent. Reports the price move, whether the structure trend changed, \
     how the swings moved, and which drawings were added or removed between the two captures. \
     This is 'what changed since' answered from records, not from memory.";
+
+/// `search_web` — the deployment's SearXNG instance, as a tool.
+const SEARCH_WEB: &str = "Search the web through the deployment's SearXNG instance for \
+    information the market tools cannot provide: indicator definitions and parameter \
+    conventions, methodology references (order flow, SMC, Wyckoff, footprint concepts), \
+    strategy research and worked examples, exchange or macro news, and background on a \
+    symbol or project. Use it BEFORE building a skill, indicator, or strategy when the \
+    user's request is short or assumes outside knowledge -- gather the real references \
+    first, then build from them rather than from guesses. Also use it whenever a fact \
+    may have changed since training (news, listings, outages, regulation). Returns \
+    ranked hits with title, url, snippet, engine, and published date; cite the urls you \
+    relied on in your answer, and say so when the search returns nothing usable rather \
+    than inventing detail.";
 
 /// Absence-of-tick-data message, shared so every affected tool says the same
 /// thing. The model needs to distinguish "no events occurred" from "events
@@ -2691,6 +2741,54 @@ async fn scan_market_tool(args: &Value) -> Result<Value, AgentError> {
             "timeframe": args.get("timeframe").and_then(Value::as_str)
         },
         "note": "the scan is running; the ranked table lands in the chat"
+    }))
+}
+
+/// The `search_web` handler: the host's searcher, bounded for a prompt.
+///
+/// Absence of a searcher is reported, not papered over: a model that cannot
+/// reach the web must not substitute training recall and call it current.
+async fn search_web_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AgentError::InvalidToolArgs {
+            tool: "search_web".into(),
+            reason: "`query` must be a non-empty string".into(),
+        })?;
+    let categories = args
+        .get("categories")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let time_range = args
+        .get("time_range")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let Some(searcher) = ctx.web_search else {
+        return Ok(json!({
+            "ok": false,
+            "unavailable": "web search is not configured on this deployment \
+                (SEARXNG_BASE_URL is unset); answer from the market tools and \
+                say why the web could not be consulted",
+        }));
+    };
+    let hits = searcher
+        .search(query, categories, time_range)
+        .await
+        .map_err(|reason| AgentError::ToolFailed {
+            tool: "search_web".into(),
+            reason,
+        })?;
+    Ok(json!({
+        "ok": true,
+        "query": query,
+        "result_count": hits.len(),
+        "results": hits,
+        "note": "cite the urls you relied on in the answer; when nothing here is usable, say so instead of inventing detail",
     }))
 }
 

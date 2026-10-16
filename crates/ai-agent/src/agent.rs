@@ -302,6 +302,12 @@ pub struct AskRequest {
     /// attached"), exactly like the other capabilities: a host that attaches
     /// nothing gets an honest answer instead of a fabricated base rate.
     pub backtests: Option<Arc<dyn crate::tools::BacktestRunner>>,
+    /// The host's web search (the deployment's SearXNG), when attached.
+    ///
+    /// `None` is what `search_web` reports ("web search is not configured"),
+    /// exactly like the other capabilities: a host that attaches nothing gets
+    /// an honest answer instead of training recall dressed as current fact.
+    pub web_search: Option<Arc<dyn crate::web_search::WebSearcher>>,
     /// The capability registry scoped to this request's venue (`docs/39`).
     ///
     /// When attached, tool results carry a `provenance` block and the state
@@ -333,6 +339,7 @@ impl AskRequest {
             snapshots: None,
             captures: None,
             backtests: None,
+            web_search: None,
             capabilities: None,
             attachments: Vec::new(),
             attachment_document: None,
@@ -430,6 +437,17 @@ impl AskRequest {
     #[must_use]
     pub fn with_backtests(mut self, runner: Arc<dyn crate::tools::BacktestRunner>) -> Self {
         self.backtests = Some(runner);
+        self
+    }
+
+    /// Attach the host's web search.
+    ///
+    /// Host-only like the rest: a search backend is a deployment capability
+    /// (it costs outbound requests against the instance's engines), so it is
+    /// attached from server state, never parsed from a request body.
+    #[must_use]
+    pub fn with_web_search(mut self, searcher: Arc<dyn crate::web_search::WebSearcher>) -> Self {
+        self.web_search = Some(searcher);
         self
     }
 
@@ -913,6 +931,9 @@ impl Agent {
         }
         if let Some(runner) = &request.backtests {
             ctx = ctx.with_backtests(runner.as_ref());
+        }
+        if let Some(searcher) = &request.web_search {
+            ctx = ctx.with_web_search(searcher.as_ref());
         }
         if let Some(view) = &request.capabilities {
             ctx = ctx.with_capabilities(view.clone());

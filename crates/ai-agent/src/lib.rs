@@ -50,6 +50,8 @@ pub mod snapshots;
 pub mod thesis;
 pub mod tools;
 pub mod user_drawings;
+// The agent's window on the web: `search_web` over the host's SearXNG.
+pub mod web_search;
 
 pub use agent::draft_strategy_spec;
 pub use agent::{
@@ -95,3 +97,4 @@ pub use user_drawings::{
     DrawingProvenance, DrawingWriter, NewAgentDrawing, StoredDrawing, UserDrawing,
     UserDrawingsSource,
 };
+pub use web_search::{WebSearchHit, WebSearcher};

@@ -377,6 +377,8 @@ mod tests {
                 ),
                 crate::strategy_routes::STRATEGY_DIR,
             )),
+            // No test reaches the web: absent, exactly like `agent` and `auth`.
+            web_search: None,
             agent_limits: Arc::new(crate::rate_limit::RateLimiter::new(
                 crate::rate_limit::RateLimit::default(),
             )),

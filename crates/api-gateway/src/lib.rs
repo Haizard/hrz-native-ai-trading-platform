@@ -57,6 +57,7 @@ pub mod watch_routes;
 pub mod watcher;
 pub mod documents;
 pub mod chart_routes;
+pub mod chat_routes;
 pub mod drawing_routes;
 pub mod error;
 pub mod event_engine;
@@ -82,6 +83,8 @@ pub mod scan_routes;
 // docs/23 Phase 9: Pine-lite script vetting. No persistence here -- scripts
 // live in the indicator-workspace revision tables as a new representation.
 pub mod script_routes;
+// The deployment's SearXNG instance, as the agent's `search_web` backend.
+pub mod searxng;
 pub mod skills_routes;
 pub mod strategy_routes;
 pub mod tickers;
@@ -158,6 +161,13 @@ pub struct AppState {
     /// the window service, and one construction site means every agent entry
     /// point — REST and WebSocket — attaches the same runner.
     pub research: Arc<research::WindowBacktestRunner>,
+    /// The deployment's SearXNG instance, as the agent's `search_web` backend.
+    ///
+    /// `None` when `SEARXNG_BASE_URL` is unset -- the tool then reports web
+    /// search as unconfigured, exactly like the other optional capabilities.
+    /// Held in state so every agent entry point (REST, WebSocket, the watcher)
+    /// attaches the same client.
+    pub web_search: Option<Arc<searxng::SearxngSearcher>>,
     /// Per-user limits on the endpoints that cost money (`docs/12`).
     pub agent_limits: Arc<rate_limit::RateLimiter>,
     /// The metric registry every handler records into, served at `/metrics`.
@@ -463,6 +473,15 @@ pub fn router(state: AppState) -> Router {
             "/pattern-library/{id}",
             delete(chart_routes::delete_saved_pattern),
         )
+        // The agent panel's conversation history: what used to live in one
+        // browser array now survives a reload and follows the user. Turns are
+        // saved as they finish; owner-scoped like everything of somebody's.
+        .route("/chats", get(chat_routes::list).post(chat_routes::create))
+        .route(
+            "/chats/{id}",
+            get(chat_routes::get).delete(chat_routes::remove),
+        )
+        .route("/chats/{id}/turns", post(chat_routes::append))
         // Patterns over many symbols, on demand. Public like `/scan`: candles
         // are market data, and nothing about the answer is the caller's own.
         .route("/scan/patterns", post(chart_routes::scan_patterns))
@@ -492,7 +511,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/skills/{id}",
-            get(skills_routes::get).put(skills_routes::create_version),
+            get(skills_routes::get)
+                .put(skills_routes::create_version)
+                .delete(skills_routes::remove),
         )
         // WebSocket channels (`docs/12`). Registered alongside the REST
         // routes because they share the state and the auth story.

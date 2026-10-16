@@ -196,6 +196,10 @@ impl Harness {
                     dir,
                 ))
             },
+            // No test may reach the web: absent like the other optional
+            // capabilities, and the tool reports the absence rather than a
+            // route accidentally calling out to a real SearXNG instance.
+            web_search: None,
             agent_limits: Arc::clone(&limits),
             metrics: Arc::clone(&metrics),
             // A fixed test key, not `build_vault()`. The value is irrelevant to

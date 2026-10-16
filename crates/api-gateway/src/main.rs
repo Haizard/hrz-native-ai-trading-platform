@@ -128,6 +128,17 @@ async fn main() -> anyhow::Result<()> {
         api_gateway::strategy_routes::STRATEGY_DIR,
     ));
 
+    // The agent's web search, over the deployment's SearXNG instance. Optional
+    // like the other capabilities: unset means the tool reports the absence
+    // rather than the deployment refusing to boot.
+    let web_search = api_gateway::searxng::SearxngSearcher::from_env();
+    match &web_search {
+        Some(_) => tracing::info!("SEARXNG_BASE_URL set; the agent's search_web tool is enabled"),
+        None => tracing::info!(
+            "SEARXNG_BASE_URL unset; the agent's search_web tool will report itself unconfigured"
+        ),
+    }
+
     let state = AppState {
         db,
         agent,
@@ -146,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
             market_data::exchanges::profile::standard(),
         )),
         research,
+        web_search,
         agent_limits,
         metrics: Registry::global_handle(),
         binance_base_url: trading_engine::binance_base_url(),

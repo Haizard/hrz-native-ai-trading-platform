@@ -248,6 +248,12 @@ pub async fn ask(
     let backtests: Arc<dyn ai_agent::tools::BacktestRunner> = state.research.clone();
     request = request.with_backtests(backtests);
 
+    // Web search rides the deployment, not the database: the SearXNG instance
+    // is configuration, and the tool reports its absence when none is set.
+    if let Some(searcher) = &state.web_search {
+        request = request.with_web_search(searcher.clone());
+    }
+
     // The capability view (docs/39): tool results carry their provenance, and
     // the state render labels its sections. The scope names the deployment's
     // venue — resolved from configuration, never from the request.
