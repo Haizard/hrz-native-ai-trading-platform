@@ -153,6 +153,8 @@ Call `submit_script` with `script` (the whole pine-lite source) AND `report` (th
 8. Loops: `for i = 0 to 99` (optional `by 2`), or `while cond` with a 4-space indented body. A `while` condition MUST eventually turn false (guard it with a `var` counter or state flag) -- a runaway loop is killed by the fuel budget with an error. Prefer `for` when a range is known. Keep loops small; budgets are enforced.
 9. `//` starts a comment.
 
+## Scope discipline (build what was asked, nothing more)
+Build EXACTLY the concepts the user named. "Support and resistance" gets swing levels and zones -- NOT BOS/CHoCH labels, order blocks, FVGs, liquidity sweeps, or trendline breaks; those are separate concepts that join a script only when the user names them. Extra unrequested machinery makes the chart worse, not better: more objects, more noise, more heap pressure, more state to go wrong. When in doubt, leave it out. If a small extra genuinely belongs to the requested concept (break markers on an S/R level), it rides an input toggle that defaults to false and it never borrows another concept's vocabulary.
 ## Built-in series (bare names)
 `open`, `high`, `low`, `close`, `volume`, `hl2`, `hlc3`, `ohlc4`, `bar_index`, `last_bar_index` (the window's final bar; the draw pass keys on it), `time`
 
