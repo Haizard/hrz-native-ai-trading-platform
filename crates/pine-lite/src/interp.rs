@@ -963,7 +963,7 @@ impl<'a> Vm<'a> {
                 if self.out.objects.len() < MAX_OBJECTS {
                     let bar = self.arg_f(args, 0)?.unwrap_or(NA);
                     let price = self.arg_f(args, 1)?.unwrap_or(NA);
-                    let text = self.arg_str(args, "text").or_else(|| self.arg_str_pos(args, 2)).unwrap_or_default();
+                    let text = self.arg_text(args, "text", 2)?.unwrap_or_default();
                     let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
                     self.out.objects.push(ScriptObject::Label { bar, price, text, color });
                 } else {
@@ -1015,7 +1015,7 @@ impl<'a> Vm<'a> {
                 if self.out.objects.len() < MAX_OBJECTS {
                     let nanos = self.arg_f(args, 0)?.unwrap_or(NA);
                     let price = self.arg_f(args, 1)?.unwrap_or(NA);
-                    let text = self.arg_str(args, "text").or_else(|| self.arg_str_pos(args, 2)).unwrap_or_default();
+                    let text = self.arg_text(args, "text", 2)?.unwrap_or_default();
                     let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
                     self.out.objects.push(ScriptObject::LabelTime { nanos, price, text, color });
                 } else {
@@ -2272,6 +2272,100 @@ impl<'a> Vm<'a> {
         self.eval_f(&arg.value).ok()
     }
 
+    /// The string-expression evaluator: labels take TEXT, and text is a
+    /// real expression now -- a quoted literal, `"..." + ...` concatenation,
+    /// `str.tostring(value)` / `str.tostring(value, "#.##")`, or
+    /// `str.format("{0} {1}", a, b)`. Strings are expression-level only in
+    /// v1: no variable holds one (the var buffers are float rings), so an
+    /// Ident here is a vet-time shape error, not a runtime one. A purely
+    /// numeric expression in a text slot is coerced with the plain tostring
+    /// -- convenient and unambiguous.
+    fn eval_s(&mut self, e: &Expr) -> Result<String, crate::ScriptError> {
+        match &e.kind {
+            ExprKind::Str(s) => Ok(s.clone()),
+            ExprKind::Bin { op: crate::parse::BinOp::Add(crate::parse::AddOp::Add), left, right } => {
+                Ok(format!("{}{}", self.eval_s(left)?, self.eval_s(right)?))
+            }
+            ExprKind::Call { callee, args } if callee == "str.tostring" => {
+                let v = self
+                    .arg_f(args, 0)?
+                    .ok_or_else(|| crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: "`str.tostring` needs a value".into(),
+                    })?;
+                let fmt = self.arg_str(args, "format").or_else(|| self.arg_str_pos(args, 1));
+                Ok(format_number(v, fmt.as_deref()))
+            }
+            ExprKind::Call { callee, args } if callee == "str.format" => {
+                let mut out = match args.first().map(|a| &a.value.kind) {
+                    Some(ExprKind::Str(t)) => t.clone(),
+                    _ => {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Type,
+                            span: crate::Span::new(1, 1),
+                            message: "`str.format` argument 1 must be a quoted template".into(),
+                        })
+                    }
+                };
+                for (i, a) in args.iter().enumerate().skip(1) {
+                    let idx = i - 1;
+                    // {2} plain, or {2,number,#.##} with the tostring spec.
+                    let mut head = format!("{{{idx}}}");
+                    if out.contains(&head) {
+                        let text = self.eval_s(&a.value)?;
+                        out = out.replace(&head, &text);
+                    }
+                    // Brace-scan for the decorated form: {idx,anything}.
+                    let mut scan = 0usize;
+                    while let Some(open) = out[scan..].find(&format!("{{{idx},")) {
+                        let start = scan + open;
+                        let Some(close) = out[start..].find('}') else { break };
+                        let spec = &out[start..=start + close];
+                        let parts: Vec<&str> = spec
+                            .trim_start_matches('{')
+                            .trim_end_matches('}')
+                            .split(',')
+                            .collect();
+                        let fmt = parts.get(2).map(|s| s.trim().to_string());
+                        let v = self.eval_f(&a.value)?;
+                        let text = format_number(v, fmt.as_deref());
+                        out = out.replacen(spec, &text, 1);
+                        scan = start + text.len();
+                        head.clear();
+                    }
+                }
+                Ok(out)
+            }
+            ExprKind::Ident(name) if self.vars.contains_key(name) => Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: format!(
+                    "`{name}` can't be read as text: v1 strings are expression-level (no variable holds one) -- build the text inline with str.tostring/str.format"
+                ),
+            }),
+            _ => {
+                // Numeric coercion in a text slot (builtin series like
+                // bar_index land here too -- they are not vars).
+                let v = self.eval_f(e)?;
+                Ok(format_number(v, None))
+            }
+        }
+    }
+
+    /// The label text args, through eval_s (fallible: a bad text expression
+    /// is a script error, not an empty label).
+    fn arg_text(&mut self, args: &[Arg], name: &str, pos: usize) -> Result<Option<String>, crate::ScriptError> {
+        let arg = args
+            .iter()
+            .find(|a| a.name.as_deref() == Some(name))
+            .or_else(|| args.get(pos).filter(|a| a.name.is_none()));
+        match arg {
+            Some(a) => Ok(Some(self.eval_s(&a.value)?)),
+            None => Ok(None),
+        }
+    }
+
     fn arg_str_pos(&self, args: &[Arg], index: usize) -> Option<String> {
         match args.get(index) {
             Some(Arg { value: Expr { kind: ExprKind::Str(s), .. }, .. }) => Some(s.clone()),
@@ -2761,5 +2855,35 @@ mod tests {
         assert_eq!(top, 106.5);
         assert_eq!(bottom, 103.5);
         assert!(right >= 10_000.0, "the right edge extends into the future: {right}");
+    }
+}
+
+/// Number-to-text for the string builtins. Plain form: integers print
+/// without a decimal point, others with trailing zeros trimmed ("103.6",
+/// not "103.60000001"). The "#.##" spec fixes decimal places (round-half-up);
+/// "#" pins to integers. na prints as "na".
+fn format_number(v: f64, fmt: Option<&str>) -> String {
+    if !v.is_finite() {
+        return "na".to_string();
+    }
+    match fmt {
+        Some(spec) => {
+            let decimals = spec
+                .split_once('.')
+                .map(|(_, tail)| tail.chars().take_while(|c| *c == '#').count())
+                .unwrap_or(0);
+            let scale = 10f64.powi(decimals as i32);
+            let rounded = (v * scale).round() / scale;
+            format!("{rounded:.decimals$}")
+        }
+        None => {
+            if v == v.trunc() && v.abs() < 1e15 {
+                format!("{}", v as i64)
+            } else {
+                let s = format!("{v:.10}");
+                let s = s.trim_end_matches('0').trim_end_matches('.');
+                s.to_string()
+            }
+        }
     }
 }

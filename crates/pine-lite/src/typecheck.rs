@@ -799,6 +799,7 @@ impl Cx {
             "ta.crossover" | "ta.crossunder" | "ta.cross" | "ta.rising" | "ta.falling" => {
                 Ty::Bool
             }
+            "str.tostring" | "str.format" => Ty::String,
             "barstate.isconfirmed" => Ty::Bool,
             _ => Ty::Float,
         }
@@ -816,7 +817,7 @@ impl Cx {
         self.err(
             span,
             format!(
-                "`{name}` is not defined here. Known namespaces: ta., math., input., strategy., color.; known series: open/high/low/close/volume/hl2/hlc3/ohlc4/bar_index/time."
+                "`{name}` is not defined here. Known namespaces: ta., math., input., strategy., color., str.; known series: open/high/low/close/volume/hl2/hlc3/ohlc4/bar_index/time."
             ),
         );
         Ty::Float
@@ -850,6 +851,8 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "ta.kc" => (2, 2),
         "ta.supertrend" => (2, 2),
         "ta.crossover" | "ta.crossunder" | "ta.cross" => (2, 2),
+        "str.tostring" => (1, 2),
+        "str.format" => (1, 9),
         "math.abs" | "math.floor" | "math.ceil" | "math.round" | "math.sqrt" | "math.log"
         | "math.exp" | "math.sign" => (1, 1),
         "math.min" | "math.max" | "math.avg" => (1, 8),

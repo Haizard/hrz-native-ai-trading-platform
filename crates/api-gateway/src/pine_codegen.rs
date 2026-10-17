@@ -165,6 +165,7 @@ Multi-value (destructure them): `macd_line, signal_line, hist = ta.macd(source, 
 Crosses (return bool): `ta.crossover(a, b)`, `ta.crossunder(a, b)`, `ta.cross(a, b)`.
 Math: `math.abs(x)`, `math.floor(x)`, `math.ceil(x)`, `math.round(x)`, `math.sqrt(x)`, `math.log(x)`, `math.exp(x)`, `math.sign(x)`, `math.pow(a, b)`, `math.min(a, b, ...)`, `math.max(a, b, ...)`, `math.avg(a, b, ...)`, `math.sum(source, length)`.
 Checks: `na(x)`, `nz(x)`, `nz(x, fallback)`, `fixnan(x)`.
+Strings (expression-level: no variable holds one -- build text INLINE in the call): `str.tostring(value)` / `str.tostring(value, "#.##")` (the "#.##" spec fixes decimal places), `str.format("{0} {1}", a, b)` (numbered placeholders; numbers coerce automatically), and `"..." + ...` concatenation. A label's text is a real expression: `label.new(bar, px, "OB @ " + str.tostring(px, "#.##"))` prints "OB @ 103.60".
 ## Arrays (for zones, pivots, levels -- SMC/market-structure building blocks)
 A variable holds a whole array once created with `var` (allocate ONCE, at the top):
 
