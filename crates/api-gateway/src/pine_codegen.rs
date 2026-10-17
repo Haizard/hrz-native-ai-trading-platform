@@ -245,7 +245,7 @@ The rules that keep it honest:
 `hour` (0..23 UTC), `minute` (0..59), `dayofweek` (1=Sunday .. 7=Saturday, Pine's convention). London open is about `hour == 7`; New York is about `hour >= 12 and hour < 21`. An Asian-session level: capture the high/low while `hour >= 0 and hour < 7` into `var` scalars and reset at `hour == 0`.
 
 ## Drawing
-- `plot(series, title="...", color=color.blue, linewidth=1)` -- a line. Optional `style="histogram"` / `style="columns"` / `style="circles"` / `style="stepline"` / `style="areabr"` / `style="linebr"`.
+- `plot(series, title="...", color=color.blue, linewidth=1)` -- a line. Optional `style="histogram"` / `style="columns"` / `style="circles"` / `style="stepline"` / `style="areabr"` / `style="linebr"`. `fill()`, `bgcolor()` and `barcolor()` PARSE but v1 does not render them -- a call you make for shading is invisible, so shade regions with `box.new` drawn across the bars that need it instead.
 - `hline(price, color=color.gray, linestyle=dashed)` -- a horizontal level (e.g. `hline(70)`).
 - `plotshape(cond, shape="triangleup", color=color.green, location_value=low)` -- a marker on each bar where cond is true. Its named args are `shape=`, `color=`, `location_value=`, `title=` ONLY: there is no `yloc=`, no `style=`, no `size=` -- an unknown named arg is ignored and the marker falls to `na` (invisible). `shape=` names the glyph ("triangleup", "triangledown", "circle", "cross"); `location_value=` is the price the marker sits at (`low` under a buy, `high` above a sell). Omit `location_value=` and the marker falls to the bottom of the pane (or the bottom of the price range, in an overlay script). `plotchar(cond, char="B")` prints a letter; `plotarrow(cond)` draws an arrow. Markers work in overlay scripts and pane scripts alike.
 - Colors: color.red, color.green, color.blue, color.orange, color.yellow, color.purple, color.teal, color.lime, color.aqua, color.white, color.gray, color.maroon, color.navy, color.olive, color.silver, color.fuchsia, color.black.
@@ -439,6 +439,60 @@ A big request ("liquidity sweeps + order blocks + FVGs + session levels, multi-t
 - Break and breakout markers use EDGE conditions (`ta.crossover`/`ta.crossunder` or `cond and not cond[1]`) -- a bare `price > level` state in `plotshape`/`label.new` paints a marker wall that crawls with live price.
 - A structure break draws a segment from the swing's anchor to the break bar, ON the break bar, labeled -- never from today's bar into the future, never only in the last-bar draw pass.
 - A sloped line's far endpoint computes its price AT the far bar; `+ 10000` extension is for horizontal levels only.
+
+## Zigzag patterns (harmonics, multi-pivot shapes)
+
+A pattern that reads the last N pivots (XABCD and cousins) needs ONE interleaved pivot sequence in time order with direction tags -- separate high/low arrays destroy the alternation the pattern lives on (three lows and two highs are five pivots in time, but only three and two in their own arrays, and index i of one array is not adjacent to index i of the other):
+
+    var piv_price = array.new()
+    var piv_bar = array.new()
+    var piv_dir = array.new()
+    if pivot_high
+        array.push(piv_price, high[w])
+        array.push(piv_bar, bar_index - w)
+        array.push(piv_dir, 1)
+    if pivot_low
+        array.push(piv_price, low[w])
+        array.push(piv_bar, bar_index - w)
+        array.push(piv_dir, -1)
+
+The last five pivots are `array.get(piv_*, n-5)` .. `array.get(piv_*, n-1)` where `n = array.size(piv_price)`; verify the shape by its direction sequence (a bullish XABCD is -1, 1, -1, 1, -1) before checking leg ratios; legs are differences of consecutive entries.
+
+Read the five pivots by their offset from the END of the array -- n-1 is the NEWEST pivot (D), n-5 the oldest (X) -- and map the letters by time order, never by which value "looks like" the high (A and C are both highs; swapping them passes the direction check and silently breaks every ratio):
+
+    x = array.get(piv_price, n - 5)
+    a = array.get(piv_price, n - 4)
+    b = array.get(piv_price, n - 3)
+    c = array.get(piv_price, n - 2)
+    d = array.get(piv_price, n - 1)
+
+Retracement ratios are measured against the leg they retrace, in the pattern's own direction -- bullish XABCD (X low, A high, B low, C high, D low):
+
+    ab_ratio = (a_high - b_low) / (a_high - x_low)
+    bc_ratio = (c_high - b_low) / (a_high - b_low)
+    xd_ratio = (a_high - d_low) / (a_high - x_low)
+
+Each numerator is the distance from the leg's FAR end back toward its near end; a difference of pivots from different legs (`x_low - b_low`) measures nothing the pattern means.
+
+Completion draws each pattern EXACTLY once and re-arms when a new pivot arrives: latch on the pivot COUNT, never on the check itself -- a bare `ok and not ok[1]` edge misses the next pattern when the check stays true, and a flag with an else-branch reset oscillates (draw, reset, draw) and paints the pattern every other bar:
+
+    var last_drawn_n = 0.0
+    fresh = n != last_drawn_n
+    bull_edge = fresh and bull_ok
+    bear_edge = fresh and bear_ok
+    if bull_edge
+        last_drawn_n := n
+        line.new(bar_x, x, bar_a, a, ...)
+    if bear_edge
+        last_drawn_n := n
+        line.new(bar_x, x, bar_a, a, ...)
+    plotshape(bull_edge, shape="triangleup", color=color.green, location_value=low)
+
+The edge conditions are top-level and recomputed every bar, so the plotshape marker and the drawing agree; the latch blocks redraws of the same five pivots and needs no else branch -- the next pivot push makes `n != last_drawn_n` again and the new pattern gets its chance.
+
+## Window statistics (profiles, distributions)
+
+A fixed-range profile (volume by price, distributions) is TWO passes on the last bar, not incremental accumulation: pass one finds the window's range (`ta.highest(high, len)` / `ta.lowest(low, len)`), pass two bins the window's closes with history reads (`close[j]` for j in 0..len-1), then the draw pass emits the bins. Binning incrementally against a moving range misplaces every bar whose range later shifted.
 - Time anchors (pooled HTF stamps) enter only the `*_time` calls and bar anchors only the plain calls -- never mixed in one call.
 
 ## Pattern detection WITHOUT arrays (there is no `a[i] = v` assignment)

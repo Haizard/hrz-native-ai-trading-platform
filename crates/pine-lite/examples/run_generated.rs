@@ -33,7 +33,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut candles = Vec::new();
     let t0 = 1_700_000_000_000_000_000_i64;
     for i in 0..200i64 {
-        let c = if scenario == "tl" {
+        let c = if scenario == "harm" {
+            // Monotone XABCD zigzag (no wiggle, so pivots form exactly at the
+            // turning points): X low at 20 (89.85), A high at 40 (110.15),
+            // B low at 60 (97.49 -- 61.8% of XA), C high at 80 (105.43 --
+            // 61.8% of AB), D low at 100 (94.13 -- 78.6% of XA): a textbook
+            // bullish Gartley, then a rally so D can confirm.
+            match i {
+                0..=20 => 100.0 - i as f64 * 0.5,
+                21..=40 => 90.0 + (i - 20) as f64 * 1.0,
+                41..=60 => 110.0 - (i - 40) as f64 * 0.618,
+                61..=80 => 97.64 + (i - 60) as f64 * 0.382,
+                81..=100 => 105.28 - (i - 80) as f64 * 0.55,
+                _ => 94.28 + (i - 100) as f64 * 0.4,
+            }
+        } else if scenario == "tl" {
             match i {
                 // Rising trend, ascending swing lows (a support line forms).
                 0..=99 => 90.0 + i as f64 * 0.35 + 2.5 * (i as f64 * std::f64::consts::TAU / 22.0).sin(),
@@ -65,9 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             high: h,
             low: l,
             close: c,
-            volume: 10.0,
-            buy_volume: 5.0,
-            sell_volume: 5.0,
+            volume: 100.0 + 80.0 * (i as f64 * std::f64::consts::TAU / 17.0).sin().abs(),
+            buy_volume: 60.0 + 50.0 * (i as f64 * std::f64::consts::TAU / 17.0).sin().abs(),
+            sell_volume: 40.0 + 30.0 * (i as f64 * std::f64::consts::TAU / 11.0).cos().abs(),
         });
     }
 

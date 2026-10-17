@@ -80,6 +80,9 @@ pub fn check_with_header(script: &Script, header: &crate::Header) -> Vec<ScriptE
         sec: header.sec.clone(),
         series_pool: Vec::new(),
         in_security_expr: 0,
+        stmt_call: false,
+        stmt_depth: 0,
+        top_assigned: std::collections::HashSet::new(),
     };
     cx.items(&script.items);
     cx.out.series_pool = std::mem::take(&mut cx.series_pool);
@@ -100,6 +103,9 @@ pub fn collect_series_pool(script: &Script, header: &crate::Header) -> Vec<Strin
         sec: header.sec.clone(),
         series_pool: Vec::new(),
         in_security_expr: 0,
+        stmt_call: false,
+        stmt_depth: 0,
+        top_assigned: std::collections::HashSet::new(),
     };
     cx.items(&script.items);
     cx.series_pool
@@ -175,6 +181,22 @@ struct Cx {
     /// `request.*` reads the PAIR (the VM swaps the candle set), so the
     /// no-`sec=` gate must not fire.
     in_security_expr: usize,
+    /// True only while the OUTERMOST call of a statement-level expression is
+    /// being checked: drawing builtins, plot-family calls and strategy order
+    /// commands are statements -- they return no value the VM can bind -- so
+    /// a nested use (`x := box.new(...)`, `fill(plot(a), plot(b))`) checks
+    /// clean here and then dies at run time, where the repair loop can never
+    /// see it. Name the rule at vet time instead.
+    stmt_call: bool,
+    /// Statement nesting: 0 on the script's top-level items, deeper inside
+    /// if/else/loop/function bodies.
+    stmt_depth: usize,
+    /// Names with at least one TOP-LEVEL assignment. A top-level read of a
+    /// name assigned only inside a block checks clean (the name is in
+    /// var_types) but dies at run time on every bar before the block first
+    /// executes -- and the deferred plot replay reads every bar, bar 0
+    /// included. Pine's rule is the same: block declarations stay local.
+    top_assigned: std::collections::HashSet<String>,
 }
 
 impl Cx {
@@ -223,6 +245,11 @@ impl Cx {
     fn item(&mut self, item: &Item) {
         match item {
             Item::Destructure { span, names, call } => {
+                if self.stmt_depth == 0 {
+                    for n in names {
+                        self.top_assigned.insert(n.clone());
+                    }
+                }
                 // The callee decides the count; the names decide how many the
                 // author wanted. Anything else (a single-output call, an
                 // unknown name) is an error with the fix in the text.
@@ -292,6 +319,9 @@ impl Cx {
                 }
                 let ty = self.expr(expr);
                 self.out.var_types.insert(name.clone(), ty);
+                if self.stmt_depth == 0 {
+                    self.top_assigned.insert(name.clone());
+                }
                 if self.out.variables.insert(name.clone(), *mode).is_some() && *mode == VarMode::Var
                 {
                     // Re-declaring a `var` in the same scope is usually a
@@ -313,10 +343,12 @@ impl Cx {
                         self.out.var_types.insert(v.clone(), Ty::Float);
                     }
                 }
+                self.stmt_depth += 1;
                 self.items(body);
                 if let Some(els) = els {
                     self.items(els);
                 }
+                self.stmt_depth -= 1;
                 self.depth = self.depth.saturating_sub(1);
             }
             Item::FuncDef { span, name, params, defaults, body } => {
@@ -347,10 +379,18 @@ impl Cx {
                 for p in params {
                     self.out.var_types.insert(p.clone(), Ty::Float);
                 }
+                self.stmt_depth += 1;
                 self.items(body);
+                self.stmt_depth -= 1;
             }
             Item::Expr { span, expr } => {
-                self.expr(expr);
+                if matches!(expr.kind, ExprKind::Call { .. }) {
+                    self.stmt_call = true;
+                    self.expr(expr);
+                    self.stmt_call = false;
+                } else {
+                    self.expr(expr);
+                }
                 if let ExprKind::Call { callee, .. } = &expr.kind {
                     if callee.starts_with("plot") || callee == "hline" || callee == "fill"
                         || callee == "bgcolor" || callee == "barcolor"
@@ -514,8 +554,16 @@ impl Cx {
     }
 
     fn ident(&mut self, span: Span, name: &str) -> Ty {
-        if let Some(ty) = self.out.var_types.get(name) {
-            return *ty;
+        if let Some(ty) = self.out.var_types.get(name).copied() {
+            if self.stmt_depth == 0 && !self.top_assigned.contains(name) {
+                self.err(
+                    span,
+                    format!(
+                        "`{name}` is assigned only inside a conditional or loop block and cannot be read at the top level -- declare it at the top level first (`{name} = na`) so it exists on every bar"
+                    ),
+                );
+            }
+            return ty;
         }
         if self.out.variables.contains_key(name) || self.builtins_contains(name) {
             return Ty::Float;
@@ -548,6 +596,28 @@ impl Cx {
     }
 
     fn call(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
+        const STMT_ONLY: &[&str] = &[
+            "plot", "plotshape", "plotchar", "plotarrow", "hline", "fill", "bgcolor",
+            "barcolor", "line.new", "label.new", "box.new", "fib.new", "line.new_time",
+            "label.new_time", "box.new_time", "strategy.entry", "strategy.exit",
+            "strategy.close", "strategy.close_all", "strategy.cancel",
+        ];
+        if !self.stmt_call && STMT_ONLY.contains(&callee) {
+            self.err(
+                span,
+                format!(
+                    "`{callee}` produces no value -- it works only as a standalone statement, not inside an expression or on the right side of an assignment"
+                ),
+            );
+        }
+        let was_stmt = self.stmt_call;
+        self.stmt_call = false;
+        let ty = self.call_inner(span, callee, args);
+        self.stmt_call = was_stmt;
+        ty
+    }
+
+    fn call_inner(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
         // `request.security("SYM", "tf", expr)` (Phase 11, docs/23): any
         // pair, any timeframe the host serves, per call -- the full Pine
         // form. The symbol/timeframe must be string LITERALS (the host
