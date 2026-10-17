@@ -333,6 +333,397 @@ pub fn math_sum(source: &[f64], length: f64) -> Series {
     out
 }
 
+
+// ---------- Tier 1 packs: oscillators, since/when, event helpers ----------
+
+/// `ta.stdev(source, length)` -- population standard deviation (Pine's
+/// default `biased = true`).
+#[must_use]
+pub fn ta_stdev(source: &[f64], length: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let mut out = vec![NA; source.len()];
+    for i in (n - 1)..source.len() {
+        let w = &source[i + 1 - n..=i];
+        if w.iter().all(|v| v.is_finite()) {
+            let mean = w.iter().sum::<f64>() / n as f64;
+            let var = w.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / n as f64;
+            out[i] = var.sqrt();
+        }
+    }
+    out
+}
+
+/// `ta.variance(source, length)` -- population variance.
+#[must_use]
+pub fn ta_variance(source: &[f64], length: f64) -> Series {
+    let sd = ta_stdev(source, length);
+    sd.iter().map(|v| if v.is_finite() { v * v } else { NA }).collect()
+}
+
+/// `ta.hma(source, length)` -- Hull: wma(2*wma(n/2) - wma(n), sqrt(n)).
+#[must_use]
+pub fn ta_hma(source: &[f64], length: f64) -> Series {
+    let n = length.max(1.0);
+    let half = (n / 2.0).max(1.0);
+    let root = n.sqrt().max(1.0);
+    let w1 = ta_wma(source, half);
+    let w2 = ta_wma(source, n);
+    let diff: Series = w1
+        .iter()
+        .zip(&w2)
+        .map(|(a, b)| if a.is_finite() && b.is_finite() { 2.0 * a - b } else { NA })
+        .collect();
+    // The diff leads with na until both wmas warm up; trim before the last
+    // wma so it seeds on the first real value (the macd pattern).
+    let start = diff.iter().position(|v| v.is_finite());
+    let mut out = vec![NA; diff.len()];
+    if let Some(s) = start {
+        let tail = ta_wma(&diff[s..], root);
+        for (i, v) in tail.into_iter().enumerate() {
+            out[s + i] = v;
+        }
+    }
+    out
+}
+
+/// `ta.cci(length)` -- commodity channel index over the typical price.
+#[must_use]
+pub fn ta_cci(candles: &[Candle], length: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(candles.len().max(1));
+    let tp: Vec<f64> = candles.iter().map(|c| (c.high + c.low + c.close) / 3.0).collect();
+    let ma = ta_sma(&tp, length);
+    let mut out = vec![NA; candles.len()];
+    for i in (n - 1)..candles.len() {
+        if ma[i].is_finite() {
+            let dev = tp[i + 1 - n..=i].iter().map(|v| (v - ma[i]).abs()).sum::<f64>() / n as f64;
+            out[i] = if dev > 0.0 { (tp[i] - ma[i]) / (0.015 * dev) } else { 0.0 };
+        }
+    }
+    out
+}
+
+/// `ta.mfi(length)` -- money flow index (volume-weighted rsi shape).
+#[must_use]
+pub fn ta_mfi(candles: &[Candle], length: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(candles.len().max(1));
+    let mut out = vec![NA; candles.len()];
+    for i in n..candles.len() {
+        let (mut pos, mut neg) = (0.0, 0.0);
+        for j in i + 1 - n..=i {
+            let tp = (candles[j].high + candles[j].low + candles[j].close) / 3.0;
+            let prev = (candles[j - 1].high + candles[j - 1].low + candles[j - 1].close) / 3.0;
+            let rmf = tp * candles[j].volume;
+            if tp > prev {
+                pos += rmf;
+            } else if tp < prev {
+                neg += rmf;
+            }
+        }
+        out[i] = if neg == 0.0 { 100.0 } else { 100.0 - 100.0 / (1.0 + pos / neg) };
+    }
+    out
+}
+
+/// `ta.willr(length)` -- Williams %R, -100..0.
+#[must_use]
+pub fn ta_willr(candles: &[Candle], length: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(candles.len().max(1));
+    let mut out = vec![NA; candles.len()];
+    for i in (n - 1)..candles.len() {
+        let w = &candles[i + 1 - n..=i];
+        let hh = w.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
+        let ll = w.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+        if hh != ll {
+            out[i] = -100.0 * (hh - candles[i].close) / (hh - ll);
+        }
+    }
+    out
+}
+
+/// Wilder smoothing over a dense (no-na) series; leads with na until the
+/// first full window, seeded with that window's mean, then the classic
+/// recursion.
+fn wilder(source: &[f64], length: usize) -> Series {
+    let n = source.len();
+    let mut out = vec![NA; n];
+    if n < length || length == 0 {
+        return out;
+    }
+    let mut acc: f64 = source[..length].iter().sum();
+    out[length - 1] = acc / length as f64;
+    for i in length..n {
+        acc = acc - acc / length as f64 + source[i];
+        out[i] = acc / length as f64;
+    }
+    out
+}
+
+/// `ta.dmi(length)` -> `(+DI, -DI, ADX)`, Wilder's definitions.
+#[must_use]
+pub fn ta_dmi(candles: &[Candle], length: f64) -> (Series, Series, Series) {
+    let len = length.max(1.0) as usize;
+    let n = candles.len();
+    let mut plus_dm = vec![0.0; n];
+    let mut minus_dm = vec![0.0; n];
+    let mut tr = vec![0.0; n];
+    for i in 1..n {
+        let up = candles[i].high - candles[i - 1].high;
+        let down = candles[i - 1].low - candles[i].low;
+        if up > down && up > 0.0 {
+            plus_dm[i] = up;
+        }
+        if down > up && down > 0.0 {
+            minus_dm[i] = down;
+        }
+        tr[i] = (candles[i].high - candles[i].low)
+            .max((candles[i].high - candles[i - 1].close).abs())
+            .max((candles[i].low - candles[i - 1].close).abs());
+    }
+    let sm_plus = wilder(&plus_dm, len);
+    let sm_minus = wilder(&minus_dm, len);
+    let sm_tr = wilder(&tr, len);
+    let mut plus_di = vec![NA; n];
+    let mut minus_di = vec![NA; n];
+    let mut dx = vec![0.0; n];
+    let mut dx_first = None;
+    for i in 0..n {
+        if sm_tr[i].is_finite() && sm_tr[i] > 0.0 {
+            plus_di[i] = 100.0 * sm_plus[i] / sm_tr[i];
+            minus_di[i] = 100.0 * sm_minus[i] / sm_tr[i];
+            let sum = plus_di[i] + minus_di[i];
+            dx[i] = if sum > 0.0 { 100.0 * (plus_di[i] - minus_di[i]).abs() / sum } else { 0.0 };
+            if dx_first.is_none() {
+                dx_first = Some(i);
+            }
+        }
+    }
+    let mut adx = vec![NA; n];
+    if let Some(s) = dx_first {
+        if s + len <= n {
+            let tail = wilder(&dx[s..s + (n - s).min(n)], len);
+            for (i, v) in tail.into_iter().enumerate() {
+                if s + i < n {
+                    adx[s + i] = v;
+                }
+            }
+        }
+    }
+    (plus_di, minus_di, adx)
+}
+
+/// `ta.kc(length, mult)` -> `(basis, upper, lower)` -- ema +- mult*atr.
+#[must_use]
+pub fn ta_kc(candles: &[Candle], length: f64, mult: f64) -> (Series, Series, Series) {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let basis = ta_ema(&closes, length);
+    let rng = ta_atr(candles, length);
+    let upper: Series = basis
+        .iter()
+        .zip(&rng)
+        .map(|(b, a)| if b.is_finite() && a.is_finite() { b + mult * a } else { NA })
+        .collect();
+    let lower: Series = basis
+        .iter()
+        .zip(&rng)
+        .map(|(b, a)| if b.is_finite() && a.is_finite() { b - mult * a } else { NA })
+        .collect();
+    (basis, upper, lower)
+}
+
+/// `ta.supertrend(mult, atr_length)` -> `(line, direction)`. Pine's
+/// convention: direction -1 = uptrend (line = lower band under price),
+/// 1 = downtrend (line = upper band over price).
+#[must_use]
+pub fn ta_supertrend(candles: &[Candle], mult: f64, atr_length: f64) -> (Series, Series) {
+    let n = candles.len();
+    let atr = ta_atr(candles, atr_length);
+    let mut final_up = vec![NA; n];
+    let mut final_lo = vec![NA; n];
+    let mut line = vec![NA; n];
+    let mut dir = vec![NA; n];
+    for i in 0..n {
+        if !atr[i].is_finite() {
+            continue;
+        }
+        let hl2 = (candles[i].high + candles[i].low) / 2.0;
+        let up_basic = hl2 + mult * atr[i];
+        let lo_basic = hl2 - mult * atr[i];
+        if i == 0 || !final_up[i - 1].is_finite() {
+            final_up[i] = up_basic;
+            final_lo[i] = lo_basic;
+            dir[i] = -1.0;
+            line[i] = final_lo[i];
+            continue;
+        }
+        let prev_close = candles[i - 1].close;
+        final_up[i] =
+            if up_basic < final_up[i - 1] || prev_close > final_up[i - 1] { up_basic } else { final_up[i - 1] };
+        final_lo[i] =
+            if lo_basic > final_lo[i - 1] || prev_close < final_lo[i - 1] { lo_basic } else { final_lo[i - 1] };
+        let was_down = (line[i - 1] - final_up[i - 1]).abs() < 1e-9;
+        dir[i] = if was_down {
+            if candles[i].close > final_up[i] { -1.0 } else { 1.0 }
+        } else if candles[i].close < final_lo[i] {
+            1.0
+        } else {
+            -1.0
+        };
+        line[i] = if dir[i] < 0.0 { final_lo[i] } else { final_up[i] };
+    }
+    (line, dir)
+}
+
+/// `ta.barssince(cond)` -- bars since cond held (na before it ever did).
+#[must_use]
+pub fn ta_barssince(cond: &[f64]) -> Series {
+    let mut out = vec![NA; cond.len()];
+    let mut last: Option<usize> = None;
+    for (i, v) in cond.iter().enumerate() {
+        if v.is_finite() && *v != 0.0 {
+            last = Some(i);
+        }
+        if let Some(l) = last {
+            out[i] = (i - l) as f64;
+        }
+    }
+    out
+}
+
+/// `ta.valuewhen(cond, source, occurrence)` -- the source's value at the
+/// (occurrence+1)-th most recent bar where cond held.
+#[must_use]
+pub fn ta_valuewhen(cond: &[f64], source: &[f64], occurrence: f64) -> Series {
+    let occ = occurrence.max(0.0) as usize;
+    let mut out = vec![NA; cond.len()];
+    let mut hits: Vec<usize> = Vec::new();
+    for i in 0..cond.len() {
+        let v = cond[i];
+        if v.is_finite() && v != 0.0 {
+            hits.push(i);
+        }
+        if hits.len() > occ {
+            let idx = hits[hits.len() - 1 - occ];
+            out[i] = source[idx];
+        }
+    }
+    out
+}
+
+/// `ta.highestbars(length)` -- Pine's negative offset to the window's
+/// highest high (0 = this bar, -1 = one back).
+#[must_use]
+pub fn ta_highestbars(candles: &[Candle], length: f64) -> Series {
+    offsetbars(candles, length, true)
+}
+
+/// `ta.lowestbars(length)` -- mirror for the lowest low.
+#[must_use]
+pub fn ta_lowestbars(candles: &[Candle], length: f64) -> Series {
+    offsetbars(candles, length, false)
+}
+
+fn offsetbars(candles: &[Candle], length: f64, want_high: bool) -> Series {
+    let n = (length.max(1.0) as usize).min(candles.len().max(1));
+    let mut out = vec![NA; candles.len()];
+    for i in (n - 1)..candles.len() {
+        let w = &candles[i + 1 - n..=i];
+        let mut best = 0usize;
+        for (k, c) in w.iter().enumerate() {
+            let (b, v) = if want_high {
+                (w[best].high, c.high)
+            } else {
+                (w[best].low, c.low)
+            };
+            // Pine's offset points at the MOST RECENT bar sharing the
+            // extreme, so a tie moves the pointer forward.
+            if (want_high && v >= b) || (!want_high && v <= b) {
+                best = k;
+            }
+        }
+        out[i] = -((n - 1 - best) as f64);
+    }
+    out
+}
+
+/// `ta.cum(source)` -- cumulative sum; na bars carry the running total
+/// (a gap does not poison the series for the rest of the chart).
+#[must_use]
+pub fn ta_cum(source: &[f64]) -> Series {
+    let mut out = vec![NA; source.len()];
+    let mut acc = 0.0;
+    let mut started = false;
+    for (i, v) in source.iter().enumerate() {
+        if v.is_finite() {
+            acc += v;
+            started = true;
+        }
+        if started {
+            out[i] = acc;
+        }
+    }
+    out
+}
+
+/// `ta.pivothigh(source, left, right)` -- the pivot's price, returned on the
+/// bar that CONFIRMS it (right bars after the pivot), else na.
+#[must_use]
+pub fn ta_pivothigh(source: &[f64], left: f64, right: f64) -> Series {
+    pivot(source, left, right, true)
+}
+
+/// `ta.pivotlow(source, left, right)` -- mirror.
+#[must_use]
+pub fn ta_pivotlow(source: &[f64], left: f64, right: f64) -> Series {
+    pivot(source, left, right, false)
+}
+
+fn pivot(source: &[f64], left: f64, right: f64, want_high: bool) -> Series {
+    let l = left.max(1.0) as usize;
+    let r = right.max(1.0) as usize;
+    let mut out = vec![NA; source.len()];
+    for i in (l + r)..source.len() {
+        let c = i - r;
+        let v = source[c];
+        if !v.is_finite() {
+            continue;
+        }
+        let ok = source[i - l - r..=i].iter().enumerate().all(|(k, o)| {
+            k + i - l - r == c
+                || !o.is_finite()
+                || if want_high { v > *o } else { v < *o }
+        });
+        if ok {
+            out[i] = v;
+        }
+    }
+    out
+}
+
+/// `ta.rising(source, length)` -- strictly growing for length bars back.
+#[must_use]
+pub fn ta_rising(source: &[f64], length: f64) -> Series {
+    monotone(source, length, true)
+}
+
+/// `ta.falling(source, length)` -- mirror.
+#[must_use]
+pub fn ta_falling(source: &[f64], length: f64) -> Series {
+    monotone(source, length, false)
+}
+
+fn monotone(source: &[f64], length: f64, up: bool) -> Series {
+    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let mut out = vec![NA; source.len()];
+    for i in n..source.len() {
+        let ok = (0..n).all(|k| {
+            let (a, b) = (source[i - k], source[i - k - 1]);
+            a.is_finite() && b.is_finite() && if up { a > b } else { a < b }
+        });
+        out[i] = if ok { 1.0 } else { 0.0 };
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

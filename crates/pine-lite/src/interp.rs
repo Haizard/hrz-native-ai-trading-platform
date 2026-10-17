@@ -1596,6 +1596,18 @@ impl<'a> Vm<'a> {
                 let (basis, upper, lower) = ta::ta_bb(&src, a!(1, 20.0), a!(2, 2.0));
                 vec![basis, upper, lower]
             }
+            "ta.dmi" => {
+                let (p, m, a) = ta::ta_dmi(self.candles, a!(0, 14.0));
+                vec![p, m, a]
+            }
+            "ta.kc" => {
+                let (b, u, l) = ta::ta_kc(self.candles, a!(0, 20.0), a!(1, 2.0));
+                vec![b, u, l]
+            }
+            "ta.supertrend" => {
+                let (line, dirn) = ta::ta_supertrend(self.candles, a!(0, 3.0), a!(1, 10.0));
+                vec![line, dirn]
+            }
             "ta.stoch" => {
                 let src = self.series_arg(args, 0)?;
                 let k = ta::ta_stoch(
@@ -1704,7 +1716,7 @@ impl<'a> Vm<'a> {
             // Multi-output builtins: the scalar path refuses them so an
             // author learns the destructuring form instead of plotting half a
             // Bollinger band by accident.
-            "ta.macd" | "ta.bb" => Err(crate::ScriptError {
+            "ta.macd" | "ta.bb" | "ta.dmi" | "ta.kc" | "ta.supertrend" => Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
                 message: format!(
@@ -1712,6 +1724,54 @@ impl<'a> Vm<'a> {
                 ),
             }),
             "ta.atr" => Ok(ta::ta_atr(self.candles, a!(0)?)[self.bar]),
+            "ta.stdev" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_stdev(&src, a!(1)?)[self.bar])
+            }
+            "ta.variance" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_variance(&src, a!(1)?)[self.bar])
+            }
+            "ta.hma" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_hma(&src, a!(1)?)[self.bar])
+            }
+            "ta.cci" => Ok(ta::ta_cci(self.candles, a!(0)?)[self.bar]),
+            "ta.mfi" => Ok(ta::ta_mfi(self.candles, a!(0)?)[self.bar]),
+            "ta.willr" => Ok(ta::ta_willr(self.candles, a!(0)?)[self.bar]),
+            "ta.barssince" => {
+                let cond = self.series_arg(args, 0)?;
+                Ok(ta::ta_barssince(&cond)[self.bar])
+            }
+            "ta.valuewhen" => {
+                let cond = self.series_arg(args, 0)?;
+                let src = self.series_arg(args, 1)?;
+                let occ = a!(2)?;
+                Ok(ta::ta_valuewhen(&cond, &src, if occ.is_finite() { occ } else { 0.0 })
+                    [self.bar])
+            }
+            "ta.highestbars" => Ok(ta::ta_highestbars(self.candles, a!(0)?)[self.bar]),
+            "ta.lowestbars" => Ok(ta::ta_lowestbars(self.candles, a!(0)?)[self.bar]),
+            "ta.cum" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_cum(&src)[self.bar])
+            }
+            "ta.pivothigh" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_pivothigh(&src, a!(1)?, a!(2)?)[self.bar])
+            }
+            "ta.pivotlow" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_pivotlow(&src, a!(1)?, a!(2)?)[self.bar])
+            }
+            "ta.rising" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_rising(&src, a!(1)?)[self.bar])
+            }
+            "ta.falling" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_falling(&src, a!(1)?)[self.bar])
+            }
             "ta.tr" => Ok(ta::ta_tr(self.candles)[self.bar]),
             "ta.highest" => {
                 let src = self.series_arg(args, 0)?;

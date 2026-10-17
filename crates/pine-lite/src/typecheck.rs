@@ -796,7 +796,9 @@ impl Cx {
             };
         }
         match callee {
-            "ta.crossover" | "ta.crossunder" | "ta.cross" => Ty::Bool,
+            "ta.crossover" | "ta.crossunder" | "ta.cross" | "ta.rising" | "ta.falling" => {
+                Ty::Bool
+            }
             "barstate.isconfirmed" => Ty::Bool,
             _ => Ty::Float,
         }
@@ -840,6 +842,13 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "ta.stoch" => (2, 2),
         "ta.macd" => (3, 4),
         "ta.bb" => (2, 3),
+        "ta.stdev" | "ta.variance" | "ta.hma" | "ta.rising" | "ta.falling" => (2, 2),
+        "ta.cci" | "ta.mfi" | "ta.willr" | "ta.highestbars" | "ta.lowestbars"
+        | "ta.barssince" | "ta.cum" => (1, 1),
+        "ta.valuewhen" | "ta.pivothigh" | "ta.pivotlow" => (3, 3),
+        "ta.dmi" => (1, 1),
+        "ta.kc" => (2, 2),
+        "ta.supertrend" => (2, 2),
         "ta.crossover" | "ta.crossunder" | "ta.cross" => (2, 2),
         "math.abs" | "math.floor" | "math.ceil" | "math.round" | "math.sqrt" | "math.log"
         | "math.exp" | "math.sign" => (1, 1),
@@ -901,7 +910,8 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
 /// the right of `a, b, c = ...`.
 fn multi_output_count(callee: &str) -> Option<usize> {
     match callee {
-        "ta.macd" | "ta.bb" => Some(3),
+        "ta.macd" | "ta.bb" | "ta.dmi" | "ta.kc" => Some(3),
+        "ta.supertrend" => Some(2),
         // `ta.stoch` reads as its %K alone, and destructures to %K and %D.
         "ta.stoch" => Some(2),
         _ => None,
@@ -912,7 +922,8 @@ fn multi_output_count(callee: &str) -> Option<usize> {
 /// is always a mistake worth naming.
 fn multi_only_count(callee: &str) -> Option<usize> {
     match callee {
-        "ta.macd" | "ta.bb" => Some(3),
+        "ta.macd" | "ta.bb" | "ta.dmi" | "ta.kc" => Some(3),
+        "ta.supertrend" => Some(2),
         _ => None,
     }
 }
