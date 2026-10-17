@@ -70,10 +70,33 @@ pub struct Plot {
     pub linewidth: f64,
     /// Whether the series was produced by a histogram-style plot.
     pub kind: PlotKind,
+    /// `plotcandle`/`plotbar` carry four series here; None for line plots.
+    pub candles: Option<PlotCandles>,
     /// `offset=`: the renderer shifts the plot this many bars (positive
     /// right, negative left). The values array stays in bar order; the
     /// shift is pure presentation, like Pine.
     pub offset: f64,
+}
+
+/// The four series a `plotcandle`/`plotbar` draws, plus per-bar colors.
+/// `Plot.values` mirrors the close for the legend's last-value readout.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlotCandles {
+    /// Open series.
+    pub open: Series,
+    /// High series.
+    pub high: Series,
+    /// Low series.
+    pub low: Series,
+    /// Close series.
+    pub close: Series,
+    /// Per-bar body (and border) color; absent color= defaults to
+    /// TradingView's up/down green/red.
+    pub body: Vec<u32>,
+    /// Per-bar wick color; absent wickcolor= follows the body.
+    pub wick: Vec<u32>,
+    /// true = `plotbar` (OHLC ticks), false = `plotcandle` (bodies).
+    pub bars: bool,
 }
 
 /// Visual style, from `style=`.
@@ -106,6 +129,9 @@ pub enum PlotKind {
     Shape,
     /// A per-bar arrow (plotarrow).
     Arrow,
+    /// `plotcandle`/`plotbar` -- excluded from line rendering; the chart
+    /// engine decomposes the OHLC series into wick lines and body boxes.
+    Candles,
 }
 
 /// A horizontal reference level from `hline()`.
@@ -1207,7 +1233,7 @@ impl<'a> Vm<'a> {
     fn call_stmt(&mut self, callee: &str, args: &[Arg]) -> Result<(), crate::ScriptError> {
         self.tick()?;
         match callee {
-            "plot" | "plotshape" | "plotchar" | "plotarrow" => {
+            "plot" | "plotshape" | "plotchar" | "plotarrow" | "plotcandle" | "plotbar" => {
                 if self.collecting {
                     // Defer by call site: one AST node, one plot, however many
                     // bars (or branch firings) reach it. The key is the callee
@@ -1392,9 +1418,80 @@ impl<'a> Vm<'a> {
     /// into a full-window buffer by re-evaluating the expression over the
     /// run's own variable history -- the current bar's value plus the ring
     /// buffers the VM already maintains.
+    /// Evaluate a color EXPRESSION per bar: a `color.red` literal, a named
+    /// color, an input.color var, or a ternary of any of those
+    /// (`close >= open ? color.green : color.red`).
+    fn eval_color_expr(&mut self, expr: &Expr) -> Result<u32, crate::ScriptError> {
+        match &expr.kind {
+            ExprKind::Color(c) => Ok(*c),
+            ExprKind::Ident(name) if named_color(name).is_some() => {
+                Ok(named_color(name).expect("checked"))
+            }
+            ExprKind::Ternary { cond, then, els } => {
+                let c = self.eval_f(cond)?;
+                if self.truthy(c) {
+                    self.eval_color_expr(then)
+                } else {
+                    self.eval_color_expr(els)
+                }
+            }
+            _ => {
+                let v = self.eval_f(expr)?;
+                Ok(if v.is_finite() { v as u32 } else { 0xFF_94_A3_B8 })
+            }
+        }
+    }
+
     fn plot_series(&mut self, callee: &str, args: &[Arg]) -> Result<Plot, crate::ScriptError> {
         let n = self.candles.len();
         let mut values = vec![NA; n];
+        if callee == "plotcandle" || callee == "plotbar" {
+            // Four series + per-bar colors, replayed against frozen history
+            // exactly like the one-series plot path.
+            let (mut o, mut h, mut l, mut c) = (vec![NA; n], vec![NA; n], vec![NA; n], vec![NA; n]);
+            let mut body = vec![0u32; n];
+            let mut wick = vec![0u32; n];
+            let color_arg = args.iter().find(|a| a.name.as_deref() == Some("color")).map(|a| a.value.clone());
+            let wick_arg = args.iter().find(|a| a.name.as_deref() == Some("wickcolor")).map(|a| a.value.clone());
+            let saved_bar = self.bar;
+            for bar in 0..n {
+                self.bar = bar;
+                if let Some(a) = args.first() { o[bar] = self.eval_f(&a.value)?; }
+                if let Some(a) = args.get(1) { h[bar] = self.eval_f(&a.value)?; }
+                if let Some(a) = args.get(2) { l[bar] = self.eval_f(&a.value)?; }
+                if let Some(a) = args.get(3) { c[bar] = self.eval_f(&a.value)?; }
+                let up = !c[bar].is_finite() || !o[bar].is_finite() || c[bar] >= o[bar];
+                body[bar] = match &color_arg {
+                    Some(expr) => self.eval_color_expr(expr)?,
+                    // TradingView's up green / down red.
+                    None => if up { 0xFF_26_A6_9A } else { 0xFF_EF_53_50 },
+                };
+                wick[bar] = match &wick_arg {
+                    Some(expr) => self.eval_color_expr(expr)?,
+                    None => body[bar],
+                };
+            }
+            self.bar = saved_bar;
+            return Ok(Plot {
+                id: format!("p{}", self.out.plots.len()),
+                title: self.arg_str(args, "title").unwrap_or_else(|| "candles".into()),
+                values: c.clone(),
+                style: crate::PlotStyle::Line,
+                color: 0,
+                linewidth: 1.0,
+                kind: crate::PlotKind::Candles,
+                candles: Some(crate::interp::PlotCandles {
+                    open: o,
+                    high: h,
+                    low: l,
+                    close: c,
+                    body,
+                    wick,
+                    bars: callee == "plotbar",
+                }),
+                offset: self.arg_named_f(args, "offset").unwrap_or(0.0),
+            });
+        }
         if callee == "plot" {
             if let Some(first) = args.first() {
                 // Evaluate the plot's expression at every bar by replaying the
@@ -1468,6 +1565,7 @@ impl<'a> Vm<'a> {
                 color,
                 linewidth: 1.0,
                 kind: crate::PlotKind::Shape,
+                candles: None,
                 offset: 0.0,
             });
         }
@@ -1488,6 +1586,7 @@ impl<'a> Vm<'a> {
             color: self.arg_color(args).unwrap_or(0xFF_60_A5_FAu32),
             linewidth: self.arg_named_f(args, "linewidth").unwrap_or(1.0),
             kind: crate::PlotKind::Line,
+            candles: None,
             offset: self.arg_named_f(args, "offset").unwrap_or(0.0),
         })
     }

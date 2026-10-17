@@ -105,6 +105,10 @@ pub enum ScriptDraw {
         /// `border_style=` — "solid" | "dashed" | "dotted".
         #[serde(default)]
         border_style: String,
+        /// Fill alpha override: candle bodies draw solid (1.0); zone boxes
+        /// keep the derived 0.22 when this is None.
+        #[serde(default)]
+        fill_alpha: Option<f64>,
     },
 }
 
@@ -525,6 +529,82 @@ fn project_extend(
     (ax, ay, bx, by)
 }
 
+/// Decompose `plotcandle`/`plotbar` plots into the same Box/Line draws
+/// drawing objects use: a wick line per bar plus a body box (plotcandle)
+/// or open/close tick lines (plotbar). Bodies fill solid -- they ARE the
+/// chart, not a translucent zone.
+pub fn scene_overlay_candles(
+    output: &Output,
+    slot: f64,
+    frame: &crate::scene::Frame,
+) -> Vec<ScriptDraw> {
+    let py = |v: f64| {
+        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot, frame.scale)
+    };
+    let mut draws = Vec::new();
+    for plot in &output.plots {
+        let Some(cd) = &plot.candles else {
+            continue;
+        };
+        for bar in 0..cd.close.len() {
+            let (o, h, l, c) = (cd.open[bar], cd.high[bar], cd.low[bar], cd.close[bar]);
+            if ![o, h, l, c].iter().all(|v| v.is_finite()) {
+                continue;
+            }
+            let mid = frame.plot.x + slot * (bar as f64 + 0.5 + plot.offset);
+            let wick_color = cd.wick.get(bar).copied().unwrap_or(0xFF_94_A3_B8);
+            let body_color = cd.body.get(bar).copied().unwrap_or(0xFF_94_A3_B8);
+            draws.push(ScriptDraw::Line {
+                x1: mid,
+                y1: py(h),
+                x2: mid,
+                y2: py(l),
+                color: wick_color,
+                style: "solid".to_string(),
+                width: 1.0,
+                extend: String::new(),
+            });
+            if cd.bars {
+                // plotbar: open tick left of center, close tick right.
+                draws.push(ScriptDraw::Line {
+                    x1: frame.plot.x + slot * (bar as f64 + plot.offset),
+                    y1: py(o),
+                    x2: mid,
+                    y2: py(o),
+                    color: body_color,
+                    style: "solid".to_string(),
+                    width: 1.5,
+                    extend: String::new(),
+                });
+                draws.push(ScriptDraw::Line {
+                    x1: mid,
+                    y1: py(c),
+                    x2: frame.plot.x + slot * (bar as f64 + 1.0 + plot.offset),
+                    y2: py(c),
+                    color: body_color,
+                    style: "solid".to_string(),
+                    width: 1.5,
+                    extend: String::new(),
+                });
+            } else {
+                // plotcandle: the body box, narrow inset inside the slot.
+                draws.push(ScriptDraw::Box {
+                    x1: frame.plot.x + slot * (bar as f64 + 0.15 + plot.offset),
+                    y1: py(o.max(c)),
+                    x2: frame.plot.x + slot * (bar as f64 + 0.85 + plot.offset),
+                    y2: py(o.min(c)),
+                    color: body_color,
+                    border_color: Some(body_color),
+                    border_width: 1.0,
+                    border_style: "solid".to_string(),
+                    fill_alpha: Some(1.0),
+                });
+            }
+        }
+    }
+    draws
+}
+
 /// Position an overlay script's drawing objects (docs/23 Phase 13): the
 /// script's bar-index + price coordinates through the SAME frame mapping
 /// plots and shapes use. Negative bar indexes count back from the last bar
@@ -593,6 +673,7 @@ pub fn scene_overlay_objects(
                     border_color: *border_color,
                     border_width: *border_width,
                     border_style: border_style.clone(),
+                    fill_alpha: None,
                 }]
             }
             // docs/28: time-anchored twins. The anchors are unix-nanos
@@ -647,6 +728,7 @@ pub fn scene_overlay_objects(
                     border_color: *border_color,
                     border_width: *border_width,
                     border_style: border_style.clone(),
+                    fill_alpha: None,
                 }]
             }
             // docs/37: registry primitives decompose into the wire geometry
@@ -1348,6 +1430,46 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_plotcandle_decomposes_into_wicks_and_solid_bodies() {
+        let frame = crate::scene::Frame {
+            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "plotcandle(open, high, low, close, color=close >= open ? color.teal : color.red)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        assert_eq!(output.plots.len(), 1);
+        assert!(output.plots[0].candles.is_some(), "the VM carries OHLC");
+        let draws = scene_overlay_candles(&output, 10.0, &frame);
+        let wicks = draws.iter().filter(|d| matches!(d, ScriptDraw::Line { .. })).count();
+        let bodies: Vec<_> = draws
+            .iter()
+            .filter_map(|d| match d {
+                ScriptDraw::Box { fill_alpha, .. } => Some(*fill_alpha),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(wicks, 40, "one wick per bar");
+        assert_eq!(bodies.len(), 40, "one body per bar");
+        assert!(bodies.iter().all(|a| *a == Some(1.0)), "bodies fill solid");
+        // Bar 0's wick centers in slot 0: x = slot * 0.5.
+        let wick = draws.iter().find_map(|d| match d {
+            ScriptDraw::Line { x1, x2, .. } if x1 == x2 => Some((*x1, *x2)),
+            _ => None,
+        }).expect("a vertical wick");
+        assert!((wick.0 - 5.0).abs() < 1e-9, "wick at slot center: {}", wick.0);
     }
 
     #[test]

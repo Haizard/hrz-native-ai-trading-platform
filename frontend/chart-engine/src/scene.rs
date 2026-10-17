@@ -1948,7 +1948,8 @@ pub fn build(request: &Request) -> Scene {
                 Ok(output) => {
                     let plots = crate::script::scene_overlay_plots(&output, slot, &frame);
                     let shapes = crate::script::scene_overlay_shapes(&output, slot, &frame);
-                    let objects = crate::script::scene_overlay_objects(&output, slot, &frame);
+                    let mut objects = crate::script::scene_overlay_objects(&output, slot, &frame);
+                    objects.extend(crate::script::scene_overlay_candles(&output, slot, &frame));
                     if output.objects_truncated {
                         add_note(
                             &mut scene.note,

@@ -648,7 +648,7 @@ impl Cx {
 
     fn call(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
         const STMT_ONLY: &[&str] = &[
-            "plot", "plotshape", "plotchar", "plotarrow", "hline", "fill", "bgcolor",
+            "plot", "plotshape", "plotchar", "plotarrow", "plotcandle", "plotbar", "hline", "fill", "bgcolor",
             "barcolor", "fib.new", "strategy.entry", "strategy.exit",
             "strategy.close", "strategy.close_all", "strategy.cancel",
         ];
@@ -951,6 +951,8 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         // is host-supplied, so an unknown name is a RUNTIME report.
         "request.data" => (1, 1),
         "plot" | "plotshape" | "plotchar" | "plotarrow" => (1, 8),
+        // plotcandle(open, high, low, close, title=, color=, wickcolor=, ...).
+        "plotcandle" | "plotbar" => (4, 8),
         "hline" => (1, 4),
         "fill" => (2, 6),
         "bgcolor" | "barcolor" => (1, 4),

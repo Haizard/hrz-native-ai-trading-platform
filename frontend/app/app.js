@@ -1485,7 +1485,9 @@ function createChartPane(root, hooks = {}) {
           const y = Math.min(b.y1, b.y2);
           const h = Math.abs(b.y2 - b.y1);
           if (w <= 0 || h <= 0) continue;
-          ctx.fillStyle = rgbaFromPacked(b.color, 0.22);
+          // A candle body (plotcandle) carries fill_alpha 1.0 -- it IS the
+          // chart; zone boxes keep the derived 0.22.
+          ctx.fillStyle = rgbaFromPacked(b.color, b.fill_alpha ?? 0.22);
           ctx.fillRect(x, y, w, h);
           // docs/31: an explicit border_color= wins — TradingView's box look,
           // the border distinct from the fill, with its width and dash style.
