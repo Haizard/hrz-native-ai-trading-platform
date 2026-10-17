@@ -33,7 +33,7 @@ pub mod sim;
 pub mod ta;
 pub mod typecheck;
 
-pub use interp::{run, Inputs, Output, Plot, PlotKind, PlotStyle, Vm};
+pub use interp::{run, Inputs, Output, Plot, PlotKind, PlotStyle, ScriptObject, Shape, Vm};
 pub use lex::Token;
 pub use parse::{Expr, Item};
 

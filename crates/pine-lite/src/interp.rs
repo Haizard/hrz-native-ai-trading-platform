@@ -1136,12 +1136,33 @@ impl<'a> Vm<'a> {
                 .or_else(|| self.arg_str(args, "char"))
                 .unwrap_or_else(|| "circle".to_string());
             let color = self.arg_color(args).unwrap_or(0xFF_60_A5_FAu32);
-            let location_value = self.arg_named_f(args, "location_value").unwrap_or(NA);
+            // `location_value=` is a SERIES, evaluated per bar like the
+            // condition: a marker sits at the price of ITS bar. Evaluating
+            // it once -- here, on the last bar, where the deferred plot
+            // replays -- stamped every marker with the final bar's extreme,
+            // so the whole marker field rode live price (the user's
+            // "triangles move with the price" bug).
+            let location_series = match args
+                .iter()
+                .find(|a| a.name.as_deref() == Some("location_value"))
+            {
+                Some(arg) => {
+                    let saved_bar = self.bar;
+                    let mut vals = vec![NA; n];
+                    for (bar, slot) in vals.iter_mut().enumerate() {
+                        self.bar = bar;
+                        *slot = self.eval_f(&arg.value)?;
+                    }
+                    self.bar = saved_bar;
+                    vals
+                }
+                None => vec![NA; n],
+            };
             for (bar, v) in series.iter().enumerate() {
                 if self.truthy(*v) {
                     self.out.shapes.push(Shape {
                         bar,
-                        value: location_value,
+                        value: location_series[bar],
                         glyph: glyph.clone(),
                         color,
                     });
@@ -1363,7 +1384,25 @@ impl<'a> Vm<'a> {
         match &base.kind {
             ExprKind::Ident(name) => {
                 if let Some(buf) = self.vars.get(name) {
-                    return Ok(if off <= self.bar { buf[self.bar - off] } else { NA });
+                    if off > self.bar {
+                        return Ok(NA);
+                    }
+                    // The var buffer is SPARSE (a slot holds a value only
+                    // where an assignment ran); a history read gets Pine's
+                    // carried value -- the most recent assignment at or
+                    // before the indexed bar, the same rule `read_name`
+                    // applies to the current bar.
+                    let idx = self.bar - off;
+                    let mut value = buf[idx];
+                    if !value.is_finite() {
+                        for slot in (0..idx).rev() {
+                            if buf[slot].is_finite() {
+                                value = buf[slot];
+                                break;
+                            }
+                        }
+                    }
+                    return Ok(value);
                 }
                 let series = self.builtin_series(name)?;
                 Ok(if off <= self.bar { series[self.bar - off] } else { NA })
@@ -1867,7 +1906,23 @@ impl<'a> Vm<'a> {
         match &arg.value.kind {
             ExprKind::Ident(name) => {
                 if let Some(buf) = self.vars.get(name) {
-                    return Ok(buf.clone());
+                    // The var buffer is SPARSE: a slot holds a value only on
+                    // the bar its assignment ran (`var x = ...` writes bar
+                    // 0, `x := ...` writes the bars it fires on). Pine's
+                    // semantics everywhere else are carry-forward, which the
+                    // scalar path applies in `read_name`; a `ta.*` consumer
+                    // needs the same rule as a whole series -- a sparse
+                    // buffer is NA-riddled and `ta.crossover` against a
+                    // tracked swing level silently never fires (the BOS bug).
+                    let mut out = Vec::with_capacity(buf.len());
+                    let mut last = NA;
+                    for &slot in buf.iter() {
+                        if slot.is_finite() {
+                            last = slot;
+                        }
+                        out.push(last);
+                    }
+                    return Ok(out);
                 }
                 // A function PARAMETER as a series argument (`f(x) =>
                 // ta.sma(x, n)` with `f(close)`): Pine passes the SERIES, so
@@ -2134,6 +2189,112 @@ mod tests {
     use super::*;
     use crate::{lex, parse, typecheck, limits};
     use analytics_core::types::Timeframe;
+
+    #[test]
+    fn two_plotshapes_both_fire() {
+        // Mirrors the live probe: a state plotshape plus a crossover
+        // plotshape on consecutive lines. Both must produce shapes.
+        let candles: Vec<Candle> = (0..10).map(|i| candle(i, 100.0 + i as f64)).collect();
+        let out = run_src(
+            "//@pine_lite version=1 overlay=true title=\"t\"\n\
+             plotshape(high > 105.3, shape=\"circle\", location_value=high)\n\
+             plotshape(ta.crossover(high, 105.3), shape=\"cross\", location_value=high)",
+            &candles,
+        );
+        assert_eq!(out.shapes.len(), 6, "5 state bars (5-9) + 1 cross bar (5)");
+    }
+
+    #[test]
+    fn crossover_against_a_sparse_var_fires() {
+        // Regression: a `var` that only reassigns on pivot bars has a sparse
+        // write buffer; `ta.crossover(high, ph1)` against it used to see
+        // NA-riddled data and never fire. Pine's carry-forward is the law:
+        // the var's value at every bar is its most recent assignment.
+        // (concat! with real newlines: the backslash-newline continuation
+        // strips the if-body's indentation and flattens the statement to
+        // top level.)
+        let candles: Vec<Candle> = (0..20).map(|i| candle(i, 100.0 + i as f64)).collect();
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true title=\"t\"
+",
+            "var ph1 = na
+",
+            "if bar_index == 2
+",
+            "    ph1 := 104.0
+",
+            "cross = ta.crossover(high, ph1)
+",
+            "plotshape(cross, shape=\"cross\", location_value=high)
+",
+        );
+        let out = run_src(src, &candles);
+        // high = close + 1 = 101+i; crosses 104 at bar 4 (104 <= 104, 105 > 104)
+        assert_eq!(out.shapes.len(), 1, "the crossover fires once, at the cross bar");
+        assert_eq!(out.shapes[0].bar, 4);
+    }
+
+    #[test]
+    fn var_history_read_carries_forward() {
+        // ph1[1] on a bar with no assignment must read the carried value,
+        // not the sparse slot's NA.
+        let candles: Vec<Candle> = (0..10).map(|i| candle(i, 100.0 + i as f64)).collect();
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true title=\"t\"
+",
+            "var ph1 = na
+",
+            "if bar_index == 2
+",
+            "    ph1 := 42.0
+",
+            "plot(ph1[1], title=\"h\")
+",
+        );
+        let out = run_src(src, &candles);
+        let values = &out.plots[0].values;
+        assert!(values[0].is_nan() && values[1].is_nan() && values[2].is_nan(),
+            "before the first assignment the history is na: {values:?}");
+        assert_eq!(values[3], 42.0, "bar 3 reads bar 2's assignment");
+        assert_eq!(values[9], 42.0, "bar 9 still reads the carried assignment");
+    }
+
+    #[test]
+    fn plotshape_crossover_inline() {
+        // candle(i, 100+i): high = 101+i; crosses 105.3 at bar 5.
+        let candles: Vec<Candle> = (0..10).map(|i| candle(i, 100.0 + i as f64)).collect();
+        let out = run_src(
+            "//@pine_lite version=1 overlay=true title=\"t\"\n\
+             plotshape(ta.crossover(high, 105.3), shape=\"cross\", location_value=high)",
+            &candles,
+        );
+        assert_eq!(out.shapes.len(), 1);
+        assert_eq!(out.shapes[0].bar, 5);
+    }
+
+    #[test]
+    fn plotshape_location_value_is_the_markers_own_bar() {
+        // Regression: `location_value=` used to be evaluated once, on the
+        // final bar (where the deferred plot replays), stamping every marker
+        // with the last bar's extreme -- the marker field rode live price.
+        // Each marker must sit at the high of the bar its condition fired on.
+        let candles: Vec<Candle> = (0..10).map(|i| candle(i, 100.0 + i as f64)).collect();
+        let out = run_src(
+            "//@pine_lite version=1 overlay=true title=\"t\"\n\
+             plotshape(close > 0.0, shape=\"circle\", location_value=high)",
+            &candles,
+        );
+        assert_eq!(out.shapes.len(), 10);
+        for shape in &out.shapes {
+            // candle(i, c) has high = c + 1 = 101 + i
+            assert_eq!(
+                shape.value,
+                101.0 + shape.bar as f64,
+                "marker at bar {} must carry that bar's high",
+                shape.bar
+            );
+        }
+    }
 
     fn candle(i: usize, close: f64) -> Candle {
         Candle {

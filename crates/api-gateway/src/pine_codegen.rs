@@ -247,7 +247,7 @@ The rules that keep it honest:
 ## Drawing
 - `plot(series, title="...", color=color.blue, linewidth=1)` -- a line. Optional `style="histogram"` / `style="columns"` / `style="circles"` / `style="stepline"` / `style="areabr"` / `style="linebr"`.
 - `hline(price, color=color.gray, linestyle=dashed)` -- a horizontal level (e.g. `hline(70)`).
-- `plotshape(cond, shape="triangleup", color=color.green, location_value=low)` -- a marker on each bar where cond is true. `shape=` names the glyph ("triangleup", "triangledown", "circle", "cross"); `location_value=` is the price the marker sits at (`low` under a buy, `high` above a sell). Omit `location_value=` and the marker falls to the bottom of the pane (or the bottom of the price range, in an overlay script). `plotchar(cond, char="B")` prints a letter; `plotarrow(cond)` draws an arrow. Markers work in overlay scripts and pane scripts alike.
+- `plotshape(cond, shape="triangleup", color=color.green, location_value=low)` -- a marker on each bar where cond is true. Its named args are `shape=`, `color=`, `location_value=`, `title=` ONLY: there is no `yloc=`, no `style=`, no `size=` -- an unknown named arg is ignored and the marker falls to `na` (invisible). `shape=` names the glyph ("triangleup", "triangledown", "circle", "cross"); `location_value=` is the price the marker sits at (`low` under a buy, `high` above a sell). Omit `location_value=` and the marker falls to the bottom of the pane (or the bottom of the price range, in an overlay script). `plotchar(cond, char="B")` prints a letter; `plotarrow(cond)` draws an arrow. Markers work in overlay scripts and pane scripts alike.
 - Colors: color.red, color.green, color.blue, color.orange, color.yellow, color.purple, color.teal, color.lime, color.aqua, color.white, color.gray, color.maroon, color.navy, color.olive, color.silver, color.fuchsia, color.black.
 
 ## Inputs (user-adjustable parameters)
@@ -270,7 +270,7 @@ Statements that add to a drawing heap (cap 256 per script):
     if demand_zone
         box.new(zone_left, zone_top, zone_right, zone_bottom, color=color.green)
 
-Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~256 bars (past the cap the extra objects are dropped). `style=` is "solid"/"dashed"/"dotted". Boxes take TradingView's border knobs -- `border_color=color.lime, border_width=2, border_style="dashed"`: a visible border distinct from the fill, which is how a zone reads as a zone and not a smear (leave them off for a soft fill-only band). The `*_time` twins (`box.new_time`, `line.new_time`, `label.new_time`) take unix-nanos TIME anchors instead of bar indexes -- use them for anything read from a pooled timeframe (see "A higher timeframe"), where an edge is a timestamp, not one of this chart's bars.
+Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~256 bars (past the cap the extra objects are dropped). `style=` is "solid"/"dashed"/"dotted" and belongs to `line.new` ONLY: `label.new` takes exactly `(bar, price, text, color=)` -- no `style=`, no `size=`, no `textcolor=`, and there is no `label.style_*` or `size.*` constant anywhere in this language. Boxes take TradingView's border knobs -- `border_color=color.lime, border_width=2, border_style="dashed"`: a visible border distinct from the fill, which is how a zone reads as a zone and not a smear (leave them off for a soft fill-only band). The `*_time` twins (`box.new_time`, `line.new_time`, `label.new_time`) take unix-nanos TIME anchors instead of bar indexes -- use them for anything read from a pooled timeframe (see "A higher timeframe"), where an edge is a timestamp, not one of this chart's bars.
 
 `fib.new(bar1, price1, bar2, price2, color=color.orange)` draws a Fibonacci retracement on a swing: the 0 line sits on the SECOND anchor (the swing's end), 100 on the first, and 23.6/38.2/50/61.8/78.6 between them, each with its price label. One call, one heap object -- the engine decomposes it into the levels, so a fib costs one object, not fourteen.
 
@@ -363,9 +363,58 @@ The architecture is the same state-then-draw pattern as boxes. Detection stamps 
 
 A level DIES by invalidation, not by expiring: sweep the live levels every bar (as the box idiom does) and write `na` into a dead level's array slot -- a level that price already traded through is not resistance any more.
 
-## Triangles are events, never zones
+## Structure breaks and sloped lines (BOS, CHoCH, trendline breaks)
 
-`plotshape(cond, shape="triangleup", location_value=low)` stamps a glyph at EVERY bar where `cond` is true. That makes it a marker for an EVENT at one bar: a CHoCH, a sweep, a breakout, an entry. It is NEVER the drawing for a zone -- and a "triangle zone" (a trail of triangles under each bar while a zone condition holds, crawling along with price) is the same price-following failure in another costume. When the request says "zone", the output is a box or a pair of anchored horizontal lines, whatever marker vocabulary the request used. If a zone ALSO wants its break marked, mark the BREAK bar once, where the invalidation fires -- one triangle, one event.
+A structure break is an EVENT with two anchors: the level that broke (a tracked swing) and the bar it broke on. The drawing is a horizontal SEGMENT at the broken level, FROM the swing's bar TO the break bar, labeled with the event name -- TradingView's BOS/CHoCH look:
+
+    // state: the last confirmed swing high and its bar (the pivot idiom above)
+    bull_bos = ta.crossover(high, ph1)
+    if bull_bos
+        line.new(ph1_bar, ph1, bar_index, ph1, color=color.teal, width=2)
+        label.new(bar_index, ph1, "BOS", color=color.teal)
+
+- Draw on the break bar itself, at the top level -- NOT inside `if bar_index == last_bar_index`. Every historical break stays on the chart; drawing only in the draw pass shows the latest state and erases the history, which is precisely wrong for structure. The 256 heap absorbs the history of a well-tracked level.
+- The segment's right anchor is the BREAK bar (`bar_index`), never `bar_index + 10000`: a break line that runs into the future pretends to know the future. BOS continues the prevailing swing direction; CHoCH breaks AGAINST it. The detection partitions cleanly around a trend flag -- one break event feeds exactly one branch, so one drawing lands per break:
+
+    var trend = 0
+    bull_break = ta.crossover(high, ph1)
+    bear_break = ta.crossunder(low, pl1)
+    bull_bos = trend != -1 and bull_break
+    bull_choch = trend == -1 and bull_break
+    bear_bos = trend != 1 and bear_break
+    bear_choch = trend == 1 and bear_break
+    if bull_break
+        trend := 1
+    if bear_break
+        trend := -1
+
+    The first break either way is a BOS (trend starts 0); a later break WITH the trend is another BOS; a break AGAINST it is the CHoCH that flips the flag.
+- A pooled-timeframe swing stamps a TIME anchor (the `ht[1]` family); it only ever enters the `_time` twins: `line.new_time(ht_anchor, level, time, level, ...)`. Mixing a nanos timestamp into a bar-index `line.new` -- or a bar index into a `_time` call -- throws the drawing off-canvas. The two coordinate systems never meet in one call.
+
+A TRENDLINE is the sloped cousin: two pivot anchors, a slope, and a projection the break is tested against. The projection is a continuous series -- `plot()` draws it and `ta.crossover` against it detects the break:
+
+    slope_high = (not na(ph2) and ph1_bar != ph2_bar) ? (ph1 - ph2) / (ph1_bar - ph2_bar) : na
+    level = not na(slope_high) ? ph1 + slope_high * (bar_index - ph1_bar) : na
+
+The projection must EXIST on both sides of the cross: filter the break SIGNAL (`break = ta.crossover(close, level) and slope_high < 0`), never the projection itself (`level = rising ? ... : na`) -- a projection that goes na whenever the gate closes leaves ta.crossover staring at na and the edge can never form.
+    plot(level, title="Trendline", color=color.orange)
+    bull_break = ta.crossover(close, level)
+    if bull_break
+        label.new(bar_index, low, "TL break", color=color.green)
+
+If a `line.new` version is wanted for the anchor-to-now segment, the far endpoint's price is computed AT the far endpoint's bar: `line.new(ph2_bar, ph2, bar_index, ph1 + slope_high * (bar_index - ph1_bar), ...)`. Extending a SLOPED line with `bar_index + 10000` is banned -- the `+ 10000` idiom extends HORIZONTAL levels only; on a slope it stretches the far endpoint 10000 bars out and flattens the line into nonsense.
+
+## Triangles are events, and events are EDGES
+
+`plotshape(cond, shape="triangleup", location_value=low)` stamps a glyph at EVERY bar where `cond` is true. So `cond` must be true on exactly ONE bar: the bar the thing HAPPENED.
+
+An edge condition is true one bar only: `ta.crossover(a, b)` / `ta.crossunder(a, b)`, or `cond and not cond[1]`. A level comparison -- `high > level`, `close < ph1` -- is a STATE: it holds on every bar while price sits beyond the level. A state in `plotshape` (or driving an `if` that draws) paints a wall of markers, the newest one crawling along with live price -- the ugliest failure this language can produce. Convert the state to an edge before marking anything:
+
+    threshold = ph_proj + atr * mult
+    bull_break = ta.crossover(high, threshold)
+    plotshape(bull_break, shape="triangleup", color=color.green, location_value=low)
+
+The same rule bans the triangle zone: a trail of markers under each bar while a zone condition holds is the price-following failure in another costume. When the request says "zone", the output is a box or a pair of anchored horizontal lines, whatever marker vocabulary the request used. If a zone ALSO wants its break marked, mark the BREAK bar once, where the invalidation fires -- one triangle, one event.
 
 ## Large indicator architecture (many concepts, one script)
 
@@ -387,6 +436,10 @@ A big request ("liquidity sweeps + order blocks + FVGs + session levels, multi-t
 - Draw passes sit inside `if bar_index == last_bar_index`; detection and mitigation run every bar; dead zones are `na`-stamped and guarded.
 - Live zones per concept are capped; loops are bounded; the total object count respects the 256 heap.
 - Pivots are stamped at `bar_index - w`, the bar the swing happened, not the confirmation bar.
+- Break and breakout markers use EDGE conditions (`ta.crossover`/`ta.crossunder` or `cond and not cond[1]`) -- a bare `price > level` state in `plotshape`/`label.new` paints a marker wall that crawls with live price.
+- A structure break draws a segment from the swing's anchor to the break bar, ON the break bar, labeled -- never from today's bar into the future, never only in the last-bar draw pass.
+- A sloped line's far endpoint computes its price AT the far bar; `+ 10000` extension is for horizontal levels only.
+- Time anchors (pooled HTF stamps) enter only the `*_time` calls and bar anchors only the plain calls -- never mixed in one call.
 
 ## Pattern detection WITHOUT arrays (there is no `a[i] = v` assignment)
 You cannot build lists or arrays -- not with brackets, not any other way. Track state with `var` scalars that persist across bars and reassign inside `if` blocks. The two idioms you need:
@@ -396,8 +449,10 @@ You cannot build lists or arrays -- not with brackets, not any other way. Track 
     w = input.int(defval=4, title="Pivot window")
     hh = ta.highest(high, 2 * w + 1)
     ll = ta.lowest(low, 2 * w + 1)
-    pivot_high = hh[w] == high[w]
-    pivot_low = ll[w] == low[w]
+    pivot_high = hh == high[w]
+    pivot_low = ll == low[w]
+
+`ta.highest(high, 2 * w + 1)` covers the 2w+1 bars ENDING at the current bar, so at bar i the window is centered on bar i-w: `hh == high[w]` asks "was the bar w back the highest of the whole window" -- the true centered pivot, confirmed w bars late, firing ONCE per swing. `hh[w] == high[w]` is a different, broken check: it compares the window ENDING at the candidate, so a trending bar is always its own trailing maximum and the "pivot" fires on every trend bar -- the level state then chases price w bars behind, and no `ta.crossover` edge can ever form against it.
 
 2. A state machine that remembers the last two pivots and where they happened:
 
@@ -415,7 +470,7 @@ CRITICAL: stamp the pivot with `bar_index - w`, the bar where the swing actually
 
 Slopes come from the stamps: `slope_high = (not na(ph2) and ph1_bar != ph2_bar) ? (ph1 - ph2) / (ph1_bar - ph2_bar) : na`. A projected line through the last two pivots: `level = ph1 + slope_high * (bar_index - ph1_bar)`. Plot `level` to draw the line.
 
-Slope thresholds must be SCALE-FREE -- never compare a price-per-bar slope against an absolute constant (that breaks between a 2-dollar stock and an 85000-dollar coin). Use ATR: `atr = ta.atr(14)`, then "flat" means `math.abs(slope_high) <= atr * 0.15` and "rising" means `slope_low >= atr * 0.05`. This pivot + state + slope pattern builds triangles, channels, flags and breakouts -- all without arrays.
+Slope thresholds must be SCALE-FREE -- never compare a price-per-bar slope against an absolute constant (that breaks between a 2-dollar stock and an 85000-dollar coin). Use ATR: `atr = ta.atr(14)`, then "flat" means `math.abs(slope_high) <= atr * 0.15` and "rising" means `slope_low >= atr * 0.05` -- these are ALTERNATIVE definitions a filter picks ONE of; a gate that demands a slope be steep AND flat at once is never true, and a never-true gate silently disables the whole indicator. This pivot + state + slope pattern builds triangles, channels, flags and breakouts -- all without arrays.
 
 ## Strategies (only when the user asks for entries/exits/backtests)
 Declare the trading account in the header -- a `strategy(...)` block after `title`:
@@ -795,7 +850,7 @@ mod tests {
             "mult = input.float(defval=2.0, title=\"Mult\")\n",
             "show = input.bool(defval=true, title=\"Show\")\n",
             "hh = ta.highest(high, 2 * len + 1)\n",
-            "pivot_high = hh[len] == high[len]\n",
+            "pivot_high = hh == high[len]\n",
             "var ph1 = na\n",
             "var ph2 = na\n",
             "if pivot_high\n",
@@ -929,8 +984,8 @@ mod tests {
         "w = input.int(defval=4, title=\"Pivot window\")\n",
         "hh = ta.highest(high, 2 * w + 1)\n",
         "ll = ta.lowest(low, 2 * w + 1)\n",
-        "pivot_high = hh[w] == high[w]\n",
-        "pivot_low = ll[w] == low[w]\n",
+        "pivot_high = hh == high[w]\n",
+        "pivot_low = ll == low[w]\n",
         "var ph1 = na\n",
         "var ph2 = na\n",
         "var ph1_bar = 0.0\n",
@@ -982,8 +1037,8 @@ mod tests {
         "w = input.int(defval=3, title=\"Pivot window\")\n",
         "hh = ta.highest(high, 2 * w + 1)\n",
         "ll = ta.lowest(low, 2 * w + 1)\n",
-        "pivot_high = hh[w] == high[w]\n",
-        "pivot_low = ll[w] == low[w]\n",
+        "pivot_high = hh == high[w]\n",
+        "pivot_low = ll == low[w]\n",
         "var ph1 = na\n",
         "var ph2 = na\n",
         "var ph1_bar = 0.0\n",
@@ -1093,7 +1148,7 @@ mod tests {
         var ph = array.new()\n\
         var phb = array.new()\n\
         hh = ta.highest(high, 2 * w + 1)\n\
-        pivot_high = hh[w] == high[w]\n\
+        pivot_high = hh == high[w]\n\
         if pivot_high\n\
             array.push(ph, high[w])\n\
             array.push(phb, bar_index - w)\n\
