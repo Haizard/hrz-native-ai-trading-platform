@@ -404,6 +404,14 @@ pub struct Vm<'a> {
     /// evaluator just before the call runs -- Pine's `x = input.int(...)`
     /// names the input by its target.
     current_input_name: String,
+    /// `tf = input.timeframe("4h")` registrations: var name -> timeframe
+    /// string. `request.security("SYM", tf, ...)` resolves its second
+    /// argument through this map (strings are expression-level; no float
+    /// buffer holds one).
+    input_timeframes: std::collections::HashMap<String, String>,
+    /// Side channel from the `input.timeframe` call to its Assign: the
+    /// string the assignment registers, then clears.
+    last_input_tf: Option<String>,
     /// The header's `sec=` symbol, when the script declared one. `request.*`
     /// reads are real only when this is Some -- an empty `security` vec on a
     /// sec-declaring script means the HOST failed to fetch, which must read
@@ -464,6 +472,18 @@ impl<'a> Vm<'a> {
         };
         let tf = match args.get(1).map(|a| &a.value.kind) {
             Some(ExprKind::Str(s)) => s.to_uppercase(),
+            // `request.security("BTCUSDT", tf, ...)` where tf is an
+            // input.timeframe var: resolve through the registry.
+            Some(ExprKind::Ident(v)) => match self.input_timeframes.get(v) {
+                Some(s) => s.to_uppercase(),
+                None => {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!("`{v}` is not an input.timeframe variable; `request.security` argument 2 must be a quoted timeframe or one").into(),
+                    })
+                }
+            },
             _ => {
                 return Err(crate::ScriptError {
                     kind: crate::ErrorKind::Type,
@@ -495,6 +515,8 @@ impl<'a> Vm<'a> {
             series_cache: std::collections::HashMap::new(),
             security_value_cache: std::collections::HashMap::new(),
             current_input_name: String::new(),
+            input_timeframes: std::collections::HashMap::new(),
+            last_input_tf: None,
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -717,6 +739,15 @@ impl<'a> Vm<'a> {
                 if let ExprKind::Call { callee, .. } = &expr.kind {
                     if callee.starts_with("input.") {
                         self.current_input_name = name.clone();
+                    }
+                    // A timeframe input binds NO float: register the string
+                    // under the var name and skip the buffer write.
+                    if callee == "input.timeframe" {
+                        self.eval_f(expr)?;
+                        if let Some(tf) = self.last_input_tf.take() {
+                            self.input_timeframes.insert(name.clone(), tf);
+                        }
+                        return Ok(());
                     }
                 }
                 // Compound assignment (`i += e`): desugars to `i := i <op> e`
@@ -1696,6 +1727,62 @@ impl<'a> Vm<'a> {
                     f64::from(self.inputs.bools.get(&name).copied().unwrap_or(default != 0.0))
                 }
                 "int" | "float" => self.inputs.numbers.get(&name).copied().unwrap_or(default),
+                // `src = input.source(defval=close)` -- the var BECOMES the
+                // named series (a dense every-bar value, so src[i] history
+                // works). The host overrides by series name.
+                "source" => {
+                    let chosen = self.inputs.strings.get(&name).cloned().unwrap_or_else(|| {
+                        args.iter()
+                            .find(|a| a.name.as_deref() == Some("defval"))
+                            .or_else(|| args.first())
+                            .map(|a| match &a.value.kind {
+                                ExprKind::Ident(s) => s.clone(),
+                                ExprKind::Member { path } => path.clone(),
+                                ExprKind::Str(s) => s.clone(),
+                                _ => "close".to_string(),
+                            })
+                            .unwrap_or_else(|| "close".to_string())
+                    });
+                    self.read_member(&chosen)?
+                }
+                // `c = input.color(defval=color.red)` -- colors ride the
+                // float buffer as their u32 value; drawing color= args
+                // accept the numeric form (see arg_color_named).
+                "color" => {
+                    let def = args
+                        .iter()
+                        .find(|a| a.name.as_deref() == Some("defval"))
+                        .or_else(|| args.first())
+                        .and_then(|a| match &a.value.kind {
+                            ExprKind::Color(c) => Some(*c),
+                            ExprKind::Ident(n) => named_color(n),
+                            _ => None,
+                        })
+                        .unwrap_or(0xFF_94_A3_B8);
+                    self.inputs
+                        .numbers
+                        .get(&name)
+                        .copied()
+                        .unwrap_or(def as f64)
+                }
+                // `tf = input.timeframe(defval="4h")` -- the string never
+                // touches a float buffer: the assignment registers the var
+                // name in `input_timeframes` (the Assign arm skips the
+                // write), and `request.security` resolves the var there.
+                "timeframe" => {
+                    self.last_input_tf = Some(
+                        self.inputs
+                            .strings
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                self.arg_str(args, "defval")
+                                    .or_else(|| self.arg_str_pos(args, 0))
+                                    .unwrap_or_else(|| "1h".to_string())
+                            }),
+                    );
+                    0.0
+                }
                 _ => default,
             });
         }
@@ -2477,18 +2564,26 @@ impl<'a> Vm<'a> {
         }
     }
 
-    fn arg_color(&self, args: &[Arg]) -> Option<u32> {
+    fn arg_color(&mut self, args: &[Arg]) -> Option<u32> {
         self.arg_color_named(args, "color")
     }
 
     /// A named color argument (`border_color=color.red`): the same accepted
     /// spellings as `color=` -- a `#rrggbb` literal or a `color.*` name.
-    fn arg_color_named(&self, args: &[Arg], name: &str) -> Option<u32> {
+    fn arg_color_named(&mut self, args: &[Arg], name: &str) -> Option<u32> {
         let arg = args.iter().find(|a| a.name.as_deref() == Some(name))?;
         match &arg.value.kind {
             ExprKind::Color(c) => Some(*c),
-            ExprKind::Ident(name) => named_color(name),
-            _ => None,
+            ExprKind::Ident(name) => named_color(name).or_else(|| {
+                // An input.color var (or any numeric) holds the u32 as a
+                // float; read it.
+                if self.vars.contains_key(name) {
+                    self.eval_f(&arg.value).ok().filter(|v| v.is_finite()).map(|v| v as u32)
+                } else {
+                    None
+                }
+            }),
+            _ => self.eval_f(&arg.value).ok().filter(|v| v.is_finite()).map(|v| v as u32),
         }
     }
 }

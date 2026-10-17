@@ -80,6 +80,7 @@ pub fn check_with_header(script: &Script, header: &crate::Header) -> Vec<ScriptE
         sec: header.sec.clone(),
         series_pool: Vec::new(),
         in_security_expr: 0,
+        input_timeframes: std::collections::HashMap::new(),
         security_outer: Vec::new(),
         stmt_call: false,
         stmt_depth: 0,
@@ -104,6 +105,7 @@ pub fn collect_series_pool(script: &Script, header: &crate::Header) -> Vec<Strin
         sec: header.sec.clone(),
         series_pool: Vec::new(),
         in_security_expr: 0,
+        input_timeframes: std::collections::HashMap::new(),
         security_outer: Vec::new(),
         stmt_call: false,
         stmt_depth: 0,
@@ -183,6 +185,10 @@ struct Cx {
     /// `request.*` reads the PAIR (the VM swaps the candle set), so the
     /// no-`sec=` gate must not fire.
     in_security_expr: usize,
+    /// `tf = input.timeframe("4h")` bindings seen at the top level, so
+    /// `request.security("SYM", tf, ...)` resolves its pool key the way the
+    /// VM's registry does.
+    input_timeframes: std::collections::HashMap<String, String>,
     /// Names in scope OUTSIDE the innermost `request.security` third
     /// argument. The sub-VM that evaluates the expression starts with EMPTY
     /// vars over the pooled candles, so a chart variable captured there
@@ -221,6 +227,10 @@ impl Cx {
         };
         let tf = match &args[1].value.kind {
             crate::parse::ExprKind::Str(s) => s.to_uppercase(),
+            crate::parse::ExprKind::Ident(v) => match self.input_timeframes.get(v) {
+                Some(s) => s.to_uppercase(),
+                None => return,
+            },
             _ => return,
         };
         let key = format!("{sym}@{tf}");
@@ -324,6 +334,22 @@ impl Cx {
                 if let ExprKind::Call { callee, args } = &expr.kind {
                     if let Some(kind) = callee.strip_prefix("input.") {
                         self.record_input(name, kind, args, *span);
+                        // Register the timeframe binding for security-key
+                        // resolution (sequential walk: declarations precede
+                        // the request.security calls that use them).
+                        if kind == "timeframe" {
+                            let tf = args
+                                .iter()
+                                .find(|a| a.name.as_deref() == Some("defval"))
+                                .or_else(|| args.first())
+                                .and_then(|a| match &a.value.kind {
+                                    ExprKind::Str(s) => Some(s.clone()),
+                                    _ => None,
+                                });
+                            if let Some(tf) = tf {
+                                self.input_timeframes.insert(name.clone(), tf);
+                            }
+                        }
                     }
                 }
                 let ty = self.expr(expr);
@@ -412,7 +438,7 @@ impl Cx {
     }
 
     fn record_input(&mut self, name: &str, kind: &str, args: &[Arg], span: Span) {
-        let known = ["int", "float", "bool", "string", "color"];
+        let known = ["int", "float", "bool", "string", "color", "source", "timeframe"];
         if !known.contains(&kind) {
             self.err(
                 span,
@@ -661,13 +687,25 @@ impl Cx {
                     }
                     match a.value.kind {
                         crate::parse::ExprKind::Str(_) => {}
-                        _ => self.err(
-                            span,
-                            format!(
-                                "`request.security` argument {} must be a quoted string literal (the host fetches it before the run): got an expression",
-                                i + 1
-                            ),
-                        ),
+                        _ => {
+                            // An Ident bound to input.timeframe is as
+                            // literal as a quoted string: the defval is a
+                            // constant the host fetches before the run.
+                            let is_tf_var = matches!(
+                                &a.value.kind,
+                                crate::parse::ExprKind::Ident(v)
+                                    if self.input_timeframes.contains_key(v)
+                            );
+                            if !(i == 1 && is_tf_var) {
+                                self.err(
+                                    span,
+                                    format!(
+                                        "`request.security` argument {} must be a quoted string literal (the host fetches it before the run): got an expression",
+                                        i + 1
+                                    ),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -903,7 +941,8 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "hline" => (1, 4),
         "fill" => (2, 6),
         "bgcolor" | "barcolor" => (1, 4),
-        "input.int" | "input.float" | "input.bool" | "input.string" | "input.color" => (0, 6),
+        "input.int" | "input.float" | "input.bool" | "input.string" | "input.color"
+        | "input.source" | "input.timeframe" => (0, 6),
         "strategy.entry" | "strategy.exit" | "strategy.close" | "strategy.cancel" => (1, 6),
         // Zero-arg: close everything.
         "strategy.close_all" => (0, 6),
@@ -1038,5 +1077,23 @@ mod tests {
     fn vet_end_to_end_refuses_a_type_error() {
         let errs = vet("//@pine_lite version=1\nx = close + true").expect_err("type error");
         assert!(errs.iter().any(|e| matches!(e.kind, crate::ErrorKind::Type)));
+    }
+
+    #[test]
+    fn a_timeframe_input_var_resolves_the_security_pool_key() {
+        let tokens = lex::lex(
+            "//@pine_lite version=1\n\
+             tf = input.timeframe(defval=\"4h\")\n\
+             c = request.security(\"BTCUSDT\", tf, close)\n\
+             plot(c)\n",
+        )
+        .expect("lex");
+        let script = parse::parse(tokens.1).expect("parse");
+        let cx_errs = check(&script);
+        assert!(cx_errs.is_empty(), "{cx_errs:?}");
+        // The gateway fetches exactly these keys before the run: a tf var
+        // must resolve to the same key a literal would.
+        let keys = collect_series_pool(&script, &crate::Header::default());
+        assert_eq!(keys, vec!["BTCUSDT@4H".to_string()]);
     }
 }

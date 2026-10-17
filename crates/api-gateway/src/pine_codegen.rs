@@ -256,7 +256,7 @@ The rules that keep it honest:
 - Colors: color.red, color.green, color.blue, color.orange, color.yellow, color.purple, color.teal, color.lime, color.aqua, color.white, color.gray, color.maroon, color.navy, color.olive, color.silver, color.fuchsia, color.black.
 
 ## Inputs (user-adjustable parameters)
-`len = input.int(defval=14, title="RSI Length")`, `input.float(defval=2.0, title="Mult")`, `input.bool(defval=true, title="Show signals")`. Use them instead of magic numbers.
+`len = input.int(defval=14, title="RSI Length")`, `input.float(defval=2.0, title="Mult")`, `input.bool(defval=true, title="Show signals")`. Use them instead of magic numbers. Also: `src = input.source(defval=hl2, title="Source")` (the var BECOMES the named series -- hl2/hlc3/ohlc4 too; `src[1]` history works), `c = input.color(defval=color.teal, title="Zone")` (use it in drawing color= args), and `tf = input.timeframe(defval="4h", title="HTF")` -- pass the tf var straight to request.security: `htf_close = request.security("BTCUSDT", tf, close)` (the defval is what the host fetches; keep it a plain quoted string). `options="7,14,21,28"` on an int/float input names the choices (a comma-separated string; the settings UI offers exactly those).
 
 ## User functions
 Define your own, Pine-style:
