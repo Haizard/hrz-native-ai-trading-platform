@@ -608,7 +608,7 @@ impl Cx {
         match path {
             "bar_index" | "last_bar_index" | "time" | "time_close" | "open" | "high" | "low"
             | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "hour" | "minute"
-            | "dayofweek" => Ty::Float,
+            | "dayofweek" | "year" | "month" | "dayofmonth" => Ty::Float,
             "barstate.isconfirmed" => Ty::Bool,
             "syminfo.ticker" => Ty::String,
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
@@ -810,6 +810,7 @@ impl Cx {
             name,
             "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "bar_index"
                 | "last_bar_index" | "time" | "time_close" | "hour" | "minute" | "dayofweek"
+                | "year" | "month" | "dayofmonth"
         )
     }
 
@@ -835,7 +836,8 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         // Session filters: the bare words are series reads, and models write
         // the call form `hour(time)` just as reflexively. The argument is
         // conventionally `time`; the value is the current bar's UTC clock.
-        "hour" | "minute" | "dayofweek" => (1, 1),
+        "hour" | "minute" | "dayofweek" | "year" | "month" | "dayofmonth" => (1, 1),
+        "timestamp" => (5, 5),
         "ta.sma" | "ta.ema" | "ta.rma" | "ta.wma" | "ta.rsi" | "ta.highest" | "ta.lowest"
         | "ta.mom" | "ta.roc" => (2, 2),
         "ta.atr" | "ta.change" => (1, 1),

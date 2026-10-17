@@ -1408,6 +1408,18 @@ impl<'a> Vm<'a> {
                 // 1970-01-01 was a Thursday (4).
                 (days + 4).rem_euclid(7) as f64 + 1.0
             }
+            "year" => {
+                let t = self.candles.get(self.bar).map_or(0, |c| c.open_time);
+                civil_from_nanos(t).0 as f64
+            }
+            "month" => {
+                let t = self.candles.get(self.bar).map_or(0, |c| c.open_time);
+                civil_from_nanos(t).1 as f64
+            }
+            "dayofmonth" => {
+                let t = self.candles.get(self.bar).map_or(0, |c| c.open_time);
+                civil_from_nanos(t).2 as f64
+            }
             "last_bar_index" => (self.candles.len().saturating_sub(1)) as f64,
             "time" => c.open_time as f64,
             "time_close" => (c.open_time + c.timeframe.nanos()) as f64,
@@ -1503,6 +1515,11 @@ impl<'a> Vm<'a> {
                     (days + 4).rem_euclid(7) as f64 + 1.0
                 })
                 .collect(),
+            "year" => self.candles.iter().map(|c| civil_from_nanos(c.open_time).0 as f64).collect(),
+            "month" => self.candles.iter().map(|c| civil_from_nanos(c.open_time).1 as f64).collect(),
+            "dayofmonth" => {
+                self.candles.iter().map(|c| civil_from_nanos(c.open_time).2 as f64).collect()
+            }
             "hl2" => self.candles.iter().map(|c| (c.high + c.low) / 2.0).collect(),
             "hlc3" => self
                 .candles
@@ -1659,7 +1676,7 @@ impl<'a> Vm<'a> {
             // The argument is evaluated (it may be `time` or a timestamp)
             // and otherwise ignored -- the platform runs closed bars of one
             // series, so there is nothing else the clock could be of.
-            "hour" | "minute" | "dayofweek" => {
+            "hour" | "minute" | "dayofweek" | "year" | "month" | "dayofmonth" => {
                 // The argument is usually `time`; read it as a series so the
                 // idiomatic `hour(time[1])` -- a session-boundary test --
                 // computes over the referenced bar, not the current one.
@@ -1670,11 +1687,25 @@ impl<'a> Vm<'a> {
                 Ok(match callee {
                     "hour" => (nanos / 3_600_000_000_000.0).floor().rem_euclid(24.0),
                     "minute" => (nanos / 60_000_000_000.0).floor().rem_euclid(60.0),
+                    "year" => civil_from_nanos(nanos as i64).0 as f64,
+                    "month" => civil_from_nanos(nanos as i64).1 as f64,
+                    "dayofmonth" => civil_from_nanos(nanos as i64).2 as f64,
                     _ => {
                         let days = (nanos / 86_400_000_000_000.0).floor();
                         (days + 4.0).rem_euclid(7.0) + 1.0
                     }
                 })
+            }
+            // `timestamp(year, month, day, hour, minute)` builds unix nanos:
+            // the anchor for drawings pinned to a date ("mark March 15").
+            "timestamp" => {
+                let y = a!(0)? as i64;
+                let mo = a!(1)? as i64;
+                let d = a!(2)? as i64;
+                let h = a!(3)? as i64;
+                let mi = a!(4)? as i64;
+                let days = days_from_civil(y, mo, d);
+                Ok((days * 86_400 + h * 3_600 + mi * 60) as f64 * 1_000_000_000.0)
             }
             "na" => Ok(f64::from(!a!(0)?.is_finite())),
             "nz" => {
@@ -2886,4 +2917,30 @@ fn format_number(v: f64, fmt: Option<&str>) -> String {
             }
         }
     }
+}
+
+/// Unix nanos -> (year, month, day) in UTC, Howard Hinnant's
+/// civil-from-days (no chrono in the VM).
+fn civil_from_nanos(nanos: i64) -> (i64, i64, i64) {
+    let z = nanos.div_euclid(86_400_000_000_000) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// (year, month, day) in UTC -> days since the epoch: the inverse of
+/// `civil_from_nanos`, for `timestamp(...)`.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
