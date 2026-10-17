@@ -1795,6 +1795,26 @@ impl<'a> Vm<'a> {
             };
         }
         match callee {
+            // `time("0800-1200")` -- Pine's session filter: the bar's unix
+            // nanos when the bar falls inside the session, na outside.
+            // Spec: "HHMM-HHMM" or "HH:MM-HH:MM" UTC, overnight specs wrap
+            // midnight ("2200-0600"), an optional ":days" suffix restricts
+            // weekdays in Pine dayofweek codes (1=Sunday..7=Saturday;
+            // ":23456" = Mon-Fri). `not na(time("0800-1200"))` is the gate.
+            "time" => {
+                let spec = match args.first().map(|a| &a.value.kind) {
+                    Some(ExprKind::Str(s)) => s.clone(),
+                    _ => {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Type,
+                            span: crate::Span::new(1, 1),
+                            message: "`time(session)` needs a quoted session spec like \"0800-1200\"".into(),
+                        })
+                    }
+                };
+                let nanos = self.candles.get(self.bar).map_or(0, |c| c.open_time) as f64;
+                Ok(if session_hit(&spec, nanos as i64) { nanos } else { crate::ta::NA })
+            }
             // The call form of the time-of-day reads: `hour(time)` is the
             // current bar's UTC hour exactly like the bare `hour` series.
             // The argument is evaluated (it may be `time` or a timestamp)
@@ -3081,6 +3101,50 @@ fn format_number(v: f64, fmt: Option<&str>) -> String {
 
 /// Unix nanos -> (year, month, day) in UTC, Howard Hinnant's
 /// civil-from-days (no chrono in the VM).
+/// Parse a Pine session spec ("HHMM-HHMM" / "HH:MM-HH:MM" with an
+/// optional ":days" weekday suffix) and test one bar against it. UTC --
+/// the platform's candles are UTC; exchange timezones are a Tier-2 knob.
+fn session_hit(spec: &str, nanos: i64) -> bool {
+    let (range, days) = match spec.split_once(':') {
+        Some((r, d)) if d.chars().all(|c| c.is_ascii_digit()) && !d.is_empty() => (r, Some(d)),
+        _ => (spec, None),
+    };
+    let Some((start_s, end_s)) = range.split_once('-') else {
+        return false;
+    };
+    let to_min = |s: &str| -> Option<i64> {
+        let d: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+        if d.len() != 4 {
+            return None;
+        }
+        let h: i64 = d.get(..2)?.parse().ok()?;
+        let m: i64 = d.get(2..4)?.parse().ok()?;
+        if h > 23 || m > 59 {
+            return None;
+        }
+        Some(h * 60 + m)
+    };
+    let (Some(start), Some(end)) = (to_min(start_s), to_min(end_s)) else {
+        return false;
+    };
+    if let Some(days) = days {
+        // Pine dayofweek codes: 1 = Sunday .. 7 = Saturday.
+        let dow = ((nanos / 86_400_000_000_000) + 4).rem_euclid(7) + 1;
+        if !days.chars().any(|c| c.to_digit(10) == Some(dow as u32)) {
+            return false;
+        }
+    }
+    let mins = (nanos / 60_000_000_000).rem_euclid(24 * 60);
+    if start == end {
+        true
+    } else if start < end {
+        mins >= start && mins < end
+    } else {
+        // Overnight: "2200-0600" wraps midnight.
+        mins >= start || mins < end
+    }
+}
+
 fn civil_from_nanos(nanos: i64) -> (i64, i64, i64) {
     let z = nanos.div_euclid(86_400_000_000_000) + 719_468;
     let era = z.div_euclid(146_097);

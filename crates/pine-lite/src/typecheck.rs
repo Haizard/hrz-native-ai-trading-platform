@@ -875,6 +875,8 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         // the call form `hour(time)` just as reflexively. The argument is
         // conventionally `time`; the value is the current bar's UTC clock.
         "hour" | "minute" | "dayofweek" | "year" | "month" | "dayofmonth" => (1, 1),
+        // time("0800-1200") -- the session filter (nanos in-session, na out).
+        "time" => (1, 1),
         "timestamp" => (5, 5),
         "ta.sma" | "ta.ema" | "ta.rma" | "ta.wma" | "ta.rsi" | "ta.highest" | "ta.lowest"
         | "ta.mom" | "ta.roc" => (2, 2),
