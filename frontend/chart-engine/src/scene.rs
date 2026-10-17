@@ -484,6 +484,10 @@ pub struct Bar {
     /// See `open`.
     #[serde(default)]
     pub close: f64,
+    /// `barcolor(...)` override: a script recolored this bar's main candle.
+    /// Defaulted so pre-barcolor scenes still deserialize.
+    #[serde(default)]
+    pub color: Option<u32>,
 }
 
 /// A point on a line or area chart.
@@ -1950,6 +1954,17 @@ pub fn build(request: &Request) -> Scene {
                     let shapes = crate::script::scene_overlay_shapes(&output, slot, &frame);
                     let mut objects = crate::script::scene_overlay_objects(&output, slot, &frame);
                     objects.extend(crate::script::scene_overlay_candles(&output, slot, &frame));
+                    objects.extend(crate::script::scene_overlay_tints(&output, slot, &frame));
+                    // barcolor(...) recolors the MAIN candles: last finite
+                    // write wins, indexed like the visible window.
+                    for (bar, color) in crate::script::overlay_barcolors(&output, scene.candles.len())
+                        .into_iter()
+                        .enumerate()
+                    {
+                        if let (Some(b), Some(c)) = (scene.candles.get_mut(bar), color) {
+                            b.color = Some(c);
+                        }
+                    }
                     if output.objects_truncated {
                         add_note(
                             &mut scene.note,
@@ -2399,6 +2414,7 @@ fn candle_bars(
                 // above already described the same candle, so this is the
                 // same data in value form, not a second opinion.
                 open_time: candle.open_time,
+                color: None,
                 open: candle.open,
                 high: candle.high,
                 low: candle.low,

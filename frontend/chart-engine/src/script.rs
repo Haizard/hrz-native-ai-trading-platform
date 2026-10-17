@@ -529,6 +529,77 @@ fn project_extend(
     (ax, ay, bx, by)
 }
 
+/// Decompose `bgcolor` tints and `fill` bands into zero-border Box draws:
+/// a tint spans the plot's full height at 0.10 alpha, a band segment spans
+/// the gap between its two series at 0.30. Zero-width borders keep the
+/// derived border from outlining every strip.
+pub fn scene_overlay_tints(
+    output: &Output,
+    slot: f64,
+    frame: &crate::scene::Frame,
+) -> Vec<ScriptDraw> {
+    let py = |v: f64| {
+        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot, frame.scale)
+    };
+    let mut draws = Vec::new();
+    for tint in &output.tints {
+        for (bar, color) in tint.iter().enumerate() {
+            let Some(color) = color else {
+                continue;
+            };
+            draws.push(ScriptDraw::Box {
+                x1: frame.plot.x + slot * bar as f64,
+                y1: frame.plot.y,
+                x2: frame.plot.x + slot * (bar as f64 + 1.0),
+                y2: frame.plot.y + frame.plot.h,
+                color: *color,
+                border_color: Some(*color),
+                border_width: 0.0,
+                border_style: "solid".to_string(),
+                fill_alpha: Some(0.10),
+            });
+        }
+    }
+    for fill in &output.fills {
+        for bar in 0..fill.a.len() {
+            let (a, b) = (fill.a[bar], fill.b[bar]);
+            let Some(color) = fill.color.get(bar).copied().flatten() else {
+                continue;
+            };
+            if !a.is_finite() || !b.is_finite() {
+                continue;
+            }
+            draws.push(ScriptDraw::Box {
+                x1: frame.plot.x + slot * bar as f64,
+                y1: py(a.max(b)),
+                x2: frame.plot.x + slot * (bar as f64 + 1.0),
+                y2: py(a.min(b)),
+                color,
+                border_color: Some(color),
+                border_width: 0.0,
+                border_style: "solid".to_string(),
+                fill_alpha: Some(0.30),
+            });
+        }
+    }
+    draws
+}
+
+/// Merge every `barcolor(...)` call's per-bar colors into one array: the
+/// last finite write wins, the way TradingView's later barcolor overrides
+/// the earlier.
+pub fn overlay_barcolors(output: &Output, bars: usize) -> Vec<Option<u32>> {
+    let mut merged = vec![None; bars];
+    for arr in &output.barcolors {
+        for (bar, color) in arr.iter().enumerate() {
+            if bar < bars && color.is_some() {
+                merged[bar] = *color;
+            }
+        }
+    }
+    merged
+}
+
 /// Decompose `plotcandle`/`plotbar` plots into the same Box/Line draws
 /// drawing objects use: a wick line per bar plus a body box (plotcandle)
 /// or open/close tick lines (plotbar). Bodies fill solid -- they ARE the
@@ -1430,6 +1501,47 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn fills_and_tints_decompose_into_zero_border_boxes() {
+        let frame = crate::scene::Frame {
+            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "f = ta.ema(close, 9)\n",
+            "s = ta.ema(close, 21)\n",
+            "plot(f)\n",
+            "plot(s)\n",
+            "fill(f, s, color=f >= s ? color.teal : color.red)\n",
+            "bgcolor(bar_index < 10 ? color.orange : na)\n",
+            "barcolor(close >= open ? color.purple : na)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        assert_eq!(output.fills.len(), 1, "one fill band");
+        assert_eq!(output.tints.len(), 1, "one bgcolor array");
+        assert_eq!(output.barcolors.len(), 1, "one barcolor array");
+        let draws = scene_overlay_tints(&output, 10.0, &frame);
+        let (tints, bands) = draws.iter().fold((0usize, 0usize), |(t, b), d| match d {
+            ScriptDraw::Box { fill_alpha: Some(a), border_width, .. } if *border_width == 0.0 => {
+                if (*a - 0.10).abs() < 1e-9 { (t + 1, b) } else { (t, b + 1) }
+            }
+            _ => (t, b),
+        });
+        assert_eq!(tints, 10, "ten tinted bars (bar_index < 10)");
+        assert!(bands >= 19, "the fill band covers the EMA overlap (warmup 21): {bands}");
+        // barcolor merge: last finite write wins per bar.
+        let merged = overlay_barcolors(&output, 40);
+        assert!(merged.iter().any(|c| c.is_some()), "some bars recolored");
     }
 
     #[test]

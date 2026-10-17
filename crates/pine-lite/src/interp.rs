@@ -78,6 +78,17 @@ pub struct Plot {
     pub offset: f64,
 }
 
+/// One `fill(a, b, color=...)` band, replayed against completed buffers.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlotFill {
+    /// First boundary series.
+    pub a: Series,
+    /// Second boundary series.
+    pub b: Series,
+    /// Per-bar color (None = na, that bar's segment draws nothing).
+    pub color: Vec<Option<u32>>,
+}
+
 /// The four series a `plotcandle`/`plotbar` draws, plus per-bar colors.
 /// `Plot.values` mirrors the close for the legend's last-value readout.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -212,6 +223,13 @@ pub struct Output {
     /// the cap the draw calls become no-ops and `objects_truncated` reports
     /// it, the way TradingView stops drawing instead of failing.
     pub objects: Vec<ScriptObject>,
+    /// `fill(a, b, color=...)` bands: the two series + per-bar colors
+    /// (None = na segment, nothing drawn).
+    pub fills: Vec<PlotFill>,
+    /// `bgcolor(...)`: per-bar chart tints, one array per call site.
+    pub tints: Vec<Vec<Option<u32>>>,
+    /// `barcolor(...)`: per-bar recolors of the MAIN candles.
+    pub barcolors: Vec<Vec<Option<u32>>>,
     /// The strategy simulation (docs/24 S1): orders, equity curve, account
     /// snapshots and the report. None for indicator scripts; Some for every
     /// run that recorded `strategy.*` intents or (with the header block)
@@ -616,8 +634,15 @@ impl<'a> Vm<'a> {
         self.deferred_seen.clear();
         for expr in &deferred {
             if let ExprKind::Call { callee, args } = &expr.kind {
-                let series = self.plot_series(callee, args)?;
-                self.out.plots.push(series);
+                match callee.as_str() {
+                    "fill" => self.fill_series(args)?,
+                    "bgcolor" => self.tint_series(args, true)?,
+                    "barcolor" => self.tint_series(args, false)?,
+                    _ => {
+                        let series = self.plot_series(callee, args)?;
+                        self.out.plots.push(series);
+                    }
+                }
             }
         }
         // Strategy execution (docs/24 S1): the intents this run recorded go
@@ -710,8 +735,15 @@ impl<'a> Vm<'a> {
         self.deferred_seen.clear();
         for expr in &deferred {
             if let ExprKind::Call { callee, args } = &expr.kind {
-                let series = self.plot_series(callee, args)?;
-                self.out.plots.push(series);
+                match callee.as_str() {
+                    "fill" => self.fill_series(args)?,
+                    "bgcolor" => self.tint_series(args, true)?,
+                    "barcolor" => self.tint_series(args, false)?,
+                    _ => {
+                        let series = self.plot_series(callee, args)?;
+                        self.out.plots.push(series);
+                    }
+                }
             }
         }
         if self.out.intents != pass1_intents {
@@ -1233,7 +1265,8 @@ impl<'a> Vm<'a> {
     fn call_stmt(&mut self, callee: &str, args: &[Arg]) -> Result<(), crate::ScriptError> {
         self.tick()?;
         match callee {
-            "plot" | "plotshape" | "plotchar" | "plotarrow" | "plotcandle" | "plotbar" => {
+            "plot" | "plotshape" | "plotchar" | "plotarrow" | "plotcandle" | "plotbar"
+            | "fill" | "bgcolor" | "barcolor" => {
                 if self.collecting {
                     // Defer by call site: one AST node, one plot, however many
                     // bars (or branch firings) reach it. The key is the callee
@@ -1273,8 +1306,10 @@ impl<'a> Vm<'a> {
                 Ok(())
             }
             "fill" | "bgcolor" | "barcolor" => {
-                // v1 collects but does not render fills/tints; the plots they
-                // reference are kept by id for the renderer to pair.
+                // Handled by the deferred replay above (the tint/band needs
+                // completed buffers, exactly like plots). Reaching here means
+                // the replay itself ran a statement-position copy, which is
+                // a no-op.
                 Ok(())
             }
             "strategy.entry" => {
@@ -1440,6 +1475,70 @@ impl<'a> Vm<'a> {
                 Ok(if v.is_finite() { v as u32 } else { 0xFF_94_A3_B8 })
             }
         }
+    }
+
+    /// Like eval_color_expr but na-aware: a conditional tint's `na` branch
+    /// means "nothing here", not a gray bar.
+    fn eval_color_opt(&mut self, expr: &Expr) -> Result<Option<u32>, crate::ScriptError> {
+        match &expr.kind {
+            ExprKind::Color(c) => Ok(Some(*c)),
+            ExprKind::Ident(name) if named_color(name).is_some() => {
+                Ok(Some(named_color(name).expect("checked")))
+            }
+            ExprKind::Ternary { cond, then, els } => {
+                let c = self.eval_f(cond)?;
+                if self.truthy(c) {
+                    self.eval_color_opt(then)
+                } else {
+                    self.eval_color_opt(els)
+                }
+            }
+            _ => {
+                let v = self.eval_f(expr)?;
+                Ok(if v.is_finite() { Some(v as u32) } else { None })
+            }
+        }
+    }
+
+    /// Replay a `fill(a, b, color=...)` against completed buffers.
+    fn fill_series(&mut self, args: &[Arg]) -> Result<(), crate::ScriptError> {
+        let n = self.candles.len();
+        let (mut a, mut b) = (vec![NA; n], vec![NA; n]);
+        let mut color = vec![None; n];
+        let color_arg = args.iter().find(|x| x.name.as_deref() == Some("color")).map(|x| x.value.clone());
+        let saved_bar = self.bar;
+        for bar in 0..n {
+            self.bar = bar;
+            if let Some(x) = args.first() { a[bar] = self.eval_f(&x.value)?; }
+            if let Some(x) = args.get(1) { b[bar] = self.eval_f(&x.value)?; }
+            color[bar] = match &color_arg {
+                Some(e) => self.eval_color_opt(e)?,
+                None => Some(0xFF_60_A5_FA),
+            };
+        }
+        self.bar = saved_bar;
+        self.out.fills.push(crate::interp::PlotFill { a, b, color });
+        Ok(())
+    }
+
+    /// Replay a `bgcolor(...)`/`barcolor(...)` per-bar color expression.
+    fn tint_series(&mut self, args: &[Arg], is_bg: bool) -> Result<(), crate::ScriptError> {
+        let n = self.candles.len();
+        let mut colors = vec![None; n];
+        let saved_bar = self.bar;
+        for bar in 0..n {
+            self.bar = bar;
+            if let Some(x) = args.first() {
+                colors[bar] = self.eval_color_opt(&x.value)?;
+            }
+        }
+        self.bar = saved_bar;
+        if is_bg {
+            self.out.tints.push(colors);
+        } else {
+            self.out.barcolors.push(colors);
+        }
+        Ok(())
     }
 
     fn plot_series(&mut self, callee: &str, args: &[Arg]) -> Result<Plot, crate::ScriptError> {

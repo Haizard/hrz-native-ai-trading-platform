@@ -2380,7 +2380,8 @@ function createChartPane(root, hooks = {}) {
 
   function drawCandles(ctx, scene) {
     for (const bar of scene.candles) {
-      const colour = bar.up ? COLORS.up : COLORS.down;
+      // A script's barcolor(...) overrides the up/down palette for its bars.
+      const colour = bar.color != null ? rgbaFromPacked(bar.color, 1.0) : (bar.up ? COLORS.up : COLORS.down);
       ctx.strokeStyle = colour;
       ctx.fillStyle = colour;
       // The wick.
