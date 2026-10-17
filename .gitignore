@@ -72,3 +72,4 @@ reports/*-soak.log
 .freebuff/
 _ctmp/
 .cargo-tmp/
+.scratch/
