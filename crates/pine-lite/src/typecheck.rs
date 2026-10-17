@@ -649,8 +649,7 @@ impl Cx {
     fn call(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
         const STMT_ONLY: &[&str] = &[
             "plot", "plotshape", "plotchar", "plotarrow", "hline", "fill", "bgcolor",
-            "barcolor", "line.new", "label.new", "box.new", "fib.new", "line.new_time",
-            "label.new_time", "box.new_time", "strategy.entry", "strategy.exit",
+            "barcolor", "fib.new", "strategy.entry", "strategy.exit",
             "strategy.close", "strategy.close_all", "strategy.cancel",
         ];
         if !self.stmt_call && STMT_ONLY.contains(&callee) {
@@ -937,6 +936,14 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "line.new_time" => (4, 7),
         "label.new_time" => (3, 4),
         "box.new_time" => (4, 8),
+        // Tier 1 D: drawing setters mutate through the constructor's
+        // handle; deletes free the slot.
+        "line.set_x1" | "line.set_x2" | "line.set_y1" | "line.set_y2"
+        | "line.set_color" | "line.set_extend" | "box.set_left" | "box.set_right"
+        | "box.set_top" | "box.set_bottom" | "box.set_border_color"
+        | "box.set_border_width" | "box.set_bgcolor" | "label.set_x" | "label.set_y"
+        | "label.set_text" | "label.set_color" => (2, 2),
+        "line.delete" | "label.delete" | "box.delete" => (1, 1),
         // The registry primitive (docs/37): 4 anchors + the named color.
         "fib.new" => (4, 5),
         // Phase 14: platform-native data by name. The literal name is

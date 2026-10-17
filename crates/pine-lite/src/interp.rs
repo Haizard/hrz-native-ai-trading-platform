@@ -422,6 +422,11 @@ pub struct Vm<'a> {
     /// Side channel from the `input.timeframe` call to its Assign: the
     /// string the assignment registers, then clears.
     last_input_tf: Option<String>,
+    /// The live drawing-object arena: `l = line.new(...)` binds the ARENA
+    /// INDEX as a float handle, setters mutate through it, deletes clear
+    /// the slot. `out.objects` fills from this at the end of the run
+    /// (creation order, deleted slots skipped).
+    objects_live: Vec<Option<ScriptObject>>,
     /// The header's `sec=` symbol, when the script declared one. `request.*`
     /// reads are real only when this is Some -- an empty `security` vec on a
     /// sec-declaring script means the HOST failed to fetch, which must read
@@ -527,6 +532,7 @@ impl<'a> Vm<'a> {
             current_input_name: String::new(),
             input_timeframes: std::collections::HashMap::new(),
             last_input_tf: None,
+            objects_live: Vec::new(),
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -633,6 +639,10 @@ impl<'a> Vm<'a> {
                 ));
             }
         }
+        // Serialize the arena: creation order, deleted slots gone. One
+        // drain serves every pass -- a rerun cleared and refilled the
+        // arena, so the LAST pass's arena is the one that ships.
+        self.out.objects = self.objects_live.iter().filter_map(|o| o.clone()).collect();
         Ok(std::mem::take(&mut self.out))
     }
 
@@ -658,6 +668,7 @@ impl<'a> Vm<'a> {
         self.series_cache.clear();
         self.security_value_cache.clear();
         self.heap.clear();
+        self.objects_live.clear();
         self.deferred.clear();
         self.deferred_seen.clear();
         self.steps = 0;
@@ -922,6 +933,277 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// Create one drawing object in the arena and hand back its float
+    /// handle (the arena index). `None` when the callee is not a drawing
+    /// constructor. The cap STOPS drawing rather than killing the run
+    /// (TradingView's behavior): past MAX_OBJECTS the call is a no-op and
+    /// the handle is na.
+    fn draw_object(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+        let object = match callee {
+            "line.new" => {
+                self.tick()?;
+                let bar1 = self.arg_f(args, 0)?.unwrap_or(NA);
+                let price1 = self.arg_f(args, 1)?.unwrap_or(NA);
+                let bar2 = self.arg_f(args, 2)?.unwrap_or(NA);
+                let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
+                let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
+                let style = self.arg_str(args, "style").unwrap_or_else(|| "solid".into());
+                let width = self.arg_named_f(args, "width").unwrap_or(1.0);
+                let extend = self.arg_extend(args)?;
+                ScriptObject::Line { bar1, price1, bar2, price2, color, style, width, extend }
+            }
+            "label.new" => {
+                self.tick()?;
+                let bar = self.arg_f(args, 0)?.unwrap_or(NA);
+                let price = self.arg_f(args, 1)?.unwrap_or(NA);
+                let text = self.arg_text(args, "text", 2)?.unwrap_or_default();
+                let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
+                ScriptObject::Label { bar, price, text, color }
+            }
+            "box.new" => {
+                self.tick()?;
+                let left = self.arg_f(args, 0)?.unwrap_or(NA);
+                let top = self.arg_f(args, 1)?.unwrap_or(NA);
+                let right = self.arg_f(args, 2)?.unwrap_or(NA);
+                let bottom = self.arg_f(args, 3)?.unwrap_or(NA);
+                let color = self.arg_color(args).unwrap_or(0x33_94_A3_B8_u32);
+                // docs/31: the TradingView box look -- a visible border
+                // distinct from the fill, off when unasked.
+                let border_color = self.arg_color_named(args, "border_color");
+                let border_width = self.arg_named_f(args, "border_width").unwrap_or(1.0);
+                let border_style = self.arg_str(args, "border_style").unwrap_or_else(|| "solid".into());
+                ScriptObject::Box { left, top, right, bottom, color, border_color, border_width, border_style }
+            }
+            // ---- time-anchored drawing objects (docs/28): the same three
+            // shapes with unix-nanos anchors instead of bar indexes, so a
+            // script reading a pooled higher timeframe can draw what it found
+            // there onto this chart's time axis. Same heap, same cap.
+            "line.new_time" => {
+                self.tick()?;
+                let t1 = self.arg_f(args, 0)?.unwrap_or(NA);
+                let price1 = self.arg_f(args, 1)?.unwrap_or(NA);
+                let t2 = self.arg_f(args, 2)?.unwrap_or(NA);
+                let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
+                let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
+                let style = self.arg_str(args, "style").unwrap_or_else(|| "solid".into());
+                let width = self.arg_named_f(args, "width").unwrap_or(1.0);
+                let extend = self.arg_extend(args)?;
+                ScriptObject::LineTime { t1, price1, t2, price2, color, style, width, extend }
+            }
+            "label.new_time" => {
+                self.tick()?;
+                let nanos = self.arg_f(args, 0)?.unwrap_or(NA);
+                let price = self.arg_f(args, 1)?.unwrap_or(NA);
+                let text = self.arg_text(args, "text", 2)?.unwrap_or_default();
+                let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
+                ScriptObject::LabelTime { nanos, price, text, color }
+            }
+            "box.new_time" => {
+                self.tick()?;
+                let left_nanos = self.arg_f(args, 0)?.unwrap_or(NA);
+                let top = self.arg_f(args, 1)?.unwrap_or(NA);
+                let right_nanos = self.arg_f(args, 2)?.unwrap_or(NA);
+                let bottom = self.arg_f(args, 3)?.unwrap_or(NA);
+                let color = self.arg_color(args).unwrap_or(0x33_94_A3_B8_u32);
+                // docs/31: the same border knobs as the bar-index box.
+                let border_color = self.arg_color_named(args, "border_color");
+                let border_width = self.arg_named_f(args, "border_width").unwrap_or(1.0);
+                let border_style = self.arg_str(args, "border_style").unwrap_or_else(|| "solid".into());
+                ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color, border_color, border_width, border_style }
+            }
+            _ => return Ok(None),
+        };
+        if self.objects_live.len() < MAX_OBJECTS {
+            let handle = self.objects_live.len() as f64;
+            self.objects_live.push(Some(object));
+            Ok(Some(handle))
+        } else {
+            self.out.objects_truncated = true;
+            Ok(Some(NA))
+        }
+    }
+
+    /// Resolve a setter/delete handle to a live arena slot. na, out of
+    /// range, or a deleted object is a clear error -- a handle the script
+    /// never created is a bug the user should see, not a silent no-op.
+    fn object_index(&mut self, args: &[Arg], callee: &str) -> Result<usize, crate::ScriptError> {
+        let h = self.arg_f(args, 0)?.unwrap_or(NA);
+        let err = |reason: &str| crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span: crate::Span::new(1, 1),
+            message: format!("`{callee}` needs a live drawing handle from line.new/label.new/box.new: {reason}"),
+        };
+        if !h.is_finite() || h < 0.0 {
+            return Err(err("got na or a negative handle"));
+        }
+        let idx = h as usize;
+        if idx >= self.objects_live.len() {
+            return Err(err("no drawing was ever created with that handle"));
+        }
+        if self.objects_live[idx].is_none() {
+            return Err(err("that drawing was deleted"));
+        }
+        Ok(idx)
+    }
+
+    /// Mutate or delete a live drawing through its handle. `true` when the
+    /// callee was a setter/delete (handled), `false` otherwise.
+    fn set_object(&mut self, callee: &str, args: &[Arg]) -> Result<bool, crate::ScriptError> {
+        let kind_err = |callee: &str, want: &str| crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span: crate::Span::new(1, 1),
+            message: format!("`{callee}` needs a {want} handle"),
+        };
+        match callee {
+            "line.set_x1" | "line.set_x2" | "line.set_y1" | "line.set_y2" => {
+                let idx = self.object_index(args, callee)?;
+                let v = self.arg_f(args, 1)?.unwrap_or(NA);
+                match &mut self.objects_live[idx] {
+                    Some(ScriptObject::Line { bar1, bar2, price1, price2, .. }) => {
+                        match callee {
+                            "line.set_x1" => *bar1 = v,
+                            "line.set_x2" => *bar2 = v,
+                            "line.set_y1" => *price1 = v,
+                            _ => *price2 = v,
+                        }
+                    }
+                    Some(ScriptObject::LineTime { t1, t2, price1, price2, .. }) => {
+                        match callee {
+                            "line.set_x1" => *t1 = v,
+                            "line.set_x2" => *t2 = v,
+                            "line.set_y1" => *price1 = v,
+                            _ => *price2 = v,
+                        }
+                    }
+                    _ => return Err(kind_err(callee, "line")),
+                }
+                Ok(true)
+            }
+            "line.set_color" => {
+                let idx = self.object_index(args, callee)?;
+                let c = self.arg_color_pos(args, 1).unwrap_or(0xFF_94_A3_B8_u32);
+                match &mut self.objects_live[idx] {
+                    Some(ScriptObject::Line { color, .. }) | Some(ScriptObject::LineTime { color, .. }) => *color = c,
+                    _ => return Err(kind_err(callee, "line")),
+                }
+                Ok(true)
+            }
+            "line.set_extend" => {
+                let idx = self.object_index(args, callee)?;
+                let e = self.extend_from_pos(args, 1)?;
+                match &mut self.objects_live[idx] {
+                    Some(ScriptObject::Line { extend, .. }) | Some(ScriptObject::LineTime { extend, .. }) => *extend = e,
+                    _ => return Err(kind_err(callee, "line")),
+                }
+                Ok(true)
+            }
+            "box.set_left" | "box.set_right" | "box.set_top" | "box.set_bottom" => {
+                let idx = self.object_index(args, callee)?;
+                let v = self.arg_f(args, 1)?.unwrap_or(NA);
+                match &mut self.objects_live[idx] {
+                    Some(ScriptObject::Box { left, right, top, bottom, .. }) => {
+                        match callee {
+                            "box.set_left" => *left = v,
+                            "box.set_right" => *right = v,
+                            "box.set_top" => *top = v,
+                            _ => *bottom = v,
+                        }
+                    }
+                    Some(ScriptObject::BoxTime { left_nanos, right_nanos, top, bottom, .. }) => {
+                        match callee {
+                            "box.set_left" => *left_nanos = v,
+                            "box.set_right" => *right_nanos = v,
+                            "box.set_top" => *top = v,
+                            _ => *bottom = v,
+                        }
+                    }
+                    _ => return Err(kind_err(callee, "box")),
+                }
+                Ok(true)
+            }
+            "box.set_border_color" => {
+                let idx = self.object_index(args, callee)?;
+                let c = self.arg_color_pos(args, 1).unwrap_or(0xFF_94_A3_B8_u32);
+                match &mut self.objects_live[idx] {
+                    Some(ScriptObject::Box { border_color, .. }) | Some(ScriptObject::BoxTime { border_color, .. }) => *border_color = Some(c),
+                    _ => return Err(kind_err(callee, "box")),
+                }
+                Ok(true)
+            }
+            "box.set_border_width" => {
+                let idx = self.object_index(args, callee)?;
+                let v = self.arg_f(args, 1)?.unwrap_or(1.0);
+                match &mut self.objects_live[idx] {
+                    Some(ScriptObject::Box { border_width, .. }) | Some(ScriptObject::BoxTime { border_width, .. }) => *border_width = v,
+                    _ => return Err(kind_err(callee, "box")),
+                }
+                Ok(true)
+            }
+            "box.set_bgcolor" => {
+                let idx = self.object_index(args, callee)?;
+                let c = self.arg_color_pos(args, 1).unwrap_or(0x33_94_A3_B8_u32);
+                match &mut self.objects_live[idx] {
+                    Some(ScriptObject::Box { color, .. }) | Some(ScriptObject::BoxTime { color, .. }) => *color = c,
+                    _ => return Err(kind_err(callee, "box")),
+                }
+                Ok(true)
+            }
+            "label.set_x" | "label.set_y" => {
+                let idx = self.object_index(args, callee)?;
+                let v = self.arg_f(args, 1)?.unwrap_or(NA);
+                match &mut self.objects_live[idx] {
+                    Some(ScriptObject::Label { bar, price, .. }) => {
+                        if callee == "label.set_x" { *bar = v } else { *price = v }
+                    }
+                    Some(ScriptObject::LabelTime { nanos, price, .. }) => {
+                        if callee == "label.set_x" { *nanos = v } else { *price = v }
+                    }
+                    _ => return Err(kind_err(callee, "label")),
+                }
+                Ok(true)
+            }
+            "label.set_text" => {
+                let idx = self.object_index(args, callee)?;
+                let arg = args.get(1).ok_or_else(|| crate::ScriptError {
+                    kind: crate::ErrorKind::Type,
+                    span: crate::Span::new(1, 1),
+                    message: "`label.set_text` needs (id, text)".to_string(),
+                })?;
+                let text = self.eval_s(&arg.value)?;
+                match &mut self.objects_live[idx] {
+                    Some(ScriptObject::Label { text: t, .. }) | Some(ScriptObject::LabelTime { text: t, .. }) => *t = text,
+                    _ => return Err(kind_err(callee, "label")),
+                }
+                Ok(true)
+            }
+            "label.set_color" => {
+                let idx = self.object_index(args, callee)?;
+                let c = self.arg_color_pos(args, 1).unwrap_or(0xFF_94_A3_B8_u32);
+                match &mut self.objects_live[idx] {
+                    Some(ScriptObject::Label { color, .. }) | Some(ScriptObject::LabelTime { color, .. }) => *color = c,
+                    _ => return Err(kind_err(callee, "label")),
+                }
+                Ok(true)
+            }
+            "line.delete" | "label.delete" | "box.delete" => {
+                let idx = self.object_index(args, callee)?;
+                let matches_kind = match (&self.objects_live[idx], callee) {
+                    (Some(ScriptObject::Line { .. }) | Some(ScriptObject::LineTime { .. }), "line.delete") => true,
+                    (Some(ScriptObject::Label { .. }) | Some(ScriptObject::LabelTime { .. }), "label.delete") => true,
+                    (Some(ScriptObject::Box { .. }) | Some(ScriptObject::BoxTime { .. }), "box.delete") => true,
+                    _ => false,
+                };
+                if !matches_kind {
+                    let want = callee.strip_suffix(".delete").unwrap_or(callee);
+                    return Err(kind_err(callee, want));
+                }
+                self.objects_live[idx] = None;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     fn call_stmt(&mut self, callee: &str, args: &[Arg]) -> Result<(), crate::ScriptError> {
         self.tick()?;
         match callee {
@@ -1005,112 +1287,13 @@ impl<'a> Vm<'a> {
             // to the object heap, capped like the array heap. Coordinates are
             // plain f64 bar indexes/prices; the engine maps them to the
             // canvas, never the script.
-            "line.new" => {
-                self.tick()?;
-                // The heap cap STOPS drawing rather than killing the run
-                // (TradingView's behavior): a script that conditions fired
-                // 100 times on a long window still renders only the first
-                // MAX_OBJECTS
-                // objects, with the truncation reported in the scene note.
-                if self.out.objects.len() < MAX_OBJECTS {
-                    let bar1 = self.arg_f(args, 0)?.unwrap_or(NA);
-                    let price1 = self.arg_f(args, 1)?.unwrap_or(NA);
-                    let bar2 = self.arg_f(args, 2)?.unwrap_or(NA);
-                    let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
-                    let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
-                    let style = self.arg_str(args, "style").unwrap_or_else(|| "solid".into());
-                    let width = self.arg_named_f(args, "width").unwrap_or(1.0);
-                    let extend = self.arg_extend(args)?;
-                    self.out.objects.push(ScriptObject::Line { bar1, price1, bar2, price2, color, style, width, extend });
-                } else {
-                    self.out.objects_truncated = true;
-                }
-                Ok(())
-            }
-            "label.new" => {
-                self.tick()?;
-                if self.out.objects.len() < MAX_OBJECTS {
-                    let bar = self.arg_f(args, 0)?.unwrap_or(NA);
-                    let price = self.arg_f(args, 1)?.unwrap_or(NA);
-                    let text = self.arg_text(args, "text", 2)?.unwrap_or_default();
-                    let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
-                    self.out.objects.push(ScriptObject::Label { bar, price, text, color });
-                } else {
-                    self.out.objects_truncated = true;
-                }
-                Ok(())
-            }
-            "box.new" => {
-                self.tick()?;
-                if self.out.objects.len() < MAX_OBJECTS {
-                    let left = self.arg_f(args, 0)?.unwrap_or(NA);
-                    let top = self.arg_f(args, 1)?.unwrap_or(NA);
-                    let right = self.arg_f(args, 2)?.unwrap_or(NA);
-                    let bottom = self.arg_f(args, 3)?.unwrap_or(NA);
-                    let color = self.arg_color(args).unwrap_or(0x33_94_A3_B8_u32);
-                    // docs/31: the TradingView box look -- a visible border
-                    // distinct from the fill, off when unasked.
-                    let border_color = self.arg_color_named(args, "border_color");
-                    let border_width = self.arg_named_f(args, "border_width").unwrap_or(1.0);
-                    let border_style = self.arg_str(args, "border_style").unwrap_or_else(|| "solid".into());
-                    self.out.objects.push(ScriptObject::Box { left, top, right, bottom, color, border_color, border_width, border_style });
-                } else {
-                    self.out.objects_truncated = true;
-                }
-                Ok(())
-            }
-            // ---- time-anchored drawing objects (docs/28): the same three
-            // shapes with unix-nanos anchors instead of bar indexes, so a
-            // script reading a pooled higher timeframe can draw what it found
-            // there onto this chart's time axis. Same heap, same cap.
-            "line.new_time" => {
-                self.tick()?;
-                if self.out.objects.len() < MAX_OBJECTS {
-                    let t1 = self.arg_f(args, 0)?.unwrap_or(NA);
-                    let price1 = self.arg_f(args, 1)?.unwrap_or(NA);
-                    let t2 = self.arg_f(args, 2)?.unwrap_or(NA);
-                    let price2 = self.arg_f(args, 3)?.unwrap_or(NA);
-                    let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
-                    let style = self.arg_str(args, "style").unwrap_or_else(|| "solid".into());
-                    let width = self.arg_named_f(args, "width").unwrap_or(1.0);
-                    let extend = self.arg_extend(args)?;
-                    self.out.objects.push(ScriptObject::LineTime { t1, price1, t2, price2, color, style, width, extend });
-                } else {
-                    self.out.objects_truncated = true;
-                }
-                Ok(())
-            }
-            "label.new_time" => {
-                self.tick()?;
-                if self.out.objects.len() < MAX_OBJECTS {
-                    let nanos = self.arg_f(args, 0)?.unwrap_or(NA);
-                    let price = self.arg_f(args, 1)?.unwrap_or(NA);
-                    let text = self.arg_text(args, "text", 2)?.unwrap_or_default();
-                    let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
-                    self.out.objects.push(ScriptObject::LabelTime { nanos, price, text, color });
-                } else {
-                    self.out.objects_truncated = true;
-                }
-                Ok(())
-            }
-            "box.new_time" => {
-                self.tick()?;
-                if self.out.objects.len() < MAX_OBJECTS {
-                    let left_nanos = self.arg_f(args, 0)?.unwrap_or(NA);
-                    let top = self.arg_f(args, 1)?.unwrap_or(NA);
-                    let right_nanos = self.arg_f(args, 2)?.unwrap_or(NA);
-                    let bottom = self.arg_f(args, 3)?.unwrap_or(NA);
-                    let color = self.arg_color(args).unwrap_or(0x33_94_A3_B8_u32);
-                    // docs/31: the same border knobs as the bar-index box.
-                    let border_color = self.arg_color_named(args, "border_color");
-                    let border_width = self.arg_named_f(args, "border_width").unwrap_or(1.0);
-                    let border_style = self.arg_str(args, "border_style").unwrap_or_else(|| "solid".into());
-                    self.out.objects.push(ScriptObject::BoxTime { left_nanos, top, right_nanos, bottom, color, border_color, border_width, border_style });
-                } else {
-                    self.out.objects_truncated = true;
-                }
-                Ok(())
-            }
+            // ---- drawing constructors + mutators (Tier 1 D): the six
+            // `*.new` shapes live behind handles now -- `l = line.new(...)`
+            // binds the arena index, `line.set_*(l, ...)` mutates through
+            // it, `*.delete(l)` clears the slot. The construction itself is
+            // in `draw_object`, shared with the expression path.
+            _ if self.draw_object(callee, args)?.is_some() => Ok(()),
+            _ if self.set_object(callee, args)? => Ok(()),
             // ---- the registry primitive (docs/37): the VM stores the raw
             // anchors; the decomposition into levels and labels is the
             // engine's, because positioning is the engine's.
@@ -1733,6 +1916,11 @@ impl<'a> Vm<'a> {
         self.tick()?;
         // Inputs first: they are host-supplied or defaults, never computed.
         // The bool/int/string distinction rides on the call's own kind.
+        // `l = line.new(...)` -- a drawing constructor in expression
+        // position binds the arena handle (a statement discards it).
+        if let Some(handle) = self.draw_object(callee, args)? {
+            return Ok(handle);
+        }
         if let Some(kind) = callee.strip_prefix("input.") {
             let name = self.current_input_name.clone();
             let default = self.arg_named_f(args, "defval").unwrap_or(0.0);
@@ -2611,6 +2799,43 @@ impl<'a> Vm<'a> {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
                 message: "extend= takes one of extend.none, extend.right, extend.left, extend.both".into(),
+            }),
+        }
+    }
+
+    /// A color read by POSITION (the setters take `line.set_color(l,
+    /// color.red)`): constants, named colors, or a numeric input.color var.
+    fn arg_color_pos(&mut self, args: &[Arg], index: usize) -> Option<u32> {
+        let arg = args.get(index)?;
+        match &arg.value.kind {
+            ExprKind::Color(c) => Some(*c),
+            ExprKind::Ident(name) => named_color(name).or_else(|| {
+                if self.vars.contains_key(name) {
+                    self.eval_f(&arg.value).ok().filter(|v| v.is_finite()).map(|v| v as u32)
+                } else {
+                    None
+                }
+            }),
+            _ => self.eval_f(&arg.value).ok().filter(|v| v.is_finite()).map(|v| v as u32),
+        }
+    }
+
+    /// The extend constant by POSITION (`line.set_extend(l, extend.right)`).
+    fn extend_from_pos(&self, args: &[Arg], index: usize) -> Result<String, crate::ScriptError> {
+        let path = match args.get(index).map(|a| &a.value.kind) {
+            Some(ExprKind::Member { path }) => path.as_str(),
+            Some(ExprKind::Ident(name)) => name.as_str(),
+            _ => "",
+        };
+        match path {
+            "extend.none" => Ok(String::new()),
+            "extend.right" => Ok("right".to_string()),
+            "extend.left" => Ok("left".to_string()),
+            "extend.both" => Ok("both".to_string()),
+            _ => Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "set_extend takes one of extend.none, extend.right, extend.left, extend.both".into(),
             }),
         }
     }
