@@ -508,7 +508,15 @@ pub async fn replay_script_preview(
             }
         }
     }
-    let inputs = pine_lite::interp::Inputs { security, series_pool, data_series, ..pine_lite::interp::Inputs::default() };
+    // The instrument's tick size feeds syminfo.mintick /
+    // math.round_to_mintick. Static majors table until exchange-info wiring
+    // lands; 0.01 covers the USDT majors customers chart most.
+    let mintick = Some(match symbol.to_uppercase().as_str() {
+        "XRPUSDT" | "DOGEUSDT" | "ADAUSDT" => 0.0001,
+        "SOLUSDT" | "BNBUSDT" => 0.001,
+        _ => 0.01,
+    });
+    let inputs = pine_lite::interp::Inputs { security, series_pool, data_series, mintick, ..pine_lite::interp::Inputs::default() };
     let output = pine_lite::interp::run(&parsed, &candles, &inputs)
         .map_err(|err| format!("the script failed at run time: {err}"))?;
     // Run notes (docs/24 S1: the two-pass strategy mismatch, and any later

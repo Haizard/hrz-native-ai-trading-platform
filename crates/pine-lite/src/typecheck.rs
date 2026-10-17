@@ -608,7 +608,7 @@ impl Cx {
         match path {
             "bar_index" | "last_bar_index" | "time" | "time_close" | "open" | "high" | "low"
             | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "hour" | "minute"
-            | "dayofweek" | "year" | "month" | "dayofmonth" => Ty::Float,
+            | "dayofweek" | "year" | "month" | "dayofmonth" | "syminfo.mintick" => Ty::Float,
             "barstate.isconfirmed" => Ty::Bool,
             "syminfo.ticker" => Ty::String,
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
@@ -810,7 +810,7 @@ impl Cx {
             name,
             "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "bar_index"
                 | "last_bar_index" | "time" | "time_close" | "hour" | "minute" | "dayofweek"
-                | "year" | "month" | "dayofmonth"
+                | "year" | "month" | "dayofmonth" | "syminfo.mintick" | "syminfo.ticker"
         )
     }
 
@@ -855,7 +855,7 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "ta.crossover" | "ta.crossunder" | "ta.cross" => (2, 2),
         "str.tostring" => (1, 2),
         "str.format" => (1, 9),
-        "math.abs" | "math.floor" | "math.ceil" | "math.round" | "math.sqrt" | "math.log"
+        "math.round_to_mintick" | "math.abs" | "math.floor" | "math.ceil" | "math.round" | "math.sqrt" | "math.log"
         | "math.exp" | "math.sign" => (1, 1),
         "math.min" | "math.max" | "math.avg" => (1, 8),
         "math.sum" => (2, 2),

@@ -195,6 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Inputs::default()
     };
+    let inputs = pine_lite::interp::Inputs { mintick: Some(0.01), ..inputs };
     let out = pine_lite::run(&script, &candles, &inputs)?;
     if out.strategy_used {
         println!("STRATEGY intents: {}", out.intents.len());

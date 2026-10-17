@@ -33,6 +33,11 @@ pub struct Inputs {
     /// so indexes never drift -- cross-market math stays bar-aligned.
     /// Empty when the header declares no `sec`.
     pub security: Vec<Candle>,
+    /// The chart instrument's tick size, from the host's instrument
+    /// metadata (exchange info). `syminfo.mintick` and
+    /// `math.round_to_mintick` read it; None when the host did not supply
+    /// one, and both are loud about it rather than guessing a tick.
+    pub mintick: Option<f64>,
     /// Every named pair of `request.security("SYM", "tf", ...)` in the
     /// script, keyed `SYM@tf`, uppercased, already fetched and aligned onto
     /// the chart's bars by the host -- the same contract as `security`.
@@ -1424,6 +1429,16 @@ impl<'a> Vm<'a> {
             "time" => c.open_time as f64,
             "time_close" => (c.open_time + c.timeframe.nanos()) as f64,
             "barstate.isconfirmed" => 1.0, // the host only runs closed bars
+            "syminfo.mintick" => match self.inputs.mintick {
+                Some(t) if t > 0.0 => t,
+                _ => {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: "`syminfo.mintick` needs the host's instrument metadata (the tick size); the host did not supply one for this chart".into(),
+                    })
+                }
+            },
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
             | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => {
                 self.strategy_read(path)
@@ -1706,6 +1721,22 @@ impl<'a> Vm<'a> {
                 let mi = a!(4)? as i64;
                 let days = days_from_civil(y, mo, d);
                 Ok((days * 86_400 + h * 3_600 + mi * 60) as f64 * 1_000_000_000.0)
+            }
+            "math.round_to_mintick" => {
+                let v = a!(0)?;
+                // na in, na out -- the warmup bars of a windowed source are
+                // not a missing-tick error.
+                if !v.is_finite() {
+                    return Ok(crate::ta::NA);
+                }
+                match self.inputs.mintick {
+                    Some(t) if t > 0.0 => Ok((v / t).round() * t),
+                    _ => Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: "`math.round_to_mintick` needs the host's instrument metadata (the tick size)".into(),
+                    }),
+                }
             }
             "na" => Ok(f64::from(!a!(0)?.is_finite())),
             "nz" => {
@@ -2368,6 +2399,18 @@ impl<'a> Vm<'a> {
                 }
                 Ok(out)
             }
+            ExprKind::Member { path } if path == "syminfo.ticker" => Ok(self
+                .candles
+                .first()
+                .map(|c| c.symbol.clone())
+                .unwrap_or_default()),
+            // Dotted paths parse as Ident in some positions; the chart
+            // symbol must read as text in all of them.
+            ExprKind::Ident(name) if name == "syminfo.ticker" => Ok(self
+                .candles
+                .first()
+                .map(|c| c.symbol.clone())
+                .unwrap_or_default()),
             ExprKind::Ident(name) if self.vars.contains_key(name) => Err(crate::ScriptError {
                 kind: crate::ErrorKind::Type,
                 span: crate::Span::new(1, 1),
