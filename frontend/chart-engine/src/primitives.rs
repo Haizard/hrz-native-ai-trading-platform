@@ -120,6 +120,7 @@ fn position_fib(placement: &Placement, object: &ScriptObject) -> Vec<ScriptDraw>
                     color: *color,
                     style: if boundary { "solid" } else { "dashed" }.to_string(),
                     width: 1.0,
+                    extend: String::new(),
                 },
                 ScriptDraw::Label {
                     x: xb + 4.0,

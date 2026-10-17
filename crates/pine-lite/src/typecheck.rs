@@ -635,6 +635,9 @@ impl Cx {
             "bar_index" | "last_bar_index" | "time" | "time_close" | "open" | "high" | "low"
             | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "hour" | "minute"
             | "dayofweek" | "year" | "month" | "dayofmonth" | "syminfo.mintick" => Ty::Float,
+            // The line-extension constants (`extend=extend.right` on a
+            // line) are the only dotted string constants.
+            "extend.none" | "extend.right" | "extend.left" | "extend.both" => Ty::String,
             "barstate.isconfirmed" => Ty::Bool,
             "syminfo.ticker" => Ty::String,
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
@@ -849,6 +852,7 @@ impl Cx {
             "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "bar_index"
                 | "last_bar_index" | "time" | "time_close" | "hour" | "minute" | "dayofweek"
                 | "year" | "month" | "dayofmonth" | "syminfo.mintick" | "syminfo.ticker"
+                | "extend.none" | "extend.right" | "extend.left" | "extend.both"
         )
     }
 

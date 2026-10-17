@@ -204,7 +204,7 @@ pub struct Output {
 /// `bar_index - n`); the engine maps them to time/canvas, never the script.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScriptObject {
-    /// `line.new(bar1, price1, bar2, price2, ...)`.
+    /// `line.new(bar1, price1, bar2, price2, ..., extend=extend.right)`.
     Line {
         /// First anchor's bar index.
         bar1: f64,
@@ -220,6 +220,10 @@ pub enum ScriptObject {
         style: String,
         /// Line width.
         width: f64,
+        /// "" | "right" | "left" | "both": the renderer projects the
+        /// segment to the plot edge(s) along its slope. Pine's
+        /// extend.none is the empty string.
+        extend: String,
     },
     /// `label.new(bar, price, text, ...)`.
     Label {
@@ -272,6 +276,8 @@ pub enum ScriptObject {
         style: String,
         /// Line width.
         width: f64,
+        /// "" | "right" | "left" | "both" (see Line).
+        extend: String,
     },
     /// `label.new_time(t, price, text, ...)` — time-anchored (docs/28).
     LabelTime {
@@ -1010,7 +1016,8 @@ impl<'a> Vm<'a> {
                     let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
                     let style = self.arg_str(args, "style").unwrap_or_else(|| "solid".into());
                     let width = self.arg_named_f(args, "width").unwrap_or(1.0);
-                    self.out.objects.push(ScriptObject::Line { bar1, price1, bar2, price2, color, style, width });
+                    let extend = self.arg_extend(args)?;
+                    self.out.objects.push(ScriptObject::Line { bar1, price1, bar2, price2, color, style, width, extend });
                 } else {
                     self.out.objects_truncated = true;
                 }
@@ -1062,7 +1069,8 @@ impl<'a> Vm<'a> {
                     let color = self.arg_color(args).unwrap_or(0xFF_94_A3_B8_u32);
                     let style = self.arg_str(args, "style").unwrap_or_else(|| "solid".into());
                     let width = self.arg_named_f(args, "width").unwrap_or(1.0);
-                    self.out.objects.push(ScriptObject::LineTime { t1, price1, t2, price2, color, style, width });
+                    let extend = self.arg_extend(args)?;
+                    self.out.objects.push(ScriptObject::LineTime { t1, price1, t2, price2, color, style, width, extend });
                 } else {
                     self.out.objects_truncated = true;
                 }
@@ -2573,6 +2581,31 @@ impl<'a> Vm<'a> {
         match args.get(index) {
             Some(Arg { value: Expr { kind: ExprKind::Str(s), .. }, .. }) => Some(s.clone()),
             _ => None,
+        }
+    }
+
+    /// `extend=extend.right` on a line: the value is a dotted constant,
+    /// not a string literal. Maps to "" | "right" | "left" | "both";
+    /// anything else is a clear error (Pine has exactly these four).
+    fn arg_extend(&self, args: &[Arg]) -> Result<String, crate::ScriptError> {
+        let Some(arg) = args.iter().find(|a| a.name.as_deref() == Some("extend")) else {
+            return Ok(String::new());
+        };
+        let path = match &arg.value.kind {
+            ExprKind::Member { path } => path.as_str(),
+            ExprKind::Ident(name) => name.as_str(),
+            _ => "",
+        };
+        match path {
+            "extend.none" => Ok(String::new()),
+            "extend.right" => Ok("right".to_string()),
+            "extend.left" => Ok("left".to_string()),
+            "extend.both" => Ok("both".to_string()),
+            _ => Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "extend= takes one of extend.none, extend.right, extend.left, extend.both".into(),
+            }),
         }
     }
 

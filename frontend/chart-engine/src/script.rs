@@ -66,6 +66,10 @@ pub enum ScriptDraw {
         style: String,
         /// Width in CSS pixels.
         width: f64,
+        /// "" | "right" | "left" | "both": the mapping projects the
+        /// endpoint(s) to the plot edge along the segment's slope
+        /// (a vertical segment, x1 == x2, does not extend — Pine's rule).
+        extend: String,
     },
     /// `label.new` — anchor + text.
     Label {
@@ -478,6 +482,47 @@ pub fn scene_overlay_shapes(
         .collect()
 }
 
+/// Project an extended line's endpoint(s) to the plot edge along its
+/// slope. Pine's rules: the far endpoint moves, the near one stays; a
+/// vertical segment (x1 == x2) has no slope and never extends.
+fn project_extend(
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    extend: &str,
+    plot: &crate::scene::Plot,
+) -> (f64, f64, f64, f64) {
+    let dx = x2 - x1;
+    if dx.abs() < 1e-9 || extend.is_empty() {
+        return (x1, y1, x2, y2);
+    }
+    let slope = (y2 - y1) / dx;
+    let (mut ax, mut ay, mut bx, mut by) = (x1, y1, x2, y2);
+    if extend == "right" || extend == "both" {
+        // The right-hand anchor moves to the plot's right edge.
+        let edge = plot.x + plot.w;
+        if x1 >= x2 {
+            ax = edge;
+            ay = y2 + slope * (edge - x2);
+        } else {
+            bx = edge;
+            by = y1 + slope * (edge - x1);
+        }
+    }
+    if extend == "left" || extend == "both" {
+        let edge = plot.x;
+        if x1 <= x2 {
+            ax = edge;
+            ay = by - slope * (bx - edge);
+        } else {
+            bx = edge;
+            by = ay - slope * (ax - edge);
+        }
+    }
+    (ax, ay, bx, by)
+}
+
 /// Position an overlay script's drawing objects (docs/23 Phase 13): the
 /// script's bar-index + price coordinates through the SAME frame mapping
 /// plots and shapes use. Negative bar indexes count back from the last bar
@@ -510,18 +555,21 @@ pub fn scene_overlay_objects(
         // seven labels. The built-in shapes keep their one-to-one shape as a
         // one-element Vec.
         .flat_map(|o| match o {
-            pine_lite::interp::ScriptObject::Line { bar1, price1, bar2, price2, color, style, width } => {
+            pine_lite::interp::ScriptObject::Line { bar1, price1, bar2, price2, color, style, width, extend } => {
                 if !bar1.is_finite() || !bar2.is_finite() || !price1.is_finite() || !price2.is_finite() {
                     return Vec::new();
                 }
+                let (x1, y1, x2, y2) = (bx(*bar1), py(*price1), bx(*bar2), py(*price2));
+                let (x1, y1, x2, y2) = project_extend(x1, y1, x2, y2, extend, &frame.plot);
                 vec![ScriptDraw::Line {
-                    x1: bx(*bar1),
-                    y1: py(*price1),
-                    x2: bx(*bar2),
-                    y2: py(*price2),
+                    x1,
+                    y1,
+                    x2,
+                    y2,
                     color: *color,
                     style: style.clone(),
                     width: *width,
+                    extend: extend.clone(),
                 }]
             }
             pine_lite::interp::ScriptObject::Label { bar, price, text, color } => {
@@ -551,18 +599,26 @@ pub fn scene_overlay_objects(
             // so an HTF zone lands exactly where its bars sit on this chart's
             // axis. An anchor outside the window maps off-plot and the canvas
             // clips, exactly as a bar-index object does.
-            pine_lite::interp::ScriptObject::LineTime { t1, price1, t2, price2, color, style, width } => {
+            pine_lite::interp::ScriptObject::LineTime { t1, price1, t2, price2, color, style, width, extend } => {
                 if !t1.is_finite() || !t2.is_finite() || !price1.is_finite() || !price2.is_finite() {
                     return Vec::new();
                 }
+                let (x1, y1, x2, y2) = (
+                    frame.x_at_nanos(*t1 as i64),
+                    py(*price1),
+                    frame.x_at_nanos(*t2 as i64),
+                    py(*price2),
+                );
+                let (x1, y1, x2, y2) = project_extend(x1, y1, x2, y2, extend, &frame.plot);
                 vec![ScriptDraw::Line {
-                    x1: frame.x_at_nanos(*t1 as i64),
-                    y1: py(*price1),
-                    x2: frame.x_at_nanos(*t2 as i64),
-                    y2: py(*price2),
+                    x1,
+                    y1,
+                    x2,
+                    y2,
                     color: *color,
                     style: style.clone(),
                     width: *width,
+                    extend: extend.clone(),
                 }]
             }
             pine_lite::interp::ScriptObject::LabelTime { nanos, price, text, color } => {
@@ -1290,6 +1346,49 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_extend_right_line_projects_its_far_end_to_the_plot_edge() {
+        let frame = crate::scene::Frame {
+            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "if bar_index == 0\n",
+            "    line.new(10, 100.0, 20, 110.0, extend=extend.right)\n",
+            "plot(close)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        let objects = scene_overlay_objects(&output, 10.0, &frame);
+        let line = objects
+            .iter()
+            .find_map(|o| match o {
+                ScriptDraw::Line { x1, y1, x2, y2, extend, .. } => Some((*x1, *y1, *x2, *y2, extend)),
+                _ => None,
+            })
+            .expect("one line");
+        let (x1, y1, x2, y2, extend) = line;
+        assert_eq!(extend, "right");
+        let rect = frame.plot;
+        assert!(
+            (x2 - (rect.x + rect.w)).abs() < 1e-6,
+            "the far end rides the right edge: {x2} vs {}",
+            rect.x + rect.w
+        );
+        // The slope is preserved: 10 price units over 10 bars, projected
+        // from x1 to the edge, keeps the line's angle.
+        let slope = (y2 - y1) / (x2 - x1);
+        let y_at_edge = y1 + slope * (rect.x + rect.w - x1);
+        assert!((y2 - y_at_edge).abs() < 1e-6, "the extension stays on the slope");
     }
 
     #[test]

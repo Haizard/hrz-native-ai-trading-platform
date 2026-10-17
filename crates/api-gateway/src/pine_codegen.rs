@@ -474,7 +474,7 @@ The projection must EXIST on both sides of the cross: filter the break SIGNAL (`
     if bull_break
         label.new(bar_index, low, "TL break", color=color.green)
 
-If a `line.new` version is wanted for the anchor-to-now segment, the far endpoint's price is computed AT the far endpoint's bar: `line.new(ph2_bar, ph2, bar_index, ph1 + slope_high * (bar_index - ph1_bar), ...)`. Extending a SLOPED line with `bar_index + 10000` is banned -- the `+ 10000` idiom extends HORIZONTAL levels only; on a slope it stretches the far endpoint 10000 bars out and flattens the line into nonsense.
+If a `line.new` version is wanted for the anchor-to-now segment, the far endpoint's price is computed AT the far endpoint's bar: `line.new(ph2_bar, ph2, bar_index, ph1 + slope_high * (bar_index - ph1_bar), ...)`. To extend a line past its anchors -- SLOPED ones included -- use the native knob: `line.new(b1, p1, b2, p2, extend=extend.right)` projects the far endpoint to the plot edge ALONG the segment's slope (extend.left and extend.both work the same way; a vertical line never extends, exactly like Pine). Extending a SLOPED line with `bar_index + 10000` is banned -- the `+ 10000` idiom extends HORIZONTAL levels only; on a slope it stretches the far endpoint 10000 bars out and flattens the line into nonsense.
 
 ## Triangles are events, and events are EDGES
 
