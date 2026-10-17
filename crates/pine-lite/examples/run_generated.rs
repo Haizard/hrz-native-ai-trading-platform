@@ -31,9 +31,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // sharp dip THROUGH the rising low-line, and a recovery that reclaims
     // it -- engineered so a trendline-breakout script actually fires.
     let mut candles = Vec::new();
-    let t0 = 1_700_000_000_000_000_000_i64;
+    let mut prev_c = 0.0_f64;
+    // `sess` needs bar i to open at hour (i mod 24) UTC: t0 = 2023-11-14
+    // 00:00 UTC. The others only need spacing.
+    let t0 = if scenario == "sess" {
+        1_699_920_000_000_000_000_i64
+    } else {
+        1_700_000_000_000_000_000_i64
+    };
     for i in 0..200i64 {
-        let c = if scenario == "harm" {
+        let c = if scenario == "sweep" {
+            // Liquidity sweep + CHoCH: equal highs at 103.3 (bars 8, 24),
+            // equal lows at 97.6 (bars 16, 28), a sweep to 105.0 at 33 that
+            // closes back below, a minor low at 101.1 (bar 40), a lower
+            // high, then the CHoCH close under 101.1 at ~47 and a downtrend
+            // into the 97.6 pool, then chop.
+            match i {
+                0..=8 => 100.0 + i as f64 * 0.375,
+                9..=16 => 103.0 - (i - 8) as f64 * 0.625,
+                17..=24 => 98.0 + (i - 16) as f64 * 0.625,
+                25..=28 => 103.0 - (i - 24) as f64 * 1.25,
+                29..=31 => 98.0 + (i - 28) as f64 * 1.0,
+                // Single-bar sweep: high 103.4 pokes the 103.3 pool, close
+                // 103.1 falls back below it.
+                32 => 102.6,
+                33 => 103.1,
+                34 => 102.0,
+                35..=40 => 102.0 - (i - 34) as f64 * 0.15,
+                41..=44 => 101.1 + (i - 40) as f64 * 0.35,
+                45..=60 => 102.5 - (i - 44) as f64 * 0.35,
+                61..=90 => 96.9 + 0.4 * ((i - 60) as f64 * std::f64::consts::TAU / 15.0).sin(),
+                _ => 97.0 + 0.5 * ((i - 90) as f64 * std::f64::consts::TAU / 20.0).sin(),
+            }
+        } else if scenario == "obfvg" {
+            // OB + FVG confluence: downtrend with lower highs, a sharp
+            // CHoCH rally out of 99 with a 3-candle FVG right above the last
+            // down candle (the order block at bar 71), a pullback into the
+            // overlap at ~100.3, then the rally leg that pays 2R.
+            match i {
+                0..=59 => 110.0 - i as f64 * 0.17 + 1.2 * (i as f64 * std::f64::consts::TAU / 18.0).sin(),
+                60..=70 => 99.5 - (i - 59) as f64 * 0.045,
+                71 => 100.0,
+                72 => 100.6,
+                73 => 101.2,
+                74..=85 => 101.2 + (i - 73) as f64 * 0.8,
+                86..=100 => 110.8 - (i - 85) as f64 * 0.68,
+                101..=140 => 100.6 + (i - 100) as f64 * 0.15,
+                _ => 106.6 + 0.5 * ((i - 140) as f64 * std::f64::consts::TAU / 20.0).sin(),
+            }
+        } else if scenario == "sess" {
+            // London killzone: t0 is a Monday 00:00 UTC; every 24-bar day has
+            // a tight Asian range (bars 0-7), a London impulse (bars 7-10,
+            // alternating up/down days), then drift. Day offset keeps days
+            // distinguishable.
+            let day = i / 24;
+            let hod = i % 24;
+            let base = 100.0 + day as f64 * 0.8;
+            let up_day = day % 2 == 0;
+            match hod {
+                0..=6 => base + 0.2 * (hod as f64 * std::f64::consts::TAU / 7.0).sin(),
+                7..=10 => {
+                    let dir = if up_day { 1.0 } else { -1.0 };
+                    base + dir * (0.4 + (hod - 6) as f64 * 0.45)
+                }
+                _ => {
+                    let dir = if up_day { 1.0 } else { -1.0 };
+                    base + dir * 2.2 - dir * (hod - 10) as f64 * 0.08
+                }
+            }
+        } else if scenario == "harm" {
             // Monotone XABCD zigzag (no wiggle, so pivots form exactly at the
             // turning points): X low at 20 (89.85), A high at 40 (110.15),
             // B low at 60 (97.49 -- 61.8% of XA), C high at 80 (105.43 --
@@ -68,9 +134,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => 95.0 + (i - 139) as f64 * 0.2,
             }
         };
-        let o = c - 0.1;
-        let h = c.max(o) + 0.3;
-        let l = c.min(o) - 0.3;
+        // Alternate the open side by parity: even bars close up, odd bars
+        // close down, so down-close candles exist (order blocks need them).
+        // The open is the PREVIOUS close: candle direction follows the
+        // local trend (down-close candles in declines, up-close in rallies),
+        // which is what order-block detection reads. Tight symmetric wicks.
+        let o = if i == 0 { c } else { prev_c };
+        prev_c = c;
+        let h = c + 0.15;
+        let l = c - 0.15;
         candles.push(Candle {
             symbol: "BTCUSDT".to_string(),
             timeframe: analytics_core::Timeframe::H1,
@@ -86,6 +158,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let out = pine_lite::run(&script, &candles, &Inputs::default())?;
+    if out.strategy_used {
+        println!("STRATEGY intents: {}", out.intents.len());
+        for (bar, intent) in &out.intents {
+            println!("  bar {bar}: {intent:?}");
+        }
+        if let Some(sim) = &out.simulation {
+            println!("SIM orders: {}", sim.orders.len());
+            for o in &sim.orders {
+                println!(
+                    "  bar {} {:?} {} qty={:.4} px={:.2} stop={:?} pnl={:?}",
+                    o.bar,
+                    o.kind,
+                    if o.long { "LONG" } else { "SHORT" },
+                    o.qty,
+                    o.price,
+                    o.stop,
+                    o.pnl.map(|p| format!("{p:.2}"))
+                );
+            }
+            if let Some(last) = sim.snapshots.last() {
+                println!(
+                    "SIM final: equity={:.2} position={:.4}",
+                    last.equity, last.position_size
+                );
+            }
+        }
+    }
     println!("objects: {} (truncated: {})", out.objects.len(), out.objects_truncated);
     for (i, obj) in out.objects.iter().enumerate() {
         match obj {

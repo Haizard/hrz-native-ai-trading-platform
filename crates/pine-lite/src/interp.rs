@@ -337,6 +337,12 @@ pub struct Vm<'a> {
     inputs: &'a Inputs,
     /// Per-variable ring buffers.
     vars: std::collections::HashMap<String, Vec<f64>>,
+    /// Parallel to `vars`: which slots an assignment actually RAN on. The
+    /// buffer alone cannot tell "no assignment this bar" (Pine carries the
+    /// value forward) from "the assignment ran and produced na" (the value
+    /// IS na) -- and confusing them either kills sticky `var` state or
+    /// resurrects stale values past na computations (the zone-scan bug).
+    vars_written: std::collections::HashMap<String, Vec<bool>>,
     /// Variables that carry state across bars (`var`).
     var_modes: std::collections::HashMap<String, VarMode>,
     /// User functions.
@@ -463,6 +469,7 @@ impl<'a> Vm<'a> {
             candles,
             inputs,
             vars: std::collections::HashMap::new(),
+            vars_written: std::collections::HashMap::new(),
             var_modes: std::collections::HashMap::new(),
             funcs: std::collections::HashMap::new(),
             call_depth: 0,
@@ -588,6 +595,7 @@ impl<'a> Vm<'a> {
         // fuel restarts (the two passes meter separately, per docs/24).
         self.out = Output::default();
         self.vars.clear();
+        self.vars_written.clear();
         self.var_modes.clear();
         self.scopes.clear();
         self.series_cache.clear();
@@ -678,12 +686,37 @@ impl<'a> Vm<'a> {
     fn item(&mut self, item: &Item) -> Result<(), crate::ScriptError> {
         self.tick()?;
         match item {
-            Item::Assign { name, mode, expr, .. } => {
+            Item::Assign { name, mode, expr, op, .. } => {
                 // `x = input.int(...)` -- the input reads its name from the
                 // assignment target.
                 if let ExprKind::Call { callee, .. } = &expr.kind {
                     if callee.starts_with("input.") {
                         self.current_input_name = name.clone();
+                    }
+                }
+                // Compound assignment (`i += e`): desugars to `i := i <op> e`
+                // -- the current value comes through the normal name read,
+                // so an unreadable name errors exactly like `i := i + e`.
+                if let Some(op) = op.as_deref() {
+                    if matches!(op, "+=" | "-=" | "*=" | "/=" | "%=") {
+                        let cur = self.read_name(name)?;
+                        let rhs = self.eval_f(expr)?;
+                        let value = match &op[..1] {
+                            "+" => cur + rhs,
+                            "-" => cur - rhs,
+                            "*" => cur * rhs,
+                            "%" => cur % rhs,
+                            _ => cur / rhs,
+                        };
+                        let buf = self
+                            .vars
+                            .entry(name.clone())
+                            .or_insert_with(|| vec![NA; self.candles.len()]);
+                        buf[self.bar] = value;
+                        self.vars_written
+                            .entry(name.clone())
+                            .or_insert_with(|| vec![false; self.candles.len()])[self.bar] = true;
+                        return Ok(());
                     }
                 }
                 // `var` semantics: initialized once, at bar 0. On later bars
@@ -702,6 +735,9 @@ impl<'a> Vm<'a> {
                     .entry(name.clone())
                     .or_insert_with(|| vec![NA; self.candles.len()]);
                 buf[self.bar] = value;
+                self.vars_written
+                    .entry(name.clone())
+                    .or_insert_with(|| vec![false; self.candles.len()])[self.bar] = true;
                 self.var_modes.insert(name.clone(), *mode);
             }
             Item::Destructure { names, call, .. } => {
@@ -725,6 +761,9 @@ impl<'a> Vm<'a> {
                         .entry(name.clone())
                         .or_insert_with(|| vec![NA; self.candles.len()]);
                     buf[self.bar] = value;
+                    self.vars_written
+                        .entry(name.clone())
+                        .or_insert_with(|| vec![false; self.candles.len()])[self.bar] = true;
                     self.var_modes.insert(name.clone(), VarMode::Auto);
                 }
             }
@@ -1313,14 +1352,25 @@ impl<'a> Vm<'a> {
             // declarations write their slot only once (bar 0), so the carry
             // walks back to the LAST written slot, not just one bar: reading
             // a `var a = array.new()` handle at bar 5 must still find bar 0's
-            // allocation.
+            // allocation. The carry applies to STICKY (`var`) state ONLY:
+            // an auto var (`b2 = expr`) is recomputed every bar, and a bar
+            // whose expression is na IS na -- carrying a stale value forward
+            // would make `not na(b2)` guards pass on ghosts (the zone-scan
+            // corruption).
             let current = buf[self.bar];
             if current.is_finite() {
                 return Ok(current);
             }
-            for slot in (0..self.bar).rev() {
-                if buf[slot].is_finite() {
-                    return Ok(buf[slot]);
+            // A slot the assignment RAN on is authoritative, na included;
+            // carry forward only across slots no assignment touched.
+            if let Some(wrote) = self.vars_written.get(name) {
+                if wrote[self.bar] {
+                    return Ok(current);
+                }
+                for slot in (0..self.bar).rev() {
+                    if wrote[slot] {
+                        return Ok(buf[slot]);
+                    }
                 }
             }
             return Ok(current);
@@ -1395,10 +1445,14 @@ impl<'a> Vm<'a> {
                     let idx = self.bar - off;
                     let mut value = buf[idx];
                     if !value.is_finite() {
-                        for slot in (0..idx).rev() {
-                            if buf[slot].is_finite() {
-                                value = buf[slot];
-                                break;
+                        // A slot the assignment RAN on is authoritative, na
+                        // included; carry across untouched slots only.
+                        if let Some(wrote) = self.vars_written.get(name) {
+                            for slot in (0..=idx).rev() {
+                                if wrote[slot] {
+                                    value = buf[slot];
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1426,6 +1480,29 @@ impl<'a> Vm<'a> {
             "low" => self.candles.iter().map(|c| c.low).collect(),
             "close" => self.candles.iter().map(|c| c.close).collect(),
             "volume" => self.candles.iter().map(|c| c.volume).collect(),
+            // Time-of-day words as whole series: the per-bar scalar path
+            // (`read_member`) has always had them; history reads (`hour[1]`,
+            // session-boundary tests like `hour < hour[1]`), ta consumers and
+            // plot replay all come through here and used to die with
+            // "not a series". Same integer math as the scalar path.
+            "hour" => self
+                .candles
+                .iter()
+                .map(|c| (c.open_time / 3_600_000_000_000).rem_euclid(24) as f64)
+                .collect(),
+            "minute" => self
+                .candles
+                .iter()
+                .map(|c| (c.open_time / 60_000_000_000).rem_euclid(60) as f64)
+                .collect(),
+            "dayofweek" => self
+                .candles
+                .iter()
+                .map(|c| {
+                    let days = c.open_time.div_euclid(86_400_000_000_000);
+                    (days + 4).rem_euclid(7) as f64 + 1.0
+                })
+                .collect(),
             "hl2" => self.candles.iter().map(|c| (c.high + c.low) / 2.0).collect(),
             "hlc3" => self
                 .candles
@@ -1914,13 +1991,19 @@ impl<'a> Vm<'a> {
                     // needs the same rule as a whole series -- a sparse
                     // buffer is NA-riddled and `ta.crossover` against a
                     // tracked swing level silently never fires (the BOS bug).
+                    let wrote = self.vars_written.get(name);
                     let mut out = Vec::with_capacity(buf.len());
                     let mut last = NA;
-                    for &slot in buf.iter() {
-                        if slot.is_finite() {
-                            last = slot;
+                    for (i, &slot) in buf.iter().enumerate() {
+                        let ran = wrote.is_some_and(|w| w[i]);
+                        if ran {
+                            if slot.is_finite() {
+                                last = slot;
+                            }
+                            out.push(slot);
+                        } else {
+                            out.push(last);
                         }
-                        out.push(last);
                     }
                     return Ok(out);
                 }

@@ -242,7 +242,7 @@ The rules that keep it honest:
 - Pick the timeframes from the request: "multi-timeframe" on a 5m chart means 15m + 1h; on a 1h chart, 4h + 1d. Two to three steps up, never sideways or down.
 
 ## Time of day (session filters)
-`hour` (0..23 UTC), `minute` (0..59), `dayofweek` (1=Sunday .. 7=Saturday, Pine's convention). London open is about `hour == 7`; New York is about `hour >= 12 and hour < 21`. An Asian-session level: capture the high/low while `hour >= 0 and hour < 7` into `var` scalars and reset at `hour == 0`.
+`hour` (0..23 UTC), `minute` (0..59), `dayofweek` (1=Sunday .. 7=Saturday, Pine's convention). London open is about `hour == 7`; New York is about `hour >= 12 and hour < 21`. An Asian-session level: capture the high/low while `hour >= 0 and hour < 7` into `var` scalars and reset at `hour == 0`. A new day is the hour WRAPPING: `new_day = hour < hour[1]`; per-day state (`var traded_today = false`) resets on that edge (`if new_day \n    traded_today := false`) and one-trade-per-day is `if killzone and not traded_today and ... \n    traded_today := true`.
 
 ## Drawing
 - `plot(series, title="...", color=color.blue, linewidth=1)` -- a line. Optional `style="histogram"` / `style="columns"` / `style="circles"` / `style="stepline"` / `style="areabr"` / `style="linebr"`. `fill()`, `bgcolor()` and `barcolor()` PARSE but v1 does not render them -- a call you make for shading is invisible, so shade regions with `box.new` drawn across the bars that need it instead.
@@ -328,6 +328,73 @@ The rules that make it work:
 - Mark a dead zone by writing `na` into its edge array (`array.set(bull_bot, i, na)`) and guard every read with `not na(...)`.
 - Keep at most ~25 zones per side in the loops; the heap caps at 256 objects and older zones matter less.
 - An order block is the same shape with different detection: the LAST opposing candle before a displacement (for a bullish OB, the last down candle before a strong 2-3 bar rally); top/bottom are that candle's high/low, born at that candle's bar. A breaker block is an order block that failed and flipped side -- same box, other color.
+
+## OB + FVG confluence (order block guarded by a fair value gap)
+
+The whole setup is ONE canonical shape; every piece below exists because skipping it breaks the setup in a way vet cannot see:
+
+    var ob_top = array.new()
+    var ob_bot = array.new()
+    var fvg_top = array.new()
+    var fvg_bot = array.new()
+    var bool broke = false
+
+    // 1. The CHoCH latches -- only break-leg FVGs are tradeable, so detection
+    //    starts at the break, and the OB scan runs once, on the break bar.
+    if ta.crossover(close, ph1)
+        broke := true
+        i = 1
+        while i < 20 and close[i] >= open[i]
+            i += 1
+        if i < 20
+            array.push(ob_top, high[i])
+            array.push(ob_bot, low[i])
+            box.new(bar_index - i, high[i], bar_index + 10000, low[i], color=color.blue)
+
+    // 2. FVG = three-candle gap, drawn AT CREATION with that bar's values
+    //    (a last-bar draw pass reads stale loop variables).
+    if broke and low > high[2]
+        array.push(fvg_top, low)
+        array.push(fvg_bot, high[2])
+        box.new(bar_index - 2, low, bar_index + 10000, high[2], color=color.aqua)
+
+    // 3. Mitigation: a BULLISH zone dies when price closes DOWN through it
+    //    (close < ob_bot). The inverted comparison kills zones the bar after
+    //    they form and nothing ever enters.
+    n_ob = array.size(ob_top)
+    for i = 0 to n_ob - 1
+        b = array.get(ob_bot, i)
+        if not na(b) and close < b
+            array.set(ob_bot, i, na)
+    n_fvg = array.size(fvg_top)
+    for j = 0 to n_fvg - 1
+        b2 = array.get(fvg_bot, j)
+        if not na(b2) and close < b2
+            array.set(fvg_bot, j, na)
+
+    // 4. The entry CAPTURES the band the first bar the pullback touches a
+    //    guarded FVG -- loop variables read after the pair scan are stale.
+    var float ent_fvg_t = na
+    var float ent_fvg_b = na
+    var float ent_ob_b = na
+    for i = 0 to n_ob - 1
+        ob_t = array.get(ob_top, i)
+        ob_b = array.get(ob_bot, i)
+        if not na(ob_b)
+            for j = 0 to n_fvg - 1
+                fvg_t = array.get(fvg_top, j)
+                fvg_b = array.get(fvg_bot, j)
+                if not na(fvg_b) and na(ent_fvg_t)
+                    if fvg_b <= ob_t * 1.02 and low <= fvg_t and low >= fvg_b
+                        ent_fvg_t := fvg_t
+                        ent_fvg_b := fvg_b
+                        ent_ob_b := ob_b
+    if not na(ent_fvg_t) and strategy.position_size == 0
+        strategy.entry("L", direction="long")
+        strategy.exit("x", stop=ent_ob_b - 0.1, limit=close + 2 * (close - ent_ob_b))
+        ent_fvg_t := na
+
+A strict OB-intersects-FVG overlap is a geometric knife edge -- the gap always starts one step above the OB candle -- so "guarded" means the FVG bottom sits within ~2% ABOVE the OB top, an input, not an intersection.
 
 ## Zones drawn with LINES (when the user asks for lines, not boxes)
 
@@ -490,6 +557,9 @@ Completion draws each pattern EXACTLY once and re-arms when a new pivot arrives:
 
 The edge conditions are top-level and recomputed every bar, so the plotshape marker and the drawing agree; the latch blocks redraws of the same five pivots and needs no else branch -- the next pivot push makes `n != last_drawn_n` again and the new pattern gets its chance.
 
+## Loop bounds are array.size, never a guessed constant
+`for i = 0 to 24` over a zone array both misses zones beyond 24 and -- much worse -- burns the step budget: a nested pair scan (`for i ... for j ...`) at a guessed 24 runs 576 iterations EVERY bar and the script dies with "exceeded its step budget" before any entry can fire. Bound every zone loop by the array's real size (`n = array.size(zones)` then `for i = 0 to n - 1`), and do the pair scan (OB x FVG overlap, zone intersection) ONCE when a zone is created or when the entry is evaluated -- not as a full Cartesian sweep every bar.
+
 ## Window statistics (profiles, distributions)
 
 A fixed-range profile (volume by price, distributions) is TWO passes on the last bar, not incremental accumulation: pass one finds the window's range (`ta.highest(high, len)` / `ta.lowest(low, len)`), pass two bins the window's closes with history reads (`close[j]` for j in 0..len-1), then the draw pass emits the bins. Binning incrementally against a moving range misplaces every bar whose range later shifted.
@@ -546,6 +616,28 @@ The rules that keep a strategy correct:
 2. Arm the stop inside `if strategy.position_size != 0` -- a stop declared while flat is forgotten.
 3. Persist the trailing level with `var float trail = 0.0` and RATCHET it -- and SEED it on the first bar of the position, because a long's stop starts BELOW price but a short's starts ABOVE it: `trail := trail == 0.0 ? close - atr * 3.0 : math.max(trail, close - atr * 3.0)` for a long (`close + atr * 3.0` with `math.min` for a short), and reset `trail := 0.0` while flat. A bare `trail = 0.0` (no `var`) resets EVERY bar, so the "trail" follows price in both directions and stops out immediately -- the most common strategy bug.
 4. On the exit signal prefer `strategy.close_all()` in the same `if` as the reverse entry, and re-arm nothing while flat.
+5. The engine is the only ledger: a trade tracked in the script's own vars (`trade_active := true`, `entry_price := close`) without a `strategy.entry` DOES NOT EXIST -- no fill, no pnl, no equity curve, nothing in the report. Enter with `strategy.entry`, gate re-entries on `strategy.position_size == 0` (never a `trade_active` var), and read the fill from `strategy.position_avg_price`.
+6. A STATIC exit (a fixed stop and target for this trade) is armed ONCE, on the entry bar; only a TRAILING stop is re-armed (each arm replaces the last). A `strategy.exit` fired unconditionally every bar floods the intent stream with duplicate orders.
+7. The trade's visual lines (entry, stop, target) are drawn ON the entry bar from that bar forward -- they persist on the heap, so gating them on `bar_index == last_bar_index` hides every trade that did not open on the final bar.
+8. History offsets count BACKWARD: `close[1]` is the PREVIOUS bar, so `close[i+1]` is one bar MORE RECENT than `close[i]` -- never the future; there is no look-ahead. "The candles after an event" is a scan from the event's offset DOWN toward 0, and any scan loop must move its offset every iteration or it never terminates and the step budget kills the whole script.
+
+## Liquidity sweeps (stop hunts over pools)
+
+A sweep reversal is a STATE machine with three latched stages; each stage's `var` is written on its own bar and never touched otherwise -- a state reset "the bar after" (`bar_index > event_bar`) destroys the machine before the trigger can form:
+
+    // stage 1 -- pool: two swing highs within tolerance
+    pool = not na(ph1) and not na(ph2) and math.abs(ph1 - ph2) / ph1 <= tol
+    // stage 2 -- sweep: poke above the pool, close back below it; the pool
+    // is CONSUMED (a swept pool does not sweep again)
+    if pool and high > ph1 and close < ph1
+        swept := true
+        sweep_high := high
+        sweep_pool := ph1
+    // stage 3 -- trigger: close crosses under the minor swing low that
+    // formed AFTER the sweep bar; the entry fires on that bar only
+    if swept and not na(pl1) and pl1_bar > sweep_bar and ta.crossunder(close, pl1)
+        swept := false
+        strategy.entry("S", direction="short")
 
 ## Reference strategy (exactly this shape of code, vetted AND simulated)
 

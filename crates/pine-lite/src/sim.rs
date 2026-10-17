@@ -82,6 +82,7 @@ pub enum OrderKind {
     Entry,
     Exit,
     Stop,
+    Limit,
     Close,
 }
 
@@ -124,6 +125,7 @@ struct Position {
     entry_price: f64,
     entry_bar: usize,
     stop: Option<f64>,
+    limit: Option<f64>,
 }
 
 /// Pine's stop-fill rule, shared with the replay adapter: a long's stop
@@ -141,6 +143,13 @@ pub fn stop_fill_price(long: bool, open: f64, stop: f64) -> f64 {
 /// A stop a script never declared: 2 × ATR(14) from the decision close —
 /// the replay adapter's default, shared so the two paths cannot drift.
 /// Falls back to 2% of price while ATR is still warming up.
+/// The mirror of `stop_fill_price` for targets: a long's limit fills at the
+/// limit, or at the open when the bar GAPPED past it (the better price).
+#[must_use]
+pub fn limit_fill_price(long: bool, open: f64, limit: f64) -> f64 {
+    if long { open.max(limit) } else { open.min(limit) }
+}
+
 #[must_use]
 pub fn default_stop(candles: &[Candle], bar: usize, long: bool) -> Option<f64> {
     let candle = candles.get(bar)?;
@@ -195,6 +204,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
     // market order at a time (the one-decision-per-bar rule).
     let mut pending: Option<Intent> = None;
     let mut pending_stop: Option<f64> = None;
+    let mut pending_limit: Option<f64> = None;
 
     for bar in 0..candles.len() {
         let c = &candles[bar];
@@ -218,6 +228,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                             // `strategy.exit(stop=...)` the same bar) arms the
                             // position the moment it fills.
                             stop: pending_stop.take(),
+                            limit: pending_limit.take(),
                         });
                         sim.orders.push(SimOrder {
                             bar,
@@ -296,6 +307,40 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
             }
         }
 
+        // 2b. Intrabar limit on the active position. The stop check runs
+        // first, so a bar that would touch both resolves to the stop -- the
+        // conservative read, since nothing about the bar's path is known.
+        if let Some(pos) = &position {
+            if let Some(limit) = pos.limit {
+                let hit = if pos.long { c.high >= limit } else { c.low <= limit };
+                if hit {
+                    let pos = position.take().expect("checked above");
+                    let price = limit_fill_price(pos.long, c.open, limit);
+                    let gross = open_pnl(&pos, price);
+                    let fees = commission(knobs, pos.qty * pos.entry_price)
+                        + commission(knobs, pos.qty * price);
+                    let pnl = gross - fees;
+                    realized += pnl;
+                    closed += 1.0;
+                    if pnl > 0.0 {
+                        wins += 1.0;
+                        gross_win += pnl;
+                    } else {
+                        gross_loss -= pnl;
+                    }
+                    sim.orders.push(SimOrder {
+                        bar,
+                        kind: OrderKind::Limit,
+                        long: pos.long,
+                        qty: pos.qty,
+                        price,
+                        stop: pos.stop,
+                        pnl: Some(pnl),
+                    });
+                }
+            }
+        }
+
         // 3. Mark the account at this close.
         let open_pnl_mark = position.as_ref().map_or(0.0, |p| open_pnl(p, c.close));
         let equity = knobs.initial_capital + realized + open_pnl_mark;
@@ -323,17 +368,27 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         let bar_intents: Vec<&Intent> = intents.iter().filter(|(b, _)| *b == bar).map(|(_, i)| i).collect();
         let close_wins = bar_intents.iter().any(|i| {
             matches!(i, Intent::Close { .. })
-                || matches!(i, Intent::Exit { stop: None, .. })
+                || matches!(i, Intent::Exit { stop: None, limit: None, .. })
         });
         for intent in &bar_intents {
             match intent {
-                Intent::Exit { stop, .. } => {
+                Intent::Exit { stop, limit, .. } => {
+                    let mut armed = false;
                     if let Some(s) = stop {
                         if let Some(pos) = &mut position {
                             pos.stop = Some(*s);
                         }
                         pending_stop = Some(*s);
-                    } else {
+                        armed = true;
+                    }
+                    if let Some(l) = limit {
+                        if let Some(pos) = &mut position {
+                            pos.limit = Some(*l);
+                        }
+                        pending_limit = Some(*l);
+                        armed = true;
+                    }
+                    if !armed {
                         pending = Some(Intent::Close { id: None });
                     }
                 }
@@ -432,6 +487,32 @@ mod tests {
         assert_eq!(stop_order.bar, 3, "the bar that dipped");
         assert_eq!(stop_order.price, 95.0, "fill at the stop, not the low");
         assert!(stop_order.pnl.expect("pnl") < 0.0, "stopped out at a loss");
+    }
+
+    #[test]
+    fn exit_limit_fills_at_target_and_only_when_touched() {
+        // From bar 5 the close is 102 (high 103) -- the 103 limit touches
+        // intrabar without the open gapping past it.
+        let candles: Vec<Candle> = (0..10)
+            .map(|i| candle(i, if i >= 5 { 102.0 } else { 100.0 }))
+            .collect();
+        let knobs = StrategyHeader::default();
+        let intents = vec![
+            (0, Intent::Entry { id: "L".into(), long: true, qty: Some(1.0) }),
+            (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: Some(103.0) }),
+        ];
+        let sim = simulate(&intents, &candles, &knobs);
+        // The long fills at bar 1's open (100); the 103 limit touches when
+        // bars jump to 104 at index 5 (high 105 >= 103) -- one Limit order.
+        let limit_orders: Vec<_> = sim
+            .orders
+            .iter()
+            .filter(|o| o.kind == OrderKind::Limit)
+            .collect();
+        assert_eq!(limit_orders.len(), 1, "orders: {:?}", sim.orders);
+        assert!((limit_orders[0].price - 103.0).abs() < 1e-9);
+        assert!(limit_orders[0].pnl.unwrap() > 0.0);
+        assert!(sim.orders.iter().all(|o| o.kind != OrderKind::Stop));
     }
 
     #[test]

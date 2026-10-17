@@ -72,6 +72,7 @@ fn vm_trades(source: &str, cs: &[Candle]) -> Vec<Trade> {
             pine_lite::sim::OrderKind::Entry => open = Some((order.long, order.bar)),
             pine_lite::sim::OrderKind::Exit
             | pine_lite::sim::OrderKind::Stop
+            | pine_lite::sim::OrderKind::Limit
             | pine_lite::sim::OrderKind::Close => {
                 if let Some((long, entry_bar)) = open.take() {
                     trades.push(Trade { long, entry_bar, exit_bar: order.bar });
