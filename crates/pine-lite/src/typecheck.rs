@@ -80,6 +80,7 @@ pub fn check_with_header(script: &Script, header: &crate::Header) -> Vec<ScriptE
         sec: header.sec.clone(),
         series_pool: Vec::new(),
         in_security_expr: 0,
+        security_outer: Vec::new(),
         stmt_call: false,
         stmt_depth: 0,
         top_assigned: std::collections::HashSet::new(),
@@ -103,6 +104,7 @@ pub fn collect_series_pool(script: &Script, header: &crate::Header) -> Vec<Strin
         sec: header.sec.clone(),
         series_pool: Vec::new(),
         in_security_expr: 0,
+        security_outer: Vec::new(),
         stmt_call: false,
         stmt_depth: 0,
         top_assigned: std::collections::HashSet::new(),
@@ -181,6 +183,13 @@ struct Cx {
     /// `request.*` reads the PAIR (the VM swaps the candle set), so the
     /// no-`sec=` gate must not fire.
     in_security_expr: usize,
+    /// Names in scope OUTSIDE the innermost `request.security` third
+    /// argument. The sub-VM that evaluates the expression starts with EMPTY
+    /// vars over the pooled candles, so a chart variable captured there
+    /// checks clean here and dies at run time ("not a series") where the
+    /// repair loop never sees it. One set per nesting level (security
+    /// expressions may nest, depth-capped).
+    security_outer: Vec<std::collections::HashSet<String>>,
     /// True only while the OUTERMOST call of a statement-level expression is
     /// being checked: drawing builtins, plot-family calls and strategy order
     /// commands are statements -- they return no value the VM can bind -- so
@@ -554,6 +563,19 @@ impl Cx {
     }
 
     fn ident(&mut self, span: Span, name: &str) -> Ty {
+        if self.in_security_expr > 0
+            && self
+                .security_outer
+                .iter()
+                .any(|outer| outer.contains(name))
+        {
+            self.err(
+                span,
+                format!(
+                    "`{name}` is a chart variable and is not visible inside request.security's series expression -- compute the expression over the pooled series instead (close/open/high/low/volume and ta.* of them), e.g. request.security(\"SYM\", \"tf\", ta.ema(close, 20))"
+                ),
+            );
+        }
         if let Some(ty) = self.out.var_types.get(name).copied() {
             if self.stmt_depth == 0 && !self.top_assigned.contains(name) {
                 self.err(
@@ -654,9 +676,12 @@ impl Cx {
             // `request.*` reads the pooled series, so the no-`sec=` gate is
             // lifted for exactly this subtree.
             self.in_security_expr += 1;
+            self.security_outer
+                .push(self.out.var_types.keys().cloned().collect());
             if let Some(a) = args.get(2) {
                 self.expr(&a.value);
             }
+            self.security_outer.pop();
             self.in_security_expr -= 1;
             return Ty::Float;
         }

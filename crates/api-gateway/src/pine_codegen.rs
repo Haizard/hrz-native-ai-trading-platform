@@ -190,7 +190,7 @@ With `sec=` set, these zero-argument calls give the pair's series, bar-aligned t
     hh = request.security("BTCUSDT", "1h", high)
     hl = request.security("BTCUSDT", "1h", low)
 
-A change in the pooled `time` IS the higher timeframe's new bar: `ht != ht[1]` marks the chart bar where one 1h bar closed and the next opened. HTF patterns need CLOSED HTF bars, so shift levels into `var`s at each boundary and test the just-closed bar BEFORE shifting:
+A change in the pooled `time` IS the higher timeframe's new bar: `ht != ht[1]` marks the chart bar where one 1h bar closed and the next opened. The third argument is evaluated in the POOLED context: chart variables are NOT visible inside it (the vet refuses them), so an HTF indicator goes inside the call -- `request.security("BTCUSDT", "4h", ta.ema(close, 20))` computes the EMA on 4h bars; never `request.security("BTCUSDT", "4h", ta.ema(c4h, 20))` where `c4h` is a chart-side variable. HTF patterns need CLOSED HTF bars, so shift levels into `var`s at each boundary and test the just-closed bar BEFORE shifting:
 
     newbar = ht != ht[1]
     var ph1 = na
