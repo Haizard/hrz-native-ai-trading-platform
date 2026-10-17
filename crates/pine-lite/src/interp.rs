@@ -70,6 +70,10 @@ pub struct Plot {
     pub linewidth: f64,
     /// Whether the series was produced by a histogram-style plot.
     pub kind: PlotKind,
+    /// `offset=`: the renderer shifts the plot this many bars (positive
+    /// right, negative left). The values array stays in bar order; the
+    /// shift is pure presentation, like Pine.
+    pub offset: f64,
 }
 
 /// Visual style, from `style=`.
@@ -1281,6 +1285,7 @@ impl<'a> Vm<'a> {
                 color,
                 linewidth: 1.0,
                 kind: crate::PlotKind::Shape,
+                offset: 0.0,
             });
         }
         let style = match self.arg_str(args, "style").as_deref() {
@@ -1300,6 +1305,7 @@ impl<'a> Vm<'a> {
             color: self.arg_color(args).unwrap_or(0xFF_60_A5_FAu32),
             linewidth: self.arg_named_f(args, "linewidth").unwrap_or(1.0),
             kind: crate::PlotKind::Line,
+            offset: self.arg_named_f(args, "offset").unwrap_or(0.0),
         })
     }
 

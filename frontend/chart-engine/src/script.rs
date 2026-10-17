@@ -363,7 +363,7 @@ pub fn pane_from_output(
                 .enumerate()
                 .filter(|(_, v)| v.is_finite())
                 .map(|(bar, v)| crate::scene::Point {
-                    x: plot.x + slot * (bar as f64 + 0.5),
+                    x: plot.x + slot * (bar as f64 + 0.5 + p.offset),
                     y: y_at(*v),
                 })
                 .collect(),
@@ -441,7 +441,9 @@ pub fn scene_overlay_plots(
                 .enumerate()
                 .filter(|(_, v)| v.is_finite())
                 .map(|(bar, v)| crate::scene::Point {
-                    x: frame.plot.x + slot * (bar as f64 + 0.5),
+                    // `offset=` shifts the plot in bar units -- presentation
+                    // only, the values stay in bar order (Pine's rule).
+                    x: frame.plot.x + slot * (bar as f64 + 0.5 + p.offset),
                     y: price_to_y(*v),
                 })
                 .collect(),
@@ -1346,6 +1348,31 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_plot_offset_shifts_points_in_bar_units() {
+        let frame = crate::scene::Frame {
+            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "plot(close, offset=5)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        assert_eq!(output.plots[0].offset, 5.0, "the VM carries the knob");
+        let plots = scene_overlay_plots(&output, 10.0, &frame);
+        // Bar 0's point with a 5-bar offset sits at x = slot * (0 + 0.5 + 5).
+        let x = plots[0].points[0].x;
+        assert!((x - 10.0 * 5.5).abs() < 1e-9, "shifted 5 slots right: {x}");
     }
 
     #[test]
