@@ -638,6 +638,11 @@ impl Cx {
             // The line-extension constants (`extend=extend.right` on a
             // line) are the only dotted string constants.
             "extend.none" | "extend.right" | "extend.left" | "extend.both" => Ty::String,
+            // The table-position constants (`table.new(position.top_right,
+            // ...)`) are dotted string constants too.
+            "position.top_right" | "position.top_left" | "position.top_center"
+            | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
+            | "position.middle_right" | "position.middle_left" | "position.middle_center" => Ty::String,
             "barstate.isconfirmed" => Ty::Bool,
             "syminfo.ticker" => Ty::String,
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
@@ -649,7 +654,7 @@ impl Cx {
     fn call(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
         const STMT_ONLY: &[&str] = &[
             "plot", "plotshape", "plotchar", "plotarrow", "plotcandle", "plotbar", "hline", "fill", "bgcolor",
-            "barcolor", "fib.new", "strategy.entry", "strategy.exit",
+            "barcolor", "fib.new", "table.cell", "strategy.entry", "strategy.exit",
             "strategy.close", "strategy.close_all", "strategy.cancel",
         ];
         if !self.stmt_call && STMT_ONLY.contains(&callee) {
@@ -852,6 +857,9 @@ impl Cx {
                 | "last_bar_index" | "time" | "time_close" | "hour" | "minute" | "dayofweek"
                 | "year" | "month" | "dayofmonth" | "syminfo.mintick" | "syminfo.ticker"
                 | "extend.none" | "extend.right" | "extend.left" | "extend.both"
+                | "position.top_right" | "position.top_left" | "position.top_center"
+                | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
+                | "position.middle_right" | "position.middle_left" | "position.middle_center"
         )
     }
 
@@ -944,6 +952,10 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         | "box.set_border_width" | "box.set_bgcolor" | "label.set_x" | "label.set_y"
         | "label.set_text" | "label.set_color" => (2, 2),
         "line.delete" | "label.delete" | "box.delete" => (1, 1),
+        // table.new(position, columns, rows, ...) returns the panel handle;
+        // table.cell writes one cell.
+        "table.new" => (3, 5),
+        "table.cell" => (4, 6),
         // The registry primitive (docs/37): 4 anchors + the named color.
         "fib.new" => (4, 5),
         // Phase 14: platform-native data by name. The literal name is

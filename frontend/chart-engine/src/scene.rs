@@ -1955,6 +1955,7 @@ pub fn build(request: &Request) -> Scene {
                     let mut objects = crate::script::scene_overlay_objects(&output, slot, &frame);
                     objects.extend(crate::script::scene_overlay_candles(&output, slot, &frame));
                     objects.extend(crate::script::scene_overlay_tints(&output, slot, &frame));
+                    objects.extend(crate::script::scene_overlay_tables(&output, &frame));
                     // barcolor(...) recolors the MAIN candles: last finite
                     // write wins, indexed like the visible window.
                     for (bar, color) in crate::script::overlay_barcolors(&output, scene.candles.len())

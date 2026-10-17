@@ -78,6 +78,33 @@ pub struct Plot {
     pub offset: f64,
 }
 
+/// One `table.new` panel: cells update in place per bar (the dashboard
+/// pattern), and the LAST bar's contents serialize.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OutputTable {
+    /// "top_right" | "top_left" | "bottom_right" | "bottom_left" |
+    /// "top_center" | "bottom_center" | "middle_right" | "middle_left" |
+    /// "middle_center".
+    pub position: String,
+    /// Grid width, in cells.
+    pub columns: usize,
+    /// Grid height, in cells.
+    pub rows: usize,
+    /// Only the cells a `table.cell` wrote, keyed (column, row).
+    pub cells: std::collections::HashMap<(usize, usize), OutputTableCell>,
+}
+
+/// One written table cell.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputTableCell {
+    /// The cell's text (a string expression, so str.format works).
+    pub text: String,
+    /// `bgcolor=` override.
+    pub bg: Option<u32>,
+    /// `text_color=` override.
+    pub text_color: Option<u32>,
+}
+
 /// One `fill(a, b, color=...)` band, replayed against completed buffers.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlotFill {
@@ -230,6 +257,8 @@ pub struct Output {
     pub tints: Vec<Vec<Option<u32>>>,
     /// `barcolor(...)`: per-bar recolors of the MAIN candles.
     pub barcolors: Vec<Vec<Option<u32>>>,
+    /// `table.new` panels, in creation order.
+    pub tables: Vec<OutputTable>,
     /// The strategy simulation (docs/24 S1): orders, equity curve, account
     /// snapshots and the report. None for indicator scripts; Some for every
     /// run that recorded `strategy.*` intents or (with the header block)
@@ -466,6 +495,9 @@ pub struct Vm<'a> {
     /// Side channel from the `input.timeframe` call to its Assign: the
     /// string the assignment registers, then clears.
     last_input_tf: Option<String>,
+    /// Live `table.new` panels: the handle is the index, `table.cell`
+    /// updates in place. Serialized into out.tables at the end of the run.
+    tables_live: Vec<OutputTable>,
     /// The live drawing-object arena: `l = line.new(...)` binds the ARENA
     /// INDEX as a float handle, setters mutate through it, deletes clear
     /// the slot. `out.objects` fills from this at the end of the run
@@ -577,6 +609,7 @@ impl<'a> Vm<'a> {
             input_timeframes: std::collections::HashMap::new(),
             last_input_tf: None,
             objects_live: Vec::new(),
+            tables_live: Vec::new(),
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -694,6 +727,7 @@ impl<'a> Vm<'a> {
         // drain serves every pass -- a rerun cleared and refilled the
         // arena, so the LAST pass's arena is the one that ships.
         self.out.objects = self.objects_live.iter().filter_map(|o| o.clone()).collect();
+        self.out.tables = self.tables_live.clone();
         Ok(std::mem::take(&mut self.out))
     }
 
@@ -720,6 +754,7 @@ impl<'a> Vm<'a> {
         self.security_value_cache.clear();
         self.heap.clear();
         self.objects_live.clear();
+        self.tables_live.clear();
         self.deferred.clear();
         self.deferred_seen.clear();
         self.steps = 0;
@@ -989,6 +1024,83 @@ impl<'a> Vm<'a> {
                 Ok(())
             }
         }
+    }
+
+    /// `table.new(position.top_right, columns, rows, ...)`: create a panel,
+    /// hand back its handle. `None` when the callee is not table.new.
+    fn table_handle(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+        if callee != "table.new" {
+            return Ok(None);
+        }
+        self.tick()?;
+        let position = match args.first().map(|a| &a.value.kind) {
+            Some(ExprKind::Member { path }) => path.strip_prefix("position.").unwrap_or("").to_string(),
+            Some(ExprKind::Ident(name)) => name.strip_prefix("position.").unwrap_or("").to_string(),
+            _ => String::new(),
+        };
+        let known = [
+            "top_right", "top_left", "top_center",
+            "bottom_right", "bottom_left", "bottom_center",
+            "middle_right", "middle_left", "middle_center",
+        ];
+        if !known.contains(&position.as_str()) {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "`table.new` argument 1 is a position: position.top_right, position.top_left, position.bottom_right, position.bottom_left (or the center/middle variants)".into(),
+            });
+        }
+        let columns = self.arg_f(args, 1)?.unwrap_or(1.0).max(1.0) as usize;
+        let rows = self.arg_f(args, 2)?.unwrap_or(1.0).max(1.0) as usize;
+        let handle = self.tables_live.len() as f64;
+        self.tables_live.push(OutputTable {
+            position,
+            columns,
+            rows,
+            cells: std::collections::HashMap::new(),
+        });
+        Ok(Some(handle))
+    }
+
+    /// `table.cell(t, col, row, text, bgcolor=..., text_color=...)`: write
+    /// one cell of a live table. `true` when the callee was table.cell.
+    fn table_stmt(&mut self, callee: &str, args: &[Arg]) -> Result<bool, crate::ScriptError> {
+        if callee != "table.cell" {
+            return Ok(false);
+        }
+        self.tick()?;
+        let h = self.arg_f(args, 0)?.unwrap_or(NA);
+        let idx = if h.is_finite() && h >= 0.0 { h as usize } else { usize::MAX };
+        if idx >= self.tables_live.len() {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "`table.cell` needs a live table handle from table.new".into(),
+            });
+        }
+        let text_arg = args.get(3).ok_or_else(|| crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span: crate::Span::new(1, 1),
+            message: "`table.cell` needs (table, column, row, text)".to_string(),
+        })?;
+        let text = self.eval_s(&text_arg.value)?;
+        let bg = self.arg_color_named(args, "bgcolor");
+        let text_color = self.arg_color_named(args, "text_color");
+        let col = self.arg_f(args, 1)?.unwrap_or(0.0) as usize;
+        let row = self.arg_f(args, 2)?.unwrap_or(0.0) as usize;
+        let table = &mut self.tables_live[idx];
+        if col >= table.columns || row >= table.rows {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: format!(
+                    "`table.cell` ({col}, {row}) is outside the {}x{} grid the table declared",
+                    table.columns, table.rows
+                ),
+            });
+        }
+        table.cells.insert((col, row), OutputTableCell { text, bg, text_color });
+        Ok(true)
     }
 
     /// Create one drawing object in the arena and hand back its float
@@ -1355,6 +1467,8 @@ impl<'a> Vm<'a> {
             // in `draw_object`, shared with the expression path.
             _ if self.draw_object(callee, args)?.is_some() => Ok(()),
             _ if self.set_object(callee, args)? => Ok(()),
+            _ if self.table_handle(callee, args)?.is_some() => Ok(()),
+            _ if self.table_stmt(callee, args)? => Ok(()),
             // ---- the registry primitive (docs/37): the VM stores the raw
             // anchors; the decomposition into levels and labels is the
             // engine's, because positioning is the engine's.
@@ -2117,6 +2231,9 @@ impl<'a> Vm<'a> {
         // `l = line.new(...)` -- a drawing constructor in expression
         // position binds the arena handle (a statement discards it).
         if let Some(handle) = self.draw_object(callee, args)? {
+            return Ok(handle);
+        }
+        if let Some(handle) = self.table_handle(callee, args)? {
             return Ok(handle);
         }
         if let Some(kind) = callee.strip_prefix("input.") {

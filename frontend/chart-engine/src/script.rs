@@ -47,6 +47,21 @@ pub struct ScriptSpec {
 
 /// One positioned drawing object (docs/23 Phase 13): the script chose
 /// bar-index + price coordinates; the engine maps them to the canvas with
+/// One written table cell, positioned by its grid coordinates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScriptTableCell {
+    /// Grid column.
+    pub col: usize,
+    /// Grid row.
+    pub row: usize,
+    /// The text to draw.
+    pub text: String,
+    /// `bgcolor=` override (None = the panel's default dark fill).
+    pub bg: Option<u32>,
+    /// `text_color=` override.
+    pub text_color: Option<u32>,
+}
+
 /// the same frame every plot and shape uses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ScriptDraw {
@@ -70,6 +85,19 @@ pub enum ScriptDraw {
         /// endpoint(s) to the plot edge along the segment's slope
         /// (a vertical segment, x1 == x2, does not extend — Pine's rule).
         extend: String,
+    },
+    /// `table.new` — a positioned cell grid; x/y is the panel's top-left.
+    Table {
+        /// Panel left edge.
+        x: f64,
+        /// Panel top edge.
+        y: f64,
+        /// Cell width in CSS pixels.
+        cell_w: f64,
+        /// Cell height in CSS pixels.
+        cell_h: f64,
+        /// Only the written cells.
+        cells: Vec<ScriptTableCell>,
     },
     /// `label.new` — anchor + text.
     Label {
@@ -527,6 +555,52 @@ fn project_extend(
         }
     }
     (ax, ay, bx, by)
+}
+
+/// Position every `table.new` panel against the plot rect: the position
+/// constant picks the corner (center variants center the panel), and cells
+/// keep their grid coordinates for the shell to lay out.
+pub fn scene_overlay_tables(
+    output: &Output,
+    frame: &crate::scene::Frame,
+) -> Vec<ScriptDraw> {
+    const CELL_W: f64 = 96.0;
+    const CELL_H: f64 = 18.0;
+    output
+        .tables
+        .iter()
+        .map(|t| {
+            let panel_w = t.columns as f64 * CELL_W;
+            let panel_h = t.rows as f64 * CELL_H;
+            let x = if t.position.ends_with("_right") {
+                frame.plot.x + frame.plot.w - panel_w
+            } else if t.position.ends_with("_center") {
+                frame.plot.x + (frame.plot.w - panel_w) / 2.0
+            } else {
+                frame.plot.x
+            };
+            let y = if t.position.starts_with("bottom") {
+                frame.plot.y + frame.plot.h - panel_h
+            } else if t.position.starts_with("middle") {
+                frame.plot.y + (frame.plot.h - panel_h) / 2.0
+            } else {
+                frame.plot.y
+            };
+            let mut cells: Vec<ScriptTableCell> = t
+                .cells
+                .iter()
+                .map(|((col, row), c)| ScriptTableCell {
+                    col: *col,
+                    row: *row,
+                    text: c.text.clone(),
+                    bg: c.bg,
+                    text_color: c.text_color,
+                })
+                .collect();
+            cells.sort_by_key(|c| (c.row, c.col));
+            ScriptDraw::Table { x, y, cell_w: CELL_W, cell_h: CELL_H, cells }
+        })
+        .collect()
 }
 
 /// Decompose `bgcolor` tints and `fill` bands into zero-border Box draws:
@@ -1501,6 +1575,50 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_dashboard_table_anchors_top_right_with_its_last_writes() {
+        let frame = crate::scene::Frame {
+            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "var t = na\n",
+            "if bar_index == 0\n",
+            "    t := table.new(position.top_right, 2, 2)\n",
+            "table.cell(t, 0, 0, \"RSI\")\n",
+            "table.cell(t, 1, 0, str.tostring(close, \"#.##\"), text_color=color.teal)\n",
+            "plot(close)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0 + i as f64)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        assert_eq!(output.tables.len(), 1, "one panel");
+        assert_eq!(output.tables[0].cells.len(), 2, "two written cells");
+        let draws = scene_overlay_tables(&output, &frame);
+        let table = draws.iter().find_map(|d| match d {
+            ScriptDraw::Table { x, y, cells, cell_w, .. } => Some((*x, *y, cells.len(), *cell_w)),
+            _ => None,
+        }).expect("one table draw");
+        // 2 columns * 96 = 192 wide; top_right anchors at plot.w - 192.
+        assert!((table.0 - (400.0 - 192.0)).abs() < 1e-9, "right-anchored: {}", table.0);
+        assert_eq!(table.1, 0.0, "top-anchored");
+        assert_eq!(table.2, 2, "both cells ride");
+        // The per-bar update won: cell (1,0) shows the LAST close.
+        let cells = match &draws[0] {
+            ScriptDraw::Table { cells, .. } => cells,
+            _ => unreachable!(),
+        };
+        let val = cells.iter().find(|c| c.col == 1 && c.row == 0).expect("value cell");
+        assert_eq!(val.text, "139.00", "the last bar's write stands");
+        assert_eq!(val.text_color, cells[1].text_color);
     }
 
     #[test]

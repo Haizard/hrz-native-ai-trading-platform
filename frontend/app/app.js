@@ -1508,6 +1508,25 @@ function createChartPane(root, hooks = {}) {
             ctx.lineWidth = 1;
             ctx.strokeRect(bx, by, bw, bh);
           }
+        } else if (o.Table) {
+          const t = o.Table;
+          // The panel backdrop: the TradingView dashboard look -- a dark
+          // plate under the written cells.
+          const cols = Math.max(1, ...t.cells.map((c) => c.col + 1));
+          const rows = Math.max(1, ...t.cells.map((c) => c.row + 1));
+          ctx.fillStyle = "rgba(15, 23, 42, 0.78)";
+          ctx.fillRect(t.x, t.y, cols * t.cell_w, rows * t.cell_h);
+          for (const c of t.cells) {
+            const cx = t.x + c.col * t.cell_w;
+            const cy = t.y + c.row * t.cell_h;
+            if (c.bg != null) {
+              ctx.fillStyle = rgbaFromPacked(c.bg, 0.75);
+              ctx.fillRect(cx, cy, t.cell_w, t.cell_h);
+            }
+            ctx.fillStyle = c.text_color != null ? rgbaFromPacked(c.text_color, 1.0) : "#e2e8f0";
+            ctx.font = "600 10px ui-sans-serif, system-ui";
+            ctx.fillText(c.text, cx + 6, cy + 12);
+          }
         } else if (o.Label) {
           const lb = o.Label;
           ctx.font = "600 10px ui-sans-serif, system-ui";
