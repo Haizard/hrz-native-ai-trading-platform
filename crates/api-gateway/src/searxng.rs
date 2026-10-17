@@ -12,8 +12,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ai_agent::{WebSearchHit, WebSearcher};
+use ai_agent::{WebImage, WebSearchHit, WebSearcher};
 use async_trait::async_trait;
+use base64::Engine;
+use futures::StreamExt;
 use serde::Deserialize;
 
 /// How many hits reach the model. SearXNG ranks best-first; past the first
@@ -30,6 +32,21 @@ const MAX_TITLE_CHARS: usize = 160;
 /// The whole call's ceiling. A search slower than this is an engine problem
 /// the model should hear about, not wait on.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// How many pattern images reach the model. Images dominate a turn's token
+/// cost the way screenshots do, and three or four references are enough to
+/// learn how a concept is conventionally drawn.
+const MAX_IMAGES: usize = 4;
+
+/// Byte ceiling per fetched image. A reference chart screenshot is legible
+/// well under this; past it the model is paying tokens for resolution it
+/// cannot use.
+const MAX_IMAGE_BYTES: usize = 1536 * 1024;
+
+/// Per-image fetch ceiling. A slow origin must not hold the whole run: the
+/// hit is skipped and the next candidate serves.
+const IMAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+
 
 /// A SearXNG instance the agent can search through.
 pub struct SearxngSearcher {
@@ -91,9 +108,52 @@ impl WebSearcher for SearxngSearcher {
         if let Some(time_range) = time_range {
             url.push_str(&format!("&time_range={}", urlencoding(time_range)));
         }
+        let payload = self.search_json(&url).await?;
+        Ok(trim_hits(payload.results))
+    }
+
+    async fn search_images(&self, query: &str) -> Result<Vec<WebImage>, String> {
+        let url = format!(
+            "{}/search?q={}&format=json&categories=images",
+            self.base_url,
+            urlencoding(query)
+        );
+        let payload = self.search_json(&url).await?;
+        // Candidates carry a direct image URL (`img_src`); page-only results
+        // cannot be shown to the model and are dropped before any fetching.
+        let candidates: Vec<RawHit> = payload
+            .results
+            .into_iter()
+            .filter(|hit| {
+                hit.img_src
+                    .as_deref()
+                    .map(|src| src.starts_with("http://") || src.starts_with("https://"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        // Fetch concurrently: four slow origins in series would burn the
+        // run's whole budget on the wait alone. A failed or oversized fetch
+        // is skipped, never fatal -- the best three images beat an apology
+        // for the fourth.
+        let fetches = candidates
+            .into_iter()
+            .take(MAX_IMAGES)
+            .map(|hit| self.fetch_image(hit));
+        let images = futures::future::join_all(fetches)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+        Ok(images)
+    }
+}
+
+impl SearxngSearcher {
+    /// One search call's shared path: request, status handling, parse.
+    async fn search_json(&self, url: &str) -> Result<SearchResponse, String> {
         let response = self
             .http
-            .get(&url)
+            .get(url)
             .send()
             .await
             .map_err(|e| format!("the SearXNG instance could not be reached: {e}"))?;
@@ -111,11 +171,71 @@ impl WebSearcher for SearxngSearcher {
         if !status.is_success() {
             return Err(format!("the SearXNG instance answered {status}"));
         }
-        let payload: SearchResponse = response
+        response
             .json()
             .await
-            .map_err(|e| format!("the SearXNG instance returned an unreadable response: {e}"))?;
-        Ok(trim_hits(payload.results))
+            .map_err(|e| format!("the SearXNG instance returned an unreadable response: {e}"))
+    }
+
+    /// Fetch one image hit's bytes. `None` -- the hit is skipped -- for
+    /// anything unreachable, oversized, or not a format the model can see.
+    async fn fetch_image(&self, hit: RawHit) -> Option<WebImage> {
+        let src = hit.img_src?;
+        let response = reqwest::Client::builder()
+            .timeout(IMAGE_FETCH_TIMEOUT)
+            .build()
+            .ok()?
+            .get(&src)
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        // The declared length is a hint to skip early; the streamed cap
+        // below is the enforcement, because origins lie about it.
+        if let Some(len) = response.content_length() {
+            if len > MAX_IMAGE_BYTES as u64 {
+                return None;
+            }
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.ok()?;
+            if bytes.len() + chunk.len() > MAX_IMAGE_BYTES {
+                return None;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        // The bytes decide the type. Content-type headers and URL
+        // extensions both lie -- an error page served as `image/jpeg`
+        // passes those checks and then costs the run its most expensive
+        // failure: the vision model rejecting an undecodable image.
+        let media_type = sniff_media_type(&bytes)?;
+        Some(WebImage {
+            title: truncate(hit.title.trim(), MAX_TITLE_CHARS),
+            page_url: hit.url.trim().to_string(),
+            media_type: media_type.to_string(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+    }
+}
+
+/// The image format the bytes themselves declare, when they declare one the
+/// model can see. This is the only type check that matters: it cannot be
+/// spoofed by a header, and an unrecognized payload never reaches the model.
+fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF8") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
     }
 }
 
@@ -171,7 +291,8 @@ struct SearchResponse {
 
 /// One result as SearXNG serializes it. `publishedDate` arrives as an RFC
 /// 3339 string when the engine knows it; `content` can be empty on
-/// title-only hits.
+/// title-only hits. `img_src` is the direct image URL, present only on
+/// results from the `images` category.
 #[derive(Debug, Deserialize)]
 struct RawHit {
     #[serde(default)]
@@ -184,6 +305,8 @@ struct RawHit {
     engine: Option<String>,
     #[serde(default, rename = "publishedDate")]
     published_date: Option<String>,
+    #[serde(default)]
+    img_src: Option<String>,
 }
 
 #[cfg(test)]
@@ -205,6 +328,7 @@ mod tests {
                 content: "x".repeat(500),
                 engine: Some("brave".into()),
                 published_date: Some("2026-10-16T00:00:00Z".into()),
+                img_src: None,
             })
             .collect();
         let hits = trim_hits(raw);
@@ -224,6 +348,7 @@ mod tests {
                 content: String::new(),
                 engine: None,
                 published_date: None,
+                img_src: None,
             },
             RawHit {
                 url: "https://example.com".into(),
@@ -231,6 +356,7 @@ mod tests {
                 content: String::new(),
                 engine: Some(" ".into()),
                 published_date: None,
+                img_src: None,
             },
         ];
         let hits = trim_hits(raw);
@@ -238,6 +364,22 @@ mod tests {
         assert_eq!(hits[0].url, "https://example.com");
         assert_eq!(hits[0].snippet, "");
         assert_eq!(hits[0].engine, None);
+    }
+
+    #[test]
+    fn sniff_media_type_reads_the_bytes_not_the_claim() {
+        assert_eq!(
+            sniff_media_type(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A]),
+            Some("image/png")
+        );
+        assert_eq!(sniff_media_type(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(sniff_media_type(b"GIF89a...."), Some("image/gif"));
+        assert_eq!(sniff_media_type(b"RIFF....WEBPVP8 "), Some("image/webp"));
+        // The live failure: an HTML error page served with an image
+        // content-type. The bytes give it away.
+        assert_eq!(sniff_media_type(b"<html><body>404</body></html>"), None);
+        assert_eq!(sniff_media_type(b""), None);
+        assert_eq!(sniff_media_type(&[0x89, b'P']), None);
     }
 
     #[test]

@@ -148,7 +148,7 @@ aes-gcm = "0.10"
 # Wipes key material on drop. A `Vec<u8>` that held an API secret is otherwise
 # left in freed memory for the allocator to hand to the next request.
 zeroize = "1"
-reqwest           = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest           = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 # TLS is NOT on by default: without it `connect_async("wss://...")` fails at
 # runtime with "URL error: TLS support not compiled in". rustls + webpki-roots
 # keeps us off OpenSSL on Windows and matches reqwest's TLS backend.

@@ -977,6 +977,10 @@ impl Agent {
         // do, so a run gets the same budget the question itself gets.
         const MAX_CAPTURES_PER_RUN: usize = 3;
         let mut captures_used = 0_usize;
+        // Web pattern images share the captures' budget discipline: images
+        // dominate a turn's token cost, so a run gets few and they are counted.
+        const MAX_PATTERN_IMAGES_PER_RUN: usize = 4;
+        let mut pattern_images_used = 0_usize;
         // Whether any drawing-family call ran this analysis. The submit gate
         // reads it when the loaded skill's rules say DRAW.
         let mut drew_this_run = false;
@@ -1126,6 +1130,9 @@ impl Agent {
             // ride the progress channel the moment they are dispatched, and the
             // uploads are collected after the call loop, before the results go.
             let mut pending_captures: Vec<String> = Vec::new();
+            // Images a tool staged for the vision path (`search_pattern_images`):
+            // collected like captures and merged into the same results message.
+            let mut pending_images: Vec<ContentBlock> = Vec::new();
             for call in &calls {
                 if call.name == SUBMIT_THESIS {
                     submitted = Some(call);
@@ -1172,7 +1179,7 @@ impl Agent {
                     call.name.as_str(),
                     "create_drawing" | "update_drawing" | "delete_drawing"
                 );
-                let result = self
+                let mut result = self
                     .run_tool(call, &ctx, &mut range, &mut trace, &mut shown_doctrine)
                     .await;
                 progress.report(Progress::ToolDone {
@@ -1241,6 +1248,55 @@ impl Agent {
                                 .map(str::to_string),
                             extra: Some(command.clone()),
                         });
+                    }
+                }
+                // Web pattern images (`search_pattern_images`): the tool stages
+                // the fetched bytes under `_images` so the handler stays pure
+                // JSON; here they leave the text result (which must stay lean)
+                // and reattach as image blocks -- the same door the chart
+                // captures use, and the same budget discipline.
+                if !result.is_error {
+                    if let Some(staged) = result
+                        .content
+                        .get("_images")
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                    {
+                        if let Some(object) = result.content.as_object_mut() {
+                            object.remove("_images");
+                        }
+                        for image in staged {
+                            if pattern_images_used >= MAX_PATTERN_IMAGES_PER_RUN {
+                                pending_images.push(ContentBlock::Text(
+                                    "the pattern-image budget for this run is spent; design                                      from the methodology you have."
+                                        .into(),
+                                ));
+                                break;
+                            }
+                            let media_type = image
+                                .get("media_type")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            let data = image
+                                .get("data_base64")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            if media_type.is_empty() || data.is_empty() {
+                                continue;
+                            }
+                            let caption = image
+                                .get("caption")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("a pattern reference")
+                                .to_string();
+                            pattern_images_used += 1;
+                            pending_images.push(ContentBlock::Text(format!(
+                                "Pattern reference from the web ({caption}) -- study how the                                  concept is drawn: zones as labeled boxes, events as named                                  markers. Illustration, not data."
+                            )));
+                            pending_images.push(ContentBlock::Image { media_type, data });
+                        }
                     }
                 }
                 results.push(result);
@@ -1381,7 +1437,7 @@ impl Agent {
             // been on the screen's progress channel since dispatch, so the
             // uploads are usually already waiting. Each request gets a short
             // poll; an unanswered one becomes an honest note, never a hang.
-            let mut visual_blocks: Vec<ContentBlock> = Vec::new();
+            let mut visual_blocks: Vec<ContentBlock> = std::mem::take(&mut pending_images);
             if !pending_captures.is_empty() {
                 if let Some(source) = ctx.captures {
                     for capture_id in pending_captures.drain(..) {
@@ -1687,7 +1743,10 @@ impl Agent {
              2. What is wrong or missing: detections that should be visible but \
              are not, shapes that draw as the wrong kind of object (a band where \
              the user asked for a line), markers on the wrong side, nothing at all \
-             when the chart clearly has the pattern.\n\
+             when the chart clearly has the pattern, and presentation gaps -- \
+             unlabeled zones, bare lines with no title, events with no label. The \
+             chart should read like a published TradingView script: every zone, \
+             level, and signal named on the canvas.\n\
              3. The smallest concrete change to the document's YAML -- a concept \
              window, selector, requirement, min_band_ratio, or shape -- that would \
              fix the most important problem. Quote the YAML field you would change.\n\
@@ -1858,10 +1917,33 @@ impl Agent {
                     }
                 }
                 range.observe_result(&result);
+                let mut trace_result = result.clone();
+                if let Some(object) = trace_result.as_object_mut() {
+                    if let Some(staged) = object.remove("_images") {
+                        // Provenance keeps the fact of the images, not their
+                        // bytes: base64 in the trace would ride every
+                        // answer's HTTP body for nothing a reader can use.
+                        let slim = staged
+                            .as_array()
+                            .map(|images| {
+                                images
+                                    .iter()
+                                    .map(|image| {
+                                        json!({
+                                            "caption": image.get("caption"),
+                                            "media_type": image.get("media_type"),
+                                        })
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        object.insert("_images".to_string(), json!(slim));
+                    }
+                }
                 trace.push(ToolTrace {
                     tool: call.name.clone(),
                     args: call.input.clone(),
-                    result: result.clone(),
+                    result: trace_result,
                 });
                 ToolResult {
                     tool_use_id: call.id.clone(),
@@ -1946,10 +2028,23 @@ fn ask_system_prompt(
         "## One chat, every capability\n\
          The user talks to ONE chat. When they ask to BUILD an indicator, call \
          `create_indicator`; to BUILD a strategy, `create_strategy`; to SCAN \
-         or SCREEN the market, `scan_market`. Call the matching tool \
-         immediately, with their request verbatim -- never describe how they \
-         could do it elsewhere, never refuse, and never do a data analysis \
-         when the request was to build something.\n\n",
+         or SCREEN the market, `scan_market` -- never describe how they could \
+         do it elsewhere, never refuse, and never do a data analysis when the \
+         request was to build something.\n\
+         HOW you reach the build depends on the spec they handed you:\n\
+         - A DETAILED request (they described the logic: the levels, the \
+         conditions, the sessions, the signals) is a spec -- call the matching \
+         tool immediately, with their request verbatim.\n\
+         - A SHORT request (a concept name and little more -- 'make me a silver \
+         bullet indicator', 'build an SMC strategy') is a topic, not a spec. Do \
+         NOT dispatch it yet. First `search_web` the concept, so you are \
+         discussing the real methodology and not a guess. Then brainstorm in \
+         one chat message: what the concept actually is, the questions that \
+         decide the build (their trading style, their timeframe and session, \
+         what decision the tool should drive), and 2-3 concrete enrichments \
+         you could include (mark the FVG it leaves, alert on the sweep, filter \
+         by session). When the user answers, call the create tool with the \
+         enriched, agreed description.\n\n",
     );
     out.push_str(
         "When the request was to build something and you dispatched it, the \

@@ -29,6 +29,25 @@ pub struct WebSearchHit {
     pub published: Option<String>,
 }
 
+/// A pattern image the host searched for AND fetched.
+///
+/// The bytes travel with the hit so the tool's caller never touches the
+/// network: the agent loop attaches them to the model's conversation as
+/// image blocks, and the model studies how a concept is conventionally
+/// drawn -- zones as labeled boxes, events as named markers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebImage {
+    /// The image's title, as the engine rendered it.
+    pub title: String,
+    /// The page the image came from. The model cites this in its answer.
+    pub page_url: String,
+    /// MIME type, e.g. `image/png`.
+    pub media_type: String,
+    /// The image bytes, base64-encoded -- the same shape chart captures
+    /// arrive in, so one image path serves both.
+    pub data_base64: String,
+}
+
 /// The host's web search implementation.
 ///
 /// In practice a SearXNG instance, but the trait says nothing about the
@@ -54,6 +73,20 @@ pub trait WebSearcher: Send + Sync {
         categories: Option<&str>,
         time_range: Option<&str>,
     ) -> Result<Vec<WebSearchHit>, String>;
+
+    /// Search for IMAGES of `query` and fetch the top few, bytes included.
+    ///
+    /// Few and small on purpose: images dominate a turn's token cost, so
+    /// implementations cap count and size before anything reaches the model.
+    /// A hit whose bytes will not fetch cleanly is skipped -- a shorter list
+    /// is a better answer than an error for one rotten link.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Self::search`]: a human-readable reason when the
+    /// search itself could not run. Individual image fetch failures are not
+    /// errors; the whole search failing is.
+    async fn search_images(&self, query: &str) -> Result<Vec<WebImage>, String>;
 }
 
 impl std::fmt::Debug for dyn WebSearcher {

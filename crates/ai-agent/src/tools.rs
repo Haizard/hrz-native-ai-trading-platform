@@ -740,6 +740,12 @@ impl ToolRegistry {
                     input_schema: search_web_schema(),
                     exposed_tool: None, // base tool: the handler reports when no searcher is attached
                 },
+                ToolSpec {
+                    name: "search_pattern_images".into(),
+                    description: SEARCH_PATTERN_IMAGES.into(),
+                    input_schema: search_pattern_images_schema(),
+                    exposed_tool: None, // base tool: the handler reports when no searcher is attached
+                },
             ],
         }
     }
@@ -864,6 +870,7 @@ impl ToolRegistry {
             "get_snapshot" => get_snapshot_tool(ctx, &call.input).await,
             "compare_snapshots" => compare_snapshots(ctx, &call.input).await,
             "search_web" => search_web_tool(ctx, &call.input).await,
+            "search_pattern_images" => search_pattern_images_tool(ctx, &call.input).await,
             other => return Err(AgentError::UnknownTool(other.to_string())),
         };
         let elapsed = started.elapsed();
@@ -1164,6 +1171,16 @@ fn search_web_schema() -> Value {
             "query": {"type": "string", "description": "The search query, in plain language. Be specific: 'volume profile initial balance definition' beats 'volume profile'."},
             "categories": {"type": "string", "description": "Optional comma-separated SearXNG categories, e.g. \"general,news\". Omit for the instance's default set."},
             "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "Optional freshness filter; use it for news, never for reference material."},
+        },
+        "required": ["query"],
+    })
+}
+
+fn search_pattern_images_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "The concept to see, in plain language: 'fair value gap', 'bullish order block', 'liquidity sweep chart'."},
         },
         "required": ["query"],
     })
@@ -1507,14 +1524,27 @@ const CREATE_INDICATOR: &str = "Create a chart indicator from a natural-language
     themselves elsewhere. The studio's pipeline drafts the script, validates it \
     against the real grammar, previews it on live candles, attaches it to the \
     user's chart, and reports back what it detects, what it drew, and what to \
-    tune. Pass the user's request verbatim as `description`.";
+    tune. \
+    TIMING: a detailed request (the user described the logic) is a spec -- call \
+    immediately, passing their request verbatim as `description`. A short \
+    request (a concept name and little more) is a topic, not a spec: do NOT \
+    call yet. `search_web` the concept first, then brainstorm the build with \
+    the user -- their trading style, timeframe and session, what decision the \
+    tool should drive, plus 2-3 enrichments you suggest -- and call this only \
+    once the spec is agreed, passing the enriched description you settled on.";
 
 /// `create_strategy` — build a backtestable strategy from a description.
 const CREATE_STRATEGY: &str = "Create a backtestable trading strategy from a \
     natural-language description. Call this when the user asks to BUILD a \
     strategy, entries and exits, or a backtest. The pipeline generates the \
-    strategy, simulates it, and reports the result. Pass the user's request \
-    verbatim as `description`.";
+    strategy, simulates it, and reports the result. \
+    TIMING: a detailed request (entries, exits, stops, sizing, sessions) is a \
+    spec -- call immediately, passing the request verbatim as `description`. \
+    A short request (a concept name and little more) is a topic, not a spec: \
+    do NOT call yet. `search_web` the concept first, then brainstorm the \
+    build with the user -- their trading style, timeframe, risk per trade, \
+    plus 2-3 enrichments you suggest -- and call this only once the spec is \
+    agreed, passing the enriched description you settled on.";
 
 /// `scan_market` — rank the market by one measurement.
 const SCAN_MARKET: &str = "Scan the market: rank many symbols by one measurement \
@@ -1599,6 +1629,17 @@ const SEARCH_WEB: &str = "Search the web through the deployment's SearXNG instan
     ranked hits with title, url, snippet, engine, and published date; cite the urls you \
     relied on in your answer, and say so when the search returns nothing usable rather \
     than inventing detail.";
+
+/// `search_pattern_images` — see how a concept is conventionally drawn.
+const SEARCH_PATTERN_IMAGES: &str = "Search the web for IMAGES of a trading concept and \
+    see how it is conventionally drawn on a chart -- fair value gaps, order blocks, \
+    liquidity sweeps, session levels, harmonic shapes, indicator layouts. The top matches \
+    come back attached as images you can see. Use this BEFORE designing the visuals of an \
+    indicator, skill, or strategy: study how the concept is represented (zones as labeled \
+    boxes, events as named markers, levels as titled lines) and mirror those conventions, \
+    so what you build reads the way traders expect it to read. Also use it whenever the \
+    user names a pattern you are not certain you picture correctly. Cite the page urls \
+    you relied on in your answer.";
 
 /// Absence-of-tick-data message, shared so every affected tool says the same
 /// thing. The model needs to distinguish "no events occurred" from "events
@@ -2789,6 +2830,56 @@ async fn search_web_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, A
         "result_count": hits.len(),
         "results": hits,
         "note": "cite the urls you relied on in the answer; when nothing here is usable, say so instead of inventing detail",
+    }))
+}
+
+/// The `search_pattern_images` handler: the host's image search, fetched and
+/// staged for the vision path.
+///
+/// The bytes ride the result under `_images` as base64: the tool stays pure
+/// JSON, and the agent loop strips the key (the text result must stay lean)
+/// and reattaches the images as content blocks -- the same door the chart
+/// captures use.
+async fn search_pattern_images_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AgentError::InvalidToolArgs {
+            tool: "search_pattern_images".into(),
+            reason: "`query` must be a non-empty string".into(),
+        })?;
+    let Some(searcher) = ctx.web_search else {
+        return Ok(json!({
+            "ok": false,
+            "unavailable": "web search is not configured on this deployment                 (SEARXNG_BASE_URL is unset); design the visuals from the                 methodology you researched instead",
+        }));
+    };
+    let images = searcher
+        .search_images(query)
+        .await
+        .map_err(|reason| AgentError::ToolFailed {
+            tool: "search_pattern_images".into(),
+            reason,
+        })?;
+    Ok(json!({
+        "ok": true,
+        "query": query,
+        "image_count": images.len(),
+        "sources": images
+            .iter()
+            .map(|image| json!({"title": image.title, "page_url": image.page_url}))
+            .collect::<Vec<_>>(),
+        "_images": images
+            .iter()
+            .map(|image| json!({
+                "media_type": image.media_type,
+                "data_base64": image.data_base64,
+                "caption": format!("{} — {}", image.title, image.page_url),
+            }))
+            .collect::<Vec<_>>(),
+        "note": "the images are attached below; study how the concept is drawn and mirror             the conventions in what you build. When nothing usable came back, say so and             design from the methodology instead of inventing a look",
     }))
 }
 
