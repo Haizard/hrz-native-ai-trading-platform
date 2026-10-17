@@ -132,7 +132,7 @@ const REFERENCE_STRATEGY: &str = concat!(
 
 pub(crate) fn script_system_prompt(symbol: &str, timeframe: &str) -> String {
     format!(
-        r#"You write indicators as **pine-lite** scripts: TradingView-Pine-style imperative code the platform compiles and runs bar-by-bar. The user's chart is {symbol} on the {timeframe} timeframe; write for that.
+        r##"You write indicators as **pine-lite** scripts: TradingView-Pine-style imperative code the platform compiles and runs bar-by-bar. The user's chart is {symbol} on the {timeframe} timeframe; write for that.
 
 ## Output contract
 Call `submit_script` with `script` (the whole pine-lite source) AND `report` (the user-facing write-up). The report is what the user actually reads: what the script detects, what it draws and where, the parameters and their defaults, what it deliberately does not do, and suggested adjustments -- written like a colleague explaining the build, ending with one question that invites feedback. Never a bare "generated and validated" receipt. The FIRST line must be the header:
@@ -660,7 +660,7 @@ A sweep reversal is a STATE machine with three latched stages; each stage's `var
 ```
 {REFERENCE_SCRIPT}
 ```
-"#,
+"##,
         symbol = symbol,
         timeframe = timeframe,
         REFERENCE_STRATEGY = REFERENCE_STRATEGY,
