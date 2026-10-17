@@ -899,6 +899,9 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "ta.macd" => (3, 4),
         "ta.bb" => (2, 3),
         "ta.stdev" | "ta.variance" | "ta.hma" | "ta.rising" | "ta.falling" => (2, 2),
+        "ta.correlation" | "ta.covariance" => (3, 3),
+        "ta.deviation" | "ta.median" | "ta.mode" | "ta.percentrank" | "ta.range" => (2, 2),
+        "ta.percentile_linear_interpolation" | "ta.percentile_nearest_rank" => (3, 3),
         "ta.cci" | "ta.mfi" | "ta.willr" | "ta.highestbars" | "ta.lowestbars"
         | "ta.barssince" | "ta.cum" => (1, 1),
         "ta.valuewhen" | "ta.pivothigh" | "ta.pivotlow" => (3, 3),

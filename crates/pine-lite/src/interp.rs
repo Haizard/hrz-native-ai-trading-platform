@@ -2510,6 +2510,36 @@ impl<'a> Vm<'a> {
                 let src = self.series_arg(args, 0)?;
                 Ok(ta::ta_variance(&src, a!(1)?)[self.bar])
             }
+            "ta.correlation" | "ta.covariance" => {
+                let x = self.series_arg(args, 0)?;
+                let y = self.series_arg(args, 1)?;
+                let len = a!(2)?;
+                Ok(if callee == "ta.correlation" {
+                    ta::ta_correlation(&x, &y, len)
+                } else {
+                    ta::ta_covariance(&x, &y, len)
+                }[self.bar])
+            }
+            "ta.deviation" | "ta.median" | "ta.mode" | "ta.percentrank" | "ta.range" => {
+                let src = self.series_arg(args, 0)?;
+                let len = a!(1)?;
+                Ok(match callee {
+                    "ta.deviation" => ta::ta_deviation(&src, len),
+                    "ta.median" => ta::ta_median(&src, len),
+                    "ta.mode" => ta::ta_mode(&src, len),
+                    "ta.percentrank" => ta::ta_percentrank(&src, len),
+                    _ => ta::ta_range(&src, len),
+                }[self.bar])
+            }
+            "ta.percentile_linear_interpolation" | "ta.percentile_nearest_rank" => {
+                let src = self.series_arg(args, 0)?;
+                let (len, pct) = (a!(1)?, a!(2)?);
+                Ok(if callee == "ta.percentile_linear_interpolation" {
+                    ta::ta_percentile_linear_interpolation(&src, len, pct)
+                } else {
+                    ta::ta_percentile_nearest_rank(&src, len, pct)
+                }[self.bar])
+            }
             "ta.hma" => {
                 let src = self.series_arg(args, 0)?;
                 Ok(ta::ta_hma(&src, a!(1)?)[self.bar])

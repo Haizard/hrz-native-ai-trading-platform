@@ -733,6 +733,58 @@ mod tests {
     }
 
     #[test]
+    fn correlation_of_proportional_series_is_one() {
+        let x = rising(10);
+        let y: Vec<f64> = x.iter().map(|v| 3.0 * v + 2.0).collect();
+        let out = ta_correlation(&x, &y, 5.0);
+        assert!((out[9] - 1.0).abs() < 1e-9, "y = 3x+2 correlates perfectly");
+        let neg: Vec<f64> = x.iter().map(|v| -2.0 * v).collect();
+        let out = ta_correlation(&x, &neg, 5.0);
+        assert!((out[9] + 1.0).abs() < 1e-9, "y = -2x anti-correlates perfectly");
+        // A constant leg has zero variance: undefined -> na.
+        let flat = vec![7.0; 10];
+        let out = ta_correlation(&x, &flat, 5.0);
+        assert!(out[9].is_nan(), "flat leg -> na");
+    }
+
+    #[test]
+    fn covariance_is_population_like_stdev() {
+        let x = rising(5);
+        let out = ta_covariance(&x, &x, 5.0);
+        // cov(x, x) = var(x) = mean of squared deviations of 0..5 = 2.0.
+        assert!((out[4] - 2.0).abs() < 1e-9, "self-covariance is the variance");
+    }
+
+    #[test]
+    fn median_mode_and_deviation_on_a_known_window() {
+        // window of five at the tail: 1, 2, 2, 9, 10
+        let src = vec![0.0, 1.0, 2.0, 2.0, 9.0, 10.0];
+        let med = ta_median(&src, 5.0);
+        assert!((med[5] - 2.0).abs() < 1e-9, "median of [1,2,2,9,10]");
+        let mode = ta_mode(&src, 5.0);
+        assert!((mode[5] - 2.0).abs() < 1e-9, "2 appears twice");
+        let dev = ta_deviation(&src, 5.0);
+        // mean = 4.8; |x-mean| = 3.8, 2.8, 2.8, 4.2, 5.2 -> 18.8/5 = 3.76
+        assert!((dev[5] - 3.76).abs() < 1e-9, "mean absolute deviation");
+    }
+
+    #[test]
+    fn percentiles_and_percentrank_rank_the_window() {
+        let src = rising(6); // 0,1,2,3,4,5 -- window of five at tail: 1..5
+        let li = ta_percentile_linear_interpolation(&src, 5.0, 50.0);
+        assert!((li[5] - 3.0).abs() < 1e-9, "50th pct of 1,2,3,4,5 by interpolation");
+        let nr = ta_percentile_nearest_rank(&src, 5.0, 50.0);
+        assert!((nr[5] - 3.0).abs() < 1e-9, "nearest rank of the same window");
+        let pr = ta_percentrank(&src, 5.0);
+        assert!((pr[5] - 100.0).abs() < 1e-9, "the max ranks 100 (4 of 4 below)");
+        let flat = vec![3.0; 6];
+        let prf = ta_percentrank(&flat, 5.0);
+        assert!((prf[5] - 0.0).abs() < 1e-9, "a flat window ranks 0");
+        let rng = ta_range(&src, 5.0);
+        assert!((rng[5] - 4.0).abs() < 1e-9, "5 - 1");
+    }
+
+    #[test]
     fn sma_matches_the_crate() {
         let src = rising(10);
         let out = ta_sma(&src, 3.0);
@@ -814,4 +866,198 @@ mod tests {
             }
         }
     }
+}
+
+/// `ta.correlation(x, y, length)` -- Pearson correlation of two sources
+/// over the window; na when the window is partial or either leg is flat
+/// (zero variance -- the correlation of a constant with anything is
+/// undefined, and Pine yields na there too).
+#[must_use]
+pub fn ta_correlation(x: &[f64], y: &[f64], length: f64) -> Series {
+    let n = x.len().min(y.len());
+    let len = (length.max(1.0) as usize).min(n.max(1));
+    let mut out = vec![NA; n];
+    for i in (len - 1)..n {
+        let xs = &x[i + 1 - len..=i];
+        let ys = &y[i + 1 - len..=i];
+        if xs.iter().chain(ys.iter()).any(|v| !v.is_finite()) {
+            continue;
+        }
+        let mx = xs.iter().sum::<f64>() / len as f64;
+        let my = ys.iter().sum::<f64>() / len as f64;
+        let (mut num, mut dx, mut dy) = (0.0, 0.0, 0.0);
+        for k in 0..len {
+            let (a, b) = (xs[k] - mx, ys[k] - my);
+            num += a * b;
+            dx += a * a;
+            dy += b * b;
+        }
+        let den = (dx * dy).sqrt();
+        if den > 0.0 {
+            out[i] = num / den;
+        }
+    }
+    out
+}
+
+/// `ta.covariance(x, y, length)` -- population covariance (divide by
+/// length), matching this module's stdev/variance convention.
+#[must_use]
+pub fn ta_covariance(x: &[f64], y: &[f64], length: f64) -> Series {
+    let n = x.len().min(y.len());
+    let len = (length.max(1.0) as usize).min(n.max(1));
+    let mut out = vec![NA; n];
+    for i in (len - 1)..n {
+        let xs = &x[i + 1 - len..=i];
+        let ys = &y[i + 1 - len..=i];
+        if xs.iter().chain(ys.iter()).any(|v| !v.is_finite()) {
+            continue;
+        }
+        let mx = xs.iter().sum::<f64>() / len as f64;
+        let my = ys.iter().sum::<f64>() / len as f64;
+        out[i] = xs
+            .iter()
+            .zip(ys.iter())
+            .map(|(a, b)| (a - mx) * (b - my))
+            .sum::<f64>()
+            / len as f64;
+    }
+    out
+}
+
+/// `ta.deviation(source, length)` -- mean absolute deviation from the
+/// window's mean.
+#[must_use]
+pub fn ta_deviation(source: &[f64], length: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let mut out = vec![NA; source.len()];
+    for i in (n - 1)..source.len() {
+        let w = &source[i + 1 - n..=i];
+        if w.iter().all(|v| v.is_finite()) {
+            let mean = w.iter().sum::<f64>() / n as f64;
+            out[i] = w.iter().map(|v| (v - mean).abs()).sum::<f64>() / n as f64;
+        }
+    }
+    out
+}
+
+/// Sort the finite window ascending; the shared engine of median, mode
+/// and the percentile family. `None` when the window is partial or holds
+/// an na -- the same warmup contract every windowed ta follows here.
+fn sorted_window(source: &[f64], i: usize, n: usize) -> Option<Vec<f64>> {
+    let w = &source[i + 1 - n..=i];
+    if w.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let mut s = w.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(s)
+}
+
+/// `ta.median(source, length)` -- the window's middle value (the mean of
+/// the two middles when the length is even).
+#[must_use]
+pub fn ta_median(source: &[f64], length: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let mut out = vec![NA; source.len()];
+    for i in (n - 1)..source.len() {
+        if let Some(s) = sorted_window(source, i, n) {
+            out[i] = if n % 2 == 1 {
+                s[n / 2]
+            } else {
+                (s[n / 2 - 1] + s[n / 2]) / 2.0
+            };
+        }
+    }
+    out
+}
+
+/// `ta.mode(source, length)` -- the window's most frequent value; ties
+/// resolve to the SMALLEST of the tied values (deterministic -- exact
+/// float ties on market data are rare anyway).
+#[must_use]
+pub fn ta_mode(source: &[f64], length: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let mut out = vec![NA; source.len()];
+    for i in (n - 1)..source.len() {
+        if let Some(s) = sorted_window(source, i, n) {
+            let (mut best, mut best_n) = (s[0], 0usize);
+            let mut k = 0;
+            while k < n {
+                let mut j = k + 1;
+                while j < n && s[j] == s[k] {
+                    j += 1;
+                }
+                if j - k > best_n {
+                    best = s[k];
+                    best_n = j - k;
+                }
+                k = j;
+            }
+            out[i] = best;
+        }
+    }
+    out
+}
+
+/// `ta.percentile_linear_interpolation(source, length, pct)` -- the pct-th
+/// percentile with linear interpolation between the bracketing ranks.
+#[must_use]
+pub fn ta_percentile_linear_interpolation(source: &[f64], length: f64, pct: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let mut out = vec![NA; source.len()];
+    for i in (n - 1)..source.len() {
+        if let Some(s) = sorted_window(source, i, n) {
+            let pos = (pct.clamp(0.0, 100.0) / 100.0) * (n as f64 - 1.0);
+            let lo = pos.floor() as usize;
+            let hi = pos.ceil() as usize;
+            let frac = pos - lo as f64;
+            out[i] = s[lo] + (s[hi.min(n - 1)] - s[lo]) * frac;
+        }
+    }
+    out
+}
+
+/// `ta.percentile_nearest_rank(source, length, pct)` -- the pct-th
+/// percentile by the nearest-rank method.
+#[must_use]
+pub fn ta_percentile_nearest_rank(source: &[f64], length: f64, pct: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let mut out = vec![NA; source.len()];
+    for i in (n - 1)..source.len() {
+        if let Some(s) = sorted_window(source, i, n) {
+            let rank = ((pct.clamp(0.0, 100.0) / 100.0) * n as f64).ceil() as usize;
+            out[i] = s[rank.clamp(1, n) - 1];
+        }
+    }
+    out
+}
+
+/// `ta.percentrank(source, length)` -- 100 * the count of window values
+/// STRICTLY below the current value, over length-1. A flat window ranks
+/// 0; the first bar of a series is na.
+#[must_use]
+pub fn ta_percentrank(source: &[f64], length: f64) -> Series {
+    let n = (length.max(2.0) as usize).min(source.len().max(1));
+    let mut out = vec![NA; source.len()];
+    for i in (n - 1)..source.len() {
+        let w = &source[i + 1 - n..=i];
+        if w.iter().all(|v| v.is_finite()) {
+            let cur = source[i];
+            let below = w.iter().filter(|v| **v < cur).count();
+            out[i] = 100.0 * below as f64 / (n as f64 - 1.0);
+        }
+    }
+    out
+}
+
+/// `ta.range(source, length)` -- highest minus lowest over the window.
+#[must_use]
+pub fn ta_range(source: &[f64], length: f64) -> Series {
+    let hi = ta_highest(source, length);
+    let lo = ta_lowest(source, length);
+    hi.iter()
+        .zip(lo.iter())
+        .map(|(a, b)| if a.is_finite() && b.is_finite() { a - b } else { NA })
+        .collect()
 }
