@@ -144,7 +144,7 @@ pub enum Intent {
         qty: Option<f64>,
     },
     #[allow(dead_code)]
-    /// `strategy.exit(id, stop=, limit=, ...)`.
+    /// `strategy.exit(id, stop=, limit=, qty_percent=, ...)`.
     Exit {
         /// Order id.
         id: String,
@@ -152,11 +152,18 @@ pub enum Intent {
         stop: Option<f64>,
         /// Optional limit price.
         limit: Option<f64>,
+        /// Fraction of the position this order closes when it triggers
+        /// (Pine's qty_percent, 0..100). None = the whole position. The
+        /// bracket stays armed on the remainder -- scale-out ladders arm
+        /// the next leg with a fresh exit call.
+        qty_percent: Option<f64>,
     },
     /// `strategy.close(id)` / `strategy.close_all()`.
     Close {
         /// The entry id, or all when empty.
         id: Option<String>,
+        /// Fraction to close at market (Pine's qty_percent); None = all.
+        qty_percent: Option<f64>,
     },
 }
 
@@ -561,7 +568,20 @@ impl<'a> Vm<'a> {
             let knobs = self.script.header.strategy.clone().unwrap_or_default();
             self.out.simulation = Some(crate::sim::simulate(&self.out.intents, self.candles, &knobs));
             if wants_state {
-                self.rerun_with_account()?;
+                // Fixpoint over state reads: pass 2 decides against pass 1's
+                // account, but ITERATED dependence (leg 2 arms only after leg
+                // 1's partial fill shrank the position) needs pass 3 to
+                // decide against pass 2's fills. Rerun until the intent list
+                // stops changing -- a scale-out ladder converges in three.
+                // The cap guards scripts whose gates flip-flop (those ship
+                // the last converging pass, never a hang).
+                for _ in 0..5 {
+                    let before = self.out.intents.clone();
+                    self.rerun_with_account()?;
+                    if self.out.intents == before {
+                        break;
+                    }
+                }
             }
             // docs/24 S3: a strategy whose entry never fired still simulates
             // (a flat equity line at initial_capital), but a silent "net 0"
@@ -922,19 +942,21 @@ impl<'a> Vm<'a> {
                 let id = self.arg_str(args, "id").or_else(|| self.arg_str_pos(args, 0)).unwrap_or_default();
                 let stop = self.arg_named_f(args, "stop");
                 let limit = self.arg_named_f(args, "limit");
+                let qty_percent = self.arg_named_f(args, "qty_percent");
                 self.out.strategy_used = true;
-                self.out.intents.push((self.bar, Intent::Exit { id, stop, limit }));
+                self.out.intents.push((self.bar, Intent::Exit { id, stop, limit, qty_percent }));
                 Ok(())
             }
             "strategy.close" => {
                 let id = self.arg_str(args, "id").or_else(|| self.arg_str_pos(args, 0));
+                let qty_percent = self.arg_named_f(args, "qty_percent");
                 self.out.strategy_used = true;
-                self.out.intents.push((self.bar, Intent::Close { id }));
+                self.out.intents.push((self.bar, Intent::Close { id, qty_percent }));
                 Ok(())
             }
             "strategy.close_all" => {
                 self.out.strategy_used = true;
-                self.out.intents.push((self.bar, Intent::Close { id: None }));
+                self.out.intents.push((self.bar, Intent::Close { id: None, qty_percent: None }));
                 Ok(())
             }
             "strategy.cancel" => Ok(()),

@@ -126,6 +126,29 @@ struct Position {
     entry_bar: usize,
     stop: Option<f64>,
     limit: Option<f64>,
+    /// Fraction the armed exit closes when it triggers (Pine's
+    /// qty_percent); None = the whole position.
+    exit_pct: Option<f64>,
+}
+
+/// Book one exit leg -- possibly a fraction of the position -- and shrink
+/// the remainder. Returns (closed_qty, pnl). Fees are pro-rata per leg, so
+/// a three-leg scale-out pays the same total commission as one full exit.
+fn close_leg(
+    pos: &mut Position,
+    frac: f64,
+    price: f64,
+    knobs: &StrategyHeader,
+) -> (f64, f64) {
+    let closed_qty = if frac >= 1.0 { pos.qty } else { pos.qty * frac.max(0.0) };
+    let gross = if pos.long {
+        (price - pos.entry_price) * closed_qty
+    } else {
+        (pos.entry_price - price) * closed_qty
+    };
+    let fees = commission(knobs, closed_qty * pos.entry_price) + commission(knobs, closed_qty * price);
+    pos.qty -= closed_qty;
+    (closed_qty, gross - fees)
 }
 
 /// Pine's stop-fill rule, shared with the replay adapter: a long's stop
@@ -205,6 +228,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
     let mut pending: Option<Intent> = None;
     let mut pending_stop: Option<f64> = None;
     let mut pending_limit: Option<f64> = None;
+    let mut pending_pct: Option<f64> = None;
 
     for bar in 0..candles.len() {
         let c = &candles[bar];
@@ -229,6 +253,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                             // position the moment it fills.
                             stop: pending_stop.take(),
                             limit: pending_limit.take(),
+                            exit_pct: pending_pct.take(),
                         });
                         sim.orders.push(SimOrder {
                             bar,
@@ -241,16 +266,14 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         });
                     }
                 }
-                Intent::Exit { .. } | Intent::Close { .. } => {
-                    if let Some(pos) = position.take() {
+                Intent::Exit { qty_percent, .. } | Intent::Close { qty_percent, .. } => {
+                    if let Some(mut pos) = position.take() {
                         let exit_ref = pending_stop.take().unwrap_or(c.open);
                         // The CLOSING trade's side: exiting a long is a sell
                         // (fill slips down), exiting a short is a buy.
                         let price = fill_price(exit_ref, !pos.long, knobs.slippage_pct);
-                        let gross = open_pnl(&pos, price);
-                        let fees = commission(knobs, pos.qty * pos.entry_price)
-                            + commission(knobs, pos.qty * price);
-                        let pnl = gross - fees;
+                        let frac = qty_percent.map(|p| (p / 100.0).clamp(0.0, 1.0)).unwrap_or(1.0);
+                        let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
                         realized += pnl;
                         closed += 1.0;
                         if pnl > 0.0 {
@@ -263,11 +286,14 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                             bar,
                             kind: OrderKind::Exit,
                             long: pos.long,
-                            qty: pos.qty,
+                            qty: closed_qty,
                             price,
                             stop: pos.stop,
                             pnl: Some(pnl),
                         });
+                        if pos.qty > 1e-12 {
+                            position = Some(pos);
+                        }
                     }
                 }
                 _ => {}
@@ -280,12 +306,10 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
             if let Some(stop) = pos.stop {
                 let hit = if pos.long { c.low <= stop } else { c.high >= stop };
                 if hit {
-                    let pos = position.take().expect("checked above");
+                    let mut pos = position.take().expect("checked above");
                     let price = stop_fill_price(pos.long, c.open, stop);
-                    let gross = open_pnl(&pos, price);
-                    let fees = commission(knobs, pos.qty * pos.entry_price)
-                        + commission(knobs, pos.qty * price);
-                    let pnl = gross - fees;
+                    let frac = pos.exit_pct.map(|p| (p / 100.0).clamp(0.0, 1.0)).unwrap_or(1.0);
+                    let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
                     realized += pnl;
                     closed += 1.0;
                     if pnl > 0.0 {
@@ -298,11 +322,20 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         bar,
                         kind: OrderKind::Stop,
                         long: pos.long,
-                        qty: pos.qty,
+                        qty: closed_qty,
                         price,
                         stop: pos.stop,
                         pnl: Some(pnl),
                     });
+                    // Pine consumes a filled exit order: a partial fill
+                    // leaves the remainder UNCOVERED -- the script arms the
+                    // next leg with a fresh strategy.exit call.
+                    if pos.qty > 1e-12 {
+                        pos.stop = None;
+                        pos.limit = None;
+                        pos.exit_pct = None;
+                        position = Some(pos);
+                    }
                 }
             }
         }
@@ -314,12 +347,10 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
             if let Some(limit) = pos.limit {
                 let hit = if pos.long { c.high >= limit } else { c.low <= limit };
                 if hit {
-                    let pos = position.take().expect("checked above");
+                    let mut pos = position.take().expect("checked above");
                     let price = limit_fill_price(pos.long, c.open, limit);
-                    let gross = open_pnl(&pos, price);
-                    let fees = commission(knobs, pos.qty * pos.entry_price)
-                        + commission(knobs, pos.qty * price);
-                    let pnl = gross - fees;
+                    let frac = pos.exit_pct.map(|p| (p / 100.0).clamp(0.0, 1.0)).unwrap_or(1.0);
+                    let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
                     realized += pnl;
                     closed += 1.0;
                     if pnl > 0.0 {
@@ -332,11 +363,19 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         bar,
                         kind: OrderKind::Limit,
                         long: pos.long,
-                        qty: pos.qty,
+                        qty: closed_qty,
                         price,
                         stop: pos.stop,
                         pnl: Some(pnl),
                     });
+                    if pos.qty > 1e-12 {
+                        // The filled limit order is consumed (Pine
+                        // semantics); the remainder needs a fresh arm.
+                        pos.stop = None;
+                        pos.limit = None;
+                        pos.exit_pct = None;
+                        position = Some(pos);
+                    }
                 }
             }
         }
@@ -372,7 +411,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         });
         for intent in &bar_intents {
             match intent {
-                Intent::Exit { stop, limit, .. } => {
+                Intent::Exit { stop, limit, qty_percent, .. } => {
                     let mut armed = false;
                     if let Some(s) = stop {
                         if let Some(pos) = &mut position {
@@ -388,11 +427,20 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         pending_limit = Some(*l);
                         armed = true;
                     }
+                    if armed {
+                        // The fraction rides the bracket it armed.
+                        if let Some(pos) = &mut position {
+                            pos.exit_pct = *qty_percent;
+                        }
+                        pending_pct = *qty_percent;
+                    }
                     if !armed {
-                        pending = Some(Intent::Close { id: None });
+                        pending = Some(Intent::Close { id: None, qty_percent: *qty_percent });
                     }
                 }
-                Intent::Close { .. } => pending = Some(Intent::Close { id: None }),
+                Intent::Close { qty_percent, .. } => {
+                    pending = Some(Intent::Close { id: None, qty_percent: *qty_percent });
+                }
                 Intent::Entry { long, qty, .. } if !close_wins => {
                     // Pine/TV: an entry while a position is open is refused
                     // (pyramiding 0); the replay adapter refuses the signal,
@@ -448,7 +496,7 @@ mod tests {
     }
 
     fn close(bar: usize) -> (usize, Intent) {
-        (bar, Intent::Close { id: None })
+        (bar, Intent::Close { id: None, qty_percent: None })
     }
 
     #[test]
@@ -481,7 +529,7 @@ mod tests {
         let mut candles: Vec<Candle> = (0..6).map(|i| candle(i, 100.0)).collect();
         candles[3] = Candle { low: 94.0, ..candle(3, 100.0) };
         let knobs = StrategyHeader { commission_value: 0.0, ..Default::default() };
-        let stop_intent = (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: None });
+        let stop_intent = (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: None, qty_percent: None });
         let sim = simulate(&[entry(0, true), stop_intent], &candles, &knobs);
         let stop_order = sim.orders.iter().find(|o| o.kind == OrderKind::Stop).expect("stop filled");
         assert_eq!(stop_order.bar, 3, "the bar that dipped");
@@ -499,7 +547,7 @@ mod tests {
         let knobs = StrategyHeader::default();
         let intents = vec![
             (0, Intent::Entry { id: "L".into(), long: true, qty: Some(1.0) }),
-            (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: Some(103.0) }),
+            (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: Some(103.0), qty_percent: None }),
         ];
         let sim = simulate(&intents, &candles, &knobs);
         // The long fills at bar 1's open (100); the 103 limit touches when
