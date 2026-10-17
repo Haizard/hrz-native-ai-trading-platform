@@ -1243,11 +1243,15 @@ function createChartPane(root, hooks = {}) {
   /// A packed-RGBA u32 (from a script's `color=`) to a CSS colour string.
   /// Pure formatting: the packing is the engine's, the alpha byte is its top
   /// one, and a missing alpha is opaque.
+  /// The VM packs colors as 0xAARRGGBB. A packed alpha below 1.0 is the
+  /// script's OWN transparency (color.new) and wins over the renderer's
+  /// derived alpha; full-alpha colors keep the derived look.
   function rgbaFromPacked(color, alpha) {
-    const r = (color >>> 24) & 0xFF;
-    const g = (color >>> 16) & 0xFF;
-    const b = (color >>> 8) & 0xFF;
-    const a = ((color & 0xFF) / 255) * (alpha == null ? 1.0 : alpha);
+    const packedA = ((color >>> 24) & 0xFF) / 255;
+    const r = (color >>> 16) & 0xFF;
+    const g = (color >>> 8) & 0xFF;
+    const b = color & 0xFF;
+    const a = packedA < 0.999 ? packedA : (alpha == null ? 1.0 : alpha);
     return `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
   }
 

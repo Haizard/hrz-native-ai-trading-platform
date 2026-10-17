@@ -1026,6 +1026,71 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// The `color.*` constructors: `color.new(base, transparency)` repacks a
+    /// base with its own alpha (transparency 0..100 -> alpha 255..0),
+    /// `color.rgb(r, g, b[, transparency])` builds from channels, and
+    /// `color.from_gradient(v, bottom, top, c_bottom, c_top)` interpolates
+    /// every channel including alpha. All pack 0xAARRGGBB.
+    fn color_call(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+        let bad = |what: &str| crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span: crate::Span::new(1, 1),
+            message: what.to_string(),
+        };
+        match callee {
+            "color.new" => {
+                self.tick()?;
+                let base = self.arg_color_pos(args, 0)
+                    .or_else(|| self.arg_color_named(args, "base_color"))
+                    .or_else(|| self.arg_color_named(args, "color"))
+                    .ok_or_else(|| bad("`color.new` argument 1 is a base color: a color.* name, a #rrggbb literal, or a color variable"))?;
+                let transp = self
+                    .arg_f(args, 1)?
+                    .or_else(|| self.arg_named_f(args, "transparency"))
+                    .unwrap_or(0.0)
+                    .clamp(0.0, 100.0);
+                let alpha = (255.0 * (100.0 - transp) / 100.0).round() as u32;
+                Ok(Some((((alpha << 24) | (base & 0x00FF_FFFF)) as f64)))
+            }
+            "color.rgb" => {
+                self.tick()?;
+                let mut chan = |i: usize| -> Result<u32, crate::ScriptError> {
+                    Ok(self
+                        .arg_f(args, i)?
+                        .ok_or_else(|| bad("`color.rgb` needs red, green and blue channels (0-255)"))?
+                        .clamp(0.0, 255.0)
+                        .round() as u32)
+                };
+                let (r, g, b) = (chan(0)?, chan(1)?, chan(2)?);
+                let transp = self.arg_f(args, 3)?.unwrap_or(0.0).clamp(0.0, 100.0);
+                let alpha = (255.0 * (100.0 - transp) / 100.0).round() as u32;
+                Ok(Some((((alpha << 24) | (r << 16) | (g << 8) | b) as f64)))
+            }
+            "color.from_gradient" => {
+                self.tick()?;
+                let v = self.arg_f(args, 0)?.unwrap_or(NA);
+                let bottom = self.arg_f(args, 1)?.unwrap_or(NA);
+                let top = self.arg_f(args, 2)?.unwrap_or(NA);
+                let c_bottom = self.arg_color_pos(args, 3)
+                    .ok_or_else(|| bad("`color.from_gradient` needs (value, bottom, top, bottom_color, top_color)"))?;
+                let c_top = self.arg_color_pos(args, 4)
+                    .ok_or_else(|| bad("`color.from_gradient` needs (value, bottom, top, bottom_color, top_color)"))?;
+                if !v.is_finite() || !bottom.is_finite() || !top.is_finite() || top == bottom {
+                    return Ok(Some(NA));
+                }
+                let t = ((v - bottom) / (top - bottom)).clamp(0.0, 1.0);
+                let lerp = |shift: u32| -> u32 {
+                    let a = ((c_bottom >> shift) & 0xFF) as f64;
+                    let b = ((c_top >> shift) & 0xFF) as f64;
+                    (a + (b - a) * t).round() as u32
+                };
+                let packed = (lerp(24) << 24) | (lerp(16) << 16) | (lerp(8) << 8) | lerp(0);
+                Ok(Some((packed as f64)))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// `table.new(position.top_right, columns, rows, ...)`: create a panel,
     /// hand back its handle. `None` when the callee is not table.new.
     fn table_handle(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
@@ -2235,6 +2300,11 @@ impl<'a> Vm<'a> {
         }
         if let Some(handle) = self.table_handle(callee, args)? {
             return Ok(handle);
+        }
+        // The color constructors evaluate to a packed 0xAARRGGBB float that
+        // every color= argument accepts (vars, ternaries, inline calls).
+        if let Some(v) = self.color_call(callee, args)? {
+            return Ok(v);
         }
         if let Some(kind) = callee.strip_prefix("input.") {
             let name = self.current_input_name.clone();

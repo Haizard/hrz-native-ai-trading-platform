@@ -845,6 +845,7 @@ impl Cx {
                 Ty::Bool
             }
             "str.tostring" | "str.format" => Ty::String,
+            "color.new" | "color.rgb" | "color.from_gradient" => Ty::Color,
             "barstate.isconfirmed" => Ty::Bool,
             _ => Ty::Float,
         }
@@ -857,6 +858,7 @@ impl Cx {
                 | "last_bar_index" | "time" | "time_close" | "hour" | "minute" | "dayofweek"
                 | "year" | "month" | "dayofmonth" | "syminfo.mintick" | "syminfo.ticker"
                 | "extend.none" | "extend.right" | "extend.left" | "extend.both"
+                | "color.new" | "color.rgb" | "color.from_gradient"
                 | "position.top_right" | "position.top_left" | "position.top_center"
                 | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
                 | "position.middle_right" | "position.middle_left" | "position.middle_center"
@@ -956,6 +958,10 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         // table.cell writes one cell.
         "table.new" => (3, 5),
         "table.cell" => (4, 6),
+        // The color constructors evaluate to a packed 0xAARRGGBB value.
+        "color.new" => (2, 2),
+        "color.rgb" => (3, 4),
+        "color.from_gradient" => (4, 5),
         // The registry primitive (docs/37): 4 anchors + the named color.
         "fib.new" => (4, 5),
         // Phase 14: platform-native data by name. The literal name is

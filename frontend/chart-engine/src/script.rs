@@ -162,7 +162,8 @@ pub struct ScriptPlot {
     /// engine -- the shell draws whatever this carries, gaps included, which
     /// is what a line-with-na should look like.
     pub points: Vec<crate::scene::Point>,
-    /// Packed RGBA; the shell renders it as `#rrggbbaa`.
+    /// Packed 0xAARRGGBB (alpha in the high byte, the VM's layout); a packed
+    /// alpha below 1.0 is the script's own transparency and wins.
     pub color: u32,
     /// Line width in CSS pixels.
     pub linewidth: f64,
@@ -1575,6 +1576,46 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_color_constructors_pack_aarrggbb_with_real_alpha() {
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "z = color.new(color.teal, 90)\n",
+            "g = color.from_gradient(ta.rsi(close, 14), 30, 70, color.teal, color.red)\n",
+            "if bar_index == 5\n",
+            "    box.new(5, 110, 8, 100, color=z)\n",
+            "if bar_index == 6\n",
+            "    label.new(6, 112, text=\"x\", color=color.rgb(255, 200, 50))\n",
+            "bgcolor(bar_index == 20 ? g : na)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        // color.new(teal, 90): teal 0xFF2DD4BF, alpha = round(255 * 0.1) = 26 = 0x1A.
+        let box_color = output.objects.iter().find_map(|o| match o {
+            pine_lite::interp::ScriptObject::Box { color, .. } => Some(*color),
+            _ => None,
+        }).expect("the box");
+        assert_eq!(box_color, 0x1A_2D_D4_BF, "translucent teal packs AARRGGBB");
+        // color.rgb(255, 200, 50) with no transparency: 0xFF_FF_C8_32.
+        let label_color = output.objects.iter().find_map(|o| match o {
+            pine_lite::interp::ScriptObject::Label { color, .. } => Some(*color),
+            _ => None,
+        }).expect("the label");
+        assert_eq!(label_color, 0xFF_FF_C8_32, "rgb channels pack in order");
+        // The gradient tint: RSI of flat closes is na (no gains/losses) ->
+        // the bar-20 tint is None, and no panic. Use a rising series instead
+        // in a second run to see a real gradient color.
+        let candles2: Vec<Candle> = (0..40).map(|i| candle(i, 100.0 + i as f64)).collect();
+        let output2 = run(&parsed, &candles2, &Inputs::default()).expect("run rising");
+        let tint = output2.tints[0][20].expect("a tint at bar 20");
+        assert_eq!(tint >> 24, 0xFF, "gradient endpoints are opaque: {tint:#x}");
+        // All-gains RSI = 100 -> top of the gradient -> red.
+        let r = (tint >> 16) & 0xFF;
+        let g = (tint >> 8) & 0xFF;
+        assert!(r > 200 && g < 120, "RSI 100 lands at the red end: {tint:#x}");
     }
 
     #[test]
