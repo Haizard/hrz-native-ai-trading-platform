@@ -229,7 +229,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect();
         series_pool.insert("BTCUSDT/ETHUSDT@1H".to_string(), ratio);
-        pine_lite::interp::Inputs { series_pool, ..Inputs::default() }
+        // Synthetic funding points every 8 hours, alternating signs --
+        // the request.data("BTCUSDT.funding") probe reads them carried.
+        let mut data_series = std::collections::HashMap::new();
+        let funding: Vec<f64> = candles
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                let epoch = i / 8;
+                if epoch % 2 == 0 { 0.0001 } else { -0.0002 }
+            })
+            .collect();
+        data_series.insert("BTCUSDT.funding".to_string(), funding);
+        pine_lite::interp::Inputs { series_pool, data_series, ..Inputs::default() }
     } else if scenario == "smt" {
         pine_lite::interp::Inputs { security: build_eth_path(&candles), ..Inputs::default() }
     } else {

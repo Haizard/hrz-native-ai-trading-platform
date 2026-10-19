@@ -305,6 +305,97 @@ async fn fetch_security_candles(
 /// open times, so a pooled candle at `t` covers `[t, t + tf)`. A chart bar
 /// before the pooled series' first candle is flat at that first close, the
 /// same carry-forward the `sec=` aligner uses.
+/// One venue funding-rate point (USDT-M futures endpoint, market DATA
+/// even on a spot chart).
+#[derive(Debug, serde::Deserialize)]
+struct FundingPoint {
+    #[serde(rename = "fundingRate")]
+    funding_rate: String,
+    #[serde(rename = "fundingTime")]
+    funding_time: i64,
+}
+
+/// One open-interest snapshot.
+#[derive(Debug, serde::Deserialize)]
+struct OiPoint {
+    #[serde(rename = "sumOpenInterest")]
+    sum_open_interest: String,
+    timestamp: i64,
+}
+
+/// Fetch the funding-rate series for request.data("SYM.funding"): venue
+/// futures REST, ascending (time_ms, rate). Empty on any failure -- the
+/// data-missing error downstream is the truth, not a zero.
+async fn fetch_funding_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, f64)> {
+    let url = format!(
+        "https://fapi.binance.com/fapi/v1/fundingRate?symbol={sym}&startTime={}&endTime={}&limit=1000",
+        from_ns / 1_000_000,
+        to_ns / 1_000_000
+    );
+    let Ok(resp) = reqwest::get(&url).await else { return Vec::new() };
+    let Ok(points) = resp.json::<Vec<FundingPoint>>().await else { return Vec::new() };
+    points
+        .into_iter()
+        .filter_map(|p| {
+            let rate = p.funding_rate.parse::<f64>().ok()?;
+            Some((p.funding_time * 1_000_000, rate))
+        })
+        .collect()
+}
+
+/// Fetch open interest for request.data("SYM.oi"). The venue caps at 500
+/// points per page, so the period adapts to the window: the coarsest
+/// granularity that still covers it in one page.
+async fn fetch_oi_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, f64)> {
+    let minutes = ((to_ns - from_ns) / 60_000_000_000).max(1);
+    let period = if minutes / 5 <= 480 {
+        "5m"
+    } else if minutes / 15 <= 480 {
+        "15m"
+    } else if minutes / 30 <= 480 {
+        "30m"
+    } else if minutes / 60 <= 480 {
+        "1h"
+    } else if minutes / 120 <= 480 {
+        "2h"
+    } else if minutes / 240 <= 480 {
+        "4h"
+    } else if minutes / 720 <= 480 {
+        "12h"
+    } else {
+        "1d"
+    };
+    let url = format!(
+        "https://fapi.binance.com/futures/data/openInterestHist?symbol={sym}&period={period}&startTime={}&endTime={}&limit=500",
+        from_ns / 1_000_000,
+        to_ns / 1_000_000
+    );
+    let Ok(resp) = reqwest::get(&url).await else { return Vec::new() };
+    let Ok(points) = resp.json::<Vec<OiPoint>>().await else { return Vec::new() };
+    points
+        .into_iter()
+        .filter_map(|p| {
+            let v = p.sum_open_interest.parse::<f64>().ok()?;
+            Some((p.timestamp * 1_000_000, v))
+        })
+        .collect()
+}
+
+/// Carry a sparse (time, value) series onto the chart's bars: each bar
+/// reads the last point at or before its open.
+fn carry_points(points: &[(i64, f64)], candles: &[types::Candle]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(candles.len());
+    let mut cursor = 0usize;
+    for c in candles {
+        while cursor + 1 < points.len() && points[cursor + 1].0 <= c.open_time {
+            cursor += 1;
+        }
+        let usable = !points.is_empty() && points[cursor.min(points.len() - 1)].0 <= c.open_time;
+        out.push(if usable { points[cursor].1 } else { f64::NAN });
+    }
+    out
+}
+
 /// Parse a synthetic ticker (`BTCUSDT/ETHUSDT`, `BTCUSDT*ETHUSDT`,
 /// `BTCUSDT-ETHUSDT`, `BTCUSDT+ETHUSDT`): two legs and one operator.
 /// Anything else is not a synthetic -- the caller treats it as a plain
@@ -361,6 +452,42 @@ fn compose_synthetic(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod data_feed_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_points_carry_forward_by_bar_open() {
+        // Points at hours 0 and 4; bars are hourly.
+        let points = vec![
+            (0, 0.0001),
+            (4 * 3_600_000_000_000, -0.0002),
+        ];
+        let candles: Vec<types::Candle> = (0..6)
+            .map(|i| types::Candle {
+                symbol: "T".to_string(),
+                timeframe: Timeframe::H1,
+                open_time: i * Timeframe::H1.nanos(),
+                open: 1.0,
+                high: 1.0,
+                low: 1.0,
+                close: 1.0,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            })
+            .collect();
+        let carried = carry_points(&points, &candles);
+        assert_eq!(carried[0], 0.0001, "the first point lands at its bar");
+        assert_eq!(carried[3], 0.0001, "carried across the gap");
+        assert_eq!(carried[4], -0.0002, "the new point takes over at its bar");
+        // Before any point: na, not zero.
+        let later = vec![(10 * Timeframe::H1.nanos(), 1.0)];
+        let carried = carry_points(&later, &candles);
+        assert!(carried[0].is_nan(), "no point yet is na");
+    }
 }
 
 #[cfg(test)]
@@ -643,17 +770,36 @@ pub async fn replay_script_preview(
     let mut data_series = std::collections::HashMap::new();
     for name in pine_lite::typecheck::collect_data_names(&parsed) {
         let Some((sym, field)) = name.split_once('.') else { continue };
-        if let Some(t) = state.tickers.get(sym).await {
-            let value = match field {
-                "change_pct" => Some(t.price_change_percent),
-                "quote_volume" => Some(t.quote_volume),
-                "high" => Some(t.high_price),
-                "low" => Some(t.low_price),
-                "last" => Some(t.last_price),
-                _ => None,
-            };
-            if let Some(v) = value {
-                data_series.insert(name.clone(), vec![v; candles.len()]);
+        match field {
+            // Venue futures feeds: funding rate and open interest, carried
+            // per bar. A failed fetch leaves the name missing -- the VM's
+            // data-missing error stays the truth.
+            "funding" => {
+                let points = fetch_funding_series(sym, from_ns, to_ns).await;
+                if !points.is_empty() {
+                    data_series.insert(name.clone(), carry_points(&points, &candles));
+                }
+            }
+            "oi" => {
+                let points = fetch_oi_series(sym, from_ns, to_ns).await;
+                if !points.is_empty() {
+                    data_series.insert(name.clone(), carry_points(&points, &candles));
+                }
+            }
+            _ => {
+                if let Some(t) = state.tickers.get(sym).await {
+                    let value = match field {
+                        "change_pct" => Some(t.price_change_percent),
+                        "quote_volume" => Some(t.quote_volume),
+                        "high" => Some(t.high_price),
+                        "low" => Some(t.low_price),
+                        "last" => Some(t.last_price),
+                        _ => None,
+                    };
+                    if let Some(v) = value {
+                        data_series.insert(name.clone(), vec![v; candles.len()]);
+                    }
+                }
             }
         }
     }

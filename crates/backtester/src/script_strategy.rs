@@ -111,6 +111,11 @@ pub fn intents_to_signal(
                 }
             }
             pine_lite::interp::Intent::Entry { long, .. } => entry_long = Some(*long),
+            // The VM's simulator enforces risk limits and direction gates;
+            // this replay is the one-decision-per-bar parity path (docs/24
+            // S4) and ignores them -- the script's own sim is the authority.
+            pine_lite::interp::Intent::RiskLimit { .. }
+            | pine_lite::interp::Intent::RiskDirection { .. } => {}
         }
     }
     let _ = entry_long;
