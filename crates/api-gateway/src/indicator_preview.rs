@@ -469,7 +469,21 @@ pub async fn replay_script_preview(
     let mut series_pool = std::collections::HashMap::new();
     for key in pine_lite::typecheck::collect_series_pool(&parsed, &header) {
         let Some((sym, tf_str)) = key.split_once('@') else { continue };
-        let pooled_tf = tf_str.parse::<Timeframe>().unwrap_or(tf);
+        // Pine spellings normalize to the venue set: bare numbers are
+        // MINUTES ("60" = 1h, "240" = 4h, "1440" = 1d), "D"/"W" are the
+        // daily/weekly singles. An unknown string still falls back to the
+        // chart timeframe -- but now it has tried the Pine reading first.
+        let pooled_tf = tf_str
+            .parse::<Timeframe>()
+            .ok()
+            .or_else(|| match tf_str {
+                "60" => Some(Timeframe::H1),
+                "240" => Some(Timeframe::H4),
+                "1440" | "D" => Some(Timeframe::D1),
+                "W" => Some(Timeframe::W1),
+                _ => None,
+            })
+            .unwrap_or(tf);
         let is_own = sym.eq_ignore_ascii_case(symbol) && pooled_tf == tf;
         let raw = if is_own {
             candles.clone()
