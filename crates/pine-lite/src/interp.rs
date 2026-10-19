@@ -300,6 +300,32 @@ pub enum Intent {
         /// Fraction to close at market (Pine's qty_percent); None = all.
         qty_percent: Option<f64>,
     },
+    /// `strategy.risk.max_*` -- a numeric risk limit.
+    RiskLimit {
+        /// Which limit.
+        kind: RiskLimitKind,
+        /// Its value (qty units, or currency for the loss caps).
+        value: f64,
+    },
+    /// `strategy.risk.allow_entry_in(direction)`.
+    RiskDirection {
+        /// Longs allowed.
+        allow_long: bool,
+        /// Shorts allowed.
+        allow_short: bool,
+    },
+}
+
+/// The numeric risk limits `strategy.risk.*` sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiskLimitKind {
+    /// Cap each entry order's quantity.
+    MaxPositionSize,
+    /// Halt entries for the rest of the day after this loss (currency).
+    MaxIntradayLoss,
+    /// Halt entries permanently once peak-to-trough equity loss exceeds
+    /// this (currency).
+    MaxDrawdown,
 }
 
 /// What one run produced.
@@ -2005,6 +2031,55 @@ impl<'a> Vm<'a> {
                 Ok(())
             }
             "strategy.cancel" => Ok(()),
+            // The risk limits (Pine's strategy.risk.* calls): they set
+            // account-level rules the simulator enforces from the next bar.
+            "strategy.risk.max_position_size" | "strategy.risk.max_intraday_loss"
+            | "strategy.risk.max_drawdown" => {
+                let kind = match callee {
+                    "strategy.risk.max_position_size" => RiskLimitKind::MaxPositionSize,
+                    "strategy.risk.max_intraday_loss" => RiskLimitKind::MaxIntradayLoss,
+                    _ => RiskLimitKind::MaxDrawdown,
+                };
+                let value = self.arg_f(args, 0)?.unwrap_or(NA);
+                if !value.is_finite() || value < 0.0 {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!("`{callee}` needs a non-negative number"),
+                    });
+                }
+                self.out.strategy_used = true;
+                self.out.intents.push((self.bar, Intent::RiskLimit { kind, value }));
+                Ok(())
+            }
+            "strategy.risk.allow_entry_in" => {
+                let dir = match args.first().map(|a| &a.value.kind) {
+                    Some(ExprKind::Ident(v)) | Some(ExprKind::Member { path: v }) => v.as_str(),
+                    _ => {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Type,
+                            span: crate::Span::new(1, 1),
+                            message: "`strategy.risk.allow_entry_in` takes strategy.direction.long / .short / .all / .none".into(),
+                        })
+                    }
+                };
+                let (allow_long, allow_short) = match dir {
+                    "strategy.direction.long" => (true, false),
+                    "strategy.direction.short" => (false, true),
+                    "strategy.direction.all" => (true, true),
+                    "strategy.direction.none" => (false, false),
+                    _ => {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Type,
+                            span: crate::Span::new(1, 1),
+                            message: format!("`{dir}` is not an entry direction; use strategy.direction.long / .short / .all / .none"),
+                        })
+                    }
+                };
+                self.out.strategy_used = true;
+                self.out.intents.push((self.bar, Intent::RiskDirection { allow_long, allow_short }));
+                Ok(())
+            }
             // ---- drawing objects (docs/23 Phase 13): statements that push
             // to the object heap, capped like the array heap. Coordinates are
             // plain f64 bar indexes/prices; the engine maps them to the

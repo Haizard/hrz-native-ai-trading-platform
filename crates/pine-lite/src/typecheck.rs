@@ -888,6 +888,8 @@ impl Cx {
             | "barmerge.lookahead_off" => Ty::String,
             "size.auto" | "size.tiny" | "size.small" | "size.normal" | "size.large"
             | "size.huge" => Ty::String,
+            "strategy.direction.long" | "strategy.direction.short" | "strategy.direction.all"
+            | "strategy.direction.none" => Ty::String,
             "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
                 Ty::Bool
             }
@@ -904,6 +906,8 @@ impl Cx {
         const STMT_ONLY: &[&str] = &[
             "plot", "plotshape", "plotchar", "plotarrow", "plotcandle", "plotbar", "hline", "fill", "bgcolor",
             "barcolor", "fib.new", "table.cell", "alert", "strategy.entry", "strategy.exit",
+            "strategy.risk.max_position_size", "strategy.risk.max_intraday_loss",
+            "strategy.risk.max_drawdown", "strategy.risk.allow_entry_in",
             "strategy.close", "strategy.close_all", "strategy.cancel",
         ];
         if !self.stmt_call && STMT_ONLY.contains(&callee) {
@@ -1262,6 +1266,8 @@ impl Cx {
                 | "barmerge.lookahead_on" | "barmerge.lookahead_off"
                 | "size.auto" | "size.tiny" | "size.small" | "size.normal"
                 | "size.large" | "size.huge"
+                | "strategy.direction.long" | "strategy.direction.short"
+                | "strategy.direction.all" | "strategy.direction.none"
                 | "position.top_right" | "position.top_left" | "position.top_center"
                 | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
                 | "position.middle_right" | "position.middle_left" | "position.middle_center"
@@ -1413,6 +1419,8 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "input.int" | "input.float" | "input.bool" | "input.string" | "input.color"
         | "input.source" | "input.timeframe" | "input.time" | "input.price" | "input.symbol" => (0, 6),
         "strategy.entry" | "strategy.exit" | "strategy.close" | "strategy.cancel" => (1, 9),
+        "strategy.risk.max_position_size" | "strategy.risk.max_intraday_loss"
+        | "strategy.risk.max_drawdown" | "strategy.risk.allow_entry_in" => (1, 1),
         // Zero-arg: close everything.
         "strategy.close_all" => (0, 6),
         _ => return None,
@@ -1457,6 +1465,8 @@ fn namespace_const(name: &str) -> Option<Ty> {
         | "barmerge.lookahead_off" => Some(Ty::String),
         "size.auto" | "size.tiny" | "size.small" | "size.normal" | "size.large"
         | "size.huge" => Some(Ty::String),
+        "strategy.direction.long" | "strategy.direction.short" | "strategy.direction.all"
+        | "strategy.direction.none" => Some(Ty::String),
         "timeframe.multiplier" => Some(Ty::Float),
         "timeframe.isintraday" | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm" => {
             Some(Ty::Bool)

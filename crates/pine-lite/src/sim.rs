@@ -16,7 +16,7 @@
 //! adapter refuses the signal. An exit/close intent on the same bar as an
 //! entry wins (the replay's one-decision-per-bar rule).
 
-use crate::interp::Intent;
+use crate::interp::{Intent, RiskLimitKind};
 use analytics_core::types::Candle;
 
 /// Commission model, from the `strategy(...)` header.
@@ -263,6 +263,15 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
     let mut pending_limit: Option<f64> = None;
     let mut pending_pct: Option<f64> = None;
     let mut pending_trail: (Option<f64>, Option<f64>, Option<f64>) = (None, None, None);
+    // strategy.risk.* limits, settable per intent from the next bar on.
+    let mut risk_max_qty: Option<f64> = None;
+    let mut risk_max_day_loss: Option<f64> = None;
+    let mut risk_max_dd: Option<f64> = None;
+    let mut risk_allow: (bool, bool) = (true, true);
+    let mut risk_dd_halted = false;
+    let mut risk_day_floor = 0.0f64;
+    let mut risk_day_id: i64 = 0;
+    let mut risk_day_halted = false;
 
     for bar in 0..candles.len() {
         let c = &candles[bar];
@@ -281,6 +290,8 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         QtyType::Fixed => knobs.default_qty_value,
                         QtyType::PercentOfEquity => equity_mark * knobs.default_qty_value / 100.0 / price,
                     });
+                    // strategy.risk.max_position_size caps the order.
+                    let qty = risk_max_qty.map_or(qty, |cap| qty.min(cap));
                     if qty > 0.0 && price > 0.0 {
                         if let Some(mut pos) = position.take() {
                             // A pyramid leg stacks: the cost basis becomes
@@ -491,6 +502,25 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         let (pos_size, avg, op) = position.as_ref().map_or((0.0, 0.0, open_pnl_mark), |p| {
             (if p.long { p.qty } else { -p.qty }, p.entry_price, open_pnl_mark)
         });
+        // strategy.risk halts: max_intraday_loss resets each calendar day,
+        // max_drawdown is permanent once breached.
+        let day = analytics_core::types::Timeframe::D1.bucket_of(c.open_time);
+        if day != risk_day_id {
+            risk_day_id = day;
+            risk_day_floor = realized;
+            risk_day_halted = false;
+        }
+        if let Some(cap) = risk_max_day_loss {
+            let day_loss = (risk_day_floor - (realized + open_pnl_mark)).max(0.0);
+            if day_loss > cap {
+                risk_day_halted = true;
+            }
+        }
+        if let Some(cap) = risk_max_dd {
+            if peak - equity > cap {
+                risk_dd_halted = true;
+            }
+        }
         sim.equity.push(equity);
         max_dd_abs = max_dd_abs.max(peak - equity);
         sim.snapshots.push(SimSnapshot {
@@ -569,6 +599,16 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                 Intent::Close { qty_percent, .. } => {
                     pending = Some(Intent::Close { id: None, qty_percent: *qty_percent });
                 }
+                Intent::RiskLimit { kind, value } => {
+                    match kind {
+                        RiskLimitKind::MaxPositionSize => risk_max_qty = Some(*value),
+                        RiskLimitKind::MaxIntradayLoss => risk_max_day_loss = Some(*value),
+                        RiskLimitKind::MaxDrawdown => risk_max_dd = Some(*value),
+                    }
+                }
+                Intent::RiskDirection { allow_long, allow_short } => {
+                    risk_allow = (*allow_long, *allow_short);
+                }
                 Intent::Entry { long, qty, .. } if !close_wins => {
                     // Pine/TV: an entry while a position is open is refused
                     // past the pyramiding budget (0 = a single leg); a
@@ -576,7 +616,10 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                     let stacking = position.as_ref().is_some_and(|p| {
                         p.long == *long && p.legs < 1 + knobs.pyramiding
                     });
-                    if position.is_none() || stacking {
+                    // strategy.risk gates: the direction must be allowed and
+                    // no halt may be active.
+                    let direction_ok = if *long { risk_allow.0 } else { risk_allow.1 };
+                    if (position.is_none() || stacking) && direction_ok && !risk_dd_halted && !risk_day_halted {
                         pending = Some(Intent::Entry { id: String::new(), long: *long, qty: *qty });
                     }
                 }
@@ -628,6 +671,52 @@ mod tests {
 
     fn close(bar: usize) -> (usize, Intent) {
         (bar, Intent::Close { id: None, qty_percent: None })
+    }
+
+    #[test]
+    fn max_drawdown_halts_new_entries_once_breached() {
+        let candles = |closes: &[(f64, f64, f64)]| -> Vec<analytics_core::types::Candle> {
+            closes
+                .iter()
+                .enumerate()
+                .map(|(i, (h, l, c))| analytics_core::types::Candle {
+                    symbol: "T".to_string(),
+                    timeframe: analytics_core::types::Timeframe::H1,
+                    open_time: i as i64 * analytics_core::types::Timeframe::H1.nanos(),
+                    open: *c,
+                    high: *h,
+                    low: *l,
+                    close: *c,
+                    volume: 1.0,
+                    buy_volume: 0.5,
+                    sell_volume: 0.5,
+                })
+                .collect()
+        };
+        // A losing long (100 -> 92 breaches the 6.0 dd cap), then a signal
+        // that should be refused, then a recovery.
+        let cs = candles(&[
+            (101.0, 99.0, 100.0), // 0: entry signal
+            (100.5, 95.0, 96.0),  // 1: entry at open 100.5, slides
+            (96.0, 91.0, 92.0),   // 2: dd = 10000->9991.5+(-8.5) ... breaches 6.0
+            (93.0, 91.5, 92.5),   // 3: second signal -- must be refused
+            (110.0, 92.0, 108.0), // 4: recovery never trades
+        ]);
+        let intents = vec![
+            (0, Intent::Entry { id: "L".into(), long: true, qty: Some(1.0) }),
+            (0, Intent::RiskLimit { kind: RiskLimitKind::MaxDrawdown, value: 6.0 }),
+            (2, Intent::Entry { id: "L2".into(), long: true, qty: Some(1.0) }),
+        ];
+        let knobs = StrategyHeader {
+            default_qty_type: QtyType::Fixed,
+            default_qty_value: 1.0,
+            commission_value: 0.0,
+            slippage_pct: 0.0,
+            ..StrategyHeader::default()
+        };
+        let sim = simulate(&intents, &cs, &knobs);
+        let entries: Vec<&SimOrder> = sim.orders.iter().filter(|o| o.kind == OrderKind::Entry).collect();
+        assert_eq!(entries.len(), 1, "the breach bars the second entry: {:?}", sim.orders);
     }
 
     #[test]
