@@ -283,6 +283,15 @@ pub enum Intent {
         /// bracket stays armed on the remainder -- scale-out ladders arm
         /// the next leg with a fresh exit call.
         qty_percent: Option<f64>,
+        /// Trailing-stop activation as a distance from the entry, in price
+        /// units (trail_points converted from ticks at the call site).
+        trail_points: Option<f64>,
+        /// Trailing-stop activation as an absolute price (Pine's
+        /// trail_price).
+        trail_price: Option<f64>,
+        /// The distance the ratcheting stop trails behind the peak, in
+        /// price units (trail_offset converted from ticks).
+        trail_offset: Option<f64>,
     },
     /// `strategy.close(id)` / `strategy.close_all()`.
     Close {
@@ -1957,8 +1966,30 @@ impl<'a> Vm<'a> {
                 let stop = self.arg_named_f(args, "stop");
                 let limit = self.arg_named_f(args, "limit");
                 let qty_percent = self.arg_named_f(args, "qty_percent");
+                // Trailing stops: trail_points/trail_offset are TICKS (Pine's
+                // units) and convert to price through the instrument's tick
+                // size -- the same contract syminfo.mintick carries. A
+                // trail_price is already absolute.
+                let ticks = |v: Option<f64>| -> Result<Option<f64>, crate::ScriptError> {
+                    match v {
+                        Some(t) => match self.inputs.mintick {
+                            Some(m) if m > 0.0 => Ok(Some(t * m)),
+                            _ => Err(crate::ScriptError {
+                                kind: crate::ErrorKind::Type,
+                                span: crate::Span::new(1, 1),
+                                message: "trail_points/trail_offset are ticks and need the instrument's tick size; the host did not supply syminfo.mintick for this chart".into(),
+                            }),
+                        },
+                        None => Ok(None),
+                    }
+                };
+                let trail_points = ticks(self.arg_named_f(args, "trail_points"))?;
+                let trail_offset = ticks(self.arg_named_f(args, "trail_offset"))?;
+                let trail_price = self.arg_named_f(args, "trail_price");
                 self.out.strategy_used = true;
-                self.out.intents.push((self.bar, Intent::Exit { id, stop, limit, qty_percent }));
+                self.out.intents.push((self.bar, Intent::Exit {
+                    id, stop, limit, qty_percent, trail_points, trail_offset, trail_price,
+                }));
                 Ok(())
             }
             "strategy.close" => {

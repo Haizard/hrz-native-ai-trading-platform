@@ -152,6 +152,15 @@ struct Position {
     /// Fraction the armed exit closes when it triggers (Pine's
     /// qty_percent); None = the whole position.
     exit_pct: Option<f64>,
+    /// Trailing-stop activation distance from the entry (price units).
+    trail_points: Option<f64>,
+    /// Trailing-stop activation as an absolute price.
+    trail_price: Option<f64>,
+    /// Distance the ratcheting stop trails the peak (price units).
+    trail_offset: Option<f64>,
+    /// The best price since the trail armed (the peak for longs, the
+    /// trough for shorts).
+    trail_peak: f64,
 }
 
 /// Book one exit leg -- possibly a fraction of the position -- and shrink
@@ -253,6 +262,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
     let mut pending_stop: Option<f64> = None;
     let mut pending_limit: Option<f64> = None;
     let mut pending_pct: Option<f64> = None;
+    let mut pending_trail: (Option<f64>, Option<f64>, Option<f64>) = (None, None, None);
 
     for bar in 0..candles.len() {
         let c = &candles[bar];
@@ -291,6 +301,12 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                             if pending_pct.is_some() {
                                 pos.exit_pct = pending_pct.take();
                             }
+                            if pending_trail.0.is_some() || pending_trail.1.is_some() || pending_trail.2.is_some() {
+                                pos.trail_points = pending_trail.0.take();
+                                pos.trail_price = pending_trail.1.take();
+                                pos.trail_offset = pending_trail.2.take();
+                                pos.trail_peak = price;
+                            }
                             position = Some(pos);
                         } else {
                             position = Some(Position {
@@ -305,6 +321,10 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                                 stop: pending_stop.take(),
                                 limit: pending_limit.take(),
                                 exit_pct: pending_pct.take(),
+                                trail_points: pending_trail.0.take(),
+                                trail_price: pending_trail.1.take(),
+                                trail_offset: pending_trail.2.take(),
+                                trail_peak: price,
                             });
                         }
                         sim.orders.push(SimOrder {
@@ -349,6 +369,32 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // 1b. The trailing stop ratchets: once the peak moves the
+        //    activation distance in favor, the stop follows the peak by
+        //    the offset and never gives ground back.
+        if let Some(pos) = &mut position {
+            if pos.trail_offset.is_some() {
+                let offset = pos.trail_offset.unwrap_or(0.0);
+                let activate_at = pos.trail_price.unwrap_or_else(|| {
+                    let d = pos.trail_points.unwrap_or(0.0);
+                    if pos.long { pos.entry_price + d } else { pos.entry_price - d }
+                });
+                if pos.long {
+                    pos.trail_peak = pos.trail_peak.max(c.high);
+                    if pos.trail_peak >= activate_at {
+                        let t = pos.trail_peak - offset;
+                        pos.stop = Some(pos.stop.map_or(t, |cur| cur.max(t)));
+                    }
+                } else {
+                    pos.trail_peak = pos.trail_peak.min(c.low);
+                    if pos.trail_peak <= activate_at {
+                        let t = pos.trail_peak + offset;
+                        pos.stop = Some(pos.stop.map_or(t, |cur| cur.min(t)));
+                    }
+                }
             }
         }
 
@@ -426,6 +472,9 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         pos.stop = None;
                         pos.limit = None;
                         pos.exit_pct = None;
+                        pos.trail_points = None;
+                        pos.trail_price = None;
+                        pos.trail_offset = None;
                         position = Some(pos);
                     }
                 }
@@ -462,13 +511,26 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         // closes only when price touches it) and carries for the next entry;
         // a stop-less exit and every close/close_all are market exits.
         let bar_intents: Vec<&Intent> = intents.iter().filter(|(b, _)| *b == bar).map(|(_, i)| i).collect();
+        // A market close beats an entry the same bar -- but an exit that
+        // only ARMS (a stop, a limit, or a trailing stop) is no close at
+        // all, so the trail knobs count as arming here.
         let close_wins = bar_intents.iter().any(|i| {
             matches!(i, Intent::Close { .. })
-                || matches!(i, Intent::Exit { stop: None, limit: None, .. })
+                || matches!(
+                    i,
+                    Intent::Exit {
+                        stop: None,
+                        limit: None,
+                        trail_points: None,
+                        trail_price: None,
+                        trail_offset: None,
+                        ..
+                    }
+                )
         });
         for intent in &bar_intents {
             match intent {
-                Intent::Exit { stop, limit, qty_percent, .. } => {
+                Intent::Exit { stop, limit, qty_percent, trail_points, trail_price, trail_offset, .. } => {
                     let mut armed = false;
                     if let Some(s) = stop {
                         if let Some(pos) = &mut position {
@@ -482,6 +544,15 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                             pos.limit = Some(*l);
                         }
                         pending_limit = Some(*l);
+                        armed = true;
+                    }
+                    if trail_points.is_some() || trail_price.is_some() || trail_offset.is_some() {
+                        if let Some(pos) = &mut position {
+                            pos.trail_points = *trail_points;
+                            pos.trail_price = *trail_price;
+                            pos.trail_offset = *trail_offset;
+                        }
+                        pending_trail = (*trail_points, *trail_price, *trail_offset);
                         armed = true;
                     }
                     if armed {
@@ -560,6 +631,69 @@ mod tests {
     }
 
     #[test]
+    fn a_trailing_stop_activates_then_ratchets_to_the_peak() {
+        let candles = |closes: &[(f64, f64, f64)]| -> Vec<analytics_core::types::Candle> {
+            closes
+                .iter()
+                .enumerate()
+                .map(|(i, (h, l, c))| analytics_core::types::Candle {
+                    symbol: "T".to_string(),
+                    timeframe: analytics_core::types::Timeframe::H1,
+                    open_time: i as i64 * analytics_core::types::Timeframe::H1.nanos(),
+                    open: *c,
+                    high: *h,
+                    low: *l,
+                    close: *c,
+                    volume: 1.0,
+                    buy_volume: 0.5,
+                    sell_volume: 0.5,
+                })
+                .collect()
+        };
+        // Enter at 101 (bar 1's open after the bar-0 signal). trail_points
+        // 3.0 activates at 104: bar 1's high (102) is too small, bar 2's
+        // 105 activates (stop 104), bar 3's 107 ratchets (stop 106), and
+        // bar 4's 108 ratchets again (stop 107) -- whose own low of 105
+        // then triggers it, banking +6 at the stop.
+        let cs = candles(&[
+            (101.0, 99.0, 100.0),   // 0: signal bar
+            (102.0, 100.0, 101.0),  // 1: entry fills at open 101; high 102 < 104
+            (105.0, 104.5, 104.8),  // 2: activates; stop 104, low holds
+            (107.0, 106.5, 106.8),  // 3: ratchets; stop 106, low holds
+            (108.0, 105.0, 106.0),  // 4: stop 107; the bar's own low breaks it
+            (110.0, 105.0, 108.0),  // 5: (post-exit rally the trade misses)
+        ]);
+        let intents = vec![
+            (0, Intent::Entry { id: "L".into(), long: true, qty: Some(1.0) }),
+            (0, Intent::Exit {
+                id: "x".into(),
+                stop: None,
+                limit: None,
+                qty_percent: None,
+                trail_points: Some(3.0),
+                trail_price: None,
+                trail_offset: Some(1.0),
+            }),
+        ];
+        let knobs = StrategyHeader {
+            default_qty_type: QtyType::Fixed,
+            default_qty_value: 1.0,
+            commission_value: 0.0,
+            slippage_pct: 0.0,
+            ..StrategyHeader::default()
+        };
+        let sim = simulate(&intents, &cs, &knobs);
+        let stops: Vec<&SimOrder> = sim.orders.iter().filter(|o| o.kind == OrderKind::Stop).collect();
+        assert_eq!(stops.len(), 1, "exactly one trailing-stop fill: {:?}", sim.orders);
+        assert_eq!(stops[0].bar, 4, "the stop fills on the bar that breaks 107");
+        // The bar opens at 106 -- through the 107 stop -- so the gap rule
+        // fills at the open, the worse (honest) price.
+        assert!((stops[0].price - 106.0).abs() < 1e-9, "the gap rule fills at the open: {}", stops[0].price);
+        // PnL: entry 101, exit 106 -> +5.
+        assert!((stops[0].pnl.unwrap() - 5.0).abs() < 1e-9, "the run banks the trend: {:?}", stops[0].pnl);
+    }
+
+    #[test]
     fn an_entry_fills_at_the_next_open_and_the_close_prices_the_trade() {
         // Closes 100..110 rising; entry decided on bar 2 fills at open[3]
         // (100-based fixture: open == close of each bar).
@@ -589,7 +723,7 @@ mod tests {
         let mut candles: Vec<Candle> = (0..6).map(|i| candle(i, 100.0)).collect();
         candles[3] = Candle { low: 94.0, ..candle(3, 100.0) };
         let knobs = StrategyHeader { commission_value: 0.0, ..Default::default() };
-        let stop_intent = (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: None, qty_percent: None });
+        let stop_intent = (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: None, qty_percent: None, trail_points: None, trail_price: None, trail_offset: None });
         let sim = simulate(&[entry(0, true), stop_intent], &candles, &knobs);
         let stop_order = sim.orders.iter().find(|o| o.kind == OrderKind::Stop).expect("stop filled");
         assert_eq!(stop_order.bar, 3, "the bar that dipped");
@@ -607,7 +741,7 @@ mod tests {
         let knobs = StrategyHeader::default();
         let intents = vec![
             (0, Intent::Entry { id: "L".into(), long: true, qty: Some(1.0) }),
-            (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: Some(103.0), qty_percent: None }),
+            (1, Intent::Exit { id: "x".into(), stop: Some(95.0), limit: Some(103.0), qty_percent: None, trail_points: None, trail_price: None, trail_offset: None }),
         ];
         let sim = simulate(&intents, &candles, &knobs);
         // The long fills at bar 1's open (100); the 103 limit touches when
