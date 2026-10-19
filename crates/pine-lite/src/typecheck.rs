@@ -822,17 +822,6 @@ impl Cx {
                 ),
             );
         }
-        if let Some(ty) = self.out.var_types.get(name).copied() {
-            if self.stmt_depth == 0 && !self.top_assigned.contains(name) {
-                self.err(
-                    span,
-                    format!(
-                        "`{name}` is assigned only inside a conditional or loop block and cannot be read at the top level -- declare it at the top level first (`{name} = na`) so it exists on every bar"
-                    ),
-                );
-            }
-            return ty;
-        }
         // A dotted name whose base holds a UDT: `p.x` types as the field's
         // declared type.
         if let Some((base, field)) = name.split_once('.') {
@@ -849,6 +838,17 @@ impl Cx {
                     return Ty::Float;
                 }
             }
+        }
+        if let Some(ty) = self.out.var_types.get(name).copied() {
+            if self.stmt_depth == 0 && !self.top_assigned.contains(name) {
+                self.err(
+                    span,
+                    format!(
+                        "`{name}` is assigned only inside a conditional or loop block and cannot be read at the top level -- declare it at the top level first (`{name} = na`) so it exists on every bar"
+                    ),
+                );
+            }
+            return ty;
         }
         // Namespaced constants first: a dotted constant in BOTH tables
         // (extend.*, position.*, the barstate set) has a precise type that
@@ -1321,7 +1321,7 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "ta.cci" | "ta.mfi" | "ta.willr" | "ta.highestbars" | "ta.lowestbars"
         | "ta.barssince" | "ta.cum" => (1, 1),
         "ta.valuewhen" | "ta.pivothigh" | "ta.pivotlow" => (3, 3),
-        "ta.dmi" => (1, 1),
+        "ta.dmi" => (2, 2),
         "ta.kc" => (2, 2),
         "ta.supertrend" => (2, 2),
         "ta.crossover" | "ta.crossunder" | "ta.cross" => (2, 2),

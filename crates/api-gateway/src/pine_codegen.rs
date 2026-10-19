@@ -130,23 +130,16 @@ const REFERENCE_STRATEGY: &str = concat!(
 /// Both reference scripts are pinned by tests: [`REFERENCE_SCRIPT`] must vet,
 /// and [`REFERENCE_STRATEGY`] must vet AND simulate (docs/24 S3).
 
-pub(crate) fn script_system_prompt(symbol: &str, timeframe: &str) -> String {
-    format!(
-        r##"You write indicators as **pine-lite** scripts: TradingView-Pine-style imperative code the platform compiles and runs bar-by-bar. The user's chart is {symbol} on the {timeframe} timeframe; write for that.
-
-## Output contract
-Call `submit_script` with `script` (the whole pine-lite source) AND `report` (the user-facing write-up). The report is what the user actually reads: what the script detects, what it draws and where, the parameters and their defaults, what it deliberately does not do, and suggested adjustments -- written like a colleague explaining the build, ending with one question that invites feedback. Never a bare "generated and validated" receipt. The FIRST line must be the header:
-
-//@pine_lite version=1 overlay=false title="My Indicator"
-
-- `overlay=true` draws on the price chart (levels, bands drawn in price units); `overlay=false` gives the script its own pane below the chart (oscillators like RSI, stoch).
-- `title` names the pane and legend.
-
-## Syntax rules (the compiler is strict)
+/// The pine-lite language reference: every construct the compiler accepts,
+/// shared verbatim by the generation prompt ([`script_system_prompt`]) and
+/// the repair loop's cheatsheet ([`crate::pine_cheatsheet`]), so the two can
+/// never teach different languages again.
+pub(crate) fn language_reference() -> &'static str {
+    r##"## Syntax rules (the compiler is strict)
 1. ONE statement per line. Each statement ends at the newline. Never put two statements on one line; never use `;`.
 2. Indent block bodies by exactly 4 spaces under `if` / `else` / `for`.
 3. Declare with `=`. Reassign with `:=`. `var x = ...` initializes once and keeps its value across bars (running counters, state).
-4. switch picks a value by matching: `trend = switch` then indented arms `fast > slow => 1.0` and a default `=> 0.0` (the subject-less form tests conditions in order); or match a subject: `bucket = switch math.floor(close / 2)` then `50.0 => 100.0`. All arms produce one type. In a text position keep the switch inline (label text=(switch ...) with arms indented past the statement) -- strings never bind to variables. Declarations may carry a type word: `float x = 1.5`, `int n = 2`, `bool b = close > open`, `color c = color.teal`, `var float acc = 0.0` (handles too: `line l = na`). The word must match the value -- a mismatch is a vet error. Square brackets are ONLY a history offset on a named series variable or a built-in series, with an integer: `close[1]`, `myVar[3]`, `high[0]`. NOTHING else may ever be in brackets: no list literals, no `ta.sma(close, 9)[1]`, no `foo()[0]`. To compare a function result with its past, assign it first: `s = ta.sma(close, 9)` then `s[1]`. Collections exist as ARRAY FUNCTIONS, never as bracket syntax: `a = array.new()`, `array.push(a, v)`, `array.get(a, i)`. Writing `a[i] = v` is a syntax error. The full array set: `array.from(v1, v2, ...)` (build from values), `array.slice(a, from, to)` (copy a window; end exclusive), `array.concat(a, b)` (new joined array), `array.indexof(a, v)` (first slot or -1), `array.fill(a, v[, from, to])` (overwrite a range), `array.includes(a, v)`, `array.size/first/last/min/max/avg(a)`, and `array.join(a, " | ")` (renders the values as one text -- pass it DIRECTLY to a label/table text= argument; strings never live in variables). Allocate arrays ONCE with `var`: a per-bar array.slice/array.concat/array.from hits the 64-array cap by design.
+4. switch picks a value by matching: `trend = switch` then indented arms `fast > slow => 1.0` and a default `=> 0.0` (the subject-less form tests conditions in order); or match a subject: `bucket = switch math.floor(close / 2)` then `50.0 => 100.0`. All arms produce one type. In a text position keep the switch inline (label text=(switch ...) with arms indented past the statement) or bind its result to a string variable. Declarations may carry a type word: `float x = 1.5`, `int n = 2`, `bool b = close > open`, `color c = color.teal`, `var float acc = 0.0` (handles too: `line l = na`). The word must match the value -- a mismatch is a vet error. Square brackets are ONLY a history offset on a named series variable or a built-in series, with an integer: `close[1]`, `myVar[3]`, `high[0]`. NOTHING else may ever be in brackets: no list literals, no `ta.sma(close, 9)[1]`, no `foo()[0]`. To compare a function result with its past, assign it first: `s = ta.sma(close, 9)` then `s[1]`. Collections exist as ARRAY FUNCTIONS, never as bracket syntax: `a = array.new()`, `array.push(a, v)`, `array.get(a, i)`. Writing `a[i] = v` is a syntax error. The full array set: `array.from(v1, v2, ...)` (build from values), `array.slice(a, from, to)` (copy a window; end exclusive), `array.concat(a, b)` (new joined array), `array.indexof(a, v)` (first slot or -1), `array.fill(a, v[, from, to])` (overwrite a range), `array.includes(a, v)`, `array.size/first/last/min/max/avg(a)`, and `array.join(a, " | ")` (renders the values as one text). Allocate arrays ONCE with `var`: a per-bar array.slice/array.concat/array.from hits the 64-array cap by design.
 5. Multi-value calls are destructured on one line: `basis, upper, lower = ta.bb(close, 20, 2)`. The names must match the callee's output count. `ta.macd` and `ta.bb` return three values, `ta.stoch` returns two (%K, %D) -- and `ta.stoch` also reads as its %K alone.
 6. Numbers are floats; bools are `true`/`false`; `na` is the missing value (it propagates; comparisons with it are false). Ternary: `cond ? a : b`. Logic: `and`, `or`, `not`. Comparisons: `< <= > >= == !=`.
 7. PARTIAL EXITS: `strategy.exit("x1", limit=tp1, qty_percent=50)` closes that FRACTION when the level triggers, and the order is CONSUMED (Pine semantics) -- the remainder sits uncovered until a fresh `strategy.exit` arms the next leg. Detect a filled leg by the position SHRINKING: gate leg 2 on `strategy.position_size > 0 and strategy.position_size < <initial qty>`. The engine replays passes until intents stabilize, so leg-on-leg ladders converge. `strategy.close("id", qty_percent=50)` scales out at market the same way. THE REST IS 100: the fraction is of the position AT ORDER TIME -- after a 50% first leg, the second leg that closes "the rest" is `qty_percent=100` (another 50 would leave a quarter running).
@@ -171,7 +164,7 @@ Multi-value (destructure them): `macd_line, signal_line, hist = ta.macd(source, 
 Crosses (return bool): `ta.crossover(a, b)`, `ta.crossunder(a, b)`, `ta.cross(a, b)`.
 Math: `math.abs(x)`, `math.floor(x)`, `math.ceil(x)`, `math.round(x)`, `math.sqrt(x)`, `math.log(x)`, `math.exp(x)`, `math.sign(x)`, `math.pow(a, b)`, `math.min(a, b, ...)`, `math.max(a, b, ...)`, `math.avg(a, b, ...)`, `math.sum(source, length)`, `math.round_to_mintick(x)` (round to the instrument's tick grid). Timeframes: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w -- quote any of them in request.security / input.timeframe / timeframe.change. Timeframe words: `timeframe.period` (the chart's timeframe as a string, for label text: `"tf=" + timeframe.period`), `timeframe.multiplier` (its numeric prefix), `timeframe.isintraday` / `timeframe.isdaily` / `timeframe.isweekly` / `timeframe.isdwm` (its shape), and `timeframe.change("4h")` (true on the chart bars that open a new 4H period -- the MTF "fresh higher bar" pulse; the classic higher-timeframe line is `htf = request.security(sym, "4h", close)` then read htf, and `timeframe.change("4h")` marks where it stepped). Bar state: `barstate.isfirst` (bar 0), `barstate.islast` (the last bar -- the guard for end-of-run draws), `barstate.isnew` and `barstate.isconfirmed` (both always true here: the host replays closed bars once each). Instrument words: `syminfo.mintick` (the tick size), `syminfo.pointvalue` (PnL per point per unit; 1.0 on spot -- size positions with `qty = risk_usd / (stop_distance * syminfo.pointvalue)`), `syminfo.ticker` (the chart symbol, for label text: `"Levels: " + syminfo.ticker`). Trig: `math.sin(x)` / `math.cos(x)` / `math.tan(x)` (radians), `math.asin(x)` / `math.acos(x)` (na outside [-1, 1]), `math.atan(x)`, `math.atan2(y, x)`, `math.toradians(deg)`, `math.todegrees(rad)`, and the constant `math.pi` -- e.g. a cyclic wave `math.sin((bar_index % 40) / 40 * 2 * math.pi)`.
 Checks: `na(x)`, `nz(x)`, `nz(x, fallback)`, `fixnan(x)`.
-Strings (expression-level: no variable holds one -- build text INLINE in the call): `str.tostring(value)` / `str.tostring(value, "#.##")` (the "#.##" spec fixes decimal places), `str.format("{0} {1}", a, b)` (numbered placeholders; numbers coerce automatically), and `"..." + ...` concatenation. A label's text is a real expression: `label.new(bar, px, "OB @ " + str.tostring(px, "#.##"))` prints "OB @ 103.60".
+Strings (real variables since v2 -- `string state = "FLAT"` binds, `state[1]` reads yesterday, `state == "LONG"` compares; text positions also take any inline expression): `str.tostring(value)` / `str.tostring(value, "#.##")` (the "#.##" spec fixes decimal places), `str.format("{0} {1}", a, b)` (numbered placeholders; numbers coerce automatically), and `"..." + ...` concatenation. A label's text is a real expression: `label.new(bar, px, "OB @ " + str.tostring(px, "#.##"))` prints "OB @ 103.60".
 ## Arrays (for zones, pivots, levels -- SMC/market-structure building blocks)
 A variable holds a whole array once created with `var` (allocate ONCE, at the top):
 
@@ -185,7 +178,7 @@ Readers: `array.size(a)`, `array.get(a, i)`, `array.first(a)`, `array.last(a)`, 
 Guards: out-of-bounds `array.get` returns `na` (wrap with `nz(...)` when the value feeds arithmetic); never allocate without `var` (the heap cap kills the script); pop/shift when a list could grow unbounded. A state machine over two parallel arrays (values + bar stamps) builds order blocks, FVGs, breaker blocks and session levels.
 
 ## A second instrument (cross-market math: SMT divergence, spreads, ratios)
-The chart is {symbol}; a correlated second instrument rides along when the header declares it:
+A correlated second instrument rides along when the header declares it:
 
     //@pine_lite version=1 overlay=false title="SMT" sec="ETHUSDT"
 
@@ -298,8 +291,28 @@ Statements that add to a drawing heap (cap 256 per script):
 Coordinates are bar indexes and PRICES. Draw inside `if` blocks or guard with `bar_index == 0` -- a top-level `line.new` runs EVERY bar and fills the heap in ~256 bars (past the cap the extra objects are dropped). `style=` is "solid"/"dashed"/"dotted" and belongs to `line.new` ONLY: `label.new` takes exactly `(bar, price, text, color=)` -- no `style=`, no `size=`, no `textcolor=`, and there is no `label.style_*` or `size.*` constant anywhere in this language. Boxes take TradingView's border knobs -- `border_color=color.lime, border_width=2, border_style="dashed"`: a visible border distinct from the fill, which is how a zone reads as a zone and not a smear (leave them off for a soft fill-only band). The `*_time` twins (`box.new_time`, `line.new_time`, `label.new_time`) take unix-nanos TIME anchors instead of bar indexes -- use them for anything read from a pooled timeframe (see "A higher timeframe"), where an edge is a timestamp, not one of this chart's bars.
 
 `fib.new(bar1, price1, bar2, price2, color=color.orange)` draws a Fibonacci retracement on a swing: the 0 line sits on the SECOND anchor (the swing's end), 100 on the first, and 23.6/38.2/50/61.8/78.6 between them, each with its price label. One call, one heap object -- the engine decomposes it into the levels, so a fib costs one object, not fourteen.
+"##
+}
 
-## SMC zones (order blocks, fair value gaps, breaker blocks): draw BOXES, never markers
+pub(crate) fn script_system_prompt(symbol: &str, timeframe: &str) -> String {
+    format!(
+        r##"You write indicators as **pine-lite** scripts: TradingView-Pine-style imperative code the platform compiles and runs bar-by-bar. The user's chart is {symbol} on the {timeframe} timeframe; write for that.
+
+## Output contract
+Call `submit_script` with `script` (the whole pine-lite source) AND `report` (the user-facing write-up). The report is what the user actually reads: what the script detects, what it draws and where, the parameters and their defaults, what it deliberately does not do, and suggested adjustments -- written like a colleague explaining the build, ending with one question that invites feedback. Never a bare "generated and validated" receipt. The FIRST line must be the header:
+
+//@pine_lite version=1 overlay=false title="My Indicator"
+
+- `overlay=true` draws on the price chart (levels, bands drawn in price units); `overlay=false` gives the script its own pane below the chart (oscillators like RSI, stoch).
+- `title` names the pane and legend.
+"##,
+        symbol = symbol,
+        timeframe = timeframe,
+    ) + "\n\n"
+        + language_reference()
+        + "\n\n"
+        + &format!(
+            r##"## SMC zones (order blocks, fair value gaps, breaker blocks): draw BOXES, never markers
 
 A zone is a price band with a birth bar, so the drawing is `box.new`: one box per LIVE zone, its right edge extended past the last bar (`bar_index + 10000`) so the canvas clips it at the plot edge -- TradingView's "extend to now" look. A `plotshape` triangle marks an EVENT (a CHoCH, a sweep, a BOS); it is never the drawing for a ZONE. Zones default to BOXES; when the request explicitly asks for zone LINES, the 'Zones drawn with LINES' section below is the law -- an SMC indicator that renders a zone as a trail of triangles or a price-following line has failed the request. DRAWING HANDLES: `line.new`/`label.new`/`box.new` (and the *_time twins) RETURN a handle -- `var l = na` then `if born \n    l := line.new(...)` keeps it. Mutate live: `line.set_y2(l, 108.0)`, `line.set_color(l, color.orange)`, `line.set_extend(l, extend.right)`, `box.set_right(b, bar_index + 10)`, `box.set_bgcolor(b, color.teal)`, `label.set_text(t, "filled")`, `label.set_x(t, bar_index)`. Retire: `line.delete(l)` / `box.delete(b)` / `label.delete(t)` removes the drawing for good. A setter on a deleted or wrong-kind handle ERRORS, exactly like Pine. THE ROLLING-WINDOW IDIOM (stay under the object cap): keep the newest zone per state, delete the one it replaces -- `if new_zone and not na(active_box) \n    box.delete(active_box) \n    active_box := box.new(...)`.
 Per-kind caps ride the header: `//@pine_lite version=1 overlay=true max_lines_count=3` keeps only the newest 3 lines (the OLDEST is garbage-collected and its slot reused -- a rolling levels script never fills the arena); max_boxes_count and max_labels_count do the same for boxes and labels.
@@ -685,8 +698,6 @@ A sweep reversal is a STATE machine with three latched stages; each stage's `var
 {REFERENCE_SCRIPT}
 ```
 "##,
-        symbol = symbol,
-        timeframe = timeframe,
         REFERENCE_STRATEGY = REFERENCE_STRATEGY,
     )
 }
@@ -1012,6 +1023,27 @@ mod tests {
         "hline(30)\n",
         "```\n",
     );
+
+    #[test]
+    fn the_prompt_assembles_all_three_parts() {
+        let p = script_system_prompt("BTCUSDT", "15m");
+        // Intro (interpolated), the shared reference, and the recipe tail.
+        for marker in [
+            "BTCUSDT",
+            "## Output contract",
+            "## Syntax rules",
+            "## Functions (these are ALL of them",
+            "switch picks",
+            "STRINGS ARE REAL VARIABLES",
+            "TRAILING STOPS",
+            "## SMC zones",
+            "## Reference strategy",
+        ] {
+            assert!(p.contains(marker), "the prompt is missing: {marker}");
+        }
+        // The reference and the cheatsheet share one source now.
+        assert_eq!(language_reference(), crate::pine_cheatsheet::language_reference());
+    }
 
     #[test]
     fn the_system_prompt_teaches_only_vettable_forms() {
