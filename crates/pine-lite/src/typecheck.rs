@@ -480,18 +480,7 @@ impl Cx {
                         ));
                     }
                 }
-                // Strings are expression-level only in v1: no float-ring
-                // variable can hold one, so a string binding fails at
-                // runtime with a confusing "not defined". Refuse it here,
-                // crisply. input.* declarations are exempt -- they are
-                // recorded for the UI, not really bindings.
-                if ty == Ty::String
-                    && !matches!(&expr.kind, ExprKind::Call { callee, .. } if callee.starts_with("input."))
-                {
-                    self.err(*span, format!(
-                        "`{name}` binds a string, and strings are expression-level only in v1: pass the str.* expression directly to a text= argument (labels, table cells) instead of a variable"
-                    ));
-                }
+                // (Strings bind as real variables; nothing to refuse here.)
                 // `p.x := v`: legal only when p holds a UDT -- the field
                 // must exist and the value must match its type.
                 if let Some((base, field)) = name.split_once('.') {
@@ -600,6 +589,18 @@ impl Cx {
                 }
                 self.stmt_depth += 1;
                 self.items(body);
+                // Functions return numbers: the body's last expression is
+                // the value, and a string there is a vet error (string
+                // params and string returns are both out of the function
+                // model; string vars live at statement level). Typed at the
+                // body's own depth, after its walk.
+                if let Some(Item::Expr { expr, .. }) = body.last() {
+                    if self.expr(expr) == Ty::String {
+                        self.err(*span, format!(
+                            "`{name}` returns a string, and functions return numbers; build the text at the call site instead"
+                        ));
+                    }
+                }
                 self.stmt_depth -= 1;
             }
             Item::Expr { span, expr } => {
@@ -682,10 +683,11 @@ impl Cx {
                 let inner = self.expr(base);
                 self.expr(offset);
                 match inner {
-                    Ty::Color | Ty::String => {
-                        self.err(expr.span, "history indexing is for numeric and bool series");
+                    Ty::Color => {
+                        self.err(expr.span, "history indexing is for numeric, bool and string series");
                         Ty::Float
                     }
+                    Ty::String => Ty::String,
                     _ => Ty::Float,
                 }
             }
@@ -1351,6 +1353,7 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "map.put" => (3, 3),
         "map.get" | "map.contains" | "map.remove" => (2, 2),
         "map.size" | "map.clear" => (1, 1),
+        "array.new_string" => (0, 0),
         "array.from" => (0, 8),
         "array.slice" => (3, 3),
         "array.join" => (1, 2),

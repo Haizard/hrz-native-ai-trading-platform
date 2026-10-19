@@ -609,6 +609,17 @@ pub struct Vm<'a> {
     points_heap: Vec<(f64, f64)>,
     /// The `map.new` heap: string-keyed float maps by handle.
     maps_live: Vec<std::collections::HashMap<String, f64>>,
+    /// String variables, with the same per-bar ring and carry rules the
+    /// float buffers use. A name here is never in `vars` -- the two
+    /// buffers are disjoint by kind.
+    str_vars: std::collections::HashMap<String, Vec<Option<String>>>,
+    /// Which bars a string var was assigned on (carry-forward authority,
+    /// mirroring vars_written).
+    str_vars_written: std::collections::HashMap<String, Vec<bool>>,
+    /// The string-array heap; handles are tagged STR_TAG + index so they
+    /// share the array functions' handle space without colliding with the
+    /// float arrays.
+    str_heap: Vec<Vec<String>>,
     /// The `matrix.new` heap: row-major float matrices by handle.
     matrices_live: Vec<(usize, usize, Vec<f64>)>,
     /// The `input.symbol` side channel: like input.timeframe, the var
@@ -673,6 +684,10 @@ pub const MAX_CALL_DEPTH: usize = 16;
 /// zones and session levels comfortably under this; a script that allocates
 /// fresh arrays every bar hits the cap and is killed, not leaked.
 pub const MAX_ARRAYS: usize = 64;
+
+/// Array handles at or above this tag index the string-array heap
+/// (array.new_string); below it, the float heap.
+const STR_TAG: f64 = 1_000_000.0;
 
 /// The cap on one array's length. Enough for a full session's FVGs or a
 /// chart's worth of pivots at any sane lookback.
@@ -788,6 +803,9 @@ impl<'a> Vm<'a> {
             polylines_live: Vec::new(),
             points_heap: Vec::new(),
             maps_live: Vec::new(),
+            str_vars: std::collections::HashMap::new(),
+            str_vars_written: std::collections::HashMap::new(),
+            str_heap: Vec::new(),
             matrices_live: Vec::new(),
             last_input_sym: None,
             input_symbols: std::collections::HashMap::new(),
@@ -975,6 +993,9 @@ impl<'a> Vm<'a> {
         self.polylines_live.clear();
         self.points_heap.clear();
         self.maps_live.clear();
+        self.str_vars.clear();
+        self.str_vars_written.clear();
+        self.str_heap.clear();
         self.matrices_live.clear();
         self.ltf_slots.clear();
         self.udts_live.clear();
@@ -1135,6 +1156,23 @@ impl<'a> Vm<'a> {
                         values[fi] = value;
                         return Ok(());
                     }
+                }
+                // A string right-hand side writes the string buffers, never
+                // the float ring: `s = "UP"`, `s := s + "!"`.
+                if self.expr_is_string(expr) {
+                    let value = self.eval_s(expr)?;
+                    if *mode != VarMode::Auto && self.bar > 0 && self.str_vars.contains_key(name) {
+                        return Ok(());
+                    }
+                    let buf = self
+                        .str_vars
+                        .entry(name.clone())
+                        .or_insert_with(|| vec![None; self.candles.len()]);
+                    buf[self.bar] = Some(value);
+                    self.str_vars_written
+                        .entry(name.clone())
+                        .or_insert_with(|| vec![false; self.candles.len()])[self.bar] = true;
+                    return Ok(());
                 }
                 // Compound assignment (`i += e`): desugars to `i := i <op> e`
                 // -- the current value comes through the normal name read,
@@ -2137,6 +2175,19 @@ impl<'a> Vm<'a> {
             "array.push" => {
                 self.tick()?;
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                if handle >= STR_TAG {
+                    let v = self.eval_s(&args[1].value)?;
+                    let list = self.str_array_ref(handle)?;
+                    if list.len() >= MAX_ARRAY_LEN {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Limit,
+                            span: crate::Span::new(1, 1),
+                            message: format!("an array grew past {MAX_ARRAY_LEN} entries; trim it with array.pop/shift or bound the loop"),
+                        });
+                    }
+                    list.push(v);
+                    return Ok(());
+                }
                 let value = self.arg_f(args, 1)?.unwrap_or(NA);
                 let list = self.array_ref(handle)?;
                 if list.len() >= MAX_ARRAY_LEN {
@@ -2151,6 +2202,10 @@ impl<'a> Vm<'a> {
             }
             "array.pop" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                if handle >= STR_TAG {
+                    self.str_array_ref(handle)?.pop();
+                    return Ok(());
+                }
                 if let Some(v) = self.array_ref(handle)?.pop() {
                     let _ = v;
                 }
@@ -2158,6 +2213,13 @@ impl<'a> Vm<'a> {
             }
             "array.shift" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                if handle >= STR_TAG {
+                    let list = self.str_array_ref(handle)?;
+                    if !list.is_empty() {
+                        list.remove(0);
+                    }
+                    return Ok(());
+                }
                 if !self.array_ref(handle)?.is_empty() {
                     self.array_ref(handle)?.remove(0);
                 }
@@ -2165,6 +2227,10 @@ impl<'a> Vm<'a> {
             }
             "array.clear" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                if handle >= STR_TAG {
+                    self.str_array_ref(handle)?.clear();
+                    return Ok(());
+                }
                 self.array_ref(handle)?.clear();
                 Ok(())
             }
@@ -2211,6 +2277,21 @@ impl<'a> Vm<'a> {
             }
             "array.fill" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                if handle >= STR_TAG {
+                    let v = self.eval_s(&args[1].value)?;
+                    let from = self.arg_f(args, 2)?.unwrap_or(0.0);
+                    let to = self.arg_f(args, 3)?.unwrap_or(NA);
+                    let list = self.str_array_ref(handle)?;
+                    let len = list.len();
+                    let lo = if from.is_finite() { from.max(0.0) as usize } else { 0 };
+                    let hi = if to.is_finite() { (to.max(0.0) as usize).min(len) } else { len };
+                    for slot in list.iter_mut().take(hi).skip(lo) {
+                        *slot = v.clone();
+                    }
+                    return Ok(());
+                }
+
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
                 let value = self.arg_f(args, 1)?.unwrap_or(NA);
                 let from = self.arg_f(args, 2)?.unwrap_or(0.0);
                 let to = self.arg_f(args, 3)?.unwrap_or(NA);
@@ -2224,6 +2305,23 @@ impl<'a> Vm<'a> {
                 Ok(())
             }
             "array.set" => {
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                if handle >= STR_TAG {
+                    let idx = self.arg_f(args, 1)?.unwrap_or(NA);
+                    let v = self.eval_s(&args[2].value)?;
+                    let list = self.str_array_ref(handle)?;
+                    let idx = if idx.is_finite() && idx >= 0.0 { idx as usize } else { usize::MAX };
+                    if idx >= list.len() {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Type,
+                            span: crate::Span::new(1, 1),
+                            message: format!("array.set index {idx} is past the array's length {}", list.len()),
+                        });
+                    }
+                    list[idx] = v;
+                    return Ok(());
+                }
+
                 self.tick()?;
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
                 let index = self.arg_f(args, 1)?.unwrap_or(NA);
@@ -2601,6 +2699,15 @@ impl<'a> Vm<'a> {
                 }
             }
             ExprKind::Bin { left, op, right } => {
+                // String equality: `s == "UP"` compares as text when either
+                // side is string-typed.
+                if matches!(op, BinOp::Cmp(crate::parse::CmpOp::Eq) | BinOp::Cmp(crate::parse::CmpOp::Ne))
+                    && (self.expr_is_string(left) || self.expr_is_string(right))
+                {
+                    let (l, r) = (self.eval_s(left)?, self.eval_s(right)?);
+                    let eq = l == r;
+                    return Ok(f64::from(if matches!(op, BinOp::Cmp(crate::parse::CmpOp::Eq)) { eq } else { !eq }));
+                }
                 let l = self.eval_f(left)?;
                 let r = self.eval_f(right)?;
                 self.bin(*op, l, r)
@@ -2958,6 +3065,72 @@ impl<'a> Vm<'a> {
             });
         }
         Ok(&mut self.heap[handle as usize])
+    }
+
+    /// Is this expression string-typed? Mirrors eval_s's domain exactly:
+    /// the runtime answer to "does this assignment write a string var".
+    fn expr_is_string(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Str(_) => true,
+            ExprKind::Ident(name) => {
+                self.str_vars.contains_key(name)
+                    || matches!(name.as_str(), "syminfo.ticker" | "timeframe.period")
+            }
+            ExprKind::Member { path } => {
+                matches!(path.as_str(), "syminfo.ticker" | "timeframe.period")
+            }
+            ExprKind::Call { callee, .. } => {
+                matches!(callee.as_str(), "str.tostring" | "str.format" | "array.join")
+            }
+            ExprKind::Bin { op: crate::parse::BinOp::Add(crate::parse::AddOp::Add), left, right } => {
+                self.expr_is_string(left) || self.expr_is_string(right)
+            }
+            ExprKind::Ternary { then, els, .. } => {
+                self.expr_is_string(then) || self.expr_is_string(els)
+            }
+            ExprKind::Switch { arms, .. } => {
+                arms.iter().any(|(_, r)| self.expr_is_string(r))
+            }
+            ExprKind::History { base, .. } => self.expr_is_string(base),
+            _ => false,
+        }
+    }
+
+    /// Read a string var at the current bar with the float buffers' carry
+    /// rules: an assigned slot is authoritative (None = na), unassigned
+    /// slots carry the last assigned value.
+    fn read_str_var(&self, name: &str) -> Result<Option<String>, crate::ScriptError> {
+        let Some(buf) = self.str_vars.get(name) else {
+            return Ok(None);
+        };
+        let cur = buf[self.bar].clone();
+        if cur.is_some() {
+            return Ok(cur);
+        }
+        if let Some(wrote) = self.str_vars_written.get(name) {
+            if wrote[self.bar] {
+                return Ok(cur);
+            }
+            for slot in (0..self.bar).rev() {
+                if wrote[slot] {
+                    return Ok(buf[slot].clone());
+                }
+            }
+        }
+        Ok(cur)
+    }
+
+    /// Route an array handle: the float heap below STR_TAG, the string
+    /// heap at and above it.
+    fn str_array_ref(&mut self, handle: f64) -> Result<&mut Vec<String>, crate::ScriptError> {
+        if !handle.is_finite() || handle < STR_TAG || handle >= STR_TAG + self.str_heap.len() as f64 {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "that variable does not hold a string array; create one with `var a = array.new_string()`".into(),
+            });
+        }
+        Ok(&mut self.str_heap[(handle - STR_TAG) as usize])
     }
 
     /// A live map by handle, or the create-one error.
@@ -3834,11 +4007,21 @@ impl<'a> Vm<'a> {
             }
             "array.get" => {
                 let handle = a!(0)?;
+                if handle >= STR_TAG {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: "array.get on a string array returns text -- read it in a text position (label/table text=, a string var, or array.join)".into(),
+                    });
+                }
                 let index = a!(1)?;
                 Ok(self.array_read(handle, index)?)
             }
             "array.size" => {
                 let handle = a!(0)?;
+                if handle >= STR_TAG {
+                    return Ok(self.str_array_ref(handle)?.len() as f64);
+                }
                 Ok(self.array_ref(handle)?.len() as f64)
             }
             "array.first" => {
@@ -3949,7 +4132,34 @@ impl<'a> Vm<'a> {
                 let handle = a!(0)?;
                 Ok(self.map_ref(handle)?.len() as f64)
             }
+            "array.new_string" => {
+                if self.str_heap.len() >= MAX_ARRAYS {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Limit,
+                        span: crate::Span::new(1, 1),
+                        message: format!("more than {MAX_ARRAYS} string arrays; allocate them once with `var`"),
+                    });
+                }
+                self.str_heap.push(Vec::new());
+                Ok(STR_TAG + (self.str_heap.len() - 1) as f64)
+            }
             "array.from" => {
+                // Any string-typed argument makes this a string array.
+                if args.iter().any(|a| self.expr_is_string(&a.value)) {
+                    if self.str_heap.len() >= MAX_ARRAYS {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Limit,
+                            span: crate::Span::new(1, 1),
+                            message: format!("more than {MAX_ARRAYS} string arrays; allocate them once with `var`"),
+                        });
+                    }
+                    let mut list = Vec::with_capacity(args.len());
+                    for a in args {
+                        list.push(self.eval_s(&a.value)?);
+                    }
+                    self.str_heap.push(list);
+                    return Ok(STR_TAG + (self.str_heap.len() - 1) as f64);
+                }
                 if self.heap.len() >= MAX_ARRAYS {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Limit,
@@ -4448,6 +4658,29 @@ impl<'a> Vm<'a> {
                     self.eval_s(els)
                 }
             }
+            ExprKind::Call { callee, args } if callee == "array.get" => {
+                let handle = self
+                    .arg_f(args, 0)?
+                    .ok_or_else(|| crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: "`array.get` needs an array".into(),
+                    })?;
+                if handle < STR_TAG {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: "array.get of a FLOAT array in a text position: wrap it in str.tostring(value)".into(),
+                    });
+                }
+                let idx = self.arg_f(args, 1)?.unwrap_or(NA);
+                let idx = if idx.is_finite() && idx >= 0.0 { idx as usize } else { usize::MAX };
+                Ok(self
+                    .str_array_ref(handle)?
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_default())
+            }
             ExprKind::Call { callee, args } if callee == "array.join" => {
                 let handle = self
                     .arg_f(args, 0)?
@@ -4460,12 +4693,37 @@ impl<'a> Vm<'a> {
                     Some(a) => self.eval_s(&a.value)?,
                     None => ",".to_string(),
                 };
+                if handle >= STR_TAG {
+                    return Ok(self.str_array_ref(handle)?.join(&sep));
+                }
                 Ok(self
                     .array_ref(handle)?
                     .iter()
                     .map(|v| if v.is_finite() { format_number(*v, None) } else { "na".to_string() })
                     .collect::<Vec<_>>()
                     .join(&sep))
+            }
+            ExprKind::Ident(name) if self.str_vars.contains_key(name) => {
+                let v = self.read_str_var(name)?;
+                Ok(v.unwrap_or_default())
+            }
+            ExprKind::History { base, offset } => {
+                // `s[1]`: a string var's past, with the float buffers'
+                // carry rules.
+                let off = {
+                    let v = self.eval_f(offset)?;
+                    if v.is_finite() { v.max(0.0) as usize } else { 0 }
+                };
+                match &base.kind {
+                    ExprKind::Ident(name) if self.str_vars.contains_key(name) => {
+                        let saved = self.bar;
+                        self.bar = saved.saturating_sub(off);
+                        let v = self.read_str_var(name);
+                        self.bar = saved;
+                        Ok(v?.unwrap_or_default())
+                    }
+                    _ => Ok(String::new()),
+                }
             }
             ExprKind::Member { path } if path == "timeframe.period" => Ok(self
                 .candles
