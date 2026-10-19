@@ -30,6 +30,7 @@
 #![deny(missing_docs)]
 
 pub mod backfill;
+pub mod broker;
 pub mod bus;
 pub mod candle_builder;
 pub mod error;

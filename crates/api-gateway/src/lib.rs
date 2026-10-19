@@ -282,6 +282,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/capabilities", get(capability_report))
+        .route("/broker-capabilities", get(broker_capability_catalog))
         // Prometheus scrapes this. Public, like the health endpoints: it names
         // no user and no strategy, only counts.
         .route("/metrics", get(metrics::scrape))
@@ -771,6 +772,14 @@ async fn healthz() -> Json<HealthResponse> {
 /// limits and a deployment that looks broken.
 async fn capability_report(State(state): State<AppState>) -> Json<capabilities::CapabilityReport> {
     Json(capabilities::report(&state, now_ns()))
+}
+
+/// The broker/product capability catalog (market-data's broker registry):
+/// which data channels each product serves and which features require what.
+/// The frontend grays out unavailable features per instrument from this, and
+/// the agent reads it before promising a feature an instrument cannot serve.
+async fn broker_capability_catalog() -> Json<serde_json::Value> {
+    Json(::market_data::broker::capability_catalog())
 }
 
 /// Readiness: can we serve traffic (i.e. is the database reachable)?
