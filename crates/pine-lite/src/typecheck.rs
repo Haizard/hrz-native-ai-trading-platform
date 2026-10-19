@@ -705,6 +705,36 @@ impl Cx {
         // the user never saw). The third argument is a series expression
         // over that pair, evaluated per bar by the VM against the pooled
         // series; it may itself contain request.security (depth-capped).
+        // `alert(message[, freq])`: the message is a STRING expression --
+        // the condition-first form (alert(cond, "text")) is the classic
+        // swap and would fire every bar with the condition coerced to
+        // "1"/"0" as its text. Catch it: arg 0 must type String, arg 1
+        // must be an alert.freq_* constant.
+        if callee == "alert" {
+            if let Some(a0) = args.first() {
+                let ty = self.expr(&a0.value);
+                if ty != Ty::String {
+                    self.err(
+                        span,
+                        "`alert`'s first argument is the MESSAGE (a string); the condition goes in the `if` around it, on the line before the alert. Did you mean to gate it?".to_string(),
+                    );
+                }
+            }
+            if let Some(a1) = args.get(1) {
+                let ok = match &a1.value.kind {
+                    crate::parse::ExprKind::Ident(v)
+                    | crate::parse::ExprKind::Member { path: v } => v.starts_with("alert.freq_"),
+                    _ => false,
+                };
+                if !ok {
+                    self.err(
+                        span,
+                        "`alert`'s optional second argument is a frequency constant: alert.freq_once_per_bar_close (or omit it)".to_string(),
+                    );
+                }
+            }
+            return Ty::Float;
+        }
         if callee == "request.security" {
             if !(3..=5).contains(&args.len()) {
                 self.err(
