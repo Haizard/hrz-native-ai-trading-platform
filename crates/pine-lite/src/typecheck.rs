@@ -88,6 +88,7 @@ pub fn check_with_header(script: &Script, header: &crate::Header) -> Vec<ScriptE
         input_symbols: std::collections::HashMap::new(),
         type_fields: std::collections::HashMap::new(),
         var_udt_types: std::collections::HashMap::new(),
+        methods: std::collections::HashMap::new(),
     };
     cx.items(&script.items);
     cx.out.series_pool = std::mem::take(&mut cx.series_pool);
@@ -116,6 +117,7 @@ pub fn collect_series_pool(script: &Script, header: &crate::Header) -> Vec<Strin
         input_symbols: std::collections::HashMap::new(),
         type_fields: std::collections::HashMap::new(),
         var_udt_types: std::collections::HashMap::new(),
+        methods: std::collections::HashMap::new(),
     };
     cx.items(&script.items);
     cx.series_pool
@@ -201,6 +203,8 @@ struct Cx {
     type_fields: std::collections::HashMap<String, Vec<(String, String)>>,
     /// Vars known to hold a UDT instance: var name -> type name.
     var_udt_types: std::collections::HashMap<String, String>,
+    /// Declared methods: (receiver type, name) -> params (receiver first).
+    methods: std::collections::HashMap<(String, String), Vec<String>>,
     /// Names in scope OUTSIDE the innermost `request.security` third
     /// argument. The sub-VM that evaluates the expression starts with EMPTY
     /// vars over the pooled candles, so a chart variable captured there
@@ -549,7 +553,24 @@ impl Cx {
                 self.stmt_depth -= 1;
                 self.depth = self.depth.saturating_sub(1);
             }
-            Item::FuncDef { span, name, params, defaults, body } => {
+            Item::FuncDef { span, name, params, defaults, body, method_of } => {
+                if let Some(type_name) = method_of {
+                    // A method: the receiver type must exist, the pair
+                    // (type, name) must be new, and the receiver param
+                    // types as the UDT inside the body (field access on it
+                    // resolves through var_udt_types).
+                    if !self.type_fields.contains_key(type_name) {
+                        self.err(*span, format!(
+                            "method `{name}` receivers on `{type_name}`, which is not a declared type"
+                        ));
+                    }
+                    if let Some(recv) = params.first() {
+                        self.var_udt_types.insert(recv.clone(), type_name.clone());
+                    }
+                    if !self.methods.insert((type_name.clone(), name.clone()), params.clone()).is_none() {
+                        self.err(*span, format!("method `{name}` is defined twice on type `{type_name}`"));
+                    }
+                }
                 if self.out.functions.contains_key(name) {
                     self.err(*span, format!("function `{name}` is defined twice"));
                 }
@@ -901,6 +922,32 @@ impl Cx {
     }
 
     fn call_inner(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
+        // `p.dist(q)`: a method call on a var whose type we know. The
+        // receiver is not an argument; the rest bind by the signature.
+        if let Some((base, mname)) = callee.split_once('.') {
+            if let Some(type_name) = self.var_udt_types.get(base).cloned() {
+                if let Some(sig) = self.methods.get(&(type_name.clone(), mname.to_string())).cloned() {
+                    let positional = args.iter().filter(|a| a.name.is_none()).count();
+                    let want = sig.len().saturating_sub(1);
+                    if positional != want {
+                        self.err(span, format!(
+                            "method `{mname}` on {type_name} takes {want} argument(s) after the receiver, got {positional}"
+                        ));
+                    }
+                    for a in args {
+                        self.expr(&a.value);
+                    }
+                    return Ty::Float;
+                }
+                if self.type_fields.contains_key(&type_name) {
+                    self.err(span, format!("type {type_name} has no method `{mname}`"));
+                    for a in args {
+                        self.expr(&a.value);
+                    }
+                    return Ty::Float;
+                }
+            }
+        }
         // `Point.new(1, 2)`: a user type declared in this script. Positional
         // args fill the layout in order, named args their field; everything
         // else reads na. The value is a heap handle (a float to the VM).

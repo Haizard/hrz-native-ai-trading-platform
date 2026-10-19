@@ -89,6 +89,9 @@ pub enum Item {
         defaults: Vec<Option<Expr>>,
         /// The indented body; the last expression is the return value.
         body: Vec<Item>,
+        /// `method name(Type self, ...)`: the receiver's type. None = a
+        /// plain function.
+        method_of: Option<String>,
     },
     /// A bare call statement whose value is discarded (`plot(...)`,
     /// `strategy.entry(...)`, or any expression).
@@ -385,6 +388,7 @@ impl Parser {
                 Some(self.var_decl(span, k))
             }
             TokenKind::Keyword(k) if k == "type" => Some(self.typedef_stmt(indent, span)),
+            TokenKind::Keyword(k) if k == "method" => Some(self.methoddef(span)),
             TokenKind::Keyword(k) if k == "while" => {
                 self.bump();
                 let cond = self.expr()?;
@@ -654,7 +658,81 @@ impl Parser {
             other => self.err(span, format!("a function body starts with `=>`, found `{other:?}`")),
         }
         let body = self.block_body(span.col.saturating_sub(1));
-        Item::FuncDef { span, name, params, defaults, body }
+        Item::FuncDef { span, name, params, defaults, body, method_of: None }
+    }
+
+    /// `method name(TypeName receiver, param, ...) => body`: the same
+    /// shape as a function definition, with the receiver's type word first
+    /// inside the parens. The receiver binds the instance at the call
+    /// (`p.dist(q)`), so it is not an argument.
+    fn methoddef(&mut self, span: Span) -> Item {
+        self.bump(); // method
+        let name = match self.bump().kind {
+            TokenKind::Ident(n) => n,
+            other => {
+                self.err(span, format!("`method` needs a name, found `{other:?}`"));
+                return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+            }
+        };
+        self.bump(); // (
+        let type_name = match self.bump().kind {
+            TokenKind::Ident(t) => t,
+            other => {
+                self.err(span, format!("a method's first parameter is the receiver's type: method {name}(Point p, ...), found `{other:?}`"));
+                return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+            }
+        };
+        let receiver = match self.bump().kind {
+            TokenKind::Ident(r) => r,
+            other => {
+                self.err(span, format!("the receiver needs a name after its type: method {name}({type_name} p, ...), found `{other:?}`"));
+                return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+            }
+        };
+        let mut params = vec![receiver];
+        let mut defaults: Vec<Option<Expr>> = vec![None];
+        loop {
+            match self.bump().kind {
+                TokenKind::Ident(prm) => {
+                    // A type word before the name (`float x2`): every
+                    // parameter may declare its type, like the receiver
+                    // does. The word goes, the name stays.
+                    let prm = if Self::is_type_word(&prm)
+                        && matches!(self.peek().kind, TokenKind::Ident(_))
+                    {
+                        match self.bump().kind {
+                            TokenKind::Ident(n) => n,
+                            other => {
+                                self.err(span, format!("a typed parameter needs a name, found `{other:?}`"));
+                                break;
+                            }
+                        }
+                    } else {
+                        prm
+                    };
+                    params.push(prm);
+                    if matches!(self.peek().kind, TokenKind::Assign(ref op) if op == "=") {
+                        self.bump();
+                        let Some(d) = self.expr() else { break };
+                        defaults.push(Some(d));
+                    } else {
+                        defaults.push(None);
+                    }
+                }
+                TokenKind::RParen => break,
+                TokenKind::Comma => {}
+                other => {
+                    self.err(span, format!("bad parameter `{other:?}`"));
+                    break;
+                }
+            }
+        }
+        match self.bump().kind {
+            TokenKind::Op(op) if op == "=>" => {}
+            other => self.err(span, format!("a method body starts with `=>`, found `{other:?}`")),
+        }
+        let body = self.block_body(span.col.saturating_sub(1));
+        Item::FuncDef { span, name, params, defaults, body, method_of: Some(type_name) }
     }
 
     /// The words Pine lets a variable declaration carry. Handles

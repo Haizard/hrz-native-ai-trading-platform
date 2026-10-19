@@ -591,6 +591,9 @@ pub struct Vm<'a> {
     var_udt_types: std::collections::HashMap<String, String>,
     /// Side channel: the last `Type.new` call's type, for the Assign arm.
     last_udt_type: Option<String>,
+    /// Declared methods: (receiver type, name) -> (params with the
+    /// receiver first, body).
+    methods: std::collections::HashMap<(String, String), (Vec<String>, &'a [Item])>,
     /// `security_lower_tf` slice rotation: each call site owns up to 8
     /// heap slots, reused oldest-first. The function allocates an array
     /// per bar BY DESIGN, so the global 64-cap would kill any script that
@@ -710,6 +713,16 @@ impl<'a> Vm<'a> {
                 _ => None,
             })
             .collect();
+        let methods = script
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::FuncDef { name, params, body, method_of: Some(t), .. } => {
+                    Some(((t.clone(), name.clone()), (params.clone(), &**body)))
+                }
+                _ => None,
+            })
+            .collect();
         Self {
             script,
             type_defs,
@@ -747,6 +760,7 @@ impl<'a> Vm<'a> {
             udts_live: Vec::new(),
             var_udt_types: std::collections::HashMap::new(),
             last_udt_type: None,
+            methods,
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -3888,8 +3902,80 @@ impl<'a> Vm<'a> {
                 self.heap.push(joined);
                 Ok((self.heap.len() - 1) as f64)
             }
-            _ => self.call_user(callee, args),
+            _ => {
+                if let Some(v) = self.method_call(callee, args)? {
+                    return Ok(v);
+                }
+                self.call_user(callee, args)
+            }
         }
+    }
+
+    /// `p.dist(q)`: a method call. The callee's base is a var holding a UDT
+    /// instance; the method's receiver param binds the instance HANDLE (a
+    /// snapshot -- the body's field writes must land on the same instance)
+    /// and registers its type for the body's field reads. Returns None when
+    /// the callee is not a method on the base's type.
+    fn method_call(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+        let Some((base, mname)) = callee.split_once('.') else {
+            return Ok(None);
+        };
+        let Some(type_name) = self.var_udt_types.get(base).cloned() else {
+            return Ok(None);
+        };
+        let Some((params, body)) = self.methods.get(&(type_name.clone(), mname.to_string())).cloned() else {
+            return Ok(None);
+        };
+        if self.call_depth >= MAX_CALL_DEPTH {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Limit,
+                span: crate::Span::new(1, 1),
+                message: format!("call depth exceeds {MAX_CALL_DEPTH}; recursion is refused"),
+            });
+        }
+        self.tick()?;
+        let handle = self.read_name(base)?;
+        let recv = params.first().cloned().unwrap_or_else(|| "self".to_string());
+        let mut locals = std::collections::HashMap::new();
+        let mut series_args: std::collections::HashMap<String, Expr> = std::collections::HashMap::new();
+        // The receiver binds the instance handle itself.
+        locals.insert(recv.clone(), handle);
+        for (i, arg) in args.iter().enumerate() {
+            let param = params.get(i + 1).cloned().unwrap_or_else(|| format!("arg{i}"));
+            let resolved = self.resolve_param(&arg.value);
+            series_args.insert(param.clone(), resolved);
+            let v = self.eval_f(&arg.value)?;
+            locals.insert(param, v);
+        }
+        // The body's field reads on the receiver resolve through the UDT
+        // registry; save and restore any outer binding of the same name.
+        let prev_type = self.var_udt_types.insert(recv.clone(), type_name.clone());
+        self.series_args.push(series_args);
+        self.scopes.push(locals);
+        self.call_depth += 1;
+        let mut result = NA;
+        let last = body.len().saturating_sub(1);
+        for (i, item) in body.iter().enumerate() {
+            if i == last {
+                if let Item::Expr { expr, .. } = item {
+                    result = self.eval_f(expr)?;
+                    continue;
+                }
+            }
+            self.item(item)?;
+        }
+        self.call_depth -= 1;
+        self.scopes.pop();
+        self.series_args.pop();
+        match prev_type {
+            Some(t) => {
+                self.var_udt_types.insert(recv, t);
+            }
+            None => {
+                self.var_udt_types.remove(&recv);
+            }
+        }
+        Ok(Some(result))
     }
 
     /// Evaluate an argument into a whole-window series, for the ta functions
