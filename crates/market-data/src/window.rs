@@ -171,6 +171,7 @@ pub struct WindowService {
     history: Arc<HistoryRegistry>,
     live: Arc<LiveRegistry>,
     backfill: BackfillClient,
+    deriv: Option<crate::deriv::DerivClient>,
 }
 
 impl WindowService {
@@ -185,7 +186,16 @@ impl WindowService {
             history,
             live,
             backfill,
+            deriv: None,
         }
+    }
+
+    /// Attach the Deriv client: namespaced `DERIV:`/`DERIV-FX:` symbols then
+    /// fetch from the Deriv API instead of the crypto venues.
+    #[must_use]
+    pub fn with_deriv(mut self, deriv: crate::deriv::DerivClient) -> Self {
+        self.deriv = Some(deriv);
+        self
     }
 
     /// The buffer this service reads.
@@ -274,7 +284,27 @@ impl WindowService {
                 (from_ns, gap_end)
             };
 
-            match self
+            // The multi-broker route: a namespaced Deriv symbol fetches from
+            // the Deriv API, everything else from the crypto venues. Rows
+            // arrive as finished candles either way.
+            let deriv_code = crate::deriv::code_for_namespaced(&symbol);
+            match (deriv_code, &self.deriv) {
+                (Some(code), Some(client)) => {
+                    match client.candles(code, timeframe, wanted, fetch_to).await {
+                        Ok(cs) => {
+                            // The Deriv client already answers in our Candle
+                            // type -- no row mapping needed.
+                            fetched = cs;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                symbol, %timeframe, error = %e,
+                                "the Deriv API refused part of the window; serving what is in RAM"
+                            );
+                        }
+                    }
+                }
+                _ => match self
                 .backfill
                 .fetch_klines(&symbol, timeframe, fetch_from, fetch_to)
                 .await
@@ -295,6 +325,7 @@ impl WindowService {
                         "the venue refused part of the window; serving what is in RAM"
                     );
                 }
+            },
             }
         }
         let venue = fetched.len();

@@ -736,6 +736,20 @@ pub async fn replay_script_preview(
         let is_own = sym.eq_ignore_ascii_case(symbol) && pooled_tf == tf;
         let raw = if is_own {
             candles.clone()
+        } else if let Some(code) = ::market_data::deriv::code_for_namespaced(sym) {
+            // A Deriv symbol: the Deriv API's own candle page (ticks_history
+            // style=candles), in our Candle shape already.
+            let client = ::market_data::deriv::DerivClient::from_env();
+            let count = (((to_ns - from_ns).max(1) / pooled_tf.nanos().max(1)) as usize).clamp(1, 5000);
+            let fetched = client.candles(code, pooled_tf, count, to_ns).await.unwrap_or_else(|e| {
+                tracing::warn!(%sym, error = %e, "deriv pool fetch failed");
+                Vec::new()
+            });
+            if fetched.is_empty() {
+                tracing::warn!(%sym, "deriv pool fetch came back empty");
+                continue;
+            }
+            fetched
         } else if let Some((leg_a, op, leg_b)) = parse_synthetic(sym) {
             // A synthetic ticker: fetch both legs and compose pointwise
             // (BTCUSDT/ETHUSDT is the strength-ratio classic).

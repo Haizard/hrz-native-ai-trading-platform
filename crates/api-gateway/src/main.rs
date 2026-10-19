@@ -71,7 +71,8 @@ async fn main() -> anyhow::Result<()> {
     // rather than fresh ones: a second `HistoryRegistry` would be a second,
     // permanently empty answer to the same question, which is the shape of the
     // defect this replaced.
-    let windows = market_data::WindowService::new(bots.history(), bots.live(), backfill.clone());
+    let windows = market_data::WindowService::new(bots.history(), bots.live(), backfill.clone())
+        .with_deriv(market_data::deriv::DerivClient::from_env());
 
     // The venue's own listing, for search and validation. Fetched lazily on
     // first use rather than here, so a venue that is slow or unreachable at boot
