@@ -733,6 +733,75 @@ mod tests {
     }
 
     #[test]
+    fn vwma_weights_by_volume_and_swma_is_the_fixed_four() {
+        let candles = |vols: &[f64]| -> Vec<Candle> {
+            vols.iter()
+                .map(|v| Candle {
+                    symbol: "T".to_string(),
+                    timeframe: analytics_core::types::Timeframe::M1,
+                    open_time: 0,
+                    open: 0.0,
+                    high: 0.0,
+                    low: 0.0,
+                    close: 0.0,
+                    volume: *v,
+                    buy_volume: 0.0,
+                    sell_volume: 0.0,
+                })
+                .collect()
+        };
+        // Flat volume: vwma == sma.
+        let src = rising(6);
+        let flat = candles(&[1.0; 6]);
+        let vw = ta_vwma(&src, &flat, 3.0);
+        let sm = ta_sma(&src, 3.0);
+        assert!((vw[5] - sm[5]).abs() < 1e-9, "flat volume = plain mean");
+        // Weighted: (10*1 + 20*3) / 4 = 17.5.
+        let s2 = vec![10.0, 20.0];
+        let c2 = candles(&[1.0, 3.0]);
+        let vw2 = ta_vwma(&s2, &c2, 2.0);
+        assert!((vw2[1] - 17.5).abs() < 1e-9, "volume tips the mean");
+        // swma of 1,2,3,4 = (1 + 4 + 6 + 4) / 6 = 2.5.
+        let sw = ta_swma(&vec![1.0, 2.0, 3.0, 4.0]);
+        assert!((sw[3] - 2.5).abs() < 1e-9, "the (1,2,2,1)/6 window");
+        assert!(sw[2].is_nan(), "swma needs its four bars");
+    }
+
+    #[test]
+    fn alma_of_a_constant_is_the_constant_and_linreg_hits_the_line() {
+        let flat = vec![42.0; 12];
+        let al = ta_alma(&flat, 9.0, 0.85, 6.0);
+        assert!((al[11] - 42.0).abs() < 1e-9, "normalized weights keep a constant");
+        // y = 2x + 1: the regression line at the window's last bar IS y.
+        let line: Vec<f64> = (0..10).map(|i| 2.0 * i as f64 + 1.0).collect();
+        let lr = ta_linreg(&line, 5.0, 0.0);
+        assert!((lr[9] - line[9]).abs() < 1e-9, "offset 0 tracks the line");
+        // offset 2 projects two bars of slope forward: y + 2 * slope.
+        let lp = ta_linreg(&line, 5.0, 2.0);
+        assert!((lp[9] - (line[9] + 4.0)).abs() < 1e-9, "offset projects the slope");
+    }
+
+    #[test]
+    fn tema_of_a_constant_is_the_constant_after_the_triple_warmup() {
+        let flat = vec![7.0; 30];
+        let te = ta_tema(&flat, 5.0);
+        // Triple warmup: ema seeds at 4, the second at 8, the third at 12.
+        assert!(te[11].is_nan(), "the third nesting is still warming");
+        assert!((te[12] - 7.0).abs() < 1e-9, "constant survives three nestings");
+        // On a rising series TEMA lags less than the plain EMA.
+        let up = rising(60);
+        let te = ta_tema(&up, 10.0);
+        let em = ta_ema(&up, 10.0);
+        assert!(
+            (up[59] - te[59]).abs() < (up[59] - em[59]).abs(),
+            "TEMA hugs the ramp closer than EMA: tema={} ema={} src={}",
+            te[59],
+            em[59],
+            up[59]
+        );
+    }
+
+    #[test]
     fn correlation_of_proportional_series_is_one() {
         let x = rising(10);
         let y: Vec<f64> = x.iter().map(|v| 3.0 * v + 2.0).collect();
@@ -1059,5 +1128,146 @@ pub fn ta_range(source: &[f64], length: f64) -> Series {
     hi.iter()
         .zip(lo.iter())
         .map(|(a, b)| if a.is_finite() && b.is_finite() { a - b } else { NA })
+        .collect()
+}
+
+/// `ta.vwma(source, length)` -- volume-weighted: sum(source * volume) /
+/// sum(volume) over the window; na when the window's volume sums to zero.
+#[must_use]
+pub fn ta_vwma(source: &[f64], candles: &[Candle], length: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let mut out = vec![NA; source.len()];
+    for i in (n - 1)..source.len() {
+        let mut num = 0.0;
+        let mut den = 0.0;
+        let mut ok = true;
+        for k in i + 1 - n..=i {
+            let vol = candles.get(k).map(|c| c.volume).unwrap_or(NA);
+            let s = source[k];
+            if !s.is_finite() || !vol.is_finite() {
+                ok = false;
+                break;
+            }
+            num += s * vol;
+            den += vol;
+        }
+        if ok && den > 0.0 {
+            out[i] = num / den;
+        }
+    }
+    out
+}
+
+/// `ta.swma(source)` -- the fixed symmetric 4-bar weighted MA, weights
+/// (1, 2, 2, 1) / 6. No length argument: Pine's swma is always 4 bars.
+#[must_use]
+pub fn ta_swma(source: &[f64]) -> Series {
+    const W: [f64; 4] = [1.0 / 6.0, 2.0 / 6.0, 2.0 / 6.0, 1.0 / 6.0];
+    let mut out = vec![NA; source.len()];
+    for i in 3..source.len() {
+        let w = &source[i - 3..=i];
+        if w.iter().all(|v| v.is_finite()) {
+            out[i] = w.iter().zip(W.iter()).map(|(v, k)| v * k).sum();
+        }
+    }
+    out
+}
+
+/// `ta.alma(source, length, offset, sigma)` -- Arnaud Legoux: Gaussian
+/// weights centered at floor(offset * (length - 1)) with width
+/// length / sigma, so offset > 0.5 skews the weight toward recent bars.
+#[must_use]
+pub fn ta_alma(source: &[f64], length: f64, offset: f64, sigma: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let m = (offset.clamp(0.0, 1.0) * (n as f64 - 1.0)).floor();
+    let s = (n as f64 / sigma.max(0.01)).max(0.01);
+    let mut out = vec![NA; source.len()];
+    for i in (n - 1)..source.len() {
+        let w = &source[i + 1 - n..=i];
+        if w.iter().all(|v| v.is_finite()) {
+            let mut num = 0.0;
+            let mut den = 0.0;
+            for (k, v) in w.iter().enumerate() {
+                let d = (k as f64 - m) / s;
+                let weight = (-d * d / 2.0).exp();
+                num += v * weight;
+                den += weight;
+            }
+            if den > 0.0 {
+                out[i] = num / den;
+            }
+        }
+    }
+    out
+}
+
+/// `ta.linreg(source, length, offset)` -- the least-squares regression
+/// line's value at the window's last bar plus `offset` (a positive offset
+/// projects the line forward; that projection is the classic "linreg band"
+/// idiom). `ta.lsma` is Pine's legacy name for the same function.
+#[must_use]
+pub fn ta_linreg(source: &[f64], length: f64, offset: f64) -> Series {
+    let n = (length.max(1.0) as usize).min(source.len().max(1));
+    let off = if offset.is_finite() { offset } else { 0.0 };
+    let mut out = vec![NA; source.len()];
+    for i in (n - 1)..source.len() {
+        let w = &source[i + 1 - n..=i];
+        if w.iter().all(|v| v.is_finite()) {
+            let nf = n as f64;
+            let sx = nf * (nf - 1.0) / 2.0;
+            let sxx = nf * (nf - 1.0) * (2.0 * nf - 1.0) / 6.0;
+            let sy: f64 = w.iter().sum();
+            let sxy: f64 = w.iter().enumerate().map(|(k, v)| k as f64 * v).sum();
+            let denom = nf * sxx - sx * sx;
+            if denom != 0.0 {
+                let slope = (nf * sxy - sx * sy) / denom;
+                let intercept = (sy - slope * sx) / nf;
+                out[i] = intercept + slope * ((nf - 1.0) + off);
+            }
+        }
+    }
+    out
+}
+
+/// `ta.lsma(source, length, offset)` -- Pine's legacy alias of `ta.linreg`.
+#[must_use]
+pub fn ta_lsma(source: &[f64], length: f64, offset: f64) -> Series {
+    ta_linreg(source, length, offset)
+}
+
+/// Run `f` on the finite tail of `source` -- everything from its first
+/// finite value -- and re-pad the warmup with na. This is the adapter that
+/// lets a crate-backed average (whose seed needs a finite window, and whose
+/// all-or-nothing contract otherwise refuses a series that already HAS a
+/// warmup) nest under Pine's "an average of an average starts at the first
+/// bar the inner one is valid" rule. TEMA is the customer.
+fn on_finite_tail(source: &[f64], f: impl Fn(&[f64]) -> Series) -> Series {
+    let Some(start) = source.iter().position(|v| v.is_finite()) else {
+        return vec![NA; source.len()];
+    };
+    let tail = f(&source[start..]);
+    let mut out = vec![NA; source.len()];
+    out[start..].copy_from_slice(&tail);
+    out
+}
+
+/// `ta.tema(source, length)` -- triple EMA: 3*ema1 - 3*ema2 + ema3. The
+/// nested EMAs run on the finite tail of their input, so the double warmup
+/// (then triple) is the only na span, matching Pine.
+#[must_use]
+pub fn ta_tema(source: &[f64], length: f64) -> Series {
+    let e1 = ta_ema(source, length);
+    let e2 = on_finite_tail(&e1, |s| ta_ema(s, length));
+    let e3 = on_finite_tail(&e2, |s| ta_ema(s, length));
+    e1.iter()
+        .zip(e2.iter())
+        .zip(e3.iter())
+        .map(|((a, b), c)| {
+            if a.is_finite() && b.is_finite() && c.is_finite() {
+                3.0 * a - 3.0 * b + c
+            } else {
+                NA
+            }
+        })
         .collect()
 }

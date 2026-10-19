@@ -2374,6 +2374,15 @@ impl<'a> Vm<'a> {
             });
         }
         macro_rules! a {
+            ($i:expr, $default:expr) => {
+                match args.get($i) {
+                    Some(arg) => {
+                        let v = self.eval_f(&arg.value)?;
+                        if v.is_finite() { v } else { $default }
+                    }
+                    None => $default,
+                }
+            };
             ($i:expr) => {
                 match args.get($i) {
                     Some(arg) => self.eval_f(&arg.value),
@@ -2539,6 +2548,27 @@ impl<'a> Vm<'a> {
                 } else {
                     ta::ta_percentile_nearest_rank(&src, len, pct)
                 }[self.bar])
+            }
+            "ta.vwma" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_vwma(&src, self.candles, a!(1)?)[self.bar])
+            }
+            "ta.swma" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_swma(&src)[self.bar])
+            }
+            "ta.alma" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_alma(&src, a!(1)?, a!(2, 0.85), a!(3, 6.0))[self.bar])
+            }
+            "ta.lsma" | "ta.linreg" => {
+                let src = self.series_arg(args, 0)?;
+                let f = if callee == "ta.lsma" { ta::ta_lsma } else { ta::ta_linreg };
+                Ok(f(&src, a!(1)?, a!(2, 0.0))[self.bar])
+            }
+            "ta.tema" => {
+                let src = self.series_arg(args, 0)?;
+                Ok(ta::ta_tema(&src, a!(1)?)[self.bar])
             }
             "ta.hma" => {
                 let src = self.series_arg(args, 0)?;
