@@ -986,6 +986,7 @@ impl Cx {
             "ta.crossover" | "ta.crossunder" | "ta.cross" | "ta.rising" | "ta.falling" => {
                 Ty::Bool
             }
+            "map.contains" => Ty::Bool,
             "timeframe.change" => Ty::Bool,
             "str.tostring" | "str.format" | "array.join" => Ty::String,
             "color.new" | "color.rgb" | "color.from_gradient" => Ty::Color,
@@ -1088,6 +1089,10 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "array.size" | "array.first" | "array.last" | "array.min" | "array.max"
         | "array.avg" => (1, 1),
         "array.includes" => (2, 2),
+        "map.new" => (0, 0),
+        "map.put" => (3, 3),
+        "map.get" | "map.contains" | "map.remove" => (2, 2),
+        "map.size" | "map.clear" => (1, 1),
         "array.from" => (0, 8),
         "array.slice" => (3, 3),
         "array.join" => (1, 2),

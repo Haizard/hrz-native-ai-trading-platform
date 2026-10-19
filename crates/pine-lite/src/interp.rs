@@ -569,6 +569,8 @@ pub struct Vm<'a> {
     /// as long as the array heap -- a var array of point handles built
     /// across bars must resolve every handle at polyline.new time.
     points_heap: Vec<(f64, f64)>,
+    /// The `map.new` heap: string-keyed float maps by handle.
+    maps_live: Vec<std::collections::HashMap<String, f64>>,
     /// The live drawing-object arena: `l = line.new(...)` binds the ARENA
     /// INDEX as a float handle, setters mutate through it, deletes clear
     /// the slot. `out.objects` fills from this at the end of the run
@@ -684,6 +686,7 @@ impl<'a> Vm<'a> {
             linefills_live: Vec::new(),
             polylines_live: Vec::new(),
             points_heap: Vec::new(),
+            maps_live: Vec::new(),
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -857,6 +860,7 @@ impl<'a> Vm<'a> {
         self.linefills_live.clear();
         self.polylines_live.clear();
         self.points_heap.clear();
+        self.maps_live.clear();
         self.deferred.clear();
         self.deferred_seen.clear();
         self.steps = 0;
@@ -1877,6 +1881,24 @@ impl<'a> Vm<'a> {
                 self.array_ref(handle)?.clear();
                 Ok(())
             }
+            "map.put" => {
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                let key = self.eval_s(&args[1].value)?;
+                let value = self.arg_f(args, 2)?.unwrap_or(NA);
+                self.map_ref(handle)?.insert(key, value);
+                Ok(())
+            }
+            "map.remove" => {
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                let key = self.eval_s(&args[1].value)?;
+                self.map_ref(handle)?.remove(&key);
+                Ok(())
+            }
+            "map.clear" => {
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                self.map_ref(handle)?.clear();
+                Ok(())
+            }
             "array.fill" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
                 let value = self.arg_f(args, 1)?.unwrap_or(NA);
@@ -2596,6 +2618,18 @@ impl<'a> Vm<'a> {
             });
         }
         Ok(&mut self.heap[handle as usize])
+    }
+
+    /// A live map by handle, or the create-one error.
+    fn map_ref(&mut self, handle: f64) -> Result<&mut std::collections::HashMap<String, f64>, crate::ScriptError> {
+        if !handle.is_finite() || handle < 0.0 || handle >= self.maps_live.len() as f64 {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "that variable does not hold a map; create one with `var m = map.new()`".into(),
+            });
+        }
+        Ok(&mut self.maps_live[handle as usize])
     }
 
     /// `array.get(a, i)`, bounds-checked.
@@ -3385,6 +3419,31 @@ impl<'a> Vm<'a> {
                     self.array_ref(handle)?.iter().any(|v| (*v - needle).abs() < f64::EPSILON),
                 ))
             }
+            "map.new" => {
+                if self.maps_live.len() >= MAX_ARRAYS {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Limit,
+                        span: crate::Span::new(1, 1),
+                        message: format!("more than {MAX_ARRAYS} maps; allocate them once with `var`"),
+                    });
+                }
+                self.maps_live.push(std::collections::HashMap::new());
+                Ok((self.maps_live.len() - 1) as f64)
+            }
+            "map.get" => {
+                let handle = a!(0)?;
+                let key = self.eval_s(&args[1].value)?;
+                Ok(self.map_ref(handle)?.get(&key).copied().unwrap_or(NA))
+            }
+            "map.contains" => {
+                let handle = a!(0)?;
+                let key = self.eval_s(&args[1].value)?;
+                Ok(f64::from(self.map_ref(handle)?.contains_key(&key)))
+            }
+            "map.size" => {
+                let handle = a!(0)?;
+                Ok(self.map_ref(handle)?.len() as f64)
+            }
             "array.from" => {
                 if self.heap.len() >= MAX_ARRAYS {
                     return Err(crate::ScriptError {
@@ -3799,6 +3858,17 @@ impl<'a> Vm<'a> {
                             message: "a switch in a text position matched no arm and has no `=>` default".into(),
                         })
                     }
+                }
+            }
+            ExprKind::Ternary { cond, then, els } => {
+                // A string ternary in a text slot (`cond ? "UP" : "DOWN"`):
+                // the branch is a string expression, so evaluate it HERE --
+                // falling through to the numeric coercion would render na.
+                let c = self.eval_f(cond)?;
+                if self.truthy(c) {
+                    self.eval_s(then)
+                } else {
+                    self.eval_s(els)
                 }
             }
             ExprKind::Call { callee, args } if callee == "array.join" => {
