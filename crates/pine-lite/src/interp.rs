@@ -2069,7 +2069,11 @@ impl<'a> Vm<'a> {
             "last_bar_index" => (self.candles.len().saturating_sub(1)) as f64,
             "time" => c.open_time as f64,
             "time_close" => (c.open_time + c.timeframe.nanos()) as f64,
-            "barstate.isconfirmed" => 1.0, // the host only runs closed bars
+            // The host replays closed bars once each: every bar is "new"
+            // and confirmed; first/last mark the window's edges.
+            "barstate.isconfirmed" | "barstate.isnew" => 1.0,
+            "barstate.isfirst" => f64::from(self.bar == 0),
+            "barstate.islast" => f64::from(self.bar + 1 == self.candles.len()),
             "syminfo.mintick" => match self.inputs.mintick {
                 Some(t) if t > 0.0 => t,
                 _ => {

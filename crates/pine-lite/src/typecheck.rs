@@ -625,16 +625,19 @@ impl Cx {
             }
             return ty;
         }
+        // Namespaced constants first: a dotted constant in BOTH tables
+        // (extend.*, position.*, the barstate set) has a precise type that
+        // the builtins fallback's blanket Float would hide -- a barstate
+        // read must type Bool or ternaries on it refuse.
+        if let Some(ty) = namespace_const(name) {
+            return ty;
+        }
         if self.out.variables.contains_key(name) || self.builtins_contains(name) {
             return Ty::Float;
         }
         if self.out.functions.contains_key(name) {
             self.err(span, format!("`{name}` is a function; call it or rename the variable"));
             return Ty::Float;
-        }
-        // Namespaced constants: colors are values, barstate reads as a bool.
-        if let Some(ty) = namespace_const(name) {
-            return ty;
         }
         self.unknown(span, name)
     }
@@ -656,7 +659,9 @@ impl Cx {
             "position.top_right" | "position.top_left" | "position.top_center"
             | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
             | "position.middle_right" | "position.middle_left" | "position.middle_center" => Ty::String,
-            "barstate.isconfirmed" => Ty::Bool,
+            "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
+                Ty::Bool
+            }
             "syminfo.ticker" => Ty::String,
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
             | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => Ty::Float,
@@ -859,7 +864,9 @@ impl Cx {
             }
             "str.tostring" | "str.format" | "array.join" => Ty::String,
             "color.new" | "color.rgb" | "color.from_gradient" => Ty::Color,
-            "barstate.isconfirmed" => Ty::Bool,
+            "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
+                Ty::Bool
+            }
             _ => Ty::Float,
         }
     }
@@ -873,6 +880,7 @@ impl Cx {
                 | "extend.none" | "extend.right" | "extend.left" | "extend.both"
                 | "color.new" | "color.rgb" | "color.from_gradient"
                 | "math.pi"
+                | "barstate.isnew" | "barstate.isfirst" | "barstate.islast"
                 | "position.top_right" | "position.top_left" | "position.top_center"
                 | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
                 | "position.middle_right" | "position.middle_left" | "position.middle_center"
@@ -1040,7 +1048,9 @@ fn namespace_const(name: &str) -> Option<Ty> {
         return Some(Ty::Color);
     }
     match name {
-        "barstate.isconfirmed" => Some(Ty::Bool),
+        "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
+            Some(Ty::Bool)
+        }
         "syminfo.ticker" => Some(Ty::String),
         "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
         | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => Some(Ty::Float),
