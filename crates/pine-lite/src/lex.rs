@@ -362,7 +362,7 @@ fn is_keyword(word: &str) -> bool {
     matches!(
         word,
         "var" | "varip" | "if" | "else" | "for" | "to" | "by" | "while" | "true" | "false" | "na"
-            | "switch"
+            | "switch" | "type"
         // The logic connectives are reserved words: the parser's `and`/`or`
         // precedence levels match on `Keyword`, so lexing them as identifiers
         // silently terminated every compound condition at the first `and`.

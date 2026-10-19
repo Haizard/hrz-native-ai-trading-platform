@@ -23,6 +23,16 @@ pub struct Script {
 /// script.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
+    /// `type Point` then indented `float x` field lines.
+    TypeDef {
+        /// Where the statement starts.
+        span: Span,
+        /// The type's name.
+        name: String,
+        /// (name, type word) per field, in declaration order: the instance
+        /// layout.
+        fields: Vec<(String, String)>,
+    },
     /// `r = ta.rsi(close, 14)` or `var count = 0`.
     Assign {
         /// Where the statement starts.
@@ -374,6 +384,7 @@ impl Parser {
                 self.bump();
                 Some(self.var_decl(span, k))
             }
+            TokenKind::Keyword(k) if k == "type" => Some(self.typedef_stmt(indent, span)),
             TokenKind::Keyword(k) if k == "while" => {
                 self.bump();
                 let cond = self.expr()?;
@@ -681,6 +692,63 @@ impl Parser {
         }
         self.pos = save;
         result
+    }
+
+    /// `type Point` then indented field lines, one `float x` per line.
+    fn typedef_stmt(&mut self, indent: usize, span: Span) -> Item {
+        self.bump(); // type
+        let name = match self.bump().kind {
+            TokenKind::Ident(n) => n,
+            other => {
+                self.err(span, format!("`type` needs a name (type Point), found `{other:?}`"));
+                return Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } };
+            }
+        };
+        self.end_of_line();
+        // Field lines: indented `float x` pairs (the type words the
+        // declaration forms already know, plus `array`).
+        let mut fields: Vec<(String, String)> = Vec::new();
+        loop {
+            let save = self.pos;
+            self.skip_blank();
+            let field_indent = self.peek().span.col.saturating_sub(1);
+            if field_indent <= indent || matches!(self.peek().kind, TokenKind::Eof) {
+                self.pos = save;
+                break;
+            }
+            let word = match self.bump().kind {
+                TokenKind::Ident(w) => w,
+                other => {
+                    self.err(self.peek().span, format!("a field line is `float x` (a type word then a name), found `{other:?}`"));
+                    break;
+                }
+            };
+            let ok_word = Self::is_type_word(&word) || word == "array";
+            if !ok_word {
+                self.err(self.peek().span, format!("`{word}` is not a field type; fields are float/int/bool/color, a handle type, or array"));
+                break;
+            }
+            let fname = match self.bump().kind {
+                TokenKind::Ident(n) => n,
+                other => {
+                    self.err(self.peek().span, format!("a field needs a name after its type, found `{other:?}`"));
+                    break;
+                }
+            };
+            fields.push((fname, word));
+            match self.peek().kind {
+                TokenKind::Newline => {}
+                TokenKind::Eof => break,
+                _ => {
+                    self.err(self.peek().span, "one field per line");
+                    break;
+                }
+            }
+        }
+        if fields.is_empty() {
+            self.err(span, format!("type {name} declares no fields"));
+        }
+        Item::TypeDef { span, name, fields }
     }
 
     /// `switch [subject]` then indented `test => result` lines, with a

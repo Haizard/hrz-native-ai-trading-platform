@@ -582,6 +582,15 @@ pub struct Vm<'a> {
     last_input_sym: Option<String>,
     /// `input.symbol` var name -> chosen symbol.
     input_symbols: std::collections::HashMap<String, String>,
+    /// The script's UDT declarations: type name -> ordered (field, type
+    /// word) layout, hoisted from the items at construction.
+    type_defs: std::collections::HashMap<String, Vec<(String, String)>>,
+    /// The UDT instance heap: (type name, field values) by handle.
+    udts_live: Vec<(String, Vec<f64>)>,
+    /// Vars known to hold a UDT instance: var name -> type name.
+    var_udt_types: std::collections::HashMap<String, String>,
+    /// Side channel: the last `Type.new` call's type, for the Assign arm.
+    last_udt_type: Option<String>,
     /// `security_lower_tf` slice rotation: each call site owns up to 8
     /// heap slots, reused oldest-first. The function allocates an array
     /// per bar BY DESIGN, so the global 64-cap would kill any script that
@@ -693,8 +702,17 @@ impl<'a> Vm<'a> {
     }
 
     fn with_fuel(script: &'a Script, candles: &'a [Candle], inputs: &'a Inputs, fuel: u64) -> Self {
+        let type_defs = script
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::TypeDef { name, fields, .. } => Some((name.clone(), fields.clone())),
+                _ => None,
+            })
+            .collect();
         Self {
             script,
+            type_defs,
             candles,
             inputs,
             vars: std::collections::HashMap::new(),
@@ -726,6 +744,9 @@ impl<'a> Vm<'a> {
             last_input_sym: None,
             input_symbols: std::collections::HashMap::new(),
             ltf_slots: std::collections::HashMap::new(),
+            udts_live: Vec::new(),
+            var_udt_types: std::collections::HashMap::new(),
+            last_udt_type: None,
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -907,6 +928,9 @@ impl<'a> Vm<'a> {
         self.maps_live.clear();
         self.matrices_live.clear();
         self.ltf_slots.clear();
+        self.udts_live.clear();
+        self.var_udt_types.clear();
+        self.last_udt_type = None;
         self.deferred.clear();
         self.deferred_seen.clear();
         self.steps = 0;
@@ -1004,6 +1028,9 @@ impl<'a> Vm<'a> {
     fn item(&mut self, item: &Item) -> Result<(), crate::ScriptError> {
         self.tick()?;
         match item {
+            // A type declaration is read at VM construction; the item
+            // itself does nothing per bar.
+            Item::TypeDef { .. } => {}
             Item::Assign { name, mode, expr, op, .. } => {
                 // `x = input.int(...)` -- the input reads its name from the
                 // assignment target.
@@ -1027,6 +1054,36 @@ impl<'a> Vm<'a> {
                         if let Some(tf) = self.last_input_tf.take() {
                             self.input_timeframes.insert(name.clone(), tf);
                         }
+                        return Ok(());
+                    }
+                }
+                // `p.x := v`: a field write on a var that holds a UDT
+                // instance. (Checked before the plain path -- `p.x` is not
+                // a plain variable name.)
+                if let Some((base, field)) = name.split_once('.') {
+                    if self.var_udt_types.contains_key(base) {
+                        let value = self.eval_f(expr)?;
+                        let handle = self.read_name(base)?;
+                        let idx = if handle.is_finite() && handle >= 0.0 { handle as usize } else { usize::MAX };
+                        let Some((type_name, values)) = self.udts_live.get_mut(idx) else {
+                            return Err(crate::ScriptError {
+                                kind: crate::ErrorKind::Type,
+                                span: crate::Span::new(1, 1),
+                                message: format!("`{base}` does not hold a live instance"),
+                            });
+                        };
+                        let Some((fi, _)) = self.type_defs[type_name.as_str()]
+                            .iter()
+                            .enumerate()
+                            .find(|(_, (f, _))| f == field)
+                        else {
+                            return Err(crate::ScriptError {
+                                kind: crate::ErrorKind::Type,
+                                span: crate::Span::new(1, 1),
+                                message: format!("type {type_name} has no field `{field}`"),
+                            });
+                        };
+                        values[fi] = value;
                         return Ok(());
                     }
                 }
@@ -1062,6 +1119,11 @@ impl<'a> Vm<'a> {
                     return Ok(());
                 }
                 let value = self.eval_f(expr)?;
+                // The var's UDT type rides the side channel a `Type.new`
+                // call set DURING the right-hand side's evaluation.
+                if let Some(tn) = self.last_udt_type.take() {
+                    self.var_udt_types.insert(name.clone(), tn);
+                }
                 // Ring buffer: one slot per bar, written at the current bar.
                 // `var`/`varip` initialize **once** (bar 0) and then carry:
                 // their earlier slots stay frozen so `count := count + 1`
@@ -2493,6 +2555,33 @@ impl<'a> Vm<'a> {
                 return Ok(*v);
             }
         }
+        // A dotted name whose base holds a UDT instance: `p.x` reads the
+        // instance's field. (Namespace constants -- ta.*, color.* -- never
+        // land here: they resolve through read_member below or earlier
+        // checks.)
+        if let Some((base, field)) = name.split_once('.') {
+            if self.var_udt_types.contains_key(base) {
+                let handle = self.read_name(base)?;
+                let idx = if handle.is_finite() && handle >= 0.0 { handle as usize } else { usize::MAX };
+                let Some((type_name, values)) = self.udts_live.get(idx) else {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!("`{base}` does not hold a live instance (was it created with {base} = Type.new(...)?)"),
+                    });
+                };
+                let layout = &self.type_defs[type_name];
+                let Some((fi, _)) = layout.iter().enumerate().find(|(_, (f, _))| f == field) else {
+                    let known: Vec<&str> = layout.iter().map(|(f, _)| f.as_str()).collect();
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!("type {type_name} has no field `{field}`; fields: {}", known.join(", ")),
+                    });
+                };
+                return Ok(values[fi]);
+            }
+        }
         if let Some(buf) = self.vars.get(name) {
             // Pine carry-forward: a variable read before its (re)assignment
             // this bar has the value it ended the previous bar with -- this
@@ -2878,6 +2967,29 @@ impl<'a> Vm<'a> {
         // every color= argument accepts (vars, ternaries, inline calls).
         if let Some(v) = self.color_call(callee, args)? {
             return Ok(v);
+        }
+        // `Point.new(x, y)`: a user type the script declared. Field values
+        // fill in declaration order (positional) or by field name; missing
+        // fields read na. The handle rides the udt heap; the Assign arm
+        // records the var's type through the side channel.
+        if let Some(type_name) = callee.strip_suffix(".new") {
+            if let Some(layout) = self.type_defs.get(type_name).cloned() {
+                self.tick()?;
+                let mut values = vec![NA; layout.len()];
+                for (idx, (fname, _)) in layout.iter().enumerate() {
+                    if let Some(a) = args.iter().find(|a| a.name.as_deref() == Some(fname.as_str())) {
+                        values[idx] = self.eval_f(&a.value)?;
+                    }
+                }
+                let positional: Vec<&Arg> = args.iter().filter(|a| a.name.is_none()).collect();
+                for (a, slot) in positional.iter().zip(values.iter_mut()) {
+                    *slot = self.eval_f(&a.value)?;
+                }
+                let handle = self.udts_live.len() as f64;
+                self.udts_live.push((type_name.to_string(), values));
+                self.last_udt_type = Some(type_name.to_string());
+                return Ok(handle);
+            }
         }
         if let Some(kind) = callee.strip_prefix("input.") {
             let name = self.current_input_name.clone();

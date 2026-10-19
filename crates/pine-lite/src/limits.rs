@@ -49,6 +49,7 @@ impl Limiter {
                 );
             }
             match item {
+                Item::TypeDef { .. } => {}
                 Item::Assign { span, expr, .. } => {
                     self.expr(expr);
                     let _ = span;
@@ -125,6 +126,7 @@ impl Limiter {
 
 fn span_of(item: &Item) -> crate::Span {
     match item {
+        Item::TypeDef { span, .. } => *span,
         Item::Assign { span, .. }
         | Item::Block { span, .. }
         | Item::FuncDef { span, .. }

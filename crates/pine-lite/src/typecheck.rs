@@ -86,6 +86,8 @@ pub fn check_with_header(script: &Script, header: &crate::Header) -> Vec<ScriptE
         stmt_depth: 0,
         top_assigned: std::collections::HashSet::new(),
         input_symbols: std::collections::HashMap::new(),
+        type_fields: std::collections::HashMap::new(),
+        var_udt_types: std::collections::HashMap::new(),
     };
     cx.items(&script.items);
     cx.out.series_pool = std::mem::take(&mut cx.series_pool);
@@ -112,6 +114,8 @@ pub fn collect_series_pool(script: &Script, header: &crate::Header) -> Vec<Strin
         stmt_depth: 0,
         top_assigned: std::collections::HashSet::new(),
         input_symbols: std::collections::HashMap::new(),
+        type_fields: std::collections::HashMap::new(),
+        var_udt_types: std::collections::HashMap::new(),
     };
     cx.items(&script.items);
     cx.series_pool
@@ -193,6 +197,10 @@ struct Cx {
     input_timeframes: std::collections::HashMap<String, String>,
     /// `input.symbol` var name -> its chosen symbol (defval or host).
     input_symbols: std::collections::HashMap<String, String>,
+    /// Declared UDTs: type name -> ordered (field, type word) layout.
+    type_fields: std::collections::HashMap<String, Vec<(String, String)>>,
+    /// Vars known to hold a UDT instance: var name -> type name.
+    var_udt_types: std::collections::HashMap<String, String>,
     /// Names in scope OUTSIDE the innermost `request.security` third
     /// argument. The sub-VM that evaluates the expression starts with EMPTY
     /// vars over the pooled candles, so a chart variable captured there
@@ -365,6 +373,28 @@ impl Cx {
                     self.out.variables.insert(name.clone(), VarMode::Auto);
                 }
             }
+            Item::TypeDef { span, name, fields } => {
+                if self.type_fields.contains_key(name) {
+                    self.err(*span, format!("type `{name}` is declared twice"));
+                }
+                // A field name may not repeat inside one type; the instance
+                // layout is the declaration order.
+                let mut seen = std::collections::HashSet::new();
+                for (fname, word) in fields {
+                    if !seen.insert(fname) {
+                        self.err(*span, format!("type `{name}` declares `{fname}` twice"));
+                    }
+                    let known = matches!(
+                        word.as_str(),
+                        "float" | "int" | "bool" | "color" | "line" | "label" | "box" | "table"
+                            | "linefill" | "polyline" | "array"
+                    );
+                    if !known {
+                        self.err(*span, format!("`{word}` is not a field type pine-lite knows"));
+                    }
+                }
+                self.type_fields.insert(name.clone(), fields.clone());
+            }
             Item::Assign { span, name, mode, expr, decl_type, .. } => {
                 // An explicit type word must be a word we know, and must
                 // match the right-hand side: `float`/`int` take a number
@@ -377,7 +407,7 @@ impl Cx {
                         word.as_str(),
                         "float" | "int" | "bool" | "color" | "string" | "line" | "label" | "box"
                             | "table" | "linefill" | "polyline"
-                    );
+                    ) || self.type_fields.contains_key(word);
                     if !known {
                         self.err(*span, format!(
                             "`{word}` is not a type pine-lite knows: float, int, bool, color, line, label, box, table, linefill, polyline"
@@ -421,12 +451,22 @@ impl Cx {
                     }
                 }
                 let ty = self.expr(expr);
+                // `p = Point.new(...)`: the var holds that type's instances.
+                if let ExprKind::Call { callee, .. } = &expr.kind {
+                    if let Some(tn) = callee.strip_suffix(".new") {
+                        if self.type_fields.contains_key(tn) {
+                            self.var_udt_types.insert(name.clone(), tn.to_string());
+                        }
+                    }
+                }
                 if let Some(word) = decl_type {
                     let ok = match word.as_str() {
                         "float" | "int" | "line" | "label" | "box" | "table" | "linefill"
                         | "polyline" => matches!(ty, Ty::Float | Ty::Na),
                         "bool" => matches!(ty, Ty::Bool | Ty::Na),
                         "color" => matches!(ty, Ty::Color | Ty::Na),
+                        // A user type word: instances are handles (floats).
+                        w if self.type_fields.contains_key(w) => matches!(ty, Ty::Float | Ty::Na),
                         // `string`'s error is the string-binding one below.
                         _ => true,
                     };
@@ -447,6 +487,34 @@ impl Cx {
                     self.err(*span, format!(
                         "`{name}` binds a string, and strings are expression-level only in v1: pass the str.* expression directly to a text= argument (labels, table cells) instead of a variable"
                     ));
+                }
+                // `p.x := v`: legal only when p holds a UDT -- the field
+                // must exist and the value must match its type.
+                if let Some((base, field)) = name.split_once('.') {
+                    match self.var_udt_types.get(base).cloned() {
+                        Some(type_name) => {
+                            if let Some(layout) = self.type_fields.get(&type_name) {
+                                match layout.iter().find(|(f, _)| f == field) {
+                                    Some((_, word)) => {
+                                        let want = match word.as_str() {
+                                            "bool" => Ty::Bool,
+                                            "color" => Ty::Color,
+                                            _ => Ty::Float,
+                                        };
+                                        if ty != want && ty != Ty::Na {
+                                            self.err(*span, format!(
+                                                "field `{field}` of {type_name} is {want:?} but the value is {ty:?}"
+                                            ));
+                                        }
+                                    }
+                                    None => self.err(*span, format!("type {type_name} has no field `{field}`")),
+                                }
+                            }
+                        }
+                        None => self.err(*span, format!(
+                            "`{base}` does not hold a user type, so `{name}` is not a field -- declare it with `{base} = TypeName.new(...)` first"
+                        )),
+                    }
                 }
                 self.out.var_types.insert(name.clone(), ty);
                 if self.stmt_depth == 0 {
@@ -742,6 +810,23 @@ impl Cx {
             }
             return ty;
         }
+        // A dotted name whose base holds a UDT: `p.x` types as the field's
+        // declared type.
+        if let Some((base, field)) = name.split_once('.') {
+            if let Some(type_name) = self.var_udt_types.get(base).cloned() {
+                if let Some(layout) = self.type_fields.get(&type_name) {
+                    if let Some((_, word)) = layout.iter().find(|(f, _)| f == field) {
+                        return match word.as_str() {
+                            "bool" => Ty::Bool,
+                            "color" => Ty::Color,
+                            _ => Ty::Float,
+                        };
+                    }
+                    self.err(span, format!("type {type_name} has no field `{field}`"));
+                    return Ty::Float;
+                }
+            }
+        }
         // Namespaced constants first: a dotted constant in BOTH tables
         // (extend.*, position.*, the barstate set) has a precise type that
         // the builtins fallback's blanket Float would hide -- a barstate
@@ -816,6 +901,28 @@ impl Cx {
     }
 
     fn call_inner(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
+        // `Point.new(1, 2)`: a user type declared in this script. Positional
+        // args fill the layout in order, named args their field; everything
+        // else reads na. The value is a heap handle (a float to the VM).
+        if let Some(type_name) = callee.strip_suffix(".new") {
+            if let Some(layout) = self.type_fields.get(type_name).cloned() {
+                for (i, a) in args.iter().enumerate() {
+                    if a.name.is_none() && i >= layout.len() {
+                        self.err(a.value.span, format!(
+                            "`{callee}` takes {} field value(s) in layout order",
+                            layout.len()
+                        ));
+                    }
+                    if let Some(n) = a.name.as_deref() {
+                        if !layout.iter().any(|(f, _)| f == n) {
+                            self.err(a.value.span, format!("type {type_name} has no field `{n}`"));
+                        }
+                    }
+                    self.expr(&a.value);
+                }
+                return Ty::Float;
+            }
+        }
         // `request.security("SYM", "tf", expr)` (Phase 11, docs/23): any
         // pair, any timeframe the host serves, per call -- the full Pine
         // form. The symbol/timeframe must be string LITERALS (the host

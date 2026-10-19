@@ -280,6 +280,7 @@ fn reads_strategy_state(script: &parse::Script) -> bool {
     }
     fn item_has_read(it: &parse::Item, builtins: &[&str]) -> bool {
         match it {
+            parse::Item::TypeDef { .. } => false,
             parse::Item::Assign { expr, .. } => has_state_read(expr, builtins),
             parse::Item::Destructure { call, .. } => has_state_read(call, builtins),
             parse::Item::Expr { expr, .. } => has_state_read(expr, builtins),
