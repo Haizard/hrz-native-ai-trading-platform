@@ -1428,21 +1428,53 @@ function createChartPane(root, hooks = {}) {
           pulsing = true;
         }
       }
-      // The glyph itself, larger than the old 7px triangle so the glow has
-      // something to belong to.
+      // The glyph table (Pine's plotshape shapes); an unknown glyph string
+      // draws AS TEXT -- that is what plotchar's char= is for.
       ctx.fillStyle = rgbaFromPacked(shape.color, 1.0);
+      const glyphName = (shape.glyph || "").toLowerCase();
+      const s = sizeScale;
       ctx.beginPath();
-      if (down) {
-        ctx.moveTo(cx, cy + 6 * sizeScale);
-        ctx.lineTo(cx - 5.5 * sizeScale, cy - 3 * sizeScale);
-        ctx.lineTo(cx + 5.5 * sizeScale, cy - 3 * sizeScale);
+      if (glyphName.includes("triangledown")) {
+        ctx.moveTo(cx, cy + 6 * s); ctx.lineTo(cx - 5.5 * s, cy - 3 * s); ctx.lineTo(cx + 5.5 * s, cy - 3 * s);
+        ctx.closePath(); ctx.fill();
+      } else if (glyphName.includes("triangleup") || glyphName === "triangle") {
+        ctx.moveTo(cx, cy - 6 * s); ctx.lineTo(cx - 5.5 * s, cy + 3 * s); ctx.lineTo(cx + 5.5 * s, cy + 3 * s);
+        ctx.closePath(); ctx.fill();
+      } else if (glyphName === "diamond") {
+        ctx.moveTo(cx, cy - 6 * s); ctx.lineTo(cx + 4.5 * s, cy); ctx.lineTo(cx, cy + 6 * s); ctx.lineTo(cx - 4.5 * s, cy);
+        ctx.closePath(); ctx.fill();
+      } else if (glyphName === "square") {
+        ctx.fillRect(cx - 4 * s, cy - 4 * s, 8 * s, 8 * s);
+      } else if (glyphName === "circle") {
+        ctx.arc(cx, cy, 4.5 * s, 0, Math.PI * 2); ctx.fill();
+      } else if (glyphName === "cross" || glyphName === "xcross") {
+        // cross is plus-shaped, xcross is diagonal -- both stroked.
+        ctx.strokeStyle = rgbaFromPacked(shape.color, 1.0);
+        ctx.lineWidth = 2.2 * s;
+        const d = glyphName === "cross" ? [[0, -5], [0, 5], [-5, 0], [5, 0]] : [[-4, -4], [4, 4], [-4, 4], [4, -4]];
+        ctx.moveTo(cx + d[0][0] * s, cy + d[0][1] * s); ctx.lineTo(cx + d[1][0] * s, cy + d[1][1] * s);
+        ctx.moveTo(cx + d[2][0] * s, cy + d[2][1] * s); ctx.lineTo(cx + d[3][0] * s, cy + d[3][1] * s);
+        ctx.stroke();
+      } else if (glyphName === "flag") {
+        ctx.fillRect(cx - 1 * s, cy - 7 * s, 2 * s, 14 * s);
+        ctx.moveTo(cx + 1 * s, cy - 7 * s); ctx.lineTo(cx + 7 * s, cy - 4 * s); ctx.lineTo(cx + 1 * s, cy - 1 * s);
+        ctx.closePath(); ctx.fill();
+      } else if (glyphName === "arrowup" || glyphName === "arrowdown") {
+        const dir = glyphName === "arrowdown" ? 1 : -1;
+        ctx.strokeStyle = rgbaFromPacked(shape.color, 1.0);
+        ctx.lineWidth = 2.2 * s;
+        ctx.moveTo(cx, cy + 7 * s * dir); ctx.lineTo(cx, cy - 7 * s * dir);
+        ctx.moveTo(cx - 4 * s, cy - 3 * s * dir); ctx.lineTo(cx, cy - 7 * s * dir); ctx.lineTo(cx + 4 * s, cy - 3 * s * dir);
+        ctx.stroke();
       } else {
-        ctx.moveTo(cx, cy - 6 * sizeScale);
-        ctx.lineTo(cx - 5.5 * sizeScale, cy + 3 * sizeScale);
-        ctx.lineTo(cx + 5.5 * sizeScale, cy + 3 * sizeScale);
+        // plotchar's char= (or any new shape name): draw the string itself.
+        ctx.font = `bold ${Math.round(11 * s)}px ui-monospace, monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(shape.glyph || "?", cx, cy);
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
       }
-      ctx.closePath();
-      ctx.fill();
       // plotshape text= labels its marker; textcolor= overrides the ink.
       if (shape.text) {
         ctx.fillStyle = rgbaFromPacked(shape.text_color ?? shape.color, 1.0);
