@@ -389,6 +389,20 @@ impl Parser {
             }
             TokenKind::Keyword(k) if k == "type" => Some(self.typedef_stmt(indent, span)),
             TokenKind::Keyword(k) if k == "method" => Some(self.methoddef(span)),
+            // `import`/`export` are TradingView's library surface: shared
+            // code hosted and versioned on their side. pine-lite scripts
+            // are self-contained -- say so plainly rather than leaving the
+            // line to die in expression parsing.
+            TokenKind::Ident(ref kw) if kw == "import" || kw == "export" => {
+                self.err(span, format!(
+                    "`{kw}` is TradingView's library surface, which pine-lite does not have: scripts are self-contained. Write the shared logic inline (or ask for it as a new builtin if it belongs in the language)"
+                ));
+                // Consume the line so the vet reports this once.
+                while !matches!(self.peek().kind, TokenKind::Newline | TokenKind::Eof) {
+                    self.bump();
+                }
+                Some(Item::Expr { span, expr: Expr { kind: ExprKind::Na, span } })
+            }
             TokenKind::Keyword(k) if k == "while" => {
                 self.bump();
                 let cond = self.expr()?;
