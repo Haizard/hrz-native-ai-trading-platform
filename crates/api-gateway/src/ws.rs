@@ -38,6 +38,13 @@
 //! taken when there is a measurement rather than a guess.
 
 use std::sync::Arc;
+
+/// A namespaced Deriv symbol must never start a crypto feed: its stream is
+/// the Deriv WS phase, and a Binance feed for it is reconnect noise and a
+/// 400ing depth socket (the VPS logs proved both).
+fn is_deriv_symbol(symbol: &str) -> bool {
+    symbol.starts_with("DERIV:") || symbol.starts_with("DERIV-FX:")
+}
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -221,8 +228,11 @@ pub async fn market(
     let symbol = symbol.to_uppercase();
 
     // A chart should start the feed, not wait for a bot to happen to. Otherwise
-    // "the chart is empty" has two possible causes again.
-    state.bots.ensure_feed_for(&symbol);
+    // "the chart is empty" has two possible causes again. Deriv symbols skip:
+    // their stream is not Binance.
+    if !is_deriv_symbol(&symbol) {
+        state.bots.ensure_feed_for(&symbol);
+    }
     // The **chart** lane, not the closed-candle lane the bots read: it carries
     // closed candles plus a once-a-second snapshot of each forming bar, which
     // is what makes the newest bar move between closes -- a `1d` chart that
@@ -365,7 +375,9 @@ pub async fn orderbook(
     let symbol = symbol.to_uppercase();
     // A DOM should start the feed, not wait for a bot to happen to -- and the
     // feed subscribes depth alongside trades on the same connection.
-    state.bots.ensure_feed_for(&symbol);
+    if !is_deriv_symbol(&symbol) {
+        state.bots.ensure_feed_for(&symbol);
+    }
     let books = state.bots.subscribe_orderbook(&symbol);
 
     let channel = format!("/ws/orderbook/{symbol}");
@@ -852,7 +864,9 @@ where
     // The same claim `POST /agent/ask` makes: asking about a symbol is a reason
     // for it to have a feed, and without one the buffer never fills and every
     // read costs a venue round trip.
-    state.bots.ensure_feed_for(&request.symbol.to_uppercase());
+    if !is_deriv_symbol(&request.symbol.to_uppercase()) {
+        state.bots.ensure_feed_for(&request.symbol.to_uppercase());
+    }
 
     let data = crate::market_data::WindowMarketData::new(state.windows.clone());
     let (tx, mut steps) = tokio::sync::mpsc::unbounded_channel();
