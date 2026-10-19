@@ -571,6 +571,8 @@ pub struct Vm<'a> {
     points_heap: Vec<(f64, f64)>,
     /// The `map.new` heap: string-keyed float maps by handle.
     maps_live: Vec<std::collections::HashMap<String, f64>>,
+    /// The `matrix.new` heap: row-major float matrices by handle.
+    matrices_live: Vec<(usize, usize, Vec<f64>)>,
     /// The live drawing-object arena: `l = line.new(...)` binds the ARENA
     /// INDEX as a float handle, setters mutate through it, deletes clear
     /// the slot. `out.objects` fills from this at the end of the run
@@ -687,6 +689,7 @@ impl<'a> Vm<'a> {
             polylines_live: Vec::new(),
             points_heap: Vec::new(),
             maps_live: Vec::new(),
+            matrices_live: Vec::new(),
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -861,6 +864,7 @@ impl<'a> Vm<'a> {
         self.polylines_live.clear();
         self.points_heap.clear();
         self.maps_live.clear();
+        self.matrices_live.clear();
         self.deferred.clear();
         self.deferred_seen.clear();
         self.steps = 0;
@@ -1881,6 +1885,29 @@ impl<'a> Vm<'a> {
                 self.array_ref(handle)?.clear();
                 Ok(())
             }
+            "matrix.set" => {
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                let (r, c) = (self.arg_f(args, 1)?.unwrap_or(NA), self.arg_f(args, 2)?.unwrap_or(NA));
+                let value = self.arg_f(args, 3)?.unwrap_or(NA);
+                let (rows, cols, data) = self.matrix_ref(handle)?;
+                let (r, c) = (r as usize, c as usize);
+                if r >= *rows || c >= *cols {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!("matrix.set ({r}, {c}) is outside the {rows}x{cols} matrix"),
+                    });
+                }
+                data[r * *cols + c] = value;
+                Ok(())
+            }
+            "matrix.fill" => {
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                let value = self.arg_f(args, 1)?.unwrap_or(NA);
+                let (_, _, data) = self.matrix_ref(handle)?;
+                data.iter_mut().for_each(|v| *v = value);
+                Ok(())
+            }
             "map.put" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
                 let key = self.eval_s(&args[1].value)?;
@@ -2630,6 +2657,18 @@ impl<'a> Vm<'a> {
             });
         }
         Ok(&mut self.maps_live[handle as usize])
+    }
+
+    /// A live matrix by handle, or the create-one error.
+    fn matrix_ref(&mut self, handle: f64) -> Result<&mut (usize, usize, Vec<f64>), crate::ScriptError> {
+        if !handle.is_finite() || handle < 0.0 || handle >= self.matrices_live.len() as f64 {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "that variable does not hold a matrix; create one with `var m = matrix.new(2, 2, 0)`".into(),
+            });
+        }
+        Ok(&mut self.matrices_live[handle as usize])
     }
 
     /// `array.get(a, i)`, bounds-checked.
@@ -3418,6 +3457,46 @@ impl<'a> Vm<'a> {
                 Ok(f64::from(
                     self.array_ref(handle)?.iter().any(|v| (*v - needle).abs() < f64::EPSILON),
                 ))
+            }
+            "matrix.new" => {
+                if self.matrices_live.len() >= MAX_ARRAYS {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Limit,
+                        span: crate::Span::new(1, 1),
+                        message: format!("more than {MAX_ARRAYS} matrices; allocate them once with `var`"),
+                    });
+                }
+                let rows = a!(0)?.max(1.0) as usize;
+                let cols = a!(1)?.max(1.0) as usize;
+                let init = a!(2, 0.0);
+                if rows.saturating_mul(cols) > 65_536 {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Limit,
+                        span: crate::Span::new(1, 1),
+                        message: "a matrix may hold at most 65536 cells".into(),
+                    });
+                }
+                self.matrices_live.push((rows, cols, vec![init; rows * cols]));
+                Ok((self.matrices_live.len() - 1) as f64)
+            }
+            "matrix.get" => {
+                let handle = a!(0)?;
+                let (r, c) = (a!(1)?, a!(2)?);
+                let (rows, cols, data) = self.matrix_ref(handle)?;
+                let (r, c) = (r as usize, c as usize);
+                Ok(if r < *rows && c < *cols {
+                    data[r * *cols + c]
+                } else {
+                    NA
+                })
+            }
+            "matrix.rows" => {
+                let handle = a!(0)?;
+                Ok(self.matrix_ref(handle)?.0 as f64)
+            }
+            "matrix.columns" => {
+                let handle = a!(0)?;
+                Ok(self.matrix_ref(handle)?.1 as f64)
             }
             "map.new" => {
                 if self.maps_live.len() >= MAX_ARRAYS {

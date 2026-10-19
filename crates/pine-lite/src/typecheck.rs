@@ -1089,6 +1089,11 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "array.size" | "array.first" | "array.last" | "array.min" | "array.max"
         | "array.avg" => (1, 1),
         "array.includes" => (2, 2),
+        "matrix.new" => (2, 3),
+        "matrix.get" => (3, 3),
+        "matrix.set" => (4, 4),
+        "matrix.rows" | "matrix.columns" => (1, 1),
+        "matrix.fill" => (2, 2),
         "map.new" => (0, 0),
         "map.put" => (3, 3),
         "map.get" | "map.contains" | "map.remove" => (2, 2),
