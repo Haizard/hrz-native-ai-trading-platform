@@ -1030,6 +1030,8 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         | "box.set_border_width" | "box.set_bgcolor" | "label.set_x" | "label.set_y"
         | "label.set_text" | "label.set_color" => (2, 2),
         "line.delete" | "label.delete" | "box.delete" => (1, 1),
+        "linefill.new" => (3, 3),
+        "linefill.delete" => (1, 1),
         // table.new(position, columns, rows, ...) returns the panel handle;
         // table.cell writes one cell.
         "table.new" => (3, 5),

@@ -97,6 +97,20 @@ pub struct OutputTable {
     pub cells: std::collections::HashMap<(usize, usize), OutputTableCell>,
 }
 
+/// One `linefill.new(l1, l2, color)`: the fill BETWEEN two line objects.
+/// Stored as arena indices into `objects`; the renderer resolves the
+/// overlap quadrilateral (the lines may move via setters after the fill is
+/// created, and Pine's fill follows them).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutputLineFill {
+    /// Arena index of the first line.
+    pub line1: usize,
+    /// Arena index of the second line.
+    pub line2: usize,
+    /// Packed fill color.
+    pub color: u32,
+}
+
 /// One fired `alert(...)`: the bar, its open time, and the rendered text.
 /// The host replays closed bars once each, so Pine's frequency constants
 /// collapse -- every alert is "once per bar close" by construction.
@@ -284,6 +298,8 @@ pub struct Output {
     pub tables: Vec<OutputTable>,
     /// `alert(...)` events, in firing order.
     pub alerts: Vec<ScriptAlert>,
+    /// `linefill.new` fills between line objects, in creation order.
+    pub linefills: Vec<OutputLineFill>,
     /// The strategy simulation (docs/24 S1): orders, equity curve, account
     /// snapshots and the report. None for indicator scripts; Some for every
     /// run that recorded `strategy.*` intents or (with the header block)
@@ -523,6 +539,9 @@ pub struct Vm<'a> {
     /// Live `table.new` panels: the handle is the index, `table.cell`
     /// updates in place. Serialized into out.tables at the end of the run.
     tables_live: Vec<OutputTable>,
+    /// Live `linefill.new` fills: the handle is the index, `linefill.delete`
+    /// clears the slot. Resolved into out.linefills at the end of the run.
+    linefills_live: Vec<Option<OutputLineFill>>,
     /// The live drawing-object arena: `l = line.new(...)` binds the ARENA
     /// INDEX as a float handle, setters mutate through it, deletes clear
     /// the slot. `out.objects` fills from this at the end of the run
@@ -635,6 +654,7 @@ impl<'a> Vm<'a> {
             last_input_tf: None,
             objects_live: Vec::new(),
             tables_live: Vec::new(),
+            linefills_live: Vec::new(),
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -753,6 +773,30 @@ impl<'a> Vm<'a> {
         // arena, so the LAST pass's arena is the one that ships.
         self.out.objects = self.objects_live.iter().filter_map(|o| o.clone()).collect();
         self.out.tables = self.tables_live.clone();
+        // out.objects is the FILTERED arena (deleted slots gone), so the
+        // fills' arena indices shift: remap them, and drop a fill whose
+        // line was deleted -- Pine's behavior too.
+        let mut remap = vec![usize::MAX; self.objects_live.len()];
+        let mut next = 0usize;
+        for (i, o) in self.objects_live.iter().enumerate() {
+            if o.is_some() {
+                remap[i] = next;
+                next += 1;
+            }
+        }
+        self.out.linefills = self
+            .linefills_live
+            .iter()
+            .flatten()
+            .filter_map(|f| {
+                let (a, b) = (remap[f.line1], remap[f.line2]);
+                if a != usize::MAX && b != usize::MAX {
+                    Some(OutputLineFill { line1: a, line2: b, color: f.color })
+                } else {
+                    None
+                }
+            })
+            .collect();
         Ok(std::mem::take(&mut self.out))
     }
 
@@ -780,6 +824,7 @@ impl<'a> Vm<'a> {
         self.heap.clear();
         self.objects_live.clear();
         self.tables_live.clear();
+        self.linefills_live.clear();
         self.deferred.clear();
         self.deferred_seen.clear();
         self.steps = 0;
@@ -1118,6 +1163,59 @@ impl<'a> Vm<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// `linefill.new(l1, l2, color)`: fill between two line objects, hand
+    /// back the fill's handle. `None` when the callee is not linefill.new.
+    fn linefill_handle(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+        if callee != "linefill.new" {
+            return Ok(None);
+        }
+        self.tick()?;
+        let h1 = self.arg_f(args, 0)?.unwrap_or(NA);
+        let h2 = self.arg_f(args, 1)?.unwrap_or(NA);
+        let color = self
+            .arg_color_named(args, "color")
+            .or_else(|| self.arg_color_pos(args, 2))
+            .unwrap_or(0xFF_60_A5_FA);
+        let idx1 = if h1.is_finite() && h1 >= 0.0 { h1 as usize } else { usize::MAX };
+        let idx2 = if h2.is_finite() && h2 >= 0.0 { h2 as usize } else { usize::MAX };
+        let is_line = |i: usize, objects: &[Option<ScriptObject>]| {
+            matches!(
+                objects.get(i),
+                Some(Some(ScriptObject::Line { .. })) | Some(Some(ScriptObject::LineTime { .. }))
+            )
+        };
+        if !is_line(idx1, &self.objects_live) || !is_line(idx2, &self.objects_live) {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "`linefill.new` needs two live line handles from line.new (a deleted or non-line handle does not fill)".into(),
+            });
+        }
+        let handle = self.linefills_live.len() as f64;
+        self.linefills_live.push(Some(OutputLineFill { line1: idx1, line2: idx2, color }));
+        Ok(Some(handle))
+    }
+
+    /// `linefill.delete(lf)`: clear one fill's slot. `true` when the callee
+    /// was linefill.delete.
+    fn linefill_stmt(&mut self, callee: &str, args: &[Arg]) -> Result<bool, crate::ScriptError> {
+        if callee != "linefill.delete" {
+            return Ok(false);
+        }
+        self.tick()?;
+        let h = self.arg_f(args, 0)?.unwrap_or(NA);
+        let idx = if h.is_finite() && h >= 0.0 { h as usize } else { usize::MAX };
+        if idx >= self.linefills_live.len() {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "`linefill.delete` needs a live linefill handle from linefill.new".into(),
+            });
+        }
+        self.linefills_live[idx] = None;
+        Ok(true)
     }
 
     /// `table.new(position.top_right, columns, rows, ...)`: create a panel,
@@ -1579,6 +1677,8 @@ impl<'a> Vm<'a> {
             }
             _ if self.table_handle(callee, args)?.is_some() => Ok(()),
             _ if self.table_stmt(callee, args)? => Ok(()),
+            _ if self.linefill_handle(callee, args)?.is_some() => Ok(()),
+            _ if self.linefill_stmt(callee, args)? => Ok(()),
             // ---- the registry primitive (docs/37): the VM stores the raw
             // anchors; the decomposition into levels and labels is the
             // engine's, because positioning is the engine's.
@@ -2410,6 +2510,9 @@ impl<'a> Vm<'a> {
             return Ok(handle);
         }
         if let Some(handle) = self.table_handle(callee, args)? {
+            return Ok(handle);
+        }
+        if let Some(handle) = self.linefill_handle(callee, args)? {
             return Ok(handle);
         }
         // The color constructors evaluate to a packed 0xAARRGGBB float that

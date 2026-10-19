@@ -86,6 +86,16 @@ pub enum ScriptDraw {
         /// (a vertical segment, x1 == x2, does not extend — Pine's rule).
         extend: String,
     },
+    /// `linefill.new` — the overlap quadrilateral between two lines,
+    /// filled solid at the fill's own alpha.
+    Polygon {
+        /// The four corners, in order (top edge then bottom edge reversed).
+        points: [(f64, f64); 4],
+        /// Packed fill color.
+        color: u32,
+        /// Fill alpha (Pine's linefill reads solid-ish: 0.45 default).
+        fill_alpha: f64,
+    },
     /// `table.new` — a positioned cell grid; x/y is the panel's top-left.
     Table {
         /// Panel left edge.
@@ -541,6 +551,69 @@ pub fn scene_overlay_shapes(
                 text: s.text.clone(),
                 text_color: s.text_color,
             }
+        })
+        .collect()
+}
+
+/// Resolve every `linefill.new` into its overlap quadrilateral: the two
+/// lines' canvas segments (no extension -- the fill spans the lines as
+/// anchored), clipped to their shared x-range, each line's y interpolated
+/// at the overlap's edges. A vertical line or an empty overlap skips.
+pub fn scene_overlay_linefills(
+    output: &Output,
+    slot: f64,
+    frame: &crate::scene::Frame,
+) -> Vec<ScriptDraw> {
+    let py = |v: f64| {
+        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot, frame.scale)
+    };
+    let seg = |o: &pine_lite::interp::ScriptObject| -> Option<((f64, f64), (f64, f64))> {
+        match o {
+            pine_lite::interp::ScriptObject::Line { bar1, price1, bar2, price2, .. }
+                if bar1.is_finite() && bar2.is_finite() && price1.is_finite() && price2.is_finite() =>
+            {
+                Some((
+                    (frame.plot.x + slot * (*bar1 + 0.5), py(*price1)),
+                    (frame.plot.x + slot * (*bar2 + 0.5), py(*price2)),
+                ))
+            }
+            pine_lite::interp::ScriptObject::LineTime { t1, price1, t2, price2, .. }
+                if t1.is_finite() && t2.is_finite() && price1.is_finite() && price2.is_finite() =>
+            {
+                Some((
+                    (frame.x_at_nanos(*t1 as i64), py(*price1)),
+                    (frame.x_at_nanos(*t2 as i64), py(*price2)),
+                ))
+            }
+            _ => None,
+        }
+    };
+    output
+        .linefills
+        .iter()
+        .filter_map(|f| {
+            let (a1, a2) = seg(output.objects.get(f.line1)?)?;
+            let (b1, b2) = seg(output.objects.get(f.line2)?)?;
+            if (a1.0 - a2.0).abs() < f64::EPSILON || (b1.0 - b2.0).abs() < f64::EPSILON {
+                return None; // a vertical line has no slope to fill against
+            }
+            let (lo, hi) = (a1.0.min(a2.0).max(b1.0.min(b2.0)), a1.0.max(a2.0).min(b1.0.max(b2.0)));
+            if hi - lo < f64::EPSILON {
+                return None; // the lines never share an x
+            }
+            let y_at = |p1: (f64, f64), p2: (f64, f64), x: f64| {
+                p1.1 + (p2.1 - p1.1) * (x - p1.0) / (p2.0 - p1.0)
+            };
+            Some(ScriptDraw::Polygon {
+                points: [
+                    (lo, y_at(a1, a2, lo)),
+                    (hi, y_at(a1, a2, hi)),
+                    (hi, y_at(b1, b2, hi)),
+                    (lo, y_at(b1, b2, lo)),
+                ],
+                color: f.color,
+                fill_alpha: 0.45,
+            })
         })
         .collect()
 }
@@ -1604,6 +1677,57 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_linefill_resolves_to_the_overlap_quad_and_follows_setters() {
+        let frame = crate::scene::Frame {
+            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "if bar_index == 0\n",
+            "    t = line.new(0, 110, 20, 110, color=color.teal)\n",
+            "    b = line.new(0, 100, 20, 104, color=color.red)\n",
+            "    f = linefill.new(t, b, color=color.new(color.teal, 70))\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        assert_eq!(output.linefills.len(), 1, "one fill");
+        let draws = scene_overlay_linefills(&output, 10.0, &frame);
+        let quad = draws.iter().find_map(|d| match d {
+            ScriptDraw::Polygon { points, fill_alpha, .. } => Some((*points, *fill_alpha)),
+            _ => None,
+        }).expect("one polygon");
+        // Lines span bars 0..20: x from slot*0.5 to slot*20.5.
+        assert!((quad.0[0].0 - 5.0).abs() < 1e-9 && (quad.0[1].0 - 205.0).abs() < 1e-9,
+            "the overlap spans the shared range: {:?}", quad.0);
+        // The top line is flat at 110 (y near the plot top); the bottom
+        // rises 100 -> 104, so the quad's bottom edge slopes.
+        assert!((quad.0[0].1 - quad.0[1].1).abs() < 1e-9, "top edge flat");
+        assert!(quad.0[2].1 < quad.0[3].1, "bottom edge rises (y shrinks)");
+        assert!((quad.1 - 0.45).abs() < 1e-9, "the fill alpha");
+
+        // Deleting a line kills its fill (the arena remap).
+        let src2 = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "if bar_index == 0\n",
+            "    t = line.new(0, 110, 20, 110, color=color.teal)\n",
+            "    b = line.new(0, 100, 20, 104, color=color.red)\n",
+            "    f = linefill.new(t, b, color=color.new(color.teal, 70))\n",
+            "if bar_index == 5\n",
+            "    line.delete(b)\n",
+        );
+        let (_, parsed2) = pine_lite::vet(src2).expect("vet 2");
+        let output2 = run(&parsed2, &candles, &Inputs::default()).expect("run 2");
+        assert!(output2.linefills.is_empty(), "a deleted line drops the fill");
     }
 
     #[test]

@@ -1520,6 +1520,13 @@ function createChartPane(root, hooks = {}) {
             ctx.lineWidth = 1;
             ctx.strokeRect(bx, by, bw, bh);
           }
+        } else if (o.Polygon) {
+          const p = o.Polygon;
+          ctx.beginPath();
+          p.points.forEach(([px, py], i) => (i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)));
+          ctx.closePath();
+          ctx.fillStyle = rgbaFromPacked(p.color, p.fill_alpha ?? 0.45);
+          ctx.fill();
         } else if (o.Table) {
           const t = o.Table;
           // The panel backdrop: the TradingView dashboard look -- a dark
