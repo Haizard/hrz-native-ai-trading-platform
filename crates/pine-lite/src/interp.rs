@@ -1589,6 +1589,20 @@ impl<'a> Vm<'a> {
                 self.array_ref(handle)?.clear();
                 Ok(())
             }
+            "array.fill" => {
+                let handle = self.arg_f(args, 0)?.unwrap_or(NA);
+                let value = self.arg_f(args, 1)?.unwrap_or(NA);
+                let from = self.arg_f(args, 2)?.unwrap_or(0.0);
+                let to = self.arg_f(args, 3)?.unwrap_or(NA);
+                let list = self.array_ref(handle)?;
+                let len = list.len();
+                let lo = if from.is_finite() { from.max(0.0) as usize } else { 0 };
+                let hi = if to.is_finite() { (to.max(0.0) as usize).min(len) } else { len };
+                for v in list.iter_mut().take(hi).skip(lo) {
+                    *v = value;
+                }
+                Ok(())
+            }
             "array.set" => {
                 self.tick()?;
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
@@ -2880,6 +2894,67 @@ impl<'a> Vm<'a> {
                     self.array_ref(handle)?.iter().any(|v| (*v - needle).abs() < f64::EPSILON),
                 ))
             }
+            "array.from" => {
+                if self.heap.len() >= MAX_ARRAYS {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Limit,
+                        span: crate::Span::new(1, 1),
+                        message: format!("more than {MAX_ARRAYS} arrays; allocate them once with `var`"),
+                    });
+                }
+                let mut list = Vec::with_capacity(args.len());
+                for arg in args {
+                    list.push(self.eval_f(&arg.value)?);
+                }
+                self.heap.push(list);
+                Ok((self.heap.len() - 1) as f64)
+            }
+            "array.slice" => {
+                let handle = a!(0)?;
+                let (from, to) = (a!(1)?, a!(2)?);
+                if self.heap.len() >= MAX_ARRAYS {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Limit,
+                        span: crate::Span::new(1, 1),
+                        message: format!("more than {MAX_ARRAYS} arrays; allocate them once with `var`"),
+                    });
+                }
+                let slice = {
+                    let list = self.array_ref(handle)?;
+                    let len = list.len();
+                    let lo = if from.is_finite() { from.max(0.0) as usize } else { 0 };
+                    // Pine's end index is exclusive.
+                    let hi = if to.is_finite() { (to.max(0.0) as usize).min(len) } else { len };
+                    if lo < hi { list[lo..hi].to_vec() } else { Vec::new() }
+                };
+                self.heap.push(slice);
+                Ok((self.heap.len() - 1) as f64)
+            }
+            "array.indexof" => {
+                let handle = a!(0)?;
+                let needle = a!(1)?;
+                Ok(self
+                    .array_ref(handle)?
+                    .iter()
+                    .position(|v| (*v - needle).abs() < f64::EPSILON)
+                    .map(|i| i as f64)
+                    .unwrap_or(-1.0))
+            }
+            "array.concat" => {
+                let (h1, h2) = (a!(0)?, a!(1)?);
+                if self.heap.len() >= MAX_ARRAYS {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Limit,
+                        span: crate::Span::new(1, 1),
+                        message: format!("more than {MAX_ARRAYS} arrays; allocate them once with `var`"),
+                    });
+                }
+                let mut joined = { self.array_ref(h1)?.clone() };
+                let second = { self.array_ref(h2)?.clone() };
+                joined.extend(second);
+                self.heap.push(joined);
+                Ok((self.heap.len() - 1) as f64)
+            }
             _ => self.call_user(callee, args),
         }
     }
@@ -3193,6 +3268,25 @@ impl<'a> Vm<'a> {
                     }
                 }
                 Ok(out)
+            }
+            ExprKind::Call { callee, args } if callee == "array.join" => {
+                let handle = self
+                    .arg_f(args, 0)?
+                    .ok_or_else(|| crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: "`array.join` needs an array".into(),
+                    })?;
+                let sep = match args.get(1) {
+                    Some(a) => self.eval_s(&a.value)?,
+                    None => ",".to_string(),
+                };
+                Ok(self
+                    .array_ref(handle)?
+                    .iter()
+                    .map(|v| if v.is_finite() { format_number(*v, None) } else { "na".to_string() })
+                    .collect::<Vec<_>>()
+                    .join(&sep))
             }
             ExprKind::Member { path } if path == "syminfo.ticker" => Ok(self
                 .candles

@@ -353,6 +353,18 @@ impl Cx {
                     }
                 }
                 let ty = self.expr(expr);
+                // Strings are expression-level only in v1: no float-ring
+                // variable can hold one, so a string binding fails at
+                // runtime with a confusing "not defined". Refuse it here,
+                // crisply. input.* declarations are exempt -- they are
+                // recorded for the UI, not really bindings.
+                if ty == Ty::String
+                    && !matches!(&expr.kind, ExprKind::Call { callee, .. } if callee.starts_with("input."))
+                {
+                    self.err(*span, format!(
+                        "`{name}` binds a string, and strings are expression-level only in v1: pass the str.* expression directly to a text= argument (labels, table cells) instead of a variable"
+                    ));
+                }
                 self.out.var_types.insert(name.clone(), ty);
                 if self.stmt_depth == 0 {
                     self.top_assigned.insert(name.clone());
@@ -845,7 +857,7 @@ impl Cx {
             "ta.crossover" | "ta.crossunder" | "ta.cross" | "ta.rising" | "ta.falling" => {
                 Ty::Bool
             }
-            "str.tostring" | "str.format" => Ty::String,
+            "str.tostring" | "str.format" | "array.join" => Ty::String,
             "color.new" | "color.rgb" | "color.from_gradient" => Ty::Color,
             "barstate.isconfirmed" => Ty::Bool,
             _ => Ty::Float,
@@ -932,6 +944,12 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "array.size" | "array.first" | "array.last" | "array.min" | "array.max"
         | "array.avg" => (1, 1),
         "array.includes" => (2, 2),
+        "array.from" => (0, 8),
+        "array.slice" => (3, 3),
+        "array.join" => (1, 2),
+        "array.indexof" => (2, 2),
+        "array.concat" => (2, 2),
+        "array.fill" => (2, 4),
         "array.push" => (2, 2),
         "array.pop" | "array.shift" | "array.clear" => (1, 1),
         "array.set" => (3, 3),
