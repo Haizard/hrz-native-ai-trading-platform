@@ -468,6 +468,13 @@ pub async fn replay_script_preview(
     // chart's own symbol/timeframe is served from the primary fetch.
     let mut series_pool = std::collections::HashMap::new();
     for key in pine_lite::typecheck::collect_series_pool(&parsed, &header) {
+        // `#ltf` keys come from request.security_lower_tf: the host pools
+        // the RAW lower-timeframe series (no alignment -- each chart bar
+        // slices its own window out of it).
+        let (key, want_raw) = match key.strip_suffix("#ltf") {
+            Some(base) => (base.to_string(), true),
+            None => (key, false),
+        };
         let Some((sym, tf_str)) = key.split_once('@') else { continue };
         // Pine spellings normalize to the venue set: bare numbers are
         // MINUTES ("60" = 1h, "240" = 4h, "1440" = 1d), "D"/"W" are the
@@ -496,8 +503,8 @@ pub async fn replay_script_preview(
             }
             fetched
         };
-        let aligned = align_security_pooled(&candles, &raw);
-        series_pool.insert(key, aligned);
+        let pooled = if want_raw { raw } else { align_security_pooled(&candles, &raw) };
+        series_pool.insert(if want_raw { format!("{key}#ltf") } else { key }, pooled);
     }
     // Phase 14 (docs/23): `request.data("NAME")` — platform-native feeds.
     // Today: ticker fields from the venue cache, named `SYMBOL.field`

@@ -255,6 +255,35 @@ impl Cx {
         }
     }
 
+    /// The `request.security_lower_tf` pool keys: `SYM@LTF#ltf` -- the
+    /// suffix tells the host to pool the RAW lower-timeframe series (a
+    /// plain `SYM@LTF` key from request.security gets the aligned form).
+    fn check_lower_tf_pool(&mut self, args: &[Arg]) {
+        if args.len() < 2 {
+            return;
+        }
+        let sym = match &args[0].value.kind {
+            crate::parse::ExprKind::Str(s) => s.to_uppercase(),
+            crate::parse::ExprKind::Ident(v) => match self.input_symbols.get(v) {
+                Some(s) => s.to_uppercase(),
+                None => return,
+            },
+            _ => return,
+        };
+        let tf = match &args[1].value.kind {
+            crate::parse::ExprKind::Str(s) => s.to_uppercase(),
+            crate::parse::ExprKind::Ident(v) => match self.input_timeframes.get(v) {
+                Some(s) => s.to_uppercase(),
+                None => return,
+            },
+            _ => return,
+        };
+        let key = format!("{sym}@{tf}#ltf");
+        if !self.series_pool.contains(&key) {
+            self.series_pool.push(key);
+        }
+    }
+
     fn err(&mut self, span: Span, message: impl Into<String>) {
         self.errors.push(ScriptError {
             kind: ErrorKind::Type,
@@ -889,6 +918,42 @@ impl Cx {
             // The third argument is evaluated over the PAIR: inside it, bare
             // `request.*` reads the pooled series, so the no-`sec=` gate is
             // lifted for exactly this subtree.
+            self.in_security_expr += 1;
+            self.security_outer
+                .push(self.out.var_types.keys().cloned().collect());
+            if let Some(a) = args.get(2) {
+                self.expr(&a.value);
+            }
+            self.security_outer.pop();
+            self.in_security_expr -= 1;
+            return Ty::Float;
+        }
+        // `request.security_lower_tf("SYM", "ltf", expr)` (docs/23 shape,
+        // Phase 11's lower-half): the same literal rules as
+        // request.security, but the pool key carries the `#ltf` suffix --
+        // the host fetches the RAW lower-timeframe series (no alignment),
+        // and each chart bar receives an array of the values its window
+        // holds.
+        if callee == "request.security_lower_tf" {
+            if args.len() != 3 {
+                self.err(
+                    span,
+                    "`request.security_lower_tf` takes exactly 3 arguments: request.security_lower_tf(\"SYM\", \"ltf\", series_expr)".to_string(),
+                );
+            }
+            for (i, a) in args.iter().take(2).enumerate() {
+                match a.value.kind {
+                    crate::parse::ExprKind::Str(_) => {}
+                    crate::parse::ExprKind::Ident(ref v)
+                        if (i == 0 && self.input_symbols.contains_key(v))
+                            || (i == 1 && self.input_timeframes.contains_key(v)) => {}
+                    _ => self.err(
+                        span,
+                        format!("`request.security_lower_tf` argument {} must be a quoted literal (or an input.symbol/input.timeframe variable)", i + 1),
+                    ),
+                }
+            }
+            self.check_lower_tf_pool(args);
             self.in_security_expr += 1;
             self.security_outer
                 .push(self.out.var_types.keys().cloned().collect());

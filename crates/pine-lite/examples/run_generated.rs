@@ -189,6 +189,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let raw_4h = build_4h_pool(t0);
         let mut series_pool = std::collections::HashMap::new();
         series_pool.insert("BTCUSDT@4H".to_string(), align_pooled(&candles, &raw_4h));
+        // The raw 15m pool for request.security_lower_tf tests: four bars
+        // per chart hour, ramping +0.25 each -- value N of the window is
+        // readable by inspection.
+        let tf15 = analytics_core::Timeframe::M15;
+        let mut raw_15m = Vec::with_capacity(candles.len() * 4);
+        for c in &candles {
+            for k in 0..4u32 {
+                raw_15m.push(Candle {
+                    symbol: "BTCUSDT".to_string(),
+                    timeframe: tf15,
+                    open_time: c.open_time + k as i64 * tf15.nanos(),
+                    open: c.open,
+                    high: c.high,
+                    low: c.low,
+                    close: c.open + 0.25 * (k as f64 + 1.0),
+                    volume: c.volume / 4.0,
+                    buy_volume: c.buy_volume / 4.0,
+                    sell_volume: c.sell_volume / 4.0,
+                });
+            }
+        }
+        series_pool.insert("BTCUSDT@15M#ltf".to_string(), raw_15m);
         pine_lite::interp::Inputs { series_pool, ..Inputs::default() }
     } else if scenario == "smt" {
         pine_lite::interp::Inputs { security: build_eth_path(&candles), ..Inputs::default() }

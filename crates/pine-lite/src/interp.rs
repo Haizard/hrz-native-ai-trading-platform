@@ -582,6 +582,12 @@ pub struct Vm<'a> {
     last_input_sym: Option<String>,
     /// `input.symbol` var name -> chosen symbol.
     input_symbols: std::collections::HashMap<String, String>,
+    /// `security_lower_tf` slice rotation: each call site owns up to 8
+    /// heap slots, reused oldest-first. The function allocates an array
+    /// per bar BY DESIGN, so the global 64-cap would kill any script that
+    /// uses it; rotation keeps short history reads (w[1]..w[7]) honest
+    /// and the heap bounded.
+    ltf_slots: std::collections::HashMap<String, Vec<usize>>,
     /// Creation sequence per arena slot: Pine's per-kind GC retires the
     /// oldest-CREATED drawing, and slot reuse makes position a lie -- only
     /// a sequence number tells the truth about age.
@@ -719,6 +725,7 @@ impl<'a> Vm<'a> {
             matrices_live: Vec::new(),
             last_input_sym: None,
             input_symbols: std::collections::HashMap::new(),
+            ltf_slots: std::collections::HashMap::new(),
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -899,6 +906,7 @@ impl<'a> Vm<'a> {
         self.points_heap.clear();
         self.maps_live.clear();
         self.matrices_live.clear();
+        self.ltf_slots.clear();
         self.deferred.clear();
         self.deferred_seen.clear();
         self.steps = 0;
@@ -3388,6 +3396,75 @@ impl<'a> Vm<'a> {
                 };
                 self.security_value_cache.insert(site, revealed.clone());
                 Ok(revealed.get(self.bar).copied().unwrap_or(NA))
+            }
+            // ---- request.security_lower_tf("SYM", "ltf", expr): an ARRAY
+            // of the expression's values across the lower-timeframe bars
+            // inside THIS chart bar. The pool key carries `#ltf`; the host
+            // pooled the raw series. The whole-series values memoize per
+            // site (the expression sees full lower history); each bar just
+            // slices its window.
+            "request.security_lower_tf" => {
+                let key = self.security_key(args)?;
+                let site = format!("{key}#{:p}", &args[2].value);
+                let raw = self
+                    .inputs
+                    .series_pool
+                    .get(&format!("{key}#ltf"))
+                    .ok_or_else(|| crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!(
+                            "`request.security_lower_tf` has no raw pooled series for {key}; the host must fetch it before the run"
+                        ),
+                    })?;
+                if !self.security_value_cache.contains_key(&site) {
+                    let expr = args[2].value.clone();
+                    let sub_inputs = Inputs {
+                        security: raw.clone(),
+                        series_pool: std::collections::HashMap::new(),
+                        ..Inputs::default()
+                    };
+                    let slice = self.fuel.saturating_sub(self.steps).max(1);
+                    let mut sub = Vm::new_for_pool(&expr, raw, &sub_inputs, slice);
+                    let mut values = Vec::with_capacity(raw.len());
+                    for bar in 0..raw.len() {
+                        sub.bar = bar;
+                        values.push(sub.eval_f(&expr)?);
+                    }
+                    self.steps += sub.steps;
+                    self.security_value_cache.insert(site.clone(), values);
+                }
+                let values = &self.security_value_cache[&site];
+                let chart_tf_nanos = self.candles[self.bar].timeframe.nanos();
+                let t0 = self.candles[self.bar].open_time;
+                let mut out = Vec::new();
+                for (k, c) in raw.iter().enumerate() {
+                    if c.open_time >= t0 && c.open_time < t0 + chart_tf_nanos {
+                        out.push(values.get(k).copied().unwrap_or(NA));
+                    }
+                }
+                // Per-site rotation: the slice is a fresh array every bar
+                // by design; 8 slots per site keep short history reads
+                // honest and the heap bounded.
+                let slots = self.ltf_slots.entry(site.clone()).or_default();
+                if slots.len() < 8 {
+                    if self.heap.len() >= MAX_ARRAYS {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Limit,
+                            span: crate::Span::new(1, 1),
+                            message: format!("more than {MAX_ARRAYS} arrays; allocate them once with `var`"),
+                        });
+                    }
+                    self.heap.push(out);
+                    let h = self.heap.len() - 1;
+                    slots.push(h);
+                    Ok(h as f64)
+                } else {
+                    let h = slots.remove(0);
+                    slots.push(h);
+                    self.heap[h] = out;
+                    Ok(h as f64)
+                }
             }
             // ---- request.data("name") (Phase 14, docs/23): a host-filled
             // platform-native series (ticker fields, funding, OI), aligned
