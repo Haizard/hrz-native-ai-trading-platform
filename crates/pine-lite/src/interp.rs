@@ -565,6 +565,10 @@ pub struct Vm<'a> {
     /// Live `polyline.new` paths: the handle is the index,
     /// `polyline.delete` clears the slot.
     polylines_live: Vec<Option<OutputPolyline>>,
+    /// The `chart.point.new` heap: (bar, price) vertices by handle. Lives
+    /// as long as the array heap -- a var array of point handles built
+    /// across bars must resolve every handle at polyline.new time.
+    points_heap: Vec<(f64, f64)>,
     /// The live drawing-object arena: `l = line.new(...)` binds the ARENA
     /// INDEX as a float handle, setters mutate through it, deletes clear
     /// the slot. `out.objects` fills from this at the end of the run
@@ -679,6 +683,7 @@ impl<'a> Vm<'a> {
             tables_live: Vec::new(),
             linefills_live: Vec::new(),
             polylines_live: Vec::new(),
+            points_heap: Vec::new(),
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -851,6 +856,7 @@ impl<'a> Vm<'a> {
         self.tables_live.clear();
         self.linefills_live.clear();
         self.polylines_live.clear();
+        self.points_heap.clear();
         self.deferred.clear();
         self.deferred_seen.clear();
         self.steps = 0;
@@ -1191,6 +1197,26 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// `chart.point.new(bar, price)`: one vertex for the Pine-form
+    /// polyline, returned as a heap handle (a float, so it rides arrays).
+    fn chart_point_handle(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+        if callee != "chart.point.new" {
+            return Ok(None);
+        }
+        self.tick()?;
+        let x = self.arg_f(args, 0)?.unwrap_or(NA);
+        let y = self.arg_f(args, 1)?.unwrap_or(NA);
+        if !x.is_finite() || !y.is_finite() {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "`chart.point.new` needs a finite bar and price".into(),
+            });
+        }
+        self.points_heap.push((x, y));
+        Ok(Some((self.points_heap.len() - 1) as f64))
+    }
+
     /// `polyline.new(xs, ys, closed=, line_color=, fill_color=,
     /// line_width=)`: a freeform path through parallel (bar, price) arrays,
     /// hand back the path's handle. `None` when the callee is not
@@ -1206,20 +1232,39 @@ impl<'a> Vm<'a> {
             message: what.to_string(),
         };
         let hx = self.arg_f(args, 0)?.unwrap_or(NA);
-        let hy = self.arg_f(args, 1)?.unwrap_or(NA);
-        // Snapshot both arrays BEFORE anything else mutable: array_ref
-        // borrows self, so clone the vertex data out.
-        let xs = { self.array_ref(hx).map_err(|_| bad("`polyline.new` argument 1 is the array of bar indices (build it with var + array.push)"))?.clone() };
-        let ys = { self.array_ref(hy).map_err(|_| bad("`polyline.new` argument 2 is the array of prices"))?.clone() };
-        if xs.len() != ys.len() || xs.len() < 2 {
-            return Err(bad("`polyline.new` needs the bar-index and price arrays to hold the same number of points, at least 2"));
-        }
-        let mut points = Vec::with_capacity(xs.len());
-        for (x, y) in xs.iter().zip(ys.iter()) {
-            if !x.is_finite() || !y.is_finite() {
-                return Err(bad("`polyline.new` points must be finite numbers (na vertex)"));
+        // Two forms: polyline.new(points) -- ONE array of chart.point
+        // handles, the Pine shape -- and polyline.new(xs, ys) -- two
+        // parallel arrays, the v1 shorthand. One positional argument picks
+        // the first form.
+        let has_second = args.iter().skip(1).any(|a| a.name.is_none());
+        let mut points = Vec::new();
+        if has_second {
+            let hy = self.arg_f(args, 1)?.unwrap_or(NA);
+            // Snapshot both arrays BEFORE anything else mutable: array_ref
+            // borrows self, so clone the vertex data out.
+            let xs = { self.array_ref(hx).map_err(|_| bad("`polyline.new` argument 1 is the array of bar indices (build it with var + array.push)"))?.clone() };
+            let ys = { self.array_ref(hy).map_err(|_| bad("`polyline.new` argument 2 is the array of prices"))?.clone() };
+            if xs.len() != ys.len() || xs.len() < 2 {
+                return Err(bad("`polyline.new` needs the bar-index and price arrays to hold the same number of points, at least 2"));
             }
-            points.push((*x, *y));
+            for (x, y) in xs.iter().zip(ys.iter()) {
+                if !x.is_finite() || !y.is_finite() {
+                    return Err(bad("`polyline.new` points must be finite numbers (na vertex)"));
+                }
+                points.push((*x, *y));
+            }
+        } else {
+            let handles = { self.array_ref(hx).map_err(|_| bad("`polyline.new` takes one array of chart.point handles (or two parallel arrays)"))?.clone() };
+            if handles.len() < 2 {
+                return Err(bad("`polyline.new` needs at least 2 chart.point handles"));
+            }
+            for h in handles {
+                let idx = if h.is_finite() && h >= 0.0 { h as usize } else { usize::MAX };
+                let Some(pt) = self.points_heap.get(idx) else {
+                    return Err(bad("`polyline.new`'s array holds a handle that is not a chart.point -- build the array with array.push(a, chart.point.new(bar, price))"));
+                };
+                points.push(*pt);
+            }
         }
         let closed = self
             .arg_named_f(args, "closed")
@@ -2649,6 +2694,9 @@ impl<'a> Vm<'a> {
             return Ok(handle);
         }
         if let Some(handle) = self.polyline_handle(callee, args)? {
+            return Ok(handle);
+        }
+        if let Some(handle) = self.chart_point_handle(callee, args)? {
             return Ok(handle);
         }
         // The color constructors evaluate to a packed 0xAARRGGBB float that

@@ -1721,6 +1721,44 @@ mod tests {
     }
 
     #[test]
+    fn chart_points_feed_the_pine_form_polyline() {
+        let frame = crate::scene::Frame {
+            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "var pts = array.new()\n",
+            "if bar_index == 0\n",
+            "    array.push(pts, chart.point.new(2, 95))\n",
+            "    array.push(pts, chart.point.new(10, 110))\n",
+            "if bar_index == 1\n",
+            "    array.push(pts, chart.point.new(18, 100))\n",
+            "if barstate.islast\n",
+            "    p = polyline.new(pts, line_color=color.orange, line_width=2)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        assert_eq!(output.polylines.len(), 1, "one path");
+        let pl = &output.polylines[0];
+        assert_eq!(pl.points, vec![(2.0, 95.0), (10.0, 110.0), (18.0, 100.0)],
+            "handles from earlier bars resolve at polyline.new time");
+        let draws = scene_overlay_polylines(&output, 10.0, &frame);
+        let d = draws.iter().find_map(|d| match d {
+            ScriptDraw::Polyline { points, width, .. } => Some((points.len(), *width)),
+            _ => None,
+        }).expect("one polyline draw");
+        assert_eq!(d.0, 3);
+        assert!((d.1 - 2.0).abs() < 1e-9, "line_width rides");
+    }
+
+    #[test]
     fn a_polyline_maps_its_vertices_and_delete_clears_it() {
         let frame = crate::scene::Frame {
             plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
