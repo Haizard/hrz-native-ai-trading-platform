@@ -988,6 +988,7 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "ta.bb" => (2, 3),
         "ta.stdev" | "ta.variance" | "ta.hma" | "ta.rising" | "ta.falling" => (2, 2),
         "ta.vwma" | "ta.tema" => (2, 2),
+        "ta.obv" | "ta.pvt" | "ta.nvi" | "ta.wad" | "ta.ad" => (0, 0),
         "ta.swma" => (1, 1),
         "ta.alma" => (2, 4),
         "ta.lsma" | "ta.linreg" => (3, 3),

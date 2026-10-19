@@ -733,6 +733,45 @@ mod tests {
     }
 
     #[test]
+    fn volume_classics_accumulate_the_way_their_names_say() {
+        let mk = |close: f64, high: f64, low: f64, vol: f64, i: usize| Candle {
+            symbol: "T".to_string(),
+            timeframe: analytics_core::types::Timeframe::M1,
+            open_time: i as i64 * 60_000_000_000,
+            open: close,
+            high,
+            low,
+            close,
+            volume: vol,
+            buy_volume: 0.0,
+            sell_volume: 0.0,
+        };
+        // up bar vol 10, down bar vol 20, flat bar vol 5.
+        let cs = vec![
+            mk(10.0, 11.0, 9.0, 10.0, 0),
+            mk(11.0, 12.0, 10.0, 10.0, 1), // up
+            mk(9.0, 11.5, 8.5, 20.0, 2),   // down
+            mk(9.0, 9.5, 8.5, 5.0, 3),     // flat
+        ];
+        let obv = ta_obv(&cs);
+        assert_eq!(obv[3], 10.0 - 20.0, "obv adds up-volume, subtracts down (bar 0 carries nothing)");
+        let pvt = ta_pvt(&cs);
+        let want = 10.0 * (11.0 - 10.0) / 10.0 + 20.0 * (9.0 - 11.0) / 11.0;
+        assert!((pvt[3] - want).abs() < 1e-9, "pvt weights by the fractional move");
+        let nvi = ta_nvi(&cs);
+        // Bar 2's volume (20) > bar 1's (10): no adjustment. Bar 3's (5) <
+        // bar 2's (20): adjust by (9 - 9) / 9 * 100 = 0.
+        assert_eq!(nvi[3], 1000.0, "nvi only moves on falling volume");
+        let wad = ta_wad(&cs);
+        // bar1 up: 11 - min(low 10, prev 10) = 1; bar2 down: -(max(11.5, 11) - 9) = -2.5.
+        assert!((wad[3] - (1.0 - 2.5)).abs() < 1e-9, "wad uses the true range edges");
+        let ad = ta_ad(&cs);
+        // bar0: ((10-9)-(11-10))/2 * 10 = 0; bar1: ((11-10)-(12-11))/2*10 = 0;
+        // bar2: ((9-8.5)-(11.5-9))/3 * 20 = (0.5-2.5)/3*20 = -13.33; bar3 flat close mid.
+        assert!((ad[2] - (-40.0 / 3.0)).abs() < 1e-6, "chaikin money-flow volume");
+    }
+
+    #[test]
     fn vwma_weights_by_volume_and_swma_is_the_fixed_four() {
         let candles = |vols: &[f64]| -> Vec<Candle> {
             vols.iter()
@@ -1270,4 +1309,103 @@ pub fn ta_tema(source: &[f64], length: f64) -> Series {
             }
         })
         .collect()
+}
+
+/// `ta.obv()` -- on-balance volume: cumulative +/- volume by the close's
+/// direction (flat closes carry nothing). Starts at 0.
+#[must_use]
+pub fn ta_obv(candles: &[Candle]) -> Series {
+    let mut out = vec![NA; candles.len()];
+    let mut acc = 0.0;
+    for (i, c) in candles.iter().enumerate() {
+        if i > 0 {
+            let p = candles[i - 1].close;
+            if c.close > p {
+                acc += c.volume;
+            } else if c.close < p {
+                acc -= c.volume;
+            }
+        }
+        out[i] = acc;
+    }
+    out
+}
+
+/// `ta.pvt()` -- price-volume trend: cumulative volume weighted by the
+/// close's fractional move, so a 2% rally on light volume counts less
+/// than the same rally on heavy volume.
+#[must_use]
+pub fn ta_pvt(candles: &[Candle]) -> Series {
+    let mut out = vec![NA; candles.len()];
+    let mut acc = 0.0;
+    for (i, c) in candles.iter().enumerate() {
+        if i > 0 {
+            let p = candles[i - 1].close;
+            if p != 0.0 {
+                acc += c.volume * (c.close - p) / p;
+            }
+        }
+        out[i] = acc;
+    }
+    out
+}
+
+/// `ta.nvi()` -- negative volume index: starts at 1000 and adjusts only
+/// on bars whose volume FELL from the previous bar, by the close's
+/// percentage change times 100 (Fosback's idea: the quiet bars are where
+/// the informed money moves).
+#[must_use]
+pub fn ta_nvi(candles: &[Candle]) -> Series {
+    let mut out = vec![NA; candles.len()];
+    let mut acc = 1000.0;
+    for (i, c) in candles.iter().enumerate() {
+        if i > 0 {
+            let p = &candles[i - 1];
+            if c.volume < p.volume && p.close != 0.0 {
+                acc += (c.close - p.close) / p.close * 100.0;
+            }
+        }
+        out[i] = acc;
+    }
+    out
+}
+
+/// `ta.wad()` -- Williams accumulation/distribution: accumulates the
+/// close's distance from the TRUE low of an up bar (or the true high of a
+/// down bar), where "true" means measured against the previous close.
+#[must_use]
+pub fn ta_wad(candles: &[Candle]) -> Series {
+    let mut out = vec![NA; candles.len()];
+    let mut acc = 0.0;
+    for (i, c) in candles.iter().enumerate() {
+        if i > 0 {
+            let p = candles[i - 1].close;
+            if c.close > p {
+                acc += c.close - c.low.min(p);
+            } else if c.close < p {
+                acc -= c.high.max(p) - c.close;
+            }
+        }
+        out[i] = acc;
+    }
+    out
+}
+
+/// `ta.ad()` -- Chaikin accumulation/distribution line: cumulative
+/// money-flow volume, where each bar's volume counts in proportion to
+/// where the close sits inside its range (a close at the high counts the
+/// whole bar; a close at the low counts it negatively).
+#[must_use]
+pub fn ta_ad(candles: &[Candle]) -> Series {
+    let mut out = vec![NA; candles.len()];
+    let mut acc = 0.0;
+    for (i, c) in candles.iter().enumerate() {
+        let range = c.high - c.low;
+        if range > 0.0 {
+            let mfm = ((c.close - c.low) - (c.high - c.close)) / range;
+            acc += mfm * c.volume;
+        }
+        out[i] = acc;
+    }
+    out
 }

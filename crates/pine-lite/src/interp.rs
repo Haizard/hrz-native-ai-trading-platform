@@ -2916,6 +2916,13 @@ impl<'a> Vm<'a> {
                 let src = self.series_arg(args, 0)?;
                 Ok(ta::ta_tema(&src, a!(1)?)[self.bar])
             }
+            // The volume classics take no arguments -- the candles carry
+            // everything they need.
+            "ta.obv" => Ok(ta::ta_obv(self.candles)[self.bar]),
+            "ta.pvt" => Ok(ta::ta_pvt(self.candles)[self.bar]),
+            "ta.nvi" => Ok(ta::ta_nvi(self.candles)[self.bar]),
+            "ta.wad" => Ok(ta::ta_wad(self.candles)[self.bar]),
+            "ta.ad" => Ok(ta::ta_ad(self.candles)[self.bar]),
             "ta.hma" => {
                 let src = self.series_arg(args, 0)?;
                 Ok(ta::ta_hma(&src, a!(1)?)[self.bar])
