@@ -11,9 +11,9 @@ WORKDIR /app
 
 # Build tooling. We use rustls everywhere (no OpenSSL), but pkg-config is
 # needed by the `ring` crate that rustls pulls in, and cmake by `btls-sys`
-# (BoringSSL, the Deriv client's browser-grade TLS).
+# (BoringSSL, the Deriv client's browser-grade TLS); clang/libclang-dev feeds its bindgen.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends pkg-config cmake \
+    && apt-get install -y --no-install-recommends pkg-config cmake clang libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # The wasm32 target, needed *before* it is strictly required.
