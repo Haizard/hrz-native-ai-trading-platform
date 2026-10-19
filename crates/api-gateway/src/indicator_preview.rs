@@ -305,6 +305,114 @@ async fn fetch_security_candles(
 /// open times, so a pooled candle at `t` covers `[t, t + tf)`. A chart bar
 /// before the pooled series' first candle is flat at that first close, the
 /// same carry-forward the `sec=` aligner uses.
+/// Parse a synthetic ticker (`BTCUSDT/ETHUSDT`, `BTCUSDT*ETHUSDT`,
+/// `BTCUSDT-ETHUSDT`, `BTCUSDT+ETHUSDT`): two legs and one operator.
+/// Anything else is not a synthetic -- the caller treats it as a plain
+/// symbol (and a plain symbol never contains these characters).
+fn parse_synthetic(sym: &str) -> Option<(String, char, String)> {
+    for op in ['/', '*', '-', '+'] {
+        if let Some((a, b)) = sym.split_once(op) {
+            let (a, b) = (a.trim(), b.trim());
+            if !a.is_empty() && !b.is_empty() && !b.contains(['/', '*', '-', '+']) {
+                return Some((a.to_uppercase(), op, b.to_uppercase()));
+            }
+        }
+    }
+    None
+}
+
+/// Compose a synthetic series from two legs: the OHLC fields combine
+/// pointwise over the shared time grid (both venues align per timeframe),
+/// volume takes the first leg's, and a zero denominator leg yields a
+/// zero-close candle the VM reads as flat -- never a panic.
+fn compose_synthetic(
+    a: &[types::Candle],
+    op: char,
+    b: &[types::Candle],
+) -> Vec<types::Candle> {
+    let b_by_time: std::collections::HashMap<i64, &types::Candle> =
+        b.iter().map(|c| (c.open_time, c)).collect();
+    let combine = |x: f64, y: f64| match op {
+        '/' => {
+            if y != 0.0 {
+                x / y
+            } else {
+                0.0
+            }
+        }
+        '*' => x * y,
+        '-' => x - y,
+        _ => x + y,
+    };
+    a.iter()
+        .filter_map(|ca| {
+            let cb = b_by_time.get(&ca.open_time)?;
+            Some(types::Candle {
+                symbol: ca.symbol.clone(),
+                timeframe: ca.timeframe,
+                open_time: ca.open_time,
+                open: combine(ca.open, cb.open),
+                high: combine(ca.high, cb.high),
+                low: combine(ca.low, cb.low),
+                close: combine(ca.close, cb.close),
+                volume: ca.volume,
+                buy_volume: ca.buy_volume,
+                sell_volume: ca.sell_volume,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod synthetic_tests {
+    use super::*;
+
+    fn leg(sym: &str, closes: &[f64]) -> Vec<types::Candle> {
+        closes
+            .iter()
+            .enumerate()
+            .map(|(i, c)| types::Candle {
+                symbol: sym.to_string(),
+                timeframe: Timeframe::H1,
+                open_time: i as i64 * Timeframe::H1.nanos(),
+                open: *c,
+                high: *c * 1.01,
+                low: *c * 0.99,
+                close: *c,
+                volume: 10.0,
+                buy_volume: 5.0,
+                sell_volume: 5.0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_ratio_ticker_composes_pointwise() {
+        let a = leg("BTCUSDT", &[100.0, 110.0, 120.0]);
+        let b = leg("ETHUSDT", &[50.0, 55.0, 40.0]);
+        let s = compose_synthetic(&a, '/', &b);
+        assert_eq!(s.len(), 3);
+        assert!((s[0].close - 2.0).abs() < 1e-9, "100/50");
+        assert!((s[2].close - 3.0).abs() < 1e-9, "120/40");
+        assert!((s[0].high - 101.0 / 50.5).abs() < 1e-9, "high fields compose too");
+        // A missing leg bar drops the pair's bar (the shared grid only).
+        let b_short = leg("ETHUSDT", &[50.0]);
+        let s = compose_synthetic(&a, '/', &b_short);
+        assert_eq!(s.len(), 1, "only the shared bar survives");
+        // A zero denominator never panics.
+        let zero = leg("ETHUSDT", &[0.0, 55.0, 40.0]);
+        let s = compose_synthetic(&a, '/', &zero);
+        assert_eq!(s[0].close, 0.0, "zero denominator reads flat");
+        // The parser: one operator, two legs, nothing nested.
+        assert_eq!(
+            parse_synthetic("BTCUSDT/ETHUSDT"),
+            Some(("BTCUSDT".to_string(), '/', "ETHUSDT".to_string()))
+        );
+        assert_eq!(parse_synthetic("BTCUSDT"), None);
+        assert_eq!(parse_synthetic("A/B/C"), None);
+    }
+}
+
 fn align_security_pooled(primary: &[types::Candle], pooled: &[types::Candle]) -> Vec<types::Candle> {
     if pooled.is_empty() || primary.is_empty() {
         return Vec::new();
@@ -494,6 +602,19 @@ pub async fn replay_script_preview(
         let is_own = sym.eq_ignore_ascii_case(symbol) && pooled_tf == tf;
         let raw = if is_own {
             candles.clone()
+        } else if let Some((leg_a, op, leg_b)) = parse_synthetic(sym) {
+            // A synthetic ticker: fetch both legs and compose pointwise
+            // (BTCUSDT/ETHUSDT is the strength-ratio classic).
+            let (a, b) = (
+                fetch_security_candles(state, database, &leg_a, pooled_tf, from_ns, to_ns).await,
+                fetch_security_candles(state, database, &leg_b, pooled_tf, from_ns, to_ns).await,
+            );
+            let composed = compose_synthetic(&a, op, &b);
+            if composed.is_empty() {
+                tracing::warn!(%sym, %tf_str, "synthetic pool legs share no bars");
+                continue;
+            }
+            composed
         } else {
             let fetched =
                 fetch_security_candles(state, database, sym, pooled_tf, from_ns, to_ns).await;

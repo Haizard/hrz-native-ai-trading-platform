@@ -211,6 +211,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         series_pool.insert("BTCUSDT@15M#ltf".to_string(), raw_15m);
+        // The synthetic ratio the gateway composes, pre-composed here:
+        // BTC/ETH at 2.0 flat -- the VM reads it like any pooled series.
+        let ratio: Vec<Candle> = candles
+            .iter()
+            .map(|c| Candle {
+                symbol: "BTCUSDT/ETHUSDT".to_string(),
+                timeframe: c.timeframe,
+                open_time: c.open_time,
+                open: 2.0,
+                high: 2.02,
+                low: 1.98,
+                close: 2.0,
+                volume: c.volume,
+                buy_volume: c.buy_volume,
+                sell_volume: c.sell_volume,
+            })
+            .collect();
+        series_pool.insert("BTCUSDT/ETHUSDT@1H".to_string(), ratio);
         pine_lite::interp::Inputs { series_pool, ..Inputs::default() }
     } else if scenario == "smt" {
         pine_lite::interp::Inputs { security: build_eth_path(&candles), ..Inputs::default() }
