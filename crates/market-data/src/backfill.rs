@@ -516,11 +516,18 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 pub fn interval_for(timeframe: Timeframe) -> &'static str {
     match timeframe {
         Timeframe::M1 => "1m",
+        Timeframe::M3 => "3m",
         Timeframe::M5 => "5m",
         Timeframe::M15 => "15m",
+        Timeframe::M30 => "30m",
         Timeframe::H1 => "1h",
+        Timeframe::H2 => "2h",
         Timeframe::H4 => "4h",
+        Timeframe::H6 => "6h",
+        Timeframe::H8 => "8h",
+        Timeframe::H12 => "12h",
         Timeframe::D1 => "1d",
+        Timeframe::D3 => "3d",
         Timeframe::W1 => "1w",
     }
 }

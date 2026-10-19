@@ -2735,7 +2735,9 @@ impl<'a> Vm<'a> {
             }
             "timeframe.isintraday" => f64::from(matches!(
                 c.timeframe,
-                Timeframe::M1 | Timeframe::M5 | Timeframe::M15 | Timeframe::H1 | Timeframe::H4
+                Timeframe::M1 | Timeframe::M3 | Timeframe::M5 | Timeframe::M15 | Timeframe::M30
+                    | Timeframe::H1 | Timeframe::H2 | Timeframe::H4 | Timeframe::H6 | Timeframe::H8
+                    | Timeframe::H12
             )),
             "timeframe.isdaily" => f64::from(c.timeframe == Timeframe::D1),
             "timeframe.isweekly" => f64::from(c.timeframe == Timeframe::W1),

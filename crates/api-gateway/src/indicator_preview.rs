@@ -592,9 +592,16 @@ pub async fn replay_script_preview(
             .parse::<Timeframe>()
             .ok()
             .or_else(|| match tf_str {
+                "3" => Some(Timeframe::M3),
+                "30" => Some(Timeframe::M30),
                 "60" => Some(Timeframe::H1),
+                "120" => Some(Timeframe::H2),
                 "240" => Some(Timeframe::H4),
+                "360" => Some(Timeframe::H6),
+                "480" => Some(Timeframe::H8),
+                "720" => Some(Timeframe::H12),
                 "1440" | "D" => Some(Timeframe::D1),
+                "4320" => Some(Timeframe::D3),
                 "W" => Some(Timeframe::W1),
                 _ => None,
             })

@@ -530,15 +530,23 @@ impl Venue for BybitVenue {
         // calendar resolutions which are single letters. There is no `1m`/`1h`
         // spelling, so passing through `interval_for` would send `1m` and get a
         // 400 that names the parameter but not the reason.
-        Some(match timeframe {
-            Timeframe::M1 => "1",
-            Timeframe::M5 => "5",
-            Timeframe::M15 => "15",
-            Timeframe::H1 => "60",
-            Timeframe::H4 => "240",
-            Timeframe::D1 => "D",
-            Timeframe::W1 => "W",
-        })
+        match timeframe {
+            Timeframe::M1 => Some("1"),
+            Timeframe::M3 => Some("3"),
+            Timeframe::M5 => Some("5"),
+            Timeframe::M15 => Some("15"),
+            Timeframe::M30 => Some("30"),
+            Timeframe::H1 => Some("60"),
+            Timeframe::H2 => Some("120"),
+            Timeframe::H4 => Some("240"),
+            Timeframe::H6 => Some("360"),
+            Timeframe::H8 => Some("480"),
+            Timeframe::H12 => Some("720"),
+            Timeframe::D1 => Some("D"),
+            Timeframe::W1 => Some("W"),
+            // This venue has no three-day kline.
+            Timeframe::D3 => None,
+        }
     }
 
     fn columns(&self) -> Columns {

@@ -25,21 +25,42 @@ pub enum Timeframe {
     /// One minute.
     #[serde(rename = "1m")]
     M1,
+    /// Three minutes.
+    #[serde(rename = "3m")]
+    M3,
     /// Five minutes.
     #[serde(rename = "5m")]
     M5,
     /// Fifteen minutes.
     #[serde(rename = "15m")]
     M15,
+    /// Thirty minutes.
+    #[serde(rename = "30m")]
+    M30,
     /// One hour.
     #[serde(rename = "1h")]
     H1,
+    /// Two hours.
+    #[serde(rename = "2h")]
+    H2,
     /// Four hours.
     #[serde(rename = "4h")]
     H4,
+    /// Six hours.
+    #[serde(rename = "6h")]
+    H6,
+    /// Eight hours.
+    #[serde(rename = "8h")]
+    H8,
+    /// Twelve hours.
+    #[serde(rename = "12h")]
+    H12,
     /// One day.
     #[serde(rename = "1d")]
     D1,
+    /// Three days.
+    #[serde(rename = "3d")]
+    D3,
     /// One week.
     ///
     /// The venue's own weekly bars, not seven daily bars stitched together.
@@ -64,11 +85,18 @@ impl Timeframe {
     pub const fn nanos(self) -> i64 {
         match self {
             Self::M1 => 60 * NS_PER_SEC,
+            Self::M3 => 3 * 60 * NS_PER_SEC,
             Self::M5 => 5 * 60 * NS_PER_SEC,
             Self::M15 => 15 * 60 * NS_PER_SEC,
+            Self::M30 => 30 * 60 * NS_PER_SEC,
             Self::H1 => 60 * 60 * NS_PER_SEC,
+            Self::H2 => 2 * 60 * 60 * NS_PER_SEC,
             Self::H4 => 4 * 60 * 60 * NS_PER_SEC,
+            Self::H6 => 6 * 60 * 60 * NS_PER_SEC,
+            Self::H8 => 8 * 60 * 60 * NS_PER_SEC,
+            Self::H12 => 12 * 60 * 60 * NS_PER_SEC,
             Self::D1 => 24 * 60 * 60 * NS_PER_SEC,
+            Self::D3 => 3 * 24 * 60 * 60 * NS_PER_SEC,
             Self::W1 => 7 * 24 * 60 * 60 * NS_PER_SEC,
         }
     }
@@ -183,11 +211,18 @@ impl Timeframe {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::M1 => "1m",
+            Self::M3 => "3m",
             Self::M5 => "5m",
             Self::M15 => "15m",
+            Self::M30 => "30m",
             Self::H1 => "1h",
+            Self::H2 => "2h",
             Self::H4 => "4h",
+            Self::H6 => "6h",
+            Self::H8 => "8h",
+            Self::H12 => "12h",
             Self::D1 => "1d",
+            Self::D3 => "3d",
             Self::W1 => "1w",
         }
     }
@@ -205,11 +240,18 @@ impl FromStr for Timeframe {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "1m" => Ok(Self::M1),
+            "3m" => Ok(Self::M3),
             "5m" => Ok(Self::M5),
             "15m" => Ok(Self::M15),
+            "30m" => Ok(Self::M30),
             "1h" => Ok(Self::H1),
+            "2h" => Ok(Self::H2),
             "4h" => Ok(Self::H4),
+            "6h" => Ok(Self::H6),
+            "8h" => Ok(Self::H8),
+            "12h" => Ok(Self::H12),
             "1d" => Ok(Self::D1),
+            "3d" => Ok(Self::D3),
             "1w" => Ok(Self::W1),
             other => Err(AnalyticsError::InvalidTimeframe(other.to_string())),
         }
