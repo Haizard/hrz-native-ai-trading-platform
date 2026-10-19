@@ -576,6 +576,12 @@ pub struct Vm<'a> {
     maps_live: Vec<std::collections::HashMap<String, f64>>,
     /// The `matrix.new` heap: row-major float matrices by handle.
     matrices_live: Vec<(usize, usize, Vec<f64>)>,
+    /// The `input.symbol` side channel: like input.timeframe, the var
+    /// binds no float -- the Assign arm registers the string here and
+    /// `request.security` resolves its first argument through the map.
+    last_input_sym: Option<String>,
+    /// `input.symbol` var name -> chosen symbol.
+    input_symbols: std::collections::HashMap<String, String>,
     /// Creation sequence per arena slot: Pine's per-kind GC retires the
     /// oldest-CREATED drawing, and slot reuse makes position a lie -- only
     /// a sequence number tells the truth about age.
@@ -637,11 +643,21 @@ impl<'a> Vm<'a> {
     fn security_key(&self, args: &[Arg]) -> Result<String, crate::ScriptError> {
         let sym = match args.first().map(|a| &a.value.kind) {
             Some(ExprKind::Str(s)) => s.to_uppercase(),
+            Some(ExprKind::Ident(v)) => match self.input_symbols.get(v) {
+                Some(s) => s.to_uppercase(),
+                None => {
+                    return Err(crate::ScriptError {
+                        kind: crate::ErrorKind::Type,
+                        span: crate::Span::new(1, 1),
+                        message: format!("`{v}` is not an input.symbol variable; `request.security` argument 1 must be a quoted symbol or one").into(),
+                    })
+                }
+            },
             _ => {
                 return Err(crate::ScriptError {
                     kind: crate::ErrorKind::Type,
                     span: crate::Span::new(1, 1),
-                    message: "`request.security` argument 1 must be a quoted symbol".into(),
+                    message: "`request.security` argument 1 must be a quoted symbol or an input.symbol variable".into(),
                 })
             }
         };
@@ -701,6 +717,8 @@ impl<'a> Vm<'a> {
             points_heap: Vec::new(),
             maps_live: Vec::new(),
             matrices_live: Vec::new(),
+            last_input_sym: None,
+            input_symbols: std::collections::HashMap::new(),
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -984,6 +1002,15 @@ impl<'a> Vm<'a> {
                 if let ExprKind::Call { callee, .. } = &expr.kind {
                     if callee.starts_with("input.") {
                         self.current_input_name = name.clone();
+                    }
+                    // A symbol input binds NO float either: same registry,
+                    // first-argument resolution in request.security.
+                    if callee == "input.symbol" {
+                        self.eval_f(expr)?;
+                        if let Some(sym) = self.last_input_sym.take() {
+                            self.input_symbols.insert(name.clone(), sym);
+                        }
+                        return Ok(());
                     }
                     // A timeframe input binds NO float: register the string
                     // under the var name and skip the buffer write.
@@ -2851,7 +2878,9 @@ impl<'a> Vm<'a> {
                 "bool" => {
                     f64::from(self.inputs.bools.get(&name).copied().unwrap_or(default != 0.0))
                 }
-                "int" | "float" => self.inputs.numbers.get(&name).copied().unwrap_or(default),
+                "int" | "float" | "time" | "price" => {
+                    self.inputs.numbers.get(&name).copied().unwrap_or(default)
+                }
                 // `src = input.source(defval=close)` -- the var BECOMES the
                 // named series (a dense every-bar value, so src[i] history
                 // works). The host overrides by series name.
@@ -2889,6 +2918,25 @@ impl<'a> Vm<'a> {
                         .get(&name)
                         .copied()
                         .unwrap_or(def as f64)
+                }
+                // `sym = input.symbol(defval="ETHUSDT")` -- the same
+                // side-channel shape as input.timeframe: no buffer write,
+                // the var registers in `input_symbols`, and
+                // `request.security(sym, ...)` resolves through it.
+                "symbol" => {
+                    self.last_input_sym = Some(
+                        self.inputs
+                            .strings
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                self.arg_str(args, "defval")
+                                    .or_else(|| self.arg_str_pos(args, 0))
+                                    .unwrap_or_else(|| "ETHUSDT".to_string())
+                            })
+                            .to_uppercase(),
+                    );
+                    0.0
                 }
                 // `tf = input.timeframe(defval="4h")` -- the string never
                 // touches a float buffer: the assignment registers the var

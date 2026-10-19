@@ -85,6 +85,7 @@ pub fn check_with_header(script: &Script, header: &crate::Header) -> Vec<ScriptE
         stmt_call: false,
         stmt_depth: 0,
         top_assigned: std::collections::HashSet::new(),
+        input_symbols: std::collections::HashMap::new(),
     };
     cx.items(&script.items);
     cx.out.series_pool = std::mem::take(&mut cx.series_pool);
@@ -110,6 +111,7 @@ pub fn collect_series_pool(script: &Script, header: &crate::Header) -> Vec<Strin
         stmt_call: false,
         stmt_depth: 0,
         top_assigned: std::collections::HashSet::new(),
+        input_symbols: std::collections::HashMap::new(),
     };
     cx.items(&script.items);
     cx.series_pool
@@ -189,6 +191,8 @@ struct Cx {
     /// `request.security("SYM", tf, ...)` resolves its pool key the way the
     /// VM's registry does.
     input_timeframes: std::collections::HashMap<String, String>,
+    /// `input.symbol` var name -> its chosen symbol (defval or host).
+    input_symbols: std::collections::HashMap<String, String>,
     /// Names in scope OUTSIDE the innermost `request.security` third
     /// argument. The sub-VM that evaluates the expression starts with EMPTY
     /// vars over the pooled candles, so a chart variable captured there
@@ -223,6 +227,10 @@ impl Cx {
         }
         let sym = match &args[0].value.kind {
             crate::parse::ExprKind::Str(s) => s.to_uppercase(),
+            crate::parse::ExprKind::Ident(v) => match self.input_symbols.get(v) {
+                Some(s) => s.to_uppercase(),
+                None => return,
+            },
             _ => return,
         };
         let tf = match &args[1].value.kind {
@@ -355,6 +363,19 @@ impl Cx {
                         // Register the timeframe binding for security-key
                         // resolution (sequential walk: declarations precede
                         // the request.security calls that use them).
+                        if kind == "symbol" {
+                            let sym = args
+                                .iter()
+                                .find(|a| a.name.as_deref() == Some("defval"))
+                                .or_else(|| args.first())
+                                .and_then(|a| match &a.value.kind {
+                                    ExprKind::Str(s) => Some(s.to_uppercase()),
+                                    _ => None,
+                                });
+                            if let Some(sym) = sym {
+                                self.input_symbols.insert(name.clone(), sym);
+                            }
+                        }
                         if kind == "timeframe" {
                             let tf = args
                                 .iter()
@@ -483,7 +504,7 @@ impl Cx {
     }
 
     fn record_input(&mut self, name: &str, kind: &str, args: &[Arg], span: Span) {
-        let known = ["int", "float", "bool", "string", "color", "source", "timeframe"];
+        let known = ["int", "float", "bool", "string", "color", "source", "timeframe", "time", "price", "symbol"];
         if !known.contains(&kind) {
             self.err(
                 span,
@@ -846,7 +867,12 @@ impl Cx {
                                 crate::parse::ExprKind::Ident(v)
                                     if self.input_timeframes.contains_key(v)
                             );
-                            if !(i == 1 && is_tf_var) {
+                            let is_sym_var = matches!(
+                                &a.value.kind,
+                                crate::parse::ExprKind::Ident(v)
+                                    if self.input_symbols.contains_key(v)
+                            );
+                            if !((i == 1 && is_tf_var) || (i == 0 && is_sym_var)) {
                                 self.err(
                                     span,
                                     format!(
@@ -1166,7 +1192,7 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "fill" => (2, 6),
         "bgcolor" | "barcolor" => (1, 4),
         "input.int" | "input.float" | "input.bool" | "input.string" | "input.color"
-        | "input.source" | "input.timeframe" => (0, 6),
+        | "input.source" | "input.timeframe" | "input.time" | "input.price" | "input.symbol" => (0, 6),
         "strategy.entry" | "strategy.exit" | "strategy.close" | "strategy.cancel" => (1, 6),
         // Zero-arg: close everything.
         "strategy.close_all" => (0, 6),
