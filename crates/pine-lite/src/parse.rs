@@ -131,6 +131,15 @@ pub enum ExprKind {
     Str(String),
     /// A packed-RGBA color literal.
     Color(u32),
+    /// `switch [subject]` with `test => result` arms and an optional
+    /// bare `=> result` default. No-subject switches test each arm's
+    /// condition instead of matching a value.
+    Switch {
+        /// The value the arms match against; None = condition form.
+        subject: Option<Box<Expr>>,
+        /// (test, result); a None test is the default arm.
+        arms: Vec<(Option<Expr>, Expr)>,
+    },
     /// `true` / `false`.
     Bool(bool),
     /// `na`.
@@ -275,7 +284,7 @@ pub struct Arg {
 /// lexer recorded in each token's span. An indentation increase opens a block;
 /// back to a previous level closes it -- the standard Python/Pine rule.
 pub fn parse(tokens: Vec<Token>) -> Result<Script, Vec<ScriptError>> {
-    let mut p = Parser { tokens, pos: 0, errors: Vec::new() };
+    let mut p = Parser { tokens, pos: 0, errors: Vec::new(), stmt_indent: 0 };
     let items = p.items(0);
     if p.errors.is_empty() {
         // The lexer parsed the header; the parser carries the default until
@@ -287,6 +296,10 @@ pub fn parse(tokens: Vec<Token>) -> Result<Script, Vec<ScriptError>> {
 }
 
 struct Parser {
+    /// The indentation of the statement being parsed: expression forms
+    /// that span lines (switch arms) measure themselves against the
+    /// statement's line, not against their own keyword's column.
+    stmt_indent: usize,
     tokens: Vec<Token>,
     pos: usize,
     errors: Vec<ScriptError>,
@@ -352,6 +365,7 @@ impl Parser {
     }
 
     fn statement(&mut self, indent: usize) -> Option<Item> {
+        self.stmt_indent = indent;
         let span = self.peek().span;
         match self.peek().kind.clone() {
             TokenKind::Keyword(k) if k == "if" => Some(self.if_stmt(indent, span)),
@@ -669,6 +683,68 @@ impl Parser {
         result
     }
 
+    /// `switch [subject]` then indented `test => result` lines, with a
+    /// bare `=> result` as the default arm. Arms end when the indentation
+    /// drops back to the switch's own line.
+    fn switch_expr(&mut self, span: Span) -> Option<Expr> {
+        let subject = if matches!(self.peek().kind, TokenKind::Newline) {
+            None
+        } else {
+            Some(Box::new(self.expr()?))
+        };
+        // Arms indent past the STATEMENT's line (the switch keyword can sit
+        // anywhere on it -- `trend = switch` puts it mid-line).
+        let opener_indent = self.stmt_indent;
+        let mut arms: Vec<(Option<Expr>, Expr)> = Vec::new();
+        loop {
+            // Peek past blank lines for the next arm; if the next line is
+            // NOT an arm, put everything back -- the trailing newline
+            // belongs to the statement the switch ends, not to the arms.
+            let save = self.pos;
+            self.skip_blank();
+            let arm_indent = self.peek().span.col.saturating_sub(1);
+            if arm_indent <= opener_indent || matches!(self.peek().kind, TokenKind::Eof) {
+                self.pos = save;
+                break;
+            }
+            if matches!(self.peek().kind, TokenKind::Op(ref op) if op == "=>") {
+                self.bump(); // =>
+                let result = self.expr()?;
+                arms.push((None, result));
+            } else {
+                let test = self.expr()?;
+                match self.bump().kind {
+                    TokenKind::Op(op) if op == "=>" => {}
+                    other => {
+                        self.err(self.peek().span, format!("a switch arm is `test => result`, found `{other:?}`"));
+                        return None;
+                    }
+                }
+                let result = self.expr()?;
+                arms.push((Some(test), result));
+            }
+            // Do NOT consume the arm's newline here: the loop top's
+            // save/skip/restore decides whether another arm follows, and
+            // for the last arm that newline ends the outer statement. A
+            // `)` or `,` right after the result closes the whole switch --
+            // the parenthesized inline form (`text=(switch ... => "x")`)
+            // continues the enclosing call on the arm's own line.
+            match self.peek().kind {
+                TokenKind::Newline => {}
+                TokenKind::RParen | TokenKind::Comma | TokenKind::Eof => break,
+                _ => {
+                    self.err(self.peek().span, "one switch arm per line");
+                    return None;
+                }
+            }
+        }
+        if arms.is_empty() {
+            self.err(span, "a switch needs at least one `test => result` arm");
+            return None;
+        }
+        Some(Expr { span, kind: ExprKind::Switch { subject, arms } })
+    }
+
     fn skip_blank(&mut self) {
         while matches!(self.peek().kind, TokenKind::Newline) {
             self.bump();
@@ -951,6 +1027,7 @@ impl Parser {
                     Some(Expr { span, kind: ExprKind::Na })
                 }
             }
+            TokenKind::Keyword(k) if k == "switch" => self.switch_expr(span),
             TokenKind::Keyword(k) if k == "var" || k == "varip" => {
                 // A declaration mid-expression position is a statement; treat
                 // it as one by handing back to the statement parser via a

@@ -2179,6 +2179,34 @@ impl<'a> Vm<'a> {
                 let off = if off.is_finite() { off.max(0.0) as usize } else { 0 };
                 self.read_history(base, off)?
             }
+            ExprKind::Switch { subject, arms } => {
+                let sv = match subject {
+                    Some(s) => Some(self.eval_f(s)?),
+                    None => None,
+                };
+                let mut chosen: Option<&Expr> = None;
+                let mut default: Option<&Expr> = None;
+                for (test, result) in arms {
+                    match test {
+                        None => default = Some(result),
+                        Some(t) => {
+                            let tv = self.eval_f(t)?;
+                            let hit = match sv {
+                                Some(v) => tv == v,
+                                None => self.truthy(tv),
+                            };
+                            if hit {
+                                chosen = Some(result);
+                                break;
+                            }
+                        }
+                    }
+                }
+                match chosen.or(default) {
+                    Some(r) => self.eval_f(r)?,
+                    None => NA,
+                }
+            }
             ExprKind::Ternary { cond, then, els } => {
                 let c = self.eval_f(cond)?;
                 if self.truthy(c) {
@@ -3493,6 +3521,13 @@ impl<'a> Vm<'a> {
             ExprKind::History { base, offset } => {
                 Self::expr_depends_on_vars(base) || Self::expr_depends_on_vars(offset)
             }
+            ExprKind::Switch { subject, arms } => {
+                subject.as_deref().is_some_and(Self::expr_depends_on_vars)
+                    || arms.iter().any(|(t, r)| {
+                        t.as_ref().is_some_and(Self::expr_depends_on_vars)
+                            || Self::expr_depends_on_vars(r)
+                    })
+            }
             ExprKind::Call { args, .. } => {
                 args.iter().any(|a| Self::expr_depends_on_vars(&a.value))
             }
@@ -3683,6 +3718,40 @@ impl<'a> Vm<'a> {
                     }
                 }
                 Ok(out)
+            }
+            ExprKind::Switch { subject, arms } => {
+                let sv = match subject {
+                    Some(s) => Some(self.eval_f(s)?),
+                    None => None,
+                };
+                let mut chosen: Option<&Expr> = None;
+                let mut default: Option<&Expr> = None;
+                for (test, result) in arms {
+                    match test {
+                        None => default = Some(result),
+                        Some(t) => {
+                            let tv = self.eval_f(t)?;
+                            let hit = match sv {
+                                Some(v) => tv == v,
+                                None => self.truthy(tv),
+                            };
+                            if hit {
+                                chosen = Some(result);
+                                break;
+                            }
+                        }
+                    }
+                }
+                match chosen.or(default) {
+                    Some(r) => self.eval_s(r),
+                    None => {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Type,
+                            span: crate::Span::new(1, 1),
+                            message: "a switch in a text position matched no arm and has no `=>` default".into(),
+                        })
+                    }
+                }
             }
             ExprKind::Call { callee, args } if callee == "array.join" => {
                 let handle = self

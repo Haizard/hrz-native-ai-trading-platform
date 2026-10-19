@@ -550,6 +550,40 @@ impl Cx {
                     _ => Ty::Float,
                 }
             }
+            ExprKind::Switch { subject, arms } => {
+                // The subject's type gates the arm tests; every arm's result
+                // must agree on one type (the switch IS that type).
+                let subj_ty = subject.as_deref().map(|s| self.expr(s));
+                let mut out_ty = Ty::Na;
+                for (test, result) in arms {
+                    if let Some(t) = test {
+                        let tt = self.expr(t);
+                        match subj_ty {
+                            Some(s) => {
+                                if tt != s && tt != Ty::Na && s != Ty::Na {
+                                    self.err(t.span, format!(
+                                        "a switch arm's test is {tt:?} but the subject is {s:?} -- they must agree"
+                                    ));
+                                }
+                            }
+                            None => {
+                                if !matches!(tt, Ty::Bool | Ty::Na) {
+                                    self.err(t.span, "a switch without a subject tests conditions -- each arm's test must be bool");
+                                }
+                            }
+                        }
+                    }
+                    let rt = self.expr(result);
+                    if out_ty == Ty::Na {
+                        out_ty = rt;
+                    } else if rt != out_ty && rt != Ty::Na {
+                        self.err(result.span, format!(
+                            "switch arms must all produce one type: earlier arms give {out_ty:?}, this one {rt:?}"
+                        ));
+                    }
+                }
+                out_ty
+            }
             ExprKind::Ternary { cond, then, els } => {
                 let c = self.expr(cond);
                 if !matches!(c, Ty::Bool | Ty::Na) {
