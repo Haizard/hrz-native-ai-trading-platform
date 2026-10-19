@@ -2066,6 +2066,7 @@ impl<'a> Vm<'a> {
                     })
                 }
             },
+            "math.pi" => std::f64::consts::PI,
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
             | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => {
                 self.strategy_read(path)
@@ -2763,6 +2764,24 @@ impl<'a> Vm<'a> {
                 })
             }
             "math.abs" => Ok(a!(0)?.abs()),
+            // The trig pack: radians in and out, exactly like Pine; the
+            // inverse functions return na outside their domains rather than
+            // erroring (asin 2.0 is a data bug a script survives, not a vet).
+            "math.sin" => Ok(a!(0)?.sin()),
+            "math.cos" => Ok(a!(0)?.cos()),
+            "math.tan" => Ok(a!(0)?.tan()),
+            "math.asin" => {
+                let v = a!(0)?;
+                Ok(if (-1.0..=1.0).contains(&v) { v.asin() } else { NA })
+            }
+            "math.acos" => {
+                let v = a!(0)?;
+                Ok(if (-1.0..=1.0).contains(&v) { v.acos() } else { NA })
+            }
+            "math.atan" => Ok(a!(0)?.atan()),
+            "math.atan2" => Ok(a!(0)?.atan2(a!(1)?)),
+            "math.toradians" => Ok(a!(0)?.to_radians()),
+            "math.todegrees" => Ok(a!(0)?.to_degrees()),
             "math.min" | "math.max" => {
                 let mut acc = a!(0)?;
                 for i in 1..args.len() {

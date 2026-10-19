@@ -638,6 +638,7 @@ impl Cx {
             // The line-extension constants (`extend=extend.right` on a
             // line) are the only dotted string constants.
             "extend.none" | "extend.right" | "extend.left" | "extend.both" => Ty::String,
+            "math.pi" => Ty::Float,
             // The table-position constants (`table.new(position.top_right,
             // ...)`) are dotted string constants too.
             "position.top_right" | "position.top_left" | "position.top_center"
@@ -859,6 +860,7 @@ impl Cx {
                 | "year" | "month" | "dayofmonth" | "syminfo.mintick" | "syminfo.ticker"
                 | "extend.none" | "extend.right" | "extend.left" | "extend.both"
                 | "color.new" | "color.rgb" | "color.from_gradient"
+                | "math.pi"
                 | "position.top_right" | "position.top_left" | "position.top_center"
                 | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
                 | "position.middle_right" | "position.middle_left" | "position.middle_center"
@@ -917,6 +919,9 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "str.format" => (1, 9),
         "math.round_to_mintick" | "math.abs" | "math.floor" | "math.ceil" | "math.round" | "math.sqrt" | "math.log"
         | "math.exp" | "math.sign" => (1, 1),
+        "math.sin" | "math.cos" | "math.tan" | "math.asin" | "math.acos" | "math.atan"
+        | "math.toradians" | "math.todegrees" => (1, 1),
+        "math.atan2" => (2, 2),
         "math.min" | "math.max" | "math.avg" => (1, 8),
         "math.sum" => (2, 2),
         "math.pow" => (2, 2),
