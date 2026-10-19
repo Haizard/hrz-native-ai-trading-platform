@@ -212,6 +212,13 @@ pub struct Shape {
     pub glyph: String,
     /// Packed RGBA.
     pub color: u32,
+    /// `size=` -- "tiny"|"small"|"normal"|"large"|"huge"; "" = normal.
+    pub size: String,
+    /// `text=` -- the marker's label ("" = none); evaluated per bar, so a
+    /// conditional string works like Pine's series text.
+    pub text: String,
+    /// `textcolor=` -- the label's color; None follows the marker's.
+    pub text_color: Option<u32>,
 }
 
 /// One strategy intent recorded during the run.
@@ -1878,16 +1885,45 @@ impl<'a> Vm<'a> {
                 }
                 None => vec![NA; n],
             };
+            // `size=` takes a size.* constant (dotted string); `text=` and
+            // `textcolor=` are per-bar expressions, replayed like the
+            // location series so a marker's label is of ITS bar.
+            let size = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some("size"))
+                .and_then(|a| match &a.value.kind {
+                    ExprKind::Ident(v) | ExprKind::Member { path: v } => {
+                        v.strip_prefix("size.").map(str::to_string)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let text_arg = args.iter().find(|a| a.name.as_deref() == Some("text")).map(|a| a.value.clone());
+            let text_color_arg = args.iter().find(|a| a.name.as_deref() == Some("textcolor")).map(|a| a.value.clone());
+            let saved_bar = self.bar;
             for (bar, v) in series.iter().enumerate() {
                 if self.truthy(*v) {
+                    self.bar = bar;
+                    let text = match &text_arg {
+                        Some(e) => self.eval_s(e)?,
+                        None => String::new(),
+                    };
+                    let text_color = match &text_color_arg {
+                        Some(e) => self.eval_color_opt(e)?,
+                        None => None,
+                    };
                     self.out.shapes.push(Shape {
                         bar,
                         value: location_series[bar],
                         glyph: glyph.clone(),
                         color,
+                        size: size.clone(),
+                        text,
+                        text_color,
                     });
                 }
             }
+            self.bar = saved_bar;
             return Ok(Plot {
                 id: format!("p{}", self.out.plots.len()),
                 title: self.arg_str(args, "title").unwrap_or_else(|| "plot".into()),

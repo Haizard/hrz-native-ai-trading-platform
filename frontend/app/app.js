@@ -1403,7 +1403,9 @@ function createChartPane(root, hooks = {}) {
       const cy = shape.y;
       // The glow: one radial gradient per marker, alpha from the marker's
       // own colour so a red signal glows red. Cheap enough per frame.
-      const glowR = 11;
+      // plotshape size= scales the marker and its glow.
+      const sizeScale = { tiny: 0.55, small: 0.75, normal: 1.0, large: 1.5, huge: 2.25 }[shape.size || "normal"] ?? 1.0;
+      const glowR = 11 * sizeScale;
       const grad = ctx.createRadialGradient(cx, cy, 1.5, cx, cy, glowR);
       grad.addColorStop(0, rgbaFromPacked(shape.color, 0.5));
       grad.addColorStop(1, rgbaFromPacked(shape.color, 0.0));
@@ -1431,16 +1433,22 @@ function createChartPane(root, hooks = {}) {
       ctx.fillStyle = rgbaFromPacked(shape.color, 1.0);
       ctx.beginPath();
       if (down) {
-        ctx.moveTo(cx, cy + 6);
-        ctx.lineTo(cx - 5.5, cy - 3);
-        ctx.lineTo(cx + 5.5, cy - 3);
+        ctx.moveTo(cx, cy + 6 * sizeScale);
+        ctx.lineTo(cx - 5.5 * sizeScale, cy - 3 * sizeScale);
+        ctx.lineTo(cx + 5.5 * sizeScale, cy - 3 * sizeScale);
       } else {
-        ctx.moveTo(cx, cy - 6);
-        ctx.lineTo(cx - 5.5, cy + 3);
-        ctx.lineTo(cx + 5.5, cy + 3);
+        ctx.moveTo(cx, cy - 6 * sizeScale);
+        ctx.lineTo(cx - 5.5 * sizeScale, cy + 3 * sizeScale);
+        ctx.lineTo(cx + 5.5 * sizeScale, cy + 3 * sizeScale);
       }
       ctx.closePath();
       ctx.fill();
+      // plotshape text= labels its marker; textcolor= overrides the ink.
+      if (shape.text) {
+        ctx.fillStyle = rgbaFromPacked(shape.text_color ?? shape.color, 1.0);
+        ctx.font = `${Math.round(10 * sizeScale)}px ui-monospace, monospace`;
+        ctx.fillText(shape.text, cx + 8 * sizeScale, cy + (down ? -8 : 12) * sizeScale);
+      }
     }
     // Someone is pulsing: schedule the next frame so the halo breathes even
     // when the feed is quiet. One timer for the whole chart, self-cancelling

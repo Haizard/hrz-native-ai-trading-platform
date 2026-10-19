@@ -202,6 +202,15 @@ pub struct ScriptShape {
     /// markers -- one that landed on the newest bars -- for the pulse; a
     /// marker's story ("this just happened") is part of its meaning.
     pub bar: usize,
+    /// `size=` -- "tiny"|"small"|"normal"|"large"|"huge"; "" = normal.
+    #[serde(default)]
+    pub size: String,
+    /// `text=` -- the marker's label ("" = none).
+    #[serde(default)]
+    pub text: String,
+    /// `textcolor=` -- the label's color; None follows the marker's.
+    #[serde(default)]
+    pub text_color: Option<u32>,
 }
 
 /// One script's pane: the plots, levels and shapes it asked for, in its own
@@ -438,6 +447,9 @@ pub fn pane_from_output(
             glyph: s.glyph.clone(),
             color: s.color,
             bar: s.bar,
+            size: s.size.clone(),
+            text: s.text.clone(),
+            text_color: s.text_color,
         })
         .collect();
 
@@ -525,6 +537,9 @@ pub fn scene_overlay_shapes(
                 glyph: s.glyph.clone(),
                 color: s.color,
                 bar: s.bar,
+                size: s.size.clone(),
+                text: s.text.clone(),
+                text_color: s.text_color,
             }
         })
         .collect()
@@ -1589,6 +1604,37 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn plotshape_carries_size_and_per_bar_text() {
+        let frame = crate::scene::Frame {
+            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "f = ta.ema(close, 3)\n",
+            "s = ta.ema(close, 6)\n",
+            "plotshape(ta.crossover(f, s), shape=\"triangleup\", location_value=low, size=size.large, text=str.tostring(close, \"#.##\"), textcolor=color.orange)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let mut cs: Vec<Candle> = (0..20).map(|i| candle(i, 100.0 - i as f64)).collect();
+        cs.extend((20..40).map(|i| candle(i, 82.0 + (i - 20) as f64)));
+        let output = run(&parsed, &cs, &Inputs::default()).expect("run");
+        assert!(!output.shapes.is_empty(), "the V-shape crosses up somewhere");
+        let shapes = scene_overlay_shapes(&output, 10.0, &frame);
+        let m = &shapes[0];
+        assert_eq!(m.size, "large", "size= maps through");
+        assert_eq!(m.text_color, Some(0xFF_F9_73_16), "textcolor= maps packed");
+        // The text is of the marker's OWN bar: the close at that bar.
+        let bar_close = cs[output.shapes[0].bar].close;
+        assert_eq!(m.text, format!("{bar_close:.2}"), "per-bar text eval");
     }
 
     #[test]

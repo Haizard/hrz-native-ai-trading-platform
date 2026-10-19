@@ -662,6 +662,8 @@ impl Cx {
             // The barmerge constants are dotted string constants too.
             "barmerge.gaps_on" | "barmerge.gaps_off" | "barmerge.lookahead_on"
             | "barmerge.lookahead_off" => Ty::String,
+            "size.auto" | "size.tiny" | "size.small" | "size.normal" | "size.large"
+            | "size.huge" => Ty::String,
             "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
                 Ty::Bool
             }
@@ -913,6 +915,8 @@ impl Cx {
                 | "alert.freq_once_per_bar_close"
                 | "barmerge.gaps_on" | "barmerge.gaps_off"
                 | "barmerge.lookahead_on" | "barmerge.lookahead_off"
+                | "size.auto" | "size.tiny" | "size.small" | "size.normal"
+                | "size.large" | "size.huge"
                 | "position.top_right" | "position.top_left" | "position.top_center"
                 | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
                 | "position.middle_right" | "position.middle_left" | "position.middle_center"
@@ -1090,6 +1094,8 @@ fn namespace_const(name: &str) -> Option<Ty> {
         | "alert.freq_once_per_bar_close" => Some(Ty::String),
         "barmerge.gaps_on" | "barmerge.gaps_off" | "barmerge.lookahead_on"
         | "barmerge.lookahead_off" => Some(Ty::String),
+        "size.auto" | "size.tiny" | "size.small" | "size.normal" | "size.large"
+        | "size.huge" => Some(Ty::String),
         "timeframe.multiplier" => Some(Ty::Float),
         "timeframe.isintraday" | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm" => {
             Some(Ty::Bool)
