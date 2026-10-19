@@ -538,6 +538,7 @@ pub async fn replay_script_preview(
         trades: output.simulation.as_ref().map_or(0, |s| s.report.total_trades as usize),
         net_profit: output.simulation.as_ref().map_or(0.0, |s| s.report.net_profit),
         max_drawdown: output.simulation.as_ref().map_or(0.0, |s| s.report.max_drawdown),
+        alerts: output.alerts.len(),
         simulation_note: strategy_simulation_note(output.simulation.as_ref(), candles.len()),
     };
     let title = header.title.clone().unwrap_or_else(|| "script".to_string());

@@ -225,6 +225,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!("objects: {} (truncated: {})", out.objects.len(), out.objects_truncated);
+    for a in &out.alerts {
+        println!("ALERT bar={} text={:?}", a.bar, a.text);
+    }
     for (i, obj) in out.objects.iter().enumerate() {
         match obj {
             pine_lite::ScriptObject::Line { bar1, price1, bar2, price2, .. } => {

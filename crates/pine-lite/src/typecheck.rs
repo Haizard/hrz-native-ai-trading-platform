@@ -674,7 +674,7 @@ impl Cx {
     fn call(&mut self, span: Span, callee: &str, args: &[Arg]) -> Ty {
         const STMT_ONLY: &[&str] = &[
             "plot", "plotshape", "plotchar", "plotarrow", "plotcandle", "plotbar", "hline", "fill", "bgcolor",
-            "barcolor", "fib.new", "table.cell", "strategy.entry", "strategy.exit",
+            "barcolor", "fib.new", "table.cell", "alert", "strategy.entry", "strategy.exit",
             "strategy.close", "strategy.close_all", "strategy.cancel",
         ];
         if !self.stmt_call && STMT_ONLY.contains(&callee) {
@@ -886,6 +886,8 @@ impl Cx {
                 | "barstate.isnew" | "barstate.isfirst" | "barstate.islast"
                 | "timeframe.period" | "timeframe.multiplier" | "timeframe.isintraday"
                 | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm"
+                | "alert.freq_all" | "alert.freq_once_per" | "alert.freq_once_per_bar"
+                | "alert.freq_once_per_bar_close"
                 | "position.top_right" | "position.top_left" | "position.top_center"
                 | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
                 | "position.middle_right" | "position.middle_left" | "position.middle_center"
@@ -948,6 +950,7 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         | "math.toradians" | "math.todegrees" => (1, 1),
         "math.atan2" => (2, 2),
         "timeframe.change" => (1, 1),
+        "alert" => (1, 2),
         "math.min" | "math.max" | "math.avg" => (1, 8),
         "math.sum" => (2, 2),
         "math.pow" => (2, 2),
@@ -1058,6 +1061,8 @@ fn namespace_const(name: &str) -> Option<Ty> {
             Some(Ty::Bool)
         }
         "timeframe.period" => Some(Ty::String),
+        "alert.freq_all" | "alert.freq_once_per" | "alert.freq_once_per_bar"
+        | "alert.freq_once_per_bar_close" => Some(Ty::String),
         "timeframe.multiplier" => Some(Ty::Float),
         "timeframe.isintraday" | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm" => {
             Some(Ty::Bool)

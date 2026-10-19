@@ -65,6 +65,9 @@ pub struct ScriptPreviewStats {
     pub net_profit: f64,
     /// Peak-to-trough drawdown, as a fraction of the equity peak.
     pub max_drawdown: f64,
+    /// `alert(...)` events the run fired.
+    #[serde(default)]
+    pub alerts: usize,
     /// docs/24 S3: non-fatal warning when a strategy simulated ZERO fills --
     /// the run is valid, but nothing traded. Rides the stats card and the
     /// chat row so the user (and the repair loop's next round) sees it.

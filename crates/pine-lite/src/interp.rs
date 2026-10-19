@@ -94,6 +94,19 @@ pub struct OutputTable {
     pub cells: std::collections::HashMap<(usize, usize), OutputTableCell>,
 }
 
+/// One fired `alert(...)`: the bar, its open time, and the rendered text.
+/// The host replays closed bars once each, so Pine's frequency constants
+/// collapse -- every alert is "once per bar close" by construction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptAlert {
+    /// The bar the alert fired on.
+    pub bar: usize,
+    /// That bar's open time (unix nanos).
+    pub nanos: i64,
+    /// The rendered message (a string expression, so str.format composes).
+    pub text: String,
+}
+
 /// One written table cell.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputTableCell {
@@ -259,6 +272,8 @@ pub struct Output {
     pub barcolors: Vec<Vec<Option<u32>>>,
     /// `table.new` panels, in creation order.
     pub tables: Vec<OutputTable>,
+    /// `alert(...)` events, in firing order.
+    pub alerts: Vec<ScriptAlert>,
     /// The strategy simulation (docs/24 S1): orders, equity curve, account
     /// snapshots and the report. None for indicator scripts; Some for every
     /// run that recorded `strategy.*` intents or (with the header block)
@@ -1536,6 +1551,22 @@ impl<'a> Vm<'a> {
             // in `draw_object`, shared with the expression path.
             _ if self.draw_object(callee, args)?.is_some() => Ok(()),
             _ if self.set_object(callee, args)? => Ok(()),
+            "alert" => {
+                self.tick()?;
+                let text_arg = args.first().ok_or_else(|| crate::ScriptError {
+                    kind: crate::ErrorKind::Type,
+                    span: crate::Span::new(1, 1),
+                    message: "`alert` needs a message -- alert(str.format(\"BOS at {0,number,#.##}\", level))".to_string(),
+                })?;
+                let text = self.eval_s(&text_arg.value)?;
+                // The frequency argument is accepted (the alert.freq_*
+                // constants vet as string constants) and ignored: closed-bar
+                // replay fires exactly once per triggering bar, which is what
+                // freq_once_per_bar_close means on TradingView.
+                let nanos = self.candles.get(self.bar).map(|c| c.open_time).unwrap_or(0);
+                self.out.alerts.push(ScriptAlert { bar: self.bar, nanos, text });
+                Ok(())
+            }
             _ if self.table_handle(callee, args)?.is_some() => Ok(()),
             _ if self.table_stmt(callee, args)? => Ok(()),
             // ---- the registry primitive (docs/37): the VM stores the raw
