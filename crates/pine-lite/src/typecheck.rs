@@ -328,7 +328,25 @@ impl Cx {
                     self.out.variables.insert(name.clone(), VarMode::Auto);
                 }
             }
-            Item::Assign { span, name, mode, expr, .. } => {
+            Item::Assign { span, name, mode, expr, decl_type, .. } => {
+                // An explicit type word must be a word we know, and must
+                // match the right-hand side: `float`/`int` take a number
+                // (they unify here), `bool` a bool, `color` a color, the
+                // handle words (line/label/box/table/linefill/polyline) a
+                // handle. `string` fails the way every string binding
+                // fails -- strings are expression-level only.
+                if let Some(word) = decl_type {
+                    let known = matches!(
+                        word.as_str(),
+                        "float" | "int" | "bool" | "color" | "string" | "line" | "label" | "box"
+                            | "table" | "linefill" | "polyline"
+                    );
+                    if !known {
+                        self.err(*span, format!(
+                            "`{word}` is not a type pine-lite knows: float, int, bool, color, line, label, box, table, linefill, polyline"
+                        ));
+                    }
+                }
                 // `input.*` declarations are recorded for the UI and typed by
                 // their call.
                 if let ExprKind::Call { callee, args } = &expr.kind {
@@ -353,6 +371,21 @@ impl Cx {
                     }
                 }
                 let ty = self.expr(expr);
+                if let Some(word) = decl_type {
+                    let ok = match word.as_str() {
+                        "float" | "int" | "line" | "label" | "box" | "table" | "linefill"
+                        | "polyline" => matches!(ty, Ty::Float | Ty::Na),
+                        "bool" => matches!(ty, Ty::Bool | Ty::Na),
+                        "color" => matches!(ty, Ty::Color | Ty::Na),
+                        // `string`'s error is the string-binding one below.
+                        _ => true,
+                    };
+                    if !ok {
+                        self.err(*span, format!(
+                            "`{name}` is declared `{word}` but the right-hand side is {ty:?} -- the declaration and the value must agree"
+                        ));
+                    }
+                }
                 // Strings are expression-level only in v1: no float-ring
                 // variable can hold one, so a string binding fails at
                 // runtime with a confusing "not defined". Refuse it here,

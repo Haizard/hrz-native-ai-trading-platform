@@ -35,6 +35,10 @@ pub enum Item {
         op: Option<String>,
         /// The right-hand side.
         expr: Expr,
+        /// The explicit type word (`float x = ...` / `var float x = ...`),
+        /// when the script declares one. The vet checks it against the
+        /// right-hand side.
+        decl_type: Option<String>,
     },
     /// `basis, upper, lower = ta.bb(close, 20, 2)`: one multi-output call,
     /// several names. The count is checked against the callee at vet time.
@@ -381,6 +385,32 @@ impl Parser {
                     Some(Item::Expr { span, expr })
                 }
             }
+            // `float x = 1.5`: a bare type word starts a typed declaration.
+            // The guard is exact (type word, name, then `=`), so a variable
+            // NAMED float (`float = 5`) keeps parsing as an assignment.
+            TokenKind::Ident(ref kw)
+                if Self::is_type_word(kw)
+                    && matches!(self.peek_ahead(1).kind, TokenKind::Ident(_))
+                    && matches!(self.peek_ahead(2).kind, TokenKind::Assign(_)) =>
+            {
+                let kw = kw.clone();
+                self.bump(); // the type word
+                let name = match self.bump().kind {
+                    TokenKind::Ident(n) => n,
+                    _ => unreachable!("guarded above"),
+                };
+                self.bump(); // =
+                let expr = self.expr()?;
+                self.end_of_line();
+                Some(Item::Assign {
+                    span,
+                    name,
+                    mode: VarMode::Auto,
+                    op: None,
+                    expr,
+                    decl_type: Some(kw),
+                })
+            }
             // `a, b = ta.macd(...)`: names, commas, then one multi-output call.
             TokenKind::Ident(_) if matches!(self.peek_ahead(1).kind, TokenKind::Comma) => {
                 Some(self.destructure(span, false))
@@ -406,7 +436,7 @@ impl Parser {
                 let mode = VarMode::Auto;
                 let expr = self.expr()?;
                 self.end_of_line();
-                Some(Item::Assign { span, name, mode, op: Some(op), expr })
+                Some(Item::Assign { span, name, mode, op: Some(op), expr, decl_type: None })
             }
             _ => {
                 let expr = self.expr()?;
@@ -466,14 +496,17 @@ impl Parser {
             }
         };
         // `var float x = 0.0`: Pine carries an optional type word between the
-        // keyword and the name, and models write it reflexively. We infer
-        // types: when the word already read as the name is followed by
-        // `Ident =`, that word was the type and the ident at the cursor is
-        // the real name. The plain `var x = ...` shape (`=` straight after
-        // the name) does not match and is untouched.
+        // keyword and the name, and models write it reflexively. When the
+        // word already read as the name is followed by `Ident =`, that word
+        // was the type and the ident at the cursor is the real name -- and
+        // the type word RIDES to the vet now (it checks the declared type
+        // against the right-hand side). The plain `var x = ...` shape (`=`
+        // straight after the name) does not match and is untouched.
+        let mut decl_type = None;
         if matches!(self.peek().kind, TokenKind::Ident(_))
             && matches!(self.peek_ahead(1).kind, TokenKind::Assign(_))
         {
+            decl_type = Some(name);
             name = match self.bump().kind {
                 TokenKind::Ident(n) => n,
                 other => {
@@ -492,7 +525,7 @@ impl Parser {
         };
         let expr = self.expr().unwrap_or(Expr { kind: ExprKind::Na, span });
         self.end_of_line();
-        Item::Assign { span, name, mode, op, expr }
+        Item::Assign { span, name, mode, op, expr, decl_type }
     }
 
     fn if_stmt(&mut self, indent: usize, span: Span) -> Item {
@@ -597,6 +630,17 @@ impl Parser {
         }
         let body = self.block_body(span.col.saturating_sub(1));
         Item::FuncDef { span, name, params, defaults, body }
+    }
+
+    /// The words Pine lets a variable declaration carry. Handles
+    /// (line/label/box/table/linefill/polyline) are floats to the VM; the
+    /// vet checks the word against the right-hand side's type.
+    fn is_type_word(word: &str) -> bool {
+        matches!(
+            word,
+            "float" | "int" | "bool" | "string" | "color" | "line" | "label" | "box" | "table"
+                | "linefill" | "polyline"
+        )
     }
 
     /// Does the current `name(...)` continue with `=>` on this line? A call's

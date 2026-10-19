@@ -2165,7 +2165,11 @@ impl<'a> Vm<'a> {
         Ok(match &expr.kind {
             ExprKind::Num(n) => *n,
             ExprKind::Bool(b) => f64::from(*b),
-            ExprKind::Color(_) | ExprKind::Str(_) => NA, // colors/strings cannot be numeric
+            // A color literal IS a value (0xAARRGGBB): vars hold it, and
+            // every color= argument reads it back. Strings stay
+            // expression-level -- no numeric view of text.
+            ExprKind::Color(c) => *c as f64,
+            ExprKind::Str(_) => NA,
             ExprKind::Na => NA,
             ExprKind::NaChecked { value } => f64::from(!self.eval_f(value)?.is_finite()),
             ExprKind::Ident(name) => self.read_name(name)?,
@@ -2360,6 +2364,9 @@ impl<'a> Vm<'a> {
                 }
             },
             "math.pi" => std::f64::consts::PI,
+            // A named color in value position: the packed u32 as a float
+            // (`c = color.teal` binds it, color= reads it back).
+            _ if named_color(path).is_some() => named_color(path).expect("checked") as f64,
             // The chart timeframe's shape. `period` itself is a string and
             // lives in eval_s; these are its numeric and boolean views.
             "timeframe.multiplier" => {
