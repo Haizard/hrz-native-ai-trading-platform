@@ -388,13 +388,18 @@ pub fn pane_from_output(
         .plots
         .iter()
         .filter(|p| p.kind == pine_lite::PlotKind::Line)
-        .map(|p| ScriptPlot {
+        .map(|p| {
+            let cutoff = p
+                .show_last
+                .map(|n| p.values.len().saturating_sub(n.max(0.0) as usize));
+            ScriptPlot {
             title: p.title.clone(),
             points: p
                 .values
                 .iter()
                 .enumerate()
                 .filter(|(_, v)| v.is_finite())
+                .filter(|(bar, _)| cutoff.is_none_or(|c| *bar >= c))
                 .map(|(bar, v)| crate::scene::Point {
                     x: plot.x + slot * (bar as f64 + 0.5 + p.offset),
                     y: y_at(*v),
@@ -406,6 +411,7 @@ pub fn pane_from_output(
             // trailing `na` is a hole the polyline already skips, and the
             // legend must not show a hole either.
             last_value: p.values.iter().rev().find(|v| v.is_finite()).copied(),
+            }
         })
         .collect();
 
@@ -466,13 +472,19 @@ pub fn scene_overlay_plots(
         .plots
         .iter()
         .filter(|p| p.kind == pine_lite::PlotKind::Line)
-        .map(|p| ScriptPlot {
+        .map(|p| {
+            // `show_last=N` draws only the last N bars of the series.
+            let cutoff = p
+                .show_last
+                .map(|n| p.values.len().saturating_sub(n.max(0.0) as usize));
+            ScriptPlot {
             title: p.title.clone(),
             points: p
                 .values
                 .iter()
                 .enumerate()
                 .filter(|(_, v)| v.is_finite())
+                .filter(|(bar, _)| cutoff.is_none_or(|c| *bar >= c))
                 .map(|(bar, v)| crate::scene::Point {
                     // `offset=` shifts the plot in bar units -- presentation
                     // only, the values stay in bar order (Pine's rule).
@@ -484,6 +496,7 @@ pub fn scene_overlay_plots(
             linewidth: p.linewidth,
             // docs/32: same legend contract as the pane path.
             last_value: p.values.iter().rev().find(|v| v.is_finite()).copied(),
+            }
         })
         .collect()
 }
@@ -1576,6 +1589,34 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn show_last_keeps_only_the_tail_of_a_plot() {
+        let frame = crate::scene::Frame {
+            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "plot(close, title=\"all\")\n",
+            "plot(close, title=\"tail\", show_last=5)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        let plots = scene_overlay_plots(&output, 10.0, &frame);
+        assert_eq!(plots.len(), 2);
+        assert_eq!(plots[0].points.len(), 40, "no show_last: everything draws");
+        assert_eq!(plots[1].points.len(), 5, "only the last five bars draw");
+        // The tail starts at bar 35: x = slot * (35 + 0.5).
+        let first_x = plots[1].points[0].x;
+        assert!((first_x - 355.0).abs() < 1e-9, "tail starts at bar 35: {first_x}");
     }
 
     #[test]

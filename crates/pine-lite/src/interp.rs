@@ -76,6 +76,9 @@ pub struct Plot {
     /// right, negative left). The values array stays in bar order; the
     /// shift is pure presentation, like Pine.
     pub offset: f64,
+    /// `show_last=`: only the last N bars of the series draw (Pine's
+    /// show_last). None = the whole series.
+    pub show_last: Option<f64>,
 }
 
 /// One `table.new` panel: cells update in place per bar (the dashboard
@@ -1817,6 +1820,7 @@ impl<'a> Vm<'a> {
                     bars: callee == "plotbar",
                 }),
                 offset: self.arg_named_f(args, "offset").unwrap_or(0.0),
+                show_last: self.arg_named_f(args, "show_last"),
             });
         }
         if callee == "plot" {
@@ -1894,6 +1898,7 @@ impl<'a> Vm<'a> {
                 kind: crate::PlotKind::Shape,
                 candles: None,
                 offset: 0.0,
+                show_last: None,
             });
         }
         let style = match self.arg_str(args, "style").as_deref() {
@@ -1915,6 +1920,7 @@ impl<'a> Vm<'a> {
             kind: crate::PlotKind::Line,
             candles: None,
             offset: self.arg_named_f(args, "offset").unwrap_or(0.0),
+            show_last: self.arg_named_f(args, "show_last"),
         })
     }
 
