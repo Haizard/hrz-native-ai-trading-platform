@@ -12,9 +12,9 @@
 //! public demo id (`1089`) when the platform's own registration lands.
 
 use analytics_core::types::{Candle, Timeframe};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use serde::Deserialize;
-use tokio_tungstenite::tungstenite::Message;
+use wreq::ws::message::Message;
 
 use crate::MarketDataError;
 
@@ -141,6 +141,28 @@ impl DerivClient {
         Self { app_id: app_id.into(), ws_url: ws_url.into() }
     }
 
+    /// Open a Deriv WebSocket with a BROWSER's TLS handshake: the edge
+    /// (Cloudflare in front of Deriv) refuses machine ClientHellos -- rustls,
+    /// LibreSSL, Node all drew a bare 520 in testing, while every browser
+    /// passed. `wreq` with a Chrome profile speaks the same hello the
+    /// browser does, which is the whole fix.
+    async fn connect(&self) -> Result<wreq::ws::WebSocket, MarketDataError> {
+        let client = wreq::Client::builder()
+            .emulation(wreq_util::Profile::Chrome149)
+            .build()
+            .map_err(|e| MarketDataError::Normalization(format!("deriv client build: {e}")))?;
+        let url = format!("{}?app_id={}", self.ws_url, self.app_id);
+        let response = client
+            .websocket(url)
+            .send()
+            .await
+            .map_err(|e| MarketDataError::Normalization(format!("deriv connect failed: {e}")))?;
+        response
+            .into_websocket()
+            .await
+            .map_err(|e| MarketDataError::Normalization(format!("deriv upgrade failed: {e}")))
+    }
+
     /// One page of candles, newest at the end: `ticks_history` with
     /// `style: "candles"`, `count` bars back from `end` (unix nanos; 0 =
     /// latest). Deriv volumes on synthetics are quote ticks, not trades, so
@@ -160,10 +182,7 @@ impl DerivClient {
         let granularity = granularity_for(tf).ok_or_else(|| {
             MarketDataError::Normalization(format!("deriv has no granularity for {tf}"))
         })?;
-        let url = format!("{}?app_id={}", self.ws_url, self.app_id);
-        let (mut socket, _) = tokio_tungstenite::connect_async(&url)
-            .await
-            .map_err(|e| MarketDataError::Normalization(format!("deriv connect failed: {e}")))?;
+        let mut socket = self.connect().await?;
         let mut request = serde_json::json!({
             "ticks_history": code,
             "adjust_start_time": 1,
@@ -175,12 +194,12 @@ impl DerivClient {
             request["end"] = serde_json::json!(end_ns / 1_000_000_000);
         }
         socket
-            .send(Message::Text(request.to_string().into()))
+            .send(Message::text(request.to_string()))
             .await
             .map_err(|e| MarketDataError::Normalization(format!("deriv send failed: {e}")))?;
         // Read until the candles envelope (pings and unrelated pushes first).
         let reply: DerivResponse = loop {
-            let Some(frame) = socket.next().await else {
+            let Some(frame) = socket.recv().await else {
                 return Err(MarketDataError::Normalization(
                     "deriv closed the socket before answering".to_string(),
                 ));
@@ -270,18 +289,15 @@ impl DerivClient {
     /// transport failure (the caller distinguishes "bad token" from "cannot
     /// reach the venue" by the error text).
     pub async fn authorize(&self, token: &str) -> Result<DerivAuth, MarketDataError> {
-        let url = format!("{}?app_id={}", self.ws_url, self.app_id);
-        let (mut socket, _) = tokio_tungstenite::connect_async(&url)
-            .await
-            .map_err(|e| MarketDataError::Normalization(format!("deriv connect failed: {e}")))?;
+        let mut socket = self.connect().await?;
         socket
-            .send(Message::Text(
-                serde_json::json!({ "authorize": token }).to_string().into(),
+            .send(Message::text(
+                serde_json::json!({ "authorize": token }).to_string(),
             ))
             .await
             .map_err(|e| MarketDataError::Normalization(format!("deriv send failed: {e}")))?;
         let reply: DerivAuthResponse = loop {
-            let Some(frame) = socket.next().await else {
+            let Some(frame) = socket.recv().await else {
                 return Err(MarketDataError::Normalization(
                     "deriv closed the socket before answering".to_string(),
                 ));

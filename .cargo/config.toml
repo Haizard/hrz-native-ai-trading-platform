@@ -7,3 +7,4 @@ xtask = "run --package xtask --"
 # stays green without DATABASE_URL. Flip this to false and run
 # `cargo sqlx prepare` if/when we adopt compile-time checked queries.
 SQLX_OFFLINE = { value = "true", force = false }
+
