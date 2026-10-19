@@ -239,6 +239,15 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
                     "max_bars_back must be between 1 and 5000",
                 )),
             },
+            "scale" => match value.as_str() {
+                "scale.log" => header.scale_log = true,
+                "scale.linear" => header.scale_log = false,
+                other => errors.push(err(
+                    line,
+                    1,
+                    &format!("scale is scale.log or scale.linear, not `{other}`"),
+                )),
+            },
             "max_lines_count" | "max_boxes_count" | "max_labels_count" => {
                 match value.parse::<usize>() {
                     Ok(n) if (1..=500).contains(&n) => {

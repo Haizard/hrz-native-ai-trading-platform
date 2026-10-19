@@ -121,6 +121,10 @@ pub struct Header {
     pub max_boxes_count: Option<usize>,
     /// See `max_lines_count`.
     pub max_labels_count: Option<usize>,
+    /// `scale=scale.log`: the script's own sub-pane maps values
+    /// logarithmically (equal ratios equally spaced). The overlay path
+    /// shares the price pane and follows the chart's own scale.
+    pub scale_log: bool,
     /// A second instrument (`sec="ETHUSDT"`) the host fetched and aligned
     /// onto the script's own bars. Its series read through `request.close` /
     /// `request.open` / `request.high` / `request.low` / `request.volume`;
@@ -145,6 +149,7 @@ impl Default for Header {
             max_lines_count: None,
             max_boxes_count: None,
             max_labels_count: None,
+            scale_log: false,
             sec: None,
             strategy: None,
         }
@@ -163,6 +168,7 @@ impl Header {
             max_lines_count: None,
             max_boxes_count: None,
             max_labels_count: None,
+            scale_log: false,
             sec: None,
             strategy: None,
         }

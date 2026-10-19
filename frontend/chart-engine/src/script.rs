@@ -415,7 +415,22 @@ pub fn pane_from_output(
     let pad = (max - min) * 0.05;
     let (value_min, value_max) = (min - pad, max + pad);
 
-    let y_at = |v: f64| plot.y + plot.h - (v - value_min) / (value_max - value_min) * plot.h;
+    // `scale=scale.log`: the pane maps through the engine's ScaleMap --
+    // equal ratios equally spaced. The DATA must be positive (the pad
+    // below pulls small ranges negative; for a log pane the floor is
+    // half the data's minimum, which keeps every y in log space).
+    let use_log = header.scale_log && min > 0.0;
+    let (value_min, value_max) = if use_log {
+        (value_min.max(min / 2.0), value_max)
+    } else {
+        (value_min, value_max)
+    };
+    let scale = if use_log {
+        crate::scene::ScaleMap::Log
+    } else {
+        crate::scene::ScaleMap::Linear
+    };
+    let y_at = |v: f64| crate::scene::price_to_y(v, value_min, value_max, plot, scale);
 
     let plots = output
         .plots
@@ -1718,6 +1733,34 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_log_scale_pane_spaces_ratios_evenly() {
+        let plot = crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 };
+        let spec = ScriptSpec {
+            source: concat!(
+                "//@pine_lite version=1 overlay=false scale=scale.log\n",
+                "plot(close)\n",
+            ).to_string(),
+            inputs: std::collections::HashMap::new(),
+            security: Vec::new(),
+            series_pool: std::collections::HashMap::new(),
+            data_series: std::collections::HashMap::new(),
+        };
+        // 10, 100, 1000: equal ratios must be equally spaced on the pane.
+        let closes = [10.0, 100.0, 1_000.0, 100.0, 10.0];
+        let candles: Vec<Candle> = closes
+            .iter()
+            .enumerate()
+            .map(|(i, c)| candle(i, *c))
+            .collect();
+        let pane = script_pane(&spec, &candles, 10.0, &plot).expect("pane");
+        let pts = &pane.plots[0].points;
+        let d1 = (pts[1].y - pts[0].y).abs(); // 10 -> 100 (one decade)
+        let d2 = (pts[2].y - pts[1].y).abs(); // 100 -> 1000 (one decade)
+        assert!((d1 - d2).abs() < 1e-6, "equal ratios, equal spacing: {d1} vs {d2}");
+        assert!(d1 > 50.0, "two decades span real height: {d1}");
     }
 
     #[test]
