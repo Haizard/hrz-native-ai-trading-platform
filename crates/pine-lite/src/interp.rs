@@ -2792,8 +2792,78 @@ impl<'a> Vm<'a> {
                     values.push(sub.eval_f(&expr)?);
                 }
                 self.steps += sub.steps;
-                self.security_value_cache.insert(site, values.clone());
-                Ok(values.get(self.bar).copied().unwrap_or(NA))
+                // The merge knobs (Pine's defaults: gaps=barmerge.gaps_off,
+                // lookahead=barmerge.lookahead_off). The pooled candles are
+                // index-aligned to the chart and repeat each higher bar
+                // across its chart bars, so the knobs are a pure REVEAL
+                // map over the computed values:
+                //  - lookahead_on: the containing bucket's final value is
+                //    visible on every chart bar of the bucket (what this
+                //    alignment produced before the knobs existed).
+                //  - lookahead_off (Pine's default): a chart bar sees the
+                //    last HIGHER bar that had already closed at its own
+                //    close -- the previous bucket's value through the
+                //    bucket, and the bucket's own value at its closing
+                //    chart bar. When the pool IS the chart's timeframe,
+                //    every bar closes its own bucket, so nothing shifts.
+                //  - gaps_on: only the reveal bars carry a value (the
+                //    closing chart bar with lookahead_off, the opening one
+                //    with lookahead_on); the rest read na.
+                let mut gaps_on = false;
+                let mut lookahead_on = false;
+                for a in args.iter().skip(3) {
+                    let konst = match &a.value.kind {
+                        ExprKind::Ident(v) => v.as_str(),
+                        ExprKind::Member { path } => path.as_str(),
+                        _ => "",
+                    };
+                    match (a.name.as_deref(), konst) {
+                        (Some("gaps"), "barmerge.gaps_on") => gaps_on = true,
+                        (Some("lookahead"), "barmerge.lookahead_on") => lookahead_on = true,
+                        _ => {}
+                    }
+                }
+                let revealed = if !gaps_on && lookahead_on {
+                    values
+                } else {
+                    let htf = candles.first().map(|cd| cd.timeframe).unwrap_or(Timeframe::M1);
+                    let buckets: Vec<i64> = (0..len)
+                        .map(|i| htf.bucket_of(self.candles.get(i).map(|cd| cd.open_time).unwrap_or(0)))
+                        .collect();
+                    let mut start = vec![0usize; len];
+                    let mut end = vec![0usize; len];
+                    let mut cur_start = 0usize;
+                    for i in 0..len {
+                        if i > 0 && buckets[i] != buckets[i - 1] {
+                            for j in cur_start..i {
+                                end[j] = i - 1;
+                            }
+                            cur_start = i;
+                        }
+                        start[i] = cur_start;
+                    }
+                    for j in cur_start..len {
+                        end[j] = len - 1;
+                    }
+                    let mut rev = vec![NA; len];
+                    for i in 0..len {
+                        rev[i] = if lookahead_on {
+                            // gaps_on is the only case left for on.
+                            if i == start[i] { values[i] } else { NA }
+                        } else if gaps_on {
+                            if i == end[i] { values[i] } else { NA }
+                        } else if i == end[i] {
+                            values[i]
+                        } else if start[i] > 0 {
+                            values[start[i] - 1]
+                        } else {
+                            NA
+                        };
+                    }
+                    rev
+                };
+                self.security_value_cache.insert(site, revealed.clone());
+                Ok(revealed.get(self.bar).copied().unwrap_or(NA))
             }
             // ---- request.data("name") (Phase 14, docs/23): a host-filled
             // platform-native series (ticker fields, funding, OI), aligned

@@ -659,6 +659,9 @@ impl Cx {
             "position.top_right" | "position.top_left" | "position.top_center"
             | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
             | "position.middle_right" | "position.middle_left" | "position.middle_center" => Ty::String,
+            // The barmerge constants are dotted string constants too.
+            "barmerge.gaps_on" | "barmerge.gaps_off" | "barmerge.lookahead_on"
+            | "barmerge.lookahead_off" => Ty::String,
             "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
                 Ty::Bool
             }
@@ -701,11 +704,31 @@ impl Cx {
         // over that pair, evaluated per bar by the VM against the pooled
         // series; it may itself contain request.security (depth-capped).
         if callee == "request.security" {
-            if args.len() != 3 {
+            if !(3..=5).contains(&args.len()) {
                 self.err(
                     span,
-                    "`request.security` takes exactly 3 arguments: request.security(\"SYM\", \"tf\", series_expr)".to_string(),
+                    "`request.security` takes 3 to 5 arguments: request.security(\"SYM\", \"tf\", series_expr[, gaps=barmerge.gaps_off][, lookahead=barmerge.lookahead_off])".to_string(),
                 );
+            }
+            // The merge knobs are named-only and take barmerge.* constants.
+            for a in args.iter().skip(3) {
+                let ok = match (a.name.as_deref(), &a.value.kind) {
+                    (Some("gaps"), crate::parse::ExprKind::Ident(v))
+                    | (Some("gaps"), crate::parse::ExprKind::Member { path: v }) => {
+                        matches!(v.as_str(), "barmerge.gaps_on" | "barmerge.gaps_off")
+                    }
+                    (Some("lookahead"), crate::parse::ExprKind::Ident(v))
+                    | (Some("lookahead"), crate::parse::ExprKind::Member { path: v }) => {
+                        matches!(v.as_str(), "barmerge.lookahead_on" | "barmerge.lookahead_off")
+                    }
+                    _ => false,
+                };
+                if !ok {
+                    self.err(
+                        span,
+                        "`request.security` arguments 4/5 are the named merge knobs: gaps=barmerge.gaps_on|barmerge.gaps_off and lookahead=barmerge.lookahead_on|barmerge.lookahead_off".to_string(),
+                    );
+                }
             }
             for (i, a) in args.iter().enumerate() {
                 if i < 2 {
@@ -888,6 +911,8 @@ impl Cx {
                 | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm"
                 | "alert.freq_all" | "alert.freq_once_per" | "alert.freq_once_per_bar"
                 | "alert.freq_once_per_bar_close"
+                | "barmerge.gaps_on" | "barmerge.gaps_off"
+                | "barmerge.lookahead_on" | "barmerge.lookahead_off"
                 | "position.top_right" | "position.top_left" | "position.top_center"
                 | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
                 | "position.middle_right" | "position.middle_left" | "position.middle_center"
@@ -1063,6 +1088,8 @@ fn namespace_const(name: &str) -> Option<Ty> {
         "timeframe.period" => Some(Ty::String),
         "alert.freq_all" | "alert.freq_once_per" | "alert.freq_once_per_bar"
         | "alert.freq_once_per_bar_close" => Some(Ty::String),
+        "barmerge.gaps_on" | "barmerge.gaps_off" | "barmerge.lookahead_on"
+        | "barmerge.lookahead_off" => Some(Ty::String),
         "timeframe.multiplier" => Some(Ty::Float),
         "timeframe.isintraday" | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm" => {
             Some(Ty::Bool)
