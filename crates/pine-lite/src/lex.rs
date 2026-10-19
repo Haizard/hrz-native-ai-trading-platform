@@ -298,16 +298,10 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
                             Ok(n) if n >= 0.0 => knobs = StrategyHeader { slippage_pct: n, ..knobs },
                             _ => errors.push(err(line, 1, "strategy.slippage must be a non-negative number")),
                         },
-                        "pyramiding" => {
-                            match val.parse::<usize>() {
-                                Ok(0) => {}
-                                _ => errors.push(err(
-                                    line,
-                                    1,
-                                    "pyramiding > 0 is not supported yet (single position; docs/24); declare strategy(pyramiding=0)"
-                                )),
-                            }
-                        }
+                        "pyramiding" => match val.parse::<usize>() {
+                            Ok(n) => knobs.pyramiding = n,
+                            _ => errors.push(err(line, 1, "strategy.pyramiding must be a non-negative whole number")),
+                        },
                         other => {
                             unknown = Some(other.to_string());
                         }

@@ -48,6 +48,9 @@ pub struct StrategyHeader {
     pub commission_value: f64,
     /// Slippage in percent, applied against the trader on every fill.
     pub slippage_pct: f64,
+    /// Extra same-direction entries allowed on one position (Pine's
+    /// pyramiding): 0 = a single leg, 2 = up to three legs.
+    pub pyramiding: usize,
 }
 
 impl Default for StrategyHeader {
@@ -59,6 +62,7 @@ impl Default for StrategyHeader {
             commission_type: CommissionType::Percent,
             commission_value: 0.04,
             slippage_pct: 0.0,
+            pyramiding: 0,
         }
     }
 }
@@ -133,6 +137,8 @@ pub struct Simulation {
 struct Position {
     long: bool,
     qty: f64,
+    /// Same-direction legs filled so far (1 = the initial entry).
+    legs: usize,
     entry_price: f64,
     entry_bar: usize,
     stop: Option<f64>,
@@ -247,7 +253,12 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         // 1. Fills queued by the previous bar's intents, at THIS open.
         if let Some(intent) = pending.take() {
             match intent {
-                Intent::Entry { long, qty, .. } if position.is_none() => {
+                Intent::Entry { long, qty, .. }
+                    if position.is_none()
+                        || position.as_ref().is_some_and(|p| {
+                            p.long == long && p.legs < 1 + knobs.pyramiding
+                        }) =>
+                {
                     let price = fill_price(c.open, long, knobs.slippage_pct);
                     let equity_mark = knobs.initial_capital + realized;
                     let qty = qty.unwrap_or_else(|| match knobs.default_qty_type {
@@ -255,18 +266,41 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         QtyType::PercentOfEquity => equity_mark * knobs.default_qty_value / 100.0 / price,
                     });
                     if qty > 0.0 && price > 0.0 {
-                        position = Some(Position {
-                            long,
-                            qty,
-                            entry_price: price,
-                            entry_bar: bar,
-                            // A stop declared BEFORE the entry (bracket style:
-                            // `strategy.exit(stop=...)` the same bar) arms the
-                            // position the moment it fills.
-                            stop: pending_stop.take(),
-                            limit: pending_limit.take(),
-                            exit_pct: pending_pct.take(),
-                        });
+                        if let Some(mut pos) = position.take() {
+                            // A pyramid leg stacks: the cost basis becomes
+                            // the qty-weighted average of the legs, and a
+                            // bracket armed with THIS leg replaces the old
+                            // one (the fresh leg's exit plan wins).
+                            let new_qty = pos.qty + qty;
+                            pos.entry_price =
+                                (pos.qty * pos.entry_price + qty * price) / new_qty;
+                            pos.qty = new_qty;
+                            pos.legs += 1;
+                            if pending_stop.is_some() {
+                                pos.stop = pending_stop.take();
+                            }
+                            if pending_limit.is_some() {
+                                pos.limit = pending_limit.take();
+                            }
+                            if pending_pct.is_some() {
+                                pos.exit_pct = pending_pct.take();
+                            }
+                            position = Some(pos);
+                        } else {
+                            position = Some(Position {
+                                long,
+                                qty,
+                                legs: 1,
+                                entry_price: price,
+                                entry_bar: bar,
+                                // A stop declared BEFORE the entry (bracket style:
+                                // `strategy.exit(stop=...)` the same bar) arms the
+                                // position the moment it fills.
+                                stop: pending_stop.take(),
+                                limit: pending_limit.take(),
+                                exit_pct: pending_pct.take(),
+                            });
+                        }
                         sim.orders.push(SimOrder {
                             bar,
                             kind: OrderKind::Entry,
@@ -460,9 +494,12 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                 }
                 Intent::Entry { long, qty, .. } if !close_wins => {
                     // Pine/TV: an entry while a position is open is refused
-                    // (pyramiding 0); the replay adapter refuses the signal,
-                    // the sim skips the order. Same rule, same bar.
-                    if position.is_none() {
+                    // past the pyramiding budget (0 = a single leg); a
+                    // same-direction entry within the budget stacks.
+                    let stacking = position.as_ref().is_some_and(|p| {
+                        p.long == *long && p.legs < 1 + knobs.pyramiding
+                    });
+                    if position.is_none() || stacking {
                         pending = Some(Intent::Entry { id: String::new(), long: *long, qty: *qty });
                     }
                 }
