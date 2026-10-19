@@ -620,6 +620,10 @@ pub struct Vm<'a> {
     /// share the array functions' handle space without colliding with the
     /// float arrays.
     str_heap: Vec<Vec<String>>,
+    /// The security_lower_tf slice heap; handles are tagged LTF_TAG +
+    /// index. Slices rotate per call site (64 deep), so short history
+    /// reads (w[1]..w[63]) stay valid.
+    ltf_heap: Vec<Vec<f64>>,
     /// The `matrix.new` heap: row-major float matrices by handle.
     matrices_live: Vec<(usize, usize, Vec<f64>)>,
     /// The `input.symbol` side channel: like input.timeframe, the var
@@ -688,6 +692,11 @@ pub const MAX_ARRAYS: usize = 64;
 /// Array handles at or above this tag index the string-array heap
 /// (array.new_string); below it, the float heap.
 const STR_TAG: f64 = 1_000_000.0;
+
+/// Array handles at or above this tag index the security_lower_tf slice
+/// heap (a dedicated float-array heap, so per-bar slices never contend
+/// with user arrays).
+const LTF_TAG: f64 = 2_000_000.0;
 
 /// The cap on one array's length. Enough for a full session's FVGs or a
 /// chart's worth of pivots at any sane lookback.
@@ -806,6 +815,7 @@ impl<'a> Vm<'a> {
             str_vars: std::collections::HashMap::new(),
             str_vars_written: std::collections::HashMap::new(),
             str_heap: Vec::new(),
+            ltf_heap: Vec::new(),
             matrices_live: Vec::new(),
             last_input_sym: None,
             input_symbols: std::collections::HashMap::new(),
@@ -996,6 +1006,7 @@ impl<'a> Vm<'a> {
         self.str_vars.clear();
         self.str_vars_written.clear();
         self.str_heap.clear();
+        self.ltf_heap.clear();
         self.matrices_live.clear();
         self.ltf_slots.clear();
         self.udts_live.clear();
@@ -2175,7 +2186,7 @@ impl<'a> Vm<'a> {
             "array.push" => {
                 self.tick()?;
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
-                if handle >= STR_TAG {
+                if (STR_TAG..LTF_TAG).contains(&handle) {
                     let v = self.eval_s(&args[1].value)?;
                     let list = self.str_array_ref(handle)?;
                     if list.len() >= MAX_ARRAY_LEN {
@@ -2202,7 +2213,7 @@ impl<'a> Vm<'a> {
             }
             "array.pop" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
-                if handle >= STR_TAG {
+                if (STR_TAG..LTF_TAG).contains(&handle) {
                     self.str_array_ref(handle)?.pop();
                     return Ok(());
                 }
@@ -2213,7 +2224,7 @@ impl<'a> Vm<'a> {
             }
             "array.shift" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
-                if handle >= STR_TAG {
+                if (STR_TAG..LTF_TAG).contains(&handle) {
                     let list = self.str_array_ref(handle)?;
                     if !list.is_empty() {
                         list.remove(0);
@@ -2227,7 +2238,7 @@ impl<'a> Vm<'a> {
             }
             "array.clear" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
-                if handle >= STR_TAG {
+                if (STR_TAG..LTF_TAG).contains(&handle) {
                     self.str_array_ref(handle)?.clear();
                     return Ok(());
                 }
@@ -2277,7 +2288,7 @@ impl<'a> Vm<'a> {
             }
             "array.fill" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
-                if handle >= STR_TAG {
+                if (STR_TAG..LTF_TAG).contains(&handle) {
                     let v = self.eval_s(&args[1].value)?;
                     let from = self.arg_f(args, 2)?.unwrap_or(0.0);
                     let to = self.arg_f(args, 3)?.unwrap_or(NA);
@@ -2306,7 +2317,7 @@ impl<'a> Vm<'a> {
             }
             "array.set" => {
                 let handle = self.arg_f(args, 0)?.unwrap_or(NA);
-                if handle >= STR_TAG {
+                if (STR_TAG..LTF_TAG).contains(&handle) {
                     let idx = self.arg_f(args, 1)?.unwrap_or(NA);
                     let v = self.eval_s(&args[2].value)?;
                     let list = self.str_array_ref(handle)?;
@@ -3054,8 +3065,23 @@ impl<'a> Vm<'a> {
     /// buffer as a plain float; anything else (na, negative, out of range) is
     /// an error naming the real cause.
     fn array_ref(&mut self, handle: f64) -> Result<&mut Vec<f64>, crate::ScriptError> {
-        if std::env::var("PINE_ARRAY_DEBUG").is_ok() {
-            eprintln!("array_ref handle={handle} heap_len={} bar={}", self.heap.len(), self.bar);
+        if handle >= LTF_TAG {
+            let idx = (handle - LTF_TAG) as usize;
+            if idx < self.ltf_heap.len() {
+                return Ok(&mut self.ltf_heap[idx]);
+            }
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "that security_lower_tf slice has rotated out (slices keep 64 bars of history per call site)".into(),
+            });
+        }
+        if (STR_TAG..LTF_TAG).contains(&handle) {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "that is a string array; its functions are the text ones (array.get in a text position, array.join)".into(),
+            });
         }
         if !handle.is_finite() || handle < 0.0 || handle >= self.heap.len() as f64 {
             return Err(crate::ScriptError {
@@ -3850,27 +3876,20 @@ impl<'a> Vm<'a> {
                         out.push(values.get(k).copied().unwrap_or(NA));
                     }
                 }
-                // Per-site rotation: the slice is a fresh array every bar
-                // by design; 8 slots per site keep short history reads
-                // honest and the heap bounded.
+                // Per-site rotation in the DEDICATED slice heap: 64 slots
+                // deep per call site, so w[1]..w[63] history reads stay
+                // valid and user arrays never contend with slices.
                 let slots = self.ltf_slots.entry(site.clone()).or_default();
-                if slots.len() < 8 {
-                    if self.heap.len() >= MAX_ARRAYS {
-                        return Err(crate::ScriptError {
-                            kind: crate::ErrorKind::Limit,
-                            span: crate::Span::new(1, 1),
-                            message: format!("more than {MAX_ARRAYS} arrays; allocate them once with `var`"),
-                        });
-                    }
-                    self.heap.push(out);
-                    let h = self.heap.len() - 1;
+                if slots.len() < 64 {
+                    self.ltf_heap.push(out);
+                    let h = self.ltf_heap.len() - 1;
                     slots.push(h);
-                    Ok(h as f64)
+                    Ok(LTF_TAG + h as f64)
                 } else {
                     let h = slots.remove(0);
                     slots.push(h);
-                    self.heap[h] = out;
-                    Ok(h as f64)
+                    self.ltf_heap[h] = out;
+                    Ok(LTF_TAG + h as f64)
                 }
             }
             // ---- request.data("name") (Phase 14, docs/23): a host-filled
@@ -4007,7 +4026,7 @@ impl<'a> Vm<'a> {
             }
             "array.get" => {
                 let handle = a!(0)?;
-                if handle >= STR_TAG {
+                if (STR_TAG..LTF_TAG).contains(&handle) {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Type,
                         span: crate::Span::new(1, 1),
@@ -4019,7 +4038,7 @@ impl<'a> Vm<'a> {
             }
             "array.size" => {
                 let handle = a!(0)?;
-                if handle >= STR_TAG {
+                if (STR_TAG..LTF_TAG).contains(&handle) {
                     return Ok(self.str_array_ref(handle)?.len() as f64);
                 }
                 Ok(self.array_ref(handle)?.len() as f64)
@@ -4666,7 +4685,7 @@ impl<'a> Vm<'a> {
                         span: crate::Span::new(1, 1),
                         message: "`array.get` needs an array".into(),
                     })?;
-                if handle < STR_TAG {
+                if !(STR_TAG..LTF_TAG).contains(&handle) {
                     return Err(crate::ScriptError {
                         kind: crate::ErrorKind::Type,
                         span: crate::Span::new(1, 1),
@@ -4693,7 +4712,7 @@ impl<'a> Vm<'a> {
                     Some(a) => self.eval_s(&a.value)?,
                     None => ",".to_string(),
                 };
-                if handle >= STR_TAG {
+                if (STR_TAG..LTF_TAG).contains(&handle) {
                     return Ok(self.str_array_ref(handle)?.join(&sep));
                 }
                 Ok(self
