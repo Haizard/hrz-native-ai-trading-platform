@@ -726,6 +726,7 @@ impl Cx {
             "position.top_right" | "position.top_left" | "position.top_center"
             | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
             | "position.middle_right" | "position.middle_left" | "position.middle_center" => Ty::String,
+            "syminfo.pointvalue" => Ty::Float,
             // The barmerge constants are dotted string constants too.
             "barmerge.gaps_on" | "barmerge.gaps_off" | "barmerge.lookahead_on"
             | "barmerge.lookahead_off" => Ty::String,
@@ -1009,6 +1010,7 @@ impl Cx {
                 | "barstate.isnew" | "barstate.isfirst" | "barstate.islast"
                 | "timeframe.period" | "timeframe.multiplier" | "timeframe.isintraday"
                 | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm"
+                | "syminfo.pointvalue"
                 | "alert.freq_all" | "alert.freq_once_per" | "alert.freq_once_per_bar"
                 | "alert.freq_once_per_bar_close"
                 | "barmerge.gaps_on" | "barmerge.gaps_off"
@@ -1202,6 +1204,7 @@ fn namespace_const(name: &str) -> Option<Ty> {
         "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
             Some(Ty::Bool)
         }
+        "syminfo.pointvalue" => Some(Ty::Float),
         "timeframe.period" => Some(Ty::String),
         "alert.freq_all" | "alert.freq_once_per" | "alert.freq_once_per_bar"
         | "alert.freq_once_per_bar_close" => Some(Ty::String),

@@ -38,6 +38,9 @@ pub struct Inputs {
     /// `math.round_to_mintick` read it; None when the host did not supply
     /// one, and both are loud about it rather than guessing a tick.
     pub mintick: Option<f64>,
+    /// The instrument's point value (PnL multiplier per price point per
+    /// unit, syminfo.pointvalue). None = 1.0, the spot reading.
+    pub pointvalue: Option<f64>,
     /// Every named pair of `request.security("SYM", "tf", ...)` in the
     /// script, keyed `SYM@tf`, uppercased, already fetched and aligned onto
     /// the chart's bars by the host -- the same contract as `security`.
@@ -767,7 +770,10 @@ impl<'a> Vm<'a> {
         // PREVIOUS state, one bar late, by construction.
         let wants_state = crate::reads_strategy_state(self.script);
         if self.out.strategy_used || (wants_state && self.script.header.strategy.is_some()) {
-            let knobs = self.script.header.strategy.clone().unwrap_or_default();
+            let mut knobs = self.script.header.strategy.clone().unwrap_or_default();
+            // Instrument metadata stamps the run: the host's point value
+            // scales every PnL leg (spot default 1.0).
+            knobs.pointvalue = self.inputs.pointvalue.unwrap_or(1.0);
             self.out.simulation = Some(crate::sim::simulate(&self.out.intents, self.candles, &knobs));
             if wants_state {
                 // Fixpoint over state reads: pass 2 decides against pass 1's
@@ -901,7 +907,8 @@ impl<'a> Vm<'a> {
             // case: pass 1 may push them where the position is open, but the
             // simulator refuses them (pyramiding 0), so the state-aware
             // rebuild produces the same trades.
-            let knobs = self.script.header.strategy.clone().unwrap_or_default();
+            let mut knobs = self.script.header.strategy.clone().unwrap_or_default();
+            knobs.pointvalue = self.inputs.pointvalue.unwrap_or(1.0);
             let state_sim = crate::sim::simulate(&self.out.intents, self.candles, &knobs);
             self.out.notes.push(format!(
                 "strategy state reads changed the script's decisions between passes; the trades come from the state-aware pass ({} order(s))",
@@ -2486,6 +2493,7 @@ impl<'a> Vm<'a> {
                 }
             },
             "math.pi" => std::f64::consts::PI,
+            "syminfo.pointvalue" => self.inputs.pointvalue.unwrap_or(1.0),
             // A named color in value position: the packed u32 as a float
             // (`c = color.teal` binds it, color= reads it back).
             _ if named_color(path).is_some() => named_color(path).expect("checked") as f64,

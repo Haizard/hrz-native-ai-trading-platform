@@ -51,6 +51,11 @@ pub struct StrategyHeader {
     /// Extra same-direction entries allowed on one position (Pine's
     /// pyramiding): 0 = a single leg, 2 = up to three legs.
     pub pyramiding: usize,
+    /// Monetary value of one price point per unit (syminfo.pointvalue):
+    /// 1.0 for spot, the contract multiplier for futures. Instrument
+    /// metadata the host stamps on the knobs before the run, not a
+    /// script-declared knob.
+    pub pointvalue: f64,
 }
 
 impl Default for StrategyHeader {
@@ -63,6 +68,7 @@ impl Default for StrategyHeader {
             commission_value: 0.04,
             slippage_pct: 0.0,
             pyramiding: 0,
+            pointvalue: 1.0,
         }
     }
 }
@@ -159,9 +165,9 @@ fn close_leg(
 ) -> (f64, f64) {
     let closed_qty = if frac >= 1.0 { pos.qty } else { pos.qty * frac.max(0.0) };
     let gross = if pos.long {
-        (price - pos.entry_price) * closed_qty
+        (price - pos.entry_price) * closed_qty * knobs.pointvalue
     } else {
-        (pos.entry_price - price) * closed_qty
+        (pos.entry_price - price) * closed_qty * knobs.pointvalue
     };
     let fees = commission(knobs, closed_qty * pos.entry_price) + commission(knobs, closed_qty * price);
     pos.qty -= closed_qty;
@@ -220,9 +226,9 @@ pub fn commission(knobs: &StrategyHeader, notional: f64) -> f64 {
     }
 }
 
-fn open_pnl(pos: &Position, price: f64) -> f64 {
+fn open_pnl(pos: &Position, price: f64, knobs: &StrategyHeader) -> f64 {
     let dir = if pos.long { 1.0 } else { -1.0 };
-    (price - pos.entry_price) * pos.qty * dir
+    (price - pos.entry_price) * pos.qty * dir * knobs.pointvalue
 }
 
 /// Simulate one run's intents over the candles. Deterministic, order-only —
@@ -427,7 +433,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         }
 
         // 3. Mark the account at this close.
-        let open_pnl_mark = position.as_ref().map_or(0.0, |p| open_pnl(p, c.close));
+        let open_pnl_mark = position.as_ref().map_or(0.0, |p| open_pnl(p, c.close, knobs));
         let equity = knobs.initial_capital + realized + open_pnl_mark;
         peak = peak.max(equity);
         if peak > 0.0 {
