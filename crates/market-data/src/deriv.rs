@@ -223,6 +223,99 @@ impl DerivClient {
     }
 }
 
+/// What a successful `authorize` call tells us about a token: the account
+/// it opens, in Deriv's own words.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct DerivAuth {
+    /// The account login id (e.g. `CR123456` or `VRTC...` for virtual).
+    pub loginid: String,
+    /// Account currency, when reported.
+    #[serde(default)]
+    pub currency: Option<String>,
+    /// Whether the account is a virtual (demo) account, when reported.
+    #[serde(default)]
+    pub is_virtual: Option<f64>,
+    /// The token's scopes (`read`, `trade`, ...), when reported.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+/// The `authorize` envelope.
+#[derive(Debug, Deserialize)]
+struct DerivAuthResponse {
+    authorize: Option<DerivAuthWire>,
+    error: Option<DerivError>,
+}
+
+/// The wire shape (extra fields ignored).
+#[derive(Debug, Deserialize)]
+struct DerivAuthWire {
+    loginid: String,
+    #[serde(default)]
+    currency: Option<String>,
+    #[serde(default)]
+    is_virtual: Option<f64>,
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+impl DerivClient {
+    /// Validate an API token: the `authorize` call answers with the account
+    /// it opens (and proves the token and the network both work), or Deriv's
+    /// refusal. One short-lived connection per check -- the same shape as
+    /// [`Self::candles`].
+    ///
+    /// # Errors
+    /// [`MarketDataError::Normalization`] on a Deriv error reply or a
+    /// transport failure (the caller distinguishes "bad token" from "cannot
+    /// reach the venue" by the error text).
+    pub async fn authorize(&self, token: &str) -> Result<DerivAuth, MarketDataError> {
+        let url = format!("{}?app_id={}", self.ws_url, self.app_id);
+        let (mut socket, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .map_err(|e| MarketDataError::Normalization(format!("deriv connect failed: {e}")))?;
+        socket
+            .send(Message::Text(
+                serde_json::json!({ "authorize": token }).to_string().into(),
+            ))
+            .await
+            .map_err(|e| MarketDataError::Normalization(format!("deriv send failed: {e}")))?;
+        let reply: DerivAuthResponse = loop {
+            let Some(frame) = socket.next().await else {
+                return Err(MarketDataError::Normalization(
+                    "deriv closed the socket before answering".to_string(),
+                ));
+            };
+            let frame = frame.map_err(|e| {
+                MarketDataError::Normalization(format!("deriv socket error: {e}"))
+            })?;
+            let Message::Text(text) = frame else { continue };
+            let parsed: DerivAuthResponse = serde_json::from_str(&text).map_err(|e| {
+                MarketDataError::Normalization(format!("deriv reply did not parse: {e}"))
+            })?;
+            if parsed.authorize.is_some() || parsed.error.is_some() {
+                break parsed;
+            }
+        };
+        if let Some(err) = reply.error {
+            return Err(MarketDataError::Normalization(format!(
+                "deriv {}: {}",
+                err.code.unwrap_or_else(|| "error".to_string()),
+                err.message.unwrap_or_else(|| "unknown".to_string())
+            )));
+        }
+        let wire = reply.authorize.ok_or_else(|| {
+            MarketDataError::Normalization("deriv answered without an account".to_string())
+        })?;
+        Ok(DerivAuth {
+            loginid: wire.loginid,
+            currency: wire.currency,
+            is_virtual: wire.is_virtual,
+            scopes: wire.scopes,
+        })
+    }
+}
+
 /// Parse a `Deriv:...` or `DERIV-FX:...` namespace into the Deriv code, when
 /// the instrument is one we serve.
 #[must_use]
@@ -298,6 +391,22 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(err.error.expect("error").code.as_deref(), Some("InvalidSymbol"));
+    }
+
+    #[test]
+    fn an_authorize_reply_maps_the_account() {
+        let ok: DerivAuthResponse = serde_json::from_str(
+            r#"{"authorize":{"currency":"USD","is_virtual":1,"loginid":"VRTC123456"},"msg_type":"authorize"}"#,
+        )
+        .expect("parses");
+        let wire = ok.authorize.expect("account");
+        assert_eq!(wire.loginid, "VRTC123456");
+        assert_eq!(wire.currency.as_deref(), Some("USD"));
+        let bad: DerivAuthResponse = serde_json::from_str(
+            r#"{"error":{"code":"InvalidToken","message":"The token is invalid"}}"#,
+        )
+        .expect("parses");
+        assert_eq!(bad.error.expect("error").code.as_deref(), Some("InvalidToken"));
     }
 
     #[tokio::test]

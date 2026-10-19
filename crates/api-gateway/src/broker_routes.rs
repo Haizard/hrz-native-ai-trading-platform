@@ -93,7 +93,8 @@ struct BrokerDescription {
     guidance: &'static str,
 }
 
-const SUPPORTED: [BrokerDescription; 1] = [BrokerDescription {
+const SUPPORTED: [BrokerDescription; 2] = [
+BrokerDescription {
     venue: "binance",
     name: "Binance",
     keys_url: "https://www.binance.com/en/my/settings/api-management",
@@ -101,7 +102,18 @@ const SUPPORTED: [BrokerDescription; 1] = [BrokerDescription {
         "Create an API key with **Enable Reading** and **Enable Spot & Margin Trading** only. \
                Leave **Enable Withdrawals** off -- this platform places orders and never moves \
                funds, and a key that can withdraw is refused here.",
-}];
+},
+    BrokerDescription {
+        venue: "deriv",
+        name: "Deriv",
+        keys_url: "https://app.deriv.com/account/api-token",
+        guidance:
+            "Create an API token with the **Read** and **Trade** scopes only -- never an admin or \
+             payments scope. The token rides as `api_key`; leave `api_secret` empty. New to Deriv? \
+             Sign up through the platform's partner link so your account earns you (and us) the \
+             partner commission from day one.",
+    },
+];
 
 /// `POST /brokers`
 #[derive(Debug, Deserialize)]
@@ -162,6 +174,9 @@ pub struct AvailableBrokerResponse {
     pub guidance: String,
     /// Whether live trading needs the per-venue opt-in as well as an account.
     pub requires_venue_opt_in: bool,
+    /// The partner referral link for new accounts (Deriv track 1), when the
+    /// deployment sets `DERIV_REFERRAL_URL`. Null everywhere else.
+    pub referral_url: Option<String>,
 }
 
 /// The result of a disconnect.
@@ -227,6 +242,9 @@ pub async fn available() -> Json<Vec<AvailableBrokerResponse>> {
                 // connecting a key, and revoking one should not require the
                 // other.
                 requires_venue_opt_in: true,
+                referral_url: (description.venue == "deriv")
+                    .then(|| std::env::var("DERIV_REFERRAL_URL").ok())
+                    .flatten(),
             })
             .collect(),
     )
@@ -252,7 +270,7 @@ pub async fn connect(
 
     let venue = known(&request.venue)?;
     let label = checked_label(&request.label)?;
-    let (api_key, api_secret) = checked_credentials(&request.api_key, &request.api_secret)?;
+    let (api_key, api_secret) = checked_credentials(&venue, &request.api_key, &request.api_secret)?;
 
     let scope = SecretScope::new(user.user_id, &venue);
     let credentials =
@@ -418,6 +436,30 @@ async fn check_and_record(
                 .verify_credentials()
                 .await
         }
+        // Deriv has one token, not a key/secret pair: it rides `api_key`.
+        // The `authorize` call validates it and names the account it opens.
+        "deriv" => {
+            let client = ::market_data::deriv::DerivClient::from_env();
+            client
+                .authorize(credentials.key())
+                .await
+                .map(|auth| trading_engine::AccountCheck {
+                    can_trade: auth.scopes.iter().any(|s| s == "trade"),
+                    // A Deriv API token cannot move funds out -- the platform's
+                    // favourite answer, and Deriv's only one.
+                    can_withdraw: false,
+                    can_deposit: false,
+                    account_type: Some(
+                        if auth.is_virtual == Some(1.0) { "virtual" } else { "real" }
+                            .to_string(),
+                    ),
+                    permissions: auth.scopes,
+                    account_id: Some(auth.loginid),
+                    maker_commission: None,
+                    taker_commission: None,
+                })
+                .map_err(|e| trading_engine::ExecutionError::Transport(e.to_string()))
+        }
         // Unreachable while `known` and this match agree, and an error rather
         // than a panic because the day they stop agreeing should be a refused
         // connection, not a dead process holding a user's key.
@@ -571,7 +613,7 @@ fn checked_label(raw: &str) -> Result<String, ApiError> {
 /// Both problems are reported together: a user fixing one field and being told
 /// about the other on the next attempt is the round-trip-per-requirement shape
 /// the live gate already avoids.
-fn checked_credentials(api_key: &str, api_secret: &str) -> Result<(String, String), ApiError> {
+fn checked_credentials(venue: &str, api_key: &str, api_secret: &str) -> Result<(String, String), ApiError> {
     let mut problems: Vec<String> = Vec::new();
     let key = api_key.trim();
     let secret = api_secret.trim();
@@ -579,7 +621,9 @@ fn checked_credentials(api_key: &str, api_secret: &str) -> Result<(String, Strin
     if key.is_empty() {
         problems.push("`api_key` is empty".to_string());
     }
-    if secret.is_empty() {
+    // Deriv authenticates with ONE API token (carried as `api_key`); a
+    // secret would be noise. Key/secret venues still require both.
+    if secret.is_empty() && venue != "deriv" {
         problems.push("`api_secret` is empty".to_string());
     }
     if key.chars().count() > MAX_CREDENTIAL {
@@ -749,7 +793,7 @@ mod tests {
     fn credentials_are_not_echoed_back_in_a_validation_error() {
         // The failure this prevents: `api_key` pasted into the secret box, and
         // the validation message repeating it into a log.
-        let error = checked_credentials("", "SECRET-should-not-appear").expect_err("must refuse");
+        let error = checked_credentials("binance", "", "SECRET-should-not-appear").expect_err("must refuse");
         assert_eq!(error.code(), "BROKER_CREDENTIALS_INVALID");
         assert!(
             !error.message().contains("SECRET-should-not-appear"),
@@ -768,7 +812,11 @@ mod tests {
 
     #[test]
     fn both_credential_problems_are_reported_at_once() {
-        let error = checked_credentials("", "").expect_err("must refuse");
+        let error = checked_credentials("binance", "", "").expect_err("must refuse");
+        // Deriv needs no secret: the token alone validates.
+        let (key, secret) = checked_credentials("deriv", "the-token", "").expect("deriv allows an empty secret");
+        assert_eq!(key, "the-token");
+        assert!(secret.is_empty());
         let details = error.details().expect("a detail");
         let problems = details["problems"].as_array().expect("an array");
         assert_eq!(problems.len(), 2, "{details}");
@@ -839,6 +887,7 @@ mod tests {
             keys_url: "https://example.invalid/keys".into(),
             guidance: "trading only".into(),
             requires_venue_opt_in: true,
+            referral_url: None,
         })
         .expect("serializes");
 
