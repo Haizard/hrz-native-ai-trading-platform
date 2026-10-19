@@ -190,7 +190,7 @@ With `sec=` set, these zero-argument calls give the pair's series, bar-aligned t
 - The zero-argument `request.*` calls (except `request.security`) require `sec=` in the header -- the vet refuses `request.close()` without it.
 
 ## A higher timeframe (the 1h zone on the 5m chart)
-`request.security("BTCUSDT", "1h", expression)` evaluates the expression over the named symbol+timeframe's candles, aligned onto this chart's bars: at each chart bar you read the HTF bar covering that moment. The host fetches and aligns the pool; symbol and timeframe must be quoted literals. Bind the reads once:
+`request.security("BTCUSDT", "1h", expression)` evaluates the expression over the named symbol+timeframe's candles, aligned onto this chart's bars: at each chart bar you read the last HTF bar that had already CLOSED (the Pine default; pass lookahead=barmerge.lookahead_on for the covering bar's value early). The host fetches and aligns the pool; symbol and timeframe must be quoted literals. Bind the reads once:
 
     ht = request.security("BTCUSDT", "1h", time)
     hh = request.security("BTCUSDT", "1h", high)
