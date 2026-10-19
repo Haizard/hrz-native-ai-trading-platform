@@ -15,8 +15,6 @@ analytics-core = { workspace = true }
 capabilities = { workspace = true }
 # Browser-grade TLS for Cloudflare-fronted venues (Deriv's WS edge refuses
 # rustls/LibreSSL/Node ClientHellos with a bare 520; browsers pass).
-wreq = { version = "6.0.0-rc", features = ["ws"] }
-wreq-util = "3.0.0-rc"
 # No `db` edge, deliberately. This crate publishes normalized data to its bus and
 # a binary (`xtask collect`) persists it; the collector itself never writes, so
 # the dependency sat here unused. It read as "the collector persists", which is

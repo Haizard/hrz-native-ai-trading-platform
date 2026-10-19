@@ -12,15 +12,17 @@
 //! public demo id (`1089`) when the platform's own registration lands.
 
 use analytics_core::types::{Candle, Timeframe};
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
-use wreq::ws::message::Message;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::MarketDataError;
 
-/// The default WebSocket endpoint (`ws.derivws.com` is the current host;
-/// `ws.binaryws.com` is the legacy alias).
-pub const DERIV_WS_URL: &str = "wss://ws.derivws.com/websockets/v3";
+/// The current public market-data endpoint. The legacy
+/// `ws.derivws.com/websockets/v3` is decommissioned -- Cloudflare returns a
+/// bare 520 for it (origin unreachable), which is what every client hit
+/// before the move. Public data needs no auth beyond the app id.
+pub const DERIV_WS_URL: &str = "wss://api.derivws.com/trading/v1/options/ws/public";
 
 /// The public demo application id. Registered apps substitute their own via
 /// `DERIV_APP_ID` -- and MUST before any order ever carries an attribution
@@ -84,11 +86,20 @@ pub fn symbol_for(code: &str) -> Option<&'static str> {
 }
 
 /// The Deriv granularity for one of our timeframes (seconds), or none when
-/// the venue has no such resolution.
+/// the venue has no such resolution. The current API documents exactly this
+/// set -- note the gaps: no 6h, 12h, 3d or 1w candles from the venue
+/// itself.
+pub const DERIV_GRANULARITIES: &[u32] = &[
+    60, 120, 180, 300, 600, 900, 1800, 3600, 7200, 14400, 28800, 86400,
+];
+
+/// The Deriv granularity for one of our timeframes, when the venue serves it
+/// directly. 6h/12h/3d/1w return None -- the caller resamples those from a
+/// finer granularity rather than inventing bars the venue does not have.
 #[must_use]
 pub fn granularity_for(tf: Timeframe) -> Option<u32> {
-    let secs = tf.secs();
-    u32::try_from(secs).ok().filter(|s| *s > 0)
+    let secs = u32::try_from(tf.secs()).ok()?;
+    DERIV_GRANULARITIES.contains(&secs).then_some(secs)
 }
 
 /// A candles response row from `ticks_history`.
@@ -141,26 +152,39 @@ impl DerivClient {
         Self { app_id: app_id.into(), ws_url: ws_url.into() }
     }
 
-    /// Open a Deriv WebSocket with a BROWSER's TLS handshake: the edge
-    /// (Cloudflare in front of Deriv) refuses machine ClientHellos -- rustls,
-    /// LibreSSL, Node all drew a bare 520 in testing, while every browser
-    /// passed. `wreq` with a Chrome profile speaks the same hello the
-    /// browser does, which is the whole fix.
-    async fn connect(&self) -> Result<wreq::ws::WebSocket, MarketDataError> {
-        let client = wreq::Client::builder()
-            .emulation(wreq_util::Profile::Chrome149)
-            .build()
-            .map_err(|e| MarketDataError::Normalization(format!("deriv client build: {e}")))?;
+    /// Open a Deriv WebSocket (plain tokio-tungstenite: the current public
+    /// endpoint does not fingerprint clients -- the old one's 520 was a dead
+    /// origin, not a browser check).
+    async fn connect(
+        &self,
+    ) -> Result<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        MarketDataError,
+    > {
         let url = format!("{}?app_id={}", self.ws_url, self.app_id);
-        let response = client
-            .websocket(url)
-            .send()
+        let (socket, _) = tokio_tungstenite::connect_async(&url)
             .await
             .map_err(|e| MarketDataError::Normalization(format!("deriv connect failed: {e}")))?;
-        response
-            .into_websocket()
-            .await
-            .map_err(|e| MarketDataError::Normalization(format!("deriv upgrade failed: {e}")))
+        Ok(socket)
+    }
+
+    /// The fetch granularity for a target timeframe: direct when the venue
+    /// serves it, otherwise the finer granularity we resample up from
+    /// (6h from 2h, 12h from 4h, 3d and 1w from 1d). Returns (fetch_tf,
+    /// ratio).
+    fn fetch_plan(tf: Timeframe) -> Option<(Timeframe, usize)> {
+        if granularity_for(tf).is_some() {
+            return Some((tf, 1));
+        }
+        match tf {
+            Timeframe::H6 => Some((Timeframe::H2, 3)),
+            Timeframe::H12 => Some((Timeframe::H4, 3)),
+            Timeframe::D3 => Some((Timeframe::D1, 3)),
+            Timeframe::W1 => Some((Timeframe::D1, 7)),
+            _ => None,
+        }
     }
 
     /// One page of candles, newest at the end: `ticks_history` with
@@ -179,27 +203,39 @@ impl DerivClient {
         count: usize,
         end_ns: i64,
     ) -> Result<Vec<Candle>, MarketDataError> {
-        let granularity = granularity_for(tf).ok_or_else(|| {
+        let (fetch_tf, ratio) = Self::fetch_plan(tf).ok_or_else(|| {
             MarketDataError::Normalization(format!("deriv has no granularity for {tf}"))
         })?;
+        let granularity = granularity_for(fetch_tf).expect("the plan only names direct granularities");
         let mut socket = self.connect().await?;
+        // Resampling fetches `ratio` bars per output bar, padded for the
+        // partial group at the window's edge.
+        let fetch_count = if ratio > 1 {
+            count.saturating_mul(ratio).saturating_add(ratio).clamp(1, 5000)
+        } else {
+            count.clamp(1, 5000)
+        };
         let mut request = serde_json::json!({
             "ticks_history": code,
             "adjust_start_time": 1,
-            "count": count.clamp(1, 5000),
+            "count": fetch_count,
             "granularity": granularity,
             "style": "candles",
         });
-        if end_ns > 0 {
-            request["end"] = serde_json::json!(end_ns / 1_000_000_000);
-        }
+        // `end` is REQUIRED by the current schema (the legacy API defaulted
+        // it); a string: "latest" or the epoch seconds.
+        request["end"] = serde_json::json!(if end_ns > 0 {
+            (end_ns / 1_000_000_000).to_string()
+        } else {
+            "latest".to_string()
+        });
         socket
-            .send(Message::text(request.to_string()))
+            .send(Message::Text(request.to_string().into()))
             .await
             .map_err(|e| MarketDataError::Normalization(format!("deriv send failed: {e}")))?;
         // Read until the candles envelope (pings and unrelated pushes first).
         let reply: DerivResponse = loop {
-            let Some(frame) = socket.recv().await else {
+            let Some(frame) = socket.next().await else {
                 return Err(MarketDataError::Normalization(
                     "deriv closed the socket before answering".to_string(),
                 ));
@@ -224,11 +260,11 @@ impl DerivClient {
         }
         let rows = reply.candles.unwrap_or_default();
         let display = symbol_for(code).unwrap_or(code).to_string();
-        Ok(rows
+        let fetched: Vec<Candle> = rows
             .into_iter()
             .map(|r| Candle {
                 symbol: display.clone(),
-                timeframe: tf,
+                timeframe: fetch_tf,
                 open_time: r.epoch * 1_000_000_000,
                 open: r.open,
                 high: r.high,
@@ -238,7 +274,11 @@ impl DerivClient {
                 buy_volume: 0.0,
                 sell_volume: 0.0,
             })
-            .collect())
+            .collect();
+        if ratio == 1 {
+            return Ok(fetched);
+        }
+        Ok(analytics_core::resample::resample(&fetched, tf))
     }
 }
 
@@ -291,13 +331,13 @@ impl DerivClient {
     pub async fn authorize(&self, token: &str) -> Result<DerivAuth, MarketDataError> {
         let mut socket = self.connect().await?;
         socket
-            .send(Message::text(
-                serde_json::json!({ "authorize": token }).to_string(),
+            .send(Message::Text(
+                serde_json::json!({ "authorize": token }).to_string().into(),
             ))
             .await
             .map_err(|e| MarketDataError::Normalization(format!("deriv send failed: {e}")))?;
         let reply: DerivAuthResponse = loop {
-            let Some(frame) = socket.recv().await else {
+            let Some(frame) = socket.next().await else {
                 return Err(MarketDataError::Normalization(
                     "deriv closed the socket before answering".to_string(),
                 ));
@@ -367,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn granularities_cover_the_venue_set() {
+    fn granularities_match_the_venue_set_and_gaps_plan_a_resample() {
         for tf in [
             Timeframe::M1,
             Timeframe::M3,
@@ -377,18 +417,21 @@ mod tests {
             Timeframe::H1,
             Timeframe::H2,
             Timeframe::H4,
-            Timeframe::H6,
             Timeframe::H8,
-            Timeframe::H12,
             Timeframe::D1,
-            Timeframe::D3,
-            Timeframe::W1,
         ] {
             assert!(granularity_for(tf).is_some(), "{tf:?}");
         }
         assert_eq!(granularity_for(Timeframe::M1), Some(60));
         assert_eq!(granularity_for(Timeframe::H4), Some(14_400));
-        assert_eq!(granularity_for(Timeframe::W1), Some(604_800));
+        // The venue's gaps: 6h/12h/3d/1w have no direct candles -- they plan
+        // a resample from a finer granularity instead of inventing bars.
+        for tf in [Timeframe::H6, Timeframe::H12, Timeframe::D3, Timeframe::W1] {
+            assert!(granularity_for(tf).is_none(), "{tf:?}");
+            assert!(DerivClient::fetch_plan(tf).is_some(), "{tf:?}");
+        }
+        assert_eq!(DerivClient::fetch_plan(Timeframe::H6), Some((Timeframe::H2, 3)));
+        assert_eq!(DerivClient::fetch_plan(Timeframe::W1), Some((Timeframe::D1, 7)));
     }
 
     #[test]
