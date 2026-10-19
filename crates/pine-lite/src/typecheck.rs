@@ -862,6 +862,7 @@ impl Cx {
             "ta.crossover" | "ta.crossunder" | "ta.cross" | "ta.rising" | "ta.falling" => {
                 Ty::Bool
             }
+            "timeframe.change" => Ty::Bool,
             "str.tostring" | "str.format" | "array.join" => Ty::String,
             "color.new" | "color.rgb" | "color.from_gradient" => Ty::Color,
             "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
@@ -881,6 +882,8 @@ impl Cx {
                 | "color.new" | "color.rgb" | "color.from_gradient"
                 | "math.pi"
                 | "barstate.isnew" | "barstate.isfirst" | "barstate.islast"
+                | "timeframe.period" | "timeframe.multiplier" | "timeframe.isintraday"
+                | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm"
                 | "position.top_right" | "position.top_left" | "position.top_center"
                 | "position.bottom_right" | "position.bottom_left" | "position.bottom_center"
                 | "position.middle_right" | "position.middle_left" | "position.middle_center"
@@ -942,6 +945,7 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "math.sin" | "math.cos" | "math.tan" | "math.asin" | "math.acos" | "math.atan"
         | "math.toradians" | "math.todegrees" => (1, 1),
         "math.atan2" => (2, 2),
+        "timeframe.change" => (1, 1),
         "math.min" | "math.max" | "math.avg" => (1, 8),
         "math.sum" => (2, 2),
         "math.pow" => (2, 2),
@@ -1049,6 +1053,11 @@ fn namespace_const(name: &str) -> Option<Ty> {
     }
     match name {
         "barstate.isconfirmed" | "barstate.isnew" | "barstate.isfirst" | "barstate.islast" => {
+            Some(Ty::Bool)
+        }
+        "timeframe.period" => Some(Ty::String),
+        "timeframe.multiplier" => Some(Ty::Float),
+        "timeframe.isintraday" | "timeframe.isdaily" | "timeframe.isweekly" | "timeframe.isdwm" => {
             Some(Ty::Bool)
         }
         "syminfo.ticker" => Some(Ty::String),

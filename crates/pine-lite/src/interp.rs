@@ -11,7 +11,7 @@
 //! Everything time-dependent is supplied by the host, which is what makes the
 //! native run and the sandboxed run byte-identical.
 
-use analytics_core::types::Candle;
+use analytics_core::types::{Candle, Timeframe};
 
 use crate::parse::{Arg, BinOp, BlockKind, CmpOp, Expr, ExprKind, Item, Script, UnOp, VarMode};
 use crate::ta::{self, NA, Series};
@@ -2085,6 +2085,21 @@ impl<'a> Vm<'a> {
                 }
             },
             "math.pi" => std::f64::consts::PI,
+            // The chart timeframe's shape. `period` itself is a string and
+            // lives in eval_s; these are its numeric and boolean views.
+            "timeframe.multiplier" => {
+                let s = c.timeframe.as_str();
+                s.trim_end_matches(|ch: char| ch.is_ascii_alphabetic())
+                    .parse::<f64>()
+                    .unwrap_or(1.0)
+            }
+            "timeframe.isintraday" => f64::from(matches!(
+                c.timeframe,
+                Timeframe::M1 | Timeframe::M5 | Timeframe::M15 | Timeframe::H1 | Timeframe::H4
+            )),
+            "timeframe.isdaily" => f64::from(c.timeframe == Timeframe::D1),
+            "timeframe.isweekly" => f64::from(c.timeframe == Timeframe::W1),
+            "timeframe.isdwm" => f64::from(matches!(c.timeframe, Timeframe::D1 | Timeframe::W1)),
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
             | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => {
                 self.strategy_read(path)
@@ -2410,6 +2425,37 @@ impl<'a> Vm<'a> {
             };
         }
         match callee {
+            // `timeframe.change("4h")` -- true on the chart bars that OPEN a
+            // new period of the given timeframe: the MTF "a fresh 4H bar
+            // started" pulse, computed with the venue's own bucket rules
+            // (weekly bars align to Binance's Monday, not the epoch's).
+            "timeframe.change" => {
+                let spec = match args.first().map(|a| &a.value.kind) {
+                    Some(ExprKind::Str(s)) => s.clone(),
+                    _ => {
+                        return Err(crate::ScriptError {
+                            kind: crate::ErrorKind::Type,
+                            span: crate::Span::new(1, 1),
+                            message: "`timeframe.change` takes a quoted timeframe: timeframe.change(\"4h\")".into(),
+                        })
+                    }
+                };
+                let tf = spec.parse::<Timeframe>().map_err(|_| crate::ScriptError {
+                    kind: crate::ErrorKind::Type,
+                    span: crate::Span::new(1, 1),
+                    message: format!("`timeframe.change` does not know the timeframe \"{spec}\" (known: 1m, 5m, 15m, 1h, 4h, 1d, 1w)"),
+                })?;
+                let t = self.candles.get(self.bar).map(|cd| cd.open_time).unwrap_or(0);
+                let prev = self
+                    .bar
+                    .checked_sub(1)
+                    .and_then(|p| self.candles.get(p))
+                    .map(|cd| cd.open_time);
+                Ok(match prev {
+                    None => 1.0,
+                    Some(p) => f64::from(tf.bucket_of(t) != tf.bucket_of(p)),
+                })
+            }
             // `time("0800-1200")` -- Pine's session filter: the bar's unix
             // nanos when the bar falls inside the session, na outside.
             // Spec: "HHMM-HHMM" or "HH:MM-HH:MM" UTC, overnight specs wrap
@@ -3292,6 +3338,16 @@ impl<'a> Vm<'a> {
                     .collect::<Vec<_>>()
                     .join(&sep))
             }
+            ExprKind::Member { path } if path == "timeframe.period" => Ok(self
+                .candles
+                .first()
+                .map(|cd| cd.timeframe.as_str().to_string())
+                .unwrap_or_default()),
+            ExprKind::Ident(name) if name == "timeframe.period" => Ok(self
+                .candles
+                .first()
+                .map(|cd| cd.timeframe.as_str().to_string())
+                .unwrap_or_default()),
             ExprKind::Member { path } if path == "syminfo.ticker" => Ok(self
                 .candles
                 .first()
