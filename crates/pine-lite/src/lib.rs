@@ -221,15 +221,19 @@ fn header_or_default(parsed: Header, lexed: &Header) -> Header {
 /// vet refusal above fires wherever the read hides -- inside an if body, a
 /// function, a ternary.
 fn reads_strategy_state(script: &parse::Script) -> bool {
-    const STATE_BUILTINS: [&str; 6] = [
+    const STATE_BUILTINS: [&str; 10] = [
         "strategy.position_size",
         "strategy.position_avg_price",
         "strategy.equity",
         "strategy.openprofit",
         "strategy.closedtrades",
         "strategy.wintrades",
+        "strategy.netprofit",
+        "strategy.grossprofit",
+        "strategy.grossloss",
+        "strategy.max_drawdown",
     ];
-    fn has_state_read(e: &parse::Expr, builtins: &[&str; 6]) -> bool {
+    fn has_state_read(e: &parse::Expr, builtins: &[&str]) -> bool {
         use crate::parse::ExprKind;
         match &e.kind {
             // `strategy.equity` lexes as a dotted-path IDENT, not a call.
@@ -254,7 +258,7 @@ fn reads_strategy_state(script: &parse::Script) -> bool {
             _ => false,
         }
     }
-    fn item_has_read(it: &parse::Item, builtins: &[&str; 6]) -> bool {
+    fn item_has_read(it: &parse::Item, builtins: &[&str]) -> bool {
         match it {
             parse::Item::Assign { expr, .. } => has_state_read(expr, builtins),
             parse::Item::Destructure { call, .. } => has_state_read(call, builtins),

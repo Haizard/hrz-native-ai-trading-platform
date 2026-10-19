@@ -619,7 +619,7 @@ Orders (fire them inside `if` blocks; every order fills on the NEXT bar's open):
 - `strategy.close("L")` / `strategy.close_all()` -- a market exit at the next bar's open.
 - ONE position at a time: an entry fired while a position is open is IGNORED, not reversed. Gate re-entries with the account read.
 
-Account reads (series, usable in any expression): `strategy.position_size` (signed qty, 0 = flat), `strategy.position_avg_price`, `strategy.equity`, `strategy.openprofit`, `strategy.closedtrades`, `strategy.wintrades`.
+Account reads (series, usable in any expression): `strategy.position_size` (signed qty, 0 = flat), `strategy.position_avg_price`, `strategy.equity`, `strategy.openprofit`, `strategy.closedtrades`, `strategy.wintrades`., and the account stats: `strategy.netprofit` (realized PnL only), `strategy.grossprofit` / `strategy.grossloss` (the win/loss split; grossloss is NEGATIVE, so profit factor is `strategy.grossprofit / math.abs(strategy.grossloss)`), `strategy.max_drawdown` (running peak-to-trough in currency). All read the previous state, one bar late, like every strategy state builtin
 
 The rules that keep a strategy correct:
 1. Gate entries with `strategy.position_size == 0` unless you deliberately want a reversal.

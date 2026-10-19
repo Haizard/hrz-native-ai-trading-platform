@@ -664,7 +664,9 @@ impl Cx {
             }
             "syminfo.ticker" => Ty::String,
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
-            | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => Ty::Float,
+            | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades"
+            | "strategy.netprofit" | "strategy.grossprofit" | "strategy.grossloss"
+            | "strategy.max_drawdown" => Ty::Float,
             _ => self.unknown(span, path),
         }
     }
@@ -1062,7 +1064,9 @@ fn namespace_const(name: &str) -> Option<Ty> {
         }
         "syminfo.ticker" => Some(Ty::String),
         "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
-        | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => Some(Ty::Float),
+        | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades"
+        | "strategy.netprofit" | "strategy.grossprofit" | "strategy.grossloss"
+        | "strategy.max_drawdown" => Some(Ty::Float),
         _ => None,
     }
 }

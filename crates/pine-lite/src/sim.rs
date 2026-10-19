@@ -96,6 +96,17 @@ pub struct SimSnapshot {
     pub openprofit: f64,
     pub closedtrades: f64,
     pub wintrades: f64,
+    /// Cumulative closed PnL (Pine's strategy.netprofit: realized only,
+    /// the open leg does not count until it closes).
+    pub netprofit: f64,
+    /// Cumulative winning-leg PnL (strategy.grossprofit).
+    pub grossprofit: f64,
+    /// Cumulative losing-leg PnL, NEGATIVE (strategy.grossloss), so the
+    /// profit-factor idiom reads `grossprofit / math.abs(grossloss)`.
+    pub grossloss: f64,
+    /// Running peak-to-trough equity drawdown in currency
+    /// (strategy.max_drawdown), not a fraction.
+    pub max_drawdown: f64,
 }
 
 /// The report: the same numbers as the DSL backtest report's headline.
@@ -221,6 +232,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
     let mut gross_loss = 0.0f64;
     let mut peak = knobs.initial_capital;
     let mut max_dd = 0.0f64;
+    let mut max_dd_abs = 0.0f64;
     sim.equity = Vec::with_capacity(candles.len());
     sim.snapshots = Vec::with_capacity(candles.len());
     // The fill an intent decided on bar b queues for bar b+1: one pending
@@ -391,6 +403,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
             (if p.long { p.qty } else { -p.qty }, p.entry_price, open_pnl_mark)
         });
         sim.equity.push(equity);
+        max_dd_abs = max_dd_abs.max(peak - equity);
         sim.snapshots.push(SimSnapshot {
             position_size: pos_size,
             avg_price: avg,
@@ -398,6 +411,10 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
             openprofit: op,
             closedtrades: closed,
             wintrades: wins,
+            netprofit: realized,
+            grossprofit: gross_win,
+            grossloss: gross_loss,
+            max_drawdown: max_dd_abs,
         });
 
         // 4. This bar's intents decide for the NEXT open. `strategy.exit`

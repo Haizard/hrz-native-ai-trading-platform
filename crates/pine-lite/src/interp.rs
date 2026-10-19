@@ -819,6 +819,10 @@ impl<'a> Vm<'a> {
             "strategy.openprofit" => s.openprofit,
             "strategy.closedtrades" => s.closedtrades,
             "strategy.wintrades" => s.wintrades,
+            "strategy.netprofit" => s.netprofit,
+            "strategy.grossprofit" => s.grossprofit,
+            "strategy.grossloss" => s.grossloss,
+            "strategy.max_drawdown" => s.max_drawdown,
             _ => 0.0,
         }
     }
@@ -2101,9 +2105,9 @@ impl<'a> Vm<'a> {
             "timeframe.isweekly" => f64::from(c.timeframe == Timeframe::W1),
             "timeframe.isdwm" => f64::from(matches!(c.timeframe, Timeframe::D1 | Timeframe::W1)),
             "strategy.position_size" | "strategy.position_avg_price" | "strategy.equity"
-            | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades" => {
-                self.strategy_read(path)
-            }
+            | "strategy.openprofit" | "strategy.closedtrades" | "strategy.wintrades"
+            | "strategy.netprofit" | "strategy.grossprofit" | "strategy.grossloss"
+            | "strategy.max_drawdown" => self.strategy_read(path),
             _ => {
                 return Err(crate::ScriptError {
                     kind: crate::ErrorKind::Type,
