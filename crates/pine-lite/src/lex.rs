@@ -239,6 +239,18 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
                     "max_bars_back must be between 1 and 5000",
                 )),
             },
+            "max_lines_count" | "max_boxes_count" | "max_labels_count" => {
+                match value.parse::<usize>() {
+                    Ok(n) if (1..=500).contains(&n) => {
+                        match key.as_str() {
+                            "max_lines_count" => header.max_lines_count = Some(n),
+                            "max_boxes_count" => header.max_boxes_count = Some(n),
+                            _ => header.max_labels_count = Some(n),
+                        }
+                    }
+                    _ => errors.push(err(line, 1, &format!("{key} must be between 1 and 500"))),
+                }
+            }
             // The strategy account block (docs/24 S1):
             // strategy(initial_capital=10000, default_qty_type="percent_of_equity",
             //          default_qty_value=10, commission_type="percent",

@@ -576,6 +576,12 @@ pub struct Vm<'a> {
     maps_live: Vec<std::collections::HashMap<String, f64>>,
     /// The `matrix.new` heap: row-major float matrices by handle.
     matrices_live: Vec<(usize, usize, Vec<f64>)>,
+    /// Creation sequence per arena slot: Pine's per-kind GC retires the
+    /// oldest-CREATED drawing, and slot reuse makes position a lie -- only
+    /// a sequence number tells the truth about age.
+    objects_seq: Vec<u64>,
+    /// The monotonic clock behind `objects_seq`.
+    objects_clock: u64,
     /// The live drawing-object arena: `l = line.new(...)` binds the ARENA
     /// INDEX as a float handle, setters mutate through it, deletes clear
     /// the slot. `out.objects` fills from this at the end of the run
@@ -687,6 +693,8 @@ impl<'a> Vm<'a> {
             input_timeframes: std::collections::HashMap::new(),
             last_input_tf: None,
             objects_live: Vec::new(),
+            objects_seq: Vec::new(),
+            objects_clock: 0,
             tables_live: Vec::new(),
             linefills_live: Vec::new(),
             polylines_live: Vec::new(),
@@ -865,6 +873,8 @@ impl<'a> Vm<'a> {
         self.security_value_cache.clear();
         self.heap.clear();
         self.objects_live.clear();
+        self.objects_seq.clear();
+        self.objects_clock = 0;
         self.tables_live.clear();
         self.linefills_live.clear();
         self.polylines_live.clear();
@@ -1531,8 +1541,57 @@ impl<'a> Vm<'a> {
             }
             _ => return Ok(None),
         };
+        // Per-kind caps (the header's max_lines_count & friends): Pine's
+        // rule is GC-the-oldest AND REUSE ITS SLOT -- a rolling drawing
+        // shows the newest N of its kind, and the arena never fills with
+        // churn. The global 256 cap still stands behind it.
+        let kind_cap = match &object {
+            ScriptObject::Line { .. } | ScriptObject::LineTime { .. } => {
+                self.script.header.max_lines_count
+            }
+            ScriptObject::Box { .. } | ScriptObject::BoxTime { .. } => {
+                self.script.header.max_boxes_count
+            }
+            ScriptObject::Label { .. } | ScriptObject::LabelTime { .. } => {
+                self.script.header.max_labels_count
+            }
+            _ => None,
+        };
+        if let Some(cap) = kind_cap {
+            let same_kind = |o: &Option<ScriptObject>| {
+                matches!(
+                    (o, &object),
+                    (Some(ScriptObject::Line { .. } | ScriptObject::LineTime { .. }),
+                        ScriptObject::Line { .. } | ScriptObject::LineTime { .. })
+                        | (Some(ScriptObject::Box { .. } | ScriptObject::BoxTime { .. }),
+                            ScriptObject::Box { .. } | ScriptObject::BoxTime { .. })
+                        | (Some(ScriptObject::Label { .. } | ScriptObject::LabelTime { .. }),
+                            ScriptObject::Label { .. } | ScriptObject::LabelTime { .. })
+                )
+            };
+            let live = self.objects_live.iter().filter(|o| same_kind(o)).count();
+            if live >= cap {
+                let oldest = self
+                    .objects_live
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, o)| same_kind(o))
+                    .min_by_key(|(i, _)| self.objects_seq[*i])
+                    .map(|(i, _)| i);
+                if let Some(oldest) = oldest {
+                    // Retire by creation order, not slot position: reuse
+                    // writes the fresh tick into the freed slot.
+                    self.objects_clock += 1;
+                    self.objects_live[oldest] = Some(object);
+                    self.objects_seq[oldest] = self.objects_clock;
+                    return Ok(Some(oldest as f64));
+                }
+            }
+        }
         if self.objects_live.len() < MAX_OBJECTS {
             let handle = self.objects_live.len() as f64;
+            self.objects_clock += 1;
+            self.objects_seq.push(self.objects_clock);
             self.objects_live.push(Some(object));
             Ok(Some(handle))
         } else {

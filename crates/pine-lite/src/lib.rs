@@ -113,6 +113,14 @@ pub struct Header {
     pub title: Option<String>,
     /// History depth the script may index, `max_bars_back`. Default 300.
     pub max_bars_back: usize,
+    /// Per-kind drawing caps (`max_lines_count` & friends): at the cap the
+    /// OLDEST drawing of that kind is garbage-collected, like Pine. None =
+    /// only the global 256-object cap applies.
+    pub max_lines_count: Option<usize>,
+    /// See `max_lines_count`.
+    pub max_boxes_count: Option<usize>,
+    /// See `max_lines_count`.
+    pub max_labels_count: Option<usize>,
     /// A second instrument (`sec="ETHUSDT"`) the host fetched and aligned
     /// onto the script's own bars. Its series read through `request.close` /
     /// `request.open` / `request.high` / `request.low` / `request.volume`;
@@ -134,6 +142,9 @@ impl Default for Header {
             overlay: false,
             title: None,
             max_bars_back: 300,
+            max_lines_count: None,
+            max_boxes_count: None,
+            max_labels_count: None,
             sec: None,
             strategy: None,
         }
@@ -149,6 +160,9 @@ impl Header {
             overlay: false,
             title: None,
             max_bars_back: 300,
+            max_lines_count: None,
+            max_boxes_count: None,
+            max_labels_count: None,
             sec: None,
             strategy: None,
         }
