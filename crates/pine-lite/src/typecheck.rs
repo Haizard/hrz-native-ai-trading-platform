@@ -1032,6 +1032,8 @@ fn builtin_arity(callee: &str) -> Option<(usize, usize)> {
         "line.delete" | "label.delete" | "box.delete" => (1, 1),
         "linefill.new" => (3, 3),
         "linefill.delete" => (1, 1),
+        "polyline.new" => (2, 7),
+        "polyline.delete" => (1, 1),
         // table.new(position, columns, rows, ...) returns the panel handle;
         // table.cell writes one cell.
         "table.new" => (3, 5),

@@ -97,6 +97,24 @@ pub struct OutputTable {
     pub cells: std::collections::HashMap<(usize, usize), OutputTableCell>,
 }
 
+/// One `polyline.new(xs, ys, ...)`: a freeform connected path through
+/// (bar, price) points -- the harmonic-pattern wing, the custom zigzag.
+/// v1 takes two parallel arrays (bar indices, prices); Pine's
+/// array<chart.point> form lands with the UDT family.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputPolyline {
+    /// The path's vertices as (bar index, price).
+    pub points: Vec<(f64, f64)>,
+    /// `closed=` -- join the last vertex back to the first.
+    pub closed: bool,
+    /// Stroke color.
+    pub line_color: u32,
+    /// `fill_color=` -- None draws no fill.
+    pub fill_color: Option<u32>,
+    /// Stroke width.
+    pub width: f64,
+}
+
 /// One `linefill.new(l1, l2, color)`: the fill BETWEEN two line objects.
 /// Stored as arena indices into `objects`; the renderer resolves the
 /// overlap quadrilateral (the lines may move via setters after the fill is
@@ -300,6 +318,8 @@ pub struct Output {
     pub alerts: Vec<ScriptAlert>,
     /// `linefill.new` fills between line objects, in creation order.
     pub linefills: Vec<OutputLineFill>,
+    /// `polyline.new` freeform paths, in creation order.
+    pub polylines: Vec<OutputPolyline>,
     /// The strategy simulation (docs/24 S1): orders, equity curve, account
     /// snapshots and the report. None for indicator scripts; Some for every
     /// run that recorded `strategy.*` intents or (with the header block)
@@ -542,6 +562,9 @@ pub struct Vm<'a> {
     /// Live `linefill.new` fills: the handle is the index, `linefill.delete`
     /// clears the slot. Resolved into out.linefills at the end of the run.
     linefills_live: Vec<Option<OutputLineFill>>,
+    /// Live `polyline.new` paths: the handle is the index,
+    /// `polyline.delete` clears the slot.
+    polylines_live: Vec<Option<OutputPolyline>>,
     /// The live drawing-object arena: `l = line.new(...)` binds the ARENA
     /// INDEX as a float handle, setters mutate through it, deletes clear
     /// the slot. `out.objects` fills from this at the end of the run
@@ -655,6 +678,7 @@ impl<'a> Vm<'a> {
             objects_live: Vec::new(),
             tables_live: Vec::new(),
             linefills_live: Vec::new(),
+            polylines_live: Vec::new(),
             security_ticker: script.header.sec.clone(),
             account: None,
             out: Output::default(),
@@ -797,6 +821,7 @@ impl<'a> Vm<'a> {
                 }
             })
             .collect();
+        self.out.polylines = self.polylines_live.iter().flatten().cloned().collect();
         Ok(std::mem::take(&mut self.out))
     }
 
@@ -825,6 +850,7 @@ impl<'a> Vm<'a> {
         self.objects_live.clear();
         self.tables_live.clear();
         self.linefills_live.clear();
+        self.polylines_live.clear();
         self.deferred.clear();
         self.deferred_seen.clear();
         self.steps = 0;
@@ -1163,6 +1189,76 @@ impl<'a> Vm<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// `polyline.new(xs, ys, closed=, line_color=, fill_color=,
+    /// line_width=)`: a freeform path through parallel (bar, price) arrays,
+    /// hand back the path's handle. `None` when the callee is not
+    /// polyline.new.
+    fn polyline_handle(&mut self, callee: &str, args: &[Arg]) -> Result<Option<f64>, crate::ScriptError> {
+        if callee != "polyline.new" {
+            return Ok(None);
+        }
+        self.tick()?;
+        let bad = |what: &str| crate::ScriptError {
+            kind: crate::ErrorKind::Type,
+            span: crate::Span::new(1, 1),
+            message: what.to_string(),
+        };
+        let hx = self.arg_f(args, 0)?.unwrap_or(NA);
+        let hy = self.arg_f(args, 1)?.unwrap_or(NA);
+        // Snapshot both arrays BEFORE anything else mutable: array_ref
+        // borrows self, so clone the vertex data out.
+        let xs = { self.array_ref(hx).map_err(|_| bad("`polyline.new` argument 1 is the array of bar indices (build it with var + array.push)"))?.clone() };
+        let ys = { self.array_ref(hy).map_err(|_| bad("`polyline.new` argument 2 is the array of prices"))?.clone() };
+        if xs.len() != ys.len() || xs.len() < 2 {
+            return Err(bad("`polyline.new` needs the bar-index and price arrays to hold the same number of points, at least 2"));
+        }
+        let mut points = Vec::with_capacity(xs.len());
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(bad("`polyline.new` points must be finite numbers (na vertex)"));
+            }
+            points.push((*x, *y));
+        }
+        let closed = self
+            .arg_named_f(args, "closed")
+            .map(|v| v != 0.0)
+            .unwrap_or(false);
+        let line_color = self
+            .arg_color_named(args, "line_color")
+            .unwrap_or(0xFF_60_A5_FA);
+        let fill_color = self.arg_color_named(args, "fill_color");
+        let width = self.arg_named_f(args, "line_width").unwrap_or(1.0).max(0.5);
+        let handle = self.polylines_live.len() as f64;
+        self.polylines_live.push(Some(OutputPolyline {
+            points,
+            closed,
+            line_color,
+            fill_color,
+            width,
+        }));
+        Ok(Some(handle))
+    }
+
+    /// `polyline.delete(p)`: clear one path's slot. `true` when the callee
+    /// was polyline.delete.
+    fn polyline_stmt(&mut self, callee: &str, args: &[Arg]) -> Result<bool, crate::ScriptError> {
+        if callee != "polyline.delete" {
+            return Ok(false);
+        }
+        self.tick()?;
+        let h = self.arg_f(args, 0)?.unwrap_or(NA);
+        let idx = if h.is_finite() && h >= 0.0 { h as usize } else { usize::MAX };
+        if idx >= self.polylines_live.len() {
+            return Err(crate::ScriptError {
+                kind: crate::ErrorKind::Type,
+                span: crate::Span::new(1, 1),
+                message: "`polyline.delete` needs a live polyline handle from polyline.new".into(),
+            });
+        }
+        self.polylines_live[idx] = None;
+        Ok(true)
     }
 
     /// `linefill.new(l1, l2, color)`: fill between two line objects, hand
@@ -1679,6 +1775,8 @@ impl<'a> Vm<'a> {
             _ if self.table_stmt(callee, args)? => Ok(()),
             _ if self.linefill_handle(callee, args)?.is_some() => Ok(()),
             _ if self.linefill_stmt(callee, args)? => Ok(()),
+            _ if self.polyline_handle(callee, args)?.is_some() => Ok(()),
+            _ if self.polyline_stmt(callee, args)? => Ok(()),
             // ---- the registry primitive (docs/37): the VM stores the raw
             // anchors; the decomposition into levels and labels is the
             // engine's, because positioning is the engine's.
@@ -2513,6 +2611,9 @@ impl<'a> Vm<'a> {
             return Ok(handle);
         }
         if let Some(handle) = self.linefill_handle(callee, args)? {
+            return Ok(handle);
+        }
+        if let Some(handle) = self.polyline_handle(callee, args)? {
             return Ok(handle);
         }
         // The color constructors evaluate to a packed 0xAARRGGBB float that

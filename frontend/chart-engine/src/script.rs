@@ -86,6 +86,20 @@ pub enum ScriptDraw {
         /// (a vertical segment, x1 == x2, does not extend — Pine's rule).
         extend: String,
     },
+    /// `polyline.new` — a freeform connected path, stroked and optionally
+    /// filled (the harmonic wing).
+    Polyline {
+        /// The vertices, in path order.
+        points: Vec<(f64, f64)>,
+        /// Join the last vertex to the first.
+        closed: bool,
+        /// Stroke color.
+        line_color: u32,
+        /// Fill color; None = stroke only.
+        fill_color: Option<u32>,
+        /// Stroke width.
+        width: f64,
+    },
     /// `linefill.new` — the overlap quadrilateral between two lines,
     /// filled solid at the fill's own alpha.
     Polygon {
@@ -551,6 +565,33 @@ pub fn scene_overlay_shapes(
                 text: s.text.clone(),
                 text_color: s.text_color,
             }
+        })
+        .collect()
+}
+
+/// Position every `polyline.new` path: bar/price vertices map with the
+/// same slot geometry the drawing objects use.
+pub fn scene_overlay_polylines(
+    output: &Output,
+    slot: f64,
+    frame: &crate::scene::Frame,
+) -> Vec<ScriptDraw> {
+    let py = |v: f64| {
+        crate::scene::price_to_y(v, frame.price_min, frame.price_max, &frame.plot, frame.scale)
+    };
+    output
+        .polylines
+        .iter()
+        .map(|p| ScriptDraw::Polyline {
+            points: p
+                .points
+                .iter()
+                .map(|(bar, price)| (frame.plot.x + slot * (*bar + 0.5), py(*price)))
+                .collect(),
+            closed: p.closed,
+            line_color: p.line_color,
+            fill_color: p.fill_color,
+            width: p.width,
         })
         .collect()
 }
@@ -1677,6 +1718,59 @@ mod tests {
             }
             other => panic!("expected a label: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_polyline_maps_its_vertices_and_delete_clears_it() {
+        let frame = crate::scene::Frame {
+            plot: crate::scene::Plot { x: 0.0, y: 0.0, w: 400.0, h: 200.0 },
+            from: 0,
+            to: 40 * 60_000_000_000,
+            price_min: 90.0,
+            price_max: 120.0,
+            bar_nanos: 60_000_000_000,
+            scale: crate::scene::ScaleMap::Linear,
+        };
+        let src = concat!(
+            "//@pine_lite version=1 overlay=true\n",
+            "var xs = array.new()\n",
+            "var ys = array.new()\n",
+            "if bar_index == 0\n",
+            "    array.push(xs, 2)\n",
+            "    array.push(ys, 95)\n",
+            "    array.push(xs, 10)\n",
+            "    array.push(ys, 110)\n",
+            "    array.push(xs, 18)\n",
+            "    array.push(ys, 100)\n",
+            "if bar_index == 1\n",
+            "    p = polyline.new(xs, ys, closed=true, line_color=color.purple, fill_color=color.new(color.purple, 80), line_width=2)\n",
+        );
+        let (_, parsed) = pine_lite::vet(src).expect("vet");
+        let candles: Vec<Candle> = (0..40).map(|i| candle(i, 100.0)).collect();
+        let output = run(&parsed, &candles, &Inputs::default()).expect("run");
+        assert_eq!(output.polylines.len(), 1);
+        assert_eq!(output.polylines[0].points.len(), 3, "three vertices");
+        let draws = scene_overlay_polylines(&output, 10.0, &frame);
+        let pl = draws.iter().find_map(|d| match d {
+            ScriptDraw::Polyline { points, closed, fill_color, width, .. } => {
+                Some((points.len(), *closed, *fill_color, *width))
+            }
+            _ => None,
+        }).expect("one polyline draw");
+        assert_eq!(pl.0, 3);
+        assert!(pl.1, "closed rides");
+        // fill alpha from color.new(purple, 80): round(255 * 0.2) = 51 = 0x33.
+        assert_eq!(pl.2, Some(0x33_A8_55_F7), "the translucent fill packs");
+        assert!((pl.3 - 2.0).abs() < 1e-9, "line_width=2");
+
+        // delete clears the path.
+        let src2 = src.replace(
+            "    p = polyline.new(xs, ys, closed=true, line_color=color.purple, fill_color=color.new(color.purple, 80), line_width=2)\n",
+            "    p = polyline.new(xs, ys)\nif bar_index == 3\n    polyline.delete(p)\n",
+        );
+        let (_, parsed2) = pine_lite::vet(&src2).expect("vet 2");
+        let output2 = run(&parsed2, &candles, &Inputs::default()).expect("run 2");
+        assert!(output2.polylines.is_empty(), "deleted paths do not ship");
     }
 
     #[test]

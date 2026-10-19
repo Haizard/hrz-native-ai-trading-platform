@@ -1520,6 +1520,20 @@ function createChartPane(root, hooks = {}) {
             ctx.lineWidth = 1;
             ctx.strokeRect(bx, by, bw, bh);
           }
+        } else if (o.Polyline) {
+          const pl = o.Polyline;
+          if (pl.points.length >= 2) {
+            ctx.beginPath();
+            pl.points.forEach(([px, py], i) => (i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)));
+            if (pl.closed) ctx.closePath();
+            if (pl.fill_color != null) {
+              ctx.fillStyle = rgbaFromPacked(pl.fill_color, 0.35);
+              ctx.fill();
+            }
+            ctx.strokeStyle = rgbaFromPacked(pl.line_color, 1.0);
+            ctx.lineWidth = pl.width || 1.5;
+            ctx.stroke();
+          }
         } else if (o.Polygon) {
           const p = o.Polygon;
           ctx.beginPath();
