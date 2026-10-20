@@ -2698,6 +2698,9 @@ function createChartPane(root, hooks = {}) {
     if (noteEl && src) {
       noteEl.textContent = `candles: ${src.memory} from live buffer, ${src.venue} fetched from venue (${response.candles?.length ?? 0} total)`;
     }
+    // The concept events ride the same pulse: bar-close facts, no extra
+    // cadence of their own.
+    refreshConceptEvents();
     return response.candles || [];
   }
 
@@ -3043,7 +3046,10 @@ function createChartPane(root, hooks = {}) {
       // bare identifier would be a `ReferenceError` the moment a thesis existed
       // -- and short-circuiting on `thesis &&` is exactly what would hide it,
       // because the read that throws is the one after the guard.
-      overlays: thesis && thesis.symbol === el("symbol").value ? thesisOverlays(thesis) : [],
+      overlays: [
+        ...(thesis && thesis.symbol === el("symbol").value ? thesisOverlays(thesis) : []),
+        ...conceptOverlays(),
+      ],
       // The profile's edge, in the engine's own spelling. Assigned only when
       // set: absent means Right, which keeps every existing request byte-identical.
       ...(profileLeft ? { profile_anchor: "left" } : {}),
@@ -5383,6 +5389,92 @@ function createChartPane(root, hooks = {}) {
     delete menu.dataset.owner;
   }
 
+  /// ---- The Concept Explorer (Trading Intelligence Libraries) --------------
+  ///
+  /// Per-pane concept toggles: the trader picks detectors from the registry
+  /// (GET /concepts), the pane fetches their events (GET /concept-events)
+  /// alongside its candles, and the events draw as levels and bands through
+  /// the same overlay lane the thesis uses -- so the chart's coordinates are
+  /// the engine's, not a second scale.
+
+  // The pane's enabled concept ids and the catalog + events cache.
+  let enabledConcepts = new Set();
+  let conceptCatalog = null;     // /concepts entries for the pane's symbol
+  let conceptEvents = [];        // /concept-events for the pane's symbol
+
+  /// Fetch the catalog for the pane's symbol (once per symbol).
+  async function refreshConceptCatalog() {
+    const symbol = el("symbol") && el("symbol").value;
+    if (!symbol) { conceptCatalog = null; return; }
+    try {
+      conceptCatalog = await api(`/concepts?symbol=${encodeURIComponent(symbol)}`);
+    } catch {
+      conceptCatalog = null;
+    }
+  }
+
+  /// Fetch the enabled concepts' events. Cheap and bar-close-cadenced: the
+  /// events are bar facts, so the pane's refresh cycle is the right pulse.
+  async function refreshConceptEvents() {
+    const symbol = el("symbol") && el("symbol").value;
+    if (!symbol || enabledConcepts.size === 0) { conceptEvents = []; return; }
+    try {
+      const body = await api(`/concept-events?symbol=${encodeURIComponent(symbol)}`);
+      conceptEvents = (body && body.events) || [];
+    } catch {
+      conceptEvents = [];
+    }
+  }
+
+  /// Map the cached events to scene overlays, filtered by the enabled ids.
+  function conceptOverlays() {
+    if (!enabledConcepts.size || !conceptEvents.length) return [];
+    const out = [];
+    for (const e of conceptEvents) {
+      if (!enabledConcepts.has(e.concept_id)) continue;
+      const arrow = e.direction === "bullish" ? "↑" : e.direction === "bearish" ? "↓" : "•";
+      const short = e.concept_id.split(".")[1] || e.concept_id;
+      const label = `${short} ${arrow}`;
+      if (e.zone_low != null && e.zone_high != null) {
+        out.push({ price: e.zone_low, label, role: "level", band_to: e.zone_high, filled: true });
+      } else if (e.price_level != null) {
+        out.push({ price: e.price_level, label, role: "level", filled: false });
+      }
+    }
+    // Newest 24, so a long history of events cannot crowd the pane out.
+    return out.slice(-24);
+  }
+
+  /// The menu section: one checkbox row per registered concept, with the
+  /// unavailable ones greyed and named with the reason.
+  function conceptMenuNodes() {
+    const rows = [];
+    if (!conceptCatalog || !conceptCatalog.length) return rows;
+    const label = Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Concepts" });
+    rows.push(label);
+    for (const c of conceptCatalog) {
+      const row = Object.assign(document.createElement("label"), {
+        className: "conceptRow",
+        title: c.description,
+      });
+      const box = Object.assign(document.createElement("input"), { type: "checkbox" });
+      box.checked = enabledConcepts.has(c.id);
+      if (c.available === false) {
+        box.disabled = true;
+        row.classList.add("unavailable");
+        row.title = `${c.description} -- needs ${c.required_channels.join(", ")}, which this instrument does not serve`;
+      }
+      box.addEventListener("change", () => {
+        if (box.checked) enabledConcepts.add(c.id);
+        else enabledConcepts.delete(c.id);
+        refreshConceptEvents().then(() => refresh && refresh());
+      });
+      row.append(box, document.createTextNode(`${c.name}`));
+      rows.push(row);
+    }
+    return rows;
+  }
+
   /// The Deriv trade ticket's menu section, or nothing on any other venue.
   /// Rebuilt on every open (the menu is transient), so the wiring here is
   /// always this open's own; the controls inside call the api() helper, so
@@ -5502,6 +5594,7 @@ function createChartPane(root, hooks = {}) {
       Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Chart" }),
       el("mode"), el("zones"), el("fit"), el("load"),
       el("feedStatus"),
+      ...conceptMenuNodes(),
       ...tradeMenuNodes(),
       document.createElement("hr"),
       Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Drawing tools" }),
@@ -5510,6 +5603,15 @@ function createChartPane(root, hooks = {}) {
     // Hosted, the tool row is a plain menu section; it keeps its own tool
     // wiring either way.
     tools.hidden = false;
+    refreshConceptCatalog().then(() => {
+      // The menu is already open: rebuild the section now that the catalog
+      // is here (a first open is usually faster than the fetch).
+      if (menuHosted) {
+        for (const node of menu.querySelectorAll(".conceptRow")) node.remove();
+        const anchor = menu.querySelector(".tradeTicket") || menu.querySelector("hr");
+        if (anchor) for (const node of conceptMenuNodes()) menu.insertBefore(node, anchor);
+      }
+    });
     menu.classList.add("open");
     const box = menu.getBoundingClientRect();
     menu.style.left = `${Math.min(x, window.innerWidth - box.width - 8)}px`;
@@ -5743,6 +5845,12 @@ function createChartPane(root, hooks = {}) {
     // and indicator. A fetch that fails now shows an empty chart and its
     // error, not the previous instrument under the new one's name.
     resetSeries();
+    // The concept explorer follows the instrument: a new symbol gets its own
+    // availability-gated catalog, and the old symbol's events leave with it.
+    enabledConcepts = new Set();
+    conceptEvents = [];
+    conceptCatalog = null;
+    refreshConceptCatalog();
     refresh().then(connectLive);
     paintTitle();
       if (hooks.onSymbolChange) hooks.onSymbolChange(paneApi);
