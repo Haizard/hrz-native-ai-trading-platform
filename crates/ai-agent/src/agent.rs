@@ -313,6 +313,10 @@ pub struct AskRequest {
     /// When attached, tool results carry a `provenance` block and the state
     /// render labels its sections. `None` makes no claims — data facts only.
     pub capabilities: Option<crate::capability_view::CapabilityView>,
+    /// Recent Concept-Registry events for the ask's symbol, formatted by the
+    /// gateway: evidence lines the model cites verbatim (levels, not prose).
+    /// Attached like every other capability; absent in tools-only builds.
+    pub concept_evidence: Option<Vec<String>>,
     /// Images the user attached to the question: a chart photo, a book page,
     /// a drawing. They ride the first user message as image blocks, ahead of
     /// the question text, exactly like chart screenshots.
@@ -341,6 +345,7 @@ impl AskRequest {
             backtests: None,
             web_search: None,
             capabilities: None,
+            concept_evidence: None,
             attachments: Vec::new(),
             attachment_document: None,
         }
@@ -459,6 +464,12 @@ impl AskRequest {
     #[must_use]
     pub fn with_capabilities(mut self, view: crate::capability_view::CapabilityView) -> Self {
         self.capabilities = Some(view);
+        self
+    }
+
+    /// Attach the concept evidence lines (the gateway's formatted events).
+    pub fn with_concept_evidence(mut self, lines: Vec<String>) -> Self {
+        self.concept_evidence = Some(lines);
         self
     }
 }
@@ -903,6 +914,18 @@ impl Agent {
                 doc.name, doc.text, request.question
             ),
             None => request.question.clone(),
+        };
+        // Concept evidence rides *before* the question: the model reads what
+        // the registry detected, then the ask. Levels, never prose -- the
+        // grounding rule applies here exactly as it does to tool results.
+        let question_text = match &request.concept_evidence {
+            Some(lines) if !lines.is_empty() => format!(
+                "Concept Registry events on {} (most recent first; cite these levels verbatim):\n{}\n\n---\n\n{}",
+                request.symbol,
+                lines.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n"),
+                question_text
+            ),
+            _ => question_text,
         };
         first_content.push(ContentBlock::Text(question_text));
         let mut messages = vec![Message {

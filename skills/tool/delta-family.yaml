@@ -18,6 +18,10 @@ rules:
 capability_requirements:
   required: [{capability: delta}]
   preferred: [{capability: vpin}]
+# The registry's order-flow concept. Its events exist only where the venue
+# serves aggressor trades -- a Deriv synthetic never emits one, by declaration.
+concepts:
+  - order_flow.delta_shift
 applies_to:
   tools: [get_delta, get_cvd, get_vpin, get_delta_by_size, detect_size_divergence]
 conditions:

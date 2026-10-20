@@ -254,6 +254,50 @@ pub async fn ask(
         request = request.with_web_search(searcher.clone());
     }
 
+    // The Concept Registry's recent events for this symbol, as evidence lines
+    // the model cites verbatim: the thesis that says "bullish BOS at 108,250"
+    // needs those numbers, and the registry is the one place they come from.
+    // Newest 12, from the last six hours of the watcher's lane.
+    {
+        let lane = state.events.watch(&body.symbol.to_uppercase(), state.bots.history());
+        let since = crate::now_ns() - 6 * 3_600_000_000_000;
+        let lines: Vec<String> = lane
+            .since(Some(since))
+            .iter()
+            .filter_map(market_data::concepts::as_concept_event)
+            .rev()
+            .take(12)
+            .map(|e| {
+                let dir = match e.direction {
+                    market_data::concepts::Direction::Bullish => "bullish",
+                    market_data::concepts::Direction::Bearish => "bearish",
+                    market_data::concepts::Direction::Neutral => "neutral",
+                };
+                let level = e
+                    .price_level
+                    .map(|p| format!(" at {p}"))
+                    .unwrap_or_default();
+                let zone = match (e.zone_low, e.zone_high) {
+                    (Some(lo), Some(hi)) => format!(" (zone {lo}..{hi})"),
+                    _ => String::new(),
+                };
+                format!(
+                    "[{} v{}] {} {}{} {} -- {}",
+                    e.concept_id, e.concept_version, dir, e.concept_id.split('.').nth(1).unwrap_or(&e.concept_id),
+                    level, zone, match e.status {
+                        market_data::concepts::ConceptStatus::Forming => "forming",
+                        market_data::concepts::ConceptStatus::Confirmed => "confirmed",
+                        market_data::concepts::ConceptStatus::Invalidated => "invalidated",
+                        market_data::concepts::ConceptStatus::Expired => "expired",
+                    }
+                )
+            })
+            .collect();
+        if !lines.is_empty() {
+            request = request.with_concept_evidence(lines);
+        }
+    }
+
     // The capability view (docs/39): tool results carry their provenance, and
     // the state render labels its sections. The scope names the deployment's
     // venue — resolved from configuration, never from the request.

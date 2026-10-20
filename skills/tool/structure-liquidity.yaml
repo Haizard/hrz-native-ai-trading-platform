@@ -16,6 +16,13 @@ rules:
   - "An empty liquidity list with plenty of bars means no clusters qualified; with few bars it means the window is thin. Check `provenance.window_bars` before saying which."
 capability_requirements:
   required: [{capability: market_structure}]
+# The Concept-Registry ids this skill reads as (market_data::concepts). When
+# the ask's context carries registry events, cite them by id and level --
+# the event IS the structure fact, versioned and level-carrying.
+concepts:
+  - smc.bos
+  - smc.choch
+  - smc.liquidity_sweep
 applies_to:
   tools: [detect_market_structure, detect_liquidity]
 conditions:

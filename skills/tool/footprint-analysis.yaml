@@ -19,6 +19,10 @@ rules:
   - "An empty absorption list is evidence only when trades existed in the window. With trades: zero it. Without: say the window had no tape."
 capability_requirements:
   required: [{capability: footprint}]
+# Footprint math sits above the same aggressor channel the registry's
+# order_flow.delta_shift declares: the availability rule is the registry's.
+concepts:
+  - order_flow.delta_shift
 applies_to:
   tools: [get_footprint, get_bar_delta_stats, detect_imbalance, detect_absorption]
 conditions:
