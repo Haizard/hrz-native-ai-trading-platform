@@ -47,6 +47,7 @@
 
 pub mod binance;
 pub mod credentials;
+pub mod deriv;
 pub mod decisions;
 pub mod error;
 pub mod execution;

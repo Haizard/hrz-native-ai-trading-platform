@@ -243,6 +243,28 @@ pub trait ExchangeAdapter: Send + Sync {
     async fn reconcile(&self) -> Result<Vec<OrderStatusReport>, ExecutionError>;
 }
 
+/// A boxed trait object is itself an adapter: bots hold adapters by trait
+/// object, and without this forwarding the box does not satisfy the generic
+/// bound where a concrete adapter goes.
+#[async_trait]
+impl ExchangeAdapter for Box<dyn ExchangeAdapter> {
+    fn venue(&self) -> &str {
+        (**self).venue()
+    }
+
+    async fn place_order(&self, order: OrderRequest) -> Result<OrderAck, ExecutionError> {
+        (**self).place_order(order).await
+    }
+
+    async fn cancel_order(&self, client_order_id: &str) -> Result<(), ExecutionError> {
+        (**self).cancel_order(client_order_id).await
+    }
+
+    async fn reconcile(&self) -> Result<Vec<OrderStatusReport>, ExecutionError> {
+        (**self).reconcile().await
+    }
+}
+
 /// The longest client order id any venue here accepts.
 ///
 /// Binance documents 36 characters, and the id is not a suggestion: an

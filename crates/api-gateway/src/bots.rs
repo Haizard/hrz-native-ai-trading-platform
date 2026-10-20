@@ -313,7 +313,7 @@ enum BotKind {
     /// A simulator, no venue.
     Paper(Box<PaperBot>),
     /// A real venue, real orders.
-    Live(Box<LiveBot<BinanceRest>>),
+    Live(Box<LiveBot<Box<dyn trading_engine::ExchangeAdapter>>>),
 }
 
 impl BotKind {
@@ -1157,7 +1157,7 @@ impl BotSupervisor {
         bot_id: Uuid,
         user_id: Uuid,
         database: db::Database,
-        bot: LiveBot<BinanceRest>,
+        bot: LiveBot<Box<dyn trading_engine::ExchangeAdapter>>,
         broker_account_id: Option<Uuid>,
     ) {
         self.spawn(

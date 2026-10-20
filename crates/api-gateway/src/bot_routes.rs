@@ -750,7 +750,7 @@ async fn live_adapter(
     user: &UserContext,
     resolved: &db::broker_accounts::BrokerAccountRow,
     symbol: &str,
-) -> Result<BinanceRest, ApiError> {
+) -> Result<Box<dyn trading_engine::ExchangeAdapter>, ApiError> {
     let vault = state.vault.as_ref().ok_or_else(|| {
         ApiError::unavailable(
             "BROKER_KEK is not set in this deployment, so no stored broker credential can be \
@@ -793,11 +793,42 @@ async fn live_adapter(
             )
         })?;
 
-    Ok(BinanceRest::new(
+    if stored.venue == "deriv" {
+        // The Deriv arm: the token rides as the key (no secret), the loginid
+        // comes from the venue check's account_id, and the instrument is the
+        // bot's namespaced symbol.
+        let loginid = resolved
+            .permissions
+            .get("account_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                ApiError::coded(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "BROKER_ACCOUNT_INCOMPLETE",
+                    "this Deriv account has no loginid recorded; disconnect and reconnect it so the venue check can refresh",
+                )
+            })?;
+        let code = ::market_data::deriv::code_for_namespaced(symbol).ok_or_else(|| {
+            ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "VENUE_UNKNOWN",
+                format!("`{symbol}` is not a Deriv instrument this platform trades"),
+            )
+        })?;
+        let adapter = trading_engine::deriv::DerivAdapter::new(
+            ::market_data::deriv_trade::DerivTradingGateway::from_env(),
+            loginid,
+            credentials.key().to_string(),
+            code,
+            "USD",
+        );
+        return Ok(Box::new(adapter) as Box<dyn trading_engine::ExchangeAdapter>);
+    }
+    Ok(Box::new(BinanceRest::new(
         &state.binance_base_url,
         symbol,
         credentials,
-    ))
+    )))
 }
 
 /// `GET /bots`
