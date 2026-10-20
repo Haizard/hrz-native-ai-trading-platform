@@ -141,7 +141,7 @@ impl SymbolEvents {
     }
 
     /// Events at or after `since_ns` (bar-open comparison), oldest first.
-    fn since(&self, since_ns: Option<i64>) -> Vec<MarketEvent> {
+    pub(crate) fn since(&self, since_ns: Option<i64>) -> Vec<MarketEvent> {
         let recent = self
             .recent
             .lock()

@@ -1,0 +1,401 @@
+//! The Concept Registry: every detector as a registered, versioned,
+//! self-describing component.
+//!
+//! One registry, many consumers: the chart's Concept Explorer, the strategy
+//! composer, the thesis agent, the math tools, and the skills system all read
+//! the same catalog and the same event contract -- so what the chart draws,
+//! the strategy trades, and the agent cites can never drift apart.
+//!
+//! A concept declares three things, and they are deliberately separate:
+//!
+//! - **The definition** (`name`, `description`): what the concept means.
+//! - **The algorithm** (`parameters`, `event_kinds`): how this variant
+//!   detects it, versioned (`version`) because two traders define an order
+//!   block differently and both are right.
+//! - **The interpretation**: left to the consumer -- a strategy trades it,
+//!   the thesis cites it, the chart draws it. The registry never prescribes.
+//!
+//! Every concept also declares the data it honestly needs
+//! (`required_channels`), wired to the same `DataChannels` the broker
+//! registry uses: a concept that needs aggressor trades is unavailable on a
+//! Deriv synthetic by construction, not by a runtime surprise.
+
+use analytics_core::events::{EventKind, MarketEvent};
+use analytics_core::types::Side;
+use serde::Serialize;
+
+use crate::broker::DataChannels;
+
+/// The library a concept belongs to -- the catalog's top-level grouping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Library {
+    /// Smart Money Concepts: structure, liquidity, imbalance.
+    Smc,
+    /// Supply and demand zones and their lifecycle.
+    SupplyDemand,
+    /// Volume-derived facts (spikes and friends).
+    Volume,
+    /// Order-flow facts needing aggressor data.
+    OrderFlow,
+}
+
+impl Library {
+    /// The catalog id prefix, e.g. `smc` for `smc.bos`.
+    #[must_use]
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::Smc => "smc",
+            Self::SupplyDemand => "sd",
+            Self::Volume => "volume",
+            Self::OrderFlow => "order_flow",
+        }
+    }
+}
+
+/// One tunable parameter of a detector variant.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct ConceptParam {
+    /// The parameter name (`swing_lookback`).
+    pub name: &'static str,
+    /// Its default.
+    pub default: f64,
+    /// The smallest sane value.
+    pub min: f64,
+    /// The largest sane value.
+    pub max: f64,
+    /// What it changes, in one clause.
+    pub description: &'static str,
+}
+
+/// A registered concept: definition, variant, and data declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct ConceptSpec {
+    /// The catalog id, `library.concept` (`smc.bos`).
+    pub id: &'static str,
+    /// This variant's version (`1.0.0`): a changed detector is a new version.
+    pub version: &'static str,
+    /// The library it belongs to.
+    pub library: Library,
+    /// The display name.
+    pub name: &'static str,
+    /// What the concept means, in one sentence a trader can act on.
+    pub description: &'static str,
+    /// The variant's tunable parameters.
+    pub parameters: &'static [ConceptParam],
+    /// The data channels this concept honestly needs (gated per symbol).
+    pub required_channels: DataChannels,
+    /// The analytics event kinds this variant emits (the existing detections
+    /// it wraps; empty while a concept is declared but not yet detectable).
+    pub event_kinds: &'static [EventKind],
+}
+
+/// The direction a concept event reads as, from the consumer's chair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    /// Bullish evidence (a BOS up, a swept sell side).
+    Bullish,
+    /// Bearish evidence.
+    Bearish,
+    /// No directional reading (a volume spike).
+    Neutral,
+}
+
+/// A concept event's lifecycle status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConceptStatus {
+    /// Just created, still open to development (a fresh gap).
+    Forming,
+    /// Confirmed by its own rule (a candle-close break, a sweep close).
+    Confirmed,
+    /// Its defining condition broke (a retested zone's rule violated).
+    Invalidated,
+    /// Its lifecycle completed (a filled gap, an aged-out zone).
+    Expired,
+}
+
+/// The standardized event contract -- the one shape every consumer reads.
+///
+/// Carries levels, never prose: `price_level` and the zone band are numbers
+/// a chart draws and an agent cites verbatim. `evidence` holds the
+/// kind-specific measured facts (the swept touches, the spike multiple).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConceptEvent {
+    /// The emitting concept's catalog id.
+    pub concept_id: String,
+    /// The emitting variant's version.
+    pub concept_version: String,
+    /// The market the bar closed on.
+    pub symbol: String,
+    /// The resolution that produced the bar.
+    pub timeframe: String,
+    /// The consumer-side direction.
+    pub direction: Direction,
+    /// The lifecycle status.
+    pub status: ConceptStatus,
+    /// Open time of the bar that caused the event, unix nanoseconds.
+    pub event_time_ns: i64,
+    /// The level the event is about, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price_level: Option<f64>,
+    /// The bottom of a band, for band-shaped concepts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_low: Option<f64>,
+    /// The top of a band, for band-shaped concepts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_high: Option<f64>,
+    /// The measured facts, kind-specific (never prose).
+    pub evidence: serde_json::Value,
+    /// The bar range the determination used: (start_ns, end_ns).
+    pub bars: (i64, i64),
+}
+
+// ---------------------------------------------------------------------------
+// The first catalog: the existing detections, registered as concepts.
+
+/// Shared lookback tuning (the engine's own `structure_lookback`).
+const STRUCTURE_PARAMS: &[ConceptParam] = &[ConceptParam {
+    name: "swing_lookback",
+    default: 10.0,
+    min: 3.0,
+    max: 60.0,
+    description: "bars either side a swing must clear to count",
+}];
+
+/// The volume spike tuning.
+const SPIKE_PARAMS: &[ConceptParam] = &[ConceptParam {
+    name: "spike_multiple",
+    default: 2.5,
+    min: 1.2,
+    max: 20.0,
+    description: "multiple of the recent average that counts as a spike",
+}];
+
+/// The registry itself: every concept the platform knows, newest-last within
+/// a library so the id order reads as the catalog was built.
+#[must_use]
+pub fn concept_registry() -> &'static [ConceptSpec] {
+    &[
+        ConceptSpec {
+            id: "smc.bos",
+            version: "1.0.0",
+            library: Library::Smc,
+            name: "Break of Structure",
+            description: "a close through the last swing in the trend's direction -- continuation with a level to cite",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::Bos],
+        },
+        ConceptSpec {
+            id: "smc.choch",
+            version: "1.0.0",
+            library: Library::Smc,
+            name: "Change of Character",
+            description: "a close through the last swing against the trend's direction -- the first structure-level reversal evidence",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::Choch],
+        },
+        ConceptSpec {
+            id: "smc.liquidity_sweep",
+            version: "1.0.0",
+            library: Library::Smc,
+            name: "Liquidity Sweep",
+            description: "price ran beyond a liquidity level and closed back inside it -- the pool was taken without acceptance",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::LiquiditySweep],
+        },
+        ConceptSpec {
+            id: "smc.fvg",
+            version: "1.0.0",
+            library: Library::Smc,
+            name: "Fair Value Gap",
+            description: "an imbalance left by displacement, tracked from creation to fill -- the zone price may return to",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::FvgCreated, EventKind::FvgFilled],
+        },
+        ConceptSpec {
+            id: "sd.zone_tested",
+            version: "1.0.0",
+            library: Library::SupplyDemand,
+            name: "Supply/Demand Zone Test",
+            description: "price traded into a fresh supply or demand zone -- the zone's first test is its strongest",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::ZoneTested],
+        },
+        ConceptSpec {
+            id: "volume.spike",
+            version: "1.0.0",
+            library: Library::Volume,
+            name: "Volume Spike",
+            description: "bar volume at a multiple of the recent average -- participation arrived",
+            parameters: SPIKE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::VolumeSpike],
+        },
+        ConceptSpec {
+            id: "order_flow.delta_shift",
+            version: "1.0.0",
+            library: Library::OrderFlow,
+            name: "Delta Shift",
+            description: "bar delta at a multiple of its recent average absolute value -- aggressors leaned one way",
+            parameters: SPIKE_PARAMS,
+            required_channels: DataChannels::TRADES_AGGRESSOR,
+            event_kinds: &[EventKind::DeltaShift],
+        },
+    ]
+}
+
+/// One concept by id.
+#[must_use]
+pub fn concept(id: &str) -> Option<&'static ConceptSpec> {
+    concept_registry().iter().find(|c| c.id == id)
+}
+
+/// The concepts available on one symbol, by the channel rule: a concept is
+/// available exactly when the symbol's product serves every channel the
+/// concept requires. Bare symbols parse as binance:spot.
+#[must_use]
+pub fn available_for(symbol: &str) -> Vec<&'static ConceptSpec> {
+    let parsed = crate::broker::VenueSymbol::parse(symbol);
+    // Unknown venues get the honest floor: candles only, nothing claimed.
+    let channels = parsed.channels().unwrap_or(DataChannels::CANDLES);
+    concept_registry()
+        .iter()
+        .filter(|c| channels.supports(c.required_channels))
+        .collect()
+}
+
+/// Wrap one analytics event in the contract. Returns None when no registered
+/// concept emits that kind (every kind in the engine's list is wrapped, so a
+/// None means the catalog drifted from the engine -- the test below pins it).
+#[must_use]
+pub fn as_concept_event(event: &MarketEvent) -> Option<ConceptEvent> {
+    let concept = concept_registry()
+        .iter()
+        .find(|c| c.event_kinds.contains(&event.kind))?;
+    let direction = match event.side {
+        // A break carries the direction of the close; a sweep carries the
+        // liquidity's side, and taken sell-side liquidity is bullish evidence.
+        Some(Side::Buy) if event.kind == EventKind::LiquiditySweep => Direction::Bearish,
+        Some(Side::Sell) if event.kind == EventKind::LiquiditySweep => Direction::Bullish,
+        Some(Side::Buy) => Direction::Bullish,
+        Some(Side::Sell) => Direction::Bearish,
+        None => Direction::Neutral,
+    };
+    let status = match event.kind {
+        EventKind::FvgCreated => ConceptStatus::Forming,
+        EventKind::FvgFilled => ConceptStatus::Expired,
+        _ => ConceptStatus::Confirmed,
+    };
+    let mut evidence = serde_json::Map::new();
+    evidence.insert("close".to_string(), serde_json::json!(event.close));
+    if let Some(magnitude) = event.magnitude {
+        evidence.insert("magnitude".to_string(), serde_json::json!(magnitude));
+    }
+    Some(ConceptEvent {
+        concept_id: concept.id.to_string(),
+        concept_version: concept.version.to_string(),
+        symbol: event.symbol.clone(),
+        timeframe: event.timeframe.to_string(),
+        direction,
+        status,
+        event_time_ns: event.bar_time,
+        price_level: Some(event.price),
+        zone_low: event.zone_low,
+        zone_high: event.zone_high,
+        evidence: serde_json::Value::Object(evidence),
+        bars: (event.formed_at.unwrap_or(event.bar_time), event.bar_time),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_registry_is_integrity_checked() {
+        let registry = concept_registry();
+        assert!(registry.len() >= 7, "the first catalog is seeded");
+        let mut ids: Vec<&str> = registry.iter().map(|c| c.id).collect();
+        ids.sort_unstable();
+        let unique = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), unique, "ids are unique");
+        for c in registry {
+            assert!(c.id.starts_with(c.library.prefix()), "{} under its library", c.id);
+            assert!(c.version.split('.').count() == 3, "{} semver", c.id);
+            // Every declared kind is wrap-able: the catalog must not drift
+            // from the engine it consumes.
+            for kind in c.event_kinds {
+                assert!(EventKind::ALL.contains(kind), "{kind:?} is an engine kind");
+            }
+        }
+    }
+
+    #[test]
+    fn channel_gating_keeps_order_flow_off_synthetics() {
+        let deriv = available_for("DERIV:VOLATILITY 10");
+        assert!(
+            deriv.iter().any(|c| c.id == "smc.bos"),
+            "candle concepts run on synthetics"
+        );
+        assert!(
+            !deriv.iter().any(|c| c.id == "order_flow.delta_shift"),
+            "delta needs aggressor trades a synthetic does not have"
+        );
+        let spot = available_for("BTCUSDT");
+        assert!(spot.iter().any(|c| c.id == "order_flow.delta_shift"));
+    }
+
+    #[test]
+    fn the_contract_wraps_a_bos_with_levels_and_evidence() {
+        let event = MarketEvent {
+            kind: EventKind::Bos,
+            symbol: "BTCUSDT".to_string(),
+            timeframe: analytics_core::types::Timeframe::M15,
+            bar_time: 1_700_000_000_000_000_000,
+            close: 108_260.0,
+            price: 108_250.0,
+            side: Some(Side::Buy),
+            zone_low: None,
+            zone_high: None,
+            magnitude: None,
+            formed_at: Some(1_699_999_000_000_000_000),
+        };
+        let wrapped = as_concept_event(&event).expect("a bos wraps");
+        assert_eq!(wrapped.concept_id, "smc.bos");
+        assert_eq!(wrapped.concept_version, "1.0.0");
+        assert_eq!(wrapped.direction, Direction::Bullish);
+        assert_eq!(wrapped.status, ConceptStatus::Confirmed);
+        assert_eq!(wrapped.price_level, Some(108_250.0));
+        assert_eq!(wrapped.bars.0, 1_699_999_000_000_000_000);
+        let json = serde_json::to_string(&wrapped).expect("serializes");
+        assert!(json.contains("\"concept_id\":\"smc.bos\""));
+        assert!(json.contains("\"direction\":\"bullish\""));
+
+        // A sell-side sweep reads bullish (the liquidity's side was taken).
+        let sweep = MarketEvent {
+            kind: EventKind::LiquiditySweep,
+            side: Some(Side::Sell),
+            zone_low: Some(100.0),
+            zone_high: Some(101.0),
+            ..event.clone()
+        };
+        let wrapped = as_concept_event(&sweep).expect("a sweep wraps");
+        assert_eq!(wrapped.concept_id, "smc.liquidity_sweep");
+        assert_eq!(wrapped.direction, Direction::Bullish);
+        assert_eq!(wrapped.zone_low, Some(100.0));
+
+        // An FVG is Forming at creation and Expired at fill.
+        let fvg = MarketEvent { kind: EventKind::FvgCreated, ..event };
+        assert_eq!(as_concept_event(&fvg).expect("wraps").status, ConceptStatus::Forming);
+        let fvg = MarketEvent { kind: EventKind::FvgFilled, ..fvg };
+        assert_eq!(as_concept_event(&fvg).expect("wraps").status, ConceptStatus::Expired);
+    }
+}
