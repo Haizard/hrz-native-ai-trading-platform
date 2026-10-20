@@ -30,6 +30,10 @@ pub struct Composition {
     pub version: String,
     /// The resolution it evaluates on (`15m`).
     pub timeframe: String,
+    /// The market it trades, when it is meant to run as a bot (`BTCUSDT`,
+    /// `DERIV:VOLATILITY 75`). Absent for analysis-only compositions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub market: Option<String>,
     /// Which side it trades.
     pub side: CompositionSide,
     /// The condition tree.
@@ -295,17 +299,19 @@ struct LeafState {
     level: Option<f64>,
 }
 
-/// The evaluator: state over the event stream, edge-triggered.
-pub struct Composer<'a> {
-    doc: &'a Composition,
+/// The evaluator: state over the event stream, edge-triggered. Owns its
+/// document: a bot's composer lives as long as the bot does.
+#[derive(Debug, Clone)]
+pub struct Composer {
+    doc: Composition,
     leaves: Vec<(String, LeafState)>,
     fired: bool,
 }
 
-impl<'a> Composer<'a> {
-    /// Bind to a document.
+impl Composer {
+    /// Bind to a document, by value (the evaluator outlives the caller's copy).
     #[must_use]
-    pub fn new(doc: &'a Composition) -> Self {
+    pub fn new(doc: Composition) -> Self {
         let mut leaves = Vec::new();
         collect_leaves(&doc.conditions, &mut leaves);
         Self {
@@ -313,6 +319,12 @@ impl<'a> Composer<'a> {
             leaves: leaves.into_iter().map(|id| (id, LeafState::default())).collect(),
             fired: false,
         }
+    }
+
+    /// The document this composer evaluates.
+    #[must_use]
+    pub fn document(&self) -> &Composition {
+        &self.doc
     }
 
     /// Feed the events of one bar (bar index `bar`), then evaluate. Returns
@@ -543,7 +555,7 @@ mod tests {
             direction: DirectionReq::Bullish,
             lookback_bars: Some(3),
         });
-        let mut composer = Composer::new(&document);
+        let mut composer = Composer::new(document.clone());
         assert!(composer.on_bar(0, &[event("smc.bos", Direction::Bullish, 100.0)]).is_some());
         // Edge-triggered: the same bar must not fire twice.
         assert!(composer.on_bar(0, &[]).is_none());
@@ -580,15 +592,15 @@ mod tests {
             max_bars: 3,
         });
         // Wrong order: bos before the sweep never fires.
-        let mut composer = Composer::new(&document);
+        let mut composer = Composer::new(document.clone());
         composer.on_bar(0, &[event("smc.bos", Direction::Bullish, 100.0)]);
         assert!(composer.on_bar(1, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)]).is_none());
         // Right order inside the window: sweep at 0, bos at 2 (gap 2 <= 3).
-        let mut composer = Composer::new(&document);
+        let mut composer = Composer::new(document.clone());
         composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)]);
         assert!(composer.on_bar(2, &[event("smc.bos", Direction::Bullish, 100.0)]).is_some());
         // Right order but too wide: gap 4 > 3.
-        let mut composer = Composer::new(&document);
+        let mut composer = Composer::new(document.clone());
         composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)]);
         assert!(composer.on_bar(4, &[event("smc.bos", Direction::Bullish, 100.0)]).is_none());
     }
@@ -611,7 +623,7 @@ mod tests {
                 },
             ],
         });
-        let mut composer = Composer::new(&document);
+        let mut composer = Composer::new(document.clone());
         composer.on_bar(0, &[event("volume.spike", Direction::Neutral, 100.0)]);
         // The spike vetoes within its lookback.
         assert!(composer.on_bar(1, &[event("smc.bos", Direction::Bullish, 100.0)]).is_none());
@@ -643,7 +655,7 @@ mod tests {
             ],
             max_bars: 5,
         });
-        let mut composer = Composer::new(&document);
+        let mut composer = Composer::new(document.clone());
         composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 98.5)]);
         let signal = composer
             .on_bar(1, &[event("smc.bos", Direction::Bullish, 101.0)])

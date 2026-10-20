@@ -404,6 +404,51 @@ pub async fn create(
     ApiJson(request): ApiJson<CreateStrategyRequest>,
 ) -> Result<(StatusCode, Json<StrategyResponse>), ApiError> {
     let database = database(&state)?;
+
+    // Two strategy forms, one table (the shape decides): a Concept-Registry
+    // composition carries `conditions` and validates against the registry;
+    // everything else is the DSL document.
+    if request.source.contains("\"conditions\"") {
+        let composition: market_data::composer::Composition =
+            serde_json::from_str(&request.source).map_err(|e| {
+                ApiError::bad_request(
+                    "COMPOSITION_PARSE_FAILED",
+                    format!("the composition could not be parsed: {e}"),
+                )
+            })?;
+        if let Err(errors) = market_data::composer::validate(&composition) {
+            return Err(ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "COMPOSITION_INVALID",
+                errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
+            ));
+        }
+        let created_by = request.created_by.unwrap_or_else(|| "developer_sdk".into());
+        let stored = serde_json::to_value(&composition)
+            .map_err(|e| ApiError::internal(format!("could not serialize the composition: {e}")))?;
+        let id = db::strategies::create_strategy(
+            database.pool(),
+            user.user_id,
+            &composition.name,
+            &composition.version,
+            &stored,
+            &created_by,
+        )
+        .await?;
+        return Ok((
+            StatusCode::CREATED,
+            Json(StrategyResponse {
+                id: id.to_string(),
+                name: composition.name,
+                version: composition.version,
+                created_by,
+                created_at: crate::now_ns(),
+                document: stored,
+                supersedes: None,
+            }),
+        ));
+    }
+
     let validated = validate_source(&request.source)?;
     let document = validated.document();
 

@@ -40,7 +40,7 @@
 //! surfaced as a [`BotAlert`](crate::paper::BotAlert) on the transition, so a
 //! strategy failing 200 times is a notification rather than a quiet nothing.
 
-use analytics_core::types::Timeframe;
+use analytics_core::types::{Candle, Timeframe};
 use sandbox::{SandboxError, SandboxedStrategy};
 use strategy_dsl::StrategyDocument;
 use strategy_runtime::context::MarketContext;
@@ -63,6 +63,23 @@ pub(crate) struct Shape {
 }
 
 impl Shape {
+    /// The ladder for a composition: one declared timeframe (the
+    /// composition's own), deciding on it. The name is fixed so the
+    /// strategy's context lookup has exactly one key to miss.
+    pub(crate) fn for_composition(document: &market_data::composer::Composition) -> Self {
+        let tf: Timeframe = document
+            .timeframe
+            .parse()
+            .expect("the composition validated before the bot was created");
+        let mut timeframes = std::collections::BTreeMap::new();
+        timeframes.insert("composition".to_string(), tf);
+        Self {
+            ladder: RollingLadder::new(&timeframes),
+            decision_name: "composition".to_string(),
+            decision_resolution: tf,
+        }
+    }
+
     pub(crate) fn of(document: &StrategyDocument) -> Self {
         let (decision_name, decision_resolution) = document.decision_timeframe().map_or_else(
             || ("5m".to_string(), Timeframe::M5),
@@ -89,6 +106,8 @@ pub enum DecisionPath {
     /// `strategy-runtime` compiled to wasm32 and driven inside `sandbox`, under
     /// fuel, memory and wall-clock ceilings.
     Sandboxed,
+    /// A Concept-Registry composition evaluated over the event stream (P3b).
+    Composer,
 }
 
 impl DecisionPath {
@@ -98,6 +117,7 @@ impl DecisionPath {
         match self {
             Self::Native => "native",
             Self::Sandboxed => "sandboxed",
+            Self::Composer => "composer",
         }
     }
 }
@@ -122,6 +142,9 @@ pub enum Decisions {
     Native(StrategyEngine),
     /// The interpreter runs inside the sandbox.
     Sandboxed(Box<SandboxedStrategy>),
+    /// A Concept-Registry composition evaluated over the event stream (P3b):
+    /// the bot's decisions come from the composer, not from a DSL document.
+    Composer(ComposerStrategy),
 }
 
 impl Decisions {
@@ -144,6 +167,7 @@ impl Decisions {
         match self {
             Self::Native(_) => DecisionPath::Native,
             Self::Sandboxed(_) => DecisionPath::Sandboxed,
+            Self::Composer(_) => DecisionPath::Composer,
         }
     }
 
@@ -154,7 +178,7 @@ impl Decisions {
     #[must_use]
     pub fn sandbox_error_count(&self) -> usize {
         match self {
-            Self::Native(_) => 0,
+            Self::Native(_) | Self::Composer(_) => 0,
             Self::Sandboxed(strategy) => strategy.errors().len(),
         }
     }
@@ -163,7 +187,7 @@ impl Decisions {
     #[must_use]
     pub fn last_sandbox_error(&self) -> Option<String> {
         match self {
-            Self::Native(_) => None,
+            Self::Native(_) | Self::Composer(_) => None,
             Self::Sandboxed(strategy) => strategy.errors().last().map(ToString::to_string),
         }
     }
@@ -172,7 +196,7 @@ impl Decisions {
     #[must_use]
     pub fn sandbox_denials(&self) -> &[String] {
         match self {
-            Self::Native(_) => &[],
+            Self::Native(_) | Self::Composer(_) => &[],
             Self::Sandboxed(strategy) => strategy.denials(),
         }
     }
@@ -181,7 +205,7 @@ impl Decisions {
     #[must_use]
     pub fn sandbox_usage(&self) -> Option<sandbox::ResourceUsage> {
         match self {
-            Self::Native(_) => None,
+            Self::Native(_) | Self::Composer(_) => None,
             Self::Sandboxed(strategy) => Some(strategy.usage()),
         }
     }
@@ -190,9 +214,100 @@ impl Decisions {
     #[must_use]
     pub fn sandbox_errors(&self) -> &[SandboxError] {
         match self {
-            Self::Native(_) => &[],
+            Self::Native(_) | Self::Composer(_) => &[],
             Self::Sandboxed(strategy) => strategy.errors(),
         }
+    }
+}
+
+/// A composition-backed strategy: the Concept Registry's declarative
+/// documents driving a bot through the same `Signal` contract every other
+/// path speaks.
+#[derive(Debug)]
+pub struct ComposerStrategy {
+    composer: market_data::composer::Composer,
+    symbol: String,
+    /// The monotonic decision-bar counter (the composer's lookback clock).
+    bar: u64,
+    /// The trailing window detection reads (bounded like the runtime's).
+    history: Vec<Candle>,
+    config: analytics_core::events::EventConfig,
+}
+
+impl ComposerStrategy {
+    /// Bind a validated composition to a market.
+    #[must_use]
+    pub fn new(document: market_data::composer::Composition, symbol: &str) -> Self {
+        Self {
+            composer: market_data::composer::Composer::new(document),
+            symbol: symbol.to_string(),
+            bar: 0,
+            history: Vec::new(),
+            config: analytics_core::events::EventConfig::default(),
+        }
+    }
+
+    /// The composition this strategy runs.
+    #[must_use]
+    pub fn document(&self) -> &market_data::composer::Composition {
+        self.composer.document()
+    }
+}
+
+impl ComposerStrategy {
+    fn on_candle(&mut self, ctx: &MarketContext) -> Option<Signal> {
+        use strategy_dsl::Direction;
+        use strategy_runtime::EnterSignal;
+
+        let view = ctx.timeframes.get(&ctx.decision_timeframe)?;
+        self.history.push(view.candle.clone());
+        // The detection window: the engine's structure lookback needs ~2x
+        // plus margin; 240 bars bounds it like the runtime's own ladder.
+        if self.history.len() > 240 {
+            self.history.drain(..self.history.len() - 240);
+        }
+        let raw = analytics_core::events::detect_events(&self.history, &self.symbol, &self.config);
+        let events: Vec<_> = raw
+            .iter()
+            .filter(|e| e.bar_time == view.candle.open_time)
+            .filter_map(market_data::concepts::as_concept_event)
+            .collect();
+        let fired = self.composer.on_bar(self.bar as usize, &events);
+        self.bar += 1;
+        let fired = fired?;
+
+        // Protection is mandatory in this world (EnterSignal carries a stop,
+        // not an Option): an entry whose stop cannot be resolved is not an
+        // entry -- unprotected is not a signal, it is a refusal.
+        let stop_price = match &self.composer.document().risk.stop {
+            market_data::composer::StopKind::Structure => fired.stop_level?,
+            market_data::composer::StopKind::AtrMultiple { multiple } => {
+                let atr = analytics_core::indicators::atr(&self.history, 14)
+                    .last()
+                    .copied()
+                    .flatten()?;
+                if fired.long {
+                    view.candle.close - multiple * atr
+                } else {
+                    view.candle.close + multiple * atr
+                }
+            }
+        };
+        let max_risk_pct = match &self.composer.document().risk.sizing {
+            market_data::composer::SizeKind::FixedFractional { percent } => *percent,
+            // A fixed-stake composition reads as a 1% risk budget in the
+            // DSL's equity-fraction world; the venue-level stake comes from
+            // the order's quantity for contract adapters.
+            market_data::composer::SizeKind::Fixed { .. } => 1.0,
+        };
+        Some(Signal::Enter(EnterSignal {
+            direction: if fired.long { Direction::Long } else { Direction::Short },
+            reference_price: view.candle.close,
+            stop_price,
+            take_profit_price: None,
+            max_risk_pct,
+            reasons: fired.evidence,
+        }))
     }
 }
 
@@ -201,6 +316,7 @@ impl Strategy for Decisions {
         match self {
             Self::Native(engine) => engine.on_candle(ctx),
             Self::Sandboxed(strategy) => strategy.on_candle(ctx),
+            Self::Composer(strategy) => strategy.on_candle(ctx),
         }
     }
 }

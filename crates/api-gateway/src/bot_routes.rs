@@ -317,6 +317,23 @@ pub async fn create(
 
     let source = serde_json::to_string(&strategy.document)
         .map_err(|e| ApiError::internal(format!("the stored document is not readable: {e}")))?;
+
+    // Two strategy forms, one route: a Concept-Registry composition (has
+    // `conditions`) drives a Composer-backed bot; everything else is the DSL
+    // document it has always been. The kind is decided by the document's
+    // shape, not by a new column.
+    if source.contains("\"conditions\"") {
+        let composition: market_data::composer::Composition =
+            serde_json::from_str(&source).map_err(|e| {
+                ApiError::bad_request(
+                    "COMPOSITION_INVALID",
+                    format!("the stored document looks like a composition but does not parse: {e}"),
+                )
+            })?;
+        return start_composition_bot(&state, database, &user, &request, strategy.id, composition)
+            .await;
+    }
+
     let validated = strategy_dsl::parse_and_validate(&source).map_err(ApiError::from)?;
     let document = validated.document().clone();
 
@@ -452,6 +469,100 @@ async fn start_paper(
             venue: request.venue.clone(),
             // A paper bot trades no account, and echoing the request's field
             // here would claim it does.
+            broker_account_id: None,
+            created_at: now_ns(),
+            supervised_here: true,
+            activity: None,
+        }),
+    ))
+}
+
+/// Build and start a bot whose strategy is a Concept-Registry composition
+/// (P3b): validated against the registry, then the same bot machinery every
+/// other strategy gets -- risk engine, supervision, track record. Paper only
+/// for now: a live composition bot earns its venue proof the same way DSL
+/// bots do, and that gate is its own review.
+async fn start_composition_bot(
+    state: &AppState,
+    database: &db::Database,
+    user: &UserContext,
+    request: &CreateBotRequest,
+    strategy_id: Uuid,
+    composition: market_data::composer::Composition,
+) -> Result<(StatusCode, Json<BotResponse>), ApiError> {
+    if request.mode != "paper" {
+        return Err(ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "COMPOSITION_PAPER_ONLY",
+            "composition bots start paper: prove the strategy here, then the live gate is a deliberate second step",
+        ));
+    }
+    let errors = market_data::composer::validate(&composition);
+    if let Err(errors) = errors {
+        return Err(ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "COMPOSITION_INVALID",
+            errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
+        ));
+    }
+    let symbol = composition.market.clone().ok_or_else(|| {
+        ApiError::coded(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "COMPOSITION_NO_MARKET",
+            "a bot needs the composition's `market` (analysis-only compositions backtest instead)",
+        )
+    })?;
+    let symbol = symbol.to_uppercase();
+    let idempotency_key = checked_idempotency_key(request.idempotency_key.as_deref())?;
+
+    let limits = RiskLimits {
+        max_risk_pct: request.max_risk_pct.unwrap_or(1.0),
+        daily_loss_limit_r: request.daily_loss_limit_r.unwrap_or(3.0),
+        weekly_loss_limit_r: request.weekly_loss_limit_r.unwrap_or(15.0),
+        ..RiskLimits::default()
+    };
+
+    let (bot_id, created) = db::bots::create_bot_with_key(
+        database.pool(),
+        user.user_id,
+        strategy_id,
+        "paper",
+        request.venue.as_deref(),
+        idempotency_key.as_deref(),
+    )
+    .await?;
+    if !created {
+        return replay(state, database, user.user_id, bot_id).await;
+    }
+
+    let decisions = Decisions::Composer(trading_engine::decisions::ComposerStrategy::new(
+        composition.clone(),
+        &symbol,
+    ));
+    let bot = PaperBot::with_composition(
+        decisions,
+        &composition,
+        PaperConfig {
+            symbol: symbol.clone(),
+            limits,
+            fills: SimulatorConfig::default(),
+            rolling: strategy_runtime::RollingConfig::new(
+                strategy_runtime::RuntimeConfig::default().max_history,
+                strategy_runtime::RuntimeConfig::default().max_history,
+                Default::default(),
+            ),
+        },
+    );
+    state.bots.start(bot_id, user.user_id, database.clone(), bot);
+
+    Ok((
+        StatusCode::CREATED,
+        Json(BotResponse {
+            id: bot_id.to_string(),
+            strategy_id: strategy_id.to_string(),
+            mode: "paper".into(),
+            status: "running".into(),
+            venue: request.venue.clone(),
             broker_account_id: None,
             created_at: now_ns(),
             supervised_here: true,

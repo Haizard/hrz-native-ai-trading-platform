@@ -214,6 +214,17 @@ impl PaperBot {
         Self::from_shape(strategy, shape, config)
     }
 
+    /// A bot whose decisions come from a Concept-Registry composition (P3b):
+    /// the composer evaluates the event stream, the shape decides on the
+    /// composition's own timeframe.
+    pub fn with_composition(
+        strategy: Decisions,
+        document: &market_data::composer::Composition,
+        config: PaperConfig,
+    ) -> Self {
+        Self::from_shape(strategy, Shape::for_composition(document), config)
+    }
+
     fn from_shape(strategy: Decisions, shape: Shape, config: PaperConfig) -> Self {
         let (limits, clamp_note) = config.limits.clamped();
 

@@ -179,7 +179,7 @@ pub async fn backtest(
     // machine. The engine's own config is the default (the composition's
     // parameters ride the registry's defaults in v1).
     let config = analytics_core::events::EventConfig::default();
-    let mut composer = Composer::new(&request.document);
+    let mut composer = Composer::new(request.document.clone());
     let mut signals: Vec<market_data::composer::Signal> = Vec::new();
     let warmup = 22; // the structure lookback's own minimum window
     for bar in warmup..candles.len() {

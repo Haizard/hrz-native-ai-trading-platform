@@ -278,6 +278,16 @@ impl<A: ExchangeAdapter> LiveBot<A> {
         self.strategy.sandbox_errors()
     }
 
+    /// A live bot whose decisions come from a Concept-Registry composition.
+    pub fn with_composition(
+        strategy: Decisions,
+        document: &market_data::composer::Composition,
+        adapter: A,
+        config: LiveConfig,
+    ) -> Self {
+        Self::from_shape(strategy, adapter, Shape::for_composition(document), config)
+    }
+
     fn from_shape(strategy: Decisions, adapter: A, shape: Shape, config: LiveConfig) -> Self {
         Self {
             symbol: config.symbol,
