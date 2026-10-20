@@ -63,6 +63,34 @@ pub enum EventKind {
     VolumeSpike,
     /// Bar delta exceeded a multiple of the recent average absolute delta.
     DeltaShift,
+    /// Hammer shape (long lower wick, small top body) at a local low.
+    Hammer,
+    /// The hammer shape at a local high: the same candle, the opposite read.
+    HangingMan,
+    /// Long upper wick, small bottom body, at a local low.
+    InvertedHammer,
+    /// The inverted-hammer shape at a local high.
+    ShootingStar,
+    /// Open and close nearly equal (the bar could not decide).
+    Doji,
+    /// A full-body bar with no wicks worth naming, in its close's direction.
+    Marubozu,
+    /// This bar's body engulfs the previous bar's body.
+    Engulfing,
+    /// This bar's body sits inside the previous bar's body.
+    Harami,
+    /// Down bar, small indecision bar, up bar closing past the first's midpoint.
+    MorningStar,
+    /// Up bar, small indecision bar, down bar closing past the first's midpoint.
+    EveningStar,
+    /// Down bar then an up bar opening lower and closing past the midpoint.
+    PiercingLine,
+    /// Up bar then a down bar opening higher and closing past the midpoint.
+    DarkCloudCover,
+    /// Three consecutive strong up bars closing near their highs.
+    ThreeWhiteSoldiers,
+    /// Three consecutive strong down bars closing near their lows.
+    ThreeBlackCrows,
 }
 
 impl EventKind {
@@ -78,11 +106,25 @@ impl EventKind {
             Self::ZoneTested => "zone_tested",
             Self::VolumeSpike => "volume_spike",
             Self::DeltaShift => "delta_shift",
+            Self::Hammer => "hammer",
+            Self::HangingMan => "hanging_man",
+            Self::InvertedHammer => "inverted_hammer",
+            Self::ShootingStar => "shooting_star",
+            Self::Doji => "doji",
+            Self::Marubozu => "marubozu",
+            Self::Engulfing => "engulfing",
+            Self::Harami => "harami",
+            Self::MorningStar => "morning_star",
+            Self::EveningStar => "evening_star",
+            Self::PiercingLine => "piercing_line",
+            Self::DarkCloudCover => "dark_cloud_cover",
+            Self::ThreeWhiteSoldiers => "three_white_soldiers",
+            Self::ThreeBlackCrows => "three_black_crows",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 22] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -91,6 +133,20 @@ impl EventKind {
         Self::ZoneTested,
         Self::VolumeSpike,
         Self::DeltaShift,
+        Self::Hammer,
+        Self::HangingMan,
+        Self::InvertedHammer,
+        Self::ShootingStar,
+        Self::Doji,
+        Self::Marubozu,
+        Self::Engulfing,
+        Self::Harami,
+        Self::MorningStar,
+        Self::EveningStar,
+        Self::PiercingLine,
+        Self::DarkCloudCover,
+        Self::ThreeWhiteSoldiers,
+        Self::ThreeBlackCrows,
     ];
 }
 
@@ -230,6 +286,154 @@ impl EventConfig {
 ///   to fresh zones that the last bar's range reaches into.
 /// * **Volume spike / delta shift** -- the last bar against the average of
 ///   [`EventConfig::spike_average_bars`] bars before it.
+/// * **Candlestick patterns** -- the shape + trend-context pass
+///   ([`detect_patterns`]), merged into the same stream before the sort.
+
+/// The candlestick-pattern pass: shape rules plus local trend context.
+///
+/// Patterns are bar-close facts about one to three bars; every rule here is
+/// stated in ratios (wick to body, body to range) so one rule means the same
+/// thing on BTCUSDT and on a synthetic index at 4,800. Reversal patterns
+/// carry their direction from the trend *before* the pattern: a hammer and a
+/// hanging man are the same candle, and the only honest way to tell them
+/// apart is where the market came from.
+pub fn detect_patterns(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
+    let mut out = Vec::new();
+    // Six bars of trend context plus the pattern bar (three-bar shapes read
+    // further back, but they also need the trend window).
+    if candles.len() < 7 {
+        return out;
+    }
+    let n = candles.len() - 1;
+    let last = &candles[n];
+    let (o, h, l, c) = (last.open, last.high, last.low, last.close);
+    let range = h - l;
+    if range <= 0.0 {
+        return out;
+    }
+    let body = (c - o).abs();
+    let upper = h - o.max(c);
+    let lower = o.min(c) - l;
+    let bullish = c >= o;
+    let bar_time = last.open_time;
+    let tf = last.timeframe;
+
+    // The local trend: the slope of the closes before the pattern bar.
+    // Reversal reads need it; continuation reads ignore it.
+    let prior: Vec<f64> = candles[n.saturating_sub(6)..n].iter().map(|k| k.close).collect();
+    let prior_trend_down = prior.len() >= 4
+        && prior.windows(2).filter(|w| w[1] < w[0]).count() as f64 / (prior.len() - 1) as f64 > 0.6;
+    let prior_trend_up = prior.len() >= 4
+        && prior.windows(2).filter(|w| w[1] > w[0]).count() as f64 / (prior.len() - 1) as f64 > 0.6;
+
+    let mut push = |kind: EventKind, side: Option<Side>| {
+        out.push(MarketEvent {
+            kind,
+            symbol: symbol.to_string(),
+            timeframe: tf,
+            bar_time,
+            close: c,
+            price: c,
+            side,
+            zone_low: None,
+            zone_high: None,
+            magnitude: None,
+            formed_at: None,
+        });
+    };
+
+    // ---- single-bar shapes ----
+    // Doji: the body could not decide (a tenth of the range or less).
+    if body <= range * 0.1 {
+        push(EventKind::Doji, None);
+    }
+    // Marubozu: the whole bar is body, in its close's direction.
+    if body >= range * 0.9 {
+        push(EventKind::Marubozu, Some(if bullish { Side::Buy } else { Side::Sell }));
+    }
+    // Hammer / hanging man: long lower wick, small body near the top.
+    if lower >= body * 2.0 && upper <= body.max(range * 0.05) && body > 0.0 {
+        if prior_trend_down {
+            push(EventKind::Hammer, Some(Side::Buy));
+        } else if prior_trend_up {
+            push(EventKind::HangingMan, Some(Side::Sell));
+        }
+    }
+    // Inverted hammer / shooting star: long upper wick, small body near the low.
+    if upper >= body * 2.0 && lower <= body.max(range * 0.05) && body > 0.0 {
+        if prior_trend_down {
+            push(EventKind::InvertedHammer, Some(Side::Buy));
+        } else if prior_trend_up {
+            push(EventKind::ShootingStar, Some(Side::Sell));
+        }
+    }
+
+    // ---- two-bar shapes ----
+    if n >= 1 {
+        let prev = &candles[n - 1];
+        let (po, pc) = (prev.open, prev.close);
+        let pbody = (pc - po).abs();
+        let pbull = pc >= po;
+        if pbody > 0.0 && body > 0.0 {
+            // Engulfing: this body covers the previous body entirely.
+            let covers = o.min(c) <= po.min(pc) && o.max(c) >= po.max(pc);
+            if covers && bullish != pbull && body > pbody {
+                push(EventKind::Engulfing, Some(if bullish { Side::Buy } else { Side::Sell }));
+            }
+            // Harami: this body sits inside the previous body; the read is
+            // the pause's reversal against the parent bar's own direction.
+            let inside = o.min(c) >= po.min(pc) && o.max(c) <= po.max(pc);
+            if inside && bullish != pbull {
+                push(EventKind::Harami, Some(if pbull { Side::Sell } else { Side::Buy }));
+            }
+            // Piercing line / dark cloud cover: open beyond, close past the midpoint.
+            let pmid = (po + pc) / 2.0;
+            if !pbull && bullish && o < pc && c > pmid && c < po {
+                push(EventKind::PiercingLine, Some(Side::Buy));
+            }
+            if pbull && !bullish && o > pc && c < pmid && c > po {
+                push(EventKind::DarkCloudCover, Some(Side::Sell));
+            }
+        }
+    }
+
+    // ---- three-bar shapes ----
+    if n >= 2 {
+        let a = &candles[n - 2];
+        let b = &candles[n - 1];
+        let (abody, bbody) = ((a.close - a.open).abs(), (b.close - b.open).abs());
+        let arange = a.high - a.low;
+        // Morning / evening star: strong first bar, small middle, strong close
+        // back past the first bar's midpoint.
+        if abody > arange * 0.5 && bbody <= abody * 0.4 && body > arange * 0.5 {
+            let amid = (a.open + a.close) / 2.0;
+            if a.close < a.open && bullish && c > amid {
+                push(EventKind::MorningStar, Some(Side::Buy));
+            }
+            if a.close > a.open && !bullish && c < amid {
+                push(EventKind::EveningStar, Some(Side::Sell));
+            }
+        }
+        // Three soldiers / crows: three consecutive strong bars, each closing
+        // further in its direction, each near its extreme.
+        let strong = |k: &Candle, up: bool| {
+            let r = k.high - k.low;
+            r > 0.0
+                && (k.close - k.open).abs() >= r * 0.6
+                && if up { k.close > k.open && k.close >= k.high - r * 0.2 } else { k.close < k.open && k.close <= k.low + r * 0.2 }
+        };
+        if strong(a, true) && strong(b, true) && strong(last, true) && b.close > a.close && c > b.close {
+            push(EventKind::ThreeWhiteSoldiers, Some(Side::Buy));
+        }
+        if strong(a, false) && strong(b, false) && strong(last, false) && b.close < a.close && c < b.close {
+            push(EventKind::ThreeBlackCrows, Some(Side::Sell));
+        }
+    }
+
+    out
+}
+
+/// Detect every event the window's newest closed bar produced.
 #[must_use]
 pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> Vec<MarketEvent> {
     let config = config.sanitised();
@@ -495,6 +699,11 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
         }
     }
 
+    // The pattern pass rides the same stream: shape + trend context on the
+    // newest bar, merged before the deterministic sort so live and replayed
+    // windows order identically.
+    events.extend(detect_patterns(candles, symbol));
+
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
     // the live loop did, or consumers cannot diff the two.
@@ -528,6 +737,164 @@ pub fn replay_events(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::*;
+
+    fn k(open: f64, high: f64, low: f64, close: f64) -> Candle {
+        Candle {
+            symbol: "T".to_string(),
+            timeframe: crate::types::Timeframe::M15,
+            open_time: 0,
+            open,
+            high,
+            low,
+            close,
+            volume: 1.0,
+            buy_volume: 0.5,
+            sell_volume: 0.5,
+        }
+    }
+
+    fn series(mut ks: Vec<Candle>) -> Vec<Candle> {
+        for (i, k) in ks.iter_mut().enumerate() {
+            k.open_time = i as i64 * 900_000_000_000;
+        }
+        ks
+    }
+
+    fn kinds(events: &[MarketEvent]) -> Vec<EventKind> {
+        events.iter().map(|e| e.kind).collect()
+    }
+
+    // A downtrend tail (six declining closes) for reversal-context tests.
+    fn downtrend() -> Vec<Candle> {
+        (0..6)
+            .map(|i| {
+                let c = 100.0 - i as f64;
+                k(c + 0.4, c + 0.6, c - 0.4, c)
+            })
+            .collect()
+    }
+
+    fn uptrend() -> Vec<Candle> {
+        (0..6)
+            .map(|i| {
+                let c = 100.0 + i as f64;
+                k(c - 0.4, c + 0.4, c - 0.6, c)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_hammer_needs_the_shape_and_the_downtrend() {
+        // Long lower wick, small top body, after a down move.
+        let mut ks = downtrend();
+        ks.push(k(94.5, 95.0, 90.0, 94.8)); // lower wick 4.5, body 0.3, upper 0.2
+        let events = detect_patterns(&series(ks), "T");
+        assert!(kinds(&events).contains(&EventKind::Hammer), "{:?}", kinds(&events));
+        let hammer = events.iter().find(|e| e.kind == EventKind::Hammer).expect("hammer");
+        assert_eq!(hammer.side, Some(Side::Buy));
+
+        // The same shape after an UP move is a hanging man, not a hammer.
+        let mut ks = uptrend();
+        ks.push(k(105.5, 106.0, 101.0, 105.8));
+        let events = detect_patterns(&series(ks), "T");
+        assert!(kinds(&events).contains(&EventKind::HangingMan));
+        assert!(!kinds(&events).contains(&EventKind::Hammer));
+
+        // And the shape itself must hold: a lower wick under 2x the body
+        // (0.5 < 0.6) is no hammer.
+        let mut ks = downtrend();
+        ks.push(k(94.5, 95.0, 94.0, 94.8));
+        assert!(!kinds(&detect_patterns(&series(ks), "T")).contains(&EventKind::Hammer));
+    }
+
+    #[test]
+    fn a_shooting_star_needs_the_upper_wick_and_the_uptrend() {
+        let mut ks = uptrend();
+        ks.push(k(105.2, 110.0, 105.0, 105.5)); // upper 4.5, body 0.3, lower 0.2
+        let events = detect_patterns(&series(ks), "T");
+        assert!(kinds(&events).contains(&EventKind::ShootingStar));
+        // At a local low the same shape reads as an inverted hammer.
+        let mut ks = downtrend();
+        ks.push(k(94.2, 99.0, 94.0, 94.5));
+        assert!(kinds(&detect_patterns(&series(ks), "T")).contains(&EventKind::InvertedHammer));
+    }
+
+    #[test]
+    fn doji_and_marubozu_are_the_two_extremes() {
+        let mut ks = uptrend();
+        ks.push(k(106.0, 107.0, 105.0, 106.05)); // body 0.05 of a 2.0 range
+        assert!(kinds(&detect_patterns(&series(ks.clone()), "T")).contains(&EventKind::Doji));
+        let mut ks = uptrend();
+        ks.push(k(105.0, 107.0, 105.0, 106.95)); // nearly the whole range is body
+        let events = detect_patterns(&series(ks), "T");
+        assert!(kinds(&events).contains(&EventKind::Marubozu));
+        assert!(!kinds(&events).contains(&EventKind::Doji));
+    }
+
+    #[test]
+    fn an_engulfing_covers_the_prior_body_in_the_opposite_direction() {
+        let mut ks = downtrend();
+        ks.push(k(94.5, 94.6, 93.0, 93.4)); // down body 93.4..94.5
+        ks.push(k(93.2, 95.6, 93.1, 95.5)); // up body 93.2..95.5 covers it
+        let events = detect_patterns(&series(ks), "T");
+        let engulf = events.iter().find(|e| e.kind == EventKind::Engulfing).expect("engulfing");
+        assert_eq!(engulf.side, Some(Side::Buy));
+        // Same-direction bars never engulf.
+        let mut ks = downtrend();
+        ks.push(k(94.5, 94.6, 93.0, 93.4));
+        ks.push(k(94.4, 95.8, 93.2, 95.6)); // another up? no -- covers but both up
+        ks.pop();
+        ks.push(k(93.3, 94.0, 92.8, 92.9)); // a smaller down bar: no cover
+        assert!(!kinds(&detect_patterns(&series(ks), "T")).contains(&EventKind::Engulfing));
+    }
+
+    #[test]
+    fn stars_and_soldiers_need_their_three_bar_sequences() {
+        // Morning star: down, small, up past the midpoint.
+        let mut ks = downtrend();
+        ks.push(k(95.0, 95.2, 92.0, 92.4)); // strong down (mid 93.7)
+        ks.push(k(92.5, 92.8, 92.2, 92.6)); // small
+        ks.push(k(92.8, 95.0, 92.6, 94.6)); // up past 93.7
+        assert!(kinds(&detect_patterns(&series(ks), "T")).contains(&EventKind::MorningStar));
+
+        // Three black crows: three strong consecutive down bars.
+        let mut ks = uptrend();
+        ks.push(k(106.0, 106.2, 104.0, 104.2));
+        ks.push(k(104.1, 104.3, 102.0, 102.2));
+        ks.push(k(102.1, 102.3, 100.0, 100.2));
+        let events = detect_patterns(&series(ks), "T");
+        assert!(kinds(&events).contains(&EventKind::ThreeBlackCrows));
+        assert!(!kinds(&events).contains(&EventKind::ThreeWhiteSoldiers));
+    }
+
+    #[test]
+    fn piercing_and_dark_cloud_need_the_midpoint_reclaim() {
+        // Piercing: down bar, up bar opens lower and closes past the midpoint.
+        let mut ks = downtrend();
+        ks.push(k(95.0, 95.2, 92.0, 92.4)); // body 92.4..95.0, mid 93.7
+        ks.push(k(92.2, 94.4, 92.0, 94.0)); // open 92.2 < 92.4, close 94.0 > 93.7, < 95.0
+        assert!(kinds(&detect_patterns(&series(ks), "T")).contains(&EventKind::PiercingLine));
+        // Close short of the midpoint: no pattern.
+        let mut ks = downtrend();
+        ks.push(k(95.0, 95.2, 92.0, 92.4));
+        ks.push(k(92.2, 93.5, 92.0, 93.2));
+        assert!(!kinds(&detect_patterns(&series(ks), "T")).contains(&EventKind::PiercingLine));
+    }
+
+    #[test]
+    fn patterns_ride_the_engine_stream_too() {
+        // detect_events (the engine call) carries pattern kinds alongside the
+        // structure kinds -- one stream, every consumer.
+        let mut ks = downtrend();
+        ks.push(k(94.5, 95.0, 90.0, 94.8));
+        let events = detect_events(&series(ks), "T", &EventConfig::default());
+        assert!(kinds(&events).contains(&EventKind::Hammer));
+    }
 }
 
 #[cfg(test)]

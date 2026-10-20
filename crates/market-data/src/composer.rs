@@ -481,6 +481,7 @@ mod tests {
             name: "test".to_string(),
             version: "1.0.0".to_string(),
             timeframe: "15m".to_string(),
+            market: None,
             side: CompositionSide::Long,
             conditions,
             risk: RiskBlock {
