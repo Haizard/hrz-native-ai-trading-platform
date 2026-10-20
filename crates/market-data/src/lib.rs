@@ -32,6 +32,7 @@
 pub mod backfill;
 pub mod broker;
 pub mod deriv;
+pub mod deriv_trade;
 pub mod bus;
 pub mod candle_builder;
 pub mod error;
