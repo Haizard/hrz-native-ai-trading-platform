@@ -1623,6 +1623,130 @@ async fn write_fatal(
 /// ordering, the `expect_book` clock, the recorder task and the deliberate
 /// trailing `await` -- all four of which are load-bearing and were each a defect
 /// once. The body is identical; only the constructor differs.
+/// Bounded exponential backoff with jitter for feed reconnects: 1s, 2s, 4s,
+/// ... capped at 60s, ±25% jitter, and a reset after a connection that stayed
+/// healthy for five minutes (a long-lived stream is proof the venue is fine).
+struct FeedBackoff {
+    attempts: u32,
+}
+
+impl FeedBackoff {
+    fn new() -> Self {
+        Self { attempts: 0 }
+    }
+
+    fn next_delay(&mut self) -> std::time::Duration {
+        let base = 1u64
+            .checked_shl(self.attempts.min(6))
+            .unwrap_or(60)
+            .min(60);
+        self.attempts = self.attempts.saturating_add(1);
+        // ±25% jitter from the nanosecond clock -- no two feeds retry together.
+        let jitter_ns = (now_ns() as u64) % 500_000_000;
+        let jitter = (base * 1_000_000_000) / 4;
+        let delay_ns = base * 1_000_000_000 - jitter + jitter_ns % (jitter.max(1) * 2);
+        std::time::Duration::from_nanos(delay_ns.max(250_000_000))
+    }
+
+    fn note_healthy(&mut self, lived: std::time::Duration) {
+        if lived >= std::time::Duration::from_secs(300) {
+            self.attempts = 0;
+        }
+    }
+}
+
+/// One Deriv tick stream's lifetime: connect, seed the builders from the tick
+/// batch, and record every tick through the multi-timeframe builder -- closed
+/// bars to the bot lane and the chart lane, forming bars at the recorder's
+/// own one-second cadence. Quotes never touch the tape: a synthetic index has
+/// no traded volume, and the tape is where order flow lives or does not exist.
+/// Returns how long the stream lived (the backoff reads health from it) or
+/// the failure that ended it.
+/// Returns how long the stream lived paired with the failure that ended it
+/// (a stream never ends cleanly); the backoff reads health from the
+/// duration either way.
+async fn deriv_stream_once(
+    client: &market_data::deriv::DerivClient,
+    code: &str,
+    feed_symbol: &str,
+    symbol_bus: &Arc<market_data::MarketEventBus>,
+    history: &Arc<market_data::HistoryRegistry>,
+) -> (std::time::Duration, Result<(), String>) {
+    let started = std::time::Instant::now();
+    let result = async {
+        let (mut socket, batch, early) = client
+            .subscribe_ticks(code, 500)
+            .await
+            .map_err(|e| e.to_string())?;
+        // The builder keys its candles by symbol, and that key IS the
+        // registry's series key -- so candles carry the namespaced feed
+        // symbol, not the display name, or the window never finds them.
+        let mut builder = market_data::MultiTimeframeCandleBuilder::standard(feed_symbol);
+        let mut form_tick = tokio::time::interval(FORMING_PUBLISH_INTERVAL);
+        let seed = |trade: &analytics_core::types::Trade,
+                    builder: &mut market_data::MultiTimeframeCandleBuilder,
+                    history: &Arc<market_data::HistoryRegistry>,
+                    symbol_bus: &Arc<market_data::MarketEventBus>| {
+            for closed in builder.on_trade(trade) {
+                history.record_closed(&closed);
+                symbol_bus.publish_candle(closed.clone());
+                symbol_bus.publish_chart_candle(closed);
+            }
+            for forming in builder.forming() {
+                history.record_forming(forming);
+            }
+        };
+        for tick in batch.iter().chain(early.iter()) {
+            let trade = market_data::deriv::tick_as_builder_trade(tick, feed_symbol);
+            seed(&trade, &mut builder, history, symbol_bus);
+        }
+        loop {
+            tokio::select! {
+                tick = client.next_tick(&mut socket) => {
+                    let tick = tick.map_err(|e| e.to_string())?;
+                    let trade = market_data::deriv::tick_as_builder_trade(&tick, feed_symbol);
+                    seed(&trade, &mut builder, history, symbol_bus);
+                }
+                _ = form_tick.tick() => {
+                    for forming in builder.forming() {
+                        symbol_bus.publish_chart_candle(forming.clone());
+                    }
+                    if let Some(current) = builder.current_forming(analytics_core::Timeframe::M1) {
+                        symbol_bus.publish_chart_candle(current.clone());
+                    }
+                }
+            }
+        }
+    };
+    (started.elapsed(), result.await)
+}
+
+/// The Deriv feed's outer loop: reconnect after a failure with bounded
+/// exponential backoff and jitter, resetting the counter after a healthy run.
+/// The task is aborted by the feed supervisor on eviction -- no unsubscribe
+/// message is needed, the socket dies with it.
+async fn run_deriv_feed(
+    bus: Arc<market_data::MarketBusRegistry>,
+    supervisor: BotSupervisor,
+    symbol: &str,
+) -> Result<(), String> {
+    let code = market_data::deriv::code_for_namespaced(symbol)
+        .ok_or_else(|| format!("`{symbol}` is not a Deriv instrument this platform serves"))?;
+    let symbol_bus = bus.bus(symbol);
+    let history = supervisor.history();
+    let client = market_data::deriv::DerivClient::from_env();
+    let mut backoff = FeedBackoff::new();
+    loop {
+        let (lived, result) = deriv_stream_once(&client, code, symbol, &symbol_bus, &history).await;
+        backoff.note_healthy(lived);
+        if let Err(e) = result {
+            warn!(symbol, "the deriv tick stream ended after {:?}: {e}", lived);
+        }
+        let delay = backoff.next_delay();
+        tokio::time::sleep(delay).await;
+    }
+}
+
 async fn run_market_feed(
     mode: FeedMode,
     bus: Arc<market_data::MarketBusRegistry>,
@@ -1631,6 +1755,13 @@ async fn run_market_feed(
     last_used_ns: Arc<std::sync::atomic::AtomicI64>,
 ) -> Result<(), String> {
     use market_data::{BookBootstrap, Collector, CollectorConfig, ExchangeCollector};
+
+    // The multi-broker route: a namespaced Deriv symbol feeds from the Deriv
+    // tick stream (its own task shape -- no venue collector), everything else
+    // from the crypto venue collectors.
+    if market_data::deriv::code_for_namespaced(symbol).is_some() {
+        return run_deriv_feed(bus, supervisor, symbol).await;
+    }
 
     // Subscribed **before** the collector connects, for the same reason as the
     // candle watch below: a candle that closes in the gap between connecting and
@@ -1889,6 +2020,26 @@ async fn watch_feed_candles(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn the_backoff_grows_bounded_and_resets_on_health() {
+        let mut backoff = FeedBackoff::new();
+        let mut delays = Vec::new();
+        for _ in 0..10 {
+            delays.push(backoff.next_delay());
+        }
+        // Bounded: nothing exceeds 60s + jitter, and it is never aggressive.
+        assert!(delays.iter().all(|d| *d <= std::time::Duration::from_secs(75)));
+        assert!(delays.iter().all(|d| *d >= std::time::Duration::from_millis(250)));
+        // Trending up, loosely (jitter aside, later waits are not shorter by halves).
+        assert!(delays[1] > delays[0] / 2);
+        // A healthy five-minute stream clears the counter.
+        backoff.note_healthy(std::time::Duration::from_secs(301));
+        let after = backoff.next_delay();
+        assert!(after <= std::time::Duration::from_secs(2), "reset after health: {after:?}");
+    }
+
     use super::*;
 
     #[test]

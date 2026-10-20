@@ -102,6 +102,58 @@ pub fn granularity_for(tf: Timeframe) -> Option<u32> {
     DERIV_GRANULARITIES.contains(&secs).then_some(secs)
 }
 
+/// One live tick from a `style: "ticks"` subscription.
+#[derive(Debug, Deserialize)]
+pub struct DerivTick {
+    /// The quote (a price observation, NOT a trade).
+    pub quote: f64,
+    /// Tick time, unix seconds.
+    pub epoch: i64,
+    /// The Deriv symbol code (echoed).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub symbol: Option<String>,
+}
+
+/// The envelope of a live subscription stream: ticks, the history batch,
+/// candle updates, or an error.
+#[derive(Debug, Deserialize)]
+pub struct DerivStreamMsg {
+    /// `"tick"`.
+    pub tick: Option<DerivTick>,
+    /// The initial history batch (`{"prices": [...], "times": [...]}`).
+    pub history: Option<DerivTickHistory>,
+    /// Any error envelope.
+    pub error: Option<DerivError>,
+}
+
+/// The tick-history batch (`style: "ticks"`).
+#[derive(Debug, Deserialize)]
+pub struct DerivTickHistory {
+    /// Prices, oldest first.
+    pub prices: Vec<f64>,
+    /// Unix seconds, aligned with `prices`.
+    pub times: Vec<i64>,
+}
+
+/// Convert one tick into the builder's internal trade shape: zero quantity
+/// (a quote has no volume) and never anything the tape would mistake for a
+/// real fill. This is the ONLY conversion a Deriv quote receives -- the tape
+/// never sees it.
+#[must_use]
+pub fn tick_as_builder_trade(tick: &DerivTick, symbol: &str) -> analytics_core::types::Trade {
+    analytics_core::types::Trade {
+        symbol: symbol.to_string(),
+        // Quotes have no venue trade id; the builder's late-trade rule works
+        // off timestamps, so a stable zero is honest here.
+        trade_id: 0,
+        price: tick.quote,
+        quantity: 0.0,
+        timestamp: tick.epoch * 1_000_000_000,
+        is_buyer_maker: false,
+    }
+}
+
 /// A candles response row from `ticks_history`.
 #[derive(Debug, Deserialize)]
 struct DerivCandle {
@@ -319,6 +371,119 @@ struct DerivAuthWire {
 }
 
 impl DerivClient {
+    /// Subscribe to the live tick stream: `ticks_history` with
+    /// `style: "ticks"` and `"subscribe": 1`. The venue sends the recent tick
+    /// batch first (used to seed the candle builders so a reconnect does not
+    /// restart the forming bars from zero), then streams one tick at a time.
+    ///
+    /// # Errors
+    /// [`MarketDataError::Normalization`] on a subscription refusal or a
+    /// transport failure before the batch arrives.
+    pub async fn subscribe_ticks(
+        &self,
+        code: &str,
+        history: usize,
+    ) -> Result<
+        (
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            Vec<DerivTick>,
+            Vec<DerivTick>,
+        ),
+        MarketDataError,
+    > {
+        let mut socket = self.connect().await?;
+        let request = serde_json::json!({
+            "ticks_history": code,
+            "adjust_start_time": 1,
+            "count": history.clamp(1, 5000),
+            "end": "latest",
+            "start": 1,
+            "style": "ticks",
+            "subscribe": 1,
+        });
+        socket
+            .send(Message::Text(request.to_string().into()))
+            .await
+            .map_err(|e| MarketDataError::Normalization(format!("deriv subscribe failed: {e}")))?;
+        // The batch must arrive before we call the stream live; live ticks
+        // that race ahead of it are buffered and replayed after it.
+        let mut early = Vec::new();
+        let batch = loop {
+            let Some(frame) = socket.next().await else {
+                return Err(MarketDataError::Normalization(
+                    "deriv closed the socket before the tick batch".to_string(),
+                ));
+            };
+            let frame = frame.map_err(|e| {
+                MarketDataError::Normalization(format!("deriv socket error: {e}"))
+            })?;
+            let Message::Text(text) = frame else { continue };
+            let parsed: DerivStreamMsg = serde_json::from_str(&text).map_err(|e| {
+                MarketDataError::Normalization(format!("deriv reply did not parse: {e}"))
+            })?;
+            if let Some(err) = parsed.error {
+                return Err(MarketDataError::Normalization(format!(
+                    "deriv {}: {}",
+                    err.code.unwrap_or_else(|| "error".to_string()),
+                    err.message.unwrap_or_else(|| "unknown".to_string())
+                )));
+            }
+            if let Some(t) = parsed.tick {
+                early.push(t);
+            }
+            if let Some(h) = parsed.history {
+                break h
+                    .times
+                    .into_iter()
+                    .zip(h.prices)
+                    .map(|(epoch, quote)| DerivTick { quote, epoch, symbol: None })
+                    .collect::<Vec<_>>();
+            }
+        };
+        Ok((socket, batch, early))
+    }
+
+    /// The next live tick on an open subscription. Non-tick envelopes
+    /// (heartbeats and friends) are skipped; a close or an error envelope ends
+    /// the stream.
+    ///
+    /// # Errors
+    /// [`MarketDataError::Normalization`] on a socket error, a venue error
+    /// envelope, or a reply that does not parse.
+    pub async fn next_tick(
+        &self,
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> Result<DerivTick, MarketDataError> {
+        loop {
+            let Some(frame) = socket.next().await else {
+                return Err(MarketDataError::Normalization(
+                    "deriv closed the tick stream".to_string(),
+                ));
+            };
+            let frame = frame.map_err(|e| {
+                MarketDataError::Normalization(format!("deriv socket error: {e}"))
+            })?;
+            let Message::Text(text) = frame else { continue };
+            let parsed: DerivStreamMsg = serde_json::from_str(&text).map_err(|e| {
+                MarketDataError::Normalization(format!("deriv reply did not parse: {e}"))
+            })?;
+            if let Some(err) = parsed.error {
+                return Err(MarketDataError::Normalization(format!(
+                    "deriv {}: {}",
+                    err.code.unwrap_or_else(|| "error".to_string()),
+                    err.message.unwrap_or_else(|| "unknown".to_string())
+                )));
+            }
+            if let Some(tick) = parsed.tick {
+                return Ok(tick);
+            }
+        }
+    }
+
     /// Validate an API token: the `authorize` call answers with the account
     /// it opens (and proves the token and the network both work), or Deriv's
     /// refusal. One short-lived connection per check -- the same shape as
@@ -450,6 +615,47 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(err.error.expect("error").code.as_deref(), Some("InvalidSymbol"));
+    }
+
+    #[test]
+    fn a_tick_becomes_a_zero_volume_builder_trade() {
+        let tick = DerivTick { quote: 101.25, epoch: 1_700_000_061, symbol: None };
+        let trade = tick_as_builder_trade(&tick, "Volatility 75");
+        assert_eq!(trade.symbol, "Volatility 75");
+        assert!((trade.price - 101.25).abs() < 1e-9);
+        assert_eq!(trade.quantity, 0.0, "a quote has no volume");
+        assert_eq!(trade.timestamp, 1_700_000_061_000_000_000);
+        assert_eq!(trade.trade_id, 0, "no venue id on a quote");
+        // And the stream message envelope parses both shapes.
+        let batch: DerivStreamMsg = serde_json::from_str(
+            r#"{"history":{"prices":[100.0,100.5],"times":[1700000000,1700000002]},"msg_type":"history"}"#,
+        )
+        .expect("batch parses");
+        assert_eq!(batch.history.expect("batch").prices.len(), 2);
+        let live: DerivStreamMsg = serde_json::from_str(
+            r#"{"msg_type":"tick","tick":{"epoch":1700000004,"quote":101.0,"symbol":"R_75"}}"#,
+        )
+        .expect("tick parses");
+        assert!((live.tick.expect("tick").quote - 101.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    #[ignore = "live stream smoke: run explicitly with --include-ignored"]
+    async fn live_ticks_stream_for_a_few_seconds() {
+        let client = DerivClient::from_env();
+        let (mut socket, batch, _early) = client
+            .subscribe_ticks("R_75", 10)
+            .await
+            .expect("subscribe");
+        assert!(!batch.is_empty(), "the venue seeds a tick batch");
+        let tick = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            client.next_tick(&mut socket),
+        )
+        .await
+        .expect("a live tick within 20s")
+        .expect("tick parses");
+        assert!(tick.quote > 0.0 && tick.epoch > 0);
     }
 
     #[test]

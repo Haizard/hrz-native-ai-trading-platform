@@ -228,11 +228,10 @@ pub async fn market(
     let symbol = symbol.to_uppercase();
 
     // A chart should start the feed, not wait for a bot to happen to. Otherwise
-    // "the chart is empty" has two possible causes again. Deriv symbols skip:
-    // their stream is not Binance.
-    if !is_deriv_symbol(&symbol) {
-        state.bots.ensure_feed_for(&symbol);
-    }
+    // "the chart is empty" has two possible causes again. Deriv symbols route
+    // to the Deriv tick feed (run_market_feed's own arm), so the guard that
+    // once skipped them is gone.
+    state.bots.ensure_feed_for(&symbol);
     // The **chart** lane, not the closed-candle lane the bots read: it carries
     // closed candles plus a once-a-second snapshot of each forming bar, which
     // is what makes the newest bar move between closes -- a `1d` chart that
@@ -864,9 +863,7 @@ where
     // The same claim `POST /agent/ask` makes: asking about a symbol is a reason
     // for it to have a feed, and without one the buffer never fills and every
     // read costs a venue round trip.
-    if !is_deriv_symbol(&request.symbol.to_uppercase()) {
-        state.bots.ensure_feed_for(&request.symbol.to_uppercase());
-    }
+    state.bots.ensure_feed_for(&request.symbol.to_uppercase());
 
     let data = crate::market_data::WindowMarketData::new(state.windows.clone());
     let (tx, mut steps) = tokio::sync::mpsc::unbounded_channel();

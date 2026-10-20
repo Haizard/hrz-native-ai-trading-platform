@@ -113,13 +113,11 @@ pub async fn candles(
     // without this the buffer never fills and every request pays for the venue.
     // `touch_feed` after it, so a symbol being looked at is not reclaimed as
     // idle while it is on screen -- `ensure_feed_for` alone only says the feed
-    // exists, and the sweep reads *use*, not existence. Deriv symbols skip the
-    // Binance feed: their live stream is the Deriv WS phase, and a crypto feed
-    // for a namespaced symbol is noise.
-    if !symbol.starts_with("DERIV:") && !symbol.starts_with("DERIV-FX:") {
-        state.bots.ensure_feed_for(&symbol);
-        state.bots.touch_feed(&symbol);
-    }
+    // exists, and the sweep reads *use*, not existence. Deriv symbols route to
+    // the Deriv tick feed (run_market_feed's own arm); everything else to the
+    // crypto venue feed.
+    state.bots.ensure_feed_for(&symbol);
+    state.bots.touch_feed(&symbol);
 
     let limit = query.limit.unwrap_or(500).clamp(1, MAX_LIMIT);
     let history = state.bots.history();
