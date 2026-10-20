@@ -529,93 +529,12 @@ impl ContractOrder {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The multiplier PnL model (shared by the backtest simulator and the docs).
-
-/// Multiplier PnL at an exit price, Deriv's own semantics: the move scales by
-/// the multiplier, and the loss is capped at the stake (a stop-out, which
-/// triggers when the adverse move reaches `1 / multiplier` of the entry).
-/// `long` is MULTUP; `!long` is MULTDOWN.
-#[must_use]
-pub fn multiplier_pnl(entry: f64, exit: f64, stake: f64, multiplier: f64, long: bool) -> f64 {
-    if entry <= 0.0 || stake <= 0.0 || multiplier <= 0.0 {
-        return 0.0;
-    }
-    let dir = if long { 1.0 } else { -1.0 };
-    let raw = stake * multiplier * (exit - entry) / entry * dir;
-    raw.max(-stake)
-}
-
-/// The stop-out level: the adverse move that costs the whole stake.
-#[must_use]
-pub fn stop_out_level(entry: f64, multiplier: f64, long: bool) -> f64 {
-    if long {
-        entry * (1.0 - 1.0 / multiplier)
-    } else {
-        entry * (1.0 + 1.0 / multiplier)
-    }
-}
-
-/// One candle's path against an open multiplier position: does the candle
-/// stop the position out, hit the take-profit, or hit the stop-loss first?
-/// Intrabar order follows the venue's own rule (the stop fills first when
-/// both could touch -- the same conservative choice the spot sim makes).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathOutcome {
-    /// Nothing triggered; the position rides.
-    Open,
-    /// The stop-out level was touched; the stake is lost.
-    StoppedOut,
-    /// `take_profit` was touched.
-    TakeProfit,
-    /// `stop_loss` was touched.
-    StopLoss,
-}
-
-/// Evaluate one candle's range against an open multiplier position.
-#[must_use]
-pub fn path_outcome(
-    candle: &Candle,
-    entry: f64,
-    multiplier: f64,
-    long: bool,
-    take_profit: Option<f64>,
-    stop_loss: Option<f64>,
-) -> PathOutcome {
-    let stop_out = stop_out_level(entry, multiplier, long);
-    if long {
-        if candle.low <= stop_out {
-            return PathOutcome::StoppedOut;
-        }
-        // A user stop-loss sits above the stop-out (a smaller loss); check it
-        // first only if it was NOT already covered by the stop-out check.
-        if let Some(sl) = stop_loss {
-            if candle.low <= sl {
-                return PathOutcome::StopLoss;
-            }
-        }
-        if let Some(tp) = take_profit {
-            if candle.high >= tp {
-                return PathOutcome::TakeProfit;
-            }
-        }
-    } else {
-        if candle.high >= stop_out {
-            return PathOutcome::StoppedOut;
-        }
-        if let Some(sl) = stop_loss {
-            if candle.high >= sl {
-                return PathOutcome::StopLoss;
-            }
-        }
-        if let Some(tp) = take_profit {
-            if candle.low <= tp {
-                return PathOutcome::TakeProfit;
-            }
-        }
-    }
-    PathOutcome::Open
-}
+// The multiplier PnL model lives in analytics-core so the trading adapter and
+// the strategy simulator share one implementation. Re-exported here so the
+// adapter's imports keep working.
+pub use analytics_core::multiplier::{
+    PathOutcome, multiplier_pnl, path_outcome, stop_out_level,
+};
 
 #[cfg(test)]
 mod tests {

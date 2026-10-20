@@ -825,7 +825,10 @@ pub async fn replay_script_preview(
         "SOLUSDT" | "BNBUSDT" => 0.001,
         _ => 0.01,
     });
-    let inputs = pine_lite::interp::Inputs { security, series_pool, data_series, mintick, ..pine_lite::interp::Inputs::default() };
+    let contracts = ::market_data::broker::VenueSymbol::parse(symbol)
+        .channels()
+        .is_some_and(|_| ::market_data::broker::VenueSymbol::parse(symbol).broker == "deriv");
+    let inputs = pine_lite::interp::Inputs { security, series_pool, data_series, mintick, contracts, ..pine_lite::interp::Inputs::default() };
     let output = pine_lite::interp::run(&parsed, &candles, &inputs)
         .map_err(|err| format!("the script failed at run time: {err}"))?;
     // Run notes (docs/24 S1: the two-pass strategy mismatch, and any later

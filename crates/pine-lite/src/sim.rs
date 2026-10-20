@@ -56,6 +56,13 @@ pub struct StrategyHeader {
     /// metadata the host stamps on the knobs before the run, not a
     /// script-declared knob.
     pub pointvalue: f64,
+    /// Contract-flavored execution (Deriv multipliers): entry qty is read
+    /// as STAKE in account currency, PnL scales by `multiplier`, and the
+    /// loss caps at the stake via the venue's stop-out. Host-stamped from
+    /// the instrument's product, not script-declared.
+    pub contracts: bool,
+    /// The multiplier's leverage for contract mode (`strategy(multiplier=50)`).
+    pub multiplier: f64,
 }
 
 impl Default for StrategyHeader {
@@ -69,6 +76,8 @@ impl Default for StrategyHeader {
             slippage_pct: 0.0,
             pyramiding: 0,
             pointvalue: 1.0,
+            contracts: false,
+            multiplier: 50.0,
         }
     }
 }
@@ -173,6 +182,22 @@ fn close_leg(
     knobs: &StrategyHeader,
 ) -> (f64, f64) {
     let closed_qty = if frac >= 1.0 { pos.qty } else { pos.qty * frac.max(0.0) };
+    if knobs.contracts {
+        // Contract mode: qty IS the stake; the move scales by the
+        // multiplier, the loss caps at the stake. The round-trip commission
+        // lands at close like the spot path, but on the STAKE -- Deriv's
+        // notional is the stake, not price x quantity.
+        let gross = analytics_core::multiplier::multiplier_pnl(
+            pos.entry_price,
+            price,
+            closed_qty,
+            knobs.multiplier,
+            pos.long,
+        );
+        let fees = commission(knobs, closed_qty);
+        pos.qty -= closed_qty;
+        return (closed_qty, gross - fees);
+    }
     let gross = if pos.long {
         (price - pos.entry_price) * closed_qty * knobs.pointvalue
     } else {
@@ -236,6 +261,15 @@ pub fn commission(knobs: &StrategyHeader, notional: f64) -> f64 {
 }
 
 fn open_pnl(pos: &Position, price: f64, knobs: &StrategyHeader) -> f64 {
+    if knobs.contracts {
+        return analytics_core::multiplier::multiplier_pnl(
+            pos.entry_price,
+            price,
+            pos.qty,
+            knobs.multiplier,
+            pos.long,
+        );
+    }
     let dir = if pos.long { 1.0 } else { -1.0 };
     (price - pos.entry_price) * pos.qty * dir * knobs.pointvalue
 }
@@ -405,6 +439,40 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         let t = pos.trail_peak + offset;
                         pos.stop = Some(pos.stop.map_or(t, |cur| cur.min(t)));
                     }
+                }
+            }
+        }
+
+        // 1c. The contract stop-out: in contract mode an adverse move of
+        //    1/multiplier of the entry consumes the whole stake, at the
+        //    venue's own level (it fills there, before any user stop).
+        if knobs.contracts {
+            if let Some(mut pos) = position.take() {
+                let stop_out = analytics_core::multiplier::stop_out_level(
+                    pos.entry_price,
+                    knobs.multiplier,
+                    pos.long,
+                );
+                let hit = if pos.long { c.low <= stop_out } else { c.high >= stop_out };
+                if hit {
+                    let (closed_qty, pnl) = close_leg(&mut pos, 1.0, stop_out, knobs);
+                    realized += pnl;
+                    closed += 1.0;
+                    gross_loss -= pnl;
+                    sim.orders.push(SimOrder {
+                        bar,
+                        kind: OrderKind::Stop,
+                        long: pos.long,
+                        qty: closed_qty,
+                        price: stop_out,
+                        stop: Some(stop_out),
+                        pnl: Some(pnl),
+                    });
+                    if pos.qty > 1e-12 {
+                        position = Some(pos);
+                    }
+                } else {
+                    position = Some(pos);
                 }
             }
         }
@@ -717,6 +785,74 @@ mod tests {
         let sim = simulate(&intents, &cs, &knobs);
         let entries: Vec<&SimOrder> = sim.orders.iter().filter(|o| o.kind == OrderKind::Entry).collect();
         assert_eq!(entries.len(), 1, "the breach bars the second entry: {:?}", sim.orders);
+    }
+
+    #[test]
+    fn a_deriv_contract_backtest_uses_multiplier_pnl_and_the_stop_out() {
+        let candles = |bars: &[(f64, f64, f64)]| -> Vec<analytics_core::types::Candle> {
+            bars.iter()
+                .enumerate()
+                .map(|(i, (h, l, c))| analytics_core::types::Candle {
+                    symbol: "DERIV:VOLATILITY 75".to_string(),
+                    timeframe: analytics_core::types::Timeframe::H1,
+                    open_time: i as i64 * analytics_core::types::Timeframe::H1.nanos(),
+                    open: *c,
+                    high: *h,
+                    low: *l,
+                    close: *c,
+                    volume: 0.0,
+                    buy_volume: 0.0,
+                    sell_volume: 0.0,
+                })
+                .collect()
+        };
+        let knobs = StrategyHeader {
+            initial_capital: 1_000.0,
+            default_qty_type: QtyType::Fixed,
+            default_qty_value: 10.0,
+            commission_value: 0.0,
+            slippage_pct: 0.0,
+            contracts: true,
+            multiplier: 100.0,
+            ..StrategyHeader::default()
+        };
+
+        // Ride to a good exit: 101 -> 102 is +0.99% at 100x = +99% of the
+        // 10 stake = +9.90 (the multiplier mark, not the spot mark of +0.99).
+        let cs = candles(&[
+            (101.0, 99.0, 100.0), // 0: entry signal
+            (102.0, 100.0, 101.0), // 1: fills at open 100-ish (slippage 0 -> open)
+            (103.0, 101.5, 102.0), // 2: exit signal
+            (103.0, 101.0, 102.0), // 3: fills the close at open 102
+        ]);
+        let intents = vec![
+            (0, Intent::Entry { id: "L".into(), long: true, qty: Some(10.0) }),
+            (2, Intent::Close { id: None, qty_percent: None }),
+        ];
+        let sim = simulate(&intents, &cs, &knobs);
+        let exit = sim.orders.iter().find(|o| o.pnl.is_some()).expect("a closing leg");
+        assert!(
+            (exit.pnl.unwrap() - 9.900990099009901).abs() < 1e-9,
+            "the multiplier mark at the close: {}",
+            exit.pnl.unwrap()
+        );
+
+        // The stop-out: -1% at 100x consumes the whole 10 stake, at the
+        // venue's own level (99% of entry for the long).
+        let cs = candles(&[
+            (101.0, 99.0, 100.0), // 0: entry
+            (100.5, 98.0, 99.0),  // 1: fills at open 100, low 98 breaches the 99.0 stop-out
+            (102.0, 97.0, 98.0),  // 2: the dead position must NOT sell again
+        ]);
+        let intents = vec![(0, Intent::Entry { id: "L".into(), long: true, qty: Some(10.0) })];
+        let sim = simulate(&intents, &cs, &knobs);
+        let stop = sim
+            .orders
+            .iter()
+            .find(|o| o.kind == OrderKind::Stop)
+            .expect("the stop-out fires");
+        assert!((stop.pnl.unwrap() + 10.0).abs() < 1e-9, "the stake is gone: {}", stop.pnl.unwrap());
+        assert_eq!(sim.orders.iter().filter(|o| o.pnl.is_some()).count(), 1, "no double close");
     }
 
     #[test]

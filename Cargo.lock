@@ -525,6 +525,7 @@ name = "chart-engine"
 version = "0.1.0"
 dependencies = [
  "analytics-core",
+ "market-data",
  "pine-lite",
  "serde",
  "serde_json",

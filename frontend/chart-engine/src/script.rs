@@ -335,11 +335,14 @@ pub fn script_pane_full(
 /// Shared by the sub-pane path ([`run_script`]) and the scene's overlay path,
 /// so both spell the sorting the same way.
 #[must_use]
-pub fn inputs_from_spec(spec: &ScriptSpec) -> Inputs {
+pub fn inputs_from_spec(spec: &ScriptSpec, chart_symbol: &str) -> Inputs {
     let mut inputs = Inputs {
         security: spec.security.clone(),
         series_pool: spec.series_pool.clone(),
         data_series: spec.data_series.clone(),
+        // Contract execution (Deriv multipliers) when the chart's instrument
+        // is a Deriv product: the sim reads qty as stake and caps the loss.
+        contracts: market_data::broker::VenueSymbol::parse(chart_symbol).broker == "deriv",
         ..Inputs::default()
     };
     for (name, value) in &spec.inputs {
@@ -371,7 +374,8 @@ fn run_script(
 ) -> Result<(pine_lite::Header, Output), String> {
     let (header, parsed) =
         pine_lite::vet(&spec.source).map_err(|errs| format_script_errors(&errs))?;
-    let inputs = inputs_from_spec(spec);
+    let chart_symbol = candles.first().map(|c| c.symbol.as_str()).unwrap_or("");
+    let inputs = inputs_from_spec(spec, chart_symbol);
     let output: Output = run(&parsed, candles, &inputs).map_err(|err| err.to_string())?;
     Ok((header, output))
 }

@@ -1947,7 +1947,10 @@ pub fn build(request: &Request) -> Scene {
             match pine_lite::run(
                 &parsed,
                 visible_real,
-                &crate::script::inputs_from_spec(spec),
+                &crate::script::inputs_from_spec(
+                    spec,
+                    visible_real.first().map(|c| c.symbol.as_str()).unwrap_or(""),
+                ),
             ) {
                 Ok(output) => {
                     let plots = crate::script::scene_overlay_plots(&output, slot, &frame);

@@ -323,6 +323,10 @@ fn parse_header(line: usize, rest: &str) -> Result<Header, Vec<ScriptError>> {
                             Ok(n) => knobs.pyramiding = n,
                             _ => errors.push(err(line, 1, "strategy.pyramiding must be a non-negative whole number")),
                         },
+                        "multiplier" => match val.parse::<f64>() {
+                            Ok(n) if n > 0.0 => knobs.multiplier = n,
+                            _ => errors.push(err(line, 1, "strategy.multiplier must be a positive number (the contract leverage, e.g. 50)")),
+                        },
                         other => {
                             unknown = Some(other.to_string());
                         }

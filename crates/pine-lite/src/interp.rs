@@ -41,6 +41,10 @@ pub struct Inputs {
     /// The instrument's point value (PnL multiplier per price point per
     /// unit, syminfo.pointvalue). None = 1.0, the spot reading.
     pub pointvalue: Option<f64>,
+    /// Contract-flavored execution for this chart's instrument (a Deriv
+    /// product): the host stamps it from the symbol's broker product; the
+    /// sim then reads entry qty as stake and caps losses at the stake.
+    pub contracts: bool,
     /// Every named pair of `request.security("SYM", "tf", ...)` in the
     /// script, keyed `SYM@tf`, uppercased, already fetched and aligned onto
     /// the chart's bars by the host -- the same contract as `security`.
@@ -903,8 +907,10 @@ impl<'a> Vm<'a> {
         if self.out.strategy_used || (wants_state && self.script.header.strategy.is_some()) {
             let mut knobs = self.script.header.strategy.clone().unwrap_or_default();
             // Instrument metadata stamps the run: the host's point value
-            // scales every PnL leg (spot default 1.0).
+            // scales every PnL leg (spot default 1.0), and the execution
+            // flavor comes from the instrument's product.
             knobs.pointvalue = self.inputs.pointvalue.unwrap_or(1.0);
+            knobs.contracts = self.inputs.contracts;
             self.out.simulation = Some(crate::sim::simulate(&self.out.intents, self.candles, &knobs));
             if wants_state {
                 // Fixpoint over state reads: pass 2 decides against pass 1's
@@ -1050,6 +1056,7 @@ impl<'a> Vm<'a> {
             // rebuild produces the same trades.
             let mut knobs = self.script.header.strategy.clone().unwrap_or_default();
             knobs.pointvalue = self.inputs.pointvalue.unwrap_or(1.0);
+            knobs.contracts = self.inputs.contracts;
             let state_sim = crate::sim::simulate(&self.out.intents, self.candles, &knobs);
             self.out.notes.push(format!(
                 "strategy state reads changed the script's decisions between passes; the trades come from the state-aware pass ({} order(s))",

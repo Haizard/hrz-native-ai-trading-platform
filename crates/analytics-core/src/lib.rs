@@ -57,6 +57,7 @@ pub mod forecast;
 pub mod iceberg;
 pub mod imbalance;
 pub mod indicators;
+pub mod multiplier;
 pub mod liquidity;
 pub mod market_structure;
 pub mod patterns;

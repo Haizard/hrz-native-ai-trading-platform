@@ -25,6 +25,7 @@ analytics-core = { workspace = true }
 # language the gateway vets and the sandbox will isolate, and the shell paints
 # positioned output only.
 pine-lite = { workspace = true }
+market-data = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
