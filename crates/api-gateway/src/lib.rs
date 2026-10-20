@@ -74,6 +74,7 @@ pub mod orderflow_routes;
 pub mod plot;
 pub mod pine_cheatsheet;
 pub mod trade_routes;
+pub mod composition_codegen;
 pub mod concept_routes;
 pub mod pine_codegen;
 pub mod provider_routes;
@@ -291,6 +292,7 @@ pub fn router(state: AppState) -> Router {
         .route("/concepts", get(concept_routes::concepts))
         .route("/concept-events", get(concept_routes::concept_events))
         .route("/compositions/backtest", post(concept_routes::backtest))
+        .route("/compositions/generate", post(concept_routes::generate))
         // Prometheus scrapes this. Public, like the health endpoints: it names
         // no user and no strategy, only counts.
         .route("/metrics", get(metrics::scrape))

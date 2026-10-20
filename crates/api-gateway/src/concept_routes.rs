@@ -274,6 +274,49 @@ pub async fn backtest(
     })))
 }
 
+/// `POST /compositions/generate` body: describe a strategy, get a
+/// validated composition back (the AI-as-architect flow).
+#[derive(Debug, Deserialize)]
+pub struct GenerateRequest {
+    /// The strategy in the user's words.
+    pub description: String,
+    /// The instrument it composes for (gates the catalog it may use).
+    pub symbol: String,
+}
+
+/// `POST /compositions/generate`: the AI composition flow.
+pub async fn generate(
+    State(state): State<AppState>,
+    user: crate::auth::UserContext,
+    crate::extract::ApiJson(request): crate::extract::ApiJson<GenerateRequest>,
+) -> Result<Json<crate::composition_codegen::GeneratedComposition>, ApiError> {
+    crate::agent_routes::check_agent_limit(&state, &user)?;
+    if request.description.trim().len() < 10 {
+        return Err(ApiError::bad_request(
+            "DESCRIPTION_THIN",
+            "describe the strategy: what it waits for, in what order, and how it protects itself",
+        ));
+    }
+    let symbol = request.symbol.to_uppercase();
+    if market_data::concepts::available_for(&symbol).is_empty() {
+        return Err(ApiError::coded(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "VENUE_UNKNOWN",
+            format!("no concepts are registered for `{symbol}` -- is the symbol spelled right?"),
+        ));
+    }
+    let agent = crate::provider_routes::resolve_agent(&state, &user).await?;
+    let generated = crate::composition_codegen::generate_composition(
+        agent.llm().as_ref(),
+        &symbol,
+        &request.description,
+        4096,
+    )
+    .await
+    .map_err(|e| ApiError::unavailable(format!("the composition agent failed: {e}")))?;
+    Ok(Json(generated))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
