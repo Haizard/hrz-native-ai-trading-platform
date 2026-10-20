@@ -1090,7 +1090,7 @@ fn respond(
     }
 }
 
-fn database(state: &AppState) -> Result<&std::sync::Arc<db::Database>, ApiError> {
+pub(crate) fn database(state: &AppState) -> Result<&std::sync::Arc<db::Database>, ApiError> {
     state
         .db
         .as_ref()

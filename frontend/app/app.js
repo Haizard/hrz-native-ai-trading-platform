@@ -5383,6 +5383,101 @@ function createChartPane(root, hooks = {}) {
     delete menu.dataset.owner;
   }
 
+  /// The Deriv trade ticket's menu section, or nothing on any other venue.
+  /// Rebuilt on every open (the menu is transient), so the wiring here is
+  /// always this open's own; the controls inside call the api() helper, so
+  /// sign-in is enforced the same way every other request is.
+  function tradeMenuNodes() {
+    const symbol = (el("symbol") && el("symbol").value) || "";
+    if (!symbol.startsWith("DERIV:") && !symbol.startsWith("DERIV-FX:")) return [];
+    const ticket = Object.assign(document.createElement("div"), { className: "tradeTicket" });
+    ticket.innerHTML = `
+      <p class="menuLabel" style="margin:0">Trade ${escapeHtml(symbol.replace(/^DERIV(-FX)?:/, "Deriv "))}</p>
+      <div class="row">
+        <input class="stake" type="number" min="1" step="1" value="10" title="Stake (account currency)">
+        <select class="leverage" title="Multiplier">
+          <option value="10">10x</option>
+          <option value="20">20x</option>
+          <option value="50" selected>50x</option>
+          <option value="100">100x</option>
+          <option value="200">200x</option>
+        </select>
+      </div>
+      <div class="row">
+        <button class="up" data-side="buy">MULT UP</button>
+        <button class="down" data-side="sell">MULT DOWN</button>
+      </div>
+      <div class="positions" hidden></div>
+      <div class="msg"></div>`;
+    const msg = ticket.querySelector(".msg");
+    const positions = ticket.querySelector(".positions");
+    const say = (text, isErr) => {
+      msg.textContent = text;
+      msg.classList.toggle("err", Boolean(isErr));
+    };
+    const refreshPositions = async () => {
+      try {
+        const entries = await api("/trade/portfolio");
+        positions.hidden = entries.length === 0;
+        positions.replaceChildren(...entries.map((c) => {
+          const row = Object.assign(document.createElement("div"), { className: "pos" });
+          const pnl = c.profit == null ? "--" : `${c.profit >= 0 ? "+" : ""}${Number(c.profit).toFixed(2)}`;
+          row.innerHTML = `<span>#${c.contract_id}</span>
+            <span class="pnl ${c.profit != null && c.profit < 0 ? "neg" : "pos"}">${pnl}</span>`;
+          const sell = Object.assign(document.createElement("button"), { textContent: "Sell" });
+          sell.addEventListener("click", async () => {
+            sell.disabled = true;
+            try {
+              const r = await api("/trade/sell", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ contract_id: c.contract_id }),
+              });
+              say(`Sold #${c.contract_id} for ${Number(r.sold_for).toFixed(2)}`);
+              refreshPositions();
+            } catch (e) {
+              say(e.message || "Sell failed", true);
+              sell.disabled = false;
+            }
+          });
+          row.appendChild(sell);
+          return row;
+        }));
+      } catch (e) {
+        say(e.message || "Portfolio unavailable", true);
+      }
+    };
+    for (const btn of ticket.querySelectorAll("button[data-side]")) {
+      btn.addEventListener("click", async () => {
+        const stake = Number(ticket.querySelector(".stake").value);
+        const leverage = Number(ticket.querySelector(".leverage").value);
+        btn.disabled = true;
+        say("Placing...");
+        try {
+          const r = await api("/trade/order", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              symbol,
+              side: btn.dataset.side,
+              stake,
+              multiplier: leverage,
+              idempotency_key: `ui-${symbol}-${btn.dataset.side}-${stake}-${leverage}-${Date.now()}`,
+            }),
+          });
+          say(`${r.contract_type} #${r.contract_id} at ${r.price} (stake ${r.stake}, ${r.multiplier}x)`);
+          refreshPositions();
+        } catch (e) {
+          say(e.message || "Order refused", true);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    }
+    refreshPositions();
+    return [ticket];
+  }
+
   /// Open the right-click menu for this pane, at the pointer.
   ///
   /// The menu does not copy controls; it *hosts* them. The pane's real selects
@@ -5407,6 +5502,7 @@ function createChartPane(root, hooks = {}) {
       Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Chart" }),
       el("mode"), el("zones"), el("fit"), el("load"),
       el("feedStatus"),
+      ...tradeMenuNodes(),
       document.createElement("hr"),
       Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Drawing tools" }),
       tools

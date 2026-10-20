@@ -123,6 +123,35 @@ impl DerivAdapter {
         })
     }
 
+    /// The leverage this adapter buys at.
+    #[must_use]
+    pub fn leverage(&self) -> f64 {
+        self.leverage
+    }
+
+    /// Override the leverage at construction (a manual order's chosen rung
+    /// on the ladder).
+    #[must_use]
+    pub fn with_leverage(mut self, leverage: f64) -> Self {
+        self.leverage = leverage;
+        self
+    }
+
+    /// The gateway's portfolio, surfaced for the manual ticket (it is an
+    /// account read, not an adapter-order one).
+    pub async fn portfolio(
+        &self,
+    ) -> Result<Vec<market_data::deriv_trade::OpenContract>, ExecutionError> {
+        self.with_session(|mut s| Box::pin(async move { s.portfolio().await }))
+            .await
+    }
+
+    /// The gateway's early sell, surfaced for the manual ticket.
+    pub async fn sell(&self, contract_id: u64, price: f64) -> Result<f64, ExecutionError> {
+        self.with_session(|mut s| Box::pin(async move { s.sell(contract_id, price).await }))
+            .await
+    }
+
     fn remember(&self, client_order_id: &str, contract_id: u64) {
         if let Ok(mut map) = self.contracts.lock() {
             map.insert(client_order_id.to_string(), contract_id);

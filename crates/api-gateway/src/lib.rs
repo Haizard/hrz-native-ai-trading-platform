@@ -73,6 +73,7 @@ pub mod metrics;
 pub mod orderflow_routes;
 pub mod plot;
 pub mod pine_cheatsheet;
+pub mod trade_routes;
 pub mod pine_codegen;
 pub mod provider_routes;
 pub mod rate_limit;
@@ -283,6 +284,9 @@ pub fn router(state: AppState) -> Router {
         .route("/readyz", get(readyz))
         .route("/capabilities", get(capability_report))
         .route("/broker-capabilities", get(broker_capability_catalog))
+        .route("/trade/order", post(trade_routes::order))
+        .route("/trade/portfolio", get(trade_routes::portfolio))
+        .route("/trade/sell", post(trade_routes::sell))
         // Prometheus scrapes this. Public, like the health endpoints: it names
         // no user and no strategy, only counts.
         .route("/metrics", get(metrics::scrape))

@@ -215,6 +215,22 @@
   .chartBar[hidden], .tools[hidden] { display: none; }
   .chartPane.active .chartBar { box-shadow: inset 0 2px 0 var(--accent); }
   .chartBar .close { margin-left: auto; padding: 3px 8px; color: var(--muted); }
+  /* The Deriv trade ticket (chart menu, Deriv symbols only). */
+  .tradeTicket { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; }
+  .tradeTicket .row { display: flex; gap: 6px; align-items: center; }
+  .tradeTicket input.stake { width: 84px; }
+  .tradeTicket select.leverage { flex: 1; }
+  .tradeTicket button.up { border-color: var(--up); color: var(--up); font-weight: 600; flex: 1; }
+  .tradeTicket button.up:hover { background: var(--up); color: #fff; }
+  .tradeTicket button.down { border-color: var(--down); color: var(--down); font-weight: 600; flex: 1; }
+  .tradeTicket button.down:hover { background: var(--down); color: #fff; }
+  .tradeTicket .positions { border-top: 1px dashed var(--line); padding-top: 4px; display: flex; flex-direction: column; gap: 4px; }
+  .tradeTicket .pos { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .tradeTicket .pos .pnl.pos { color: var(--up); }
+  .tradeTicket .pos .pnl.neg { color: var(--down); }
+  .tradeTicket .pos button { margin-left: auto; padding: 1px 6px; font-size: 10px; }
+  .tradeTicket .msg { font-size: 11px; min-height: 14px; color: var(--muted); }
+  .tradeTicket .msg.err { color: var(--down); }
   /*
     The pane's own chrome. One line: what the chart is, then four buttons that
     belong to the chart itself -- zoom out, zoom in, collapse, expand -- and the
