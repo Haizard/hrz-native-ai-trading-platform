@@ -110,6 +110,170 @@ pub async fn concept_events(
     Ok(Json(ConceptEventsResponse { symbol, events }))
 }
 
+/// `POST /compositions/backtest` body.
+#[derive(Debug, Deserialize)]
+pub struct BacktestRequest {
+    /// The composition document.
+    pub document: market_data::composer::Composition,
+    /// The instrument to replay.
+    pub symbol: String,
+    /// How many bars to replay (default 500).
+    #[serde(default = "default_backtest_limit")]
+    pub limit: usize,
+}
+
+fn default_backtest_limit() -> usize {
+    500
+}
+
+/// One fired signal as the response reports it.
+#[derive(Debug, Serialize)]
+pub struct SignalReport {
+    /// The bar index it fired on.
+    pub bar: usize,
+    /// Long or short.
+    pub long: bool,
+    /// The stop level (structure stops), when set.
+    pub stop_level: Option<f64>,
+    /// The satisfying concepts.
+    pub evidence: Vec<String>,
+}
+
+/// `POST /compositions/backtest`: validate, replay, simulate, report.
+pub async fn backtest(
+    State(state): State<AppState>,
+    crate::extract::ApiJson(request): crate::extract::ApiJson<BacktestRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use market_data::composer::{Composer, SizeKind, StopKind};
+
+    let errors = market_data::composer::validate(&request.document);
+    if let Err(errors) = errors {
+        return Ok(Json(serde_json::json!({
+            "valid": false,
+            "errors": errors.iter().map(|e| format!("{e}")).collect::<Vec<_>>(),
+        })));
+    }
+    let tf = request
+        .document
+        .timeframe
+        .parse::<analytics_core::types::Timeframe>()
+        .expect("validated above");
+    let symbol = request.symbol.to_uppercase();
+    let to_ns = crate::now_ns();
+    let from_ns = to_ns - request.limit as i64 * tf.nanos();
+    let window = state
+        .windows
+        .candles_capped(&symbol, tf, from_ns, to_ns, request.limit)
+        .await
+        .map_err(|e| ApiError::unavailable(format!("no candles for {symbol}: {e}")))?;
+    let candles = window.candles;
+    if candles.len() < 30 {
+        return Err(ApiError::coded(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "BACKTEST_WINDOW_THIN",
+            format!("only {} bars for {symbol} {tf} -- a composition needs history to mean anything", candles.len()),
+        ));
+    }
+
+    // Replay: per bar, detect on the trailing window, wrap, feed the state
+    // machine. The engine's own config is the default (the composition's
+    // parameters ride the registry's defaults in v1).
+    let config = analytics_core::events::EventConfig::default();
+    let mut composer = Composer::new(&request.document);
+    let mut signals: Vec<market_data::composer::Signal> = Vec::new();
+    let warmup = 22; // the structure lookback's own minimum window
+    for bar in warmup..candles.len() {
+        let raw = analytics_core::events::detect_events(&candles[..=bar], &symbol, &config);
+        let events: Vec<_> = raw
+            .iter()
+            .filter(|e| e.bar_time == candles[bar].open_time)
+            .filter_map(market_data::concepts::as_concept_event)
+            .collect();
+        if let Some(signal) = composer.on_bar(bar, &events) {
+            signals.push(signal);
+        }
+    }
+
+    // Signals become sim intents: entry at the signal bar (next-open fill,
+    // like every other path), the structure stop from the satisfying level
+    // or the ATR multiple.
+    let atrs = analytics_core::indicators::atr(&candles, 14);
+    let mut intents: Vec<(usize, pine_lite::interp::Intent)> = Vec::new();
+    for signal in &signals {
+        let stop = match &request.document.risk.stop {
+            StopKind::Structure => signal.stop_level,
+            StopKind::AtrMultiple { multiple } => {
+                let entry_bar = (signal.bar + 1).min(candles.len() - 1);
+                atrs[entry_bar].map(|atr| {
+                    let entry = candles[entry_bar].open;
+                    if signal.long { entry - multiple * atr } else { entry + multiple * atr }
+                })
+            }
+        };
+        intents.push((
+            signal.bar,
+            pine_lite::interp::Intent::Entry {
+                id: "C".to_string(),
+                long: signal.long,
+                qty: match &request.document.risk.sizing {
+                    SizeKind::Fixed { quantity } => Some(*quantity),
+                    SizeKind::FixedFractional { .. } => None,
+                },
+            },
+        ));
+        if let Some(stop) = stop {
+            intents.push((
+                signal.bar,
+                pine_lite::interp::Intent::Exit {
+                    id: "C".to_string(),
+                    stop: Some(stop),
+                    limit: None,
+                    trail_points: None,
+                    trail_offset: None,
+                    trail_price: None,
+                    qty_percent: None,
+                },
+            ));
+        }
+    }
+    let knobs = pine_lite::sim::StrategyHeader {
+        default_qty_type: match &request.document.risk.sizing {
+            SizeKind::FixedFractional { percent } => pine_lite::sim::QtyType::PercentOfEquity,
+            SizeKind::Fixed { .. } => pine_lite::sim::QtyType::Fixed,
+        },
+        default_qty_value: match &request.document.risk.sizing {
+            SizeKind::FixedFractional { percent } => *percent,
+            SizeKind::Fixed { quantity } => *quantity,
+        },
+        // Instrument flavor stamps like every other path: Deriv symbols
+        // backtest as contracts, not spot positions.
+        contracts: market_data::broker::VenueSymbol::parse(&symbol).broker == "deriv",
+        ..pine_lite::sim::StrategyHeader::default()
+    };
+    let simulation = pine_lite::sim::simulate(&intents, &candles, &knobs);
+
+    Ok(Json(serde_json::json!({
+        "valid": true,
+        "name": request.document.name,
+        "symbol": symbol,
+        "timeframe": request.document.timeframe,
+        "bars": candles.len(),
+        "signals": signals.iter().map(|s| SignalReport {
+            bar: s.bar,
+            long: s.long,
+            stop_level: s.stop_level,
+            evidence: s.evidence.clone(),
+        }).collect::<Vec<_>>(),
+        "simulation": {
+            "net_profit": simulation.report.net_profit,
+            "total_trades": simulation.report.total_trades,
+            "win_rate": simulation.report.win_rate,
+            "profit_factor": simulation.report.profit_factor,
+            "max_drawdown": simulation.report.max_drawdown,
+        },
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
