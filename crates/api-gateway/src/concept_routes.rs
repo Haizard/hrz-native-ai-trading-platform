@@ -178,7 +178,7 @@ pub async fn backtest(
     // Replay: per bar, detect on the trailing window, wrap, feed the state
     // machine. The engine's own config is the default (the composition's
     // parameters ride the registry's defaults in v1).
-    let config = analytics_core::events::EventConfig::default();
+    let config = market_data::composer::event_config_for(&request.document.parameters);
     let mut composer = Composer::new(request.document.clone());
     let mut signals: Vec<market_data::composer::Signal> = Vec::new();
     let warmup = 22; // the structure lookback's own minimum window

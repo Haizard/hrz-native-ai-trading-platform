@@ -222,6 +222,26 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             event_kinds: &[EventKind::FvgCreated, EventKind::FvgFilled],
         },
         ConceptSpec {
+            id: "smc.ifvg",
+            version: "1.0.0",
+            library: Library::Smc,
+            name: "Inverse Fair Value Gap",
+            description: "a gap whose close-through failed it flips polarity -- the zone now works against its birth",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::FvgInvalidated],
+        },
+        ConceptSpec {
+            id: "smc.bpr",
+            version: "1.0.0",
+            library: Library::Smc,
+            name: "Balanced Price Range",
+            description: "two opposite open gaps overlapping -- the overlap is the balance price gravitates back to",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::BprCreated],
+        },
+        ConceptSpec {
             id: "sd.zone_tested",
             version: "1.0.0",
             library: Library::SupplyDemand,
@@ -432,8 +452,9 @@ pub fn as_concept_event(event: &MarketEvent) -> Option<ConceptEvent> {
         None => Direction::Neutral,
     };
     let status = match event.kind {
-        EventKind::FvgCreated => ConceptStatus::Forming,
+        EventKind::FvgCreated | EventKind::BprCreated => ConceptStatus::Forming,
         EventKind::FvgFilled => ConceptStatus::Expired,
+        EventKind::FvgInvalidated => ConceptStatus::Invalidated,
         _ => ConceptStatus::Confirmed,
     };
     let mut evidence = serde_json::Map::new();

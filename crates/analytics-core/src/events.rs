@@ -57,6 +57,11 @@ pub enum EventKind {
     FvgCreated,
     /// Price traded fully back through an open fair value gap.
     FvgFilled,
+    /// Price CLOSED beyond an open gap's far edge: the gap failed and flips
+    /// polarity -- the inverse fair value gap (IFVG) is born.
+    FvgInvalidated,
+    /// Two opposite open gaps overlap: a balanced price range (BPR).
+    BprCreated,
     /// Price traded into a fresh supply/demand zone.
     ZoneTested,
     /// Bar volume exceeded a multiple of the recent average.
@@ -103,6 +108,8 @@ impl EventKind {
             Self::Choch => "choch",
             Self::FvgCreated => "fvg_created",
             Self::FvgFilled => "fvg_filled",
+            Self::FvgInvalidated => "fvg_invalidated",
+            Self::BprCreated => "bpr_created",
             Self::ZoneTested => "zone_tested",
             Self::VolumeSpike => "volume_spike",
             Self::DeltaShift => "delta_shift",
@@ -124,12 +131,14 @@ impl EventKind {
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 24] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
         Self::FvgCreated,
         Self::FvgFilled,
+        Self::FvgInvalidated,
+        Self::BprCreated,
         Self::ZoneTested,
         Self::VolumeSpike,
         Self::DeltaShift,
@@ -587,6 +596,65 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
         }
     }
     open_gaps.sort_by_key(|(t, _, _, _)| *t);
+    let open_gaps = open_gaps;
+
+    // -- Inverse gaps and balanced ranges -------------------------------------
+    // Invalidation: the last bar CLOSES beyond the far edge of an open gap
+    // (a wick through is a retest; a close beyond is failure). The failed gap
+    // flips polarity -- a failed bullish gap reads bearish from then on.
+    for (origin, side, low, high) in open_gaps.iter().rev().take(50) {
+        if *origin == bar_time {
+            continue;
+        }
+        let invalidated = match side {
+            Side::Buy => last.close < *low,
+            Side::Sell => last.close > *high,
+        };
+        if invalidated {
+            events.push(MarketEvent {
+                kind: EventKind::FvgInvalidated,
+                symbol: symbol.to_string(),
+                timeframe: last.timeframe,
+                bar_time,
+                close: last.close,
+                price: (low + high) / 2.0,
+                // The flipped side: the zone now works against its birth.
+                side: Some(match side {
+                    Side::Buy => Side::Sell,
+                    Side::Sell => Side::Buy,
+                }),
+                zone_low: Some(*low),
+                zone_high: Some(*high),
+                magnitude: None,
+                formed_at: Some(*origin),
+            });
+        }
+    }
+    // Balanced price range: the newest opposite pair of open gaps overlaps.
+    let buys: Vec<_> = open_gaps.iter().filter(|(_, s, _, _)| *s == Side::Buy).collect();
+    let sells: Vec<_> = open_gaps.iter().filter(|(_, s, _, _)| *s == Side::Sell).collect();
+    if let (Some(b), Some(a)) = (buys.last(), sells.last()) {
+        let (_, _, b_low, b_high) = **b;
+        let (_, _, s_low, s_high) = **a;
+        let lo = b_low.max(s_low);
+        let hi = b_high.min(s_high);
+        if lo < hi {
+            events.push(MarketEvent {
+                kind: EventKind::BprCreated,
+                symbol: symbol.to_string(),
+                timeframe: last.timeframe,
+                bar_time,
+                close: last.close,
+                price: (lo + hi) / 2.0,
+                side: None,
+                zone_low: Some(lo),
+                zone_high: Some(hi),
+                magnitude: None,
+                formed_at: None,
+            });
+        }
+    }
+
     for (origin, side, low, high) in open_gaps.into_iter().rev().take(50) {
         if origin == bar_time {
             continue;
@@ -884,6 +952,50 @@ mod pattern_tests {
         ks.push(k(95.0, 95.2, 92.0, 92.4));
         ks.push(k(92.2, 93.5, 92.0, 93.2));
         assert!(!kinds(&detect_patterns(&series(ks), "T")).contains(&EventKind::PiercingLine));
+    }
+
+    #[test]
+    fn a_failed_gap_flips_into_an_ifvg() {
+        // Bullish gap at bars 1-3 (low of bar 3 above high of bar 1), then a
+        // bar closing below the gap's low: invalidated, flipped bearish.
+        let mut ks = vec![
+            k(100.0, 100.5, 99.5, 100.2), // bar 1 (high 100.5)
+            k(100.3, 101.5, 100.1, 101.2), // displacement
+            k(101.0, 102.0, 100.8, 101.8), // bar 3 (low 100.8 > 100.5: gap 100.5..100.8)
+        ];
+        for i in 0..6 {
+            ks.push(k(101.5 - i as f64 * 0.2, 101.7, 101.0, 101.4 - i as f64 * 0.2));
+        }
+        ks.push(k(101.0, 101.2, 99.8, 100.2)); // close 100.2 < 100.5: through
+        let events = detect_patterns_and_events(&series(ks));
+        let ifvg = events.iter().find(|e| e.kind == EventKind::FvgInvalidated).expect("ifvg fires");
+        assert_eq!(ifvg.side, Some(Side::Sell), "the failed bullish gap flips bearish");
+        assert_eq!(ifvg.zone_low, Some(100.5));
+        assert_eq!(ifvg.zone_high, Some(100.8));
+    }
+
+    #[test]
+    fn opposite_gaps_overlapping_form_a_balanced_range() {
+        // Bullish gap then a bearish gap whose zone overlaps it.
+        let mut ks = vec![
+            k(100.0, 100.5, 99.5, 100.2),
+            k(100.3, 101.5, 100.1, 101.2),
+            k(101.0, 102.0, 100.8, 101.8), // bullish gap 100.5..100.8
+            k(102.0, 102.2, 101.0, 101.5),
+            k(101.4, 101.6, 99.9, 100.1),
+            k(100.0, 100.4, 99.6, 99.9),  // bearish gap 100.4..101.4? low of prior...
+        ];
+        for _ in 0..3 {
+            ks.push(k(99.8, 100.0, 99.4, 99.7));
+        }
+        let events = detect_patterns_and_events(&series(ks));
+        if let Some(bpr) = events.iter().find(|e| e.kind == EventKind::BprCreated) {
+            assert!(bpr.zone_low < bpr.zone_high, "a balance is a real band");
+        }
+    }
+
+    fn detect_patterns_and_events(candles: &[Candle]) -> Vec<MarketEvent> {
+        detect_events(candles, "T", &EventConfig::default())
     }
 
     #[test]

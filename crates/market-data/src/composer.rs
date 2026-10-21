@@ -40,6 +40,11 @@ pub struct Composition {
     pub conditions: Condition,
     /// The risk block.
     pub risk: RiskBlock,
+    /// Per-concept parameter overrides (trader A's BOS is not trader B's):
+    /// `{ "smc.bos": { "swing_lookback": 5 } }`. Absent means the registry's
+    /// defaults, which is what every existing document already means.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub parameters: std::collections::HashMap<String, std::collections::HashMap<String, f64>>,
 }
 
 /// The side a composition trades.
@@ -190,6 +195,32 @@ pub fn validate(doc: &Composition) -> Result<(), Vec<ValidationError>> {
         });
     }
     validate_condition(&doc.conditions, "conditions", 0, &mut errors);
+    // Parameter overrides must name a registered concept, one of ITS
+    // parameters, and a value inside the declared range -- a mistyped knob
+    // must not silently become a different strategy.
+    for (concept_id, params) in &doc.parameters {
+        match crate::concepts::concept(concept_id) {
+            None => errors.push(ValidationError {
+                path: format!("parameters.{concept_id}"),
+                message: format!("`{concept_id}` is not a registered concept"),
+            }),
+            Some(spec) => {
+                for (name, value) in params {
+                    match spec.parameters.iter().find(|p| p.name == name.as_str()) {
+                        None => errors.push(ValidationError {
+                            path: format!("parameters.{concept_id}.{name}"),
+                            message: format!("`{name}` is not a parameter of {concept_id}"),
+                        }),
+                        Some(param) if *value < param.min || *value > param.max => errors.push(ValidationError {
+                            path: format!("parameters.{concept_id}.{name}"),
+                            message: format!("{value} is outside {name}'s range {}..{}", param.min, param.max),
+                        }),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
     if let StopKind::AtrMultiple { multiple } = &doc.risk.stop {
         if !(*multiple > 0.0 && multiple.is_finite()) {
             errors.push(ValidationError {
@@ -274,6 +305,32 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
             }
         }
     }
+}
+
+/// Build the engine's config from a document's parameter overrides.
+///
+/// Known parameters map onto the engine's own knobs; anything not named here
+/// keeps its default (validation already refused unknown names, so a param
+/// that lands here is always a known one).
+#[must_use]
+pub fn event_config_for(
+    parameters: &std::collections::HashMap<String, std::collections::HashMap<String, f64>>,
+) -> analytics_core::events::EventConfig {
+    let mut config = analytics_core::events::EventConfig::default();
+    for params in parameters.values() {
+        for (name, value) in params {
+            match name.as_str() {
+                "swing_lookback" => config.structure_lookback = (*value as usize).max(3),
+                "spike_multiple" => {
+                    config.volume_multiplier = *value;
+                    config.delta_multiplier = *value;
+                }
+                "fvg_min_fraction" => config.fvg_min_fraction = *value,
+                _ => {}
+            }
+        }
+    }
+    config
 }
 
 /// One fired signal: bar index, the direction, the structure level the stop
@@ -488,6 +545,7 @@ mod tests {
                 stop: StopKind::Structure,
                 sizing: SizeKind::Fixed { quantity: 1.0 },
             },
+            parameters: std::collections::HashMap::new(),
         }
     }
 
@@ -631,6 +689,45 @@ mod tests {
         // The spike's lookback (2 bars) lapses at bar 4 while the bos's (5)
         // still holds -- so the veto lifts and the group fires here.
         assert!(composer.on_bar(4, &[]).is_some(), "the lapsed veto lets the bos through");
+    }
+
+    #[test]
+    fn parameter_overrides_validate_and_reach_the_engine_config() {
+        let mut document = doc(Condition::Concept {
+            concept: "smc.bos".to_string(),
+            direction: DirectionReq::Bullish,
+            lookback_bars: None,
+        });
+        // A trader's own swing lookback validates and lands on the engine knob.
+        document.parameters.insert(
+            "smc.bos".to_string(),
+            [("swing_lookback".to_string(), 5.0)].into_iter().collect(),
+        );
+        assert!(validate(&document).is_ok());
+        let config = event_config_for(&document.parameters);
+        assert_eq!(config.structure_lookback, 5, "the override reached the engine");
+        // A spike override hits both spike thresholds.
+        document.parameters.insert(
+            "volume.spike".to_string(),
+            [("spike_multiple".to_string(), 4.0)].into_iter().collect(),
+        );
+        let config = event_config_for(&document.parameters);
+        assert_eq!(config.volume_multiplier, 4.0);
+        assert_eq!(config.delta_multiplier, 4.0);
+        // Out of range: refused with the parameter's own limits.
+        document.parameters.insert(
+            "smc.bos".to_string(),
+            [("swing_lookback".to_string(), 99.0)].into_iter().collect(),
+        );
+        let errors = validate(&document).expect_err("out of range");
+        assert!(errors.iter().any(|e| e.path.contains("swing_lookback")), "{errors:?}");
+        // An unknown parameter: refused by name.
+        document.parameters.insert(
+            "smc.bos".to_string(),
+            [("wick_mode".to_string(), 1.0)].into_iter().collect(),
+        );
+        let errors = validate(&document).expect_err("unknown param");
+        assert!(errors.iter().any(|e| e.message.contains("not a parameter")), "{errors:?}");
     }
 
     #[test]

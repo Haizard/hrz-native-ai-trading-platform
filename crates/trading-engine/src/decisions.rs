@@ -239,11 +239,11 @@ impl ComposerStrategy {
     #[must_use]
     pub fn new(document: market_data::composer::Composition, symbol: &str) -> Self {
         Self {
+            config: market_data::composer::event_config_for(&document.parameters),
             composer: market_data::composer::Composer::new(document),
             symbol: symbol.to_string(),
             bar: 0,
             history: Vec::new(),
-            config: analytics_core::events::EventConfig::default(),
         }
     }
 
