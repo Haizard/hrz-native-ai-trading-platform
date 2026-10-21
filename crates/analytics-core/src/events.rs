@@ -133,6 +133,15 @@ pub enum EventKind {
     MitigationBlockMitigated,
     /// A close beyond the mitigation block's far edge.
     MitigationBlockInvalidated,
+    /// A sweep whose reclaim bar itself closes in the reversal direction --
+    /// the grab that precedes the turn.
+    LiquidityGrab,
+    /// The nearest opposing swing liquidity in the trend's direction: the
+    /// trap before the real move.
+    Inducement,
+    /// A break of a significant swing that re-enters the range within a few
+    /// bars (Linda Raschke's turtle soup).
+    TurtleSoup,
 }
 
 impl EventKind {
@@ -180,11 +189,14 @@ impl EventKind {
             Self::MitigationBlockCreated => "mitigation_block_created",
             Self::MitigationBlockMitigated => "mitigation_block_mitigated",
             Self::MitigationBlockInvalidated => "mitigation_block_invalidated",
+            Self::LiquidityGrab => "liquidity_grab",
+            Self::Inducement => "inducement",
+            Self::TurtleSoup => "turtle_soup",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 43] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -225,6 +237,9 @@ impl EventKind {
         Self::MitigationBlockCreated,
         Self::MitigationBlockMitigated,
         Self::MitigationBlockInvalidated,
+        Self::LiquidityGrab,
+        Self::Inducement,
+        Self::TurtleSoup,
     ];
 }
 
@@ -366,6 +381,123 @@ impl EventConfig {
 ///   [`EventConfig::spike_average_bars`] bars before it.
 /// * **Candlestick patterns** -- the shape + trend-context pass
 ///   ([`detect_patterns`]), merged into the same stream before the sort.
+
+/// The liquidity-family pass: the grab, the inducement, the turtle soup.
+///
+/// The distinctions from the plain sweep: the grab reads the RECLAIM bar
+/// itself (a sweep whose bar closes in the reversal direction is conviction,
+/// not noise); the inducement is the NEAREST opposing liquidity in the
+/// trend's direction (the trap before continuation); the turtle soup is the
+/// failed break of a *significant* swing with fast re-entry, Linda
+/// Raschke's rule over the same structure.
+pub fn detect_liquidity_family(candles: &[Candle], symbol: &str, config: &EventConfig) -> Vec<MarketEvent> {
+    const SOUP_RANGE_BARS: usize = 20;
+    const SOUP_REENTRY_BARS: usize = 4;
+
+    let mut out = Vec::new();
+    let lb = config.structure_lookback;
+    // The grab's own floor (swing + a couple); the soup's larger window is
+    // guarded by its own `i < SOUP_RANGE_BARS` skip below.
+    if candles.len() < lb * 2 + 4 {
+        return out;
+    }
+    let last = candles.last().expect("checked above");
+    let bar_time = last.open_time;
+    let tf = last.timeframe;
+    let n = candles.len() - 1;
+    let mut push = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>, formed: Option<i64>| {
+        out.push(MarketEvent {
+            kind,
+            symbol: symbol.to_string(),
+            timeframe: tf,
+            bar_time,
+            close: last.close,
+            price,
+            side,
+            zone_low: low,
+            zone_high: high,
+            magnitude: None,
+            formed_at: formed,
+        });
+    };
+
+    // -- Liquidity grab --------------------------------------------------------
+    // The newest sweep whose own bar closed in the reversal direction: a
+    // wick through the swing and a close with conviction the other way.
+    for i in (n.saturating_sub(10)..=n).rev() {
+        let k = &candles[i];
+        if i < lb + 1 {
+            break;
+        }
+        let swing_high = candles[i - lb - 1..i].iter().map(|b| b.high).fold(f64::MIN, f64::max);
+        let swing_low = candles[i - lb - 1..i].iter().map(|b| b.low).fold(f64::MAX, f64::min);
+        if k.low < swing_low && k.close > swing_low && k.close > k.open {
+            push(EventKind::LiquidityGrab, Some(Side::Buy), swing_low, None, None, Some(candles[i].open_time));
+            break;
+        }
+        if k.high > swing_high && k.close < swing_high && k.close < k.open {
+            push(EventKind::LiquidityGrab, Some(Side::Sell), swing_high, None, None, Some(candles[i].open_time));
+            break;
+        }
+    }
+
+    // -- Inducement --------------------------------------------------------------
+    // The trend from the newest structure swings; the inducement is the
+    // NEAREST opposing swing on the other side of current price.
+    let mut highs: Vec<f64> = Vec::new();
+    let mut lows: Vec<f64> = Vec::new();
+    for i in lb..n.saturating_sub(lb) {
+        let k = &candles[i];
+        if (i - lb..=i + lb).all(|j| j == i || candles[j].high < k.high) {
+            highs.push(k.high);
+        }
+        if (i - lb..=i + lb).all(|j| j == i || candles[j].low > k.low) {
+            lows.push(k.low);
+        }
+    }
+    let uptrend = highs.len() >= 2 && lows.len() >= 2
+        && highs[highs.len() - 1] > highs[highs.len() - 2]
+        && lows[lows.len() - 1] > lows[lows.len() - 2];
+    let downtrend = highs.len() >= 2 && lows.len() >= 2
+        && highs[highs.len() - 1] < highs[highs.len() - 2]
+        && lows[lows.len() - 1] < lows[lows.len() - 2];
+    if uptrend {
+        if let Some(nearest) = lows.last() {
+            // The nearest swing low below price is the sell-side trap.
+            push(EventKind::Inducement, Some(Side::Sell), *nearest, None, None, None);
+        }
+    } else if downtrend {
+        if let Some(nearest) = highs.last() {
+            push(EventKind::Inducement, Some(Side::Buy), *nearest, None, None, None);
+        }
+    }
+
+    // -- Turtle soup -------------------------------------------------------------
+    // A close beyond the 20-bar extreme within the last SOUP_REENTRY_BARS
+    // bars, already re-entered (the newest close is back inside the range).
+    let top = candles[n.saturating_sub(SOUP_RANGE_BARS)..n].iter().map(|k| k.high).fold(f64::MIN, f64::max);
+    let bottom = candles[n.saturating_sub(SOUP_RANGE_BARS)..n].iter().map(|k| k.low).fold(f64::MAX, f64::min);
+    for i in (n.saturating_sub(SOUP_REENTRY_BARS)..n).rev() {
+        let k = &candles[i];
+        if i < SOUP_RANGE_BARS {
+            continue;
+        }
+        let prior_top = candles[i - SOUP_RANGE_BARS..i].iter().map(|b| b.high).fold(f64::MIN, f64::max);
+        let prior_bottom = candles[i - SOUP_RANGE_BARS..i].iter().map(|b| b.low).fold(f64::MAX, f64::min);
+        if k.close > prior_top && last.close < prior_top {
+            // Broke the top and came back: short-side soup.
+            push(EventKind::TurtleSoup, Some(Side::Sell), prior_top, None, None, Some(candles[i].open_time));
+            break;
+        }
+        if k.close < prior_bottom && last.close > prior_bottom {
+            push(EventKind::TurtleSoup, Some(Side::Buy), prior_bottom, None, None, Some(candles[i].open_time));
+            break;
+        }
+    }
+    let _ = (top, bottom);
+
+    out
+}
 
 /// The extended SMC pass: equal levels, rejection blocks, mitigation blocks.
 ///
@@ -616,7 +748,13 @@ pub fn detect_order_blocks(candles: &[Candle], symbol: &str, config: &EventConfi
             Side::Buy => last.close < *low,
             Side::Sell => last.close > *high,
         };
-        if invalidated {
+        // First breach only, as with the IFVG flip: the block becomes a
+        // breaker once, not on every later bar the close stays beyond.
+        let already = match side {
+            Side::Buy => candles[n - 1].close < *low,
+            Side::Sell => candles[n - 1].close > *high,
+        };
+        if invalidated && !already {
             out.push(MarketEvent {
                 kind: EventKind::OrderBlockInvalidated,
                 symbol: symbol.to_string(),
@@ -1172,7 +1310,15 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
             Side::Buy => last.close < *low,
             Side::Sell => last.close > *high,
         };
-        if invalidated {
+        // First breach only: an invalidated gap flips ONCE. A bar whose
+        // predecessor already closed beyond is the flip's aftermath, not a
+        // new event -- without this dedup the replay fires the same gap on
+        // every later bar.
+        let already = match side {
+            Side::Buy => candles[candles.len() - 2].close < *low,
+            Side::Sell => candles[candles.len() - 2].close > *high,
+        };
+        if invalidated && !already {
             events.push(MarketEvent {
                 kind: EventKind::FvgInvalidated,
                 symbol: symbol.to_string(),
@@ -1336,6 +1482,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_price_action(candles, symbol));
     events.extend(detect_order_blocks(candles, symbol, &config));
     events.extend(detect_smc_extended(candles, symbol, &config));
+    events.extend(detect_liquidity_family(candles, symbol, &config));
 
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
@@ -1529,7 +1676,7 @@ mod pattern_tests {
             k(101.0, 102.0, 100.8, 101.8), // bar 3 (low 100.8 > 100.5: gap 100.5..100.8)
         ];
         for i in 0..6 {
-            ks.push(k(101.5 - i as f64 * 0.2, 101.7, 101.0, 101.4 - i as f64 * 0.2));
+            ks.push(k(101.5 - i as f64 * 0.1, 101.7, 100.9, 101.4 - i as f64 * 0.1));
         }
         ks.push(k(101.0, 101.2, 99.8, 100.2)); // close 100.2 < 100.5: through
         let events = detect_patterns_and_events(&series(ks));
@@ -1685,6 +1832,69 @@ mod pattern_tests {
             .expect("breaker fires");
         assert_eq!(brk.side, Some(Side::Sell), "the failed bullish OB flips bearish");
         assert_eq!(brk.zone_low, Some(99.6));
+    }
+
+    #[test]
+    fn a_grab_needs_the_conviction_close() {
+        // Sweep of the swing low with a BULLISH close on the same bar.
+        let mut ks: Vec<Candle> = (0..14).map(|_| k(100.0, 100.5, 99.5, 100.2)).collect();
+        ks.push(k(100.1, 100.6, 98.9, 100.4)); // wick below 99.5, closes up
+        let events = detect_patterns_and_events(&series(ks));
+        let grab = events.iter().find(|e| e.kind == EventKind::LiquidityGrab).expect("grab");
+        assert_eq!(grab.side, Some(Side::Buy));
+        // A sweep closing DOWN is a sweep, not a grab.
+        let mut ks: Vec<Candle> = (0..14).map(|_| k(100.0, 100.5, 99.5, 100.2)).collect();
+        ks.push(k(100.4, 100.5, 98.9, 99.6)); // wick below, but the close is bearish
+        assert!(!kinds(&detect_patterns_and_events(&series(ks))).contains(&EventKind::LiquidityGrab));
+    }
+
+    #[test]
+    fn inducement_names_the_nearest_trap_liquidity() {
+        // Uptrend with stepping swings: inducement is the newest swing low.
+        let mut ks: Vec<Candle> = (0..3).map(|_| k(99.8, 100.2, 99.4, 99.9)).collect();
+        let path = [
+            (100.0, 100.5, 99.3, 100.2),
+            (100.2, 102.0, 100.0, 101.6), // swing high
+            (101.6, 101.8, 100.8, 101.0),
+            (101.0, 101.2, 99.0, 99.4),  // swing low 99
+            (99.4, 100.6, 101.0, 100.4),
+            (100.4, 101.8, 101.2, 101.5),
+            (101.5, 102.0, 101.3, 101.7),
+            (101.7, 102.2, 101.4, 101.9),
+            (101.9, 104.0, 101.6, 103.6), // swing high 104
+            (103.6, 103.8, 102.6, 103.0),
+            (103.0, 103.2, 101.0, 101.4), // swing low 101 (the inducement)
+            (101.4, 101.6, 101.2, 101.5),
+        ];
+        for (o, h, l, c) in path {
+            ks.push(k(o, h, l, c));
+        }
+        for _ in 0..10 {
+            ks.push(k(101.4, 101.6, 101.2, 101.5));
+        }
+        let events = detect_patterns_and_events(&series(ks));
+        let ind = events.iter().find(|e| e.kind == EventKind::Inducement).expect("inducement");
+        assert_eq!(ind.side, Some(Side::Sell), "the trap in an uptrend is the sell-side low");
+        assert_eq!(ind.price, 101.0);
+    }
+
+    #[test]
+    fn turtle_soup_is_a_fast_failed_break_of_a_big_swing() {
+        // 20-bar range, a close above the top, and a close back inside within
+        // four bars.
+        let mut ks: Vec<Candle> = (0..20).map(|_| k(100.2, 101.0, 100.0, 100.5)).collect();
+        ks.push(k(100.8, 102.0, 100.6, 101.8)); // close above the 20-bar top
+        ks.push(k(101.6, 101.9, 100.8, 101.5));
+        ks.push(k(101.4, 101.6, 100.2, 100.5)); // back inside: soup
+        let events = detect_patterns_and_events(&series(ks));
+        let soup = events.iter().find(|e| e.kind == EventKind::TurtleSoup).expect("soup");
+        assert_eq!(soup.side, Some(Side::Sell), "the failed upside break is short-side soup");
+        assert_eq!(soup.price, 101.0);
+        // Still beyond the level (no re-entry yet): not soup yet.
+        let mut ks: Vec<Candle> = (0..20).map(|_| k(100.2, 101.0, 100.0, 100.5)).collect();
+        ks.push(k(100.8, 102.0, 100.6, 101.8));
+        ks.push(k(101.6, 102.0, 101.2, 101.7));
+        assert!(!kinds(&detect_patterns_and_events(&series(ks))).contains(&EventKind::TurtleSoup));
     }
 
     #[test]

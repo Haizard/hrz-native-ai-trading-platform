@@ -5422,13 +5422,18 @@ function createChartPane(root, hooks = {}) {
     }
   }
 
-  /// Fetch the enabled concepts' events. Cheap and bar-close-cadenced: the
-  /// events are bar facts, so the pane's refresh cycle is the right pulse.
+  /// Fetch the enabled concepts' events. The BACKSCAN route, not the live
+  /// lane: the watcher only records from when it started, and a chart that
+  /// opens on 500 candles of history must show what those candles already
+  /// produced -- the trader toggles a concept to see it work on what is on
+  /// screen, not to wait for the next bar. Bar-close cadenced like the
+  /// pane's own refresh.
   async function refreshConceptEvents() {
     const symbol = el("symbol") && el("symbol").value;
-    if (!symbol || enabledConcepts.size === 0) { conceptEvents = []; return; }
+    const timeframe = el("timeframe") && el("timeframe").value;
+    if (!symbol || !timeframe || enabledConcepts.size === 0) { conceptEvents = []; return; }
     try {
-      const body = await api(`/concept-events?symbol=${encodeURIComponent(symbol)}`);
+      const body = await api(`/concept-events/scan?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`);
       conceptEvents = (body && body.events) || [];
     } catch {
       conceptEvents = [];

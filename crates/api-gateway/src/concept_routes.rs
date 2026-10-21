@@ -110,6 +110,61 @@ pub async fn concept_events(
     Ok(Json(ConceptEventsResponse { symbol, events }))
 }
 
+/// `/concept-events/scan` query: a full replay over the chart's own candles.
+#[derive(Debug, Deserialize)]
+pub struct ScanQuery {
+    /// The instrument (required).
+    pub symbol: String,
+    /// The chart's timeframe (required: events are per-resolution).
+    pub timeframe: String,
+    /// How many bars to scan (default 500, capped at 1000).
+    pub limit: Option<usize>,
+}
+
+/// `GET /concept-events/scan`: the explorer's backscan.
+///
+/// The live lane (`/concept-events`) only knows what the watcher recorded
+/// SINCE it started watching -- a chart that opens on 500 candles of history
+/// would show nothing until new bars closed. This route replays detection
+/// over the chart's own window (the composer backtest's mechanism), so a
+/// toggled concept renders across the candles already on screen.
+pub async fn scan(
+    State(state): State<AppState>,
+    Query(query): Query<ScanQuery>,
+) -> Result<Json<ConceptEventsResponse>, ApiError> {
+    let symbol = query.symbol.to_uppercase();
+    let tf: analytics_core::types::Timeframe = query.timeframe.parse().map_err(|_| {
+        ApiError::bad_request("TIMEFRAME_UNKNOWN", format!("`{}` is not a timeframe this platform serves", query.timeframe))
+    })?;
+    let limit = query.limit.unwrap_or(500).clamp(50, 1000);
+    let to_ns = crate::now_ns();
+    let from_ns = to_ns - limit as i64 * tf.nanos();
+    let window = state
+        .windows
+        .candles_capped(&symbol, tf, from_ns, to_ns, limit)
+        .await
+        .map_err(|e| ApiError::unavailable(format!("no candles for {symbol}: {e}")))?;
+    let candles = window.candles;
+    let config = analytics_core::events::EventConfig::default();
+    let mut events: Vec<market_data::concepts::ConceptEvent> = Vec::new();
+    // The replay: per bar, detect on the trailing window, keep only the
+    // events that bar itself produced (the engine's own replay rule).
+    for bar in 22..candles.len() {
+        let raw = analytics_core::events::detect_events(&candles[..=bar], &symbol, &config);
+        events.extend(
+            raw.iter()
+                .filter(|e| e.bar_time == candles[bar].open_time)
+                .filter_map(market_data::concepts::as_concept_event),
+        );
+    }
+    // Bounded for the pane: the newest 200, chronological.
+    let start = events.len().saturating_sub(200);
+    Ok(Json(ConceptEventsResponse {
+        symbol,
+        events: events.split_off(start),
+    }))
+}
+
 /// `POST /compositions/backtest` body.
 #[derive(Debug, Deserialize)]
 pub struct BacktestRequest {
