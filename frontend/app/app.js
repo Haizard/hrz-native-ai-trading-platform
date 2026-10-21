@@ -2853,7 +2853,15 @@ function createChartPane(root, hooks = {}) {
     }
 
     try {
-      candles = await loadCandles();
+      const incoming = await loadCandles();
+      // Merge, never replace: a degraded response (a venue refusal serving
+      // only the live buffer's two bars) must not shrink the chart's
+      // history to those two. New bars upsert by open_time -- the forming
+      // bar and the newest closed bars update, the older history stays. A
+      // full window replaces everything by covering it, and a symbol or
+      // timeframe change starts empty by way of resetSeries, so this only
+      // ever protects against partial fetches.
+      candles = mergeSeries(candles, incoming);
       render();
       if (!message.textContent) message.textContent = candles.length ? "" : "no candles in this window";
     } catch (e) {
@@ -3928,6 +3936,21 @@ function createChartPane(root, hooks = {}) {
   /// previous chart lying about what it was showing. Both go before the fetch:
   /// a chart that briefly shows nothing is honest, and the fetch repaints it
   /// the moment it has something true to show.
+  /// Upsert `incoming` into `existing` by open_time, sorted, capped at two
+  /// window-lengths so the merge cannot grow the series without bound.
+  function mergeSeries(existing, incoming) {
+    if (!existing.length) return incoming;
+    if (!incoming.length) return existing;
+    const byTime = new Map(existing.map((c) => [c.open_time ?? c.time, c]));
+    for (const c of incoming) {
+      byTime.set(c.open_time ?? c.time, c);
+    }
+    const cap = Math.max(incoming.length, existing.length) * 2;
+    return [...byTime.values()]
+      .sort((a, b) => (a.open_time ?? a.time) - (b.open_time ?? b.time))
+      .slice(-cap);
+  }
+
   function resetSeries() {
     resetViewport();
     candles = [];
@@ -5444,7 +5467,7 @@ function createChartPane(root, hooks = {}) {
   /// (origin to end), structure is dashed segments (swing to break), candle
   /// patterns are names on their own candle. Sides carry the color; the
   /// shape carries the concept -- never one line for everything.
-  const CONCEPT_ZONE_IDS = new Set(["smc.fvg", "smc.ifvg", "smc.bpr", "smc.order_block", "smc.breaker_block", "sd.zone_tested", "smc.premium_discount", "smc.mitigation_block", "smc.rejection_block", "smc.equal_levels"]);
+  const CONCEPT_ZONE_IDS = new Set(["smc.fvg", "smc.ifvg", "smc.bpr", "smc.order_block", "smc.breaker_block", "sd.zone_tested", "smc.premium_discount", "smc.mitigation_block", "smc.rejection_block", "smc.equal_levels", "session.london_killzone", "session.new_york_killzone", "session.asian_range"]);
   const BULL = 0xcc26a69a; // teal, 0xAARRGGBB
   const BEAR = 0xccef5350; // red
   const NEUT = 0xcc90a4ae; // slate (premium/discount, sweeps)

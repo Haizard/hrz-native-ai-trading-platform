@@ -42,6 +42,8 @@ pub enum Library {
     Candles,
     /// Price action: breakouts, retests, structure, ranges.
     PriceAction,
+    /// Session concepts: kill zones and session ranges, in UTC.
+    Session,
 }
 
 impl Library {
@@ -55,6 +57,7 @@ impl Library {
             Self::OrderFlow => "order_flow",
             Self::Candles => "candles",
             Self::PriceAction => "pa",
+            Self::Session => "session",
         }
     }
 }
@@ -333,6 +336,36 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             event_kinds: &[EventKind::TurtleSoup],
+        },
+        ConceptSpec {
+            id: "session.london_killzone",
+            version: "1.0.0",
+            library: Library::Session,
+            name: "London Kill Zone",
+            description: "07:00-10:00 UTC (ICT's London window) -- the range the session formed, drawn as its own box",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::LondonKillZone],
+        },
+        ConceptSpec {
+            id: "session.new_york_killzone",
+            version: "1.0.0",
+            library: Library::Session,
+            name: "New York Kill Zone",
+            description: "12:00-15:00 UTC (ICT's New York window) -- the range the session formed, drawn as its own box",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::NewYorkKillZone],
+        },
+        ConceptSpec {
+            id: "session.asian_range",
+            version: "1.0.0",
+            library: Library::Session,
+            name: "Asian Range",
+            description: "00:00-07:00 UTC -- the band the Asian session built, which London and New York trade against",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::AsianRange],
         },
         ConceptSpec {
             id: "sd.zone_tested",

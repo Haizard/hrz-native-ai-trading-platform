@@ -142,6 +142,13 @@ pub enum EventKind {
     /// A break of a significant swing that re-enters the range within a few
     /// bars (Linda Raschke's turtle soup).
     TurtleSoup,
+    /// The London kill zone's window and the range it formed (ICT session
+    /// concepts; times in UTC, the platform's clock).
+    LondonKillZone,
+    /// The New York kill zone's window and the range it formed.
+    NewYorkKillZone,
+    /// The Asian session's high/low band for the day.
+    AsianRange,
 }
 
 impl EventKind {
@@ -192,11 +199,14 @@ impl EventKind {
             Self::LiquidityGrab => "liquidity_grab",
             Self::Inducement => "inducement",
             Self::TurtleSoup => "turtle_soup",
+            Self::LondonKillZone => "london_kill_zone",
+            Self::NewYorkKillZone => "new_york_kill_zone",
+            Self::AsianRange => "asian_range",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 46] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -240,6 +250,9 @@ impl EventKind {
         Self::LiquidityGrab,
         Self::Inducement,
         Self::TurtleSoup,
+        Self::LondonKillZone,
+        Self::NewYorkKillZone,
+        Self::AsianRange,
     ];
 }
 
@@ -381,6 +394,77 @@ impl EventConfig {
 ///   [`EventConfig::spike_average_bars`] bars before it.
 /// * **Candlestick patterns** -- the shape + trend-context pass
 ///   ([`detect_patterns`]), merged into the same stream before the sort.
+
+/// The session pass: kill zones and the Asian range, in the platform's own
+/// clock (UTC). ICT's windows are quoted in New York time; these are the UTC
+/// equivalents for the winter offset (London 07:00-10:00 UTC ~= 02:00-05:00
+/// ET, New York 12:00-15:00 UTC ~= 07:00-10:00 ET), documented rather than
+/// DST-fudged -- the day ET rules change, these constants are the one place
+/// to move.
+pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
+    // (kind, start hour UTC, end hour UTC)
+    const WINDOWS: &[(EventKind, u32, u32)] = &[
+        (EventKind::AsianRange, 0, 7),
+        (EventKind::LondonKillZone, 7, 10),
+        (EventKind::NewYorkKillZone, 12, 15),
+    ];
+    const HOUR_NS: i64 = 3_600_000_000_000;
+    const DAY_NS: i64 = 24 * HOUR_NS;
+
+    let mut out = Vec::new();
+    if candles.len() < 2 {
+        return out;
+    }
+    let last = candles.last().expect("checked above");
+    let bar_time = last.open_time;
+    let tf = last.timeframe;
+
+    for (kind, start_hour, end_hour) in WINDOWS {
+        // The newest completed window of this kind: a session event fires
+        // ONCE per window, at the bar that crosses its end -- which is what
+        // keeps a replay from re-firing yesterday's kill zone at every bar
+        // since.
+        let day_of = last.open_time.div_euclid(DAY_NS);
+        let newest_hour = ((last.open_time % DAY_NS) / HOUR_NS) as u32;
+        let prev_hour = ((candles[candles.len() - 2].open_time % DAY_NS) / HOUR_NS) as u32;
+        // The crossing: the previous bar was still inside (or before) the
+        // window, and the newest is at-or-after its end.
+        let just_closed = prev_hour < *end_hour && newest_hour >= *end_hour;
+        if !just_closed {
+            continue;
+        }
+        // Today's slice inside the session hours, ending at the window end.
+        let session: Vec<&Candle> = candles
+            .iter()
+            .filter(|k| {
+                k.open_time.div_euclid(DAY_NS) == day_of
+                    && (((k.open_time % DAY_NS) / HOUR_NS) as u32) >= *start_hour
+                    && (((k.open_time % DAY_NS) / HOUR_NS) as u32) < *end_hour
+            })
+            .collect();
+        if session.is_empty() {
+            continue;
+        }
+        let low = session.iter().map(|k| k.low).fold(f64::MAX, f64::min);
+        let high = session.iter().map(|k| k.high).fold(f64::MIN, f64::max);
+        let from = session.first().expect("checked above").open_time;
+        out.push(MarketEvent {
+            kind: *kind,
+            symbol: symbol.to_string(),
+            timeframe: tf,
+            bar_time,
+            close: last.close,
+            price: (low + high) / 2.0,
+            side: None,
+            zone_low: Some(low),
+            zone_high: Some(high),
+            magnitude: None,
+            formed_at: Some(from),
+        });
+    }
+
+    out
+}
 
 /// The liquidity-family pass: the grab, the inducement, the turtle soup.
 ///
@@ -1483,6 +1567,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_order_blocks(candles, symbol, &config));
     events.extend(detect_smc_extended(candles, symbol, &config));
     events.extend(detect_liquidity_family(candles, symbol, &config));
+    events.extend(detect_sessions(candles, symbol));
 
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
@@ -1832,6 +1917,50 @@ mod pattern_tests {
             .expect("breaker fires");
         assert_eq!(brk.side, Some(Side::Sell), "the failed bullish OB flips bearish");
         assert_eq!(brk.zone_low, Some(99.6));
+    }
+
+    #[test]
+    fn a_kill_zone_fires_once_at_the_bars_crossing_its_end() {
+        // Two days of hourly bars: the London window (07:00-10:00 UTC) forms
+        // its box exactly when the 10:00 bar arrives.
+        // Midnight-aligned: 20833 UTC days in nanos, so "hour of day" is exact.
+        let day = 20833_i64 * 86_400_000_000_000_i64;
+        let hour = 3_600_000_000_000_i64;
+        let mut ks = Vec::new();
+        for d in 0..2 {
+            for h in 0..24 {
+                let t = day + d * 24 * hour + h * hour;
+                let base = 100.0 + (d * 24 + h) as f64 * 0.05;
+                ks.push(Candle {
+                    symbol: "T".to_string(),
+                    timeframe: crate::types::Timeframe::H1,
+                    open_time: t,
+                    open: base,
+                    high: base + 0.4,
+                    low: base - 0.4,
+                    close: base + 0.2,
+                    volume: 1.0,
+                    buy_volume: 0.5,
+                    sell_volume: 0.5,
+                });
+            }
+        }
+        // Through the 09:00 bar (still inside the window): nothing yet.
+        let events = detect_sessions(&ks[..day_bars(1, 10)], "T");
+        assert!(!events.iter().any(|e| e.kind == EventKind::LondonKillZone));
+        // At the 10:00 bar (the window's end): the box, once, with the
+        // window's own range.
+        let events = detect_sessions(&ks[..day_bars(1, 11)], "T");
+        let london: Vec<_> = events.iter().filter(|e| e.kind == EventKind::LondonKillZone).collect();
+        assert_eq!(london.len(), 1, "fires exactly once at the crossing");
+        assert!(london[0].zone_low.expect("low") < london[0].zone_high.expect("high"));
+        // And the Asian range closed at 07:00, already emitted at the 07:00 bar.
+        let events = detect_sessions(&ks[..day_bars(1, 8)], "T");
+        assert_eq!(events.iter().filter(|e| e.kind == EventKind::AsianRange).count(), 1);
+    }
+
+    fn day_bars(days: i64, hour: i64) -> usize {
+        (days * 24 + hour) as usize
     }
 
     #[test]
