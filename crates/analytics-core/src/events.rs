@@ -1899,7 +1899,9 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     // stays in the tree for the candlestick family; its harmonic gate proved
     // too strict for real data, so the family runs on our swings).
     events.extend(crate::harmonics::detect_harmonics(candles, symbol));
-    events.extend(crate::wickra_adapter::detect_candlesticks(candles, symbol));
+    // Candlesticks: the platform's own implementations (in-house doctrine --
+    // the wickra adapter stays in the tree only until the dependency review).
+    events.extend(crate::candlesticks::detect_candlesticks(candles, symbol));
 
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
