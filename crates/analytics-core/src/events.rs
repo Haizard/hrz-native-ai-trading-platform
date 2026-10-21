@@ -118,6 +118,21 @@ pub enum EventKind {
     /// The dealing range's premium/discount halves with the equilibrium at
     /// 50% (a zone-shaped state, refreshed per bar).
     PremiumDiscount,
+    /// Two same-side swings within a small tolerance: the liquidity pool.
+    EqualLevels,
+    /// A long-wick candle where the ZONE IS THE WICK (ICT's rejection block).
+    RejectionBlockCreated,
+    /// A later bar traded back into the wick zone.
+    RejectionBlockMitigated,
+    /// A close beyond the wick's tip: the rejection failed.
+    RejectionBlockInvalidated,
+    /// The failed-auction block: the last opposing candle before a sweep
+    /// that closed back WITHOUT breaking structure (ICT's mitigation block).
+    MitigationBlockCreated,
+    /// A later bar traded into the mitigation block's zone.
+    MitigationBlockMitigated,
+    /// A close beyond the mitigation block's far edge.
+    MitigationBlockInvalidated,
 }
 
 impl EventKind {
@@ -158,11 +173,18 @@ impl EventKind {
             Self::OrderBlockMitigated => "order_block_mitigated",
             Self::OrderBlockInvalidated => "order_block_invalidated",
             Self::PremiumDiscount => "premium_discount",
+            Self::EqualLevels => "equal_levels",
+            Self::RejectionBlockCreated => "rejection_block_created",
+            Self::RejectionBlockMitigated => "rejection_block_mitigated",
+            Self::RejectionBlockInvalidated => "rejection_block_invalidated",
+            Self::MitigationBlockCreated => "mitigation_block_created",
+            Self::MitigationBlockMitigated => "mitigation_block_mitigated",
+            Self::MitigationBlockInvalidated => "mitigation_block_invalidated",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 40] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -196,6 +218,13 @@ impl EventKind {
         Self::OrderBlockMitigated,
         Self::OrderBlockInvalidated,
         Self::PremiumDiscount,
+        Self::EqualLevels,
+        Self::RejectionBlockCreated,
+        Self::RejectionBlockMitigated,
+        Self::RejectionBlockInvalidated,
+        Self::MitigationBlockCreated,
+        Self::MitigationBlockMitigated,
+        Self::MitigationBlockInvalidated,
     ];
 }
 
@@ -337,6 +366,180 @@ impl EventConfig {
 ///   [`EventConfig::spike_average_bars`] bars before it.
 /// * **Candlestick patterns** -- the shape + trend-context pass
 ///   ([`detect_patterns`]), merged into the same stream before the sort.
+
+/// The extended SMC pass: equal levels, rejection blocks, mitigation blocks.
+///
+/// The distinction that matters most here is the mitigation block versus the
+/// order block, because they are built from the same candle for opposite
+/// reasons: an order block needs a structure BREAK after it, a mitigation
+/// block needs a liquidity SWEEP that closes back WITHOUT breaking. ICT's
+/// failed auction: the institutions' positions got mitigated, not driven
+/// through.
+pub fn detect_smc_extended(candles: &[Candle], symbol: &str, config: &EventConfig) -> Vec<MarketEvent> {
+    const EQUAL_TOLERANCE_ATR: f64 = 0.15;
+    const REJECTION_WICK_RATIO: f64 = 2.0;
+
+    let mut out = Vec::new();
+    let lb = config.structure_lookback;
+    // The smallest window any detector here needs (the ATR-14 floor); each
+    // detector's own slices are saturating-protected on top of it.
+    if candles.len() < 16 {
+        return out;
+    }
+    let last = candles.last().expect("checked above");
+    let bar_time = last.open_time;
+    let tf = last.timeframe;
+    let n = candles.len() - 1;
+    let mut push = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>, formed: Option<i64>| {
+        out.push(MarketEvent {
+            kind,
+            symbol: symbol.to_string(),
+            timeframe: tf,
+            bar_time,
+            close: last.close,
+            price,
+            side,
+            zone_low: low,
+            zone_high: high,
+            magnitude: None,
+            formed_at: formed,
+        });
+    };
+
+    // -- Equal highs / lows -----------------------------------------------------
+    // The newest two same-side swings within the tolerance. The tolerance is
+    // a fraction of the 14-bar average range, so one rule spans instruments.
+    let atr14 = {
+        let start = n.saturating_sub(14);
+        let sum: f64 = candles[start..n].iter().map(|k| k.high - k.low).sum();
+        sum / (n - start).max(1) as f64
+    };
+    let tolerance = atr14 * EQUAL_TOLERANCE_ATR;
+    let mut highs: Vec<(usize, f64)> = Vec::new();
+    let mut lows: Vec<(usize, f64)> = Vec::new();
+    for i in lb..n.saturating_sub(lb) {
+        let k = &candles[i];
+        if (i - lb..=i + lb).all(|j| j == i || candles[j].high < k.high) {
+            highs.push((i, k.high));
+        }
+        if (i - lb..=i + lb).all(|j| j == i || candles[j].low > k.low) {
+            lows.push((i, k.low));
+        }
+    }
+    if highs.len() >= 2 {
+        let (a, b) = (highs[highs.len() - 2], highs[highs.len() - 1]);
+        if (a.1 - b.1).abs() <= tolerance {
+            // Buy stops rest above equal highs: the pool is buy-side.
+            push(EventKind::EqualLevels, Some(Side::Buy), (a.1 + b.1) / 2.0, Some(a.1.min(b.1)), Some(a.1.max(b.1)), Some(candles[a.0].open_time));
+        }
+    }
+    if lows.len() >= 2 {
+        let (a, b) = (lows[lows.len() - 2], lows[lows.len() - 1]);
+        if (a.1 - b.1).abs() <= tolerance {
+            // Sell stops rest below equal lows: the pool is sell-side.
+            push(EventKind::EqualLevels, Some(Side::Sell), (a.1 + b.1) / 2.0, Some(a.1.min(b.1)), Some(a.1.max(b.1)), Some(candles[a.0].open_time));
+        }
+    }
+
+    // -- Rejection blocks --------------------------------------------------------
+    // The newest long-wick candle: the wick IS the zone. Bullish = a lower
+    // wick at least twice the body; the zone runs from the wick's tip to the
+    // body's bottom.
+    for i in (n.saturating_sub(30)..n).rev() {
+        let k = &candles[i];
+        let body = (k.close - k.open).abs();
+        if body == 0.0 {
+            continue;
+        }
+        let lower = k.open.min(k.close) - k.low;
+        let upper = k.high - k.open.max(k.close);
+        if lower >= body * REJECTION_WICK_RATIO && lower > upper * 2.0 {
+            let zone = (k.low, k.open.min(k.close));
+            let invalidated = candles[i + 1..=n].iter().any(|b| b.close < zone.0);
+            let mitigated = candles[i + 1..=n].iter().any(|b| b.low <= zone.1);
+            if invalidated {
+                push(EventKind::RejectionBlockInvalidated, Some(Side::Sell), (zone.0 + zone.1) / 2.0, Some(zone.0), Some(zone.1), Some(k.open_time));
+            } else if mitigated {
+                push(EventKind::RejectionBlockMitigated, Some(Side::Buy), (zone.0 + zone.1) / 2.0, Some(zone.0), Some(zone.1), Some(k.open_time));
+            } else {
+                push(EventKind::RejectionBlockCreated, Some(Side::Buy), (zone.0 + zone.1) / 2.0, Some(zone.0), Some(zone.1), Some(k.open_time));
+            }
+            break;
+        }
+        if upper >= body * REJECTION_WICK_RATIO && upper > lower * 2.0 {
+            let zone = (k.open.max(k.close), k.high);
+            let invalidated = candles[i + 1..=n].iter().any(|b| b.close > zone.1);
+            let mitigated = candles[i + 1..=n].iter().any(|b| b.high >= zone.0);
+            if invalidated {
+                push(EventKind::RejectionBlockInvalidated, Some(Side::Buy), (zone.0 + zone.1) / 2.0, Some(zone.0), Some(zone.1), Some(k.open_time));
+            } else if mitigated {
+                push(EventKind::RejectionBlockMitigated, Some(Side::Sell), (zone.0 + zone.1) / 2.0, Some(zone.0), Some(zone.1), Some(k.open_time));
+            } else {
+                push(EventKind::RejectionBlockCreated, Some(Side::Sell), (zone.0 + zone.1) / 2.0, Some(zone.0), Some(zone.1), Some(k.open_time));
+            }
+            break;
+        }
+    }
+
+    // -- Mitigation blocks --------------------------------------------------------
+    // A swing swept without a break: some bar wicked through the swing and
+    // closed back inside, and NO bar since closed beyond the swing. The last
+    // opposing candle before the sweep bar is the block.
+    // The swings are PER CANDIDATE: the extreme of the bars *before* the
+    // candidate sweep bar -- a window that includes the candidate would
+    // swallow its own wick and no sweep could ever register.
+    for i in (n.saturating_sub(20)..=n).rev() {
+        let k = &candles[i];
+        if i < lb * 4 {
+            continue;
+        }
+        let swing_high = candles[i - lb * 4..i].iter().map(|b| b.high).fold(f64::MIN, f64::max);
+        let swing_low = candles[i - lb * 4..i].iter().map(|b| b.low).fold(f64::MAX, f64::min);
+        // Sell-side sweep: wick below the swing low, close back above, and no
+        // close below it anywhere after.
+        if k.low < swing_low && k.close > swing_low {
+            let broke_after = candles[i + 1..=n].iter().any(|b| b.close < swing_low);
+            if !broke_after {
+                if let Some(ob) = candles[..i].iter().rposition(|b| b.close < b.open) {
+                    let (low, high) = (candles[ob].low, candles[ob].high);
+                    let origin = candles[ob].open_time;
+                    let invalidated = candles[i + 1..=n].iter().any(|b| b.close < low);
+                    let mitigated = candles[i + 1..=n].iter().any(|b| b.low <= high);
+                    if invalidated {
+                        push(EventKind::MitigationBlockInvalidated, Some(Side::Sell), (low + high) / 2.0, Some(low), Some(high), Some(origin));
+                    } else if mitigated {
+                        push(EventKind::MitigationBlockMitigated, Some(Side::Buy), (low + high) / 2.0, Some(low), Some(high), Some(origin));
+                    } else {
+                        push(EventKind::MitigationBlockCreated, Some(Side::Buy), (low + high) / 2.0, Some(low), Some(high), Some(origin));
+                    }
+                }
+            }
+            break;
+        }
+        // Buy-side sweep mirror.
+        if k.high > swing_high && k.close < swing_high {
+            let broke_after = candles[i + 1..=n].iter().any(|b| b.close > swing_high);
+            if !broke_after {
+                if let Some(ob) = candles[..i].iter().rposition(|b| b.close > b.open) {
+                    let (low, high) = (candles[ob].low, candles[ob].high);
+                    let origin = candles[ob].open_time;
+                    let invalidated = candles[i + 1..=n].iter().any(|b| b.close > high);
+                    let mitigated = candles[i + 1..=n].iter().any(|b| b.high >= low);
+                    if invalidated {
+                        push(EventKind::MitigationBlockInvalidated, Some(Side::Buy), (low + high) / 2.0, Some(low), Some(high), Some(origin));
+                    } else if mitigated {
+                        push(EventKind::MitigationBlockMitigated, Some(Side::Sell), (low + high) / 2.0, Some(low), Some(high), Some(origin));
+                    } else {
+                        push(EventKind::MitigationBlockCreated, Some(Side::Sell), (low + high) / 2.0, Some(low), Some(high), Some(origin));
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    out
+}
 
 /// The order-block pass: the canonical SMC rules.
 ///
@@ -1132,6 +1335,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_patterns(candles, symbol));
     events.extend(detect_price_action(candles, symbol));
     events.extend(detect_order_blocks(candles, symbol, &config));
+    events.extend(detect_smc_extended(candles, symbol, &config));
 
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
@@ -1481,6 +1685,83 @@ mod pattern_tests {
             .expect("breaker fires");
         assert_eq!(brk.side, Some(Side::Sell), "the failed bullish OB flips bearish");
         assert_eq!(brk.zone_low, Some(99.6));
+    }
+
+    #[test]
+    fn equal_highs_form_a_buy_side_pool() {
+        // Two swing highs at ~106.0 (within tolerance), spaced apart.
+        let mut ks: Vec<Candle> = (0..8).map(|_| k(100.0, 100.5, 99.5, 100.2)).collect();
+        ks.push(k(100.2, 106.0, 100.0, 105.5)); // swing high 106.0
+        for _ in 0..8 {
+            ks.push(k(102.0, 102.5, 101.5, 102.2));
+        }
+        ks.push(k(102.2, 106.05, 102.0, 105.5)); // swing high 106.05: equal
+        for _ in 0..6 {
+            ks.push(k(103.0, 103.5, 102.5, 103.2));
+        }
+        let events = detect_patterns_and_events(&series(ks));
+        let eq = events.iter().find(|e| e.kind == EventKind::EqualLevels).expect("equal levels");
+        assert_eq!(eq.side, Some(Side::Buy), "equal highs hold buy stops above");
+        // Far-apart highs: no pool.
+        let mut ks: Vec<Candle> = (0..8).map(|_| k(100.0, 100.5, 99.5, 100.2)).collect();
+        ks.push(k(100.2, 106.0, 100.0, 105.5));
+        for _ in 0..8 {
+            ks.push(k(102.0, 102.5, 101.5, 102.2));
+        }
+        ks.push(k(102.2, 109.0, 102.0, 108.5)); // a much higher high
+        for _ in 0..6 {
+            ks.push(k(103.0, 103.5, 102.5, 103.2));
+        }
+        assert!(!kinds(&detect_patterns_and_events(&series(ks))).contains(&EventKind::EqualLevels));
+    }
+
+    #[test]
+    fn a_rejection_block_zones_the_wick_not_the_body() {
+        // A lower-wick candle: body 0.4, lower wick 2.4, upper ~0.
+        let mut ks: Vec<Candle> = (0..14).map(|_| k(100.0, 100.5, 99.5, 100.2)).collect();
+        ks.push(k(100.4, 100.5, 97.6, 100.0)); // body 0.4, wick to 97.6
+        for _ in 0..4 {
+            ks.push(k(100.2, 100.8, 100.1, 100.5)); // never returns to the wick
+        }
+        let events = detect_patterns_and_events(&series(ks));
+        eprintln!("detected: {:?}", kinds(&events));
+        let rb = events
+            .iter()
+            .find(|e| e.kind == EventKind::RejectionBlockCreated)
+            .expect("rejection block");
+        assert_eq!(rb.zone_low, Some(97.6), "the zone is the wick tip");
+        assert_eq!(rb.zone_high, Some(100.0), "to the body's bottom");
+        assert_eq!(rb.side, Some(Side::Buy));
+    }
+
+    #[test]
+    fn a_mitigation_block_needs_a_sweep_without_a_break() {
+        // Down trend into a sweep of the swing low that closes back, with no
+        // close below it afterwards -- the failed auction.
+        let mut ks: Vec<Candle> = (0..14)
+            .map(|i| k(102.0 - i as f64 * 0.3, 102.2 - i as f64 * 0.3, 101.4 - i as f64 * 0.3, 101.8 - i as f64 * 0.3))
+            .collect();
+        ks.push(k(98.0, 98.2, 96.5, 97.9)); // down candle before the sweep (the block: 96.5..98.2)
+        ks.push(k(97.8, 98.0, 96.0, 97.7)); // the sweep: wick below the swing low, close back
+        for _ in 0..4 {
+            ks.push(k(98.5, 98.9, 98.3, 98.7)); // holds above, clear of the zone
+        }
+        let events = detect_patterns_and_events(&series(ks));
+        let mb = events
+            .iter()
+            .find(|e| e.kind == EventKind::MitigationBlockCreated)
+            .expect("mitigation block");
+        assert_eq!(mb.side, Some(Side::Buy));
+        // The OB-vs-MB distinction: a CLOSE below the swing after the sweep
+        // is a break, not a failed auction -- no mitigation block.
+        let mut ks2: Vec<Candle> = (0..14)
+            .map(|i| k(102.0 - i as f64 * 0.3, 102.2 - i as f64 * 0.3, 101.4 - i as f64 * 0.3, 101.8 - i as f64 * 0.3))
+            .collect();
+        ks2.push(k(98.0, 98.2, 96.5, 97.9));
+        ks2.push(k(97.8, 98.0, 96.0, 97.7));
+        ks2.push(k(97.6, 97.8, 95.0, 95.4)); // close below the swing: broken
+        let events = detect_patterns_and_events(&series(ks2));
+        assert!(!kinds(&events).contains(&EventKind::MitigationBlockCreated));
     }
 
     #[test]
