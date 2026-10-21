@@ -31,13 +31,23 @@ observability = { workspace = true }
 
 async-trait = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+# Minimal tokio, NOT the workspace's "full": the wasm consumers of this
+# crate's taxonomy cannot carry mio/net, and feature unification would drag
+# them in. sync (the bus), rt and time (the feeds), macros (async mains).
+tokio = { version = "1", default-features = false, features = ["sync", "rt", "time", "macros"] }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-futures = { workspace = true }
-reqwest = { workspace = true }
-tokio-tungstenite = { workspace = true }
 chrono = { workspace = true }
+# The network stack, feature-gated: wasm consumers (chart-engine) use the
+# taxonomy (broker, concepts, composer) without dragging tungstenite's
+# getrandom chain into the wasm32 build.
+futures = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+
+[features]
+default = ["net"]
+net = ["futures", "reqwest", "tokio-tungstenite"]
 
 [dev-dependencies]

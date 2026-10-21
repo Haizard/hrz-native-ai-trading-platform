@@ -274,6 +274,11 @@ pub struct Request {
     /// goes into [`Scene::note`], the same arrangement a refused drawing gets.
     #[serde(default)]
     pub overlays: Vec<crate::drawing::Overlay>,
+    /// The enabled concepts' detections, as semantic shapes (zones, segments,
+    /// candle marks) the engine positions -- bounded in time by construction,
+    /// which is the whole difference from a full-width overlay.
+    #[serde(default)]
+    pub concept_shapes: Vec<ConceptShape>,
     /// The output from one validated generated indicator revision.
     ///
     /// This remains optional while the workspace has no indicator attached. A
@@ -408,6 +413,7 @@ impl Default for Request {
             gesture: None,
             drawings: Vec::new(),
             overlays: Vec::new(),
+            concept_shapes: Vec::new(),
             indicator: None,
             live_indicator: None,
             zone_constraints: Vec::new(),
@@ -908,6 +914,11 @@ pub struct Scene {
     ///
     /// Always present and usually empty, like [`Scene::regions`].
     pub overlays: Vec<SceneOverlay>,
+    /// The enabled concepts' detections, positioned. Zones draw as rectangles
+    /// from their origin to their end, patterns as names on their candle,
+    /// structure as bounded segments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concept_shapes: Vec<crate::script::ScriptDraw>,
     /// The attached generated indicator, when its output was valid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indicator: Option<SceneIndicator>,
@@ -1371,6 +1382,7 @@ pub fn build(request: &Request) -> Scene {
         footprint: None,
         drawings: Vec::new(),
         overlays: Vec::new(),
+        concept_shapes: Vec::new(),
         indicator: None,
         sub_panes: Vec::new(),
         script_panes: Vec::new(),
@@ -1774,6 +1786,11 @@ pub fn build(request: &Request) -> Scene {
     // price scale -- see `Request::overlays` for why that matters.
     let (overlays, refused_overlays) = overlay_parts(&request.overlays, &frame);
     scene.overlays = overlays;
+    scene.concept_shapes = request
+        .concept_shapes
+        .iter()
+        .filter_map(|shape| position_concept_shape(shape, &frame))
+        .collect();
 
     // The live price, positioned on the same frame everything else uses -- and
     // gated on the price axis being usable, because a line with no axis is a
@@ -2315,6 +2332,113 @@ fn indicator_parts(
         links,
         trendlines,
     })
+}
+
+/// A concept's shape as the host describes it: semantic (times and prices),
+/// colored and labeled. The engine positions it, like every other overlay.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConceptShape {
+    /// A zone: a rectangle from its origin time to its end time, at its band.
+    Zone {
+        /// Origin bar, unix nanos.
+        from_ns: i64,
+        /// End bar (mitigation, or the newest bar while open), unix nanos.
+        to_ns: i64,
+        /// The zone's bottom.
+        low: f64,
+        /// The zone's top.
+        high: f64,
+        /// Its label (`ob`, `fvg`).
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+    },
+    /// A structure level: a segment from the swing's bar to the break's bar.
+    Segment {
+        /// The swing/origin bar, unix nanos.
+        from_ns: i64,
+        /// The break bar, unix nanos.
+        to_ns: i64,
+        /// The level.
+        price: f64,
+        /// Its label (`bos`, `choch`).
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+    },
+    /// A candle mark: the pattern's name on its own candle.
+    CandleMark {
+        /// The pattern bar, unix nanos.
+        at_ns: i64,
+        /// Where the label sits (the bar's high for above, low for below).
+        price: f64,
+        /// `true` places the label below the candle (bullish patterns).
+        below: bool,
+        /// The pattern's name (`engulfing`).
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+    },
+}
+
+/// Position one concept shape into the draw vocabulary the shell already
+/// strokes (the script overlay's own Line/Label/Box).
+fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Option<crate::script::ScriptDraw> {
+    let x_at = |ns: i64| frame.x_at_nanos(ns);
+    let bar_w = ((frame.plot.w) / ((frame.to - frame.from) / frame.bar_nanos.max(1)).max(1) as f64).max(1e-9);
+    match shape {
+        ConceptShape::Zone { from_ns, to_ns, low, high, label, color } => {
+            if !low.is_finite() || !high.is_finite() {
+                return None;
+            }
+            Some(crate::script::ScriptDraw::Box {
+                x1: x_at(*from_ns),
+                y1: frame.y_at(*high),
+                x2: x_at(*to_ns).max(x_at(*from_ns) + bar_w * 0.6),
+                y2: frame.y_at(*low),
+                color: *color,
+                border_color: Some(*color),
+                border_width: 1.0,
+                border_style: "solid".to_string(),
+                fill_alpha: Some(0.18),
+            })
+        }
+        ConceptShape::Segment { from_ns, to_ns, price, label, color } => {
+            if !price.is_finite() {
+                return None;
+            }
+            Some(crate::script::ScriptDraw::Line {
+                x1: x_at(*from_ns),
+                y1: frame.y_at(*price),
+                x2: x_at(*to_ns).max(x_at(*from_ns) + bar_w * 0.6),
+                y2: frame.y_at(*price),
+                color: *color,
+                style: "dashed".to_string(),
+                width: 1.0,
+                extend: "none".to_string(),
+            })
+        }
+        ConceptShape::CandleMark { at_ns, price, below, label, color } => {
+            if !price.is_finite() {
+                return None;
+            }
+            // Below the low for bullish patterns, above the high for
+            // bearish -- a fixed nudge so the text clears the wick.
+            let nudge = 10.0;
+            let y = if *below {
+                frame.y_at(*price) + nudge
+            } else {
+                frame.y_at(*price) - nudge
+            };
+            Some(crate::script::ScriptDraw::Label {
+                x: x_at(*at_ns),
+                y,
+                text: label.clone(),
+                color: *color,
+            })
+        }
+    }
 }
 
 /// One overlay, mapped onto canvas pixels.
@@ -3501,6 +3625,103 @@ fn percent_ticks(plot: &Plot, price_min: f64, price_max: f64, reference: f64) ->
 #[must_use]
 pub fn series_timeframe(candles: &[Candle]) -> Option<Timeframe> {
     candles.first().map(|candle| candle.timeframe)
+}
+
+#[cfg(test)]
+mod concept_shape_tests {
+    use super::*;
+
+    fn frame_fixture() -> Frame {
+        Frame {
+            plot: Plot { x: 0.0, y: 0.0, w: 1000.0, h: 400.0 },
+            from: 0,
+            to: 10_000_000_000_000,
+            bar_nanos: 1_000_000_000_000,
+            price_min: 90.0,
+            price_max: 110.0,
+            scale: ScaleMap::Linear,
+        }
+    }
+
+    #[test]
+    fn a_zone_is_bounded_from_origin_to_end_not_the_whole_chart() {
+        let frame = frame_fixture();
+        let zone = position_concept_shape(
+            &ConceptShape::Zone {
+                from_ns: 2_000_000_000_000,
+                to_ns: 5_000_000_000_000,
+                low: 95.0,
+                high: 105.0,
+                label: "ob".to_string(),
+                color: 0xcc26a69a,
+            },
+            &frame,
+        )
+        .expect("zone positions");
+        let crate::script::ScriptDraw::Box { x1, x2, y1, y2, fill_alpha, .. } = zone else {
+            panic!("a zone draws as a box");
+        };
+        assert!(x1 > frame.plot.x, "starts at the origin bar, not the chart's left edge");
+        assert!(x2 < frame.plot.x + frame.plot.w, "ends at its end bar, not the chart's right edge");
+        assert!(y1 < y2, "the band has height");
+        assert_eq!(fill_alpha, Some(0.18), "zones shade, not flood");
+    }
+
+    #[test]
+    fn a_candle_mark_offsets_below_for_bullish_and_above_for_bearish() {
+        let frame = frame_fixture();
+        let below = position_concept_shape(
+            &ConceptShape::CandleMark {
+                at_ns: 5_000_000_000_000,
+                price: 95.0,
+                below: true,
+                label: "hammer".to_string(),
+                color: 0xcc26a69a,
+            },
+            &frame,
+        )
+        .expect("mark");
+        let above = position_concept_shape(
+            &ConceptShape::CandleMark {
+                at_ns: 5_000_000_000_000,
+                price: 105.0,
+                below: false,
+                label: "shooting star".to_string(),
+                color: 0xccef5350,
+            },
+            &frame,
+        )
+        .expect("mark");
+        let crate::script::ScriptDraw::Label { y: y_below, .. } = below else { panic!("label") };
+        let crate::script::ScriptDraw::Label { y: y_above, .. } = above else { panic!("label") };
+        // Canvas y grows downward: below the candle means a LARGER y than the
+        // price's own position, above means smaller.
+        assert!(y_below > frame.y_at(95.0), "the label clears the wick below");
+        assert!(y_above < frame.y_at(105.0), "the label clears the wick above");
+    }
+
+    #[test]
+    fn a_segment_runs_from_the_swing_to_the_break() {
+        let frame = frame_fixture();
+        let segment = position_concept_shape(
+            &ConceptShape::Segment {
+                from_ns: 1_000_000_000_000,
+                to_ns: 4_000_000_000_000,
+                price: 100.0,
+                label: "bos".to_string(),
+                color: 0xcc26a69a,
+            },
+            &frame,
+        )
+        .expect("segment");
+        let crate::script::ScriptDraw::Line { x1, x2, y1, y2, style, extend, .. } = segment else {
+            panic!("a segment draws as a line");
+        };
+        assert!(x2 > x1, "the segment spans its bars");
+        assert_eq!(y1, y2, "a level is horizontal");
+        assert_eq!(style, "dashed");
+        assert_eq!(extend, "none", "bounded, never extended to the edge");
+    }
 }
 
 #[cfg(test)]

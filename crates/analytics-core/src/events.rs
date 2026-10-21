@@ -108,6 +108,16 @@ pub enum EventKind {
     /// The newest range window is the tightest of its recent peers: the
     /// squeeze that precedes expansion.
     RangeContraction,
+    /// The last opposing-color candle before a displacement-driven break.
+    OrderBlockCreated,
+    /// Price traded into an open order block (the zone's first touch).
+    OrderBlockMitigated,
+    /// Price closed beyond an order block's far edge: it failed, and the
+    /// failed block flips into a breaker of the opposite type.
+    OrderBlockInvalidated,
+    /// The dealing range's premium/discount halves with the equilibrium at
+    /// 50% (a zone-shaped state, refreshed per bar).
+    PremiumDiscount,
 }
 
 impl EventKind {
@@ -144,11 +154,15 @@ impl EventKind {
             Self::Retest => "retest",
             Self::HigherHighs => "higher_highs",
             Self::RangeContraction => "range_contraction",
+            Self::OrderBlockCreated => "order_block_created",
+            Self::OrderBlockMitigated => "order_block_mitigated",
+            Self::OrderBlockInvalidated => "order_block_invalidated",
+            Self::PremiumDiscount => "premium_discount",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 33] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -178,6 +192,10 @@ impl EventKind {
         Self::Retest,
         Self::HigherHighs,
         Self::RangeContraction,
+        Self::OrderBlockCreated,
+        Self::OrderBlockMitigated,
+        Self::OrderBlockInvalidated,
+        Self::PremiumDiscount,
     ];
 }
 
@@ -319,6 +337,169 @@ impl EventConfig {
 ///   [`EventConfig::spike_average_bars`] bars before it.
 /// * **Candlestick patterns** -- the shape + trend-context pass
 ///   ([`detect_patterns`]), merged into the same stream before the sort.
+
+/// The order-block pass: the canonical SMC rules.
+///
+/// A bullish order block is the LAST down-close candle before a
+/// displacement-driven break of a swing high. Displacement is graded, not
+/// felt: the breaking bar's range must clear 1.5x the 14-bar average, and it
+/// must CLOSE beyond the swing. The zone is that candle's full range.
+/// Mitigation is a trade back into the zone; invalidation is a CLOSE beyond
+/// the zone's far edge -- and the failed block flips into a breaker of the
+/// opposite type (ICT's failed-order-block rule, confirmed against the
+/// published references: Flux Charts' OB/breaker guides and ICT's own
+/// definition via Alchemy Markets).
+pub fn detect_order_blocks(candles: &[Candle], symbol: &str, config: &EventConfig) -> Vec<MarketEvent> {
+    const AVG_RANGE_BARS: usize = 14;
+    const DISPLACEMENT: f64 = 1.5;
+    const MAX_OPEN_BLOCKS: usize = 12;
+
+    let mut out = Vec::new();
+    if candles.len() < AVG_RANGE_BARS + 3 {
+        return out;
+    }
+    let last = candles.last().expect("checked above");
+    let bar_time = last.open_time;
+    let tf = last.timeframe;
+    let n = candles.len() - 1;
+    let lb = config.structure_lookback;
+    let avg_range = |end: usize| {
+        let start = end.saturating_sub(AVG_RANGE_BARS);
+        let sum: f64 = candles[start..end].iter().map(|k| k.high - k.low).sum();
+        sum / (end - start).max(1) as f64
+    };
+
+    // Rebuild every order block the window produced: at each bar i that
+    // broke a swing with displacement, the last opposing candle before it is
+    // the block's zone.
+    // (ob index, side, low, high, origin time, the BREAK bar's index: a zone
+    // is only mitigated by bars after the break -- the breaking bar's own
+    // range crossing the zone is the departure, not a retest).
+    let mut blocks: Vec<(usize, Side, f64, f64, i64, usize)> = Vec::new();
+    for i in lb + 2..=n {
+        let k = &candles[i];
+        let range = k.high - k.low;
+        if range < avg_range(i) * DISPLACEMENT {
+            continue;
+        }
+        let swing_high = candles[i - lb - 1..i].iter().map(|b| b.high).fold(f64::MIN, f64::max);
+        let swing_low = candles[i - lb - 1..i].iter().map(|b| b.low).fold(f64::MAX, f64::min);
+        if k.close > swing_high {
+            // Bullish break: the last DOWN candle before it is the block.
+            if let Some(ob) = candles[..i].iter().rposition(|b| b.close < b.open).map(|j| (j, &candles[j])) {
+                blocks.push((ob.0, Side::Buy, candles[ob.0].low, candles[ob.0].high, candles[ob.0].open_time, i));
+            }
+        } else if k.close < swing_low {
+            if let Some(ob) = candles[..i].iter().rposition(|b| b.close > b.open).map(|j| (j, &candles[j])) {
+                blocks.push((ob.0, Side::Sell, candles[ob.0].low, candles[ob.0].high, candles[ob.0].open_time, i));
+            }
+        }
+    }
+    blocks.dedup_by_key(|(idx, _, _, _, _, _)| *idx);
+
+    // Their lifecycle against the newest bar, newest block first (the newest
+    // unmitigated block is the one the chart cares about).
+    let mut created = 0;
+    for (idx, side, low, high, origin, break_idx) in blocks.iter().rev().take(MAX_OPEN_BLOCKS) {
+        let zone_price = (low + high) / 2.0;
+        // Already mitigated by any bar after the block?
+        let touched_after = candles[(break_idx + 1).min(n)..n]
+            .iter()
+            .any(|k| match side {
+                Side::Buy => k.low <= *high,
+                Side::Sell => k.high >= *low,
+            });
+        let invalidated = match side {
+            Side::Buy => last.close < *low,
+            Side::Sell => last.close > *high,
+        };
+        if invalidated {
+            out.push(MarketEvent {
+                kind: EventKind::OrderBlockInvalidated,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: zone_price,
+                // The flip: the failed bullish block reads bearish now.
+                side: Some(match side {
+                    Side::Buy => Side::Sell,
+                    Side::Sell => Side::Buy,
+                }),
+                zone_low: Some(*low),
+                zone_high: Some(*high),
+                magnitude: None,
+                formed_at: Some(*origin),
+            });
+            continue;
+        }
+        if !touched_after {
+            created += 1;
+            out.push(MarketEvent {
+                kind: EventKind::OrderBlockCreated,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: zone_price,
+                side: Some(*side),
+                zone_low: Some(*low),
+                zone_high: Some(*high),
+                magnitude: None,
+                formed_at: Some(*origin),
+            });
+        }
+        // The touch on THIS bar is a mitigation event (the zone's first touch
+        // lands here and only here).
+        if touched_after
+            && match side {
+                Side::Buy => last.low <= *high && candles[n - 1].low > *high,
+                Side::Sell => last.high >= *low && candles[n - 1].high < *low,
+            }
+        {
+            out.push(MarketEvent {
+                kind: EventKind::OrderBlockMitigated,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: zone_price,
+                side: Some(*side),
+                zone_low: Some(*low),
+                zone_high: Some(*high),
+                magnitude: None,
+                formed_at: Some(*origin),
+            });
+        }
+    }
+    let _ = created;
+
+    // -- Premium / discount ----------------------------------------------------
+    // The dealing range over the last 2*lookback swings: premium above the
+    // 50% equilibrium, discount below it. A state, not an event -- refreshed
+    // per bar so the chart's zones track the range.
+    let start = n.saturating_sub(lb * 4);
+    let range_high = candles[start..=n].iter().map(|k| k.high).fold(f64::MIN, f64::max);
+    let range_low = candles[start..=n].iter().map(|k| k.low).fold(f64::MAX, f64::min);
+    if range_high > range_low {
+        let equilibrium = (range_high + range_low) / 2.0;
+        out.push(MarketEvent {
+            kind: EventKind::PremiumDiscount,
+            symbol: symbol.to_string(),
+            timeframe: tf,
+            bar_time,
+            close: last.close,
+            price: equilibrium,
+            side: Some(if last.close >= equilibrium { Side::Sell } else { Side::Buy }),
+            zone_low: Some(range_low),
+            zone_high: Some(range_high),
+            magnitude: None,
+            formed_at: Some(candles[start].open_time),
+        });
+    }
+
+    out
+}
 
 /// The price-action pass: breakouts, retests, swing structure, and ranges.
 ///
@@ -520,8 +701,10 @@ pub fn detect_patterns(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
             close: c,
             price: c,
             side,
-            zone_low: None,
-            zone_high: None,
+            // The pattern bar's own extremes: the chart places the label
+            // under the low (bullish) or over the high (bearish) off these.
+            zone_low: Some(l),
+            zone_high: Some(h),
             magnitude: None,
             formed_at: None,
         });
@@ -948,6 +1131,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     // windows order identically.
     events.extend(detect_patterns(candles, symbol));
     events.extend(detect_price_action(candles, symbol));
+    events.extend(detect_order_blocks(candles, symbol, &config));
 
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
@@ -1251,6 +1435,67 @@ mod pattern_tests {
         let hh = events.iter().find(|e| e.kind == EventKind::HigherHighs);
         assert!(hh.is_some(), "the ascending structure fires: {:?}", kinds(&events));
         assert_eq!(hh.expect("hh").side, Some(Side::Buy));
+    }
+
+    #[test]
+    fn an_order_block_is_the_last_opposing_candle_before_displacement() {
+        // Quiet base, a down candle (the OB), then a displacement bar closing
+        // through the swing high -- range 2x+ the 14-bar average.
+        let mut ks: Vec<Candle> = (0..16)
+            .map(|i| k(100.0 + (i % 3) as f64 * 0.1, 100.6, 99.8, 100.2))
+            .collect();
+        ks.push(k(100.4, 100.5, 99.6, 99.8)); // the down candle: OB zone 99.6..100.5
+        ks.push(k(99.9, 103.5, 99.8, 103.3)); // displacement: range 3.7 >> avg ~0.8*1.5
+        ks.push(k(103.2, 103.8, 102.8, 103.5)); // follow-through
+        let events = detect_patterns_and_events(&series(ks));
+        let ob = events.iter().find(|e| e.kind == EventKind::OrderBlockCreated).expect("ob created");
+        assert_eq!(ob.side, Some(Side::Buy));
+        assert_eq!(ob.zone_low, Some(99.6));
+        assert_eq!(ob.zone_high, Some(100.5));
+
+        // No displacement (a weak drift above the swing): no order block.
+        let mut ks: Vec<Candle> = (0..16)
+            .map(|i| k(100.0 + (i % 3) as f64 * 0.1, 100.6, 99.8, 100.2))
+            .collect();
+        ks.push(k(100.4, 100.5, 99.9, 100.0));
+        ks.push(k(100.0, 100.9, 99.9, 100.75)); // breaks the swing by a hair, no range
+        let events = detect_patterns_and_events(&series(ks));
+        assert!(!kinds(&events).contains(&EventKind::OrderBlockCreated));
+    }
+
+    #[test]
+    fn an_invalidated_order_block_flips_into_a_breaker() {
+        let mut ks: Vec<Candle> = (0..16)
+            .map(|i| k(100.0 + (i % 3) as f64 * 0.1, 100.6, 99.8, 100.2))
+            .collect();
+        ks.push(k(100.4, 100.5, 99.6, 99.8)); // OB zone 99.6..100.5
+        ks.push(k(99.9, 103.5, 99.8, 103.3)); // displacement up
+        for _ in 0..4 {
+            ks.push(k(103.0, 103.4, 102.6, 103.1));
+        }
+        ks.push(k(103.0, 103.2, 99.0, 99.3)); // CLOSE below the zone's low
+        let events = detect_patterns_and_events(&series(ks));
+        let brk = events
+            .iter()
+            .find(|e| e.kind == EventKind::OrderBlockInvalidated)
+            .expect("breaker fires");
+        assert_eq!(brk.side, Some(Side::Sell), "the failed bullish OB flips bearish");
+        assert_eq!(brk.zone_low, Some(99.6));
+    }
+
+    #[test]
+    fn premium_and_discount_split_the_dealing_range() {
+        let mut ks: Vec<Candle> = (0..20)
+            .map(|i| k(100.0 + i as f64 * 0.3, 100.5 + i as f64 * 0.3, 99.5 + i as f64 * 0.3, 100.2 + i as f64 * 0.3))
+            .collect();
+        ks.push(k(105.9, 106.4, 105.4, 106.0)); // near the top of the range
+        let events = detect_patterns_and_events(&series(ks));
+        let pd = events.iter().find(|e| e.kind == EventKind::PremiumDiscount).expect("pd");
+        let lo = pd.zone_low.expect("low");
+        let hi = pd.zone_high.expect("high");
+        let eq = pd.price;
+        assert!((eq - (lo + hi) / 2.0).abs() < 1e-9, "equilibrium is the midpoint");
+        assert_eq!(pd.side, Some(Side::Sell), "above equilibrium reads premium (short-side zone)");
     }
 
     #[test]

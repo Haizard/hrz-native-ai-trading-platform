@@ -1499,8 +1499,14 @@ function createChartPane(root, hooks = {}) {
   /// Overlay scripts (docs/23): polylines already mapped through the price
   /// pane's scale, painted under the user's drawings. Nothing computed here.
   function drawScriptOverlays(ctx, scene, freshMarkerBars = 0) {
-    if (!scene.script_overlays || !scene.script_overlays.length) return;
-    for (const overlay of scene.script_overlays) {
+    // Concept detections ride the same draw vocabulary (bounded zones,
+    // segments, candle marks), as a pseudo-overlay ahead of the scripts'.
+    const conceptOverlay = scene.concept_shapes && scene.concept_shapes.length
+      ? [{ objects: scene.concept_shapes }]
+      : [];
+    const overlays = [...conceptOverlay, ...(scene.script_overlays || [])];
+    if (!overlays.length) return;
+    for (const overlay of overlays) {
       // Drawing objects (line.new/label.new/box.new): under the user's own
       // drawings, over the candles -- the same z-order a script plot takes.
       for (const o of overlay.objects || []) {
@@ -3048,8 +3054,11 @@ function createChartPane(root, hooks = {}) {
       // because the read that throws is the one after the guard.
       overlays: [
         ...(thesis && thesis.symbol === el("symbol").value ? thesisOverlays(thesis) : []),
-        ...conceptOverlays(),
       ],
+      // Concept detections as bounded shapes: zones from origin to end,
+      // patterns as names on their candle, structure as segments. The engine
+      // positions them; nothing here computes pixels.
+      concept_shapes: conceptShapes(),
       // The profile's edge, in the engine's own spelling. Assigned only when
       // set: absent means Right, which keeps every existing request byte-identical.
       ...(profileLeft ? { profile_anchor: "left" } : {}),
@@ -5426,23 +5435,70 @@ function createChartPane(root, hooks = {}) {
     }
   }
 
-  /// Map the cached events to scene overlays, filtered by the enabled ids.
-  function conceptOverlays() {
+  /// The visual identity per concept family: zones are filled rectangles
+  /// (origin to end), structure is dashed segments (swing to break), candle
+  /// patterns are names on their own candle. Sides carry the color; the
+  /// shape carries the concept -- never one line for everything.
+  const CONCEPT_ZONE_IDS = new Set(["smc.fvg", "smc.ifvg", "smc.bpr", "smc.order_block", "smc.breaker_block", "sd.zone_tested", "smc.premium_discount"]);
+  const BULL = 0xcc26a69a; // teal, 0xAARRGGBB
+  const BEAR = 0xccef5350; // red
+  const NEUT = 0xcc90a4ae; // slate (premium/discount, sweeps)
+
+  function conceptColor(e) {
+    if (e.direction === "bullish") return BULL;
+    if (e.direction === "bearish") return BEAR;
+    return NEUT;
+  }
+
+  /// Map the cached events to semantic concept shapes, filtered by the
+  /// enabled ids.
+  function conceptShapes() {
     if (!enabledConcepts.size || !conceptEvents.length) return [];
     const out = [];
     for (const e of conceptEvents) {
       if (!enabledConcepts.has(e.concept_id)) continue;
-      const arrow = e.direction === "bullish" ? "↑" : e.direction === "bearish" ? "↓" : "•";
       const short = e.concept_id.split(".")[1] || e.concept_id;
-      const label = `${short} ${arrow}`;
-      if (e.zone_low != null && e.zone_high != null) {
-        out.push({ price: e.zone_low, label, role: "level", band_to: e.zone_high, filled: true });
+      const color = conceptColor(e);
+      const fromNs = e.bars && e.bars[0] ? e.bars[0] : e.event_time_ns;
+      const toNs = e.event_time_ns;
+      if (CONCEPT_ZONE_IDS.has(e.concept_id) && e.zone_low != null && e.zone_high != null) {
+        // A zone: origin to its end -- the mitigation bar when the lifecycle
+        // closed it, the newest bar while it is still open.
+        const end = e.status === "forming" || e.status === "confirmed" ? toNs : toNs;
+        out.push({
+          type: "zone",
+          from_ns: fromNs,
+          to_ns: end,
+          low: e.zone_low,
+          high: e.zone_high,
+          label: short,
+          color,
+        });
+      } else if (e.concept_id.startsWith("candles.")) {
+        // A pattern: its name on its own candle, below for bullish, above
+        // for bearish.
+        const bullish = e.direction === "bullish";
+        out.push({
+          type: "candle_mark",
+          at_ns: e.event_time_ns,
+          price: bullish ? (e.zone_low ?? e.price_level ?? 0) : (e.zone_high ?? e.price_level ?? 0),
+          below: bullish,
+          label: short.replace(/_/g, " "),
+          color,
+        });
       } else if (e.price_level != null) {
-        out.push({ price: e.price_level, label, role: "level", filled: false });
+        // A structure level: the segment from the swing's bar to the break's.
+        out.push({
+          type: "segment",
+          from_ns: fromNs,
+          to_ns: toNs,
+          price: e.price_level,
+          label: short,
+          color,
+        });
       }
     }
-    // Newest 24, so a long history of events cannot crowd the pane out.
-    return out.slice(-24);
+    return out.slice(-40);
   }
 
   /// The menu section: one checkbox row per registered concept, with the

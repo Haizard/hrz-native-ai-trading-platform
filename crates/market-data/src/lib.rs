@@ -29,44 +29,62 @@
 
 #![deny(missing_docs)]
 
+#[cfg(feature = "net")]
 pub mod backfill;
 pub mod broker;
+#[cfg(feature = "net")]
 pub mod deriv;
+#[cfg(feature = "net")]
 pub mod deriv_trade;
 pub mod composer;
 pub mod concepts;
 pub mod bus;
 pub mod candle_builder;
 pub mod error;
+#[cfg(feature = "net")]
 pub mod exchanges;
+#[cfg(feature = "net")]
 pub mod health;
 pub mod history;
 pub mod orderbook;
+#[cfg(feature = "net")]
 pub mod scanner;
+#[cfg(feature = "net")]
 pub mod symbols;
 pub mod tape;
+#[cfg(feature = "net")]
 pub mod window;
 
+#[cfg(feature = "net")]
 pub use backfill::{BackfillClient, BackfillSource};
 pub use bus::{MarketBusRegistry, MarketEventBus};
 pub use candle_builder::{
     CandleBuilder, MultiTimeframeCandleBuilder, LIVE_TIMEFRAMES, STANDARD_TIMEFRAMES,
 };
 pub use error::MarketDataError;
+#[cfg(feature = "net")]
 pub use exchanges::binance_codec::{BinanceCodec, BINANCE_WS_URL};
+#[cfg(feature = "net")]
 pub use exchanges::bybit_codec::{
     BybitCodec, BYBIT_BOOK_DEPTH, BYBIT_INVERSE_WS, BYBIT_LINEAR_WS, BYBIT_REST, BYBIT_SPOT_WS,
 };
+#[cfg(feature = "net")]
 pub use exchanges::codec::{Frame, Incoming, Subscription, WireCodec};
+#[cfg(feature = "net")]
 pub use exchanges::collector::{BookBootstrap, Collector, CollectorConfig, SnapshotFetcher};
+#[cfg(feature = "net")]
 pub use exchanges::wire;
+#[cfg(feature = "net")]
 pub use exchanges::ExchangeCollector;
+#[cfg(feature = "net")]
 pub use health::{
     spawn_health_publisher, CollectorHealth, HealthStatus, TradeGapDetector,
     HEALTH_PUBLISH_INTERVAL,
 };
 pub use history::{CandleHistory, HistoryRegistry, DEFAULT_HISTORY_BARS};
 pub use orderbook::{DepthDiff, DiffOutcome, OrderBook, OrderBookSynchronizer};
+#[cfg(feature = "net")]
 pub use symbols::{Instrument, SymbolCheck, SymbolIndex, INDEX_TTL};
 pub use tape::{BookCache, LiveRegistry, TradeTape, DEFAULT_TAPE_TRADES};
+#[cfg(feature = "net")]
 pub use window::{Window, WindowService, WindowSource, MAX_VENUE_BARS};
