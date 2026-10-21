@@ -96,6 +96,18 @@ pub enum EventKind {
     ThreeWhiteSoldiers,
     /// Three consecutive strong down bars closing near their lows.
     ThreeBlackCrows,
+    /// A close beyond the recent range's extreme.
+    Breakout,
+    /// Closed beyond the extreme, then closed back inside: the false break.
+    FailedBreakout,
+    /// Broke out, returned to the level, and held it without closing through.
+    Retest,
+    /// Newest two swing highs ascending AND newest two swing lows ascending
+    /// (buy side); the LH/LL mirror (sell side) shares the kind.
+    HigherHighs,
+    /// The newest range window is the tightest of its recent peers: the
+    /// squeeze that precedes expansion.
+    RangeContraction,
 }
 
 impl EventKind {
@@ -127,11 +139,16 @@ impl EventKind {
             Self::DarkCloudCover => "dark_cloud_cover",
             Self::ThreeWhiteSoldiers => "three_white_soldiers",
             Self::ThreeBlackCrows => "three_black_crows",
+            Self::Breakout => "breakout",
+            Self::FailedBreakout => "failed_breakout",
+            Self::Retest => "retest",
+            Self::HigherHighs => "higher_highs",
+            Self::RangeContraction => "range_contraction",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 29] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -156,6 +173,11 @@ impl EventKind {
         Self::DarkCloudCover,
         Self::ThreeWhiteSoldiers,
         Self::ThreeBlackCrows,
+        Self::Breakout,
+        Self::FailedBreakout,
+        Self::Retest,
+        Self::HigherHighs,
+        Self::RangeContraction,
     ];
 }
 
@@ -297,6 +319,160 @@ impl EventConfig {
 ///   [`EventConfig::spike_average_bars`] bars before it.
 /// * **Candlestick patterns** -- the shape + trend-context pass
 ///   ([`detect_patterns`]), merged into the same stream before the sort.
+
+/// The price-action pass: breakouts, retests, swing structure, and ranges.
+///
+/// Everything here reconstructs its state from the window on every call --
+/// the same rule the FVG lifecycle follows, so live and replay agree by
+/// construction. Levels are computed per window (the 20-bar Donchian for the
+/// breakout family), never stored.
+pub fn detect_price_action(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
+    const RANGE_BARS: usize = 20;
+    const CONTRACTION_BARS: usize = 10;
+    const CONTRACTION_WINDOWS: usize = 10;
+
+    let mut out = Vec::new();
+    // RANGE_BARS of channel history plus the newest bar.
+    if candles.len() <= RANGE_BARS {
+        return out;
+    }
+    let last = candles.last().expect("checked above");
+    let bar_time = last.open_time;
+    let tf = last.timeframe;
+    let n = candles.len() - 1;
+    let mut push = |kind: EventKind, side: Option<Side>, price: f64| {
+        out.push(MarketEvent {
+            kind,
+            symbol: symbol.to_string(),
+            timeframe: tf,
+            bar_time,
+            close: last.close,
+            price,
+            side,
+            zone_low: None,
+            zone_high: None,
+            magnitude: None,
+            formed_at: None,
+        });
+    };
+
+    // The Donchian channel over the RANGE_BARS *before* the newest bar.
+    let window = &candles[n - RANGE_BARS..n];
+    let top = window.iter().map(|k| k.high).fold(f64::MIN, f64::max);
+    let bottom = window.iter().map(|k| k.low).fold(f64::MAX, f64::min);
+
+    // Breakout: the newest close is through the channel.
+    if last.close > top {
+        push(EventKind::Breakout, Some(Side::Buy), top);
+    } else if last.close < bottom {
+        push(EventKind::Breakout, Some(Side::Sell), bottom);
+    }
+
+    // Failed breakout and retest: rebuild the channel breaks across the
+    // window, then ask what the bars after each break did.
+    for i in RANGE_BARS..n {
+        let prior = &candles[i - RANGE_BARS..i];
+        let prior_top = prior.iter().map(|k| k.high).fold(f64::MIN, f64::max);
+        let prior_bottom = prior.iter().map(|k| k.low).fold(f64::MAX, f64::min);
+        let k = &candles[i];
+        if k.close > prior_top {
+            // A bullish break at i: failed if any later bar closed back at or
+            // under the level; retested if a later bar TOUCHED the level
+            // (wick) without closing through, and the newest close is above.
+            let mut touched = false;
+            let mut failed = false;
+            for later in &candles[i + 1..] {
+                if later.close <= prior_top {
+                    failed = true;
+                    break;
+                }
+                if later.low <= prior_top {
+                    touched = true;
+                }
+            }
+            if failed {
+                push(EventKind::FailedBreakout, Some(Side::Sell), prior_top);
+                break;
+            }
+            if touched && last.close > prior_top {
+                push(EventKind::Retest, Some(Side::Buy), prior_top);
+                break;
+            }
+        } else if k.close < prior_bottom {
+            let mut touched = false;
+            let mut failed = false;
+            for later in &candles[i + 1..] {
+                if later.close >= prior_bottom {
+                    failed = true;
+                    break;
+                }
+                if later.high >= prior_bottom {
+                    touched = true;
+                }
+            }
+            if failed {
+                push(EventKind::FailedBreakout, Some(Side::Buy), prior_bottom);
+                break;
+            }
+            if touched && last.close < prior_bottom {
+                push(EventKind::Retest, Some(Side::Sell), prior_bottom);
+                break;
+            }
+        }
+    }
+
+    // Higher highs / lower lows: the newest two swing highs and swing lows,
+    // lookback 3 (a swing clears three bars either side).
+    let mut highs: Vec<f64> = Vec::new();
+    let mut lows: Vec<f64> = Vec::new();
+    for i in 3..n.saturating_sub(3) {
+        let k = &candles[i];
+        // Strict on both sides: a flat stretch is not a series of swings, and
+        // a double top is one level, not two (tweezers are their own kind).
+        if (i - 3..=i + 3).all(|j| j == i || candles[j].high < k.high) {
+            highs.push(k.high);
+        }
+        if (i - 3..=i + 3).all(|j| j == i || candles[j].low > k.low) {
+            lows.push(k.low);
+        }
+    }
+    if highs.len() >= 2 && lows.len() >= 2 {
+        let (h1, h2) = (highs[highs.len() - 2], highs[highs.len() - 1]);
+        let (l1, l2) = (lows[lows.len() - 2], lows[lows.len() - 1]);
+        if h2 > h1 && l2 > l1 {
+            push(EventKind::HigherHighs, Some(Side::Buy), h2);
+        } else if h2 < h1 && l2 < l1 {
+            push(EventKind::HigherHighs, Some(Side::Sell), l2);
+        }
+    }
+
+    // Range contraction: the newest CONTRACTION_BARS span is the tightest of
+    // the last CONTRACTION_WINDOWS such spans.
+    let span = |end: usize| {
+        let w = &candles[end - CONTRACTION_BARS..end];
+        w.iter().map(|k| k.high).fold(f64::MIN, f64::max)
+            - w.iter().map(|k| k.low).fold(f64::MAX, f64::min)
+    };
+    let newest_span = span(candles.len());
+    if newest_span > 0.0 {
+        // The prior windows, not the newest's own peers: a market that is
+        // equally tight everywhere is a quiet market, not a squeeze.
+        let prior_tightest = (1..=CONTRACTION_WINDOWS)
+            .filter_map(|back| {
+                candles
+                    .len()
+                    .checked_sub(back + 1)
+                    .filter(|e| *e >= CONTRACTION_BARS)
+                    .map(span)
+            })
+            .fold(f64::MAX, f64::min);
+        if newest_span < prior_tightest {
+            push(EventKind::RangeContraction, None, last.close);
+        }
+    }
+
+    out
+}
 
 /// The candlestick-pattern pass: shape rules plus local trend context.
 ///
@@ -771,6 +947,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     // newest bar, merged before the deterministic sort so live and replayed
     // windows order identically.
     events.extend(detect_patterns(candles, symbol));
+    events.extend(detect_price_action(candles, symbol));
 
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
@@ -992,6 +1169,106 @@ mod pattern_tests {
         if let Some(bpr) = events.iter().find(|e| e.kind == EventKind::BprCreated) {
             assert!(bpr.zone_low < bpr.zone_high, "a balance is a real band");
         }
+    }
+
+    fn pa_series(ks: Vec<Candle>) -> Vec<Candle> {
+        series(ks)
+    }
+
+    #[test]
+    fn a_breakout_fires_on_the_close_through_the_channel() {
+        // 20 flat bars (100..101), then a close at 102.
+        let mut ks: Vec<Candle> = (0..20).map(|_| k(100.2, 101.0, 100.0, 100.5)).collect();
+        ks.push(k(100.8, 102.2, 100.6, 102.0));
+        let events = detect_patterns_and_events(&pa_series(ks));
+        let brk = events.iter().find(|e| e.kind == EventKind::Breakout).expect("breakout");
+        assert_eq!(brk.side, Some(Side::Buy));
+        assert_eq!(brk.price, 101.0, "the level is the channel top");
+        // A close INSIDE the channel fires nothing.
+        let mut ks: Vec<Candle> = (0..20).map(|_| k(100.2, 101.0, 100.0, 100.5)).collect();
+        ks.push(k(100.6, 100.9, 100.3, 100.7));
+        assert!(!kinds(&detect_patterns_and_events(&pa_series(ks))).contains(&EventKind::Breakout));
+    }
+
+    #[test]
+    fn a_failed_breakout_closed_back_inside() {
+        // Break out at bar 20, then bar 21 closes back under the level.
+        let mut ks: Vec<Candle> = (0..20).map(|_| k(100.2, 101.0, 100.0, 100.5)).collect();
+        ks.push(k(100.8, 102.0, 100.6, 101.8)); // the break
+        ks.push(k(101.6, 101.8, 100.2, 100.5)); // back inside
+        let events = detect_patterns_and_events(&pa_series(ks));
+        let failed = events.iter().find(|e| e.kind == EventKind::FailedBreakout).expect("failed");
+        assert_eq!(failed.side, Some(Side::Sell), "a failed upside break reads bearish");
+        assert_eq!(failed.price, 101.0);
+    }
+
+    #[test]
+    fn a_retest_touches_the_level_and_holds_it() {
+        // Break out, wick back to the level without closing through, hold above.
+        let mut ks: Vec<Candle> = (0..20).map(|_| k(100.2, 101.0, 100.0, 100.5)).collect();
+        ks.push(k(100.8, 102.0, 100.6, 101.8)); // the break
+        ks.push(k(101.7, 101.9, 100.9, 101.6)); // wick to 100.9 (above 101.0? no: 100.9 < 101.0 touches) close 101.6 above
+        ks.push(k(101.6, 102.0, 101.3, 101.8)); // holds above
+        let events = detect_patterns_and_events(&pa_series(ks));
+        let retest = events.iter().find(|e| e.kind == EventKind::Retest).expect("retest");
+        assert_eq!(retest.side, Some(Side::Buy));
+        assert_eq!(retest.price, 101.0);
+        // Without the touch, no retest.
+        let mut ks: Vec<Candle> = (0..20).map(|_| k(100.2, 101.0, 100.0, 100.5)).collect();
+        ks.push(k(100.8, 102.0, 100.6, 101.8));
+        ks.push(k(101.7, 102.0, 101.5, 101.9));
+        assert!(!kinds(&detect_patterns_and_events(&pa_series(ks))).contains(&EventKind::Retest));
+    }
+
+    #[test]
+    fn higher_highs_need_both_sides_stepping() {
+        // Ascending swings: highs 102, 104 and lows 99, 101. The three quiet
+        // lead bars put the first swing inside the confirmation window (a
+        // swing needs three bars either side to be seen at all).
+        let mut ks: Vec<Candle> = (0..3).map(|_| k(99.8, 100.2, 99.4, 99.9)).collect();
+        let path = [
+            (100.0, 100.5, 99.3, 100.2),
+            (100.2, 102.0, 100.0, 101.6), // swing high 102
+            (101.6, 101.8, 100.8, 101.0),
+            (101.0, 101.2, 99.0, 99.4),  // swing low 99
+            (99.4, 100.6, 101.0, 100.4),
+            (100.4, 101.8, 101.2, 101.5),
+            (101.5, 102.0, 101.3, 101.7),
+            (101.7, 102.2, 101.4, 101.9),
+            (101.9, 104.0, 101.6, 103.6), // swing high 104
+            (103.6, 103.8, 102.6, 103.0),
+            (103.0, 103.2, 101.0, 101.4), // swing low 101
+            (101.4, 101.6, 101.2, 101.5),
+        ];
+        for (o, h, l, c) in path {
+            ks.push(k(o, h, l, c));
+        }
+        // pad past the swing's confirmation window
+        for _ in 0..10 {
+            ks.push(k(101.4, 101.6, 101.2, 101.5));
+        }
+        let events = detect_patterns_and_events(&pa_series(ks));
+        let hh = events.iter().find(|e| e.kind == EventKind::HigherHighs);
+        assert!(hh.is_some(), "the ascending structure fires: {:?}", kinds(&events));
+        assert_eq!(hh.expect("hh").side, Some(Side::Buy));
+    }
+
+    #[test]
+    fn the_squeeze_is_the_tightest_window() {
+        // Wide bars, then ten nearly-flat ones at the end.
+        let mut ks: Vec<Candle> = (0..40)
+            .map(|i| k(100.0, 104.0 + (i % 3) as f64, 96.0 - (i % 2) as f64, 100.5))
+            .collect();
+        for _ in 0..10 {
+            ks.push(k(100.2, 100.6, 99.9, 100.3)); // the tight window
+        }
+        let events = detect_patterns_and_events(&pa_series(ks));
+        assert!(kinds(&events).contains(&EventKind::RangeContraction));
+        // Wide throughout: no contraction.
+        let ks: Vec<Candle> = (0..40)
+            .map(|i| k(100.0, 104.0 + (i % 3) as f64, 96.0 - (i % 2) as f64, 100.5))
+            .collect();
+        assert!(!kinds(&detect_patterns_and_events(&pa_series(ks))).contains(&EventKind::RangeContraction));
     }
 
     fn detect_patterns_and_events(candles: &[Candle]) -> Vec<MarketEvent> {

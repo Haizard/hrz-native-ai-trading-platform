@@ -40,6 +40,8 @@ pub enum Library {
     OrderFlow,
     /// Candlestick patterns: shape plus local trend context.
     Candles,
+    /// Price action: breakouts, retests, structure, ranges.
+    PriceAction,
 }
 
 impl Library {
@@ -52,6 +54,7 @@ impl Library {
             Self::Volume => "volume",
             Self::OrderFlow => "order_flow",
             Self::Candles => "candles",
+            Self::PriceAction => "pa",
         }
     }
 }
@@ -410,6 +413,56 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             event_kinds: &[EventKind::ThreeBlackCrows],
+        },
+        ConceptSpec {
+            id: "pa.breakout",
+            version: "1.0.0",
+            library: Library::PriceAction,
+            name: "Breakout",
+            description: "a close beyond the recent 20-bar extreme -- the range gave way, in the close's direction",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::Breakout],
+        },
+        ConceptSpec {
+            id: "pa.failed_breakout",
+            version: "1.0.0",
+            library: Library::PriceAction,
+            name: "Failed Breakout",
+            description: "closed beyond the extreme, then closed back inside -- the break was rejected, and the other side owns it now",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::FailedBreakout],
+        },
+        ConceptSpec {
+            id: "pa.retest",
+            version: "1.0.0",
+            library: Library::PriceAction,
+            name: "Breakout Retest",
+            description: "broke out, came back to the level, and held it -- the broken boundary works as its new role",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::Retest],
+        },
+        ConceptSpec {
+            id: "pa.higher_highs",
+            version: "1.0.0",
+            library: Library::PriceAction,
+            name: "Higher Highs / Lower Lows",
+            description: "the newest swing highs AND lows stepping the same way -- the trend's structure, confirmed by both sides of it",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::HigherHighs],
+        },
+        ConceptSpec {
+            id: "pa.range_contraction",
+            version: "1.0.0",
+            library: Library::PriceAction,
+            name: "Range Contraction",
+            description: "the tightest ten-bar span of its recent peers -- compression, the state expansion is born from",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::RangeContraction],
         },
     ]
 }
