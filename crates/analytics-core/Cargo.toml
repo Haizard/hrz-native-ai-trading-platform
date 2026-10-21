@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
+wickra = { version = "2", default-features = false }
 
 [dev-dependencies]
 proptest   = { workspace = true }

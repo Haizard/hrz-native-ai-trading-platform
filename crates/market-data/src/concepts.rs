@@ -46,6 +46,8 @@ pub enum Library {
     Session,
     /// Classical chart patterns: tops, shoulders, triangles, flags.
     Chart,
+    /// Harmonic patterns (the wickra engine): XABCD family.
+    Harmonics,
 }
 
 impl Library {
@@ -61,6 +63,7 @@ impl Library {
             Self::PriceAction => "pa",
             Self::Session => "session",
             Self::Chart => "chart",
+            Self::Harmonics => "harmonics",
         }
     }
 }
@@ -449,6 +452,86 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             event_kinds: &[EventKind::Wedge],
+        },
+        ConceptSpec {
+            id: "harmonics.gartley",
+            version: "1.0.0",
+            library: Library::Harmonics,
+            name: "Gartley",
+            description: "the classic XABCD: B at the 0.618 retracement, D completing at the 0.786 -- the harmonic the family is named for",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::HarmonicGartley],
+        },
+        ConceptSpec {
+            id: "harmonics.bat",
+            version: "1.0.0",
+            library: Library::Harmonics,
+            name: "Bat",
+            description: "the deep XABCD: B shallow, D completing at the 0.886 of XA -- the pattern that taught the family patience",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::HarmonicBat],
+        },
+        ConceptSpec {
+            id: "harmonics.butterfly",
+            version: "1.0.0",
+            library: Library::Harmonics,
+            name: "Butterfly",
+            description: "the extended XABCD: D completing BEYOND X at the 1.272 extension -- the pattern that ends past the start",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::HarmonicButterfly],
+        },
+        ConceptSpec {
+            id: "harmonics.crab",
+            version: "1.0.0",
+            library: Library::Harmonics,
+            name: "Crab",
+            description: "the deepest completion: D at the 1.618 extension of XA -- exhaustion, not continuation",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::HarmonicCrab],
+        },
+        ConceptSpec {
+            id: "harmonics.shark",
+            version: "1.0.0",
+            library: Library::Harmonics,
+            name: "Shark",
+            description: "the newer harmonic: C beyond A, D at the 0.886-1.13 of the extended range",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::HarmonicShark],
+        },
+        ConceptSpec {
+            id: "harmonics.cypher",
+            version: "1.0.0",
+            library: Library::Harmonics,
+            name: "Cypher",
+            description: "the pattern with the B inside XA and the C beyond it: D completing at the 0.786 of XC",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::HarmonicCypher],
+        },
+        ConceptSpec {
+            id: "harmonics.abcd",
+            version: "1.0.0",
+            library: Library::Harmonics,
+            name: "AB=CD",
+            description: "the measured move: the CD leg mirrors the AB leg in price and time -- symmetry as the signal",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::HarmonicAbcd],
+        },
+        ConceptSpec {
+            id: "harmonics.three_drives",
+            version: "1.0.0",
+            library: Library::Harmonics,
+            name: "Three Drives",
+            description: "three pushes at Fibonacci extensions (1.272-1.618): the trend exhausting itself in threes",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::HarmonicThreeDrives],
         },
         ConceptSpec {
             id: "sd.zone_tested",

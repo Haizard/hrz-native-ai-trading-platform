@@ -173,6 +173,22 @@ pub enum EventKind {
     HighVolumeNode,
     /// A low-volume node: rejected price.
     LowVolumeNode,
+    /// A Gartley completion (wickra engine).
+    HarmonicGartley,
+    /// A Bat completion.
+    HarmonicBat,
+    /// A Butterfly completion.
+    HarmonicButterfly,
+    /// A Crab completion.
+    HarmonicCrab,
+    /// A Shark completion.
+    HarmonicShark,
+    /// A Cypher completion.
+    HarmonicCypher,
+    /// An AB=CD completion.
+    HarmonicAbcd,
+    /// A Three Drives completion.
+    HarmonicThreeDrives,
 }
 
 impl EventKind {
@@ -237,11 +253,19 @@ impl EventKind {
             Self::ValueArea => "value_area",
             Self::HighVolumeNode => "high_volume_node",
             Self::LowVolumeNode => "low_volume_node",
+            Self::HarmonicGartley => "harmonic_gartley",
+            Self::HarmonicBat => "harmonic_bat",
+            Self::HarmonicButterfly => "harmonic_butterfly",
+            Self::HarmonicCrab => "harmonic_crab",
+            Self::HarmonicShark => "harmonic_shark",
+            Self::HarmonicCypher => "harmonic_cypher",
+            Self::HarmonicAbcd => "harmonic_abcd",
+            Self::HarmonicThreeDrives => "harmonic_three_drives",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 57] = [
+    pub const ALL: [Self; 65] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -299,6 +323,14 @@ impl EventKind {
         Self::ValueArea,
         Self::HighVolumeNode,
         Self::LowVolumeNode,
+        Self::HarmonicGartley,
+        Self::HarmonicBat,
+        Self::HarmonicButterfly,
+        Self::HarmonicCrab,
+        Self::HarmonicShark,
+        Self::HarmonicCypher,
+        Self::HarmonicAbcd,
+        Self::HarmonicThreeDrives,
     ];
 }
 
@@ -1787,6 +1819,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_sessions(candles, symbol));
     events.extend(detect_chart_patterns(candles, symbol, &config));
     events.extend(detect_volume_profile(candles, symbol));
+    events.extend(crate::wickra_adapter::detect_harmonics(candles, symbol));
 
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
