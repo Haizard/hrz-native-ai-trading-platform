@@ -253,10 +253,20 @@ pub fn calculate_volume_profile_from_candles(
 
     for candle in candles {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let first = ((candle.low - min_price) / bucket_size).floor() as usize;
+        // A malformed candle (low above high, which happens in sloppy
+        // upstream data) is normalised, never panicked on: the profile
+        // cannot reason about a candle that breaks OHLC, but it must not
+        // underflow on one either.
+        let lo = candle.low.min(candle.high);
+        let hi = candle.low.max(candle.high);
+        let first = ((lo - min_price) / bucket_size).floor() as usize;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let last = ((candle.high - min_price) / bucket_size).floor() as usize;
+        let last = ((hi - min_price) / bucket_size).floor() as usize;
         let last = last.min(bucket_count - 1);
+        // A zero-range bar at the absolute top of the range floors its low
+        // into bucket_count while the clamp holds its high at bucket_count-1:
+        // clamp  too, or the span subtracts with overflow.
+        let first = first.min(bucket_count - 1);
 
         let spanned = (last - first + 1).max(1);
         #[allow(clippy::cast_precision_loss)]
@@ -387,6 +397,73 @@ fn detect_nodes(nodes: &[VolumeNode], lookback: usize) -> (Vec<f64>, Vec<f64>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_flat_padded_series_does_not_overflow() {
+        use crate::types::Timeframe;
+        let mut ks: Vec<Candle> = (0..3)
+            .map(|_| Candle {
+                symbol: "T".to_string(),
+                timeframe: Timeframe::H1,
+                open_time: 0,
+                open: 99.8,
+                high: 100.2,
+                low: 99.4,
+                close: 99.9,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            })
+            .collect();
+        let path = [
+            (100.0, 100.5, 99.3, 100.2),
+            (100.2, 102.0, 100.0, 101.6),
+            (101.6, 101.8, 100.8, 101.0),
+            (101.0, 101.2, 99.0, 99.4),
+            (99.4, 100.6, 101.0, 100.4),
+            (100.4, 101.8, 101.2, 101.5),
+            (101.5, 102.0, 101.3, 101.7),
+            (101.7, 102.2, 101.4, 101.9),
+            (101.9, 104.0, 101.6, 103.6),
+            (103.6, 103.8, 102.6, 103.0),
+            (103.0, 103.2, 101.0, 101.4),
+            (101.4, 101.6, 101.2, 101.5),
+        ];
+        for (o, h, l, c) in path {
+            ks.push(Candle {
+                symbol: "T".to_string(),
+                timeframe: Timeframe::H1,
+                open_time: 0,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            });
+        }
+        for _ in 0..10 {
+            ks.push(Candle {
+                symbol: "T".to_string(),
+                timeframe: Timeframe::H1,
+                open_time: 0,
+                open: 101.4,
+                high: 101.6,
+                low: 101.2,
+                close: 101.5,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            });
+        }
+        // This is the exact series shape that underflowed: it must compute.
+        let span = 104.0 - 99.0;
+        let bucket = round_bucket(span, 48);
+        let profile = calculate_volume_profile_from_candles(&ks, bucket);
+        assert!(!profile.is_empty());
+    }
+
+
     use super::*;
     use crate::types::Timeframe;
 

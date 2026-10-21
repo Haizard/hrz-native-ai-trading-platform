@@ -165,6 +165,14 @@ pub enum EventKind {
     Flag,
     /// Both swing lines sloping the same way while converging.
     Wedge,
+    /// The profile's point of control: the heaviest volume bucket.
+    VolumePoc,
+    /// The value area: the band where most of the volume traded.
+    ValueArea,
+    /// A high-volume node: accepted price.
+    HighVolumeNode,
+    /// A low-volume node: rejected price.
+    LowVolumeNode,
 }
 
 impl EventKind {
@@ -225,11 +233,15 @@ impl EventKind {
             Self::Triangle => "triangle",
             Self::Flag => "flag",
             Self::Wedge => "wedge",
+            Self::VolumePoc => "volume_poc",
+            Self::ValueArea => "value_area",
+            Self::HighVolumeNode => "high_volume_node",
+            Self::LowVolumeNode => "low_volume_node",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 57] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -283,6 +295,10 @@ impl EventKind {
         Self::Triangle,
         Self::Flag,
         Self::Wedge,
+        Self::VolumePoc,
+        Self::ValueArea,
+        Self::HighVolumeNode,
+        Self::LowVolumeNode,
     ];
 }
 
@@ -424,6 +440,82 @@ impl EventConfig {
 ///   [`EventConfig::spike_average_bars`] bars before it.
 /// * **Candlestick patterns** -- the shape + trend-context pass
 ///   ([`detect_patterns`]), merged into the same stream before the sort.
+
+/// The volume-profile pass, as an ADAPTER over the platform's own profile
+/// engine (`crate::volume_profile`): the point of control, the value area,
+/// and the high/low-volume nodes. The engine is candle-derived, and it
+/// no-ops on an empty profile -- a synthetic index with zero reported volume
+/// gets NO events rather than invented ones, which is the honest floor.
+pub fn detect_volume_profile(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
+    let mut out = Vec::new();
+    if candles.len() < 20 {
+        return out;
+    }
+    let Some(last) = candles.last() else { return out };
+    let span = candles.iter().map(|k| k.high).fold(f64::MIN, f64::max)
+        - candles.iter().map(|k| k.low).fold(f64::MAX, f64::min);
+    if span <= 0.0 {
+        return out;
+    }
+    let bucket = crate::volume_profile::round_bucket(span, 48);
+    let profile = crate::volume_profile::calculate_volume_profile_from_candles(candles, bucket);
+    if profile.is_empty() {
+        return out;
+    }
+    let bar_time = last.open_time;
+    let tf = last.timeframe;
+    let mut push = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>| {
+        out.push(MarketEvent {
+            kind,
+            symbol: symbol.to_string(),
+            timeframe: tf,
+            bar_time,
+            close: last.close,
+            price,
+            side,
+            zone_low: low,
+            zone_high: high,
+            magnitude: None,
+            formed_at: None,
+        });
+    };
+
+    // The point of control: the single heaviest bucket.
+    push(EventKind::VolumePoc, None, profile.poc, None, None);
+
+    // The value area: the band where the bulk of the volume traded.
+    push(EventKind::ValueArea, None, (profile.vah + profile.val) / 2.0, Some(profile.val), Some(profile.vah));
+
+    // The nodes: the engine's own local maxima and minima of the histogram,
+    // banded so contiguous runs draw as zones rather than bucket lists.
+    let mut hvns = profile.hvn.clone();
+    hvns.sort_by(|a, b| a.total_cmp(b));
+    for band in contiguous(&hvns, bucket) {
+        push(EventKind::HighVolumeNode, None, (band.0 + band.1) / 2.0, Some(band.0), Some(band.1));
+    }
+    let mut lvns = profile.lvn.clone();
+    lvns.sort_by(|a, b| a.total_cmp(b));
+    for band in contiguous(&lvns, bucket) {
+        push(EventKind::LowVolumeNode, None, (band.0 + band.1) / 2.0, Some(band.0), Some(band.1));
+    }
+
+    out
+}
+
+/// Merge sorted node prices within one bucket-step of each other into bands.
+fn contiguous(nodes: &[f64], step: f64) -> Vec<(f64, f64)> {
+    let mut bands: Vec<(f64, f64)> = Vec::new();
+    for &price in nodes {
+        match bands.last_mut() {
+            Some(band) if price - band.1 <= step * 1.5 => band.1 = price,
+            _ => bands.push((price, price)),
+        }
+    }
+    bands
+        .into_iter()
+        .map(|(lo, hi)| (lo - step / 2.0, hi + step / 2.0))
+        .collect()
+}
 
 /// The classical chart-pattern pass, as an ADAPTER over the platform's own
 /// pattern engine (`crate::patterns`): head & shoulders (and inverse), double
@@ -1694,6 +1786,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_liquidity_family(candles, symbol, &config));
     events.extend(detect_sessions(candles, symbol));
     events.extend(detect_chart_patterns(candles, symbol, &config));
+    events.extend(detect_volume_profile(candles, symbol));
 
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
@@ -2043,6 +2136,62 @@ mod pattern_tests {
             .expect("breaker fires");
         assert_eq!(brk.side, Some(Side::Sell), "the failed bullish OB flips bearish");
         assert_eq!(brk.zone_low, Some(99.6));
+    }
+
+    #[test]
+    fn the_profile_family_names_poc_and_value_area() {
+        // A series with most volume at ~100, plus extremes: the POC sits at
+        // the heavy bucket and the value area contains it.
+        let mut ks: Vec<Candle> = Vec::new();
+        for i in 0..30 {
+            let heavy = i % 3 == 0;
+            ks.push(Candle {
+                symbol: "T".to_string(),
+                timeframe: crate::types::Timeframe::H1,
+                open_time: i as i64 * 3_600_000_000_000,
+                open: 100.0,
+                high: 100.4,
+                low: 99.6,
+                close: 100.1,
+                volume: if heavy { 50.0 } else { 2.0 },
+                buy_volume: 25.0,
+                sell_volume: 25.0,
+            });
+        }
+        ks.push(Candle {
+            symbol: "T".to_string(),
+            timeframe: crate::types::Timeframe::H1,
+            open_time: 30 * 3_600_000_000_000,
+            open: 100.1,
+            high: 104.0,
+            low: 100.0,
+            close: 103.5,
+            volume: 2.0,
+            buy_volume: 1.0,
+            sell_volume: 1.0,
+        });
+        let events = detect_patterns_and_events(&ks);
+        let poc = events.iter().find(|e| e.kind == EventKind::VolumePoc).expect("poc");
+        assert!((poc.price - 100.0).abs() < 0.5, "the poc sits at the heavy bucket: {}", poc.price);
+        let va = events.iter().find(|e| e.kind == EventKind::ValueArea).expect("value area");
+        assert!(va.zone_low.expect("val") <= poc.price && poc.price <= va.zone_high.expect("vah"), "the poc is inside the value area");
+        // And the honesty floor: zero volume yields NO profile events.
+        let flat: Vec<Candle> = (0..30)
+            .map(|i| Candle {
+                symbol: "T".to_string(),
+                timeframe: crate::types::Timeframe::H1,
+                open_time: i as i64 * 3_600_000_000_000,
+                open: 100.0,
+                high: 100.5,
+                low: 99.5,
+                close: 100.2,
+                volume: 0.0,
+                buy_volume: 0.0,
+                sell_volume: 0.0,
+            })
+            .collect();
+        let events = detect_patterns_and_events(&flat);
+        assert!(!kinds(&events).contains(&EventKind::VolumePoc), "zero volume, no poc");
     }
 
     #[test]
