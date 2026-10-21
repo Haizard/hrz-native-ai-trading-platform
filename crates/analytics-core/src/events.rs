@@ -153,6 +153,18 @@ pub enum EventKind {
     DailyOpen,
     /// The week's opening price (UTC week, Monday open).
     WeeklyOpen,
+    /// Two swing highs (or lows) within tolerance, confirmed through the
+    /// intervening trough (or peak).
+    DoubleTopBottom,
+    /// Three swings, middle highest (or lowest), confirmed through the
+    /// neckline.
+    HeadShoulders,
+    /// Converging structure: ascending, descending, or symmetrical.
+    Triangle,
+    /// A strong impulse then a tight counter channel.
+    Flag,
+    /// Both swing lines sloping the same way while converging.
+    Wedge,
 }
 
 impl EventKind {
@@ -208,11 +220,16 @@ impl EventKind {
             Self::AsianRange => "asian_range",
             Self::DailyOpen => "daily_open",
             Self::WeeklyOpen => "weekly_open",
+            Self::DoubleTopBottom => "double_top_bottom",
+            Self::HeadShoulders => "head_shoulders",
+            Self::Triangle => "triangle",
+            Self::Flag => "flag",
+            Self::Wedge => "wedge",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 53] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -261,6 +278,11 @@ impl EventKind {
         Self::AsianRange,
         Self::DailyOpen,
         Self::WeeklyOpen,
+        Self::DoubleTopBottom,
+        Self::HeadShoulders,
+        Self::Triangle,
+        Self::Flag,
+        Self::Wedge,
     ];
 }
 
@@ -402,6 +424,63 @@ impl EventConfig {
 ///   [`EventConfig::spike_average_bars`] bars before it.
 /// * **Candlestick patterns** -- the shape + trend-context pass
 ///   ([`detect_patterns`]), merged into the same stream before the sort.
+
+/// The classical chart-pattern pass, as an ADAPTER over the platform's own
+/// pattern engine (`crate::patterns`): head & shoulders (and inverse), double
+/// tops and bottoms, triangles, wedges, flags -- with confidence and trade
+/// geometry the engine computed, wrapped as events on the same stream.
+pub fn detect_chart_patterns(candles: &[Candle], symbol: &str, config: &EventConfig) -> Vec<MarketEvent> {
+    // The pattern engine's own tested swing lookback (2): finer than the
+    // structure detector's, because a classical pattern's swings are local.
+    let structure = crate::market_structure::detect_market_structure(
+        candles,
+        crate::market_structure::StructureConfig { lookback: 2 },
+    );
+    let matches = crate::patterns::detect_patterns(candles, &structure, None, &crate::patterns::PatternConfig::default());
+    let last = match candles.last() {
+        Some(l) => l,
+        None => return Vec::new(),
+    };
+    matches
+        .iter()
+        .map(|m| {
+            use crate::patterns::{PatternDirection, PatternKind};
+            let (kind, side) = match (m.kind, m.direction) {
+                (PatternKind::HeadAndShoulders, _) => (EventKind::HeadShoulders, Some(Side::Sell)),
+                (PatternKind::InverseHeadAndShoulders, _) => (EventKind::HeadShoulders, Some(Side::Buy)),
+                (PatternKind::DoubleTop, _) => (EventKind::DoubleTopBottom, Some(Side::Sell)),
+                (PatternKind::DoubleBottom, _) => (EventKind::DoubleTopBottom, Some(Side::Buy)),
+                (PatternKind::Triangle, PatternDirection::Bullish) => (EventKind::Triangle, Some(Side::Buy)),
+                (PatternKind::Triangle, PatternDirection::Bearish) => (EventKind::Triangle, Some(Side::Sell)),
+                (PatternKind::Triangle, PatternDirection::Neutral) => (EventKind::Triangle, None),
+                (PatternKind::Wedge, PatternDirection::Bullish) => (EventKind::Wedge, Some(Side::Buy)),
+                (PatternKind::Wedge, PatternDirection::Bearish) => (EventKind::Wedge, Some(Side::Sell)),
+                (PatternKind::Wedge, PatternDirection::Neutral) => (EventKind::Wedge, None),
+                (PatternKind::Flag, PatternDirection::Bullish) => (EventKind::Flag, Some(Side::Buy)),
+                (PatternKind::Flag, PatternDirection::Bearish) => (EventKind::Flag, Some(Side::Sell)),
+                (PatternKind::Flag, PatternDirection::Neutral) => (EventKind::Flag, None),
+            };
+            let (zone_low, zone_high) = if m.invalidation < m.target {
+                (Some(m.invalidation), Some(m.target))
+            } else {
+                (Some(m.target), Some(m.invalidation))
+            };
+            MarketEvent {
+                kind,
+                symbol: symbol.to_string(),
+                timeframe: last.timeframe,
+                bar_time: last.open_time,
+                close: last.close,
+                price: m.entry_level,
+                side,
+                zone_low,
+                zone_high,
+                magnitude: Some(m.confidence),
+                formed_at: m.anchors.first().map(|a| a.timestamp),
+            }
+        })
+        .collect()
+}
 
 /// The session pass: kill zones and the Asian range, in the platform's own
 /// clock (UTC). ICT's windows are quoted in New York time; these are the UTC
@@ -1614,6 +1693,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_smc_extended(candles, symbol, &config));
     events.extend(detect_liquidity_family(candles, symbol, &config));
     events.extend(detect_sessions(candles, symbol));
+    events.extend(detect_chart_patterns(candles, symbol, &config));
 
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
@@ -1963,6 +2043,32 @@ mod pattern_tests {
             .expect("breaker fires");
         assert_eq!(brk.side, Some(Side::Sell), "the failed bullish OB flips bearish");
         assert_eq!(brk.zone_low, Some(99.6));
+    }
+
+    #[test]
+    fn the_chart_engine_flows_through_the_event_stream() {
+        // The platform's own pattern engine is the detector; the adapter
+        // maps its matches onto the stream with entry levels and the trade
+        // band. The engine's own proven double-top closes: two equal peaks
+        // with a valley, then the break.
+        let closes = [90.0, 95.0, 100.0, 97.0, 94.0, 97.0, 100.0, 97.0, 94.0, 92.0, 91.0];
+        let mut ks: Vec<Candle> = Vec::new();
+        for c in &closes {
+            ks.push(k(*c, c + 0.5, c - 0.5, *c));
+        }
+        let events = detect_patterns_and_events(&series(ks));
+        let chart_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::DoubleTopBottom | EventKind::HeadShoulders | EventKind::Triangle | EventKind::Wedge | EventKind::Flag))
+            .collect();
+        assert!(!chart_events.is_empty(), "the engine's patterns reach the stream: {:?}", kinds(&events));
+        let dt = chart_events
+            .iter()
+            .find(|e| e.kind == EventKind::DoubleTopBottom)
+            .expect("a double top wraps");
+        assert_eq!(dt.side, Some(Side::Sell));
+        assert!(dt.zone_low.is_some() && dt.zone_high.is_some(), "the trade band rides");
+        assert!(dt.magnitude.is_some(), "the engine's confidence rides as magnitude");
     }
 
     #[test]

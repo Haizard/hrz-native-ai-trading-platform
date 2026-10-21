@@ -44,6 +44,8 @@ pub enum Library {
     PriceAction,
     /// Session concepts: kill zones and session ranges, in UTC.
     Session,
+    /// Classical chart patterns: tops, shoulders, triangles, flags.
+    Chart,
 }
 
 impl Library {
@@ -58,6 +60,7 @@ impl Library {
             Self::Candles => "candles",
             Self::PriceAction => "pa",
             Self::Session => "session",
+            Self::Chart => "chart",
         }
     }
 }
@@ -396,6 +399,56 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             event_kinds: &[],
+        },
+        ConceptSpec {
+            id: "chart.double_top_bottom",
+            version: "1.0.0",
+            library: Library::Chart,
+            name: "Double Top / Double Bottom",
+            description: "two swings at one level with a real dip between, confirmed through the neckline -- the market said the level twice",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::DoubleTopBottom],
+        },
+        ConceptSpec {
+            id: "chart.head_shoulders",
+            version: "1.0.0",
+            library: Library::Chart,
+            name: "Head & Shoulders",
+            description: "three swings with the middle highest and the shoulders symmetric, confirmed through the neckline -- the classic distribution top (and its inverse)",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::HeadShoulders],
+        },
+        ConceptSpec {
+            id: "chart.triangle",
+            version: "1.0.0",
+            library: Library::Chart,
+            name: "Triangle",
+            description: "converging structure: flat tops with rising lows (ascending), the mirror (descending), or both sides closing in (symmetrical)",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::Triangle],
+        },
+        ConceptSpec {
+            id: "chart.flag",
+            version: "1.0.0",
+            library: Library::Chart,
+            name: "Flag",
+            description: "a strong impulse then a tight counter channel -- the trend catching its breath before the next leg",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::Flag],
+        },
+        ConceptSpec {
+            id: "chart.wedge",
+            version: "1.0.0",
+            library: Library::Chart,
+            name: "Wedge",
+            description: "both swing lines sloping the same way while converging -- rising wedges break down, falling wedges break up",
+            parameters: STRUCTURE_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::Wedge],
         },
         ConceptSpec {
             id: "sd.zone_tested",
