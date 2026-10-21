@@ -63,6 +63,68 @@ fn as_wickra(candle: &Candle) -> Option<wickra::Candle> {
     .ok()
 }
 
+/// The candlestick family from the master list, wickra-driven: per-bar
+/// signed outputs (their own +1.0/-1.0) wrapped as events on the bar they
+/// land on. Our homegrown fourteen stay the authority where they overlap;
+/// these are the patterns the list has and we did not.
+fn candlestick_detectors() -> Vec<Detector> {
+    vec![
+        Detector { kind: EventKind::DragonflyDoji, make: || Box::new(wickra::DragonflyDoji::new()) },
+        Detector { kind: EventKind::GravestoneDoji, make: || Box::new(wickra::GravestoneDoji::new()) },
+        Detector { kind: EventKind::LongLeggedDoji, make: || Box::new(wickra::LongLeggedDoji::new()) },
+        Detector { kind: EventKind::SpinningTop, make: || Box::new(wickra::SpinningTop::new()) },
+        Detector { kind: EventKind::Tweezer, make: || Box::new(wickra::Tweezer::new()) },
+        Detector { kind: EventKind::Kicker, make: || Box::new(wickra::Kicking::new()) },
+        Detector { kind: EventKind::MatchingLow, make: || Box::new(wickra::MatchingLow::new()) },
+        Detector { kind: EventKind::OnNeck, make: || Box::new(wickra::OnNeck::new()) },
+        Detector { kind: EventKind::ThreeInside, make: || Box::new(wickra::ThreeInside::new()) },
+        Detector { kind: EventKind::ThreeOutside, make: || Box::new(wickra::ThreeOutside::new()) },
+        Detector { kind: EventKind::ThreeMethods, make: || Box::new(wickra::RisingThreeMethods::new()) },
+        Detector { kind: EventKind::ThreeMethods, make: || Box::new(wickra::FallingThreeMethods::new()) },
+        Detector { kind: EventKind::AbandonedBaby, make: || Box::new(wickra::AbandonedBaby::new()) },
+        Detector { kind: EventKind::TriStar, make: || Box::new(wickra::Tristar::new()) },
+        Detector { kind: EventKind::StickSandwich, make: || Box::new(wickra::StickSandwich::new()) },
+        Detector { kind: EventKind::MatHold, make: || Box::new(wickra::MatHold::new()) },
+        Detector { kind: EventKind::TasukiGap, make: || Box::new(wickra::TasukiGap::new()) },
+        Detector { kind: EventKind::LadderBottom, make: || Box::new(wickra::LadderBottom::new()) },
+        Detector { kind: EventKind::BeltHold, make: || Box::new(wickra::BeltHold::new()) },
+        Detector { kind: EventKind::Hikkake, make: || Box::new(wickra::Hikkake::new()) },
+    ]
+}
+
+/// Replay the window through the candlestick detectors, one event per
+/// pattern bar (their signed values carry the direction).
+pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
+    let mut out = Vec::new();
+    if candles.len() < 2 {
+        return out;
+    }
+    for detector in candlestick_detectors() {
+        let mut engine = (detector.make)();
+        for candle in candles {
+            let Some(wc) = as_wickra(candle) else { continue };
+            let Some(value) = engine.update(wc) else { continue };
+            if value == 0.0 {
+                continue;
+            }
+            out.push(MarketEvent {
+                kind: detector.kind,
+                symbol: symbol.to_string(),
+                timeframe: candle.timeframe,
+                bar_time: candle.open_time,
+                close: candle.close,
+                price: candle.close,
+                side: Some(if value > 0.0 { Side::Buy } else { Side::Sell }),
+                zone_low: Some(candle.low),
+                zone_high: Some(candle.high),
+                magnitude: Some(value.abs()),
+                formed_at: None,
+            });
+        }
+    }
+    out
+}
+
 /// Replay the window through the harmonic detectors, emitting one event per
 /// completion. The completions are the detector's own ±1.0 outputs on the
 /// bar they land on; the level is that bar's close (the completion point).
@@ -159,15 +221,96 @@ mod tests {
         );
     }
 
+    fn textbook_gartley_no_tail() -> Vec<Candle> {
+        let h = 3_600_000_000_000_i64;
+        let prices = [
+            106.0, 105.0, 102.0, 100.0,
+            104.0, 108.0, 112.0,
+            110.0, 107.0, 105.0,
+            107.0, 109.0, 110.5,
+            108.0, 105.0, 103.0,
+            104.5, 106.0, 108.0, 109.0,
+        ];
+        prices.iter().enumerate().map(|(i, p)| k(i as i64 * h, *p)).collect()
+    }
+
     #[test]
     fn the_completion_reaches_the_engine_stream() {
         let events = crate::events::detect_events(
-            &textbook_gartley(),
+            &textbook_gartley_no_tail(),
             "T",
             &crate::events::EventConfig::default(),
         );
         let gartley = events.iter().find(|e| e.kind == EventKind::HarmonicGartley);
         assert!(gartley.is_some(), "the merge delivers it: {:?}", events.iter().map(|e| e.kind.name()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn the_wickra_candle_family_fires_on_textbook_shapes() {
+        // The value-pinning rule for external logic: their patterns prove
+        // themselves on shapes any textbook would accept.
+        let h = 3_600_000_000_000_i64;
+        let bar = |t: i64, o: f64, hi: f64, lo: f64, c: f64| Candle {
+            symbol: "T".to_string(),
+            timeframe: Timeframe::H1,
+            open_time: t,
+            open: o,
+            high: hi,
+            low: lo,
+            close: c,
+            volume: 1.0,
+            buy_volume: 0.5,
+            sell_volume: 0.5,
+        };
+        // A dragonfly doji: open/close at the top, a long lower shadow.
+        let candles = vec![
+            bar(0, 100.0, 100.6, 99.5, 100.3),
+            bar(h, 100.2, 100.3, 96.0, 100.1),
+        ];
+        let events = detect_candlesticks(&candles, "T");
+        assert!(
+            events.iter().any(|e| e.kind == EventKind::DragonflyDoji && e.side == Some(Side::Buy)),
+            "the dragonfly fires bullish: {:?}",
+            events.iter().map(|e| e.kind.name()).collect::<Vec<_>>()
+        );
+
+        // A kicking gap: a black marubozu (body >= 95% of range), then a
+        // white marubozu gapping ABOVE the prior bar's high (their rule).
+        let candles = vec![
+            bar(0, 101.0, 101.05, 99.0, 99.05),
+            bar(h, 101.5, 102.95, 101.5, 102.9),
+        ];
+        let events = detect_candlesticks(&candles, "T");
+        assert!(
+            events.iter().any(|e| e.kind == EventKind::Kicker && e.side == Some(Side::Buy)),
+            "the bullish kicker fires: {:?}",
+            events.iter().map(|e| e.kind.name()).collect::<Vec<_>>()
+        );
+
+        // Every candlestick detector constructs and answers on a real series
+        // (long enough for the multi-bar families to evaluate at all).
+        let candles = vec![
+            bar(0, 101.0, 101.2, 99.0, 99.3),
+            bar(h, 100.0, 100.4, 99.5, 100.1),
+            bar(2 * h, 100.1, 100.5, 99.8, 100.3),
+            bar(3 * h, 100.3, 100.7, 100.0, 100.5),
+            bar(4 * h, 100.5, 100.9, 100.2, 100.7),
+            bar(5 * h, 100.7, 101.1, 100.4, 100.9),
+            bar(6 * h, 100.9, 101.3, 100.6, 101.1),
+            bar(7 * h, 101.1, 101.5, 100.8, 101.3),
+        ];
+        for detector in candlestick_detectors() {
+            let mut engine = (detector.make)();
+            let mut answered = false;
+            for candle in &candles {
+                if let Some(wc) = as_wickra(candle) {
+                    if engine.update(wc).is_some() {
+                        answered = true;
+                    }
+                }
+            }
+            assert!(answered, "{:?} never answered", detector.kind);
+        }
     }
 
     #[test]

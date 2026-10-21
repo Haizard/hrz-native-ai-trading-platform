@@ -59,6 +59,7 @@ pub mod imbalance;
 pub mod indicators;
 pub mod multiplier;
 pub mod smt;
+pub mod harmonics;
 pub mod wickra_adapter;
 pub mod liquidity;
 pub mod market_structure;

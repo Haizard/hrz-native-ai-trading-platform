@@ -189,6 +189,44 @@ pub enum EventKind {
     HarmonicAbcd,
     /// A Three Drives completion.
     HarmonicThreeDrives,
+    /// Dragonfly doji (wickra).
+    DragonflyDoji,
+    /// Gravestone doji.
+    GravestoneDoji,
+    /// Long-legged doji.
+    LongLeggedDoji,
+    /// Spinning top.
+    SpinningTop,
+    /// Tweezer tops or bottoms.
+    Tweezer,
+    /// Bullish or bearish kicker.
+    Kicker,
+    /// Matching low.
+    MatchingLow,
+    /// On-neck pattern.
+    OnNeck,
+    /// Three inside up or down.
+    ThreeInside,
+    /// Three outside up or down.
+    ThreeOutside,
+    /// Rising or falling three methods.
+    ThreeMethods,
+    /// Abandoned baby.
+    AbandonedBaby,
+    /// Tri-star.
+    TriStar,
+    /// Stick sandwich.
+    StickSandwich,
+    /// Mat hold.
+    MatHold,
+    /// Upside or downside tasuki gap.
+    TasukiGap,
+    /// Ladder bottom.
+    LadderBottom,
+    /// Belt-hold line.
+    BeltHold,
+    /// Hikkake trap.
+    Hikkake,
 }
 
 impl EventKind {
@@ -261,11 +299,30 @@ impl EventKind {
             Self::HarmonicCypher => "harmonic_cypher",
             Self::HarmonicAbcd => "harmonic_abcd",
             Self::HarmonicThreeDrives => "harmonic_three_drives",
+            Self::DragonflyDoji => "dragonfly_doji",
+            Self::GravestoneDoji => "gravestone_doji",
+            Self::LongLeggedDoji => "long_legged_doji",
+            Self::SpinningTop => "spinning_top",
+            Self::Tweezer => "tweezer",
+            Self::Kicker => "kicker",
+            Self::MatchingLow => "matching_low",
+            Self::OnNeck => "on_neck",
+            Self::ThreeInside => "three_inside",
+            Self::ThreeOutside => "three_outside",
+            Self::ThreeMethods => "three_methods",
+            Self::AbandonedBaby => "abandoned_baby",
+            Self::TriStar => "tri_star",
+            Self::StickSandwich => "stick_sandwich",
+            Self::MatHold => "mat_hold",
+            Self::TasukiGap => "tasuki_gap",
+            Self::LadderBottom => "ladder_bottom",
+            Self::BeltHold => "belt_hold",
+            Self::Hikkake => "hikkake",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 65] = [
+    pub const ALL: [Self; 84] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -331,6 +388,25 @@ impl EventKind {
         Self::HarmonicCypher,
         Self::HarmonicAbcd,
         Self::HarmonicThreeDrives,
+        Self::DragonflyDoji,
+        Self::GravestoneDoji,
+        Self::LongLeggedDoji,
+        Self::SpinningTop,
+        Self::Tweezer,
+        Self::Kicker,
+        Self::MatchingLow,
+        Self::OnNeck,
+        Self::ThreeInside,
+        Self::ThreeOutside,
+        Self::ThreeMethods,
+        Self::AbandonedBaby,
+        Self::TriStar,
+        Self::StickSandwich,
+        Self::MatHold,
+        Self::TasukiGap,
+        Self::LadderBottom,
+        Self::BeltHold,
+        Self::Hikkake,
     ];
 }
 
@@ -1819,7 +1895,11 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_sessions(candles, symbol));
     events.extend(detect_chart_patterns(candles, symbol, &config));
     events.extend(detect_volume_profile(candles, symbol));
-    events.extend(crate::wickra_adapter::detect_harmonics(candles, symbol));
+    // Harmonics: the platform's own calibrated detector (the wickra adapter
+    // stays in the tree for the candlestick family; its harmonic gate proved
+    // too strict for real data, so the family runs on our swings).
+    events.extend(crate::harmonics::detect_harmonics(candles, symbol));
+    events.extend(crate::wickra_adapter::detect_candlesticks(candles, symbol));
 
     // Deterministic order: by kind, then by price. A stable order is part of
     // the contract -- a replayed window must name its events in the same order
