@@ -60,6 +60,7 @@ pub mod indicators;
 pub mod multiplier;
 pub mod smt;
 pub mod candlesticks;
+pub mod fibonacci;
 pub mod harmonics;
 pub mod liquidity;
 pub mod market_structure;

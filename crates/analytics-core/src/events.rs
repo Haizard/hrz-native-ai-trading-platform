@@ -227,6 +227,25 @@ pub enum EventKind {
     BeltHold,
     /// Hikkake trap.
     Hikkake,
+    /// Three swings at one level, confirmed through the neckline.
+    TripleTopBottom,
+    /// A flat-top flat-bottom channel and its breakout.
+    RectangleBreakout,
+    /// A rounded bottom, a shallow handle, and the resumption.
+    CupAndHandle,
+    /// A strong impulse with a CONVERGING small channel (not the flag's
+    /// parallel drift).
+    Pennant,
+    /// A Fibonacci retracement level of the newest swing.
+    FibRetracement,
+    /// The golden pocket: the 0.618-0.65 band of the newest swing.
+    GoldenPocket,
+    /// A Fibonacci extension level beyond the newest swing.
+    FibExtension,
+    /// Two swings' levels agreeing within tolerance.
+    FibConfluence,
+    /// A Fibonacci-count bar of the swing.
+    FibTimeZone,
 }
 
 impl EventKind {
@@ -318,11 +337,20 @@ impl EventKind {
             Self::LadderBottom => "ladder_bottom",
             Self::BeltHold => "belt_hold",
             Self::Hikkake => "hikkake",
+            Self::TripleTopBottom => "triple_top_bottom",
+            Self::RectangleBreakout => "rectangle_breakout",
+            Self::CupAndHandle => "cup_and_handle",
+            Self::Pennant => "pennant",
+            Self::FibRetracement => "fib_retracement",
+            Self::GoldenPocket => "golden_pocket",
+            Self::FibExtension => "fib_extension",
+            Self::FibConfluence => "fib_confluence",
+            Self::FibTimeZone => "fib_time_zone",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 84] = [
+    pub const ALL: [Self; 93] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -407,6 +435,15 @@ impl EventKind {
         Self::LadderBottom,
         Self::BeltHold,
         Self::Hikkake,
+        Self::TripleTopBottom,
+        Self::RectangleBreakout,
+        Self::CupAndHandle,
+        Self::Pennant,
+        Self::FibRetracement,
+        Self::GoldenPocket,
+        Self::FibExtension,
+        Self::FibConfluence,
+        Self::FibTimeZone,
     ];
 }
 
@@ -680,6 +717,229 @@ pub fn detect_chart_patterns(candles: &[Candle], symbol: &str, config: &EventCon
             }
         })
         .collect()
+}
+
+/// Collapse near-duplicate edges: two edges within the tolerance AND close
+/// in time are one, and the more extreme of them survives.
+fn collapse_edges(mut edges: Vec<(usize, f64)>, tolerance: f64, highs: bool) -> Vec<(usize, f64)> {
+    let mut out: Vec<(usize, f64)> = Vec::new();
+    for edge in edges.drain(..) {
+        match out.last_mut() {
+            Some(last) if (edge.1 - last.1).abs() <= tolerance * edge.1.abs().max(last.1.abs()) && edge.0 - last.0 <= 3 => {
+                let replace = if highs { edge.1 > last.1 } else { edge.1 < last.1 };
+                if replace {
+                    *last = edge;
+                }
+            }
+            _ => out.push(edge),
+        }
+    }
+    out
+}
+
+/// The chart-pattern gap fills: triple tops, rectangles, cups, pennants.
+///
+/// Same swing machinery as the rest of the family (strict lookback swings),
+/// and the canonical rules: a triple top is the double top's natural
+/// extension, a rectangle is flat tops AND flat bottoms at once, a cup is a
+/// rounded bottom with a shallow handle, a pennant converges where a flag
+/// drifts parallel.
+pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig) -> Vec<MarketEvent> {
+    const TOP_TOLERANCE: f64 = 0.003;
+    const HANDLE_MAX_DEPTH: f64 = 0.5;
+
+    let mut out = Vec::new();
+    let lb = config.structure_lookback;
+    // The pennant's floor is the deepest window here (its pole plus the
+    // channel); every other detector's slices are saturating-guarded.
+    if candles.len() < 24 {
+        return out;
+    }
+    let last = candles.last().expect("checked above");
+    let bar_time = last.open_time;
+    let tf = last.timeframe;
+    let n = candles.len() - 1;
+    let mut push = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>, formed: Option<i64>| {
+        out.push(MarketEvent {
+            kind,
+            symbol: symbol.to_string(),
+            timeframe: tf,
+            bar_time,
+            close: last.close,
+            price,
+            side,
+            zone_low: low,
+            zone_high: high,
+            magnitude: None,
+            formed_at: formed,
+        });
+    };
+
+    // The strict swings of the STRUCTURE: the newest bar is the breakout or
+    // resumption, and it is excluded, because a rectangle's second edge can
+    // never confirm when the bar that breaks it lands inside its
+    // confirmation window. The channel lives before the break.
+    // The channel's edges, the way a trader reads them: a pivot on its left
+    // side (higher than the `lb` bars before it), and ALIVE until violated
+    // -- every later bar before the breakout must respect it. A level is a
+    // level until broken, which is the only reading that lets a rectangle's
+    // second edge exist on the bar before the break.
+    let mut highs: Vec<(usize, f64)> = Vec::new();
+    let mut lows: Vec<(usize, f64)> = Vec::new();
+    for i in lb..candles.len() - 1 {
+        let k = &candles[i];
+        // The left pivot tolerates the flat band too: pattern tops may sit a
+        // hair above each other and every one still counts -- the band IS
+        // the tolerance, on the left exactly as on the violation side.
+        let left_pivot_high = (i - lb..i).all(|j| candles[j].high < k.high * (1.0 + TOP_TOLERANCE));
+        // Alive until violated BEYOND the flat tolerance: a rectangle's
+        // second touch may sit a hair above the first without killing it --
+        // that hair IS the tolerance, not a violation.
+        if left_pivot_high
+            && candles[i + 1..]
+                .iter()
+                .all(|b| b.high <= k.high * (1.0 + TOP_TOLERANCE) || b.open_time == last.open_time)
+        {
+            highs.push((i, k.high));
+        }
+        let left_pivot_low = (i - lb..i).all(|j| candles[j].low > k.low * (1.0 - TOP_TOLERANCE));
+        if left_pivot_low
+            && candles[i + 1..]
+                .iter()
+                .all(|b| b.low >= k.low * (1.0 - TOP_TOLERANCE) || b.open_time == last.open_time)
+        {
+            lows.push((i, k.low));
+        }
+    }
+
+    // Near-duplicate edges collapse to the extreme of each run (within the
+    // flat tolerance and a couple of lookbacks): a peak tagged twice by two
+    // near bars is ONE edge, the higher of them -- otherwise the newest
+    // three "peaks" are one peak and its shadows.
+    let highs = collapse_edges(highs, TOP_TOLERANCE, true);
+    let lows = collapse_edges(lows, TOP_TOLERANCE, false);
+
+    // -- Triple top / bottom -----------------------------------------------------
+    // Three newest highs within tolerance, the neckline at the LOWER of the
+    // two intervening troughs, and the newest close through it.
+    if highs.len() >= 3 {
+        let (a, b, c) = (highs[highs.len() - 3], highs[highs.len() - 2], highs[highs.len() - 1]);
+        let mid = (a.1 + b.1 + c.1) / 3.0;
+        let within = (a.1 - b.1).abs() <= mid * TOP_TOLERANCE
+            && (b.1 - c.1).abs() <= mid * TOP_TOLERANCE
+            && (a.1 - c.1).abs() <= mid * TOP_TOLERANCE;
+        if within {
+            let trough1 = candles[a.0..=b.0].iter().map(|k| k.low).fold(f64::MAX, f64::min);
+            let trough2 = candles[b.0..=c.0].iter().map(|k| k.low).fold(f64::MAX, f64::min);
+            let neckline = trough1.min(trough2);
+            if mid - neckline >= mid * 0.01 && last.close < neckline {
+                push(EventKind::TripleTopBottom, Some(Side::Sell), neckline, Some(neckline), Some(mid), Some(candles[a.0].open_time));
+            }
+        }
+    }
+    if lows.len() >= 3 {
+        let (a, b, c) = (lows[lows.len() - 3], lows[lows.len() - 2], lows[lows.len() - 1]);
+        let mid = (a.1 + b.1 + c.1) / 3.0;
+        let within = (a.1 - b.1).abs() <= mid * TOP_TOLERANCE
+            && (b.1 - c.1).abs() <= mid * TOP_TOLERANCE
+            && (a.1 - c.1).abs() <= mid * TOP_TOLERANCE;
+        if within {
+            let peak1 = candles[a.0..=b.0].iter().map(|k| k.high).fold(f64::MIN, f64::max);
+            let peak2 = candles[b.0..=c.0].iter().map(|k| k.high).fold(f64::MIN, f64::max);
+            let neckline = peak1.max(peak2);
+            if neckline - mid >= mid * 0.01 && last.close > neckline {
+                push(EventKind::TripleTopBottom, Some(Side::Buy), neckline, Some(mid), Some(neckline), Some(candles[a.0].open_time));
+            }
+        }
+    }
+
+    // -- Rectangle -----------------------------------------------------------------
+    // The newest two highs flat AND the newest two lows flat (the channel);
+    // the newest close beyond a side is the breakout, in its direction.
+    eprintln!("edges: highs {highs:?} lows {lows:?}");
+    if highs.len() >= 2 && lows.len() >= 2 {
+        let (h1, h2) = (highs[highs.len() - 2], highs[highs.len() - 1]);
+        let (l1, l2) = (lows[lows.len() - 2], lows[lows.len() - 1]);
+        let top = (h1.1 + h2.1) / 2.0;
+        let bottom = (l1.1 + l2.1) / 2.0;
+        let flat_tops = (h1.1 - h2.1).abs() <= top * TOP_TOLERANCE;
+        let flat_bottoms = (l1.1 - l2.1).abs() <= bottom * TOP_TOLERANCE;
+        eprintln!("top {top} bottom {bottom} flat_tops {flat_tops} flat_bottoms {flat_bottoms} band_ok {}", top - bottom >= bottom * 0.01);
+        // The channel must be a real band (height at least 1% of price).
+        if flat_tops && flat_bottoms && top - bottom >= bottom * 0.01 {
+            let from = candles[h1.0.min(l1.0)].open_time;
+            if last.close > top {
+                push(EventKind::RectangleBreakout, Some(Side::Buy), top, Some(bottom), Some(top), Some(from));
+            } else if last.close < bottom {
+                push(EventKind::RectangleBreakout, Some(Side::Sell), bottom, Some(bottom), Some(top), Some(from));
+            }
+        }
+    }
+
+    // -- Cup and handle --------------------------------------------------------------
+    // A rounded bottom recovering to its rim, a shallow handle in the upper
+    // half, and the newest close above the rim. The bottom is the newest
+    // swing low whose recovery reached back to the prior swing high (the rim).
+    if highs.len() >= 2 && !lows.is_empty() {
+        // The bottom is the DEEPEST swing low of the window (the cup's base);
+        // the rim is the newest swing high BEFORE it (the cup's left lip);
+        // the handle is the shallow drift after the recovery, and it is
+        // allowed to be the newest low -- which is why the bottom must not
+        // be.
+        let (bottom_idx, bottom) = lows
+            .iter()
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, p)| (*i, *p))
+            .expect("checked above");
+        let rim_entry = highs.iter().filter(|h| h.0 < bottom_idx).last().copied();
+        if let Some((rim_idx, rim)) = rim_entry {
+            // Price recovered from the bottom back to the rim.
+            let recovered = candles[bottom_idx..].iter().any(|k| k.high >= rim * (1.0 - TOP_TOLERANCE));
+            // The handle: the drift AFTER the recovery bar (the first touch
+            // of the rim), held in the cup's upper half -- measuring from
+            // the newest N bars would reach back into the recovery leg.
+            let cup_depth = rim - bottom;
+            let recovery_idx = candles[bottom_idx..]
+                .iter()
+                .position(|k| k.high >= rim * (1.0 - TOP_TOLERANCE))
+                .map(|p| p + bottom_idx);
+            let handle_low = recovery_idx.map_or(f64::MAX, |r| {
+                candles[r + 1..=n].iter().map(|k| k.low).fold(f64::MAX, f64::min)
+            });
+            let handle_depth = rim - handle_low;
+            if recovered
+                && cup_depth > 0.0
+                && handle_depth > 0.0
+                && handle_depth <= cup_depth * HANDLE_MAX_DEPTH
+                && last.close > rim
+            {
+                push(EventKind::CupAndHandle, Some(Side::Buy), rim, Some(bottom), Some(rim), Some(candles[rim_idx].open_time));
+            }
+        }
+    }
+
+    // -- Pennant -------------------------------------------------------------------
+    // The flag's impulse, then a CONVERGING small channel (highs falling
+    // while lows rise). Distinct from the flag's parallel counter-drift.
+    if n >= 24 {
+        let pole_start = candles[n - 16..n - 8].iter().map(|k| k.low).fold(f64::MAX, f64::min);
+        let pole_end = candles[n - 16..n - 8].iter().map(|k| k.high).fold(f64::MIN, f64::max);
+        let pole = pole_end - pole_start;
+        let avg_range = candles[n - 24..n].iter().map(|k| k.high - k.low).sum::<f64>() / 24.0;
+        let channel = &candles[n - 8..=n];
+        let ch_high_first = channel[..4].iter().map(|k| k.high).fold(f64::MIN, f64::max);
+        let ch_high_last = channel[4..].iter().map(|k| k.high).fold(f64::MIN, f64::max);
+        let ch_low_first = channel[..4].iter().map(|k| k.low).fold(f64::MAX, f64::min);
+        let ch_low_last = channel[4..].iter().map(|k| k.low).fold(f64::MAX, f64::min);
+        let converging = ch_high_last < ch_high_first && ch_low_last > ch_low_first;
+        let ch_span = (ch_high_last.max(ch_high_first)) - (ch_low_last.min(ch_low_first));
+        if pole > avg_range * 6.0 && converging && ch_span < pole * 0.5 {
+            let up = candles[n - 8].close > candles[n - 16].close;
+            push(EventKind::Pennant, Some(if up { Side::Buy } else { Side::Sell }), (ch_high_last + ch_low_last) / 2.0, Some(ch_low_last.min(ch_low_first)), Some(ch_high_last.max(ch_high_first)), Some(candles[n - 16].open_time));
+        }
+    }
+
+    out
 }
 
 /// The session pass: kill zones and the Asian range, in the platform's own
@@ -1893,6 +2153,8 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_smc_extended(candles, symbol, &config));
     events.extend(detect_liquidity_family(candles, symbol, &config));
     events.extend(detect_sessions(candles, symbol));
+    events.extend(detect_chart_gaps(candles, symbol, &config));
+    events.extend(crate::fibonacci::detect_fibonacci(candles, symbol, config.structure_lookback));
     events.extend(detect_chart_patterns(candles, symbol, &config));
     events.extend(detect_volume_profile(candles, symbol));
     // Harmonics: the platform's own calibrated detector (the wickra adapter
@@ -2307,6 +2569,138 @@ mod pattern_tests {
             .collect();
         let events = detect_patterns_and_events(&flat);
         assert!(!kinds(&events).contains(&EventKind::VolumePoc), "zero volume, no poc");
+    }
+
+    #[test]
+    fn a_triple_top_needs_three_peaks_and_the_neckline() {
+        // Three peaks at ~106 with troughs at ~103, then the close under
+        // the LOWER trough.
+        let mut ks: Vec<Candle> = (0..16).map(|_| k(104.2, 104.8, 103.8, 104.4)).collect();
+        let path = [
+            (103.4, 106.0, 103.2, 105.6), // peak 1 (its low above the troughs)
+            (105.6, 105.8, 103.0, 103.4),
+            (103.4, 104.0, 103.2, 103.8),
+            (103.8, 104.2, 103.4, 103.9),
+            (103.9, 106.1, 103.6, 105.8), // peak 2 (4 bars later)
+            (105.8, 106.0, 103.1, 103.5),
+            (103.5, 104.0, 103.3, 103.9),
+            (103.9, 104.1, 103.5, 104.0),
+            (104.0, 106.05, 103.7, 105.7), // peak 3 (4 bars later)
+            (105.7, 105.9, 105.2, 105.5),
+            (105.5, 105.6, 105.3, 105.4),
+            (105.4, 105.5, 102.4, 102.7), // the break under 103.0
+        ];
+        for (o, h, l, c) in path {
+            ks.push(k(o, h, l, c));
+        }
+        let events = detect_patterns_and_events(&pa_series(ks));
+        eprintln!("triple events: {:?}", events.iter().map(|e| (e.kind.name(), e.side, e.price)).collect::<Vec<_>>());
+        let tt = events.iter().find(|e| e.kind == EventKind::TripleTopBottom).expect("triple top");
+        assert_eq!(tt.side, Some(Side::Sell));
+        assert_eq!(tt.price, 103.0, "the neckline is the lower trough");
+        // Two peaks only: no triple.
+        let mut ks: Vec<Candle> = (0..16).map(|_| k(100.0, 100.5, 99.5, 100.2)).collect();
+        for (o, h, l, c) in [
+            (100.2, 106.0, 100.0, 105.6),
+            (105.6, 105.8, 103.0, 103.4),
+            (103.4, 104.0, 103.2, 103.8),
+            (103.8, 106.1, 103.6, 105.8),
+            (105.8, 105.9, 102.4, 102.7),
+            (102.7, 102.9, 102.5, 102.8),
+        ] {
+            ks.push(k(o, h, l, c));
+        }
+        assert!(!kinds(&detect_patterns_and_events(&pa_series(ks))).contains(&EventKind::TripleTopBottom));
+    }
+
+    #[test]
+    fn a_rectangle_breaks_out_of_its_flat_channel() {
+        // Flat tops ~104, flat bottoms ~101, then a close above the top.
+        // The lead-in must not undercut the channel's bottoms (the
+        // left-pivot rule needs three respected bars before each edge).
+        let mut ks: Vec<Candle> = (0..16).map(|_| k(102.2, 103.2, 101.8, 102.9)).collect();
+        let path = [
+            (101.2, 104.0, 101.1, 103.6), // top 1 (its low above the bottoms)
+            (103.6, 103.8, 101.0, 101.4), // bottom 1
+            (101.4, 102.0, 101.2, 101.9),
+            (101.9, 102.2, 101.6, 102.0),
+            (102.0, 104.05, 101.8, 103.8), // top 2 (4 later, flat)
+            (103.8, 103.9, 101.05, 101.5), // bottom 2 (flat)
+            (101.5, 102.0, 101.3, 101.9),
+        ];
+        for (o, h, l, c) in path {
+            ks.push(k(o, h, l, c));
+        }
+        // The series ENDS at the breakout bar: detection is per-bar, and the
+        // edge is alive exactly here. Bars after the break would have
+        // violated it already.
+        ks.push(k(103.9, 105.0, 103.7, 104.6));
+        let events = detect_patterns_and_events(&pa_series(ks));
+        eprintln!("events: {:?}", events.iter().map(|e| (e.kind.name(), e.side, e.price)).collect::<Vec<_>>());
+        let rect = events.iter().find(|e| e.kind == EventKind::RectangleBreakout).expect("rectangle");
+        assert_eq!(rect.side, Some(Side::Buy));
+        // Inside the channel: no breakout.
+        let mut ks: Vec<Candle> = (0..4).map(|_| k(100.0, 100.5, 99.5, 100.2)).collect();
+        for (o, h, l, c) in path {
+            ks.push(k(o, h, l, c));
+        }
+        for _ in 0..4 {
+            ks.push(k(101.9, 103.5, 101.7, 102.4));
+        }
+        assert!(!kinds(&detect_patterns_and_events(&pa_series(ks))).contains(&EventKind::RectangleBreakout));
+    }
+
+    #[test]
+    fn a_cup_and_handle_needs_the_shallow_handle() {
+        // Rim at 104, cup bottom at 99, recovery to the rim, a shallow
+        // handle above 101.5 (upper half), then the resumption close above.
+        let mut ks: Vec<Candle> = (0..16).map(|_| k(100.6, 101.2, 100.2, 100.8)).collect();
+        let path = [
+            (103.6, 104.0, 103.2, 103.8), // the rim
+            (103.8, 103.9, 101.0, 101.4),
+            (101.4, 101.6, 99.0, 99.4),   // the cup bottom
+            (99.4, 100.0, 99.2, 99.8),
+            (99.8, 101.0, 99.6, 100.8),
+            (100.8, 102.0, 100.6, 101.8),
+            (101.8, 104.1, 101.6, 103.9), // recovery to the rim
+            (103.9, 104.0, 102.8, 103.2), // the shallow handle
+            (103.2, 103.4, 102.9, 103.1),
+            (103.1, 104.6, 103.0, 104.3), // the resumption above 104
+        ];
+        for (o, h, l, c) in path {
+            ks.push(k(o, h, l, c));
+        }
+        let events = detect_patterns_and_events(&pa_series(ks));
+        eprintln!("cup events: {:?}", events.iter().map(|e| (e.kind.name(), e.side, e.price)).collect::<Vec<_>>());
+        let cup = events.iter().find(|e| e.kind == EventKind::CupAndHandle).expect("cup");
+        assert_eq!(cup.side, Some(Side::Buy));
+        assert_eq!(cup.price, 104.0, "the rim is the swing high before the cup");
+    }
+
+    #[test]
+    fn a_pennant_converges_where_a_flag_drifts() {
+        // Pole up (+10 over 8 bars), then a converging small channel.
+        let mut ks: Vec<Candle> = (0..9).map(|_| k(100.0, 100.6, 99.8, 100.2)).collect();
+        for i in 0..8 {
+            ks.push(k(100.2 + i as f64 * 1.2, 101.0 + i as f64 * 1.2, 100.0 + i as f64 * 1.2, 100.9 + i as f64 * 1.2));
+        }
+        // The convergence: highs falling, lows rising.
+        let channel = [
+            (110.9, 111.2, 110.4, 110.8),
+            (110.8, 111.0, 110.5, 110.7),
+            (110.7, 110.9, 110.6, 110.75),
+            (110.75, 110.85, 110.65, 110.7),
+        ];
+        for (o, h, l, c) in channel {
+            ks.push(k(o, h, l, c));
+        }
+        for _ in 0..4 {
+            ks.push(k(110.7, 110.8, 110.66, 110.72));
+        }
+        let events = detect_patterns_and_events(&pa_series(ks));
+        let pen = events.iter().find(|e| e.kind == EventKind::Pennant);
+        assert!(pen.is_some(), "the converging channel is a pennant: {:?}", kinds(&events));
+        assert_eq!(pen.expect("checked").side, Some(Side::Buy));
     }
 
     #[test]
