@@ -110,6 +110,77 @@ pub async fn concept_events(
     Ok(Json(ConceptEventsResponse { symbol, events }))
 }
 
+/// `/concept-events/smt` query: a pair scan for SMT divergence.
+#[derive(Debug, Deserialize)]
+pub struct SmtQuery {
+    /// Symbol A (the chart's instrument).
+    pub symbol_a: String,
+    /// Symbol B (the correlated market).
+    pub symbol_b: String,
+    /// The timeframe (required).
+    pub timeframe: String,
+    /// How many bars to compare (default 400).
+    pub limit: Option<usize>,
+}
+
+/// `GET /concept-events/smt`: the pair scan.
+///
+/// SMT is a PAIR concept by construction -- it lives outside the per-symbol
+/// engine stream, evaluated here over both series' swing structure. The
+/// events carry A's divergent level (the chart's own price) with B's level
+/// as the evidence of non-confirmation.
+pub async fn smt(
+    State(state): State<AppState>,
+    Query(query): Query<SmtQuery>,
+) -> Result<Json<ConceptEventsResponse>, ApiError> {
+    let symbol_a = query.symbol_a.to_uppercase();
+    let symbol_b = query.symbol_b.to_uppercase();
+    let tf: analytics_core::types::Timeframe = query.timeframe.parse().map_err(|_| {
+        ApiError::bad_request("TIMEFRAME_UNKNOWN", format!("`{}` is not a timeframe this platform serves", query.timeframe))
+    })?;
+    let limit = query.limit.unwrap_or(400).clamp(60, 1000);
+    let to_ns = crate::now_ns();
+    let from_ns = to_ns - limit as i64 * tf.nanos();
+    let a = state
+        .windows
+        .candles_capped(&symbol_a, tf, from_ns, to_ns, limit)
+        .await
+        .map_err(|e| ApiError::unavailable(format!("no candles for {symbol_a}: {e}")))?
+        .candles;
+    let b = state
+        .windows
+        .candles_capped(&symbol_b, tf, from_ns, to_ns, limit)
+        .await
+        .map_err(|e| ApiError::unavailable(format!("no candles for {symbol_b}: {e}")))?
+        .candles;
+    let divergences = analytics_core::smt::detect_smt(&a, &b, 3);
+    let events = divergences
+        .iter()
+        .map(|d| market_data::concepts::ConceptEvent {
+            concept_id: "smc.smt_divergence".to_string(),
+            concept_version: "1.0.0".to_string(),
+            symbol: symbol_a.clone(),
+            timeframe: query.timeframe.clone(),
+            direction: match d.direction {
+                analytics_core::types::Side::Buy => market_data::concepts::Direction::Bullish,
+                analytics_core::types::Side::Sell => market_data::concepts::Direction::Bearish,
+            },
+            status: market_data::concepts::ConceptStatus::Confirmed,
+            event_time_ns: d.bar_time,
+            price_level: Some(d.a_level),
+            zone_low: None,
+            zone_high: None,
+            evidence: serde_json::json!({
+                "correlated_symbol": symbol_b,
+                "b_level": d.b_level,
+                "reading": "A swept the swing B did not confirm",
+            }),
+            bars: (d.prior_time, d.newest_time),
+        })
+        .collect();
+    Ok(Json(ConceptEventsResponse { symbol: symbol_a, events }))
+}
+
 /// `/concept-events/scan` query: a full replay over the chart's own candles.
 #[derive(Debug, Deserialize)]
 pub struct ScanQuery {

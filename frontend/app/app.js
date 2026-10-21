@@ -1501,8 +1501,11 @@ function createChartPane(root, hooks = {}) {
   function drawScriptOverlays(ctx, scene, freshMarkerBars = 0) {
     // Concept detections ride the same draw vocabulary (bounded zones,
     // segments, candle marks), as a pseudo-overlay ahead of the scripts'.
+    // A full overlay shape -- the loops below touch plots/markers/trendlines
+    // too, and an undefined one throws the whole draw (which is exactly how
+    // enabling a concept killed the pane).
     const conceptOverlay = scene.concept_shapes && scene.concept_shapes.length
-      ? [{ objects: scene.concept_shapes }]
+      ? [{ objects: scene.concept_shapes, plots: [], markers: [], trendlines: [], links: [] }]
       : [];
     const overlays = [...conceptOverlay, ...(scene.script_overlays || [])];
     if (!overlays.length) return;
@@ -1611,7 +1614,7 @@ function createChartPane(root, hooks = {}) {
           ctx.fillText(lb.text, lb.x - w / 2 + 5, lb.y - 8);
         }
       }
-      for (const p of overlay.plots) {
+      for (const p of overlay.plots || []) {
         if (p.points.length < 1) continue;
         ctx.strokeStyle = rgbaFromPacked(p.color, 1.0);
         ctx.lineWidth = p.linewidth || 1.25;

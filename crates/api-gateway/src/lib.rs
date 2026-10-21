@@ -292,6 +292,7 @@ pub fn router(state: AppState) -> Router {
         .route("/concepts", get(concept_routes::concepts))
         .route("/concept-events", get(concept_routes::concept_events))
         .route("/concept-events/scan", get(concept_routes::scan))
+        .route("/concept-events/smt", get(concept_routes::smt))
         .route("/compositions/backtest", post(concept_routes::backtest))
         .route("/compositions/generate", post(concept_routes::generate))
         // Prometheus scrapes this. Public, like the health endpoints: it names

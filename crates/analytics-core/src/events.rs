@@ -149,6 +149,10 @@ pub enum EventKind {
     NewYorkKillZone,
     /// The Asian session's high/low band for the day.
     AsianRange,
+    /// The day's opening price.
+    DailyOpen,
+    /// The week's opening price (UTC week, Monday open).
+    WeeklyOpen,
 }
 
 impl EventKind {
@@ -202,11 +206,13 @@ impl EventKind {
             Self::LondonKillZone => "london_kill_zone",
             Self::NewYorkKillZone => "new_york_kill_zone",
             Self::AsianRange => "asian_range",
+            Self::DailyOpen => "daily_open",
+            Self::WeeklyOpen => "weekly_open",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 48] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -253,6 +259,8 @@ impl EventKind {
         Self::LondonKillZone,
         Self::NewYorkKillZone,
         Self::AsianRange,
+        Self::DailyOpen,
+        Self::WeeklyOpen,
     ];
 }
 
@@ -418,6 +426,44 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
     let last = candles.last().expect("checked above");
     let bar_time = last.open_time;
     let tf = last.timeframe;
+
+    // The opens: a new period's first bar carries its opening price, once.
+    // Day-roll for the daily open, Monday-roll for the weekly (UTC week).
+    const WEEK_NS: i64 = 7 * DAY_NS;
+    let newest_day = last.open_time.div_euclid(DAY_NS);
+    let prev_day = candles[candles.len() - 2].open_time.div_euclid(DAY_NS);
+    if newest_day != prev_day {
+        out.push(MarketEvent {
+            kind: EventKind::DailyOpen,
+            symbol: symbol.to_string(),
+            timeframe: tf,
+            bar_time,
+            close: last.close,
+            price: last.open,
+            side: None,
+            zone_low: None,
+            zone_high: None,
+            magnitude: None,
+            formed_at: Some(last.open_time),
+        });
+        let newest_week = last.open_time.div_euclid(WEEK_NS);
+        let prev_week = candles[candles.len() - 2].open_time.div_euclid(WEEK_NS);
+        if newest_week != prev_week {
+            out.push(MarketEvent {
+                kind: EventKind::WeeklyOpen,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: last.open,
+                side: None,
+                zone_low: None,
+                zone_high: None,
+                magnitude: None,
+                formed_at: Some(last.open_time),
+            });
+        }
+    }
 
     for (kind, start_hour, end_hour) in WINDOWS {
         // The newest completed window of this kind: a session event fires
