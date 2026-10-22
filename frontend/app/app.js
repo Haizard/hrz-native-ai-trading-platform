@@ -1084,6 +1084,51 @@ function createChartPane(root, hooks = {}) {
         ctx.stroke();
       }
 
+      // A series pane's lines: each in its own colour, with a legend chip.
+      if (pane.lines && pane.lines.length) {
+        let legendX = pane.plot.x + 6 + ctx.measureText(pane.label).width + 10;
+        ctx.font = "9px ui-sans-serif, system-ui";
+        for (const line of pane.lines) {
+          const css = "#" + (line.color >>> 0).toString(16).padStart(6, "0");
+          if (line.points.length > 1) {
+            ctx.strokeStyle = css;
+            ctx.lineWidth = 1.25;
+            ctx.beginPath();
+            ctx.moveTo(line.points[0].x, line.points[0].y);
+            for (const point of line.points) ctx.lineTo(point.x, point.y);
+            ctx.stroke();
+          }
+          ctx.fillStyle = css;
+          ctx.fillText(line.name, legendX, pane.plot.y + 12);
+          legendX += ctx.measureText(line.name).width + 8;
+        }
+      }
+
+      // A series pane's histogram (MACD and friends): zero-anchored bars,
+      // green up, red down, a third of the slot wide.
+      if (pane.bars && pane.bars.length) {
+        const barW = Math.max(1, (pane.bars[1] ? pane.bars[1].x - pane.bars[0].x : 4) * 0.35);
+        for (const bar of pane.bars) {
+          ctx.fillStyle = bar.up ? "rgba(52, 211, 153, 0.55)" : "rgba(251, 113, 133, 0.55)";
+          const top = Math.min(bar.y_zero, bar.y_value);
+          const h = Math.max(1, Math.abs(bar.y_value - bar.y_zero));
+          ctx.fillRect(bar.x - barW / 2, top, barW, h);
+        }
+      }
+
+      // A series pane's markers (signal crossings): a dot and its label.
+      if (pane.markers && pane.markers.length) {
+        ctx.font = "600 9px ui-sans-serif, system-ui";
+        for (const marker of pane.markers) {
+          const colour = marker.kind === "bullish" ? "#34d399" : "#fb7185";
+          ctx.fillStyle = colour;
+          ctx.beginPath();
+          ctx.arc(marker.x, marker.y, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+          if (marker.label) ctx.fillText(marker.label, marker.x + 5, marker.y + 3);
+        }
+      }
+
       // Divergence lines: the detector's own claim, drawn between the two RSI
       // extremes -- green for bullish, red for bearish, labelled once.
       ctx.font = "600 9px ui-sans-serif, system-ui";
@@ -2708,8 +2753,9 @@ function createChartPane(root, hooks = {}) {
       noteEl.textContent = `candles: ${src.memory} from live buffer, ${src.venue} fetched from venue (${response.candles?.length ?? 0} total)`;
     }
     // The concept events ride the same pulse: bar-close facts, no extra
-    // cadence of their own.
+    // cadence of their own. The pane series ride it too.
     refreshConceptEvents();
+    refreshIndicatorSeries();
     return response.candles || [];
   }
 
@@ -3119,6 +3165,14 @@ function createChartPane(root, hooks = {}) {
       .join(" ");
     if (/divergence|rsi/i.test(liveNames)) {
       request.sub_panes = [{ kind: "rsi", period: 14, overbought: 70, oversold: 30 }];
+    }
+
+    // The registry's pane concepts (indicators.rsi and friends): the series
+    // came from analytics-core by way of the gateway, remapped onto this
+    // pane's candles above; the engine only positions them.
+    const registryPanes = seriesPaneSpecs();
+    if (registryPanes.length) {
+      request.sub_panes = [...(request.sub_panes || []), ...registryPanes];
     }
 
     // Pine-lite scripts (docs/23): sent as source + inputs, run by the engine
@@ -5466,6 +5520,74 @@ function createChartPane(root, hooks = {}) {
     }
   }
 
+  /// The pane concepts' series, per concept id: `{ times, spec }` from
+  /// GET /indicator-series. Fetched on the same pulse as the events; the
+  /// engine positions them as sub-panes below the chart.
+  let indicatorSeries = new Map();
+
+  /// Fetch the enabled pane concepts' series. A pane concept is a
+  /// measurement, not an event -- it renders as its own sub-pane, and this
+  /// is the data that pane draws.
+  async function refreshIndicatorSeries() {
+    const symbol = el("symbol") && el("symbol").value;
+    const timeframe = el("timeframe") && el("timeframe").value;
+    if (!symbol || !timeframe || !conceptCatalog) { indicatorSeries = new Map(); return; }
+    const wanted = conceptCatalog.filter((c) => c.pane === true && enabledConcepts.has(c.id));
+    if (!wanted.length) { indicatorSeries = new Map(); return; }
+    const next = new Map();
+    await Promise.all(wanted.map(async (c) => {
+      try {
+        const body = await api(`/indicator-series?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&concept=${encodeURIComponent(c.id)}`);
+        if (body && body.spec && Array.isArray(body.times)) next.set(c.id, body);
+      } catch {
+        // A pane that cannot compute over this window is simply absent --
+        // the events lane has its own error surface.
+      }
+    }));
+    indicatorSeries = next;
+  }
+
+  /// Remap a fetched series onto this pane's own candles by open_time: the
+  /// endpoint's values index into ITS `times`, and a bar closing mid-flight
+  /// between the two fetches must never shift a line off its candle.
+  function seriesPaneSpecs() {
+    if (!indicatorSeries.size || !candles.length) return [];
+    const indexByTime = new Map();
+    candles.forEach((c, i) => indexByTime.set(c.open_time ?? c.time, i));
+    const out = [];
+    for (const body of indicatorSeries.values()) {
+      const { times, spec } = body;
+      const srcIndexByTime = new Map(times.map((t, i) => [t, i]));
+      const remapValues = (values) => candles.map((c) => {
+        const si = srcIndexByTime.get(c.open_time ?? c.time);
+        return si != null ? (values[si] ?? null) : null;
+      });
+      const remapIndex = (i) => {
+        const t = times[i];
+        const ci = t != null ? indexByTime.get(t) : null;
+        return ci != null ? ci : null;
+      };
+      out.push({
+        kind: "series",
+        label: spec.label,
+        scale: spec.scale,
+        levels: spec.levels || [],
+        lines: (spec.lines || []).map((l) => ({ name: l.name, color: l.color, values: remapValues(l.values) })),
+        bars: spec.bars ? { name: spec.bars.name, color_up: spec.bars.color_up, color_down: spec.bars.color_down, values: remapValues(spec.bars.values) } : null,
+        segments: (spec.segments || []).map((seg) => {
+          const from = remapIndex(seg.from);
+          const to = remapIndex(seg.to);
+          return from != null && to != null ? { from, from_value: seg.from_value, to, to_value: seg.to_value, kind: seg.kind } : null;
+        }).filter(Boolean),
+        markers: (spec.markers || []).map((m) => {
+          const at = remapIndex(m.at);
+          return at != null ? { at, value: m.value, kind: m.kind, label: m.label } : null;
+        }).filter(Boolean),
+      });
+    }
+    return out;
+  }
+
   /// The visual identity per concept family: zones are filled rectangles
   /// (origin to end), structure is dashed segments (swing to break), candle
   /// patterns are names on their own candle. Sides carry the color; the
@@ -5555,6 +5677,7 @@ function createChartPane(root, hooks = {}) {
         if (box.checked) enabledConcepts.add(c.id);
         else enabledConcepts.delete(c.id);
         refreshConceptEvents().then(() => refresh && refresh());
+        refreshIndicatorSeries().then(() => refresh && refresh());
       });
       row.append(box, document.createTextNode(`${c.name}`));
       rows.push(row);

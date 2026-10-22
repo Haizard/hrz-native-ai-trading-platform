@@ -228,6 +228,34 @@ pub fn predict(model: &RsiPcaModel, row: &[Option<f64>; D]) -> Option<f64> {
     Some(pc[0] * model.coefs[0] + pc[1] * model.coefs[1])
 }
 
+/// The per-bar predictions of the walk-forward model: one `Option` per
+/// candle, `None` before the model can honestly fit. The detector and the
+/// chart pane read the SAME walk -- one model, two consumers.
+pub fn prediction_series(candles: &[Candle]) -> Option<Vec<Option<f64>>> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let rows = rsi_matrix(&closes);
+    let warm_up = 24 * 2; // his warm_up = max(rsi_lbs) * 2
+    let first = warm_up + TRAIN_SIZE;
+    if candles.len() <= first {
+        return None;
+    }
+    let mut out: Vec<Option<f64>> = vec![None; candles.len()];
+    let mut model: Option<RsiPcaModel> = None;
+    let mut next_train = first;
+    for i in first..candles.len() {
+        if i == next_train {
+            let end = i + 1 - LOOKAHEAD; // train rows [end-TRAIN_SIZE, end)
+            let start = end.saturating_sub(TRAIN_SIZE);
+            model = fit(&closes, &rows, start, end);
+            next_train += STEP_SIZE;
+        }
+        if let Some(m) = &model {
+            out[i] = predict(m, &rows[i]);
+        }
+    }
+    Some(out)
+}
+
 /// Walk the series: refit every STEP_SIZE bars on the TRAIN_SIZE window
 /// ending `LOOKAHEAD` bars back (no leak), predict each bar, and fire on the
 /// quantile crossings.

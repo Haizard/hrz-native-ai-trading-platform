@@ -106,6 +106,10 @@ pub struct ConceptSpec {
     pub parameters: &'static [ConceptParam],
     /// The data channels this concept honestly needs (gated per symbol).
     pub required_channels: DataChannels,
+    /// Whether this concept renders as an indicator sub-pane below the
+    /// chart: the shell fetches its series (GET /indicator-series) and the
+    /// engine positions it. Event-only concepts leave this false.
+    pub pane: bool,
     /// The analytics event kinds this variant emits (the existing detections
     /// it wraps; empty while a concept is declared but not yet detectable).
     pub event_kinds: &'static [EventKind],
@@ -207,6 +211,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a close through the last swing in the trend's direction -- continuation with a level to cite",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Bos],
         },
         ConceptSpec {
@@ -217,6 +222,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a close through the last swing against the trend's direction -- the first structure-level reversal evidence",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Choch],
         },
         ConceptSpec {
@@ -227,6 +233,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "price ran beyond a liquidity level and closed back inside it -- the pool was taken without acceptance",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::LiquiditySweep],
         },
         ConceptSpec {
@@ -237,6 +244,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "an imbalance left by displacement, tracked from creation to fill -- the zone price may return to",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::FvgCreated, EventKind::FvgFilled],
         },
         ConceptSpec {
@@ -247,6 +255,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a gap whose close-through failed it flips polarity -- the zone now works against its birth",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::FvgInvalidated],
         },
         ConceptSpec {
@@ -257,6 +266,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "two opposite open gaps overlapping -- the overlap is the balance price gravitates back to",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::BprCreated],
         },
         ConceptSpec {
@@ -267,6 +277,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the last opposing candle before a displacement-driven break -- where the move was loaded, and where it may return",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::OrderBlockCreated, EventKind::OrderBlockMitigated],
         },
         ConceptSpec {
@@ -277,6 +288,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "an order block whose close-through failed it flips type -- the failed support becomes the resistance",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::OrderBlockInvalidated],
         },
         ConceptSpec {
@@ -287,6 +299,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the dealing range split at its 50% equilibrium -- longs hunt in discount, shorts in premium",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::PremiumDiscount],
         },
         ConceptSpec {
@@ -297,6 +310,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "two same-side swings within a hair of each other -- the stops resting there are the pool price comes for",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::EqualLevels],
         },
         ConceptSpec {
@@ -307,6 +321,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a long-wick candle where the wick IS the zone -- the rejection lives in the part that got refused",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::RejectionBlockCreated, EventKind::RejectionBlockMitigated],
         },
         ConceptSpec {
@@ -317,6 +332,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the failed-auction block: liquidity swept without a structure break -- institutions mitigated, price reverses",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::MitigationBlockCreated, EventKind::MitigationBlockMitigated, EventKind::MitigationBlockInvalidated],
         },
         ConceptSpec {
@@ -327,6 +343,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a sweep whose own bar closes with conviction the other way -- the pool was taken and the turn is already moving",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::LiquidityGrab],
         },
         ConceptSpec {
@@ -337,6 +354,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the nearest opposing liquidity in the trend's direction -- the trap set before the real move continues",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Inducement],
         },
         ConceptSpec {
@@ -347,6 +365,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a break of a significant swing that re-enters the range within bars -- the false breakout Linda Raschke named",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::TurtleSoup],
         },
         ConceptSpec {
@@ -357,6 +376,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "07:00-10:00 UTC (ICT's London window) -- the range the session formed, drawn as its own box",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::LondonKillZone],
         },
         ConceptSpec {
@@ -367,6 +387,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "12:00-15:00 UTC (ICT's New York window) -- the range the session formed, drawn as its own box",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::NewYorkKillZone],
         },
         ConceptSpec {
@@ -377,6 +398,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "00:00-07:00 UTC -- the band the Asian session built, which London and New York trade against",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::AsianRange],
         },
         ConceptSpec {
@@ -387,6 +409,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the day's opening price -- the level the day is judged against",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::DailyOpen],
         },
         ConceptSpec {
@@ -397,6 +420,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the week's opening price (UTC Monday) -- the level the week is judged against",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::WeeklyOpen],
         },
         ConceptSpec {
@@ -407,6 +431,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the crack in correlation: one market sweeps a swing its pair does not confirm (a PAIR concept, scanned via /concept-events/smt)",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[],
         },
         ConceptSpec {
@@ -417,6 +442,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "two swings at one level with a real dip between, confirmed through the neckline -- the market said the level twice",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::DoubleTopBottom],
         },
         ConceptSpec {
@@ -427,6 +453,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "three swings with the middle highest and the shoulders symmetric, confirmed through the neckline -- the classic distribution top (and its inverse)",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HeadShoulders],
         },
         ConceptSpec {
@@ -437,6 +464,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "converging structure: flat tops with rising lows (ascending), the mirror (descending), or both sides closing in (symmetrical)",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Triangle],
         },
         ConceptSpec {
@@ -447,6 +475,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a strong impulse then a tight counter channel -- the trend catching its breath before the next leg",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Flag],
         },
         ConceptSpec {
@@ -457,6 +486,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "both swing lines sloping the same way while converging -- rising wedges break down, falling wedges break up",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Wedge],
         },
         ConceptSpec {
@@ -467,6 +497,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "three swings at one level with the neckline broken -- the market said it a third time, and meant it",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::TripleTopBottom],
         },
         ConceptSpec {
@@ -477,6 +508,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "flat tops and flat bottoms as the channel, and the side that finally gave way",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::RectangleBreakout],
         },
         ConceptSpec {
@@ -487,6 +519,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a rounded bottom back to its rim, a shallow handle in the upper half, and the resumption",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::CupAndHandle],
         },
         ConceptSpec {
@@ -497,6 +530,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a strong impulse with a converging small channel -- the flag's tighter cousin",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Pennant],
         },
         ConceptSpec {
@@ -507,6 +541,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the classic XABCD: B at the 0.618 retracement, D completing at the 0.786 -- the harmonic the family is named for",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HarmonicGartley],
         },
         ConceptSpec {
@@ -517,6 +552,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the deep XABCD: B shallow, D completing at the 0.886 of XA -- the pattern that taught the family patience",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HarmonicBat],
         },
         ConceptSpec {
@@ -527,6 +563,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the extended XABCD: D completing BEYOND X at the 1.272 extension -- the pattern that ends past the start",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HarmonicButterfly],
         },
         ConceptSpec {
@@ -537,6 +574,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the deepest completion: D at the 1.618 extension of XA -- exhaustion, not continuation",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HarmonicCrab],
         },
         ConceptSpec {
@@ -547,6 +585,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the newer harmonic: C beyond A, D at the 0.886-1.13 of the extended range",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HarmonicShark],
         },
         ConceptSpec {
@@ -557,6 +596,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the pattern with the B inside XA and the C beyond it: D completing at the 0.786 of XC",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HarmonicCypher],
         },
         ConceptSpec {
@@ -567,6 +607,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the measured move: the CD leg mirrors the AB leg in price and time -- symmetry as the signal",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HarmonicAbcd],
         },
         ConceptSpec {
@@ -577,6 +618,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "three pushes at Fibonacci extensions (1.272-1.618): the trend exhausting itself in threes",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HarmonicThreeDrives],
         },
         ConceptSpec {
@@ -587,6 +629,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the newest swing's retracement ladder (23.6 through 78.6) -- the levels, from the swing's own prices",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::FibRetracement],
         },
         ConceptSpec {
@@ -597,6 +640,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the 0.618-0.65 band of the newest swing -- the pocket traders actually mean",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::GoldenPocket],
         },
         ConceptSpec {
@@ -607,6 +651,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the 1.272 and 1.618 levels beyond the newest swing -- where the leg projects",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::FibExtension],
         },
         ConceptSpec {
@@ -617,6 +662,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "two swings' levels agreeing within tolerance -- the band where the math agrees with itself",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::FibConfluence],
         },
         ConceptSpec {
@@ -627,6 +673,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the swing's Fibonacci-count bars (3, 5, 8, 13, 21, 34, 55) -- time measured from the origin",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::FibTimeZone],
         },
         ConceptSpec {
@@ -637,7 +684,30 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the neurotrader model, in-house: RSI at 2..24, principal components of the family, a least-squares read of the next 6 bars, walk-forward with no leak -- the prediction's quantile extremes are the signal",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: true,
             event_kinds: &[EventKind::RsiPcaSignal],
+        },
+        ConceptSpec {
+            id: "indicators.rsi",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "RSI",
+            description: "Wilder's relative strength index over 14 bars -- the momentum measurement itself, in its own pane with the 30/70 bands",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: true,
+            event_kinds: &[],
+        },
+        ConceptSpec {
+            id: "indicators.rsi_divergence",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "RSI Divergence",
+            description: "the RSI line plus every confirmed RSI/price divergence in view -- the oscillator and its disagreement with price, one pane",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: true,
+            event_kinds: &[],
         },
         ConceptSpec {
             id: "sd.zone_tested",
@@ -647,6 +717,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "price traded into a fresh supply or demand zone -- the zone's first test is its strongest",
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::ZoneTested],
         },
         ConceptSpec {
@@ -657,6 +728,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "bar volume at a multiple of the recent average -- participation arrived",
             parameters: SPIKE_PARAMS,
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::VolumeSpike],
         },
         ConceptSpec {
@@ -667,6 +739,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the heaviest volume bucket -- the price the market accepted most (empty on zero-volume instruments, honestly)",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::VolumePoc],
         },
         ConceptSpec {
@@ -677,6 +750,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the band where the bulk of the volume traded (VAH to VAL) -- acceptance lives inside, rejection outside",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::ValueArea],
         },
         ConceptSpec {
@@ -687,6 +761,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "accepted price: the histogram's local maxima, banded -- where the market was content to trade",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HighVolumeNode],
         },
         ConceptSpec {
@@ -697,6 +772,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "rejected price: the histogram's local minima, banded -- the gaps price moves through fast",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::LowVolumeNode],
         },
         ConceptSpec {
@@ -707,6 +783,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "bar delta at a multiple of its recent average absolute value -- aggressors leaned one way",
             parameters: SPIKE_PARAMS,
             required_channels: DataChannels::TRADES_AGGRESSOR,
+            pane: false,
             event_kinds: &[EventKind::DeltaShift],
         },
         ConceptSpec {
@@ -717,6 +794,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a long lower wick with a small top body at a local low -- rejection of lower prices after a down move",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Hammer],
         },
         ConceptSpec {
@@ -727,6 +805,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the hammer shape at a local high -- the same candle, and the trend is the only thing that tells them apart",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HangingMan],
         },
         ConceptSpec {
@@ -737,6 +816,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a long upper wick with a small bottom body at a local high -- rejection of higher prices after an up move",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::ShootingStar],
         },
         ConceptSpec {
@@ -747,6 +827,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the shooting-star shape at a local low -- buyers tested higher after a down move",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::InvertedHammer],
         },
         ConceptSpec {
@@ -757,6 +838,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "open and close nearly equal -- the bar could not decide",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Doji],
         },
         ConceptSpec {
@@ -767,6 +849,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a full-body bar with no wicks worth naming -- one side owned the whole bar",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Marubozu],
         },
         ConceptSpec {
@@ -777,6 +860,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "this bar's body covers the previous bar's body entirely -- a one-bar takeover",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Engulfing],
         },
         ConceptSpec {
@@ -787,6 +871,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a small bar inside the previous bar's body -- the move paused, and pauses reverse or resolve",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Harami],
         },
         ConceptSpec {
@@ -797,6 +882,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "down bar, small indecision bar, up bar back past the first's midpoint -- a three-bar bottoming sequence",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::MorningStar],
         },
         ConceptSpec {
@@ -807,6 +893,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "up bar, small indecision bar, down bar back past the first's midpoint -- a three-bar topping sequence",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::EveningStar],
         },
         ConceptSpec {
@@ -817,6 +904,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a down bar, then an up bar opening lower and closing past its midpoint -- buyers reclaimed half the drop in one bar",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::PiercingLine],
         },
         ConceptSpec {
@@ -827,6 +915,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "an up bar, then a down bar opening higher and closing past its midpoint -- sellers took back half the rally",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::DarkCloudCover],
         },
         ConceptSpec {
@@ -837,6 +926,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "three consecutive strong up bars closing near their highs -- sustained initiative buying",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::ThreeWhiteSoldiers],
         },
         ConceptSpec {
@@ -847,6 +937,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "three consecutive strong down bars closing near their lows -- sustained initiative selling",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::ThreeBlackCrows],
         },
         ConceptSpec {
@@ -857,6 +948,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the doji with the long lower shadow and the close at the top -- the sellers were answered",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::DragonflyDoji],
         },
         ConceptSpec {
@@ -867,6 +959,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the doji with the long upper shadow and the close at the bottom -- the buyers were answered",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::GravestoneDoji],
         },
         ConceptSpec {
@@ -877,6 +970,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "indecision stretched both ways -- the bar that means the next one decides",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::LongLeggedDoji],
         },
         ConceptSpec {
@@ -887,6 +981,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "small body with shadows both sides -- the move caught its breath",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::SpinningTop],
         },
         ConceptSpec {
@@ -897,6 +992,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "two bars printing the same extreme -- the level was tested twice and held or broke",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Tweezer],
         },
         ConceptSpec {
@@ -907,6 +1003,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a gap against the prior bar's direction with a full body through it -- the market changed its mind overnight",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Kicker],
         },
         ConceptSpec {
@@ -917,6 +1014,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "two closes at the same low -- the level absorbed the second try",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::MatchingLow],
         },
         ConceptSpec {
@@ -927,6 +1025,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the down bar's close met by an up bar closing just above it -- pressure, not reversal yet",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::OnNeck],
         },
         ConceptSpec {
@@ -937,6 +1036,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a harami confirmed by the third bar closing through -- the pause resolves",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::ThreeInside],
         },
         ConceptSpec {
@@ -947,6 +1047,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "an engulfing confirmed by the third bar continuing -- the takeover holds",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::ThreeOutside],
         },
         ConceptSpec {
@@ -957,6 +1058,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "small counter-bars inside the first bar's body, then the trend resumes -- the textbook continuation",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::ThreeMethods],
         },
         ConceptSpec {
@@ -967,6 +1069,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a doji gapped away from both neighbors -- the island top or bottom",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::AbandonedBaby],
         },
         ConceptSpec {
@@ -977,6 +1080,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "three consecutive dojis -- total indecision at the extreme",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::TriStar],
         },
         ConceptSpec {
@@ -987,6 +1091,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "two same-close bars with an opposite bar between -- the market keeps re-testing one price",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::StickSandwich],
         },
         ConceptSpec {
@@ -997,6 +1102,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the gap that never fills while small bars try -- strength the pullbacks cannot touch",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::MatHold],
         },
         ConceptSpec {
@@ -1007,6 +1113,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the gap window after a strong bar, tested but not closed",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::TasukiGap],
         },
         ConceptSpec {
@@ -1017,6 +1124,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "consecutive down bars then a gap up -- the decline lost its stairs",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::LadderBottom],
         },
         ConceptSpec {
@@ -1027,6 +1135,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a long body opening at the extreme and closing near the other -- one side owned the whole bar",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::BeltHold],
         },
         ConceptSpec {
@@ -1037,6 +1146,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the inside-bar trap: a false break one way that springs the other",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Hikkake],
         },
         ConceptSpec {
@@ -1047,6 +1157,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "a close beyond the recent 20-bar extreme -- the range gave way, in the close's direction",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Breakout],
         },
         ConceptSpec {
@@ -1057,6 +1168,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "closed beyond the extreme, then closed back inside -- the break was rejected, and the other side owns it now",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::FailedBreakout],
         },
         ConceptSpec {
@@ -1067,6 +1179,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "broke out, came back to the level, and held it -- the broken boundary works as its new role",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::Retest],
         },
         ConceptSpec {
@@ -1077,6 +1190,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the newest swing highs AND lows stepping the same way -- the trend's structure, confirmed by both sides of it",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::HigherHighs],
         },
         ConceptSpec {
@@ -1087,6 +1201,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             description: "the tightest ten-bar span of its recent peers -- compression, the state expansion is born from",
             parameters: &[],
             required_channels: DataChannels::CANDLES,
+            pane: false,
             event_kinds: &[EventKind::RangeContraction],
         },
     ]

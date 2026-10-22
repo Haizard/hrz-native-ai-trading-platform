@@ -236,6 +236,70 @@ pub async fn scan(
     }))
 }
 
+/// `/indicator-series` query: one pane concept's series over the chart's
+/// own candles.
+#[derive(Debug, Deserialize)]
+pub struct IndicatorSeriesQuery {
+    /// The instrument (required).
+    pub symbol: String,
+    /// The chart's timeframe (required).
+    pub timeframe: String,
+    /// The pane concept (`indicators.rsi` and friends; required).
+    pub concept: String,
+    /// How many bars to compute over (default 500, capped at 1000).
+    pub limit: Option<usize>,
+}
+
+/// The series response: the spec the engine's generic series pane consumes,
+/// plus the bars' open times so the shell aligns by timestamp and a mid-
+/// flight bar close can never shift a line off its candle.
+#[derive(Debug, Serialize)]
+pub struct IndicatorSeriesResponse {
+    /// The instrument.
+    pub symbol: String,
+    /// One open time per bar the values index into, oldest first.
+    pub times: Vec<i64>,
+    /// The pane spec (engine `SubPaneSpec::Series` field-for-field).
+    pub spec: analytics_core::indicator_series::IndicatorSeries,
+}
+
+/// `GET /indicator-series`: a pane concept's measurements, computed by
+/// analytics-core over the same window the chart draws.
+pub async fn indicator_series(
+    State(state): State<AppState>,
+    Query(query): Query<IndicatorSeriesQuery>,
+) -> Result<Json<IndicatorSeriesResponse>, ApiError> {
+    let symbol = query.symbol.to_uppercase();
+    let tf: analytics_core::types::Timeframe = query.timeframe.parse().map_err(|_| {
+        ApiError::bad_request("TIMEFRAME_UNKNOWN", format!("`{}` is not a timeframe this platform serves", query.timeframe))
+    })?;
+    // The concept must be a registered pane concept: an unregistered id is a
+    /// client bug, and a non-pane id is a category error, both 400s.
+    let spec_entry = market_data::concepts::concept_registry()
+        .iter()
+        .find(|c| c.id == query.concept)
+        .ok_or_else(|| ApiError::bad_request("CONCEPT_UNKNOWN", format!("`{}` is not a registered concept", query.concept)))?;
+    if !spec_entry.pane {
+        return Err(ApiError::bad_request("CONCEPT_NOT_A_PANE", format!("`{}` has no indicator pane", query.concept)));
+    }
+    let limit = query.limit.unwrap_or(500).clamp(50, 1000);
+    let to_ns = crate::now_ns();
+    let from_ns = to_ns - limit as i64 * tf.nanos();
+    let window = state
+        .windows
+        .candles_capped(&symbol, tf, from_ns, to_ns, limit)
+        .await
+        .map_err(|e| ApiError::unavailable(format!("no candles for {symbol}: {e}")))?;
+    let candles = window.candles;
+    let spec = analytics_core::indicator_series::indicator_series(&query.concept, &candles)
+        .ok_or_else(|| ApiError::bad_request("SERIES_UNAVAILABLE", format!("`{}` produced no series over this window", query.concept)))?;
+    Ok(Json(IndicatorSeriesResponse {
+        symbol,
+        times: candles.iter().map(|c| c.open_time).collect(),
+        spec,
+    }))
+}
+
 /// `POST /compositions/backtest` body.
 #[derive(Debug, Deserialize)]
 pub struct BacktestRequest {

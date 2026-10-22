@@ -392,6 +392,101 @@ pub enum SubPaneSpec {
         /// Oversold level, drawn as the lower band.
         oversold: f64,
     },
+    /// A client-computed indicator pane: lines, an optional histogram,
+    /// segment and point marks, reference levels, on a fixed or data-fit
+    /// scale. The engine positions; the measurement arrived as values per
+    /// candle index -- this is the open vocabulary every technical
+    /// indicator adopts, so a new one needs no engine edit.
+    Series {
+        /// The pane's label, e.g. `RSI-PCA (6-bar)`.
+        label: String,
+        /// The y-scale: fixed (RSI's 0..100) or fit to the data.
+        scale: SeriesScale,
+        /// Horizontal reference lines (30/70, the zero line).
+        #[serde(default)]
+        levels: Vec<f64>,
+        /// The value lines, oldest first, one `Option` per candle.
+        #[serde(default)]
+        lines: Vec<SeriesLine>,
+        /// An optional histogram (MACD and friends).
+        #[serde(default)]
+        bars: Option<SeriesBars>,
+        /// Segment marks between two bar/value points (divergences).
+        #[serde(default)]
+        segments: Vec<SeriesSegment>,
+        /// Point markers (signal crossings and friends).
+        #[serde(default)]
+        markers: Vec<SeriesMarker>,
+    },
+}
+
+/// The series pane's y-scale.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "mode")]
+pub enum SeriesScale {
+    /// Fit the pane to the data's own min/max, padded a little.
+    Auto,
+    /// A fixed range (RSI's 0..100): values outside are clipped to the edge.
+    Fixed {
+        /// The range's low end.
+        min: f64,
+        /// The range's high end.
+        max: f64,
+    },
+}
+
+/// One value line of a series pane: a name, a colour, one `Option` per
+/// candle (None while the measurement warms up).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesLine {
+    /// The line's name, for the pane's legend.
+    pub name: String,
+    /// 0xRRGGBB.
+    pub color: u32,
+    /// One value per candle index; `None` is a gap.
+    pub values: Vec<Option<f64>>,
+}
+
+/// A histogram for a series pane (MACD's bars and friends).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesBars {
+    /// The histogram's name, for the pane's legend.
+    pub name: String,
+    /// 0xRRGGBB for non-negative bars.
+    pub color_up: u32,
+    /// 0xRRGGBB for negative bars.
+    pub color_down: u32,
+    /// One value per candle index; `None` is a gap.
+    pub values: Vec<Option<f64>>,
+}
+
+/// A segment mark between two bar/value points, coloured by `kind` in the
+/// shell (a divergence is the canonical one).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesSegment {
+    /// The first point's candle index.
+    pub from: usize,
+    /// The first point's value (on the pane's scale).
+    pub from_value: f64,
+    /// The second point's candle index.
+    pub to: usize,
+    /// The second point's value.
+    pub to_value: f64,
+    /// `bullish` or `bearish` -- the shell's colour vocabulary.
+    pub kind: String,
+}
+
+/// A point marker on the pane (a signal crossing and friends).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesMarker {
+    /// The candle index.
+    pub at: usize,
+    /// The value (on the pane's scale).
+    pub value: f64,
+    /// `bullish` or `bearish`.
+    pub kind: String,
+    /// A short label, painted beside the point.
+    pub label: String,
 }
 
 impl Default for Request {
@@ -1008,6 +1103,54 @@ pub struct ScenePane {
     /// See `value_min`.
     #[serde(default)]
     pub value_max: f64,
+    /// A series pane's lines (the generic vocabulary): when non-empty the
+    /// shell paints THESE, each in its own colour, and `line` stays empty.
+    /// Defaulted so an RSI-only scene parses.
+    #[serde(default)]
+    pub lines: Vec<SceneLine>,
+    /// A series pane's histogram bars (MACD and friends), zero-anchored.
+    #[serde(default)]
+    pub bars: Vec<SceneBar>,
+    /// A series pane's point markers (signal crossings), coloured by kind.
+    #[serde(default)]
+    pub markers: Vec<PaneMarker>,
+}
+
+/// One positioned line of a series pane.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneLine {
+    /// The line's name, for the pane's legend.
+    pub name: String,
+    /// 0xRRGGBB.
+    pub color: u32,
+    /// The points, in canvas coordinates, oldest first.
+    pub points: Vec<Point>,
+}
+
+/// One positioned histogram bar of a series pane.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneBar {
+    /// The bar's canvas x (its candle's center).
+    pub x: f64,
+    /// The zero line's canvas y.
+    pub y_zero: f64,
+    /// The value end's canvas y.
+    pub y_value: f64,
+    /// Non-negative -- the shell's up/down colours ride on this.
+    pub up: bool,
+}
+
+/// A positioned point marker of a series pane.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaneMarker {
+    /// Canvas x.
+    pub x: f64,
+    /// Canvas y.
+    pub y: f64,
+    /// `bullish` or `bearish` -- the shell's colour vocabulary.
+    pub kind: String,
+    /// A short label beside the point.
+    pub label: String,
 }
 
 /// A horizontal reference line inside a sub-pane.
@@ -2067,7 +2210,177 @@ fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], slot: f64, plot: &Plot) -> O
             overbought,
             oversold,
         } => rsi_pane(candles, slot, plot, *period, *overbought, *oversold),
+        SubPaneSpec::Series {
+            label,
+            scale,
+            levels,
+            lines,
+            bars,
+            segments,
+            markers,
+        } => series_pane(candles, slot, plot, label, *scale, levels, lines, bars.as_ref(), segments, markers),
     }
+}
+
+/// The generic series pane: the client's measurements, positioned. The
+/// engine maps every value through the pane's scale, builds the ticks, and
+/// clips fixed-scale values to the edge -- the client never sees a pixel.
+#[allow(clippy::too_many_arguments)]
+fn series_pane(
+    candles: &[Candle],
+    slot: f64,
+    plot: &Plot,
+    label: &str,
+    scale: SeriesScale,
+    levels: &[f64],
+    lines: &[SeriesLine],
+    bars: Option<&SeriesBars>,
+    segments: &[SeriesSegment],
+    markers: &[SeriesMarker],
+) -> Option<ScenePane> {
+    if candles.is_empty() {
+        return None;
+    }
+    // The scale: fixed, or fit over every supplied value and level.
+    let (vmin, vmax) = match scale {
+        SeriesScale::Fixed { min, max } if min < max => (min, max),
+        SeriesScale::Fixed { .. } => return None,
+        SeriesScale::Auto => {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            let mut eat = |v: f64| {
+                if v.is_finite() {
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                }
+            };
+            for line in lines {
+                for v in line.values.iter().flatten() {
+                    eat(*v);
+                }
+            }
+            if let Some(b) = bars {
+                for v in b.values.iter().flatten() {
+                    eat(*v);
+                }
+                eat(0.0); // a histogram's zero anchor is always in range
+            }
+            for l in levels {
+                eat(*l);
+            }
+            for m in markers {
+                eat(m.value);
+            }
+            for seg in segments {
+                eat(seg.from_value);
+                eat(seg.to_value);
+            }
+            if !lo.is_finite() || lo >= hi {
+                return None;
+            }
+            let pad = (hi - lo) * 0.05;
+            (lo - pad, hi + pad)
+        }
+    };
+    let span = vmax - vmin;
+    let y_at = |value: f64| {
+        let v = value.clamp(vmin, vmax);
+        plot.y + plot.h - (v - vmin) / span * plot.h
+    };
+
+    let positioned_lines: Vec<SceneLine> = lines
+        .iter()
+        .map(|line| SceneLine {
+            name: line.name.clone(),
+            color: line.color,
+            points: line
+                .values
+                .iter()
+                .enumerate()
+                .take(candles.len())
+                .filter_map(|(index, value)| {
+                    value.map(|v| Point {
+                        x: plot.x + slot * (index as f64 + 0.5),
+                        y: y_at(v),
+                    })
+                })
+                .collect(),
+        })
+        .filter(|l| l.points.len() > 1)
+        .collect();
+    let positioned_bars: Vec<SceneBar> = bars
+        .map(|b| {
+            b.values
+                .iter()
+                .enumerate()
+                .take(candles.len())
+                .filter_map(|(index, value)| {
+                    value.map(|v| SceneBar {
+                        x: plot.x + slot * (index as f64 + 0.5),
+                        y_zero: y_at(0.0),
+                        y_value: y_at(v),
+                        up: v >= 0.0,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if positioned_lines.is_empty() && positioned_bars.is_empty() {
+        return None;
+    }
+
+    let positioned_levels: Vec<PaneLevel> = levels
+        .iter()
+        .filter(|v| v.is_finite() && **v >= vmin && **v <= vmax)
+        .map(|&value| PaneLevel { y: y_at(value), value })
+        .collect();
+    let positioned_segments: Vec<PaneDivergence> = segments
+        .iter()
+        .filter(|seg| seg.from < candles.len() && seg.to < candles.len())
+        .map(|seg| PaneDivergence {
+            from_x: plot.x + slot * (seg.from as f64 + 0.5),
+            from_y: y_at(seg.from_value),
+            to_x: plot.x + slot * (seg.to as f64 + 0.5),
+            to_y: y_at(seg.to_value),
+            kind: seg.kind.clone(),
+        })
+        .collect();
+    let positioned_markers: Vec<PaneMarker> = markers
+        .iter()
+        .filter(|m| m.at < candles.len())
+        .map(|m| PaneMarker {
+            x: plot.x + slot * (m.at as f64 + 0.5),
+            y: y_at(m.value),
+            kind: m.kind.clone(),
+            label: m.label.clone(),
+        })
+        .collect();
+
+    // Ticks: the levels plus the range ends, deduplicated.
+    let mut tick_values: Vec<f64> = vec![vmax, vmin];
+    tick_values.extend(levels.iter().copied());
+    tick_values.sort_by(|a, b| b.total_cmp(a));
+    tick_values.dedup_by(|a, b| (*a - *b).abs() < span * 1e-6);
+    let ticks: Vec<PaneTick> = tick_values
+        .into_iter()
+        .filter(|v| v.is_finite() && *v >= vmin && *v <= vmax)
+        .map(|value| PaneTick { y: y_at(value), value })
+        .collect();
+
+    Some(ScenePane {
+        kind: "series".into(),
+        label: label.to_string(),
+        plot: *plot,
+        line: Vec::new(),
+        levels: positioned_levels,
+        divergences: positioned_segments,
+        ticks,
+        value_min: vmin,
+        value_max: vmax,
+        lines: positioned_lines,
+        bars: positioned_bars,
+        markers: positioned_markers,
+    })
 }
 
 /// The RSI sub-pane: Wilder's line, the 30/70 bands, and confirmed
@@ -2166,6 +2479,9 @@ fn rsi_pane(
         // value tag maps through the same range the ticks label.
         value_min: PANE_MIN,
         value_max: PANE_MAX,
+        lines: Vec::new(),
+        bars: Vec::new(),
+        markers: Vec::new(),
     })
 }
 
@@ -6766,5 +7082,104 @@ mod tests {
         }))
         .expect("a request without sub_panes parses");
         assert!(old.sub_panes.is_empty());
+    }
+
+    fn test_candles(n: usize) -> Vec<Candle> {
+        (0..n)
+            .map(|i| Candle {
+                symbol: "T".into(),
+                timeframe: analytics_core::types::Timeframe::H1,
+                open_time: i as i64 * 3_600_000_000_000,
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.0 + (i as f64 / 7.0).sin() * 2.0,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_series_pane_positions_the_clients_values_on_its_own_scale() {
+        let candles = test_candles(60);
+        // A line that ramps 0 -> 59 across the window, a fixed zero level,
+        // a marker mid-window, and a segment across it.
+        let parsed: Request = serde_json::from_value(serde_json::json!({
+            "candles": candles, "width": 800.0, "height": 600.0,
+            "sub_panes": [{
+                "kind": "series",
+                "label": "TEST",
+                "scale": { "mode": "auto" },
+                "levels": [0.0],
+                "lines": [{ "name": "ramp", "color": 6724094, "values": (0..60).map(|i| Some(i as f64)).collect::<Vec<_>>() }],
+                "segments": [{ "from": 10, "from_value": 10.0, "to": 20, "to_value": 20.0, "kind": "bullish" }],
+                "markers": [{ "at": 30, "value": 30.0, "kind": "bearish", "label": "x" }]
+            }]
+        }))
+        .expect("the series wire form parses");
+        let scene = build(&parsed);
+        assert_eq!(scene.sub_panes.len(), 1, "the pane exists");
+        let pane = &scene.sub_panes[0];
+        assert_eq!(pane.label, "TEST");
+        // The ramp's first point sits at the pane's floor, its last at the
+        // ceiling (auto scale, padded: near the edges, within them).
+        let line = &pane.lines[0];
+        assert_eq!(line.points.len(), 60, "every bar mapped");
+        assert!(line.points.iter().all(|p| p.y >= pane.plot.y && p.y <= pane.plot.y + pane.plot.h), "inside the plot");
+        assert!(line.points[0].y > line.points[59].y, "a rising line falls on the canvas");
+        // The zero level, the marker, and the segment all positioned.
+        assert_eq!(pane.levels.len(), 1);
+        assert_eq!(pane.markers.len(), 1);
+        assert_eq!(pane.divergences.len(), 1);
+        // x spacing matches the candles' slot.
+        let dx = line.points[1].x - line.points[0].x;
+        assert!((line.points[2].x - line.points[1].x - dx).abs() < 1e-9, "even spacing");
+    }
+
+    #[test]
+    fn a_fixed_scale_series_pane_clips_to_its_bounds() {
+        let candles = test_candles(30);
+        // Values outside 0..100 must clip to the edge rather than escape
+        // the plot rectangle.
+        let mut values: Vec<Option<f64>> = (0..30).map(|i| Some(i as f64 * 10.0 - 50.0)).collect();
+        values[0] = None; // a warm-up gap parses and skips
+        let parsed: Request = serde_json::from_value(serde_json::json!({
+            "candles": candles, "width": 800.0, "height": 600.0,
+            "sub_panes": [{
+                "kind": "series",
+                "label": "CLIP",
+                "scale": { "mode": "fixed", "min": 0.0, "max": 100.0 },
+                "levels": [30.0, 70.0],
+                "lines": [{ "name": "v", "color": 10855247, "values": values }]
+            }]
+        }))
+        .expect("the fixed form parses");
+        let scene = build(&parsed);
+        let pane = &scene.sub_panes[0];
+        let line = &pane.lines[0];
+        assert_eq!(line.points.len(), 29, "the gap is skipped");
+        assert!(line.points.iter().all(|p| p.y >= pane.plot.y && p.y <= pane.plot.y + pane.plot.h), "clipped inside");
+        assert_eq!(pane.value_min, 0.0);
+        assert_eq!(pane.value_max, 100.0);
+        // The 30/70 levels ride the fixed scale.
+        assert_eq!(pane.levels.len(), 2);
+    }
+
+    #[test]
+    fn an_empty_series_gets_no_pane() {
+        let candles = test_candles(10);
+        let parsed: Request = serde_json::from_value(serde_json::json!({
+            "candles": candles, "width": 800.0, "height": 600.0,
+            "sub_panes": [{
+                "kind": "series", "label": "EMPTY",
+                "scale": { "mode": "auto" },
+                "lines": [{ "name": "none", "color": 0, "values": vec![Option::<f64>::None; 10] }]
+            }]
+        }))
+        .expect("parses");
+        let scene = build(&parsed);
+        assert!(scene.sub_panes.is_empty(), "nothing to draw is no pane");
     }
 }
