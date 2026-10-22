@@ -46,10 +46,12 @@ pub enum Library {
     Session,
     /// Classical chart patterns: tops, shoulders, triangles, flags.
     Chart,
-    /// Harmonic patterns (the wickra engine): XABCD family.
+    /// Harmonic patterns: the platform's calibrated XABCD family.
     Harmonics,
     /// Fibonacci levels of the newest swings.
     Fibonacci,
+    /// Technical indicators and their compositions (RSI-PCA and friends).
+    Indicators,
 }
 
 impl Library {
@@ -67,6 +69,7 @@ impl Library {
             Self::Chart => "chart",
             Self::Harmonics => "harmonics",
             Self::Fibonacci => "fib",
+            Self::Indicators => "indicators",
         }
     }
 }
@@ -625,6 +628,16 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             event_kinds: &[EventKind::FibTimeZone],
+        },
+        ConceptSpec {
+            id: "indicators.rsi_pca",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "RSI-PCA Model",
+            description: "the neurotrader model, in-house: RSI at 2..24, principal components of the family, a least-squares read of the next 6 bars, walk-forward with no leak -- the prediction's quantile extremes are the signal",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            event_kinds: &[EventKind::RsiPcaSignal],
         },
         ConceptSpec {
             id: "sd.zone_tested",

@@ -246,6 +246,9 @@ pub enum EventKind {
     FibConfluence,
     /// A Fibonacci-count bar of the swing.
     FibTimeZone,
+    /// The RSI-PCA model's prediction crossing its rolling quantile
+    /// extremes (neurotrader's idea, in-house).
+    RsiPcaSignal,
 }
 
 impl EventKind {
@@ -346,11 +349,12 @@ impl EventKind {
             Self::FibExtension => "fib_extension",
             Self::FibConfluence => "fib_confluence",
             Self::FibTimeZone => "fib_time_zone",
+            Self::RsiPcaSignal => "rsi_pca_signal",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 93] = [
+    pub const ALL: [Self; 94] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -444,6 +448,7 @@ impl EventKind {
         Self::FibExtension,
         Self::FibConfluence,
         Self::FibTimeZone,
+        Self::RsiPcaSignal,
     ];
 }
 
@@ -856,7 +861,6 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
     // -- Rectangle -----------------------------------------------------------------
     // The newest two highs flat AND the newest two lows flat (the channel);
     // the newest close beyond a side is the breakout, in its direction.
-    eprintln!("edges: highs {highs:?} lows {lows:?}");
     if highs.len() >= 2 && lows.len() >= 2 {
         let (h1, h2) = (highs[highs.len() - 2], highs[highs.len() - 1]);
         let (l1, l2) = (lows[lows.len() - 2], lows[lows.len() - 1]);
@@ -864,7 +868,6 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
         let bottom = (l1.1 + l2.1) / 2.0;
         let flat_tops = (h1.1 - h2.1).abs() <= top * TOP_TOLERANCE;
         let flat_bottoms = (l1.1 - l2.1).abs() <= bottom * TOP_TOLERANCE;
-        eprintln!("top {top} bottom {bottom} flat_tops {flat_tops} flat_bottoms {flat_bottoms} band_ok {}", top - bottom >= bottom * 0.01);
         // The channel must be a real band (height at least 1% of price).
         if flat_tops && flat_bottoms && top - bottom >= bottom * 0.01 {
             let from = candles[h1.0.min(l1.0)].open_time;
@@ -2155,14 +2158,15 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_sessions(candles, symbol));
     events.extend(detect_chart_gaps(candles, symbol, &config));
     events.extend(crate::fibonacci::detect_fibonacci(candles, symbol, config.structure_lookback));
+    events.extend(crate::rsi_pca::detect_rsi_pca(candles, symbol));
     events.extend(detect_chart_patterns(candles, symbol, &config));
     events.extend(detect_volume_profile(candles, symbol));
-    // Harmonics: the platform's own calibrated detector (the wickra adapter
-    // stays in the tree for the candlestick family; its harmonic gate proved
-    // too strict for real data, so the family runs on our swings).
+    // Harmonics: the platform's own calibrated detector (the reference
+    // engine's swing gate proved too strict for real data, so the family
+    // runs on our swings with the canonical ratio windows).
     events.extend(crate::harmonics::detect_harmonics(candles, symbol));
-    // Candlesticks: the platform's own implementations (in-house doctrine --
-    // the wickra adapter stays in the tree only until the dependency review).
+    // Candlesticks: the platform's own implementations (the in-house
+    // doctrine -- the external indicator crate is out of the tree).
     events.extend(crate::candlesticks::detect_candlesticks(candles, symbol));
 
     // Deterministic order: by kind, then by price. A stable order is part of
@@ -2594,7 +2598,6 @@ mod pattern_tests {
             ks.push(k(o, h, l, c));
         }
         let events = detect_patterns_and_events(&pa_series(ks));
-        eprintln!("triple events: {:?}", events.iter().map(|e| (e.kind.name(), e.side, e.price)).collect::<Vec<_>>());
         let tt = events.iter().find(|e| e.kind == EventKind::TripleTopBottom).expect("triple top");
         assert_eq!(tt.side, Some(Side::Sell));
         assert_eq!(tt.price, 103.0, "the neckline is the lower trough");
@@ -2636,7 +2639,6 @@ mod pattern_tests {
         // violated it already.
         ks.push(k(103.9, 105.0, 103.7, 104.6));
         let events = detect_patterns_and_events(&pa_series(ks));
-        eprintln!("events: {:?}", events.iter().map(|e| (e.kind.name(), e.side, e.price)).collect::<Vec<_>>());
         let rect = events.iter().find(|e| e.kind == EventKind::RectangleBreakout).expect("rectangle");
         assert_eq!(rect.side, Some(Side::Buy));
         // Inside the channel: no breakout.
@@ -2671,7 +2673,6 @@ mod pattern_tests {
             ks.push(k(o, h, l, c));
         }
         let events = detect_patterns_and_events(&pa_series(ks));
-        eprintln!("cup events: {:?}", events.iter().map(|e| (e.kind.name(), e.side, e.price)).collect::<Vec<_>>());
         let cup = events.iter().find(|e| e.kind == EventKind::CupAndHandle).expect("cup");
         assert_eq!(cup.side, Some(Side::Buy));
         assert_eq!(cup.price, 104.0, "the rim is the swing high before the cup");
@@ -2873,7 +2874,6 @@ mod pattern_tests {
             ks.push(k(100.2, 100.8, 100.1, 100.5)); // never returns to the wick
         }
         let events = detect_patterns_and_events(&series(ks));
-        eprintln!("detected: {:?}", kinds(&events));
         let rb = events
             .iter()
             .find(|e| e.kind == EventKind::RejectionBlockCreated)
