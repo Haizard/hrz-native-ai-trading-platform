@@ -434,13 +434,13 @@ Granville, Keltner, Donchian pinned by hand-computed values), series panes/overl
 signals, and live verification on BTCUSDT 1h. Ichimoku deferred (a five-line system that deserves
 its own battery); TSI/Awesome/A-D/CMF/MFI/anchored-VWAP/chandelier remain as the indicator tail.
 
-## Battery B — the missing pattern and level detectors
+## Battery B — the missing pattern and level detectors ✅ DONE 2026-10-23
 
-11. **Upside gap two crows** (the one missing candlestick pattern)
-12. **Trendlines** (anchored swing-line detection — unlocks §2.3, §2.26, §11.14)
-13. **Inverse cup & handle · rounding bottom/top · broadening formation** (chart-pattern gaps)
-14. **Previous week/month H/L · monthly open** (session-level gaps)
-15. **Round-number / psychological levels** (pure arithmetic, high trader salience)
+11. **Upside gap two crows** ✅ — the full 40/40 candlestick book
+12. **Trendlines** ✅ (`chart.trendline`) — swing-anchored, third-touch validated, break-signaled
+13. **Inverse cup & handle ✅ · rounding bottom/top ✅ · broadening ✅** — the chart book completes
+14. **Previous day/week/month H/L ✅ · monthly open ✅** — the closed period's range, marked at the roll
+15. **Round numbers ✅** (`pa.round_numbers`) — the psychological grid, crossings in the cross's direction
 
 ## Battery C — SMC depth
 

@@ -5686,7 +5686,7 @@ function createChartPane(root, hooks = {}) {
   /// (origin to end), structure is dashed segments (swing to break), candle
   /// patterns are names on their own candle. Sides carry the color; the
   /// shape carries the concept -- never one line for everything.
-  const CONCEPT_ZONE_IDS = new Set(["smc.fvg", "smc.ifvg", "smc.bpr", "smc.order_block", "smc.breaker_block", "sd.zone_tested", "smc.premium_discount", "smc.mitigation_block", "smc.rejection_block", "smc.equal_levels", "session.london_killzone", "session.new_york_killzone", "session.asian_range", "volume.value_area", "volume.hvn", "volume.lvn", "fib.golden_pocket", "fib.confluence"]);
+  const CONCEPT_ZONE_IDS = new Set(["smc.fvg", "smc.ifvg", "smc.bpr", "smc.order_block", "smc.breaker_block", "sd.zone_tested", "smc.premium_discount", "smc.mitigation_block", "smc.rejection_block", "smc.equal_levels", "session.london_killzone", "session.new_york_killzone", "session.asian_range", "volume.value_area", "volume.hvn", "volume.lvn", "fib.golden_pocket", "fib.confluence", "session.previous_day_levels", "session.previous_week_levels", "session.previous_month_levels"]);
   const BULL = 0xcc26a69a; // teal, 0xAARRGGBB
   const BEAR = 0xccef5350; // red
   const NEUT = 0xcc90a4ae; // slate (premium/discount, sweeps)
@@ -5752,33 +5752,126 @@ function createChartPane(root, hooks = {}) {
     return out.slice(-200);
   }
 
-  /// The menu section: one checkbox row per registered concept, with the
-  /// unavailable ones greyed and named with the reason.
+  /// The concept tree, TradingView-style: a search box, then collapsible
+  /// groups BY TYPE -- the libraries, with Indicators split the way
+  /// TradingView splits them (Trend / Momentum / Volatility / Volume) --
+  /// each row a checkbox, the concept's name, and chips for what it draws
+  /// (a pane, an overlay, or chart events). Collapse state persists in
+  /// localStorage; the filter searches names and descriptions and opens the
+  /// groups that match.
+  const CONCEPT_GROUPS = [
+    { key: "ind.trend", name: "Trend", match: (id) => /^indicators\.(ema|sma|ema_family|supertrend|psar|adx|macd|macd_family|keltner|donchian)$/.test(id) },
+    { key: "ind.mom", name: "Momentum", match: (id) => /^indicators\.(rsi|rsi_divergence|rsi_family|rsi_pca|stochastic|cci|williams_r|roc)$/.test(id) },
+    { key: "ind.vol", name: "Volatility", match: (id) => /^indicators\.(bollinger|bollinger_percent|atr|atr_family)$/.test(id) },
+    { key: "ind.vol2", name: "Volume", match: (id) => id === "indicators.obv" },
+    { key: "smc", name: "Smart Money Concepts", match: (id) => id.startsWith("smc.") },
+    { key: "pa", name: "Price Action", match: (id) => id.startsWith("pa.") },
+    { key: "candles", name: "Candlestick Patterns", match: (id) => id.startsWith("candles.") },
+    { key: "chart", name: "Chart Patterns", match: (id) => id.startsWith("chart.") },
+    { key: "harmonics", name: "Harmonics", match: (id) => id.startsWith("harmonics.") },
+    { key: "fib", name: "Fibonacci", match: (id) => id.startsWith("fib.") },
+    { key: "session", name: "Sessions", match: (id) => id.startsWith("session.") },
+    { key: "volume", name: "Volume Profile", match: (id) => id.startsWith("volume.") },
+    { key: "sd", name: "Supply & Demand", match: (id) => id.startsWith("sd.") },
+    { key: "of", name: "Order Flow", match: (id) => id.startsWith("order_flow.") },
+  ];
+  let conceptTreeState = (() => {
+    try { return JSON.parse(localStorage.getItem("atp.conceptTree") || "{}"); } catch { return {}; }
+  })();
+  let conceptFilter = "";
+
+  function conceptChips(c) {
+    const chips = [];
+    if (c.pane) chips.push("pane");
+    if (c.overlay) chips.push("ovl");
+    return chips;
+  }
+
+  function conceptRow(c) {
+    const row = Object.assign(document.createElement("label"), {
+      className: "conceptRow",
+      title: c.description,
+    });
+    const box = Object.assign(document.createElement("input"), { type: "checkbox" });
+    box.checked = enabledConcepts.has(c.id);
+    if (c.available === false) {
+      box.disabled = true;
+      row.classList.add("unavailable");
+      row.title = `${c.description} -- needs ${c.required_channels.join(", ")}, which this instrument does not serve`;
+    }
+    box.addEventListener("change", () => {
+      if (box.checked) enabledConcepts.add(c.id);
+      else enabledConcepts.delete(c.id);
+      refreshConceptEvents().then(() => refresh && refresh());
+      refreshIndicatorSeries().then(() => refresh && refresh());
+    });
+    row.append(box);
+    const name = Object.assign(document.createElement("span"), { className: "conceptName", textContent: c.name });
+    row.append(name);
+    for (const chip of conceptChips(c)) {
+      row.append(Object.assign(document.createElement("span"), { className: `conceptChip ${chip}`, textContent: chip }));
+    }
+    return row;
+  }
+
   function conceptMenuNodes() {
     const rows = [];
     if (!conceptCatalog || !conceptCatalog.length) return rows;
-    const label = Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Concepts" });
-    rows.push(label);
-    for (const c of conceptCatalog) {
-      const row = Object.assign(document.createElement("label"), {
-        className: "conceptRow",
-        title: c.description,
-      });
-      const box = Object.assign(document.createElement("input"), { type: "checkbox" });
-      box.checked = enabledConcepts.has(c.id);
-      if (c.available === false) {
-        box.disabled = true;
-        row.classList.add("unavailable");
-        row.title = `${c.description} -- needs ${c.required_channels.join(", ")}, which this instrument does not serve`;
+
+    // The search box, TradingView's dialog head.
+    const search = Object.assign(document.createElement("input"), {
+      className: "conceptSearch",
+      type: "search",
+      placeholder: "Search concepts…",
+      value: conceptFilter,
+    });
+    search.addEventListener("input", () => {
+      conceptFilter = search.value;
+      // Rebuild the menu body in place: the open menu re-renders its nodes.
+      const menu = document.getElementById("chartMenu");
+      if (menu && menu.classList.contains("open")) {
+        const evt = new Event("concept-tree-refresh");
+        document.dispatchEvent(evt);
       }
-      box.addEventListener("change", () => {
-        if (box.checked) enabledConcepts.add(c.id);
-        else enabledConcepts.delete(c.id);
-        refreshConceptEvents().then(() => refresh && refresh());
-        refreshIndicatorSeries().then(() => refresh && refresh());
+    });
+    rows.push(search);
+
+    const query = conceptFilter.trim().toLowerCase();
+    const matches = (c) =>
+      !query || c.name.toLowerCase().includes(query) || c.description.toLowerCase().includes(query) || c.id.includes(query);
+
+    for (const group of CONCEPT_GROUPS) {
+      const members = conceptCatalog.filter((c) => group.match(c.id));
+      if (!members.length) continue;
+      const shown = members.filter(matches);
+      if (!shown.length) continue;
+      const collapsed = query ? false : conceptTreeState[group.key] === true;
+      const head = Object.assign(document.createElement("button"), {
+        className: "conceptGroupHead" + (collapsed ? " collapsed" : ""),
+        type: "button",
       });
-      row.append(box, document.createTextNode(`${c.name}`));
-      rows.push(row);
+      const chev = Object.assign(document.createElement("span"), { className: "chev", textContent: "▸" });
+      head.append(chev, document.createTextNode(group.name));
+      const count = Object.assign(document.createElement("span"), {
+        className: "conceptGroupCount",
+        textContent: String(members.filter((c) => enabledConcepts.has(c.id)).length || members.length),
+      });
+      head.append(count);
+      rows.push(head);
+      const body = Object.assign(document.createElement("div"), { className: "conceptGroupBody" });
+      if (collapsed) body.hidden = true;
+      for (const c of shown) body.append(conceptRow(c));
+      rows.push(body);
+      head.addEventListener("click", () => {
+        const nowCollapsed = !body.hidden;
+        body.hidden = nowCollapsed;
+        head.classList.toggle("collapsed", nowCollapsed);
+        conceptTreeState[group.key] = nowCollapsed;
+        try { localStorage.setItem("atp.conceptTree", JSON.stringify(conceptTreeState)); } catch {}
+      });
+    }
+    if (rows.length === 1) {
+      rows.push(Object.assign(document.createElement("p"), { className: "menuLabel conceptEmpty", textContent: "Nothing matches the search." }));
     }
     return rows;
   }
@@ -5915,10 +6008,27 @@ function createChartPane(root, hooks = {}) {
       // The menu is already open: rebuild the section now that the catalog
       // is here (a first open is usually faster than the fetch).
       if (menuHosted) {
-        for (const node of menu.querySelectorAll(".conceptRow")) node.remove();
-        const anchor = menu.querySelector(".tradeTicket") || menu.querySelector("hr");
-        if (anchor) for (const node of conceptMenuNodes()) menu.insertBefore(node, anchor);
+        rebuildConceptSection();
       }
+    });
+
+    // The tree rebuild, shared by the catalog fetch and the search box: drop
+    // every node of the concept section (search, group heads, bodies) and
+    // re-insert a fresh tree before the trade ticket or the divider.
+    function rebuildConceptSection() {
+      for (const node of menu.querySelectorAll(".conceptSearch, .conceptGroupHead, .conceptGroupBody, .menuLabel.conceptEmpty")) node.remove();
+      const anchor = menu.querySelector(".tradeTicket") || menu.querySelector("hr");
+      if (anchor) for (const node of conceptMenuNodes()) menu.insertBefore(node, anchor);
+      // The search keeps the user's text and focus across the rebuild.
+      const fresh = menu.querySelector(".conceptSearch");
+      if (fresh && conceptFilter) {
+        fresh.value = conceptFilter;
+        fresh.focus();
+        fresh.setSelectionRange(fresh.value.length, fresh.value.length);
+      }
+    }
+    document.addEventListener("concept-tree-refresh", () => {
+      if (menuHosted && menu.classList.contains("open")) rebuildConceptSection();
     });
     menu.classList.add("open");
     const box = menu.getBoundingClientRect();

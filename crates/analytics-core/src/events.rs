@@ -301,6 +301,31 @@ pub enum EventKind {
     SupertrendFlip,
     /// The Parabolic SAR flipping side.
     PsarFlip,
+    /// Upside gap two crows: a bearish engulfing of the gapped bar while the
+    /// gap above the first bar survives.
+    UpsideGapTwoCrows,
+    /// The previous day's high/low, marked at the day roll.
+    PreviousDayLevels,
+    /// The previous week's high/low, marked at the week roll.
+    PreviousWeekLevels,
+    /// The previous month's high/low, marked at the month roll.
+    PreviousMonthLevels,
+    /// A new month's opening price, once, at its first bar (UTC).
+    MonthlyOpen,
+    /// A close crossing a round-number level, in the cross's direction.
+    RoundNumberCross,
+    /// The rounded top: the cup mirrored, with the shallow handle in the
+    /// lower half and the breakdown through the rim.
+    InverseCupHandle,
+    /// The rounding bottom (or top): the cup's arc WITHOUT the handle,
+    /// resuming through the rim.
+    RoundingBottomTop,
+    /// The broadening formation: expanding highs AND expanding lows, with
+    /// the close beyond the newest extreme.
+    BroadeningFormation,
+    /// A swing-anchored trendline, validated by its third touch, broken by
+    /// the newest close.
+    TrendlineBreak,
 }
 
 impl EventKind {
@@ -427,11 +452,21 @@ impl EventKind {
             Self::DonchianBreakout => "donchian_breakout",
             Self::SupertrendFlip => "supertrend_flip",
             Self::PsarFlip => "psar_flip",
+            Self::UpsideGapTwoCrows => "upside_gap_two_crows",
+            Self::PreviousDayLevels => "previous_day_levels",
+            Self::PreviousWeekLevels => "previous_week_levels",
+            Self::PreviousMonthLevels => "previous_month_levels",
+            Self::MonthlyOpen => "monthly_open",
+            Self::RoundNumberCross => "round_number_cross",
+            Self::InverseCupHandle => "inverse_cup_handle",
+            Self::RoundingBottomTop => "rounding_bottom_top",
+            Self::BroadeningFormation => "broadening_formation",
+            Self::TrendlineBreak => "trendline_break",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 119] = [
+    pub const ALL: [Self; 129] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -551,6 +586,16 @@ impl EventKind {
         Self::DonchianBreakout,
         Self::SupertrendFlip,
         Self::PsarFlip,
+        Self::UpsideGapTwoCrows,
+        Self::PreviousDayLevels,
+        Self::PreviousWeekLevels,
+        Self::PreviousMonthLevels,
+        Self::MonthlyOpen,
+        Self::RoundNumberCross,
+        Self::InverseCupHandle,
+        Self::RoundingBottomTop,
+        Self::BroadeningFormation,
+        Self::TrendlineBreak,
     ];
 }
 
@@ -1023,6 +1068,119 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
         }
     }
 
+    // -- Inverse cup & handle ----------------------------------------------
+    // The cup mirrored: a rounded TOP (the deepest swing HIGH after the
+    // rim, which is the newest swing LOW before it), a shallow handle in the
+    // LOWER half of the bowl, and the breakdown through the rim.
+    if highs.len() >= 2 && !lows.is_empty() {
+        let (top_idx, top) = highs
+            .iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, p)| (*i, *p))
+            .expect("checked above");
+        let rim_entry = lows.iter().filter(|l| l.0 < top_idx).last().copied();
+        if let Some((rim_idx, rim)) = rim_entry {
+            let recovered = candles[top_idx..].iter().any(|k| k.low <= rim * (1.0 + TOP_TOLERANCE));
+            let bowl_depth = top - rim;
+            let recovery_idx = candles[top_idx..]
+                .iter()
+                .position(|k| k.low <= rim * (1.0 + TOP_TOLERANCE))
+                .map(|p| p + top_idx);
+            let handle_high = recovery_idx.map_or(f64::MIN, |r| {
+                candles[r + 1..=n].iter().map(|k| k.high).fold(f64::MIN, f64::max)
+            });
+            let handle_rise = handle_high - rim;
+            if recovered
+                && bowl_depth > 0.0
+                && handle_rise > 0.0
+                && handle_rise <= bowl_depth * HANDLE_MAX_DEPTH
+                && last.close < rim
+            {
+                push(EventKind::InverseCupHandle, Some(Side::Sell), rim, Some(rim), Some(top), Some(candles[rim_idx].open_time));
+            }
+        }
+    }
+
+    // -- Rounding bottom / top ----------------------------------------------
+    // The cup WITHOUT the handle: the arc recovers to the rim and price
+    // closes straight through it -- no drift, no pause. Same structure, the
+    // handle checks deliberately absent.
+    if highs.len() >= 2 && !lows.is_empty() {
+        let (bottom_idx, bottom) = lows
+            .iter()
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, p)| (*i, *p))
+            .expect("checked above");
+        let rim_entry = highs.iter().filter(|h| h.0 < bottom_idx).last().copied();
+        if let Some((rim_idx, rim)) = rim_entry {
+            let recovered = candles[bottom_idx..].iter().any(|k| k.high >= rim * (1.0 - TOP_TOLERANCE));
+            if recovered && rim - bottom > 0.0 && last.close > rim {
+                push(EventKind::RoundingBottomTop, Some(Side::Buy), rim, Some(bottom), Some(rim), Some(candles[rim_idx].open_time));
+            }
+        }
+        // The mirror: the rounding top breaking down through its rim.
+        let (top_idx, top) = highs
+            .iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, p)| (*i, *p))
+            .expect("checked above");
+        let rim_low = lows.iter().filter(|l| l.0 < top_idx).last().copied();
+        if let Some((rim_idx, rim)) = rim_low {
+            let recovered = candles[top_idx..].iter().any(|k| k.low <= rim * (1.0 + TOP_TOLERANCE));
+            if recovered && top - rim > 0.0 && last.close < rim {
+                push(EventKind::RoundingBottomTop, Some(Side::Sell), rim, Some(rim), Some(top), Some(candles[rim_idx].open_time));
+            }
+        }
+    }
+
+    // -- Trendlines --------------------------------------------------------------
+    // The swing-anchored line: the newest three lows ASCENDING draw the
+    // bull line through the first two; the third must touch it (within half
+    // the flat tolerance) to validate; the newest close through the line is
+    // the break. The bear line mirrors with descending highs.
+    let line_at = |a: (usize, f64), b: (usize, f64), i: usize| -> f64 {
+        a.1 + (b.1 - a.1) * (i - a.0) as f64 / (b.0 - a.0).max(1) as f64
+    };
+    if lows.len() >= 3 {
+        let (l1, l2, l3) = (lows[lows.len() - 3], lows[lows.len() - 2], lows[lows.len() - 1]);
+        let ascending = l1.1 < l2.1 && l2.1 < l3.1 && l1.0 < l2.0 && l2.0 < l3.0;
+        if ascending {
+            let touch = (l3.1 - line_at(l1, l2, l3.0)).abs() <= line_at(l1, l2, l3.0) * (TOP_TOLERANCE / 2.0);
+            let break_level = line_at(l1, l2, n);
+            if touch && last.close < break_level * (1.0 - TOP_TOLERANCE) {
+                push(EventKind::TrendlineBreak, Some(Side::Sell), break_level, Some(break_level), Some(line_at(l1, l2, l1.0)), Some(candles[l1.0].open_time));
+            }
+        }
+    }
+    if highs.len() >= 3 {
+        let (h1, h2, h3) = (highs[highs.len() - 3], highs[highs.len() - 2], highs[highs.len() - 1]);
+        let descending = h1.1 > h2.1 && h2.1 > h3.1 && h1.0 < h2.0 && h2.0 < h3.0;
+        if descending {
+            let touch = (h3.1 - line_at(h1, h2, h3.0)).abs() <= line_at(h1, h2, h3.0) * (TOP_TOLERANCE / 2.0);
+            let break_level = line_at(h1, h2, n);
+            if touch && last.close > break_level * (1.0 + TOP_TOLERANCE) {
+                push(EventKind::TrendlineBreak, Some(Side::Buy), break_level, Some(line_at(h1, h2, h1.0)), Some(break_level), Some(candles[h1.0].open_time));
+            }
+        }
+    }
+
+    // -- Broadening formation --------------------------------------------------
+    // The megaphone: the newest THREE highs ascending AND the newest THREE
+    // lows descending -- the range expands on both sides. The signal is the
+    // close beyond the newest extreme of the side it breaks.
+    if highs.len() >= 3 && lows.len() >= 3 {
+        let (h1, h2, h3) = (highs[highs.len() - 3], highs[highs.len() - 2], highs[highs.len() - 1]);
+        let (l1, l2, l3) = (lows[lows.len() - 3], lows[lows.len() - 2], lows[lows.len() - 1]);
+        let expanding = h1.1 < h2.1 && h2.1 < h3.1 && l1.1 > l2.1 && l2.1 > l3.1;
+        if expanding {
+            if last.close > h3.1 {
+                push(EventKind::BroadeningFormation, Some(Side::Buy), h3.1, Some(l3.1), Some(h3.1), Some(candles[h1.0].open_time));
+            } else if last.close < l3.1 {
+                push(EventKind::BroadeningFormation, Some(Side::Sell), l3.1, Some(l3.1), Some(h3.1), Some(candles[l1.0].open_time));
+            }
+        }
+    }
+
     // -- Pennant -------------------------------------------------------------------
     // The flag's impulse, then a CONVERGING small channel (highs falling
     // while lows rise). Distinct from the flag's parallel counter-drift.
@@ -1048,6 +1206,49 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
 }
 
 /// The session pass: kill zones and the Asian range, in the platform's own
+/// The round-number grid for a price: half the power of ten below it, so
+/// BTC at 82k reads 5,000 steps and a 1.08 pair reads 0.005 steps.
+fn round_step(price: f64) -> f64 {
+    10f64.powf(price.abs().log10().floor()) / 2.0
+}
+
+/// A close crossing a round-number level, in the cross's direction -- the
+/// psychological line the whole market watches, once per crossing.
+pub fn detect_round_numbers(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
+    let mut out = Vec::new();
+    if candles.len() < 2 {
+        return out;
+    }
+    let n = candles.len() - 1;
+    let (prev, last) = (&candles[n - 1], &candles[n]);
+    let step = round_step(last.close);
+    if step <= 0.0 || !step.is_finite() {
+        return out;
+    }
+    // The grid line between the two closes, if one was crossed.
+    let crossed = |a: f64, b: f64| -> Option<f64> {
+        let (lo, hi) = (a.min(b), a.max(b));
+        let line = (lo / step).ceil() * step;
+        (line > lo && line <= hi && line > 0.0).then_some(line)
+    };
+    if let Some(line) = crossed(prev.close, last.close) {
+        out.push(MarketEvent {
+            kind: EventKind::RoundNumberCross,
+            symbol: symbol.to_string(),
+            timeframe: last.timeframe,
+            bar_time: last.open_time,
+            close: last.close,
+            price: line,
+            side: Some(if last.close > prev.close { Side::Buy } else { Side::Sell }),
+            zone_low: Some(last.low),
+            zone_high: Some(last.high),
+            magnitude: Some(step),
+            formed_at: None,
+        });
+    }
+    out
+}
+
 /// clock (UTC). ICT's windows are quoted in New York time; these are the UTC
 /// equivalents for the winter offset (London 07:00-10:00 UTC ~= 02:00-05:00
 /// ET, New York 12:00-15:00 UTC ~= 07:00-10:00 ET), documented rather than
@@ -1106,6 +1307,112 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 magnitude: None,
                 formed_at: Some(last.open_time),
             });
+        }
+        // The month roll mirrors the week's (UTC month arithmetic is day
+        // arithmetic: a new month is a new year/month pair).
+        let month_of = |ns: i64| {
+            let days = ns.div_euclid(DAY_NS);
+            // Civil-from-days (Howard Hinnant's algorithm, compact form).
+            let z = days + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+            let y = yoe + era * 400;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 456) / 153;
+            let m = if mp < 10 { mp + 3 } else { mp - 9 };
+            (y, m)
+        };
+        if month_of(last.open_time) != month_of(candles[candles.len() - 2].open_time) {
+            out.push(MarketEvent {
+                kind: EventKind::MonthlyOpen,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: last.open,
+                side: None,
+                zone_low: None,
+                zone_high: None,
+                magnitude: None,
+                formed_at: Some(last.open_time),
+            });
+        }
+        // The previous periods' ranges, marked once at the roll: the high
+        // and low of the day/week/month that just closed, as zones from
+        // that period's first bar to now.
+        let range_of = |from_ns: i64, to_ns: i64| -> Option<(i64, f64, f64)> {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            let mut first = None;
+            for k in candles.iter().filter(|k| k.open_time >= from_ns && k.open_time < to_ns) {
+                if first.is_none() {
+                    first = Some(k.open_time);
+                }
+                lo = lo.min(k.low);
+                hi = hi.max(k.high);
+            }
+            first.map(|t| (t, lo, hi))
+        };
+        let day_start = prev_day * DAY_NS;
+        if let Some((t, lo, hi)) = range_of(day_start, newest_day * DAY_NS) {
+            out.push(MarketEvent {
+                kind: EventKind::PreviousDayLevels,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: (lo + hi) / 2.0,
+                side: None,
+                zone_low: Some(lo),
+                zone_high: Some(hi),
+                magnitude: None,
+                formed_at: Some(t),
+            });
+        }
+        let week_start = prev_week * WEEK_NS;
+        if newest_week != prev_week {
+            if let Some((t, lo, hi)) = range_of(week_start, newest_week * WEEK_NS) {
+                out.push(MarketEvent {
+                    kind: EventKind::PreviousWeekLevels,
+                    symbol: symbol.to_string(),
+                    timeframe: tf,
+                    bar_time,
+                    close: last.close,
+                    price: (lo + hi) / 2.0,
+                    side: None,
+                    zone_low: Some(lo),
+                    zone_high: Some(hi),
+                    magnitude: None,
+                    formed_at: Some(t),
+                });
+            }
+        }
+        if month_of(last.open_time) != month_of(candles[candles.len() - 2].open_time) {
+            // The previous month's start: walk back to the first candle of
+            // the month before the new one.
+            let (y, m) = month_of(candles[candles.len() - 2].open_time);
+            let month_start_idx = candles
+                .iter()
+                .position(|k| month_of(k.open_time) == (y, m));
+            if let Some(idx) = month_start_idx {
+                let from = candles[idx].open_time;
+                if let Some((t, lo, hi)) = range_of(from, last.open_time) {
+                    out.push(MarketEvent {
+                        kind: EventKind::PreviousMonthLevels,
+                        symbol: symbol.to_string(),
+                        timeframe: tf,
+                        bar_time,
+                        close: last.close,
+                        price: (lo + hi) / 2.0,
+                        side: None,
+                        zone_low: Some(lo),
+                        zone_high: Some(hi),
+                        magnitude: None,
+                        formed_at: Some(t),
+                    });
+                }
+            }
         }
     }
 
@@ -2258,6 +2565,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_smc_extended(candles, symbol, &config));
     events.extend(detect_liquidity_family(candles, symbol, &config));
     events.extend(detect_sessions(candles, symbol));
+    events.extend(detect_round_numbers(candles, symbol));
     events.extend(detect_chart_gaps(candles, symbol, &config));
     events.extend(crate::fibonacci::detect_fibonacci(candles, symbol, config.structure_lookback));
     events.extend(crate::rsi_pca::detect_rsi_pca(candles, symbol));
@@ -2753,6 +3061,102 @@ mod pattern_tests {
             ks.push(k(101.9, 103.5, 101.7, 102.4));
         }
         assert!(!kinds(&detect_patterns_and_events(&pa_series(ks))).contains(&EventKind::RectangleBreakout));
+    }
+
+    #[test]
+    fn a_round_number_cross_stamps_its_own_bar() {
+        // Price at 82k: the grid is 5000. A close from 79,900 to 80,100
+        // crosses 80,000 upward.
+        let ks = pa_series(vec![k(100.0, 100.5, 99.5, 100.0), k(100.0, 100.6, 99.4, 100.2)]);
+        let mut ks2 = ks.clone();
+        // Scale into the 80k region.
+        for c in ks2.iter_mut() {
+            c.open *= 800.0;
+            c.high *= 800.0;
+            c.low *= 800.0;
+            c.close *= 800.0;
+        }
+        ks2[0].close = 79_900.0;
+        ks2[1].close = 80_100.0;
+        let events = detect_round_numbers(&ks2, "T");
+        let cross = events.iter().find(|e| e.kind == EventKind::RoundNumberCross);
+        assert!(cross.is_some(), "the 80,000 crossing fires");
+        let cross = cross.expect("checked");
+        assert_eq!(cross.price, 80_000.0, "the level, not the close");
+        assert_eq!(cross.side, Some(Side::Buy), "upward");
+        // No crossing, no event.
+        let flat = pa_series(vec![k(100.0, 100.5, 99.5, 100.0), k(100.0, 100.4, 99.6, 100.1)]);
+        assert!(detect_round_numbers(&flat, "T").is_empty());
+    }
+
+    #[test]
+    fn previous_day_levels_mark_the_closed_days_range() {
+        // M15 bars: day 1 is 96 bars trading 100..105, then the day-2 bar.
+        let mut ks: Vec<Candle> = (0..97).map(|_| k(102.0, 105.0, 100.0, 103.0)).collect();
+        ks[96] = k(103.0, 103.5, 102.8, 103.2); // the day roll
+        let ks = pa_series(ks);
+        let events = detect_sessions(&ks, "T");
+        let levels = events.iter().find(|e| e.kind == EventKind::PreviousDayLevels);
+        assert!(levels.is_some(), "the day roll marks the closed day's range");
+        let l = levels.expect("checked");
+        assert_eq!(l.zone_low, Some(100.0));
+        assert_eq!(l.zone_high, Some(105.0));
+    }
+
+    #[test]
+    fn a_trendline_validates_three_touches_then_breaks() {
+        // Three ascending swing lows (the third on the line), then the
+        // close below the projected line.
+        let mut ks: Vec<Candle> = (0..16).map(|_| k(100.0, 100.5, 99.5, 100.2)).collect();
+        let path = [
+            (100.0, 100.8, 99.0, 100.6), // low 1 at 99.0
+            (100.6, 101.2, 100.4, 101.0),
+            (101.0, 101.4, 100.8, 101.2),
+            (101.2, 101.6, 101.0, 101.4),
+            (101.4, 101.8, 100.5, 101.6), // low 2 at 100.5
+            // The bars before low 3 must not undercut it (the left-pivot
+            // rule needs three respected bars): lows 102.1, 102.3, 102.5.
+            (101.6, 102.4, 102.1, 102.2),
+            (102.2, 102.7, 102.3, 102.5),
+            (102.5, 102.9, 102.5, 102.7),
+            // low 3 ON the line through (16, 99.0)-(20, 100.5):
+            // at index 24 the line reads 102.0.
+            (102.7, 102.9, 102.0, 102.3),
+            // the break: the line at 25 reads ~102.375; close well under.
+            (102.3, 102.4, 100.8, 101.0),
+        ];
+        for (o, h, l, c) in path {
+            ks.push(k(o, h, l, c));
+        }
+        let events = detect_chart_gaps(&ks, "T", &EventConfig::default());
+        let tl = events.iter().find(|e| e.kind == EventKind::TrendlineBreak);
+        assert!(tl.is_some(), "the validated line's break fires: {events:?}");
+        assert_eq!(tl.expect("checked").side, Some(Side::Sell), "a broken bull line is a sell");
+    }
+
+    #[test]
+    fn a_broadening_formation_needs_both_sides_expanding() {
+        // Highs 104, 105, 106 ascending; lows 101, 100, 99 descending; the
+        // close beyond 106.
+        let mut ks: Vec<Candle> = (0..16).map(|_| k(102.0, 102.6, 101.6, 102.2)).collect();
+        let path = [
+            (102.0, 104.0, 101.8, 103.8), // high 1
+            (103.8, 104.0, 101.0, 101.4), // low 1
+            (101.4, 105.0, 101.2, 104.8), // high 2
+            (104.8, 105.0, 100.0, 100.4), // low 2
+            (100.4, 106.0, 100.2, 105.8), // high 3
+            (105.8, 106.0, 99.0, 99.4),   // low 3
+            (99.4, 102.0, 99.2, 101.8),
+            (101.8, 104.0, 101.6, 103.8),
+            (103.8, 106.5, 103.6, 106.3), // the break beyond high 3
+        ];
+        for (o, h, l, c) in path {
+            ks.push(k(o, h, l, c));
+        }
+        let events = detect_chart_gaps(&ks, "T", &EventConfig::default());
+        let br = events.iter().find(|e| e.kind == EventKind::BroadeningFormation);
+        assert!(br.is_some(), "the megaphone fires on the break");
+        assert_eq!(br.expect("checked").side, Some(Side::Buy), "breaking the expanding highs is a buy");
     }
 
     #[test]

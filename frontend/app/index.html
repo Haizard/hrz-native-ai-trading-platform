@@ -216,9 +216,25 @@
   .chartPane.active .chartBar { box-shadow: inset 0 2px 0 var(--accent); }
   .chartBar .close { margin-left: auto; padding: 3px 8px; color: var(--muted); }
   /* The Concept Explorer rows (chart menu). */
-  .conceptRow { display: flex; align-items: center; gap: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
-  .conceptRow:hover { color: var(--text); }
+  .conceptRow { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 26px; font-size: 12px; cursor: pointer; border-radius: 4px; }
+  .conceptRow:hover { color: var(--text); background: rgba(148, 163, 184, 0.08); }
   .conceptRow.unavailable { color: var(--muted); opacity: .55; cursor: default; }
+  .conceptRow .conceptName { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conceptChip { font-size: 8px; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 1px 4px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); flex: none; }
+  .conceptChip.pane { color: #60a5fa; border-color: rgba(96, 165, 250, 0.35); }
+  .conceptChip.ovl { color: #22d3ee; border-color: rgba(34, 211, 238, 0.35); }
+  .conceptSearch { width: 100%; box-sizing: border-box; margin: 2px 0 6px; padding: 6px 10px; font-size: 12px;
+    background: rgba(148, 163, 184, 0.08); border: 1px solid var(--line); border-radius: 6px; color: var(--text); outline: none; }
+  .conceptSearch:focus { border-color: rgba(96, 165, 250, 0.5); }
+  .conceptGroupHead { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 6px; margin-top: 2px;
+    font-size: 11px; font-weight: 600; color: var(--text); background: none; border: none; cursor: pointer; text-align: left; border-radius: 4px; }
+  .conceptGroupHead:hover { background: rgba(148, 163, 184, 0.08); }
+  .conceptGroupHead .chev { display: inline-block; font-size: 9px; color: var(--muted); transition: transform 0.12s ease; transform: rotate(90deg); }
+  .conceptGroupHead.collapsed .chev { transform: rotate(0deg); }
+  .conceptGroupCount { margin-left: auto; font-size: 9px; font-family: var(--mono); color: var(--muted);
+    padding: 1px 6px; border-radius: 8px; background: rgba(148, 163, 184, 0.12); }
+  .conceptGroupBody { display: flex; flex-direction: column; }
   /* The Deriv trade ticket (chart menu, Deriv symbols only). */
   .tradeTicket { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; }
   .tradeTicket .row { display: flex; gap: 6px; align-items: center; }

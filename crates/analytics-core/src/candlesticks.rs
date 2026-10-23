@@ -255,6 +255,31 @@ pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
         }
     }
 
+    // ---- upside gap two crows (Nison): a long bullish bar, a bearish bar
+    // gapping above its body, and a third bearish bar engulfing the second
+    // while holding above the first bar's close -- the gap survives, the
+    // momentum does not.
+    if candles.len() >= 3 {
+        let first = &candles[n - 2];
+        let second = &candles[n - 1];
+        let third = &candles[n];
+        let f = shape(&first);
+        let g = shape(&second);
+        let t = shape(&third);
+        let gap = second.low > first.close || second.open > first.close;
+        if f.bullish
+            && f.body >= 0.5 * f.range
+            && f.range > 0.0
+            && !g.bullish
+            && gap
+            && !t.bullish
+            && third.open >= second.open
+            && third.close < second.open
+            && third.close > first.close
+        {
+            push(EventKind::UpsideGapTwoCrows, Side::Sell, &third);
+        }
+    }
     out
 }
 
@@ -365,6 +390,29 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn upside_gap_two_crows_needs_the_gap_to_survive() {
+        // Bar 1 long bullish, bar 2 small bearish gapping above bar 1's
+        // close, bar 3 bearish engulfing bar 2 but closing above bar 1.
+        let ks = vec![
+            k(0, 100.0, 104.0, 99.5, 104.0),
+            k(1, 104.6, 105.2, 104.4, 104.5),
+            k(2, 104.6, 104.8, 103.5, 104.1),
+        ];
+        let events = detect_candlesticks(&ks, "T");
+        assert!(events.iter().any(|e| e.kind == EventKind::UpsideGapTwoCrows), "the textbook shape fires");
+        // The gap closed: no pattern.
+        let closed = vec![
+            k(0, 100.0, 104.0, 99.5, 104.0),
+            k(1, 104.6, 105.2, 104.4, 104.5),
+            k(2, 104.6, 104.8, 102.5, 103.0),
+        ];
+        assert!(
+            !detect_candlesticks(&closed, "T").iter().any(|e| e.kind == EventKind::UpsideGapTwoCrows),
+            "a closed gap kills it"
+        );
+    }
+
     fn every_pattern_has_a_negative_shape() {
         // A plain full-body trend with no special relationships: nothing
         // fires at all.
