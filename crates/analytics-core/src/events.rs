@@ -275,6 +275,32 @@ pub enum EventKind {
     AtrFamilyExpansion,
     /// The GMMA ribbon's short group crossing its long group.
     GmmaCross,
+    /// Stochastic %K entering oversold (buy-side) or overbought (sell-side).
+    StochasticZoneEntry,
+    /// Stochastic %K crossing %D.
+    StochasticCross,
+    /// CCI entering the -100 (buy) or +100 (sell) zone.
+    CciZoneEntry,
+    /// Williams %R entering oversold (<-80) or overbought (>-20).
+    WilliamsZoneEntry,
+    /// ROC crossing zero.
+    RocZeroCross,
+    /// Price making the new extreme while OBV refuses it.
+    ObvDivergence,
+    /// ADX crossing 25 (side from the dominant DI), or the DI cross in a trend.
+    AdxTrendCross,
+    /// Price making the new extreme while the MACD line refuses it.
+    MacdDivergenceSignal,
+    /// Bollinger bandwidth at the lowest reading of the trailing 120 bars.
+    BollingerSqueeze,
+    /// A close outside the Keltner channel, in the break's direction.
+    KeltnerBreakout,
+    /// A close outside the Donchian channel, in the break's direction.
+    DonchianBreakout,
+    /// The Supertrend flipping side.
+    SupertrendFlip,
+    /// The Parabolic SAR flipping side.
+    PsarFlip,
 }
 
 impl EventKind {
@@ -388,11 +414,24 @@ impl EventKind {
             Self::MacdFamilyConsensus => "macd_family_consensus",
             Self::AtrFamilyExpansion => "atr_family_expansion",
             Self::GmmaCross => "gmma_cross",
+            Self::StochasticZoneEntry => "stochastic_zone_entry",
+            Self::StochasticCross => "stochastic_cross",
+            Self::CciZoneEntry => "cci_zone_entry",
+            Self::WilliamsZoneEntry => "williams_zone_entry",
+            Self::RocZeroCross => "roc_zero_cross",
+            Self::ObvDivergence => "obv_divergence",
+            Self::AdxTrendCross => "adx_trend_cross",
+            Self::MacdDivergenceSignal => "macd_divergence_signal",
+            Self::BollingerSqueeze => "bollinger_squeeze",
+            Self::KeltnerBreakout => "keltner_breakout",
+            Self::DonchianBreakout => "donchian_breakout",
+            Self::SupertrendFlip => "supertrend_flip",
+            Self::PsarFlip => "psar_flip",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 106] = [
+    pub const ALL: [Self; 119] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -499,6 +538,19 @@ impl EventKind {
         Self::MacdFamilyConsensus,
         Self::AtrFamilyExpansion,
         Self::GmmaCross,
+        Self::StochasticZoneEntry,
+        Self::StochasticCross,
+        Self::CciZoneEntry,
+        Self::WilliamsZoneEntry,
+        Self::RocZeroCross,
+        Self::ObvDivergence,
+        Self::AdxTrendCross,
+        Self::MacdDivergenceSignal,
+        Self::BollingerSqueeze,
+        Self::KeltnerBreakout,
+        Self::DonchianBreakout,
+        Self::SupertrendFlip,
+        Self::PsarFlip,
     ];
 }
 

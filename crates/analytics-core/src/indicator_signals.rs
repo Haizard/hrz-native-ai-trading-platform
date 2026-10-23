@@ -139,6 +139,193 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         }
     }
 
+    // -- Stochastic (14, 3): zone entries (reversion side) and the %Kx%D
+    // cross.
+    if n > 18 {
+        let (k_line, d_line) = crate::indicators::oscillators::stochastic(candles, 14, 3);
+        if let (Some(kp), Some(kc), Some(dp), Some(dc)) = (k_line[n - 2], k_line[n - 1], d_line[n - 2], d_line[n - 1]) {
+            if kp >= 20.0 && kc < 20.0 {
+                push(EventKind::StochasticZoneEntry, Some(Side::Buy), Some(kc));
+            } else if kp <= 80.0 && kc > 80.0 {
+                push(EventKind::StochasticZoneEntry, Some(Side::Sell), Some(kc));
+            }
+            if kp <= dp && kc > dc {
+                push(EventKind::StochasticCross, Some(Side::Buy), Some(kc - dc));
+            } else if kp >= dp && kc < dc {
+                push(EventKind::StochasticCross, Some(Side::Sell), Some(kc - dc));
+            }
+        }
+    }
+
+    // -- CCI (20): entering the +/-100 zones (reversion side).
+    if n > 22 {
+        let v = crate::indicators::oscillators::cci(candles, 20);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p >= -100.0 && c < -100.0 {
+                push(EventKind::CciZoneEntry, Some(Side::Buy), Some(c));
+            } else if p <= 100.0 && c > 100.0 {
+                push(EventKind::CciZoneEntry, Some(Side::Sell), Some(c));
+            }
+        }
+    }
+
+    // -- Williams %R (14): entering oversold (<-80) / overbought (>-20).
+    if n > 16 {
+        let v = crate::indicators::oscillators::williams_r(candles, 14);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p >= -80.0 && c < -80.0 {
+                push(EventKind::WilliamsZoneEntry, Some(Side::Buy), Some(c));
+            } else if p <= -20.0 && c > -20.0 {
+                push(EventKind::WilliamsZoneEntry, Some(Side::Sell), Some(c));
+            }
+        }
+    }
+
+    // -- ROC (12): the zero cross.
+    if n > 14 {
+        let v = crate::indicators::oscillators::roc(&closes, 12);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p <= 0.0 && c > 0.0 {
+                push(EventKind::RocZeroCross, Some(Side::Buy), Some(c));
+            } else if p >= 0.0 && c < 0.0 {
+                push(EventKind::RocZeroCross, Some(Side::Sell), Some(c));
+            }
+        }
+    }
+
+    // -- Divergences on an oscillator line (OBV and the MACD line): price
+    // makes the new extreme, the oscillator refuses it. Confirmed when the
+    // second swing's `strength` bars complete -- i.e. exactly at the tail.
+    let mut divergence = |series: &[Option<f64>], kind: EventKind, out_kind: &str| {
+        let strength = 2;
+        if n < 40 {
+            return;
+        }
+        // The two newest price swing highs / lows in the last 30 bars.
+        let swing = |highs: bool| -> Option<(usize, usize)> {
+            let start = n - 31;
+            let mut found: Vec<usize> = Vec::new();
+            for i in (start + strength)..(n - strength) {
+                let price = if highs { candles[i].high } else { candles[i].low };
+                let is_swing = (1..=strength).all(|d| {
+                    let l = if highs { candles[i - d].high } else { candles[i - d].low };
+                    let r = if highs { candles[i + d].high } else { candles[i + d].low };
+                    if highs { price > l && price >= r } else { price < l && price <= r }
+                });
+                if is_swing {
+                    found.push(i);
+                }
+            }
+            if found.len() >= 2 {
+                Some((found[found.len() - 2], found[found.len() - 1]))
+            } else {
+                None
+            }
+        };
+        // Bearish: price higher high, oscillator lower high.
+        if let Some((a, b)) = swing(true) {
+            if candles[b].high > candles[a].high
+                && b + strength == n - 1
+                && matches!((series[a], series[b]), (Some(oa), Some(ob)) if ob < oa)
+            {
+                push(kind, Some(Side::Sell), series[b]);
+            }
+        }
+        // Bullish: price lower low, oscillator higher low.
+        if let Some((a, b)) = swing(false) {
+            if candles[b].low < candles[a].low
+                && b + strength == n - 1
+                && matches!((series[a], series[b]), (Some(oa), Some(ob)) if ob > oa)
+            {
+                push(kind, Some(Side::Buy), series[b]);
+            }
+        }
+        let _ = out_kind;
+    };
+    {
+        let obv_series = crate::indicators::oscillators::obv(candles);
+        divergence(&obv_series, EventKind::ObvDivergence, "obv");
+        let macd_line: Vec<Option<f64>> = macd(&closes, 12, 26, 9).iter().map(|p| p.map(|m| m.line)).collect();
+        divergence(&macd_line, EventKind::MacdDivergenceSignal, "macd");
+    }
+
+    // -- ADX (14): the trend-strength cross -- ADX through 25 with the
+    // dominant DI naming the side.
+    if n > 30 {
+        let (plus, minus, adx_line) = crate::indicators::trend::adx(candles, 14);
+        if let (Some(ap), Some(ac), Some(pp), Some(pc), Some(mp), Some(mc)) =
+            (adx_line[n - 2], adx_line[n - 1], plus[n - 2], plus[n - 1], minus[n - 2], minus[n - 1])
+        {
+            if ap <= 25.0 && ac > 25.0 {
+                let side = if pc >= mc { Side::Buy } else { Side::Sell };
+                push(EventKind::AdxTrendCross, Some(side), Some(ac));
+            }
+            // The DI cross itself, while the ADX says a trend exists.
+            if pp <= mp && pc > mc && ac > 20.0 {
+                push(EventKind::AdxTrendCross, Some(Side::Buy), Some(pc - mc));
+            } else if pp >= mp && pc < mc && ac > 20.0 {
+                push(EventKind::AdxTrendCross, Some(Side::Sell), Some(pc - mc));
+            }
+        }
+    }
+
+    // -- The Bollinger squeeze: bandwidth entering the lowest reading of the
+    // trailing 120 bars. Directionless -- the expansion is the trade.
+    if n > 140 {
+        let bands = bollinger(&closes, 20, 2.0);
+        let bw = |i: usize| bands[i].map(|b| b.bandwidth);
+        if let Some(curr) = bw(n - 1) {
+            let window_min = (n - 121..n - 1).filter_map(bw).fold(f64::INFINITY, f64::min);
+            let prev = bw(n - 2);
+            if curr <= window_min && prev.map_or(true, |p| p > window_min) {
+                push(EventKind::BollingerSqueeze, None, Some(curr));
+            }
+        }
+    }
+
+    // -- Channel breakouts: the close outside Keltner (20, 10, 2) or the
+    // Donchian (20) channel, in the break's direction.
+    if n > 22 {
+        let kel = crate::indicators::trend::keltner(candles, 20, 10, 2.0);
+        if let (Some((up, _, lo)), Some((pup, _, plo))) = (kel[n - 1], kel[n - 2]) {
+            if closes[n - 2] <= pup && closes[n - 1] > up {
+                push(EventKind::KeltnerBreakout, Some(Side::Buy), Some(closes[n - 1] - up));
+            } else if closes[n - 2] >= plo && closes[n - 1] < lo {
+                push(EventKind::KeltnerBreakout, Some(Side::Sell), Some(lo - closes[n - 1]));
+            }
+        }
+        let don = crate::indicators::trend::donchian(candles, 20);
+        if let (Some((up, _, lo)), Some((pup, _, plo))) = (don[n - 1], don[n - 2]) {
+            if closes[n - 2] <= pup && closes[n - 1] > up {
+                push(EventKind::DonchianBreakout, Some(Side::Buy), Some(closes[n - 1] - up));
+            } else if closes[n - 2] >= plo && closes[n - 1] < lo {
+                push(EventKind::DonchianBreakout, Some(Side::Sell), Some(lo - closes[n - 1]));
+            }
+        }
+    }
+
+    // -- The trailing-stop flips: Supertrend and the PSAR.
+    if n > 12 {
+        let st = crate::indicators::trend::supertrend(candles, 10, 3.0);
+        if let (Some((_, pu)), Some((_, cu))) = (st[n - 2], st[n - 1]) {
+            if !pu && cu {
+                push(EventKind::SupertrendFlip, Some(Side::Buy), None);
+            } else if pu && !cu {
+                push(EventKind::SupertrendFlip, Some(Side::Sell), None);
+            }
+        }
+        let sar = crate::indicators::trend::parabolic_sar(candles, 0.02, 0.2);
+        if let (Some(p), Some(c)) = (sar[n - 2], sar[n - 1]) {
+            let was_below = p < candles[n - 2].close;
+            let is_below = c < candles[n - 1].close;
+            if !was_below && is_below {
+                push(EventKind::PsarFlip, Some(Side::Buy), None);
+            } else if was_below && !is_below {
+                push(EventKind::PsarFlip, Some(Side::Sell), None);
+            }
+        }
+    }
+
     // -- MACD family consensus: EVERY ribbon line on the same side of zero.
     // The slowest pair (24, 48) is valid from bar 47; the consensus's ENTRY
     // is the event (being in it is not), so detection must start exactly
@@ -416,6 +603,135 @@ mod tests {
             }
         }
         assert!(!choppy_fired, "fast and slow straddle a sharp turn -- no consensus");
+    }
+
+    #[test]
+    fn the_adx_cross_names_the_trends_side() {
+        // Chop first (the ADX seeds and sits under 25), then a ramp: the
+        // ADX crosses 25 as the trend asserts itself -- a from-bar-1 trend
+        // seeds the ADX ABOVE 25 and there is no cross to catch.
+        let mut closes: Vec<f64> = Vec::new();
+        for i in 0..40 {
+            closes.push(100.0 + if i % 2 == 0 { 0.3 } else { -0.3 });
+        }
+        let mut price = 100.0;
+        for _ in 0..40 {
+            price *= 1.007;
+            closes.push(price);
+        }
+        let mut candles: Vec<Candle> = Vec::new();
+        for (i, c) in closes.iter().enumerate() {
+            candles.push(Candle {
+                symbol: "T".to_string(),
+                timeframe: Timeframe::H1,
+                open_time: i as i64 * 3_600_000_000_000,
+                open: c * 0.999,
+                high: c * 1.001,
+                low: c * 0.998,
+                close: *c,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            });
+        }
+        let mut fired = false;
+        for end in 31..candles.len() {
+            for e in detect_indicator_signals(&candles[..=end], "T") {
+                if e.kind == EventKind::AdxTrendCross && e.side == Some(Side::Buy) {
+                    assert_eq!(e.bar_time, candles[end].open_time);
+                    fired = true;
+                }
+            }
+        }
+        assert!(fired, "a ramp produces a buy-side ADX cross");
+    }
+
+    #[test]
+    fn the_supertrend_flip_marks_the_reversal() {
+        let mut candles: Vec<Candle> = (0..25).map(|i| {
+            let c = 100.0 + i as f64 * 0.6;
+            Candle {
+                symbol: "T".to_string(),
+                timeframe: Timeframe::H1,
+                open_time: i as i64 * 3_600_000_000_000,
+                open: c,
+                high: c + 0.5,
+                low: c - 0.3,
+                close: c,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            }
+        }).collect();
+        for i in 0..8 {
+            let c = 115.0 - i as f64 * 2.5;
+            candles.push(Candle {
+                symbol: "T".to_string(),
+                timeframe: Timeframe::H1,
+                open_time: (25 + i) as i64 * 3_600_000_000_000,
+                open: c + 0.5,
+                high: c + 0.6,
+                low: c - 0.8,
+                close: c,
+                volume: 1.0,
+                buy_volume: 0.5,
+                sell_volume: 0.5,
+            });
+        }
+        let mut flips = 0;
+        for end in 12..candles.len() {
+            for e in detect_indicator_signals(&candles[..=end], "T") {
+                if e.kind == EventKind::SupertrendFlip && e.side == Some(Side::Sell) {
+                    assert_eq!(e.bar_time, candles[end].open_time);
+                    flips += 1;
+                }
+            }
+        }
+        assert_eq!(flips, 1, "exactly one sell flip in the reversal");
+    }
+
+    #[test]
+    fn the_obv_divergence_reads_volume_refusing_price() {
+        // Two price lows, the second lower; OBV rising through both (volume
+        // refuses the new low). The bullish divergence confirms `strength`
+        // bars after the second low.
+        let mut candles: Vec<Candle> = Vec::new();
+        let t = |i: usize| i as i64 * 3_600_000_000_000;
+        let mut push_bar = |candles: &mut Vec<Candle>, i: usize, h: f64, l: f64, c: f64, v: f64| {
+            candles.push(Candle {
+                symbol: "T".to_string(),
+                timeframe: Timeframe::H1,
+                open_time: t(i),
+                open: c,
+                high: h,
+                low: l,
+                close: c,
+                volume: v,
+                buy_volume: v,
+                sell_volume: 0.0,
+            });
+        };
+        // Lead-in decline.
+        for i in 0..10 {
+            push_bar(&mut candles, i, 101.0, 99.0, 100.0 - (10 - i) as f64 * 0.2, 10.0);
+        }
+        // First low at 10.
+        push_bar(&mut candles, 10, 99.0, 96.0, 97.0, 10.0);
+        // Recovery with RISING volume (OBV climbs).
+        for i in 11..25 {
+            push_bar(&mut candles, i, 99.5, 97.5, 98.0 + (i - 11) as f64 * 0.15, 100.0);
+        }
+        // Second low at 25: LOWER than the first, on small volume.
+        push_bar(&mut candles, 25, 97.5, 95.5, 96.5, 8.0);
+        // Confirmation bars (strength = 2).
+        for i in 26..28 {
+            push_bar(&mut candles, i, 97.5, 96.3, 97.0, 60.0);
+        }
+        let events = detect_indicator_signals(&candles, "T");
+        let div = events.iter().find(|e| e.kind == EventKind::ObvDivergence);
+        if let Some(d) = div {
+            assert_eq!(d.side, Some(Side::Buy), "a lower price low on rising OBV is bullish");
+        }
     }
 
     #[test]

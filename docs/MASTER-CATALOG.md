@@ -153,20 +153,22 @@ Missing: **upside gap two crows ❌** (the only named pattern without a detector
 ## 6. Technical Indicator Strategies
 
 **Trend:** MA crossover ✅ (`ema_cross`/`sma_cross`) · EMA pullback ⚠️ · SMA filter ✅ ·
-MACD trend ✅ · ADX ❌ · Parabolic SAR ❌ · Supertrend ❌ · Ichimoku ❌ ·
+MACD trend ✅ · ADX ✅ (`indicators.adx` with ±DI) · Parabolic SAR ✅ (`indicators.psar`) · Supertrend ✅ (`indicators.supertrend`) · Ichimoku ❌ ·
 MA ribbon ✅ (`indicators.ema_family`, GMMA) · Triple MA ✅ (`indicators.ema` stack)
 
-**Momentum:** RSI ✅ · RSI divergence ✅ · Stochastic ❌ · CCI ❌ · Williams %R ❌ ·
-ROC ❌ · Momentum ❌ · MACD divergence ❌ (RSI divergence exists) · TSI ❌ · Awesome ❌
+**Momentum:** RSI ✅ · RSI divergence ✅ · Stochastic ✅ (`indicators.stochastic`) · CCI ✅ (`indicators.cci`) · Williams %R ✅ (`indicators.williams_r`) ·
+ROC ✅ (`indicators.roc`) · Momentum ✅ (ROC is the momentum oscillator) · MACD divergence ✅ (`MacdDivergenceSignal` on `indicators.macd`) · TSI ❌ · Awesome ❌
 
-**Volatility:** Bollinger ✅ · Keltner ❌ · ATR ✅ · Donchian ❌ · StdDev bands ✅ (Bollinger is) ·
-BB squeeze ⚠️ (bandwidth computed; no squeeze event) · ATR breakout ⚠️ (expansion) ·
-Volatility stop ❌ · Chandelier exit ❌ · HV regimes ⚠️
+**Volatility:** Bollinger ✅ · Keltner ✅ (`indicators.keltner`) · ATR ✅ · Donchian ✅ (`indicators.donchian`) · StdDev bands ✅ (Bollinger is) ·
+BB squeeze ✅ (`BollingerSqueeze` on `indicators.bollinger_percent`) · ATR breakout ⚠️ (expansion) ·
+Volatility stop ✅ (`indicators.supertrend` is the ATR stop family) · Chandelier exit ❌ · HV regimes ⚠️
 
-**Volume:** OBV ❌ · VWAP ✅ (engine line) · Anchored VWAP ⚠️ · A/D ❌ · CMF ❌ · MFI ❌ ·
+**Volume:** OBV ✅ (`indicators.obv` + divergence signals) · VWAP ✅ (engine line) · Anchored VWAP ⚠️ · A/D ❌ · CMF ❌ · MFI ❌ ·
 Volume profile ✅ · POC ✅ · VAH/VAL ✅ · Relative volume ⚠️ (`volume.spike`)
 
-**Score: 14 ✅ / 6 ⚠️ / 20 ❌** — the ❌ list is the next battery; the series path makes each one cheap
+**Score: 27 ✅ / 4 ⚠️ / 9 ❌** — Battery A landed 2026-10-23: the full classic shelf with panes,
+overlays, and per-bar signals. Remaining ❌: TSI, Awesome, Ichimoku, A/D, CMF, MFI, anchored VWAP,
+chandelier exit, HV regimes
 
 ## 7. Volume, Order Flow and Footprint
 
@@ -425,18 +427,12 @@ lives in the backtester/live engines rather than the registry.
 Ordered by (a) the master list's priority column, (b) marginal cost on the existing paths
 (series panes are cheap; new data feeds are expensive), (c) what unlocks the most downstream items.
 
-## Battery A — the indicator gaps (adopt the series path directly)
+## Battery A — the indicator gaps ✅ DONE 2026-10-23
 
-1. **Stochastic oscillator** (pane: %K/%D + 20/80 bands; signals: zone entries, %K×%D cross)
-2. **CCI** (pane, ±100 levels; signals: zone entries)
-3. **Williams %R** (pane, −80/−20; signals: zone entries)
-4. **ROC / Momentum** (pane, zero line; signals: zero cross)
-5. **OBV** (pane, line; signals: OBV×price divergence) — completes the classic volume set
-6. **ADX** (pane: ADX + ±DI lines, 25 level; signals: trend-strength crosses) — unlocks §11.8
-7. **MACD divergence** (the divergence machinery applied to the MACD line, as RSI's was)
-8. **Bollinger %B + bandwidth** (pane; signal: the **squeeze** — bandwidth at a rolling low) — §6.26
-9. **Keltner channels** (overlay; EMA ± ATR multiples) · **Donchian channels** (overlay; N-bar high/low)
-10. **Supertrend** (overlay with side flips as signals) · **Parabolic SAR** (overlay)
+All ten landed with canonical math (Wilder's own smoothing for ADX; Lane, Lambert, Williams,
+Granville, Keltner, Donchian pinned by hand-computed values), series panes/overlays, per-bar
+signals, and live verification on BTCUSDT 1h. Ichimoku deferred (a five-line system that deserves
+its own battery); TSI/Awesome/A-D/CMF/MFI/anchored-VWAP/chandelier remain as the indicator tail.
 
 ## Battery B — the missing pattern and level detectors
 

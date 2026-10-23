@@ -20,8 +20,10 @@ pub mod atr;
 pub mod bollinger;
 pub mod ema;
 pub mod macd;
+pub mod oscillators;
 pub mod rsi;
 pub mod sma;
+pub mod trend;
 
 pub use atr::{atr, atr_percent, true_range};
 pub use bollinger::{bollinger, BollingerPoint};
