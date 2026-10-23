@@ -118,6 +118,7 @@ pub fn indicator_series(concept: &str, candles: &[Candle]) -> Option<IndicatorSe
         "indicators.rsi" => rsi_pane(candles, 14, false),
         "indicators.rsi_divergence" => rsi_pane(candles, 14, true),
         "indicators.rsi_pca" => rsi_pca_pane(candles),
+        "indicators.rsi_family" => rsi_family_pane(candles),
         "indicators.macd" => macd_pane(candles),
         "indicators.atr" => atr_pane(candles),
         "indicators.ema" => ema_overlay(candles),
@@ -125,6 +126,51 @@ pub fn indicator_series(concept: &str, candles: &[Candle]) -> Option<IndicatorSe
         "indicators.bollinger" => bollinger_overlay(candles),
         _ => None,
     }
+}
+
+/// The RSI family ribbon (his `rsi_behavior.py` exhibit): every period
+/// 2..=24 plotted together on the fixed 0..100 scale, coloured along a
+/// fast-to-slow gradient so the eye reads the family's own structure --
+/// clustered lines are a consensus trend, a fanning ribbon is a transition,
+/// the fast edge parting from the slow edge is the divergence the PCA model
+/// later quantifies. The middle lines go unnamed: twenty-three legend chips
+/// would be wallpaper, and the two edge names carry the meaning.
+fn rsi_family_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    if closes.len() < 30 {
+        return None;
+    }
+    // The gradient: amber (fast, period 2) to blue (slow, period 24).
+    let (fa, fb) = ((0xf5u32, 0x9eu32, 0x0bu32), (0x3bu32, 0x82u32, 0xf6u32));
+    let n = crate::rsi_pca::RSI_PERIODS.len();
+    let lines: Vec<SeriesLine> = crate::rsi_pca::RSI_PERIODS
+        .iter()
+        .enumerate()
+        .map(|(i, period)| {
+            let t = i as f64 / (n - 1) as f64;
+            let mix = |a: u32, b: u32| (a as f64 + (b as f64 - a as f64) * t) as u32;
+            let color = (mix(fa.0, fb.0) << 16) | (mix(fa.1, fb.1) << 8) | mix(fa.2, fb.2);
+            SeriesLine {
+                name: if i == 0 || i == n - 1 {
+                    format!("rsi{period}")
+                } else {
+                    String::new()
+                },
+                color,
+                values: crate::indicators::rsi::rsi(&closes, *period),
+            }
+        })
+        .collect();
+    Some(IndicatorSeries {
+        label: "RSI Family (2..24)".to_string(),
+        scale: SeriesScale::Fixed { min: 0.0, max: 100.0 },
+        levels: vec![70.0, 30.0],
+        lines,
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+    })
 }
 
 /// MACD (12, 26, 9): the line and its signal as two lines, the histogram as
@@ -437,6 +483,40 @@ mod tests {
             assert!(m.at < candles.len());
             assert!(spec.lines[0].values[m.at].is_some(), "the marker rides its bar's prediction");
         }
+    }
+
+    #[test]
+    fn the_family_ribbon_is_every_period_on_one_scale() {
+        let spec = indicator_series("indicators.rsi_family", &moving_series(120)).expect("spec");
+        assert_eq!(spec.lines.len(), 23, "every period 2..=24");
+        assert_eq!(spec.scale, SeriesScale::Fixed { min: 0.0, max: 100.0 });
+        // Each line warms up for exactly its own period.
+        for (i, line) in spec.lines.iter().enumerate() {
+            let period = i + 2;
+            assert!(line.values[..period].iter().all(|v| v.is_none()), "rsi{period} warms up");
+            assert!(line.values[period].is_some(), "rsi{period} starts on time");
+            for v in line.values.iter().flatten() {
+                assert!((0.0..=100.0).contains(v), "rsi{period} bounded: {v}");
+            }
+        }
+        // Only the edges carry names; the gradient runs amber to blue.
+        assert_eq!(spec.lines[0].name, "rsi2");
+        assert_eq!(spec.lines[22].name, "rsi24");
+        assert!(spec.lines[1].name.is_empty());
+        assert_eq!(spec.lines[0].color, 0xf59e0b, "the fast edge is amber");
+        assert_eq!(spec.lines[22].color, 0x3b82f6, "the slow edge is blue");
+        // The fast line is genuinely more reactive than the slow one: its
+        // bar-to-bar swings average larger.
+        let swing = |values: &[Option<f64>]| {
+            let vs: Vec<f64> = values.iter().flatten().copied().collect();
+            vs.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / vs.len() as f64
+        };
+        assert!(
+            swing(&spec.lines[0].values) > swing(&spec.lines[22].values),
+            "the fast edge swings wider: {} vs {}",
+            swing(&spec.lines[0].values),
+            swing(&spec.lines[22].values)
+        );
     }
 
     #[test]

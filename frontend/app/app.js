@@ -1122,9 +1122,11 @@ function createChartPane(root, hooks = {}) {
             for (const point of line.points) ctx.lineTo(point.x, point.y);
             ctx.stroke();
           }
-          ctx.fillStyle = css;
-          ctx.fillText(line.name, legendX, pane.plot.y + 12);
-          legendX += ctx.measureText(line.name).width + 8;
+          if (line.name) {
+            ctx.fillStyle = css;
+            ctx.fillText(line.name, legendX, pane.plot.y + 12);
+            legendX += ctx.measureText(line.name).width + 8;
+          }
         }
       }
 

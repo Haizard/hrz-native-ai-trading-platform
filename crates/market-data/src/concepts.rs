@@ -759,6 +759,18 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             event_kinds: &[],
         },
         ConceptSpec {
+            id: "indicators.rsi_family",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "RSI Family",
+            description: "every RSI period 2..24 as one ribbon -- clustered lines are a consensus trend, a fanning ribbon is a transition; the information the PCA model quantifies, visible",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: true,
+            overlay: false,
+            event_kinds: &[],
+        },
+        ConceptSpec {
             id: "indicators.macd",
             version: "1.0.0",
             library: Library::Indicators,
