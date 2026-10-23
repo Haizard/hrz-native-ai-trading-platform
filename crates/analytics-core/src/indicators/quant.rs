@@ -154,9 +154,96 @@ pub fn shannon_entropy(closes: &[f64], window: usize, bins: usize) -> Vec<Option
     out
 }
 
+/// The Engle-Granger pair spread: `a - beta * b` with beta the OLS hedge
+/// ratio over `window`, and the spread's own z-score line. The fourth
+/// return is the spread's lag-1 autocorrelation of differences at the tail
+/// -- the honesty gate: a pair that does not mean-revert is two prices, not
+/// a spread, and the caller should show the gate beside the line.
+pub fn pair_spread(a: &[f64], b: &[f64], window: usize) -> (Vec<Option<f64>>, Vec<Option<f64>>, f64) {
+    let n = a.len().min(b.len());
+    let mut z_line = vec![None; n];
+    let mut spread_line = vec![None; n];
+    if window < 20 || n < window {
+        return (z_line, spread_line, 0.0);
+    }
+    let mut last_beta = 0.0;
+    for i in window - 1..n {
+        let wa = &a[i + 1 - window..=i];
+        let wb = &b[i + 1 - window..=i];
+        let ma = wa.iter().sum::<f64>() / window as f64;
+        let mb = wb.iter().sum::<f64>() / window as f64;
+        let mut cov = 0.0;
+        let mut var_b = 0.0;
+        for j in 0..window {
+            cov += (wa[j] - ma) * (wb[j] - mb);
+            var_b += (wb[j] - mb).powi(2);
+        }
+        let beta = if var_b > 0.0 { cov / var_b } else { 0.0 };
+        last_beta = beta;
+        let spread: Vec<f64> = wa.iter().zip(wb).map(|(x, y)| x - beta * y).collect();
+        let ms = spread.iter().sum::<f64>() / window as f64;
+        let sd = (spread.iter().map(|v| (v - ms).powi(2)).sum::<f64>() / window as f64).sqrt();
+        spread_line[i] = Some(a[i] - beta * b[i]);
+        z_line[i] = Some(if sd > 0.0 { ((a[i] - beta * b[i]) - ms) / sd } else { 0.0 });
+    }
+    // The gate: autocorrelation of the spread's first difference at the tail.
+    let tail = &spread_line[n.saturating_sub(window).max(window - 1)..];
+    let diffs: Vec<f64> = tail.windows(2).filter_map(|w| w[1].zip(w[0]).map(|(x, y)| x - y)).collect();
+    let gate = if diffs.len() > 10 {
+        let m = diffs.iter().sum::<f64>() / diffs.len() as f64;
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for j in 1..diffs.len() {
+            num += (diffs[j] - m) * (diffs[j - 1] - m);
+        }
+        for d in &diffs {
+            den += (d - m).powi(2);
+        }
+        if den > 0.0 { num / den } else { 0.0 }
+    } else {
+        0.0
+    };
+    (z_line, spread_line, gate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cointegrated_pair_mean_reverts_and_the_gate_knows() {
+        // b wanders; a tracks it with noise: the spread is stationary.
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        let mut price = 50.0;
+        let mut state: u64 = 99;
+        for i in 0..120 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let step = ((state >> 33) % 100) as f64 / 10000.0 - 0.005;
+            price *= 1.0 + step;
+            b.push(price);
+            let noise = (((state >> 17) % 100) as f64 / 10000.0 - 0.005) * 0.2;
+            a.push(price * 2.0 * (1.0 + noise));
+        }
+        let (z, _spread, gate) = pair_spread(&a, &b, 60);
+        let valid = z.iter().flatten().count();
+        assert!(valid > 40, "the z line exists: {valid}");
+        // The hedge ratio is ~2: the spread's z stays bounded, and the
+        // difference-autocorrelation is low (mean-reverting).
+        let max_z = z.iter().flatten().map(|v| v.abs()).fold(0.0f64, f64::max);
+        assert!(max_z < 4.0, "a hedged spread stays home: {max_z}");
+        assert!(gate < 0.3, "the gate reads mean reversion: {gate}");
+        // Two INDEPENDENT walks: no mean reversion, the gate says so.
+        let mut c = Vec::new();
+        let mut price2 = 80.0;
+        for _ in 0..120 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            price2 *= 1.0 + (((state >> 33) % 100) as f64 / 10000.0 - 0.005);
+            c.push(price2);
+        }
+        let (_, _, gate2) = pair_spread(&a, &c, 60);
+        assert!(gate2 > gate, "independent walks read worse: {gate2} vs {gate}");
+    }
 
     #[test]
     fn the_zscore_is_sigmas_from_home() {

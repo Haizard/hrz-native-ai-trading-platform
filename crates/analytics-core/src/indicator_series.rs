@@ -163,6 +163,10 @@ pub fn indicator_series(concept: &str, candles: &[Candle]) -> Option<IndicatorSe
         "indicators.kalman" => kalman_overlay(candles),
         "indicators.changepoint" => changepoint_pane(candles),
         "indicators.entropy" => entropy_pane(candles),
+        "indicators.bayesian_drift" => bayesian_pane(candles),
+        "indicators.ar_forecast" => ar_pane(candles),
+        "indicators.garch" => garch_pane(candles),
+        "indicators.hmm" => hmm_pane(candles),
         "indicators.macd" => macd_pane(candles),
         "indicators.atr" => atr_pane(candles),
         "indicators.ema" => ema_overlay(candles),
@@ -847,6 +851,124 @@ fn entropy_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         target: SeriesTarget::Pane,
         fills: Vec::new(),
     })
+}
+
+/// The Bayesian drift: the posterior mean with the 95% band (mean ± 2 sd).
+fn bayesian_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let (means, sds) = crate::indicators::quant2::bayesian_drift(&closes, 0.01);
+    if means.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    let upper: Vec<Option<f64>> = means.iter().zip(&sds).map(|(m, s)| m.zip(*s).map(|(m, s)| m + 2.0 * s)).collect();
+    let lower: Vec<Option<f64>> = means.iter().zip(&sds).map(|(m, s)| m.zip(*s).map(|(m, s)| m - 2.0 * s)).collect();
+    Some(IndicatorSeries {
+        label: "Bayesian Drift".to_string(),
+        scale: SeriesScale::Auto,
+        levels: vec![0.0],
+        lines: vec![SeriesLine { name: "drift".to_string(), color: PRED_VIOLET, values: means }],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: vec![SeriesFill {
+            name: "95% band".to_string(),
+            color: 0xa78bfa,
+            upper,
+            lower,
+        }],
+    })
+}
+
+/// The AR(2) one-step forecast of the next return.
+fn ar_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let values = crate::indicators::quant2::ar2_forecast(&closes, 120);
+    if values.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "AR(2) Forecast".to_string(),
+        scale: SeriesScale::Auto,
+        levels: vec![0.0],
+        lines: vec![SeriesLine { name: "forecast".to_string(), color: 0x22d3ee, values }],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// GARCH(1,1) volatility.
+fn garch_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let values = crate::indicators::quant2::garch(&closes, 60, 0.1, 0.85);
+    if values.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "GARCH(1,1)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: Vec::new(),
+        lines: vec![SeriesLine { name: "sigma".to_string(), color: 0xf59e0b, values }],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// The HMM volatile-state posterior, fixed 0..1 with the 0.5 line.
+fn hmm_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let values = crate::indicators::quant2::hmm_regime(&closes, 120);
+    if values.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "HMM Regime".to_string(),
+        scale: SeriesScale::Fixed { min: 0.0, max: 1.0 },
+        levels: vec![0.5],
+        lines: vec![SeriesLine { name: "p(volatile)".to_string(), color: 0xfb7185, values }],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// The pair spread's z-score pane, computed by the GATEWAY (it is the one
+/// concept that takes two instruments): the line, the ±2 bands, the
+/// zone-entry markers, and the mean-reversion gate riding in the label.
+pub fn pair_series(z_line: &[Option<f64>], gate: f64, label: String) -> IndicatorSeries {
+    let mut markers = Vec::new();
+    for i in 1..z_line.len() {
+        if let (Some(p), Some(c)) = (z_line[i - 1], z_line[i]) {
+            if p >= -2.0 && c < -2.0 {
+                markers.push(SeriesMarker { at: i, value: c, kind: "bullish".to_string(), label: "z<-2".to_string() });
+            } else if p <= 2.0 && c > 2.0 {
+                markers.push(SeriesMarker { at: i, value: c, kind: "bearish".to_string(), label: "z>2".to_string() });
+            }
+        }
+    }
+    IndicatorSeries {
+        label,
+        scale: SeriesScale::Auto,
+        levels: vec![2.0, -2.0, 0.0],
+        lines: vec![SeriesLine {
+            name: format!("spread z (gate {gate:.2})"),
+            color: PRED_VIOLET,
+            values: z_line.to_vec(),
+        }],
+        segments: Vec::new(),
+        markers,
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    }
 }
 
 /// The Guppy ribbon (GMMA) on the price plot: the short group (3, 5, 8, 10,

@@ -5639,7 +5639,8 @@ function createChartPane(root, hooks = {}) {
     const next = new Map();
     await Promise.all(wanted.map(async (c) => {
       try {
-        const body = await api(`/indicator-series?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&concept=${encodeURIComponent(c.id)}`);
+        const pairParam = c.id === "indicators.pairs" ? `&symbol2=${encodeURIComponent(pairSymbol)}` : "";
+        const body = await api(`/indicator-series?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&concept=${encodeURIComponent(c.id)}${pairParam}`);
         if (body && body.spec && Array.isArray(body.times)) next.set(c.id, body);
       } catch {
         // A pane that cannot compute over this window is simply absent --
@@ -5805,6 +5806,12 @@ function createChartPane(root, hooks = {}) {
   })();
   let conceptFilter = "";
 
+  /// The pairs concept's second instrument, persisted. The default pairs
+  /// the chart's venue major: BTC against ETH.
+  let pairSymbol = (() => {
+    try { return localStorage.getItem("atp.pairSymbol") || "ETHUSDT"; } catch { return "ETHUSDT"; }
+  })();
+
   function conceptChips(c) {
     const chips = [];
     if (c.pane) chips.push("pane");
@@ -5833,6 +5840,22 @@ function createChartPane(root, hooks = {}) {
     row.append(box);
     const name = Object.assign(document.createElement("span"), { className: "conceptName", textContent: c.name });
     row.append(name);
+    if (c.id === "indicators.pairs") {
+      const input = Object.assign(document.createElement("input"), {
+        className: "pairInput",
+        type: "text",
+        value: pairSymbol,
+        title: "The second instrument of the pair",
+        size: 8,
+      });
+      input.addEventListener("click", (e) => e.stopPropagation());
+      input.addEventListener("change", () => {
+        pairSymbol = input.value.trim().toUpperCase() || "ETHUSDT";
+        try { localStorage.setItem("atp.pairSymbol", pairSymbol); } catch {}
+        refreshIndicatorSeries().then(() => refresh && refresh());
+      });
+      row.append(input);
+    }
     for (const chip of conceptChips(c)) {
       row.append(Object.assign(document.createElement("span"), { className: `conceptChip ${chip}`, textContent: chip }));
     }

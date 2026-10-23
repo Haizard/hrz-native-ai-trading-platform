@@ -454,6 +454,83 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         }
     }
 
+    // -- The Bayesian drift: the 95% band excluding zero (the drift is real,
+    // in the band's own direction).
+    if n > 30 {
+        let (means, sds) = crate::indicators::quant2::bayesian_drift(&closes, 0.01);
+        if let (Some(m), Some(sd)) = (means[n - 1], sds[n - 1]) {
+            let (Some(pm), Some(psd)) = (means[n - 2], sds[n - 2]) else { unreachable!() };
+            let now_bull = m - 2.0 * sd > 0.0;
+            let now_bear = m + 2.0 * sd < 0.0;
+            let was_bull = pm - 2.0 * psd > 0.0;
+            let was_bear = pm + 2.0 * psd < 0.0;
+            if now_bull && !was_bull {
+                push(EventKind::BayesianDriftShift, Some(Side::Buy), Some(m));
+            } else if now_bear && !was_bear {
+                push(EventKind::BayesianDriftShift, Some(Side::Sell), Some(m));
+            }
+        }
+    }
+
+    // -- The AR(2) forecast crossing zero.
+    if n > 125 {
+        let v = crate::indicators::quant2::ar2_forecast(&closes, 120);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p <= 0.0 && c > 0.0 {
+                push(EventKind::ArForecastCross, Some(Side::Buy), Some(c));
+            } else if p >= 0.0 && c < 0.0 {
+                push(EventKind::ArForecastCross, Some(Side::Sell), Some(c));
+            }
+        }
+    }
+
+    // -- GARCH volatility entering its own top decile (a 120-rank).
+    if n > 130 {
+        let closes2: Vec<f64> = candles.iter().map(|c| c.close).collect();
+        let v = crate::indicators::quant2::garch(&closes2, 60, 0.1, 0.85);
+        if let Some(curr) = v[n - 1] {
+            let window: Vec<f64> = v[n.saturating_sub(120)..n].iter().flatten().copied().collect();
+            if window.len() >= 60 {
+                let below = window.iter().filter(|w| **w <= curr).count();
+                let rank = below as f64 / window.len() as f64;
+                let prev_rank_below = window[..window.len() - 1].iter().filter(|w| **w <= v[n - 2].unwrap_or(curr)).count();
+                let prev_rank = prev_rank_below as f64 / (window.len() - 1).max(1) as f64;
+                if rank >= 0.9 && prev_rank < 0.9 {
+                    push(EventKind::GarchRegimeShift, None, Some(rank));
+                }
+            }
+        }
+    }
+
+    // -- The HMM volatile state crossing 0.5.
+    if n > 125 {
+        let v = crate::indicators::quant2::hmm_regime(&closes, 120);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p < 0.5 && c >= 0.5 {
+                push(EventKind::HmmRegimeShift, None, Some(c));
+            } else if p >= 0.5 && c < 0.5 {
+                push(EventKind::HmmRegimeShift, None, Some(c));
+            }
+        }
+    }
+
+    // -- The Bollinger mean reversion: a touch of the outer band that
+    // closes back INSIDE (the reversion entry, the band's other use).
+    if n > 22 {
+        let bands = bollinger(&closes, 20, 2.0);
+        if let Some(curr) = bands[n - 1] {
+            let touched_up = candles[n - 1].high > curr.upper && closes[n - 1] < curr.upper;
+            let touched_lo = candles[n - 1].low < curr.lower && closes[n - 1] > curr.lower;
+            let prev_inside = closes[n - 2] <= bands[n - 2].map(|b| b.upper).unwrap_or(f64::MAX)
+                && closes[n - 2] >= bands[n - 2].map(|b| b.lower).unwrap_or(f64::MIN);
+            if touched_up && prev_inside {
+                push(EventKind::BollingerReversion, Some(Side::Sell), Some(curr.upper));
+            } else if touched_lo && prev_inside {
+                push(EventKind::BollingerReversion, Some(Side::Buy), Some(curr.lower));
+            }
+        }
+    }
+
     // -- MACD family consensus: EVERY ribbon line on the same side of zero.
     // The slowest pair (24, 48) is valid from bar 47; the consensus's ENTRY
     // is the event (being in it is not), so detection must start exactly

@@ -275,24 +275,24 @@ Plus `order_flow.delta_shift` in the registry. **Score: 9 ✅ / 15 ⚠️ / 2 �
 
 | # | Concept | Status | # | Concept | Status |
 |---|---------|--------|---|---------|--------|
-| 1 | Mean reversion | ⚠️ no z-score yet | 16 | ARIMA | ❌ |
-| 2 | Statistical arbitrage | ❌ | 17 | GARCH | ❌ |
-| 3 | Pairs trading | ❌ | 18 | Extreme-value | ❌ |
-| 4 | Cointegration | ❌ | 19 | Distribution-based | ❌ |
+| 1 | Mean reversion | ✅ `indicators.zscore` | 16 | ARIMA | ❌ |
+| 2 | Statistical arbitrage | ❌ | 17 | GARCH | ✅ `indicators.garch` (1,1 canonical) |
+| 3 | Pairs trading | ✅ `indicators.pairs` (Engle-Granger, gate in the label) | 18 | Extreme-value | ❌ |
+| 4 | Cointegration | ✅ same | 19 | Distribution-based | ❌ |
 | 5 | Z-score reversion | ✅ `indicators.zscore` | 20 | Residual reversion | ❌ |
-| 6 | Bollinger mean reversion | ⚠️ bands exist | 21 | Spread trading | ❌ |
-| 7 | Time-series momentum | ⚠️ no ROC yet | 22 | Correlation breakdown | ❌ |
-| 8 | Cross-sectional momentum | ❌ multi-symbol | 23 | Lead-lag | ❌ |
+| 6 | Bollinger mean reversion | ✅ `BollingerReversion` on `indicators.bollinger` | 21 | Spread trading | ⚠️ the spread exists (pairs); the strategy is composition |
+| 7 | Time-series momentum | ✅ `indicators.roc` | 22 | Correlation breakdown | ⚠️ pairs infrastructure exists; the event missing |
+| 8 | Cross-sectional momentum | ❌ multi-symbol | 23 | Lead-lag | ⚠️ same |
 | 9 | Trend factor models | ❌ | 24 | Entropy regime | ✅ `indicators.entropy` |
 | 10 | Factor-based | ❌ | 25 | Change-point | ✅ `indicators.changepoint` (CUSUM) |
 | 11 | Kalman filter | ✅ `indicators.kalman` (local-level) | 26 | Volatility clustering | ⚠️ ATR family shows it |
-| 12 | HMM regime | ❌ | 27 | Robust optimization | ➖ portfolio |
-| 13 | Bayesian models | ❌ | 28 | Walk-forward | ✅ RSI-PCA + backtester |
+| 12 | HMM regime | ✅ `indicators.hmm` (2-state Gaussian, EM) | 27 | Robust optimization | ➖ portfolio |
+| 13 | Bayesian models | ✅ `indicators.bayesian_drift` (conjugate posterior) | 28 | Walk-forward | ✅ RSI-PCA + backtester |
 | 14 | Monte Carlo | ✅ `forecast.rs` cone | 29 | Ensemble signals | ✅ the composer |
-| 15 | Autoregressive | ❌ | 30 | Meta-labeling | ❌ |
+| 15 | Autoregressive | ✅ `indicators.ar_forecast` (AR(2) OLS) | 30 | Meta-labeling | ❌ |
 | — | **Predictive PCA model** | ✅ `indicators.rsi_pca` | | | |
 
-**Score: 8 ✅ / 4 ⚠️ / 17 ❌ / 1 ➖**
+**Score: 15 ✅ / 11 ⚠️ / 3 ❌ / 1 ➖**
 
 ## 13. Algorithmic and AI
 

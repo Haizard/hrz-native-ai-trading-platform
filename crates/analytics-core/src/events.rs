@@ -384,6 +384,17 @@ pub enum EventKind {
     ChangePoint,
     /// Return entropy entering the disorder or order regime.
     EntropyRegimeShift,
+    /// The Bayesian drift's 95% band excluding zero.
+    BayesianDriftShift,
+    /// The AR(2) forecast crossing zero.
+    ArForecastCross,
+    /// GARCH volatility entering its own top decile.
+    GarchRegimeShift,
+    /// The HMM volatile-state posterior crossing 0.5.
+    HmmRegimeShift,
+    /// A touch of the Bollinger band that closes back inside -- the
+    /// reversion entry.
+    BollingerReversion,
 }
 
 impl EventKind {
@@ -546,11 +557,16 @@ impl EventKind {
             Self::KalmanCross => "kalman_cross",
             Self::ChangePoint => "change_point",
             Self::EntropyRegimeShift => "entropy_regime_shift",
+            Self::BayesianDriftShift => "bayesian_drift_shift",
+            Self::ArForecastCross => "ar_forecast_cross",
+            Self::GarchRegimeShift => "garch_regime_shift",
+            Self::HmmRegimeShift => "hmm_regime_shift",
+            Self::BollingerReversion => "bollinger_reversion",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 155] = [
+    pub const ALL: [Self; 160] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -706,6 +722,11 @@ impl EventKind {
         Self::KalmanCross,
         Self::ChangePoint,
         Self::EntropyRegimeShift,
+        Self::BayesianDriftShift,
+        Self::ArForecastCross,
+        Self::GarchRegimeShift,
+        Self::HmmRegimeShift,
+        Self::BollingerReversion,
     ];
 }
 

@@ -265,6 +265,8 @@ pub struct IndicatorSeriesQuery {
     pub timeframe: String,
     /// The pane concept (`indicators.rsi` and friends; required).
     pub concept: String,
+    /// The second instrument, for the pairs concept only.
+    pub symbol2: Option<String>,
     /// How many bars to compute over (default 500, capped at 1000).
     pub limit: Option<usize>,
 }
@@ -310,6 +312,45 @@ pub async fn indicator_series(
         .await
         .map_err(|e| ApiError::unavailable(format!("no candles for {symbol}: {e}")))?;
     let candles = window.candles;
+    // The pairs concept is the one two-instrument case: fetch the second
+    // series, align by open_time, and the spread z-score IS the pane. The
+    // mean-reversion gate rides in the line's own name -- a pair that does
+    // not mean-revert is two prices, and the label says so.
+    if query.concept == "indicators.pairs" {
+        let symbol2 = query
+            .symbol2
+            .as_deref()
+            .ok_or_else(|| ApiError::bad_request("PAIR_INCOMPLETE", "the pairs concept needs `symbol2`"))?
+            .to_uppercase();
+        let window2 = state
+            .windows
+            .candles_capped(&symbol2, tf, from_ns, to_ns, limit)
+            .await
+            .map_err(|e| ApiError::unavailable(format!("no candles for {symbol2}: {e}")))?;
+        let candles2 = window2.candles;
+        // Align by open_time: only bars BOTH instruments printed.
+        let times2: std::collections::BTreeMap<i64, f64> = candles2.iter().map(|c| (c.open_time, c.close)).collect();
+        let mut times = Vec::new();
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        for c in &candles {
+            if let Some(close2) = times2.get(&c.open_time) {
+                times.push(c.open_time);
+                a.push(c.close);
+                b.push(*close2);
+            }
+        }
+        if a.len() < 80 {
+            return Err(ApiError::unavailable(format!("only {} shared bars for {symbol}/{symbol2}", a.len())));
+        }
+        let (z_line, _spread, gate) = analytics_core::indicators::quant::pair_spread(&a, &b, 60);
+        let spec = analytics_core::indicator_series::pair_series(
+            &z_line,
+            gate,
+            format!("{symbol}/{symbol2} spread"),
+        );
+        return Ok(Json(IndicatorSeriesResponse { symbol, times, spec }));
+    }
     let spec = analytics_core::indicator_series::indicator_series(&query.concept, &candles)
         .ok_or_else(|| ApiError::bad_request("SERIES_UNAVAILABLE", format!("`{}` produced no series over this window", query.concept)))?;
     Ok(Json(IndicatorSeriesResponse {
