@@ -351,6 +351,7 @@ mod tests {
     fn state_with(base_url: &str, cache: TickerCache) -> AppState {
         let supervisor = Arc::new(crate::bots::BotSupervisor::new(crate::bots::FeedMode::Off));
         AppState {
+            econ: crate::econ_routes::EconStore::default(),
             db: None,
             agent: None,
             skills: Arc::new(ai_agent::SkillLibrary::new()),

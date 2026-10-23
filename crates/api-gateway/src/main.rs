@@ -141,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let state = AppState {
+        econ: api_gateway::econ_routes::EconStore::default(),
         db,
         agent,
         skills: Arc::new(skills),
@@ -213,6 +214,9 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // The econ store is shared with the refresh task BEFORE the router
+    // consumes the state.
+    let econ_store = state.econ.clone();
     let app = router(state);
 
     let addr: SocketAddr = std::env::var("BIND_ADDR")
@@ -220,6 +224,23 @@ async fn main() -> anyhow::Result<()> {
         .parse()?;
 
     info!(%addr, "api-gateway listening");
+    // The economic engine's first fetch: NFP and CPI on boot, then every
+    // six hours. A failed fetch logs and retries on the next tick -- the
+    // routes answer honestly empty rather than inventing a release.
+    {
+        let store = econ_store;
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = api_gateway::econ_routes::refresh_releases(&store, "nfp").await {
+                    tracing::warn!("econ refresh (nfp): {e}");
+                }
+                if let Err(e) = api_gateway::econ_routes::refresh_releases(&store, "cpi").await {
+                    tracing::warn!("econ refresh (cpi): {e}");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+            }
+        });
+    }
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())

@@ -34,6 +34,7 @@ pub mod backfill;
 pub mod broker;
 #[cfg(feature = "net")]
 pub mod deriv;
+pub mod econ;
 #[cfg(feature = "net")]
 pub mod deriv_trade;
 pub mod composer;

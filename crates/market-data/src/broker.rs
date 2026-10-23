@@ -43,6 +43,10 @@ impl DataChannels {
     pub const LIQUIDATIONS: Self = Self(1 << 6);
     /// Price quotes without a real trade behind them (tick streams).
     pub const TICK_QUOTES: Self = Self(1 << 7);
+    /// Macroeconomic context (economic releases as market catalysts). A
+    /// synthetic index's price is algorithmic -- macro is UNDEFINED for it,
+    /// which is the taxonomy's whole point.
+    pub const MACRO: Self = Self(1 << 8);
 
     /// The union of two sets.
     #[must_use]
@@ -138,10 +142,12 @@ pub struct BinancePlugin;
 const BINANCE_PRODUCTS: &[Product] = &[
             Product {
                 id: "spot",
+                // Crypto trades macro through USD, yields, and risk appetite.
                 channels: DataChannels::CANDLES
                     .or(DataChannels::TRADES)
                     .or(DataChannels::TRADES_AGGRESSOR)
-                    .or(DataChannels::DEPTH),
+                    .or(DataChannels::DEPTH)
+                    .or(DataChannels::MACRO),
                 execution: ExecutionModel::SpotOrders,
                 attribution: AttributionModel::None,
             },
@@ -153,7 +159,8 @@ const BINANCE_PRODUCTS: &[Product] = &[
                     .or(DataChannels::DEPTH)
                     .or(DataChannels::FUNDING)
                     .or(DataChannels::OPEN_INTEREST)
-                    .or(DataChannels::LIQUIDATIONS),
+                    .or(DataChannels::LIQUIDATIONS)
+                    .or(DataChannels::MACRO),
                 execution: ExecutionModel::FuturesOrders,
                 attribution: AttributionModel::None,
             },
@@ -180,15 +187,17 @@ const DERIV_PRODUCTS: &[Product] = &[
                 id: "synthetic",
                 // Synthetic indices are price quotes from a random engine:
                 // candles derivable from ticks, but no real trades, no
-                // aggressor side, no book. Order flow is UNDEFINED here.
+                // aggressor side, no book, and NO MACRO -- a random engine
+                // does not read the BLS, and pretending otherwise is the
+                // category error the taxonomy exists to prevent.
                 channels: DataChannels::CANDLES.or(DataChannels::TICK_QUOTES),
                 execution: ExecutionModel::Contracts,
                 attribution: AttributionModel::ReferralAndAppTag,
             },
             Product {
                 id: "forex-cfd",
-                // Forex CFD ticks: no centralized volume; tick quotes only.
-                channels: DataChannels::CANDLES.or(DataChannels::TICK_QUOTES),
+                // Forex CFDs trade the dollar's own world: macro applies.
+                channels: DataChannels::CANDLES.or(DataChannels::TICK_QUOTES).or(DataChannels::MACRO),
                 execution: ExecutionModel::Contracts,
                 attribution: AttributionModel::ReferralAndAppTag,
             },

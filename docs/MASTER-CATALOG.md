@@ -341,8 +341,12 @@ drift detection — the AI layer's own roadmap, tracked in `docs/09`.
 
 ## 16. News, Macro and Fundamental
 
-**All ➖ data-gated** — no economic-calendar, earnings, or news feed exists in the market-data
-layer. Adding the feed is a prerequisite to every item here.
+The Economic Event Intelligence Engine landed 2026-10-23 (BLS Public Data API): the releases with
+the normalized surprise, the composite macro bias, the market-reaction report, and the forecast
+override that ends look-ahead bias. **The venue gate is the doctrine's own**: forex/crypto/basket
+get the macro channel; Deriv synthetics get `MACRO_UNDEFINED` — a random engine does not read the
+BLS. ✅ NFP (`econ.nfp`) · ✅ CPI (`econ.cpi`) · ✅ surprise-vs-consensus (the sigma model) ·
+⚠️ FOMC (needs a Fed source) · ⚠️ news sentiment (needs a news feed) · the rest stay gated.
 
 ## 17. Options, Volatility and Derivatives
 

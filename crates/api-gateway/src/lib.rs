@@ -76,6 +76,7 @@ pub mod pine_cheatsheet;
 pub mod trade_routes;
 pub mod composition_codegen;
 pub mod concept_routes;
+pub mod econ_routes;
 pub mod pine_codegen;
 pub mod provider_routes;
 pub mod rate_limit;
@@ -97,6 +98,8 @@ pub mod ws;
 /// Shared application state handed to every route handler.
 #[derive(Clone)]
 pub struct AppState {
+    /// The economic event engine's store.
+    pub econ: econ_routes::EconStore,
     /// Database handle. `None` when running without a database configured.
     pub db: Option<Arc<Database>>,
     /// The agent. `None` when Bedrock is not configured.
@@ -292,6 +295,10 @@ pub fn router(state: AppState) -> Router {
         .route("/concepts", get(concept_routes::concepts))
         .route("/concept-events", get(concept_routes::concept_events))
         .route("/concept-events/scan", get(concept_routes::scan))
+        .route("/econ/latest", get(econ_routes::latest))
+        .route("/econ/next", get(econ_routes::next))
+        .route("/econ/forecast", axum::routing::post(econ_routes::forecast_override))
+        .route("/econ/reaction", get(econ_routes::reaction))
         .route("/indicator-series", get(concept_routes::indicator_series))
         .route("/concept-events/smt", get(concept_routes::smt))
         .route("/compositions/backtest", post(concept_routes::backtest))

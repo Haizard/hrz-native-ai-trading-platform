@@ -52,6 +52,8 @@ pub enum Library {
     Fibonacci,
     /// Technical indicators and their compositions (RSI-PCA and friends).
     Indicators,
+    /// Economic events as market catalysts (BLS releases and friends).
+    Econ,
 }
 
 impl Library {
@@ -70,6 +72,7 @@ impl Library {
             Self::Harmonics => "harmonics",
             Self::Fibonacci => "fib",
             Self::Indicators => "indicators",
+            Self::Econ => "econ",
         }
     }
 }
@@ -433,6 +436,30 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             pane: false,
             overlay: false,
             event_kinds: &[EventKind::JudasSwing],
+        },
+        ConceptSpec {
+            id: "econ.nfp",
+            version: "1.0.0",
+            library: Library::Econ,
+            name: "Non-Farm Payrolls",
+            description: "the Employment Situation's headline against expectation -- the surprise in sigmas, the macro bias in words, the market's own reaction as confirmation",
+            parameters: &[],
+            required_channels: DataChannels::MACRO,
+            pane: false,
+            overlay: false,
+            event_kinds: &[],
+        },
+        ConceptSpec {
+            id: "econ.cpi",
+            version: "1.0.0",
+            library: Library::Econ,
+            name: "CPI Release",
+            description: "the inflation print against expectation -- the surprise, the bias, and the rule that the market's reaction is the confirmation, never the headline",
+            parameters: &[],
+            required_channels: DataChannels::MACRO,
+            pane: false,
+            overlay: false,
+            event_kinds: &[],
         },
         ConceptSpec {
             id: "smc.power_of_three",

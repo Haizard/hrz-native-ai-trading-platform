@@ -648,8 +648,8 @@ mod tests {
         assert!(deriv.len() < spot.len(), "synthetics serve fewer concepts");
         assert_eq!(
             spot.len() - deriv.len(),
-            1,
-            "exactly delta_shift separates them"
+            3,
+            "delta_shift (aggressor data) and the two MACRO releases separate them -- a synthetic index reads neither order flow nor the BLS"
         );
     }
 }
