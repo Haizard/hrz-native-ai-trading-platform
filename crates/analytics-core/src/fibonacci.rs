@@ -114,6 +114,18 @@ pub fn detect_fibonacci(candles: &[Candle], symbol: &str, lookback: usize) -> Ve
         Some(gp_lo.min(gp_hi)),
         Some(gp_lo.max(gp_hi)),
     );
+    // The OTE band: ICT's optimal trade entry, the 0.62-0.79 retracement of
+    // the newest swing -- wider than the golden pocket and carrying the
+    // entry's own name.
+    let ote_lo = level_at(&swing, 0.79);
+    let ote_hi = level_at(&swing, 0.62);
+    push(
+        EventKind::OptimalTradeEntry,
+        Some(if swing.up { Side::Buy } else { Side::Sell }),
+        (ote_lo + ote_hi) / 2.0,
+        Some(ote_lo.min(ote_hi)),
+        Some(ote_lo.max(ote_hi)),
+    );
     // The extensions beyond the swing.
     for ratio in EXTENSIONS {
         let level = swing.to + (swing.to - swing.from) * (ratio - 1.0);
@@ -242,6 +254,17 @@ mod tests {
             .map(|e| e.price)
             .collect::<Vec<_>>();
         assert!((ext[0] - 115.264).abs() < 1e-9, "the 1.272: {}", ext[0]);
+    }
+
+    #[test]
+    fn the_ote_band_is_the_062_to_079_retracement() {
+        let events = detect_fibonacci(&swing_series(), "T", 3);
+        let ote = events.iter().find(|e| e.kind == EventKind::OptimalTradeEntry).expect("the OTE band");
+        // The swing 100 -> 112: 0.62 retrace = 112 - 12*0.62 = 104.56;
+        // 0.79 = 112 - 12*0.79 = 102.52.
+        assert!((ote.zone_high.expect("hi") - 104.56).abs() < 0.01, "the 0.62 edge");
+        assert!((ote.zone_low.expect("lo") - 102.52).abs() < 0.01, "the 0.79 edge");
+        assert_eq!(ote.side, Some(crate::types::Side::Buy), "an up-leg's OTE is buy-side");
     }
 
     #[test]

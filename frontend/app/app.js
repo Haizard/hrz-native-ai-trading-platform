@@ -5686,7 +5686,7 @@ function createChartPane(root, hooks = {}) {
   /// (origin to end), structure is dashed segments (swing to break), candle
   /// patterns are names on their own candle. Sides carry the color; the
   /// shape carries the concept -- never one line for everything.
-  const CONCEPT_ZONE_IDS = new Set(["smc.fvg", "smc.ifvg", "smc.bpr", "smc.order_block", "smc.breaker_block", "sd.zone_tested", "smc.premium_discount", "smc.mitigation_block", "smc.rejection_block", "smc.equal_levels", "session.london_killzone", "session.new_york_killzone", "session.asian_range", "volume.value_area", "volume.hvn", "volume.lvn", "fib.golden_pocket", "fib.confluence", "session.previous_day_levels", "session.previous_week_levels", "session.previous_month_levels"]);
+  const CONCEPT_ZONE_IDS = new Set(["smc.fvg", "smc.ifvg", "smc.bpr", "smc.order_block", "smc.breaker_block", "sd.zone_tested", "smc.premium_discount", "smc.mitigation_block", "smc.rejection_block", "smc.equal_levels", "session.london_killzone", "session.new_york_killzone", "session.asian_range", "volume.value_area", "volume.hvn", "volume.lvn", "fib.golden_pocket", "fib.confluence", "session.previous_day_levels", "session.previous_week_levels", "session.previous_month_levels", "fib.ote", "smc.internal_range_liquidity", "smc.external_range_liquidity", "smc.judas_swing", "smc.power_of_three"]);
   const BULL = 0xcc26a69a; // teal, 0xAARRGGBB
   const BEAR = 0xccef5350; // red
   const NEUT = 0xcc90a4ae; // slate (premium/discount, sweeps)
@@ -5704,7 +5704,11 @@ function createChartPane(root, hooks = {}) {
     const out = [];
     for (const e of conceptEvents) {
       if (!enabledConcepts.has(e.concept_id)) continue;
-      const short = e.concept_id.split(".")[1] || e.concept_id;
+      // The liquidity pools wear their ICT names: equal highs are buy-side
+      // liquidity (the stops resting above), equal lows sell-side.
+      const short = e.concept_id === "smc.equal_levels"
+        ? (e.direction === "bullish" ? "BSL" : "SSL")
+        : e.concept_id.split(".")[1] || e.concept_id;
       const color = conceptColor(e);
       const fromNs = e.bars && e.bars[0] ? e.bars[0] : e.event_time_ns;
       const toNs = e.event_time_ns;

@@ -442,13 +442,13 @@ its own battery); TSI/Awesome/A-D/CMF/MFI/anchored-VWAP/chandelier remain as the
 14. **Previous day/week/month H/L ✅ · monthly open ✅** — the closed period's range, marked at the roll
 15. **Round numbers ✅** (`pa.round_numbers`) — the psychological grid, crossings in the cross's direction
 
-## Battery C — SMC depth
+## Battery C — SMC depth ✅ DONE 2026-10-23
 
-16. **IRL/ERL** (internal vs external range liquidity framing over the swing tree)
-17. **Standalone displacement event** (already computed inside OB detection — surface it)
-18. **OTE as the full 0.62–0.79 band** (widens the golden pocket's frame with a second band)
-19. **Judas Swing · Power of Three** (session-anchored swing models)
-20. **BSL/SSL explicit level events** (side-labelled pools over equal_levels)
+16. **IRL/ERL** ✅ — `smc.external_range_liquidity` marks the dealing range's extremes (lookback-5), `smc.internal_range_liquidity` the minor pools resting inside it
+17. **Displacement** ✅ (`smc.displacement`) — the energetic candle the OB machinery always read, surfaced as its own event with the body ratio
+18. **OTE** ✅ (`fib.ote`) — the full 0.62–0.79 band of the newest swing, zone-rendered
+19. **Judas Swing ✅ · Power of Three ✅** — session-anchored: the Asian-range sweep that closes back in, and the displaced expansion through the far side
+20. **BSL/SSL** ✅ — the equal-levels pools always carried the side; the chart now labels them by it (equal highs = BSL, equal lows = SSL)
 
 ## Battery D — regime and multi-timeframe
 

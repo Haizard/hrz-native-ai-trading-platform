@@ -326,6 +326,22 @@ pub enum EventKind {
     /// A swing-anchored trendline, validated by its third touch, broken by
     /// the newest close.
     TrendlineBreak,
+    /// ICT's energetic candle: a body at least twice the average, closing at
+    /// a fresh extreme.
+    Displacement,
+    /// The 0.62-0.79 retracement band of the newest swing.
+    OptimalTradeEntry,
+    /// A minor-swing pool INSIDE the dealing range.
+    InternalRangeLiquidity,
+    /// The dealing range's own extremes.
+    ExternalRangeLiquidity,
+    /// The session-open false move: a sweep of the Asian range that closes
+    /// back inside it within the kill zone's first hour.
+    JudasSwing,
+    /// Accumulation (Asian range), manipulation (the Judas sweep),
+    /// distribution (the expansion through the far side) -- all three
+    /// phases complete in one session.
+    PowerOfThree,
 }
 
 impl EventKind {
@@ -462,11 +478,17 @@ impl EventKind {
             Self::RoundingBottomTop => "rounding_bottom_top",
             Self::BroadeningFormation => "broadening_formation",
             Self::TrendlineBreak => "trendline_break",
+            Self::Displacement => "displacement",
+            Self::OptimalTradeEntry => "optimal_trade_entry",
+            Self::InternalRangeLiquidity => "internal_range_liquidity",
+            Self::ExternalRangeLiquidity => "external_range_liquidity",
+            Self::JudasSwing => "judas_swing",
+            Self::PowerOfThree => "power_of_three",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 129] = [
+    pub const ALL: [Self; 135] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -596,6 +618,12 @@ impl EventKind {
         Self::RoundingBottomTop,
         Self::BroadeningFormation,
         Self::TrendlineBreak,
+        Self::Displacement,
+        Self::OptimalTradeEntry,
+        Self::InternalRangeLiquidity,
+        Self::ExternalRangeLiquidity,
+        Self::JudasSwing,
+        Self::PowerOfThree,
     ];
 }
 
@@ -1206,6 +1234,167 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
 }
 
 /// The session pass: kill zones and the Asian range, in the platform's own
+/// The standalone displacement: ICT's energetic candle -- a body at least
+/// twice the 14-bar average, closing at a fresh 20-bar extreme. The order
+/// block machinery has always READ this; now it is an event of its own.
+pub fn detect_displacement(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
+    let mut out = Vec::new();
+    if candles.len() < 22 {
+        return out;
+    }
+    let n = candles.len() - 1;
+    let last = &candles[n];
+    let body = (last.close - last.open).abs();
+    let mean_body: f64 = candles[n - 14..n]
+        .iter()
+        .map(|k| (k.close - k.open).abs())
+        .sum::<f64>()
+        / 14.0;
+    if mean_body <= 0.0 || body < 2.0 * mean_body {
+        return out;
+    }
+    let extreme_hi = candles[n - 20..n].iter().map(|k| k.high).fold(f64::NEG_INFINITY, f64::max);
+    let extreme_lo = candles[n - 20..n].iter().map(|k| k.low).fold(f64::INFINITY, f64::min);
+    let side = if last.close > extreme_hi {
+        Some(Side::Buy)
+    } else if last.close < extreme_lo {
+        Some(Side::Sell)
+    } else {
+        None
+    };
+    if let Some(side) = side {
+        out.push(MarketEvent {
+            kind: EventKind::Displacement,
+            symbol: symbol.to_string(),
+            timeframe: last.timeframe,
+            bar_time: last.open_time,
+            close: last.close,
+            price: last.close,
+            side: Some(side),
+            zone_low: Some(last.low),
+            zone_high: Some(last.high),
+            magnitude: Some(body / mean_body),
+            formed_at: None,
+        });
+    }
+    out
+}
+
+/// The equal-levels tolerance, shared by the pools and the IRL clusters.
+const EQUAL_TOLERANCE_ATR_CONST: f64 = 0.15;
+
+/// IRL/ERL: the dealing-range framing. The EXTERNAL range is the newest
+/// MAJOR swing (lookback 5) -- its extremes are the pools the whole move is
+/// drawn on. INTERNAL liquidity is the minor swings' clusters (lookback 2)
+/// resting INSIDE that range.
+pub fn detect_range_liquidity(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
+    let mut out = Vec::new();
+    if candles.len() < 24 {
+        return out;
+    }
+    let n = candles.len() - 1;
+    let last = &candles[n];
+    let swings = |lb: usize| -> (Vec<(usize, f64)>, Vec<(usize, f64)>) {
+        let mut highs = Vec::new();
+        let mut lows = Vec::new();
+        for i in lb..n.saturating_sub(lb) {
+            let k = &candles[i];
+            if (i - lb..=i + lb).all(|j| j == i || candles[j].high < k.high) {
+                highs.push((i, k.high));
+            }
+            if (i - lb..=i + lb).all(|j| j == i || candles[j].low > k.low) {
+                lows.push((i, k.low));
+            }
+        }
+        (highs, lows)
+    };
+    let (major_hi, major_lo) = swings(5);
+    let (minor_hi, minor_lo) = swings(2);
+    let (Some(&(range_hi_idx, range_hi)), Some(&(range_lo_idx, range_lo))) = (major_hi.last(), major_lo.last()) else {
+        return out;
+    };
+    // ERL: the range's own extremes, each once, from its anchor bar.
+    out.push(MarketEvent {
+        kind: EventKind::ExternalRangeLiquidity,
+        symbol: symbol.to_string(),
+        timeframe: last.timeframe,
+        bar_time: last.open_time,
+        close: last.close,
+        price: range_hi,
+        side: Some(Side::Buy), // buy stops rest above the range high
+        zone_low: Some(range_lo),
+        zone_high: Some(range_hi),
+        magnitude: None,
+        formed_at: Some(candles[range_hi_idx].open_time),
+    });
+    out.push(MarketEvent {
+        kind: EventKind::ExternalRangeLiquidity,
+        symbol: symbol.to_string(),
+        timeframe: last.timeframe,
+        bar_time: last.open_time,
+        close: last.close,
+        price: range_lo,
+        side: Some(Side::Sell), // sell stops rest below the range low
+        zone_low: Some(range_lo),
+        zone_high: Some(range_hi),
+        magnitude: None,
+        formed_at: Some(candles[range_lo_idx].open_time),
+    });
+    // IRL: the newest minor CLUSTER strictly inside the range -- two or more
+    // minor swings within the ATR tolerance, neither of them the range's own
+    // edges.
+    let atr14 = {
+        let start = n.saturating_sub(14);
+        candles[start..n].iter().map(|k| k.high - k.low).sum::<f64>() / (n - start).max(1) as f64
+    };
+    let tolerance = atr14 * EQUAL_TOLERANCE_ATR_CONST;
+    let cluster = |swings: &[(usize, f64)]| -> Option<(usize, f64)> {
+        let inside: Vec<(usize, f64)> = swings
+            .iter()
+            .filter(|(_, p)| *p > range_lo + tolerance && *p < range_hi - tolerance)
+            .copied()
+            .collect();
+        if inside.len() >= 2 {
+            let (a, b) = (inside[inside.len() - 2], inside[inside.len() - 1]);
+            if (a.1 - b.1).abs() <= tolerance {
+                return Some((a.0, (a.1 + b.1) / 2.0));
+            }
+        }
+        None
+    };
+    if let Some((idx, level)) = cluster(&minor_hi) {
+        out.push(MarketEvent {
+            kind: EventKind::InternalRangeLiquidity,
+            symbol: symbol.to_string(),
+            timeframe: last.timeframe,
+            bar_time: last.open_time,
+            close: last.close,
+            price: level,
+            side: Some(Side::Buy),
+            zone_low: Some(range_lo),
+            zone_high: Some(range_hi),
+            magnitude: None,
+            formed_at: Some(candles[idx].open_time),
+        });
+    }
+    if let Some((idx, level)) = cluster(&minor_lo) {
+        out.push(MarketEvent {
+            kind: EventKind::InternalRangeLiquidity,
+            symbol: symbol.to_string(),
+            timeframe: last.timeframe,
+            bar_time: last.open_time,
+            close: last.close,
+            price: level,
+            side: Some(Side::Sell),
+            zone_low: Some(range_lo),
+            zone_high: Some(range_hi),
+            magnitude: None,
+            formed_at: Some(candles[idx].open_time),
+        });
+    }
+    out
+}
+
 /// The round-number grid for a price: half the power of ten below it, so
 /// BTC at 82k reads 5,000 steps and a 1.08 pair reads 0.005 steps.
 fn round_step(price: f64) -> f64 {
@@ -1460,6 +1649,112 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
         });
     }
 
+    // -- Judas Swing and the Power of Three -----------------------------------
+    // Today's Asian range (00:00-07:00 UTC) is the accumulation. The Judas
+    // swing is the false move: within a kill zone's FIRST hour, a trade
+    // beyond the Asian range that closes back inside it. The Power of Three
+    // completes when price then expands through the FAR side with
+    // displacement.
+    let day_of = last.open_time.div_euclid(DAY_NS);
+    let asian: Vec<&Candle> = candles
+        .iter()
+        .filter(|k| {
+            k.open_time.div_euclid(DAY_NS) == day_of && ((k.open_time % DAY_NS) / HOUR_NS) < 7
+        })
+        .collect();
+    if !asian.is_empty() {
+        let asia_lo = asian.iter().map(|k| k.low).fold(f64::MAX, f64::min);
+        let asia_hi = asian.iter().map(|k| k.high).fold(f64::MIN, f64::max);
+        let newest_hour = ((last.open_time % DAY_NS) / HOUR_NS) as u32;
+        // Today's bars since the Asian window, newest first.
+        let after: Vec<&Candle> = candles
+            .iter()
+            .filter(|k| k.open_time.div_euclid(DAY_NS) == day_of && ((k.open_time % DAY_NS) / HOUR_NS) >= 7)
+            .collect();
+        // The Judas check: some bar in a kill zone's first hour (07:00 or
+        // 12:00) traded beyond the range, and the newest close is back inside.
+        let judas_high = after.iter().any(|k| {
+            let h = ((k.open_time % DAY_NS) / HOUR_NS) as u32;
+            (h == 7 || h == 12) && k.high > asia_hi
+        });
+        let judas_low = after.iter().any(|k| {
+            let h = ((k.open_time % DAY_NS) / HOUR_NS) as u32;
+            (h == 7 || h == 12) && k.low < asia_lo
+        });
+        let back_inside = last.close < asia_hi && last.close > asia_lo;
+        let prev_inside = candles[candles.len() - 2].close < asia_hi && candles[candles.len() - 2].close > asia_lo;
+        // Fire ONCE: the bar that closes back inside after the sweep.
+        if judas_high && back_inside && !prev_inside {
+            out.push(MarketEvent {
+                kind: EventKind::JudasSwing,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: asia_hi,
+                side: Some(Side::Sell), // the sweep of the high reverses down
+                zone_low: Some(asia_lo),
+                zone_high: Some(asia_hi),
+                magnitude: None,
+                formed_at: Some(asian.first().expect("checked").open_time),
+            });
+        } else if judas_low && back_inside && !prev_inside {
+            out.push(MarketEvent {
+                kind: EventKind::JudasSwing,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: asia_lo,
+                side: Some(Side::Buy), // the sweep of the low reverses up
+                zone_low: Some(asia_lo),
+                zone_high: Some(asia_hi),
+                magnitude: None,
+                formed_at: Some(asian.first().expect("checked").open_time),
+            });
+        }
+        // PO3: after a Judas sweep, the close beyond the FAR side with a
+        // displacement body (twice the average).
+        let body = (last.close - last.open).abs();
+        let last_idx = candles.len() - 1;
+        let mean_body: f64 = candles[last_idx.saturating_sub(14)..last_idx]
+            .iter()
+            .map(|k| (k.close - k.open).abs())
+            .sum::<f64>()
+            / 14.0;
+        let displaced = mean_body > 0.0 && body >= 2.0 * mean_body;
+        let prev_close = candles[candles.len() - 2].close;
+        if judas_high && displaced && last.close < asia_lo && prev_close >= asia_lo {
+            out.push(MarketEvent {
+                kind: EventKind::PowerOfThree,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: asia_lo,
+                side: Some(Side::Sell),
+                zone_low: Some(asia_lo),
+                zone_high: Some(asia_hi),
+                magnitude: Some(body / mean_body),
+                formed_at: Some(asian.first().expect("checked").open_time),
+            });
+        } else if judas_low && displaced && last.close > asia_hi && prev_close <= asia_hi {
+            out.push(MarketEvent {
+                kind: EventKind::PowerOfThree,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: asia_hi,
+                side: Some(Side::Buy),
+                zone_low: Some(asia_lo),
+                zone_high: Some(asia_hi),
+                magnitude: Some(body / mean_body),
+                formed_at: Some(asian.first().expect("checked").open_time),
+            });
+        }
+    }
+
     out
 }
 
@@ -1589,7 +1884,7 @@ pub fn detect_liquidity_family(candles: &[Candle], symbol: &str, config: &EventC
 /// failed auction: the institutions' positions got mitigated, not driven
 /// through.
 pub fn detect_smc_extended(candles: &[Candle], symbol: &str, config: &EventConfig) -> Vec<MarketEvent> {
-    const EQUAL_TOLERANCE_ATR: f64 = 0.15;
+    const EQUAL_TOLERANCE_ATR: f64 = EQUAL_TOLERANCE_ATR_CONST;
     const REJECTION_WICK_RATIO: f64 = 2.0;
 
     let mut out = Vec::new();
@@ -2566,6 +2861,8 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_liquidity_family(candles, symbol, &config));
     events.extend(detect_sessions(candles, symbol));
     events.extend(detect_round_numbers(candles, symbol));
+    events.extend(detect_displacement(candles, symbol));
+    events.extend(detect_range_liquidity(candles, symbol));
     events.extend(detect_chart_gaps(candles, symbol, &config));
     events.extend(crate::fibonacci::detect_fibonacci(candles, symbol, config.structure_lookback));
     events.extend(crate::rsi_pca::detect_rsi_pca(candles, symbol));
@@ -3061,6 +3358,104 @@ mod pattern_tests {
             ks.push(k(101.9, 103.5, 101.7, 102.4));
         }
         assert!(!kinds(&detect_patterns_and_events(&pa_series(ks))).contains(&EventKind::RectangleBreakout));
+    }
+
+    #[test]
+    fn a_displacement_is_the_energetic_candle_at_a_fresh_extreme() {
+        // 21 quiet bars, then one huge-bodied bar closing at a new high.
+        let mut ks: Vec<Candle> = (0..21).map(|_| k(100.0, 100.4, 99.6, 100.1)).collect();
+        ks.push(k(100.1, 103.0, 100.0, 102.9)); // body ~2.8 vs ~0.1 average
+        let ks = pa_series(ks);
+        let events = detect_displacement(&ks, "T");
+        let d = events.iter().find(|e| e.kind == EventKind::Displacement);
+        assert!(d.is_some(), "the energetic candle fires");
+        let d = d.expect("checked");
+        assert_eq!(d.side, Some(Side::Buy), "closing at the fresh high");
+        assert!(d.magnitude.expect("ratio") >= 2.0, "the body ratio rides along");
+        // A big body WITHOUT a fresh extreme is not displacement.
+        let mut ks2: Vec<Candle> = (0..21).map(|_| k(100.0, 102.0, 98.0, 100.5)).collect();
+        ks2.push(k(100.1, 101.0, 99.5, 100.8)); // big body but inside the range
+        let ks2 = pa_series(ks2);
+        assert!(detect_displacement(&ks2, "T").is_empty(), "no fresh extreme, no displacement");
+    }
+
+    #[test]
+    fn external_liquidity_marks_the_range_and_internal_the_pools_inside() {
+        // A major range 100..105 (lookback-5 swings), with two equal minor
+        // highs at 103 inside it.
+        let mut ks: Vec<Candle> = (0..30).map(|_| k(102.0, 102.4, 101.6, 102.0)).collect();
+        let path = [
+            (102.0, 105.0, 101.8, 104.8), // 30: the range high
+            (104.8, 104.9, 103.0, 103.4),
+            (103.4, 103.8, 102.8, 103.2),
+            (103.2, 103.4, 102.6, 103.0),
+            (103.0, 103.2, 102.4, 102.8),
+            (102.8, 103.0, 102.2, 102.6),
+            (102.6, 102.8, 101.8, 102.2),
+            (102.2, 103.0, 102.0, 102.8), // 37: minor high at 103
+            (102.8, 102.9, 102.2, 102.5),
+            (102.5, 102.7, 102.1, 102.4),
+            (102.4, 103.0, 102.2, 102.9), // 40: second minor high at 103
+            (102.9, 103.0, 102.3, 102.6),
+            (102.6, 102.8, 102.2, 102.5),
+            (102.5, 102.7, 102.1, 102.3),
+            (102.3, 102.5, 100.0, 100.3), // 44: the range low
+            (100.3, 102.0, 100.1, 101.8),
+            (101.8, 102.2, 101.5, 102.0),
+            // The lookback-5 rule needs five bars respected after the low.
+            (102.0, 102.3, 101.6, 102.1),
+            (102.1, 102.4, 101.7, 102.2),
+            (102.2, 102.5, 101.8, 102.3),
+            (102.3, 102.6, 101.9, 102.4),
+        ];
+        for (o, h, l, c) in path {
+            ks.push(k(o, h, l, c));
+        }
+        let ks = pa_series(ks);
+        let events = detect_range_liquidity(&ks, "T");
+        let erl: Vec<_> = events.iter().filter(|e| e.kind == EventKind::ExternalRangeLiquidity).collect();
+        assert_eq!(erl.len(), 2, "both range extremes marked");
+        assert!(erl.iter().any(|e| e.side == Some(Side::Buy) && (e.price - 105.0).abs() < 0.01), "buy stops above 105");
+        assert!(erl.iter().any(|e| e.side == Some(Side::Sell) && (e.price - 100.0).abs() < 0.01), "sell stops below 100");
+    }
+
+    #[test]
+    fn a_judas_swing_sweeps_the_asian_high_and_closes_back_in() {
+        // M15 bars: the Asian window is bars 0..27 (00:00-07:00), ranging
+        // 100..101. Bar 28 (07:00) sweeps to 101.5 and closes at 101.2 (out);
+        // bar 29 closes at 100.6 (back inside).
+        let mut ks: Vec<Candle> = (0..28).map(|_| k(100.5, 101.0, 100.0, 100.5)).collect();
+        ks.push(k(100.5, 101.5, 100.4, 101.2)); // the sweep, still outside
+        ks.push(k(101.2, 101.2, 100.4, 100.6)); // back inside
+        let ks = pa_series(ks);
+        let events = detect_sessions(&ks, "T");
+        let j = events.iter().find(|e| e.kind == EventKind::JudasSwing);
+        assert!(j.is_some(), "the sweep-and-return fires");
+        assert_eq!(j.expect("checked").side, Some(Side::Sell), "sweeping the high reverses down");
+        // Without the return inside, no Judas.
+        let mut ks2: Vec<Candle> = (0..28).map(|_| k(100.5, 101.0, 100.0, 100.5)).collect();
+        ks2.push(k(100.5, 101.5, 100.4, 101.3));
+        ks2.push(k(101.3, 101.6, 101.0, 101.4)); // still outside
+        let ks2 = pa_series(ks2);
+        assert!(!detect_sessions(&ks2, "T").iter().any(|e| e.kind == EventKind::JudasSwing));
+    }
+
+    #[test]
+    fn the_power_of_three_needs_all_three_phases() {
+        // Asian range 100..101 (bars 0..27); the 07:00 bar sweeps the high;
+        // later a huge bearish bar closes below the Asian low with
+        // displacement.
+        let mut ks: Vec<Candle> = (0..28).map(|_| k(100.5, 101.0, 100.0, 100.5)).collect();
+        ks.push(k(100.5, 101.5, 100.4, 101.2)); // the Judas sweep at 07:00
+        for _ in 0..6 {
+            ks.push(k(100.8, 101.1, 100.3, 100.7));
+        }
+        ks.push(k(100.7, 100.8, 98.5, 98.7)); // the displaced close through the low
+        let ks = pa_series(ks);
+        let events = detect_sessions(&ks, "T");
+        let p = events.iter().find(|e| e.kind == EventKind::PowerOfThree);
+        assert!(p.is_some(), "all three phases complete the model");
+        assert_eq!(p.expect("checked").side, Some(Side::Sell), "the manipulation was up, the distribution down");
     }
 
     #[test]
