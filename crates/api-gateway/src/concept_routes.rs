@@ -279,8 +279,8 @@ pub async fn indicator_series(
         .iter()
         .find(|c| c.id == query.concept)
         .ok_or_else(|| ApiError::bad_request("CONCEPT_UNKNOWN", format!("`{}` is not a registered concept", query.concept)))?;
-    if !spec_entry.pane {
-        return Err(ApiError::bad_request("CONCEPT_NOT_A_PANE", format!("`{}` has no indicator pane", query.concept)));
+    if !spec_entry.pane && !spec_entry.overlay {
+        return Err(ApiError::bad_request("CONCEPT_NOT_A_PANE", format!("`{}` has no indicator series", query.concept)));
     }
     let limit = query.limit.unwrap_or(500).clamp(50, 1000);
     let to_ns = crate::now_ns();

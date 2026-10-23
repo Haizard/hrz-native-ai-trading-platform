@@ -366,6 +366,11 @@ pub struct Request {
     /// Absent means no sub-panes, and an older request keeps meaning that.
     #[serde(default)]
     pub sub_panes: Vec<SubPaneSpec>,
+    /// Overlay series on the price plot itself (EMA stacks, Bollinger
+    /// bands): per-candle PRICE values the engine maps through the same
+    /// frame the candles use. Absent means none.
+    #[serde(default)]
+    pub overlay_series: Vec<OverlaySeriesSpec>,
     /// Pine-lite scripts (`docs/23`) to run over the request's candles.
     ///
     /// The engine vets nothing here -- the gateway already refused broken
@@ -447,6 +452,18 @@ pub struct SeriesLine {
     pub values: Vec<Option<f64>>,
 }
 
+/// One overlay series on the price plot: a name, a colour, and one PRICE
+/// per candle (`None` while it warms up).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverlaySeriesSpec {
+    /// The line's name, for the legend.
+    pub name: String,
+    /// 0xRRGGBB.
+    pub color: u32,
+    /// One price per candle index; `None` is a gap.
+    pub values: Vec<Option<f64>>,
+}
+
 /// A histogram for a series pane (MACD's bars and friends).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SeriesBars {
@@ -518,6 +535,7 @@ impl Default for Request {
             last_price: None,
             snap: false,
             sub_panes: Vec::new(),
+            overlay_series: Vec::new(),
             scripts: Vec::new(),
         }
     }
@@ -1022,6 +1040,9 @@ pub struct Scene {
     /// the same way one that ignored `regions` did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_panes: Vec<ScenePane>,
+    /// Overlay series mapped onto the price plot, oldest first.
+    #[serde(default)]
+    pub overlay_lines: Vec<SceneOverlayLine>,
     /// Pine-lite script panes (`docs/23`), after the built-in sub-panes.
     /// Always present and usually empty, like [`Scene::regions`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1151,6 +1172,17 @@ pub struct PaneMarker {
     pub kind: String,
     /// A short label beside the point.
     pub label: String,
+}
+
+/// One overlay series positioned on the price plot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneOverlayLine {
+    /// The line's name, for the legend.
+    pub name: String,
+    /// 0xRRGGBB.
+    pub color: u32,
+    /// The points, in canvas coordinates, oldest first.
+    pub points: Vec<Point>,
 }
 
 /// A horizontal reference line inside a sub-pane.
@@ -1528,6 +1560,7 @@ pub fn build(request: &Request) -> Scene {
         concept_shapes: Vec::new(),
         indicator: None,
         sub_panes: Vec::new(),
+        overlay_lines: Vec::new(),
         script_panes: Vec::new(),
         strategy_layers: Vec::new(),
         equity_panes: Vec::new(),
@@ -1646,6 +1679,19 @@ pub fn build(request: &Request) -> Scene {
         for step in &cone.steps {
             visible_fit.min = visible_fit.min.min(step[0]);
             visible_fit.max = visible_fit.max.max(step[4]);
+        }
+    }
+    // Overlay series join the fitted range the same way: an EMA clipped at
+    // the plot's edge reads as "the average is off-screen", which is the
+    // renderer's failure, not the measurement's. Only the visible slice's
+    // values count -- a 200-bar average from before the window must not
+    // stretch the scale for candles that are not drawn.
+    for spec in &request.overlay_series {
+        for v in spec.values.iter().skip(window.from).take(visible.len()).flatten() {
+            if v.is_finite() {
+                visible_fit.min = visible_fit.min.min(*v);
+                visible_fit.max = visible_fit.max.max(*v);
+            }
         }
     }
     if !visible_fit.is_usable() {
@@ -2064,7 +2110,7 @@ pub fn build(request: &Request) -> Scene {
             w: plot.w,
             h: height,
         };
-        match sub_pane(spec, visible_real, slot, &pane_plot) {
+        match sub_pane(spec, visible_real, window.from, slot, &pane_plot) {
             Some(pane) => scene.sub_panes.push(pane),
             None => add_note(
                 &mut scene.note,
@@ -2072,6 +2118,32 @@ pub fn build(request: &Request) -> Scene {
             ),
         }
         pane_top += height + SUB_PANE_GAP;
+    }
+
+    // Overlay series (EMA stacks, Bollinger bands): per-candle PRICES mapped
+    // through the same frame the candles use -- a line in the pane's own
+    // scale would sit beside the price it describes rather than on it.
+    for spec in &request.overlay_series {
+        let points: Vec<Point> = spec
+            .values
+            .iter()
+            .skip(window.from)
+            .enumerate()
+            .take(visible_real.len())
+            .filter_map(|(index, value)| {
+                value.map(|price| Point {
+                    x: plot.x + slot * (index as f64 + 0.5),
+                    y: price_to_y(price, scene.price_min, scene.price_max, &plot, scale_map),
+                })
+            })
+            .collect();
+        if points.len() > 1 {
+            scene.overlay_lines.push(SceneOverlayLine {
+                name: spec.name.clone(),
+                color: spec.color,
+                points,
+            });
+        }
     }
 
     // Pine-lite scripts (`docs/23`), after the built-in sub-panes: each
@@ -2203,7 +2275,7 @@ fn sub_pane_heights(panes: &[SubPaneSpec], script_pane_count: usize) -> Vec<f64>
 }
 
 /// Build one sub-pane, or `None` when the measurement has nothing to show.
-fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], slot: f64, plot: &Plot) -> Option<ScenePane> {
+fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], value_offset: usize, slot: f64, plot: &Plot) -> Option<ScenePane> {
     match spec {
         SubPaneSpec::Rsi {
             period,
@@ -2218,7 +2290,7 @@ fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], slot: f64, plot: &Plot) -> O
             bars,
             segments,
             markers,
-        } => series_pane(candles, slot, plot, label, *scale, levels, lines, bars.as_ref(), segments, markers),
+        } => series_pane(candles, value_offset, slot, plot, label, *scale, levels, lines, bars.as_ref(), segments, markers),
     }
 }
 
@@ -2228,6 +2300,7 @@ fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], slot: f64, plot: &Plot) -> O
 #[allow(clippy::too_many_arguments)]
 fn series_pane(
     candles: &[Candle],
+    value_offset: usize,
     slot: f64,
     plot: &Plot,
     label: &str,
@@ -2296,6 +2369,7 @@ fn series_pane(
             points: line
                 .values
                 .iter()
+                .skip(value_offset)
                 .enumerate()
                 .take(candles.len())
                 .filter_map(|(index, value)| {
@@ -2312,6 +2386,7 @@ fn series_pane(
         .map(|b| {
             b.values
                 .iter()
+                .skip(value_offset)
                 .enumerate()
                 .take(candles.len())
                 .filter_map(|(index, value)| {
@@ -2334,22 +2409,30 @@ fn series_pane(
         .filter(|v| v.is_finite() && **v >= vmin && **v <= vmax)
         .map(|&value| PaneLevel { y: y_at(value), value })
         .collect();
+    // Segments and markers index the FULL request candles (the shell's
+    // array): inside the window they shift by the offset, outside it they
+    // are not drawn.
     let positioned_segments: Vec<PaneDivergence> = segments
         .iter()
-        .filter(|seg| seg.from < candles.len() && seg.to < candles.len())
+        .filter(|seg| {
+            seg.from >= value_offset
+                && seg.to >= value_offset
+                && seg.from - value_offset < candles.len()
+                && seg.to - value_offset < candles.len()
+        })
         .map(|seg| PaneDivergence {
-            from_x: plot.x + slot * (seg.from as f64 + 0.5),
+            from_x: plot.x + slot * (seg.from - value_offset) as f64 + slot * 0.5,
             from_y: y_at(seg.from_value),
-            to_x: plot.x + slot * (seg.to as f64 + 0.5),
+            to_x: plot.x + slot * (seg.to - value_offset) as f64 + slot * 0.5,
             to_y: y_at(seg.to_value),
             kind: seg.kind.clone(),
         })
         .collect();
     let positioned_markers: Vec<PaneMarker> = markers
         .iter()
-        .filter(|m| m.at < candles.len())
+        .filter(|m| m.at >= value_offset && m.at - value_offset < candles.len())
         .map(|m| PaneMarker {
-            x: plot.x + slot * (m.at as f64 + 0.5),
+            x: plot.x + slot * (m.at - value_offset) as f64 + slot * 0.5,
             y: y_at(m.value),
             kind: m.kind.clone(),
             label: m.label.clone(),
@@ -7165,6 +7248,31 @@ mod tests {
         assert_eq!(pane.value_max, 100.0);
         // The 30/70 levels ride the fixed scale.
         assert_eq!(pane.levels.len(), 2);
+    }
+
+    #[test]
+    fn an_overlay_series_maps_through_the_price_frame() {
+        let candles = test_candles(40);
+        // A flat line at the middle of the traded range, and one value
+        // above every high -- mapped with the candles' own frame, so the
+        // flat line sits mid-plot and the high value sits near the top.
+        let mut values: Vec<Option<f64>> = vec![Some(100.0); 40];
+        values[39] = Some(103.0);
+        let parsed: Request = serde_json::from_value(serde_json::json!({
+            "candles": candles, "width": 800.0, "height": 600.0,
+            "overlay_series": [{ "name": "mid", "color": 2263842, "values": values }]
+        }))
+        .expect("the overlay wire form parses");
+        let scene = build(&parsed);
+        assert_eq!(scene.overlay_lines.len(), 1);
+        let line = &scene.overlay_lines[0];
+        assert_eq!(line.points.len(), 40);
+        // The flat stretch is one y; the final higher value sits higher on
+        // the canvas (smaller y).
+        assert!((line.points[0].y - line.points[10].y).abs() < 1e-9, "a flat price is a flat line");
+        assert!(line.points[39].y < line.points[0].y, "a higher price maps higher");
+        // Inside the price plot, never in a sub-pane.
+        assert!(line.points.iter().all(|p| p.y >= scene.plot.y && p.y <= scene.plot.y + scene.plot.h));
     }
 
     #[test]

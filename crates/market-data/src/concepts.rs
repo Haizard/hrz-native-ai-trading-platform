@@ -110,6 +110,9 @@ pub struct ConceptSpec {
     /// chart: the shell fetches its series (GET /indicator-series) and the
     /// engine positions it. Event-only concepts leave this false.
     pub pane: bool,
+    /// Whether this concept renders as overlay lines ON the price plot
+    /// (EMAs, Bollinger bands): same series fetch, drawn in the price frame.
+    pub overlay: bool,
     /// The analytics event kinds this variant emits (the existing detections
     /// it wraps; empty while a concept is declared but not yet detectable).
     pub event_kinds: &'static [EventKind],
@@ -212,6 +215,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Bos],
         },
         ConceptSpec {
@@ -223,6 +227,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Choch],
         },
         ConceptSpec {
@@ -234,6 +239,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::LiquiditySweep],
         },
         ConceptSpec {
@@ -245,6 +251,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::FvgCreated, EventKind::FvgFilled],
         },
         ConceptSpec {
@@ -256,6 +263,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::FvgInvalidated],
         },
         ConceptSpec {
@@ -267,6 +275,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::BprCreated],
         },
         ConceptSpec {
@@ -278,6 +287,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::OrderBlockCreated, EventKind::OrderBlockMitigated],
         },
         ConceptSpec {
@@ -289,6 +299,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::OrderBlockInvalidated],
         },
         ConceptSpec {
@@ -300,6 +311,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::PremiumDiscount],
         },
         ConceptSpec {
@@ -311,6 +323,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::EqualLevels],
         },
         ConceptSpec {
@@ -322,6 +335,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::RejectionBlockCreated, EventKind::RejectionBlockMitigated],
         },
         ConceptSpec {
@@ -333,6 +347,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::MitigationBlockCreated, EventKind::MitigationBlockMitigated, EventKind::MitigationBlockInvalidated],
         },
         ConceptSpec {
@@ -344,6 +359,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::LiquidityGrab],
         },
         ConceptSpec {
@@ -355,6 +371,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Inducement],
         },
         ConceptSpec {
@@ -366,6 +383,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::TurtleSoup],
         },
         ConceptSpec {
@@ -377,6 +395,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::LondonKillZone],
         },
         ConceptSpec {
@@ -388,6 +407,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::NewYorkKillZone],
         },
         ConceptSpec {
@@ -399,6 +419,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::AsianRange],
         },
         ConceptSpec {
@@ -410,6 +431,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::DailyOpen],
         },
         ConceptSpec {
@@ -421,6 +443,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::WeeklyOpen],
         },
         ConceptSpec {
@@ -432,6 +455,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[],
         },
         ConceptSpec {
@@ -443,6 +467,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::DoubleTopBottom],
         },
         ConceptSpec {
@@ -454,6 +479,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HeadShoulders],
         },
         ConceptSpec {
@@ -465,6 +491,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Triangle],
         },
         ConceptSpec {
@@ -476,6 +503,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Flag],
         },
         ConceptSpec {
@@ -487,6 +515,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Wedge],
         },
         ConceptSpec {
@@ -498,6 +527,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::TripleTopBottom],
         },
         ConceptSpec {
@@ -509,6 +539,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::RectangleBreakout],
         },
         ConceptSpec {
@@ -520,6 +551,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::CupAndHandle],
         },
         ConceptSpec {
@@ -531,6 +563,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Pennant],
         },
         ConceptSpec {
@@ -542,6 +575,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HarmonicGartley],
         },
         ConceptSpec {
@@ -553,6 +587,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HarmonicBat],
         },
         ConceptSpec {
@@ -564,6 +599,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HarmonicButterfly],
         },
         ConceptSpec {
@@ -575,6 +611,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HarmonicCrab],
         },
         ConceptSpec {
@@ -586,6 +623,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HarmonicShark],
         },
         ConceptSpec {
@@ -597,6 +635,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HarmonicCypher],
         },
         ConceptSpec {
@@ -608,6 +647,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HarmonicAbcd],
         },
         ConceptSpec {
@@ -619,6 +659,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HarmonicThreeDrives],
         },
         ConceptSpec {
@@ -630,6 +671,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::FibRetracement],
         },
         ConceptSpec {
@@ -641,6 +683,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::GoldenPocket],
         },
         ConceptSpec {
@@ -652,6 +695,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::FibExtension],
         },
         ConceptSpec {
@@ -663,6 +707,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::FibConfluence],
         },
         ConceptSpec {
@@ -674,6 +719,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::FibTimeZone],
         },
         ConceptSpec {
@@ -685,6 +731,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: true,
+            overlay: false,
             event_kinds: &[EventKind::RsiPcaSignal],
         },
         ConceptSpec {
@@ -696,6 +743,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: true,
+            overlay: false,
             event_kinds: &[],
         },
         ConceptSpec {
@@ -707,6 +755,67 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: true,
+            overlay: false,
+            event_kinds: &[],
+        },
+        ConceptSpec {
+            id: "indicators.macd",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "MACD",
+            description: "the 12/26 EMA difference, its 9-bar signal, and the histogram between them -- momentum as two lines and bars in one pane",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: true,
+            overlay: false,
+            event_kinds: &[],
+        },
+        ConceptSpec {
+            id: "indicators.atr",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "ATR",
+            description: "Wilder's average true range over 14 bars -- the volatility measurement itself, one line in its own pane",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: true,
+            overlay: false,
+            event_kinds: &[],
+        },
+        ConceptSpec {
+            id: "indicators.ema",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "EMA Stack",
+            description: "the 20/50/200 exponential averages on the price plot -- the trend stack traders actually watch",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: false,
+            overlay: true,
+            event_kinds: &[],
+        },
+        ConceptSpec {
+            id: "indicators.sma",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "SMA Stack",
+            description: "the 20/50/200 simple averages on the price plot -- the slower read of the same trend",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: false,
+            overlay: true,
+            event_kinds: &[],
+        },
+        ConceptSpec {
+            id: "indicators.bollinger",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "Bollinger Bands",
+            description: "the 20-bar average with its two-sigma bands on the price plot -- volatility as a channel around price",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: false,
+            overlay: true,
             event_kinds: &[],
         },
         ConceptSpec {
@@ -718,6 +827,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: STRUCTURE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::ZoneTested],
         },
         ConceptSpec {
@@ -729,6 +839,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: SPIKE_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::VolumeSpike],
         },
         ConceptSpec {
@@ -740,6 +851,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::VolumePoc],
         },
         ConceptSpec {
@@ -751,6 +863,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::ValueArea],
         },
         ConceptSpec {
@@ -762,6 +875,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HighVolumeNode],
         },
         ConceptSpec {
@@ -773,6 +887,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::LowVolumeNode],
         },
         ConceptSpec {
@@ -784,6 +899,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: SPIKE_PARAMS,
             required_channels: DataChannels::TRADES_AGGRESSOR,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::DeltaShift],
         },
         ConceptSpec {
@@ -795,6 +911,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Hammer],
         },
         ConceptSpec {
@@ -806,6 +923,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HangingMan],
         },
         ConceptSpec {
@@ -817,6 +935,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::ShootingStar],
         },
         ConceptSpec {
@@ -828,6 +947,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::InvertedHammer],
         },
         ConceptSpec {
@@ -839,6 +959,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Doji],
         },
         ConceptSpec {
@@ -850,6 +971,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Marubozu],
         },
         ConceptSpec {
@@ -861,6 +983,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Engulfing],
         },
         ConceptSpec {
@@ -872,6 +995,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Harami],
         },
         ConceptSpec {
@@ -883,6 +1007,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::MorningStar],
         },
         ConceptSpec {
@@ -894,6 +1019,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::EveningStar],
         },
         ConceptSpec {
@@ -905,6 +1031,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::PiercingLine],
         },
         ConceptSpec {
@@ -916,6 +1043,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::DarkCloudCover],
         },
         ConceptSpec {
@@ -927,6 +1055,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::ThreeWhiteSoldiers],
         },
         ConceptSpec {
@@ -938,6 +1067,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::ThreeBlackCrows],
         },
         ConceptSpec {
@@ -949,6 +1079,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::DragonflyDoji],
         },
         ConceptSpec {
@@ -960,6 +1091,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::GravestoneDoji],
         },
         ConceptSpec {
@@ -971,6 +1103,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::LongLeggedDoji],
         },
         ConceptSpec {
@@ -982,6 +1115,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::SpinningTop],
         },
         ConceptSpec {
@@ -993,6 +1127,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Tweezer],
         },
         ConceptSpec {
@@ -1004,6 +1139,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Kicker],
         },
         ConceptSpec {
@@ -1015,6 +1151,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::MatchingLow],
         },
         ConceptSpec {
@@ -1026,6 +1163,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::OnNeck],
         },
         ConceptSpec {
@@ -1037,6 +1175,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::ThreeInside],
         },
         ConceptSpec {
@@ -1048,6 +1187,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::ThreeOutside],
         },
         ConceptSpec {
@@ -1059,6 +1199,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::ThreeMethods],
         },
         ConceptSpec {
@@ -1070,6 +1211,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::AbandonedBaby],
         },
         ConceptSpec {
@@ -1081,6 +1223,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::TriStar],
         },
         ConceptSpec {
@@ -1092,6 +1235,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::StickSandwich],
         },
         ConceptSpec {
@@ -1103,6 +1247,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::MatHold],
         },
         ConceptSpec {
@@ -1114,6 +1259,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::TasukiGap],
         },
         ConceptSpec {
@@ -1125,6 +1271,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::LadderBottom],
         },
         ConceptSpec {
@@ -1136,6 +1283,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::BeltHold],
         },
         ConceptSpec {
@@ -1147,6 +1295,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Hikkake],
         },
         ConceptSpec {
@@ -1158,6 +1307,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Breakout],
         },
         ConceptSpec {
@@ -1169,6 +1319,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::FailedBreakout],
         },
         ConceptSpec {
@@ -1180,6 +1331,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::Retest],
         },
         ConceptSpec {
@@ -1191,6 +1343,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::HigherHighs],
         },
         ConceptSpec {
@@ -1202,6 +1355,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
+            overlay: false,
             event_kinds: &[EventKind::RangeContraction],
         },
     ]

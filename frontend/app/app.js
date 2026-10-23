@@ -875,6 +875,7 @@ function createChartPane(root, hooks = {}) {
     // Oscillator panes under the price plot -- RSI and its divergences. Every
     // coordinate comes from the engine; this fills and strokes, like everywhere
     // else in this file.
+    drawOverlayLines(ctx, scene);
     drawSubPanes(ctx, scene);
 
     // Pine-lite script panes (docs/23) -- the same paint-only contract as
@@ -1038,6 +1039,29 @@ function createChartPane(root, hooks = {}) {
         plot.x + 6,
         plot.y + 14
       );
+    }
+  }
+
+  /// Overlay series on the price plot (EMA stacks, Bollinger bands): the
+  /// engine mapped every point through the price frame; this paints the
+  /// polylines and a small legend at the plot's top-left.
+  function drawOverlayLines(ctx, scene) {
+    if (!scene.overlay_lines || !scene.overlay_lines.length) return;
+    let legendX = scene.plot.x + 8;
+    ctx.font = "9px ui-sans-serif, system-ui";
+    for (const line of scene.overlay_lines) {
+      const css = "#" + (line.color >>> 0).toString(16).padStart(6, "0");
+      if (line.points.length > 1) {
+        ctx.strokeStyle = css;
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(line.points[0].x, line.points[0].y);
+        for (const point of line.points) ctx.lineTo(point.x, point.y);
+        ctx.stroke();
+      }
+      ctx.fillStyle = css;
+      ctx.fillText(line.name, legendX, scene.plot.y + 12);
+      legendX += ctx.measureText(line.name).width + 8;
     }
   }
 
@@ -3167,12 +3191,20 @@ function createChartPane(root, hooks = {}) {
       request.sub_panes = [{ kind: "rsi", period: 14, overbought: 70, oversold: 30 }];
     }
 
-    // The registry's pane concepts (indicators.rsi and friends): the series
-    // came from analytics-core by way of the gateway, remapped onto this
-    // pane's candles above; the engine only positions them.
-    const registryPanes = seriesPaneSpecs();
+    // The registry's series concepts (indicators.*): the series came from
+    // analytics-core by way of the gateway, remapped onto this pane's
+    // candles above; the engine only positions them. Pane concepts go below
+    // the chart, overlay concepts onto it.
+    const registrySeries = seriesPaneSpecs();
+    const registryPanes = registrySeries.filter((p) => !p.overlay);
+    const registryOverlays = registrySeries.filter((p) => p.overlay);
     if (registryPanes.length) {
       request.sub_panes = [...(request.sub_panes || []), ...registryPanes];
+    }
+    if (registryOverlays.length) {
+      request.overlay_series = registryOverlays.flatMap((p) =>
+        p.lines.map((l) => ({ name: l.name, color: l.color, values: l.values }))
+      );
     }
 
     // Pine-lite scripts (docs/23): sent as source + inputs, run by the engine
@@ -5532,7 +5564,7 @@ function createChartPane(root, hooks = {}) {
     const symbol = el("symbol") && el("symbol").value;
     const timeframe = el("timeframe") && el("timeframe").value;
     if (!symbol || !timeframe || !conceptCatalog) { indicatorSeries = new Map(); return; }
-    const wanted = conceptCatalog.filter((c) => c.pane === true && enabledConcepts.has(c.id));
+    const wanted = conceptCatalog.filter((c) => (c.pane === true || c.overlay === true) && enabledConcepts.has(c.id));
     if (!wanted.length) { indicatorSeries = new Map(); return; }
     const next = new Map();
     await Promise.all(wanted.map(async (c) => {
@@ -5567,23 +5599,30 @@ function createChartPane(root, hooks = {}) {
         const ci = t != null ? indexByTime.get(t) : null;
         return ci != null ? ci : null;
       };
-      out.push({
-        kind: "series",
-        label: spec.label,
-        scale: spec.scale,
-        levels: spec.levels || [],
-        lines: (spec.lines || []).map((l) => ({ name: l.name, color: l.color, values: remapValues(l.values) })),
-        bars: spec.bars ? { name: spec.bars.name, color_up: spec.bars.color_up, color_down: spec.bars.color_down, values: remapValues(spec.bars.values) } : null,
-        segments: (spec.segments || []).map((seg) => {
-          const from = remapIndex(seg.from);
-          const to = remapIndex(seg.to);
-          return from != null && to != null ? { from, from_value: seg.from_value, to, to_value: seg.to_value, kind: seg.kind } : null;
-        }).filter(Boolean),
-        markers: (spec.markers || []).map((m) => {
-          const at = remapIndex(m.at);
-          return at != null ? { at, value: m.value, kind: m.kind, label: m.label } : null;
-        }).filter(Boolean),
-      });
+      const lines = (spec.lines || []).map((l) => ({ name: l.name, color: l.color, values: remapValues(l.values) }));
+      if (spec.target === "overlay") {
+        // Overlay series: prices, mapped by the engine through the price
+        // frame -- the request's overlay_series, not a sub-pane.
+        out.push({ overlay: true, lines });
+      } else {
+        out.push({
+          kind: "series",
+          label: spec.label,
+          scale: spec.scale,
+          levels: spec.levels || [],
+          lines,
+          bars: spec.bars ? { name: spec.bars.name, color_up: spec.bars.color_up, color_down: spec.bars.color_down, values: remapValues(spec.bars.values) } : null,
+          segments: (spec.segments || []).map((seg) => {
+            const from = remapIndex(seg.from);
+            const to = remapIndex(seg.to);
+            return from != null && to != null ? { from, from_value: seg.from_value, to, to_value: seg.to_value, kind: seg.kind } : null;
+          }).filter(Boolean),
+          markers: (spec.markers || []).map((m) => {
+            const at = remapIndex(m.at);
+            return at != null ? { at, value: m.value, kind: m.kind, label: m.label } : null;
+          }).filter(Boolean),
+        });
+      }
     }
     return out;
   }
