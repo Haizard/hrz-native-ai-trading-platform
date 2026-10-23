@@ -405,19 +405,19 @@ instrument-specific probability models.
 |---|---------|--------|---|---------|--------|
 | 1 | Fixed-fractional sizing | ✅ backtester `SizeKind` | 14 | Correlation exposure | ❌ |
 | 2 | Fixed-risk-per-trade | ✅ | 15 | Portfolio risk budgeting | ➖ |
-| 3 | ATR-based stops | ⚠️ ATR exists; stop engine? | 16 | Consecutive-loss guard | ⚠️ |
-| 4 | Structure-based stops | ⚠️ swing levels exist | 17 | Exposure limits | ⚠️ |
-| 5 | Volatility sizing | ⚠️ | 18 | Slippage-aware sizing | ❌ |
+| 3 | ATR-based stops | ✅ `analytics-core::risk::atr_stop` + sim brackets | 16 | Consecutive-loss guard | ✅ same |
+| 4 | Structure-based stops | ✅ `risk::swing_stop` | 17 | Exposure limits | ✅ `max_open_positions` |
+| 5 | Volatility sizing | ✅ `SizeKind::VolatilityAdjusted` | 18 | Slippage-aware sizing | ❌ |
 | 6 | R:R filtering | ⚠️ composer targets | 19 | Stop-distance optimization | ⚠️ parameter sweep |
-| 7 | Partial profits | ⚠️ | 20 | Risk-of-ruin | ❌ |
-| 8 | Trailing stops | ⚠️ | 21 | Kelly / fractional Kelly | ❌ |
-| 9 | Break-even stops | ⚠️ | 22 | Frequency limits | ⚠️ |
+| 7 | Partial profits | ⚠️ | 20 | Risk-of-ruin | ✅ `risk::risk_of_ruin`, in the backtest response |
+| 8 | Trailing stops | ✅ `ManagementRules` ATR trail in the sim | 21 | Kelly / fractional Kelly | ✅ `risk::kelly_fraction` + `SizeKind::Kelly` (two-pass) |
+| 9 | Break-even stops | ✅ `ManagementRules::break_even_r` | 22 | Frequency limits | ⚠️ |
 | 10 | Time-based exits | ⚠️ | 23 | Strategy capital allocation | ⚠️ |
-| 11 | Max daily loss | ⚠️ | 24 | Drawdown recovery | ⚠️ backtester reports |
-| 12 | Max weekly loss | ⚠️ | 25 | Monte Carlo risk | ✅ forecast cone |
-| 13 | Max drawdown limits | ⚠️ | | | |
+| 11 | Max daily loss | ✅ `RiskGuards` (sim-enforced) | 24 | Drawdown recovery | ⚠️ backtester reports |
+| 12 | Max weekly loss | ✅ same | 25 | Monte Carlo risk | ✅ forecast cone |
+| 13 | Max drawdown limits | ✅ same | | | |
 
-**Score: 3 ✅ / 16 ⚠️ / 4 ❌ / 2 ➖** — risk is the least-catalogued working layer; much of the ⚠️
+**Score: 15 ✅ / 6 ⚠️ / 2 ❌ / 2 ➖** — risk is the least-catalogued working layer; much of the ⚠️
 lives in the backtester/live engines rather than the registry.
 
 ---

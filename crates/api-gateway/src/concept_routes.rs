@@ -448,6 +448,8 @@ pub async fn backtest(
     // like every other path), the structure stop from the satisfying level
     // or the ATR multiple.
     let atrs = analytics_core::indicators::atr(&candles, 14);
+    // The run's capital basis for the volatility-adjusted sizing below.
+    let knobs_initial_capital = 10_000.0;
     let mut intents: Vec<(usize, pine_lite::interp::Intent)> = Vec::new();
     for signal in &signals {
         let stop = match &request.document.risk.stop {
@@ -460,15 +462,27 @@ pub async fn backtest(
                 })
             }
         };
+        // The sizing: absolute for Fixed, percent-of-equity for
+        // FixedFractional and Kelly (the two-pass form measures the first
+        // run and bets the capped fraction on the second), and the
+        // volatility-adjusted absolute -- the risk fraction divided by the
+        // stop's own distance, on the run's initial capital (the documented
+        // approximation: equity drifts inside the run, the sizing does not
+        // chase it).
+        let qty = match &request.document.risk.sizing {
+            SizeKind::Fixed { quantity } => Some(*quantity),
+            SizeKind::VolatilityAdjusted { risk_fraction } => signal.stop_level.map(|stop| {
+                let distance = (candles[signal.bar].close - stop).abs();
+                analytics_core::risk::vol_adjusted_qty(knobs_initial_capital, *risk_fraction, distance)
+            }),
+            _ => None,
+        };
         intents.push((
             signal.bar,
             pine_lite::interp::Intent::Entry {
                 id: "C".to_string(),
                 long: signal.long,
-                qty: match &request.document.risk.sizing {
-                    SizeKind::Fixed { quantity } => Some(*quantity),
-                    SizeKind::FixedFractional { .. } => None,
-                },
+                qty,
             },
         ));
         if let Some(stop) = stop {
@@ -488,19 +502,50 @@ pub async fn backtest(
     }
     let knobs = pine_lite::sim::StrategyHeader {
         default_qty_type: match &request.document.risk.sizing {
-            SizeKind::FixedFractional { percent } => pine_lite::sim::QtyType::PercentOfEquity,
-            SizeKind::Fixed { .. } => pine_lite::sim::QtyType::Fixed,
+            SizeKind::FixedFractional { .. } | SizeKind::Kelly { .. } => pine_lite::sim::QtyType::PercentOfEquity,
+            SizeKind::Fixed { .. } | SizeKind::VolatilityAdjusted { .. } => pine_lite::sim::QtyType::Fixed,
         },
         default_qty_value: match &request.document.risk.sizing {
             SizeKind::FixedFractional { percent } => *percent,
+            SizeKind::Kelly { cap } => *cap * 100.0,
             SizeKind::Fixed { quantity } => *quantity,
+            SizeKind::VolatilityAdjusted { .. } => 1.0,
         },
+        initial_capital: knobs_initial_capital,
+        guards: request.document.risk.guards,
+        management: request.document.risk.management,
         // Instrument flavor stamps like every other path: Deriv symbols
         // backtest as contracts, not spot positions.
         contracts: market_data::broker::VenueSymbol::parse(&symbol).broker == "deriv",
         ..pine_lite::sim::StrategyHeader::default()
     };
-    let simulation = pine_lite::sim::simulate(&intents, &candles, &knobs);
+    // The Kelly two-pass: the first run measures the win rate and payoff,
+    // the second bets the capped fraction. Honest and documented: the stats
+    // of the SAME signals on the SAME window, not a fitted edge.
+    let simulation = if let SizeKind::Kelly { cap } = &request.document.risk.sizing {
+        let first = pine_lite::sim::simulate(&intents, &candles, &knobs);
+        let w = first.report.win_rate / 100.0;
+        let payoff = first.report.profit_factor.max(0.01) * (1.0 - w).max(0.01) / w.max(0.01);
+        let fraction = analytics_core::risk::capped_kelly(w, payoff, *cap);
+        let mut kelly_knobs = knobs.clone();
+        kelly_knobs.default_qty_value = fraction * 100.0;
+        pine_lite::sim::simulate(&intents, &candles, &kelly_knobs)
+    } else {
+        pine_lite::sim::simulate(&intents, &candles, &knobs)
+    };
+
+    // The risk analytics the report owes the reader: the ruin probability
+    // and the Kelly suggestion from the run's own statistics.
+    let w = simulation.report.win_rate / 100.0;
+    let payoff = simulation.report.profit_factor.max(0.01) * (1.0 - w).max(0.01) / w.max(0.01);
+    let risk_fraction = match &request.document.risk.sizing {
+        SizeKind::FixedFractional { percent } => *percent / 100.0,
+        SizeKind::VolatilityAdjusted { risk_fraction } => *risk_fraction,
+        SizeKind::Kelly { cap } => analytics_core::risk::capped_kelly(w, payoff, *cap),
+        SizeKind::Fixed { .. } => 0.01,
+    };
+    let ruin = analytics_core::risk::risk_of_ruin(w, payoff, risk_fraction.max(0.001), 0.5);
+    let kelly_suggested = analytics_core::risk::kelly_fraction(w, payoff);
 
     Ok(Json(serde_json::json!({
         "valid": true,
@@ -520,6 +565,10 @@ pub async fn backtest(
             "win_rate": simulation.report.win_rate,
             "profit_factor": simulation.report.profit_factor,
             "max_drawdown": simulation.report.max_drawdown,
+        },
+        "risk": {
+            "risk_of_ruin": ruin,
+            "kelly_suggested": kelly_suggested,
         },
     })))
 }

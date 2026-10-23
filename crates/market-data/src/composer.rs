@@ -127,6 +127,13 @@ pub struct RiskBlock {
     pub stop: StopKind,
     /// How size is chosen.
     pub sizing: SizeKind,
+    /// The position-management rules (break-even and the ATR trail). Absent
+    /// means the stop sits where it was placed.
+    #[serde(default)]
+    pub management: Option<analytics_core::risk::ManagementRules>,
+    /// The account guards (daily/weekly loss, drawdown, streak, positions).
+    #[serde(default)]
+    pub guards: Option<analytics_core::risk::RiskGuards>,
 }
 
 /// Stop placement.
@@ -157,6 +164,20 @@ pub enum SizeKind {
     Fixed {
         /// The quantity (stake for contracts).
         quantity: f64,
+    },
+    /// Risk exactly this equity fraction per trade; the size is the risk
+    /// divided by the stop's own distance (the stop carries the volatility,
+    /// the size carries the risk).
+    VolatilityAdjusted {
+        /// Equity fraction at risk (0.01 = 1%).
+        risk_fraction: f64,
+    },
+    /// The Kelly fraction from the run's own statistics, capped (the
+    /// two-pass honest form: the first pass measures, the second bets it).
+    Kelly {
+        /// The cap as an equity fraction (0.2 = half-Kelly by the desk's
+        /// convention).
+        cap: f64,
     },
 }
 
@@ -544,6 +565,8 @@ mod tests {
             risk: RiskBlock {
                 stop: StopKind::Structure,
                 sizing: SizeKind::Fixed { quantity: 1.0 },
+                management: None,
+                guards: None,
             },
             parameters: std::collections::HashMap::new(),
         }

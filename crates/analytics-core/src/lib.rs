@@ -73,6 +73,7 @@ pub mod profile_memory;
 pub mod regions;
 pub mod regime;
 pub mod resample;
+pub mod risk;
 pub mod rsi_divergence;
 pub mod sessions;
 pub mod size_classes;

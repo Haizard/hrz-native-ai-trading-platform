@@ -299,6 +299,9 @@ impl ComposerStrategy {
             // DSL's equity-fraction world; the venue-level stake comes from
             // the order's quantity for contract adapters.
             market_data::composer::SizeKind::Fixed { .. } => 1.0,
+            // Volatility-adjusted risks its fraction; Kelly bets its cap.
+            market_data::composer::SizeKind::VolatilityAdjusted { risk_fraction } => risk_fraction * 100.0,
+            market_data::composer::SizeKind::Kelly { cap } => cap * 100.0,
         };
         Some(Signal::Enter(EnterSignal {
             direction: if fired.long { Direction::Long } else { Direction::Short },

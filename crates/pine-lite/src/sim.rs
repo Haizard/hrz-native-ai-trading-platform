@@ -63,6 +63,12 @@ pub struct StrategyHeader {
     pub contracts: bool,
     /// The multiplier's leverage for contract mode (`strategy(multiplier=50)`).
     pub multiplier: f64,
+    /// The account guards: halt NEW entries when the day/week/drawdown/
+    /// streak/position limits trip. Managing an open position never halts.
+    pub guards: Option<analytics_core::risk::RiskGuards>,
+    /// The position-management rules: break-even and the ATR trail, applied
+    /// per bar on the open trade with its own entry context.
+    pub management: Option<analytics_core::risk::ManagementRules>,
 }
 
 impl Default for StrategyHeader {
@@ -78,6 +84,8 @@ impl Default for StrategyHeader {
             pointvalue: 1.0,
             contracts: false,
             multiplier: 50.0,
+            guards: None,
+            management: None,
         }
     }
 }
@@ -306,9 +314,40 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
     let mut risk_day_floor = 0.0f64;
     let mut risk_day_id: i64 = 0;
     let mut risk_day_halted = false;
+    // The risk layer's own state: the guards read it, the management
+    // spends it. Day/week starts roll on UTC boundaries.
+    let mut risk_state = analytics_core::risk::RiskState {
+        equity: knobs.initial_capital,
+        peak: knobs.initial_capital,
+        day_start: knobs.initial_capital,
+        week_start: knobs.initial_capital,
+        consecutive_losses: 0,
+        open_positions: 0,
+    };
+    const DAY_NS: i64 = 3_600_000_000_000 * 24;
+    const WEEK_NS: i64 = DAY_NS * 7;
+    let mut last_day_id: i64 = -1;
+    let mut last_week_id: i64 = -1;
 
     for bar in 0..candles.len() {
         let c = &candles[bar];
+        // The guard state rolls with the calendar before anything fills.
+        if knobs.guards.is_some() {
+            let day_id = c.open_time.div_euclid(DAY_NS);
+            let week_id = c.open_time.div_euclid(WEEK_NS);
+            if last_day_id < 0 {
+                last_day_id = day_id;
+                last_week_id = week_id;
+            }
+            if day_id != last_day_id {
+                risk_state.day_start = risk_state.equity;
+                last_day_id = day_id;
+            }
+            if week_id != last_week_id {
+                risk_state.week_start = risk_state.equity;
+                last_week_id = week_id;
+            }
+        }
         // 1. Fills queued by the previous bar's intents, at THIS open.
         if let Some(intent) = pending.take() {
             match intent {
@@ -318,6 +357,14 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                             p.long == long && p.legs < 1 + knobs.pyramiding
                         }) =>
                 {
+                    // The risk layer's guards: NEW risk halts here; an open
+                    // position is managed to its end regardless.
+                    risk_state.open_positions = usize::from(position.is_some());
+                    if let Some(guards) = &knobs.guards {
+                        if !guards.allows(&risk_state) {
+                            continue;
+                        }
+                    }
                     let price = fill_price(c.open, long, knobs.slippage_pct);
                     let equity_mark = knobs.initial_capital + realized;
                     let qty = qty.unwrap_or_else(|| match knobs.default_qty_type {
@@ -393,6 +440,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                         let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
                         realized += pnl;
                         closed += 1.0;
+                        if pnl > 0.0 { risk_state.consecutive_losses = 0; } else { risk_state.consecutive_losses += 1; }
                         if pnl > 0.0 {
                             wins += 1.0;
                             gross_win += pnl;
@@ -458,6 +506,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                     let (closed_qty, pnl) = close_leg(&mut pos, 1.0, stop_out, knobs);
                     realized += pnl;
                     closed += 1.0;
+                    if pnl > 0.0 { risk_state.consecutive_losses = 0; } else { risk_state.consecutive_losses += 1; }
                     gross_loss -= pnl;
                     sim.orders.push(SimOrder {
                         bar,
@@ -489,6 +538,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                     let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
                     realized += pnl;
                     closed += 1.0;
+                    if pnl > 0.0 { risk_state.consecutive_losses = 0; } else { risk_state.consecutive_losses += 1; }
                     if pnl > 0.0 {
                         wins += 1.0;
                         gross_win += pnl;
@@ -530,6 +580,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                     let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
                     realized += pnl;
                     closed += 1.0;
+                    if pnl > 0.0 { risk_state.consecutive_losses = 0; } else { risk_state.consecutive_losses += 1; }
                     if pnl > 0.0 {
                         wins += 1.0;
                         gross_win += pnl;
@@ -589,6 +640,37 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                 risk_dd_halted = true;
             }
         }
+        // The risk layer's state refresh: equity and peak ride the close.
+        risk_state.equity = equity;
+        risk_state.peak = risk_state.peak.max(equity);
+        // The position-management rules, applied on the open trade with its
+        // own entry context: break-even, then the ATR trail -- a stop that
+        // only ever tightens.
+        if let (Some(rules), Some(pos)) = (&knobs.management, position.as_mut()) {
+            let atr_value = analytics_core::indicators::atr::atr(&candles[..=bar], 14)[bar].unwrap_or(0.0);
+            let favorable = if pos.long {
+                candles[..=bar].iter().map(|k| k.high).fold(f64::MIN, f64::max).max(c.close)
+            } else {
+                candles[..=bar].iter().map(|k| k.low).fold(f64::MAX, f64::min).min(c.close)
+            };
+            // The trade's own R: entry to its CURRENT stop (the sim has no
+            // initial-stop field; the current stop before management IS the
+            // widest it has been).
+            let current = pos.stop.unwrap_or(pos.entry_price);
+            let new_stop = analytics_core::risk::managed_stop(
+                pos.long,
+                pos.entry_price,
+                current,
+                current,
+                favorable,
+                atr_value,
+                rules,
+            );
+            if let Some(stop) = pos.stop.as_mut() {
+                *stop = new_stop;
+            }
+        }
+
         sim.equity.push(equity);
         max_dd_abs = max_dd_abs.max(peak - equity);
         sim.snapshots.push(SimSnapshot {
