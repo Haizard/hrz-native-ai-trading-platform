@@ -70,6 +70,7 @@ pub mod market_structure;
 pub mod patterns;
 pub mod profile_memory;
 pub mod regions;
+pub mod regime;
 pub mod resample;
 pub mod rsi_divergence;
 pub mod sessions;

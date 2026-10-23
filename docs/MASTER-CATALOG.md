@@ -30,27 +30,27 @@ volume-profile, footprint, CVD/delta, forecast, and sandbox machinery below the 
 | 9 | Inverse FVG | ✅ | `smc.ifvg` |
 | 10 | Liquidity Sweeps | ✅ | `smc.liquidity_sweep` |
 | 11 | Liquidity Grabs | ✅ | `smc.liquidity_grab` |
-| 12 | Buy-Side Liquidity | ⚠️ | `smc.equal_levels` marks the pools; no explicit BSL/SSL side labels |
-| 13 | Sell-Side Liquidity | ⚠️ | same |
-| 14 | Internal Range Liquidity | ❌ | |
-| 15 | External Range Liquidity | ❌ | |
+| 12 | Buy-Side Liquidity | ✅ | `smc.equal_levels` pools, chart-labelled BSL by side |
+| 13 | Sell-Side Liquidity | ✅ | `smc.equal_levels` pools, chart-labelled SSL by side |
+| 14 | Internal Range Liquidity | ✅ | `smc.internal_range_liquidity` |
+| 15 | External Range Liquidity | ✅ | `smc.external_range_liquidity` |
 | 16 | Equal Highs / Equal Lows | ✅ | `smc.equal_levels` |
 | 17 | Premium / Discount Zones | ✅ | `smc.premium_discount` |
 | 18 | Equilibrium (50% range) | ⚠️ | rides inside `smc.premium_discount`; no standalone equilibrium line |
-| 19 | Displacement | ⚠️ | used *inside* order-block detection; no standalone displacement event |
+| 19 | Displacement | ✅ | `smc.displacement` (body ≥2× average at a fresh extreme) |
 | 20 | Inducement | ✅ | `smc.inducement` |
 | 21 | Market Maker Models | ❌ | composite models; the composer can express them, none prebuilt |
-| 22 | Optimal Trade Entry | ⚠️ | `fib.golden_pocket` (0.618–0.65) is the core zone; OTE's 0.62–0.79 band is wider |
-| 23 | Power of Three | ❌ | |
-| 24 | Judas Swing | ❌ | |
+| 22 | Optimal Trade Entry | ✅ | `fib.ote` — the full 0.62–0.79 band |
+| 23 | Power of Three | ✅ | `smc.power_of_three` (session-anchored) |
+| 24 | Judas Swing | ✅ | `smc.judas_swing` |
 | 25 | Turtle Soup | ✅ | `smc.turtle_soup` |
 | 26 | Liquidity Void Analysis | ⚠️ | FVGs mark voids; no void-fill lifecycle analysis |
 | 27 | SMT Divergence | ✅ | `smc.smt_divergence` |
 | 28 | Weekly/Daily Liquidity Mapping | ⚠️ | session levels exist; no per-week liquidity map |
 | 29 | Institutional Order Flow | ❌ | |
-| 30 | Multi-Timeframe SMC | ❌ | detection is single-timeframe; no MTF alignment layer |
+| 30 | Multi-Timeframe SMC | ✅ | `smc.mtf_alignment` (structure lean, 4x resample) |
 
-**Score: 18 ✅ / 8 ⚠️ / 4 ❌**
+**Score: 27 ✅ / 3 ⚠️ / 0 ❌**
 
 ## 2. Price Action
 
@@ -58,7 +58,7 @@ volume-profile, footprint, CVD/delta, forecast, and sandbox machinery below the 
 |---|---------|--------|-----------------|
 | 1 | Support & Resistance | ✅ | `analytics-core::sr_zones` (repeated swings become zones) |
 | 2 | Horizontal Level Trading | ⚠️ | zones exist; no per-level touch/confirm events |
-| 3 | Trendline Trading | ❌ | no trendline detection |
+| 3 | Trendline Trading | ✅ | `chart.trendline` (anchored, 3-touch, break) |
 | 4 | Trend Channel Trading | ⚠️ | channels inside flags/triangles; no standalone channel |
 | 5 | Breakout Trading | ✅ | `pa.breakout` |
 | 6 | Breakout-and-Retest | ✅ | `pa.retest` |
@@ -80,14 +80,14 @@ volume-profile, footprint, CVD/delta, forecast, and sandbox machinery below the 
 | 22 | Support Rejection | ⚠️ | same |
 | 23 | Horizontal Range Extremes | ⚠️ | `smc.equal_levels` |
 | 24 | Naked Chart Trading | ➖ | a style |
-| 25 | Multi-Timeframe PA | ❌ | |
-| 26 | Trendline Liquidity Sweeps | ❌ | needs trendlines first |
+| 25 | Multi-Timeframe PA | ✅ | `smc.mtf_alignment` |
+| 26 | Trendline Liquidity Sweeps | ⚠️ | trendlines exist; sweeps on them missing |
 | 27 | Opening Range Breakouts | ⚠️ | `session.asian_range`; no generic opening-range |
 | 28 | Range Expansion | ⚠️ | ATR expansion |
 | 29 | Volatility Contraction Breakouts | ⚠️ | contraction exists; the fused breakout signal missing |
 | 30 | Auction-Based PA | ⚠️ | volume-profile concepts carry it |
 
-**Score: 8 ✅ / 16 ⚠️ / 3 ❌ / 3 ➖**
+**Score: 10 ✅ / 16 ⚠️ / 1 ❌ / 3 ➖**
 
 ## 3. Candlestick Theory
 
@@ -126,29 +126,29 @@ three inside ✅ (both) · three outside ✅ (both) · three methods ✅ (both) 
 abandoned baby ✅ · tri-star ✅ · stick sandwich ✅ · mat hold ✅ ·
 tasuki gap ✅ (both) · ladder bottom ✅ · belt hold ✅ (both) · hikkake ✅
 
-Missing: **upside gap two crows ❌** (the only named pattern without a detector).
+All forty, including **upside gap two crows ✅** (`candles.upside_gap_two_crows`).
 
-**Score: 39/40 ✅**
+**Score: 40/40 ✅**
 
 ## 5. ICT Methodologies
 
 | # | Concept | Status | # | Concept | Status |
 |---|---------|--------|---|---------|--------|
-| 1 | Silver Bullet | ❌ composite | 14 | Weekly bias | ❌ |
+| 1 | Silver Bullet | ❌ composite | 14 | Weekly bias | ✅ `session.weekly_bias` |
 | 2 | Unicorn Model | ❌ composite | 15 | Liquidity draw | ⚠️ premium/discount |
 | 3 | 2022 Model | ❌ composite | 16 | FVG entries | ⚠️ `smc.fvg` detects; entry logic is composition |
-| 4 | Judas Swing | ❌ | 17 | OB entries | ⚠️ same |
-| 5 | Power of Three | ❌ | 18 | Breaker/mitigation entries | ⚠️ same |
-| 6 | OTE | ⚠️ golden pocket | 19 | Rejection block | ✅ |
+| 4 | Judas Swing | ✅ | `smc.judas_swing` | 17 | OB entries | ⚠️ same |
+| 5 | Power of Three | ✅ | `smc.power_of_three` | 18 | Breaker/mitigation entries | ⚠️ same |
+| 6 | OTE | ✅ `fib.ote` | 19 | Rejection block | ✅ |
 | 7 | MM Buy Model | ❌ composite | 20 | Balanced Price Range | ✅ `smc.bpr` |
 | 8 | MM Sell Model | ❌ composite | 21 | Volume imbalance | ✅ `analytics-core::imbalance` |
 | 9 | NY session model | ⚠️ kill zone only | 22 | Liquidity void | ⚠️ FVG marks it |
 | 10 | London model | ⚠️ kill zone only | 23 | SMT divergence | ✅ |
 | 11 | Asian range | ✅ | 24 | Consequent encroachment | ❌ |
 | 12 | Kill zones | ✅ both | 25 | Opening gap analysis | ❌ |
-| 13 | Daily bias | ❌ | | | |
+| 13 | Daily bias | ✅ `session.daily_bias` | | | |
 
-**Score: 6 ✅ / 8 ⚠️ / 11 ❌** (the ❌ are composite *models* — the composer is where they get assembled)
+**Score: 11 ✅ / 7 ⚠️ / 7 ❌** (the ❌ are composite *models* — the composer is where they get assembled)
 
 ## 6. Technical Indicator Strategies
 
@@ -200,17 +200,17 @@ Plus `order_flow.delta_shift` in the registry. **Score: 9 ✅ / 15 ⚠️ / 2 �
 | 2 | Minor S/R | ✅ sr_zones | 15 | Liquidity pools | ⚠️ equal_levels |
 | 3 | Dynamic S/R | ⚠️ MA overlays | 16 | Equal H/L trading | ✅ |
 | 4 | Previous day H/L | ⚠️ sessions carry dailies | 17 | Stop-run reversal | ✅ `smc.turtle_soup` |
-| 5 | Previous week H/L | ❌ | 18 | Sweep reversal | ✅ `smc.liquidity_sweep` |
-| 6 | Previous month H/L | ❌ | 19 | Failed auction reversal | ⚠️ |
+| 5 | Previous week H/L | ✅ `session.previous_week_levels` | 18 | Sweep reversal | ✅ `smc.liquidity_sweep` |
+| 6 | Previous month H/L | ✅ `session.previous_month_levels` | 19 | Failed auction reversal | ⚠️ |
 | 7 | Daily open | ✅ `session.daily_open` | 20 | Breakout continuation | ⚠️ |
 | 8 | Weekly open | ✅ `session.weekly_open` | 21 | Range boundary rejection | ⚠️ |
-| 9 | Monthly open | ❌ | 22 | Multi-touch levels | ✅ sr_zones |
+| 9 | Monthly open | ✅ `session.monthly_open` | 22 | Multi-touch levels | ✅ sr_zones |
 | 10 | Session H/L | ⚠️ asian range | 23 | Level confluence | ⚠️ fib confluence |
 | 11 | Opening range | ⚠️ | 24 | S/R flip | ⚠️ breaker form |
-| 12 | Round numbers | ❌ | 25 | Volume-confirmed breakout | ⚠️ |
-| 13 | Psychological levels | ❌ | | | |
+| 12 | Round numbers | ✅ `pa.round_numbers` | 25 | Volume-confirmed breakout | ⚠️ |
+| 13 | Psychological levels | ✅ same grid | | | |
 
-**Score: 8 ✅ / 12 ⚠️ / 5 ❌**
+**Score: 13 ✅ / 12 ⚠️ / 0 ❌**
 
 ## 9. Supply and Demand
 
@@ -233,12 +233,12 @@ Plus `order_flow.delta_shift` in the registry. **Score: 9 ✅ / 15 ⚠️ / 2 �
 
 | # | Concept | Status | # | Concept | Status |
 |---|---------|--------|---|---------|--------|
-| 1 | Head & Shoulders | ✅ `chart.head_shoulders` | 19 | Rounding bottom | ❌ |
-| 2 | Inverse H&S | ⚠️ verify direction coverage | 20 | Rounding top | ❌ |
-| 3 | Double top | ✅ | 21 | Broadening | ❌ |
+| 1 | Head & Shoulders | ✅ `chart.head_shoulders` | 19 | Rounding bottom | ✅ `chart.rounding_bottom_top` |
+| 2 | Inverse H&S | ⚠️ verify direction coverage | 20 | Rounding top | ✅ same |
+| 3 | Double top | ✅ | 21 | Broadening | ✅ `chart.broadening` |
 | 4 | Double bottom | ✅ | 22 | Diamond top | ❌ |
 | 5 | Triple top | ✅ `chart.triple_top_bottom` | 23 | Diamond bottom | ❌ |
-| 6 | Triple bottom | ✅ | 24 | Megaphone | ❌ (= broadening) |
+| 6 | Triple bottom | ✅ | 24 | Megaphone | ✅ (= broadening) |
 | 7 | Ascending triangle | ⚠️ `chart.triangle` | 25 | Wolfe Waves | ❌ |
 | 8 | Descending triangle | ⚠️ same | 26 | ABCD | ✅ `harmonics.abcd` |
 | 9 | Symmetrical triangle | ⚠️ same | 27 | Gartley | ✅ |
@@ -250,9 +250,9 @@ Plus `order_flow.delta_shift` in the registry. **Score: 9 ✅ / 15 ⚠️ / 2 �
 | 15 | Bear pennant | ✅ | 33 | Harmonic completion | ✅ + cypher, shark |
 | 16 | Rectangle | ✅ `chart.rectangle` | 34 | Measured move | ⚠️ fib projection |
 | 17 | Cup and handle | ✅ `chart.cup_and_handle` | 35 | Failed pattern | ⚠️ `pa.failed_breakout` |
-| 18 | Inverse cup | ❌ | | | |
+| 18 | Inverse cup | ✅ `chart.inverse_cup_handle` | | | |
 
-**Score: 22 ✅ / 6 ⚠️ / 7 ❌**
+**Score: 27 ✅ / 6 ⚠️ / 2 ❌**
 
 ## 11. Trend, Momentum and Market Regime
 
@@ -261,15 +261,15 @@ Plus `order_flow.delta_shift` in the registry. **Score: 9 ✅ / 15 ⚠️ / 2 �
 | 1 | Trend continuation | ⚠️ flags/pennants | 11 | HH continuation | ✅ `pa.higher_highs` |
 | 2 | Trend reversal | ⚠️ chart patterns | 12 | LL continuation | ✅ |
 | 3 | Momentum breakout | ⚠️ | 13 | Momentum divergence | ✅ RSI divergence |
-| 4 | Momentum pullback | ⚠️ | 14 | Trendline break | ❌ |
-| 5 | Trend exhaustion | ⚠️ | 15 | Channel break | ❌ |
+| 4 | Momentum pullback | ⚠️ | 14 | Trendline break | ✅ `chart.trendline` |
+| 5 | Trend exhaustion | ⚠️ | 15 | Channel break | ⚠️ trendline form exists |
 | 6 | Countertrend | ➖ style | 16 | MA slope | ❌ |
-| 7 | Mean-reverting pullback | ⚠️ | 17 | MTF trend alignment | ❌ |
-| 8 | Trend strength filter | ❌ needs ADX | 18 | Volatility expansion | ✅ `atr_expansion` |
-| 9 | Regime switching | ❌ | 19 | Volatility compression | ✅ `pa.range_contraction` |
-| 10 | Trend/range classify | ⚠️ contraction | 20 | Failed trend reversal | ⚠️ |
+| 7 | Mean-reverting pullback | ⚠️ | 17 | MTF trend alignment | ✅ `smc.mtf_alignment` |
+| 8 | Trend strength filter | ✅ `indicators.adx` + `pa.regime` | 18 | Volatility expansion | ✅ `atr_expansion` |
+| 9 | Regime switching | ✅ `pa.regime` (shift events) | 19 | Volatility compression | ✅ `pa.range_contraction` |
+| 10 | Trend/range classify | ✅ `pa.regime` | 20 | Failed trend reversal | ⚠️ |
 
-**Score: 4 ✅ / 10 ⚠️ / 5 ❌ / 1 ➖**
+**Score: 9 ✅ / 9 ⚠️ / 1 ❌ / 1 ➖**
 
 ## 12. Quantitative and Statistical
 
@@ -335,9 +335,9 @@ drift detection — the AI layer's own roadmap, tracked in `docs/09`.
 | 7 | Weekly opening range | ⚠️ `session.weekly_open` | 17 | Pre-news compression | ➖ |
 | 8 | Session H/L sweep | ⚠️ | 18 | Post-news momentum | ➖ |
 | 9 | PD range breakout | ⚠️ | 19 | Overnight gap | ❌ |
-| 10 | Midnight open | ⚠️ UTC daily open | 20 | Seasonals | ❌ |
+| 10 | Midnight open | ✅ UTC daily open | 20 | Seasonals | ❌ |
 
-**Score: 2 ✅ / 8 ⚠️ / 7 ❌ / 3 ➖**
+**Score: 3 ✅ / 7 ⚠️ / 7 ❌ / 3 ➖**
 
 ## 16. News, Macro and Fundamental
 
@@ -450,11 +450,11 @@ its own battery); TSI/Awesome/A-D/CMF/MFI/anchored-VWAP/chandelier remain as the
 19. **Judas Swing ✅ · Power of Three ✅** — session-anchored: the Asian-range sweep that closes back in, and the displaced expansion through the far side
 20. **BSL/SSL** ✅ — the equal-levels pools always carried the side; the chart now labels them by it (equal highs = BSL, equal lows = SSL)
 
-## Battery D — regime and multi-timeframe
+## Battery D — regime and multi-timeframe ✅ DONE 2026-10-23
 
-21. **Trend/range regime classifier** (ADX + contraction + structure, one regime event per shift)
-22. **Multi-timeframe alignment** (the same detector across N timeframes, agreement as the event)
-23. **Daily/weekly bias** (HTF structure + PDH/PDL position, one bias event per day)
+21. **Regime classifier** ✅ (`pa.regime`) — ADX for existence, DI for ownership, structure must agree; the SHIFT is the event, and a trend with no swings is honestly a range
+22. **MTF alignment** ✅ (`smc.mtf_alignment`) — the structure lean on the chart's bars versus the 4x resample's, fired when the agreement FORMS (whichever side turns last)
+23. **Daily/weekly bias** ✅ (`session.daily_bias`, `session.weekly_bias`) — the new period opening outside the closed period's range, with the structure agreeing
 
 ## Battery E — data-gated (needs a feed before any detector)
 

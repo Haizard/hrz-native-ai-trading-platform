@@ -342,6 +342,16 @@ pub enum EventKind {
     /// distribution (the expansion through the far side) -- all three
     /// phases complete in one session.
     PowerOfThree,
+    /// The trend/range regime changing state (side names the new trend, or
+    /// neutral for range).
+    RegimeShift,
+    /// The chart's structure and the 4x-higher timeframe's structure
+    /// starting to agree.
+    MtfAlignment,
+    /// The new day opening outside the closed day's range, with structure.
+    DailyBias,
+    /// The new week opening outside the closed week's range, with structure.
+    WeeklyBias,
 }
 
 impl EventKind {
@@ -484,11 +494,15 @@ impl EventKind {
             Self::ExternalRangeLiquidity => "external_range_liquidity",
             Self::JudasSwing => "judas_swing",
             Self::PowerOfThree => "power_of_three",
+            Self::RegimeShift => "regime_shift",
+            Self::MtfAlignment => "mtf_alignment",
+            Self::DailyBias => "daily_bias",
+            Self::WeeklyBias => "weekly_bias",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 135] = [
+    pub const ALL: [Self; 139] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -624,6 +638,10 @@ impl EventKind {
         Self::ExternalRangeLiquidity,
         Self::JudasSwing,
         Self::PowerOfThree,
+        Self::RegimeShift,
+        Self::MtfAlignment,
+        Self::DailyBias,
+        Self::WeeklyBias,
     ];
 }
 
@@ -2863,6 +2881,9 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_round_numbers(candles, symbol));
     events.extend(detect_displacement(candles, symbol));
     events.extend(detect_range_liquidity(candles, symbol));
+    events.extend(crate::regime::detect_regime(candles, symbol));
+    events.extend(crate::regime::detect_mtf_alignment(candles, symbol));
+    events.extend(crate::regime::detect_bias(candles, symbol));
     events.extend(detect_chart_gaps(candles, symbol, &config));
     events.extend(crate::fibonacci::detect_fibonacci(candles, symbol, config.structure_lookback));
     events.extend(crate::rsi_pca::detect_rsi_pca(candles, symbol));
