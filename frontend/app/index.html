@@ -450,6 +450,17 @@
   #sideWatch { position: relative; }
   /* Room for the hide button beside the search box it floats over. */
   #sideWatch .pane > .row:first-child { padding-right: 28px; }
+  .econChip { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 8px;
+    background: rgba(167, 139, 250, 0.12); color: #a78bfa; border: 1px solid rgba(167, 139, 250, 0.3); }
+  .econChip.hot { background: rgba(251, 113, 133, 0.15); color: #fb7185; border-color: rgba(251, 113, 133, 0.4); }
+  .econChip .kind { text-transform: uppercase; font-weight: 600; }
+  #econAlert { position: fixed; top: 16px; right: 16px; z-index: 60; max-width: 380px; padding: 12px 14px;
+    background: var(--panel); border: 1px solid rgba(167, 139, 250, 0.45); border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45); font-size: 12px; color: var(--text); }
+  #econAlert .head { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 6px; }
+  #econAlert .sigma { font-family: var(--mono); color: #a78bfa; }
+  #econAlert .bias { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  #econAlert .close { margin-left: auto; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; }
   .railHide {
     position: absolute; top: 4px; right: 4px; z-index: 5;
     padding: 0 6px; font-size: 12px; color: var(--muted);
@@ -2733,9 +2744,11 @@
   <span class="sbSep">·</span>
   <span>My workspace</span>
   <span class="spacer"></span>
+  <span id="econCountdown" class="econChip" hidden></span>
   <span id="utcClock">--:--:-- UTC</span>
 </footer>
 
+<div id="econAlert" hidden></div>
 <div id="chartMenu" aria-label="Chart settings"></div>
 
 <script src="builder.js"></script>

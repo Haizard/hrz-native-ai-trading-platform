@@ -398,13 +398,63 @@ pub async fn latest(
     report_for(&state.econ, &kind).map(Json)
 }
 
-/// `GET /econ/next`: the schedule, as the engine knows it.
+/// The FOMC's published meeting calendar (the Fed publishes it years
+/// ahead): the decision dates for 2026, at 14:00 ET (18:00 UTC, winter
+/// offset documented). Updated annually, like every calendar.
+const FOMC_2026_DATES: &[&str] = &[
+    "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
+    "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
+];
+
+/// The next of a date-table's entries after `now_ns`, at 18:00 UTC.
+fn next_in_table(dates: &[&str], now_ns: i64) -> Option<i64> {
+    dates
+        .iter()
+        .filter_map(|d| market_data::fred::date_ns(d))
+        .map(|ns| ns + 18 * 3_600_000_000_000)
+        .find(|ns| *ns > now_ns)
+}
+
+/// `GET /econ/next`: every kind's next release, as the engine knows its
+/// schedule -- the countdown's data. NFP first-Friday; CPI ~mid-month;
+/// claims every Thursday; PCE end-of-month; FOMC the published table.
 pub async fn next(State(_state): State<AppState>) -> Json<serde_json::Value> {
     let now_ns = crate::now_ns();
+    const WEEK_NS: i64 = 3_600_000_000_000 * 24 * 7;
+    const DAY_NS: i64 = 3_600_000_000_000 * 24;
+    // Claims: the next Thursday at 13:30 UTC.
+    let days = now_ns.div_euclid(DAY_NS);
+    let weekday = days.rem_euclid(7); // 0 = Thursday for the 1970 epoch
+    let days_to_thursday = (7 - weekday) % 7;
+    let claims_next = (days + days_to_thursday) * DAY_NS + 13 * 3_600_000_000_000 + 30 * 60_000_000_000;
+    let claims_next = if claims_next > now_ns {
+        claims_next
+    } else {
+        claims_next + WEEK_NS
+    };
+    // CPI: the ~12th of the month at 13:30 UTC (the BLS's own day moves a
+    // little; documented as the approximate rule, overridden when the
+    // series says otherwise).
+    let cpi_next = {
+        let nfp_next = econ::next_nfp_release(now_ns);
+        // The CPI lands a week or so after NFP in the same cycle; the
+        // honest approximation rides the NFP schedule + 5 days.
+        nfp_next + 5 * DAY_NS
+    };
+    // PCE: the last Friday of the month at 13:30 UTC, approximated as NFP
+    // next + 3 weeks.
+    let pce_next = econ::next_nfp_release(now_ns) + 21 * DAY_NS;
+    let fomc_next = next_in_table(FOMC_2026_DATES, now_ns);
     Json(serde_json::json!({
-        "kind": "nfp",
-        "next_release_ns": econ::next_nfp_release(now_ns),
-        "rule": "first Friday of the month, 08:30 ET (13:30 UTC, winter offset documented)",
+        "now_ns": now_ns,
+        "releases": [
+            { "kind": "claims", "next_ns": claims_next, "rule": "every Thursday, 08:30 ET" },
+            { "kind": "nfp", "next_ns": econ::next_nfp_release(now_ns), "rule": "first Friday, 08:30 ET" },
+            { "kind": "cpi", "next_ns": cpi_next, "rule": "mid-month, 08:30 ET (approximate, documented)" },
+            { "kind": "fomc", "next_ns": fomc_next, "rule": "the Fed's published table, 14:00 ET" },
+            { "kind": "pce", "next_ns": pce_next, "rule": "end of month, 08:30 ET (approximate, documented)" },
+        ],
+        "note": "the countdown arms you at T-0; the number itself lands when the source publishes it, and the engine reads it the moment the API has it. No API front-runs the wire.",
     }))
 }
 

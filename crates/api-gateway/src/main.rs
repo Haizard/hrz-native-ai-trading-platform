@@ -242,7 +242,17 @@ async fn main() -> anyhow::Result<()> {
                         tracing::warn!("econ refresh ({kind}): {e}");
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+                // The release window: within twenty minutes of a scheduled
+                // release the engine polls every thirty seconds until the
+                // number lands; the rest of the time, every six hours.
+                let now_ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as i64)
+                    .unwrap_or(0);
+                let next_nfp = market_data::econ::next_nfp_release(now_ns);
+                let in_window = (next_nfp - now_ns) < 20 * 60 * 1_000_000_000 && (next_nfp - now_ns) > -30 * 60 * 1_000_000_000;
+                let sleep_secs = if in_window { 30 } else { 6 * 3600 };
+                tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
             }
         });
     }

@@ -5924,7 +5924,79 @@ function createChartPane(root, hooks = {}) {
     return rows;
   }
 
-  /// The Deriv trade ticket's menu section, or nothing on any other venue.
+  /// The release countdown: the clock chips every scheduled kind shows its
+/// T-minus, goes hot inside the last hour, and the landed number raises the
+/// alert -- the countdown-room feature, with the engine's own honesty:
+/// the clock arms you, the API delivers the number when the source has it.
+(function econCountdown() {
+  const chip = document.getElementById("econCountdown");
+  const alertBox = document.getElementById("econAlert");
+  if (!chip || !alertBox) return;
+  let lastReleaseId = null;
+  let landedShown = false;
+
+  function fmt(ms) {
+    if (ms < 0) ms = 0;
+    const s = Math.floor(ms / 1000);
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+    return `${m}:${String(s % 60).padStart(2, "0")}`;
+  }
+
+  async function tick() {
+    try {
+      const sched = await api("/econ/next");
+      if (!sched || !Array.isArray(sched.releases)) return;
+      const now = (sched.now_ns || Date.now() * 1e6) / 1e6;
+      // The soonest release with a real timestamp.
+      const upcoming = sched.releases
+        .filter((r) => typeof r.next_ns === "number")
+        .sort((a, b) => a.next_ns - b.next_ns);
+      if (!upcoming.length) return;
+      const next = upcoming[0];
+      const ms = next.next_ns / 1e6 - now;
+      chip.hidden = false;
+      chip.innerHTML = `<span class="kind">${next.kind}</span> T-${fmt(ms)}`;
+      chip.classList.toggle("hot", ms < 3600_000 && ms > -1800_000);
+      chip.title = next.rule || "";
+
+      // The landed read: inside the window (or just past), check whether a
+      // NEW release landed since the last one we saw.
+      if (ms < 900_000) {
+        try {
+          const latest = await api(`/econ/latest?kind=${encodeURIComponent(next.kind)}`);
+          if (latest && latest.release && latest.release.id !== lastReleaseId) {
+            const wasLanded = lastReleaseId !== null;
+            lastReleaseId = latest.release.id;
+            if (wasLanded || (Date.now() / 1000 - latest.release.release_ns / 1e9) < 3600) {
+              const s = latest.surprise || {};
+              alertBox.hidden = false;
+              alertBox.innerHTML = `
+                <div class="head">
+                  <span>${latest.release.kind.toUpperCase()} ${latest.release.period}</span>
+                  <button class="close" aria-label="Close">×</button>
+                </div>
+                <div>actual <b>${latest.release.actual}</b> vs forecast <b>${latest.release.forecast}</b> <span style="color:var(--muted)">(${latest.release.forecast_source})</span></div>
+                <div class="sigma">surprise ${(s.sigma ?? 0).toFixed(2)}σ</div>
+                <div class="bias">${latest.bias_label} (${(latest.macro_bias ?? 0).toFixed(2)})</div>
+                <div style="margin-top:6px;color:var(--muted);font-size:10px">the reaction confirms, not the headline — the chart is the confirmation.</div>`;
+              alertBox.querySelector(".close").addEventListener("click", () => { alertBox.hidden = true; });
+              landedShown = true;
+              setTimeout(() => { if (landedShown) alertBox.hidden = true; }, 60_000);
+            }
+          }
+        } catch { /* the store answers empty until the first refresh lands */ }
+      }
+    } catch { /* the schedule endpoint is best-effort */ }
+  }
+  tick();
+  setInterval(tick, 30_000);
+})();
+
+/// The Deriv trade ticket's menu section, or nothing on any other venue.
   /// Rebuilt on every open (the menu is transient), so the wiring here is
   /// always this open's own; the controls inside call the api() helper, so
   /// sign-in is enforced the same way every other request is.
