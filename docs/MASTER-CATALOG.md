@@ -349,7 +349,8 @@ BLS. ✅ NFP (`econ.nfp`) · ✅ CPI (`econ.cpi`) · ✅ surprise-vs-consensus (
 ✅ FOMC (`econ.fomc`, the target's own change as data, via FRED) · ✅ PCE (`econ.pce`, the Fed's
 preferred gauge) · ✅ GDP (`econ.gdp`) · ✅ initial claims (`econ.claims`, the weekly pulse) ·
 ✅ the macro context (`/econ/macro`: funds direction, the 2s10s curve, real yields, the dollar,
-one composite) · ⚠️ news sentiment (needs a news feed) · the rest stay gated.
+one composite) · ✅ news sentiment (RSS feeds + the transparent lexicon; sentiment-price divergence reported) ·
+the rest stay gated.
 
 ## 17. Options, Volatility and Derivatives
 

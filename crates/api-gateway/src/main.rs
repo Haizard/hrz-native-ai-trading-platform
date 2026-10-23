@@ -242,6 +242,9 @@ async fn main() -> anyhow::Result<()> {
                         tracing::warn!("econ refresh ({kind}): {e}");
                     }
                 }
+                if let Err(e) = api_gateway::econ_routes::refresh_news(&store).await {
+                    tracing::warn!("news refresh: {e}");
+                }
                 // The release window: within twenty minutes of a scheduled
                 // release the engine polls every thirty seconds until the
                 // number lands; the rest of the time, every six hours.

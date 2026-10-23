@@ -36,6 +36,7 @@ pub mod broker;
 pub mod deriv;
 pub mod econ;
 pub mod fred;
+pub mod news;
 #[cfg(feature = "net")]
 pub mod deriv_trade;
 pub mod composer;

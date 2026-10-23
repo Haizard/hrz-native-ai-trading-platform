@@ -29,6 +29,8 @@ pub struct EconStore {
     pub releases: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, Vec<econ::EconRelease>>>>,
     /// Operator overrides: `{kind}:{period}` -> (forecast, source).
     pub overrides: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, (f64, String)>>>,
+    /// The newest scored headlines, newest-first.
+    pub news: std::sync::Arc<std::sync::RwLock<Vec<market_data::news::NewsItem>>>,
 }
 
 /// Rebuild one kind's release list from its BLS series. The NFP headline is
@@ -313,6 +315,130 @@ pub async fn macro_context(State(_state): State<AppState>) -> Result<Json<serde_
         "composite": ctx.composite,
         "label": market_data::fred::context_label(ctx.composite),
         "note": "the Fed's own numbers as one read: policy direction dominates, the curve warns, the real yield and the dollar weigh. This is the macro context; an instrument's reaction is still its own confirmation.",
+    })))
+}
+
+/// Refresh the news store: every feed, tolerant (a dead feed costs its
+/// own items, never the store's).
+pub async fn refresh_news(store: &EconStore) -> Result<usize, String> {
+    let client = reqwest::Client::new();
+    let mut all = Vec::new();
+    for (name, url) in market_data::news::FEEDS {
+        match market_data::news::fetch_feed(&client, name, url).await {
+            Ok(items) => all.extend(items),
+            Err(e) => tracing::warn!("news feed {name}: {e}"),
+        }
+    }
+    if all.is_empty() {
+        return Err("every feed failed".to_string());
+    }
+    all.sort_by_key(|i| std::cmp::Reverse(i.published_ns));
+    all.truncate(200);
+    let count = all.len();
+    *store.news.write().map_err(|e| e.to_string())? = all;
+    Ok(count)
+}
+
+/// `/news/latest` query.
+#[derive(Debug, Deserialize)]
+pub struct NewsQuery {
+    /// An instrument tag filter (`btc`, `fed`, `gold`...).
+    pub tag: Option<String>,
+    /// How many items (default 20, capped 50).
+    pub limit: Option<usize>,
+}
+
+/// `GET /news/latest`: the newest scored headlines.
+pub async fn news_latest(
+    State(state): State<AppState>,
+    Query(query): Query<NewsQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let items = state.econ.news.read().map_err(|e| ApiError::unavailable(e.to_string()))?;
+    let limit = query.limit.unwrap_or(20).min(50);
+    let filtered: Vec<&market_data::news::NewsItem> = match &query.tag {
+        Some(tag) => items.iter().filter(|i| i.tags.iter().any(|t| t == tag)).take(limit).collect(),
+        None => items.iter().take(limit).collect(),
+    };
+    Ok(Json(serde_json::json!({
+        "items": filtered,
+        "note": "a headline is context, never a signal -- the lexicon score is the measurable part, the chart is the confirmation.",
+    })))
+}
+
+/// `/news/sentiment` query.
+#[derive(Debug, Deserialize)]
+pub struct SentimentQuery {
+    /// The instrument (the tag filter; required).
+    pub symbol: Option<String>,
+}
+
+/// `GET /news/sentiment`: the rolling sentiment -- mean, share, per-tag,
+/// and the symbol's own read against the chart's recent direction.
+pub async fn news_sentiment(
+    State(state): State<AppState>,
+    Query(query): Query<SentimentQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Clone the headlines out of the lock: a read guard held across an
+    // .await is not Send, and the route's future must be.
+    let items: Vec<market_data::news::NewsItem> = state
+        .econ
+        .news
+        .read()
+        .map_err(|e| ApiError::unavailable(e.to_string()))?
+        .clone();
+    if items.is_empty() {
+        return Err(ApiError::unavailable("the news store is empty (the refresh runs on boot and every 15 minutes)"));
+    }
+    // The symbol's tag: BTCUSDT -> btc, DERIV forex gold -> gold, etc.
+    let tag = query.symbol.as_deref().map(|s| {
+        let u = s.to_uppercase();
+        if u.contains("BTC") { "btc".to_string() }
+        else if u.contains("ETH") { "eth".to_string() }
+        else if u.contains("XAU") || u.contains("GOLD") { "gold".to_string() }
+        else if u.contains("SOL") { "sol".to_string() }
+        else if u.contains("XRP") { "xrp".to_string() }
+        else if u.contains("EUR") || u.contains("USD") || u.contains("DXY") { "dollar".to_string() }
+        else { u.to_lowercase() }
+    });
+    let report = market_data::news::sentiment_report(&items, tag.as_deref());
+    // Sentiment-price divergence: the context against the instrument's own
+    // last day. A bullish feed with a falling chart is the interesting one.
+    let divergence = if let Some(symbol) = &query.symbol {
+        let symbol = symbol.to_uppercase();
+        let parsed = market_data::broker::VenueSymbol::parse(&symbol);
+        let channels = parsed.channels().unwrap_or(market_data::broker::DataChannels::CANDLES);
+        if !channels.supports(market_data::broker::DataChannels::MACRO) {
+            None // synthetics: no macro read, by taxonomy
+        } else {
+            let tf = analytics_core::types::Timeframe::H1;
+            let to_ns = crate::now_ns();
+            let from_ns = to_ns - 24 * 3_600_000_000_000;
+            let window = state
+                .windows
+                .candles_capped(&symbol, tf, from_ns, to_ns, 24)
+                .await
+                .map_err(|e| ApiError::unavailable(format!("no candles for {symbol}: {e}")))?;
+            let candles = window.candles;
+            if candles.len() >= 2 {
+                let change = (candles.last().expect("c").close / candles.first().expect("c").close - 1.0) * 100.0;
+                Some(serde_json::json!({
+                    "change_pct_24h": change,
+                    "sentiment_mean": report.mean,
+                    "diverges": report.mean.signum() != 0.0 && change.signum() != 0.0 && report.mean.signum() != change.signum(),
+                    "note": "sentiment and price disagreeing is the interesting state -- absorption or distribution, the flow decides which.",
+                }))
+            } else {
+                None
+            }
+        }
+    } else {
+        None
+    };
+    Ok(Json(serde_json::json!({
+        "report": report,
+        "tag": tag,
+        "divergence": divergence,
+        "note": "the lexicon is v1 and transparent -- every term visible, negation is v2's problem, and nobody pretends a word list is a language model.",
     })))
 }
 

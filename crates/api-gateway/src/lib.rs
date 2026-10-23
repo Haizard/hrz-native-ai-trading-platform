@@ -300,6 +300,8 @@ pub fn router(state: AppState) -> Router {
         .route("/econ/forecast", axum::routing::post(econ_routes::forecast_override))
         .route("/econ/reaction", get(econ_routes::reaction))
         .route("/econ/macro", get(econ_routes::macro_context))
+        .route("/news/latest", get(econ_routes::news_latest))
+        .route("/news/sentiment", get(econ_routes::news_sentiment))
         .route("/indicator-series", get(concept_routes::indicator_series))
         .route("/concept-events/smt", get(concept_routes::smt))
         .route("/compositions/backtest", post(concept_routes::backtest))
