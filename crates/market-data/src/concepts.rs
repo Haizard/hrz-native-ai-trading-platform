@@ -744,7 +744,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
-            event_kinds: &[],
+            event_kinds: &[EventKind::RsiZoneCross],
         },
         ConceptSpec {
             id: "indicators.rsi_divergence",
@@ -756,7 +756,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
-            event_kinds: &[],
+            event_kinds: &[EventKind::RsiDivergenceSignal],
         },
         ConceptSpec {
             id: "indicators.rsi_family",
@@ -768,6 +768,42 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
+            event_kinds: &[EventKind::RsiFamilyConsensus],
+        },
+        ConceptSpec {
+            id: "indicators.macd_family",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "MACD Family",
+            description: "the MACD line of every fast period 2..24 (slow = 2x fast) as one ribbon on the zero line -- the family's agreement is the trend's, visible",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: true,
+            overlay: false,
+            event_kinds: &[],
+        },
+        ConceptSpec {
+            id: "indicators.atr_family",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "ATR Family",
+            description: "every ATR period 2..24 as one ribbon -- volatility agreeing across periods is a real regime, one period spiking alone is noise",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: true,
+            overlay: false,
+            event_kinds: &[],
+        },
+        ConceptSpec {
+            id: "indicators.ema_family",
+            version: "1.0.0",
+            library: Library::Indicators,
+            name: "EMA Ribbon (GMMA)",
+            description: "the Guppy ribbon on the price plot: short EMAs 3..15 and long EMAs 30..60 in two tones -- the groups separating and joining is the trend's life cycle",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: false,
+            overlay: true,
             event_kinds: &[],
         },
         ConceptSpec {
@@ -780,7 +816,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
-            event_kinds: &[],
+            event_kinds: &[EventKind::MacdSignalCross, EventKind::MacdZeroCross],
         },
         ConceptSpec {
             id: "indicators.atr",
@@ -792,7 +828,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
-            event_kinds: &[],
+            event_kinds: &[EventKind::AtrExpansion],
         },
         ConceptSpec {
             id: "indicators.ema",
@@ -804,7 +840,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: true,
-            event_kinds: &[],
+            event_kinds: &[EventKind::EmaCross],
         },
         ConceptSpec {
             id: "indicators.sma",
@@ -816,7 +852,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: true,
-            event_kinds: &[],
+            event_kinds: &[EventKind::SmaCross],
         },
         ConceptSpec {
             id: "indicators.bollinger",
@@ -828,7 +864,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: true,
-            event_kinds: &[],
+            event_kinds: &[EventKind::BollingerBreakout],
         },
         ConceptSpec {
             id: "sd.zone_tested",
@@ -1521,4 +1557,38 @@ mod tests {
         let fvg = MarketEvent { kind: EventKind::FvgFilled, ..fvg };
         assert_eq!(as_concept_event(&fvg).expect("wraps").status, ConceptStatus::Expired);
     }
+#[test]
+fn indicator_signals_map_to_their_concepts() {
+    use analytics_core::events::{EventKind, MarketEvent};
+    use analytics_core::types::{Side, Timeframe};
+    let mk = |kind: EventKind| MarketEvent {
+        kind,
+        symbol: "T".into(),
+        timeframe: Timeframe::H1,
+        bar_time: 1,
+        close: 100.0,
+        price: 100.0,
+        side: Some(Side::Buy),
+        zone_low: Some(99.0),
+        zone_high: Some(101.0),
+        magnitude: None,
+        formed_at: None,
+    };
+    for (kind, want) in [
+        (EventKind::RsiZoneCross, "indicators.rsi"),
+        (EventKind::RsiFamilyConsensus, "indicators.rsi_family"),
+        (EventKind::RsiDivergenceSignal, "indicators.rsi_divergence"),
+        (EventKind::MacdSignalCross, "indicators.macd"),
+        (EventKind::MacdZeroCross, "indicators.macd"),
+        (EventKind::EmaCross, "indicators.ema"),
+        (EventKind::SmaCross, "indicators.sma"),
+        (EventKind::BollingerBreakout, "indicators.bollinger"),
+        (EventKind::AtrExpansion, "indicators.atr"),
+    ] {
+        let mapped = crate::concepts::as_concept_event(&mk(kind));
+        assert!(mapped.is_some(), "{want} maps its signal");
+        assert_eq!(mapped.expect("mapped").concept_id, want);
+    }
+}
+
 }

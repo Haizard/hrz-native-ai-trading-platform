@@ -5668,9 +5668,9 @@ function createChartPane(root, hooks = {}) {
           label: short,
           color,
         });
-      } else if (e.concept_id.startsWith("candles.")) {
-        // A pattern: its name on its own candle, below for bullish, above
-        // for bearish.
+      } else if (e.concept_id.startsWith("candles.") || e.concept_id.startsWith("indicators.")) {
+        // A pattern or an indicator signal: its name on its own candle,
+        // below for bullish, above for bearish.
         const bullish = e.direction === "bullish";
         out.push({
           type: "candle_mark",
@@ -5692,7 +5692,11 @@ function createChartPane(root, hooks = {}) {
         });
       }
     }
-    return out.slice(-40);
+    // The scan bounds the events to the newest 200; the shapes show ALL of
+    // them. A 40-shape cap hid exactly the history the backscan exists to
+    // reveal -- an attached indicator must mark every detection across the
+    // visible window, or there is no way to spot one that does not work.
+    return out.slice(-200);
   }
 
   /// The menu section: one checkbox row per registered concept, with the

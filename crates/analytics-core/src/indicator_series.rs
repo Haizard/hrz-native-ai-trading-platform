@@ -119,6 +119,9 @@ pub fn indicator_series(concept: &str, candles: &[Candle]) -> Option<IndicatorSe
         "indicators.rsi_divergence" => rsi_pane(candles, 14, true),
         "indicators.rsi_pca" => rsi_pca_pane(candles),
         "indicators.rsi_family" => rsi_family_pane(candles),
+        "indicators.macd_family" => macd_family_pane(candles),
+        "indicators.atr_family" => atr_family_pane(candles),
+        "indicators.ema_family" => ema_family_overlay(candles),
         "indicators.macd" => macd_pane(candles),
         "indicators.atr" => atr_pane(candles),
         "indicators.ema" => ema_overlay(candles),
@@ -170,6 +173,130 @@ fn rsi_family_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+    })
+}
+
+/// The MACD family ribbon: the MACD LINE of every fast period 2..=24 with
+/// slow = 2x fast (the 12:26 ratio kept), on the zero line, auto-scaled,
+/// fast-to-slow gradient. The ribbon agreeing on a side of zero is the
+/// trend's own consensus; the fast edge crossing first is the early read.
+fn macd_family_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    if closes.len() < 60 {
+        return None;
+    }
+    let n = crate::rsi_pca::RSI_PERIODS.len();
+    let (fa, fb) = ((0xf5u32, 0x9eu32, 0x0bu32), (0x3bu32, 0x82u32, 0xf6u32));
+    let lines: Vec<SeriesLine> = crate::rsi_pca::RSI_PERIODS
+        .iter()
+        .enumerate()
+        .map(|(i, fast)| {
+            let t = i as f64 / (n - 1) as f64;
+            let mix = |a: u32, b: u32| (a as f64 + (b as f64 - a as f64) * t) as u32;
+            let color = (mix(fa.0, fb.0) << 16) | (mix(fa.1, fb.1) << 8) | mix(fa.2, fb.2);
+            SeriesLine {
+                name: if i == 0 || i == n - 1 {
+                    format!("macd{fast}")
+                } else {
+                    String::new()
+                },
+                color,
+                values: crate::indicators::macd::macd(&closes, *fast, fast * 2, 1)
+                    .iter()
+                    .map(|p| p.map(|m| m.line))
+                    .collect(),
+            }
+        })
+        .collect();
+    Some(IndicatorSeries {
+        label: "MACD Family (2..24, 2x)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: vec![0.0],
+        lines,
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+    })
+}
+
+/// The ATR family ribbon: every period 2..=24, fast-to-slow gradient,
+/// auto-scaled. Agreement across periods is a real volatility regime; one
+/// period spiking alone is noise.
+fn atr_family_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    if candles.len() < 30 {
+        return None;
+    }
+    let n = crate::rsi_pca::RSI_PERIODS.len();
+    let (fa, fb) = ((0xf5u32, 0x9eu32, 0x0bu32), (0x3bu32, 0x82u32, 0xf6u32));
+    let lines: Vec<SeriesLine> = crate::rsi_pca::RSI_PERIODS
+        .iter()
+        .enumerate()
+        .map(|(i, period)| {
+            let t = i as f64 / (n - 1) as f64;
+            let mix = |a: u32, b: u32| (a as f64 + (b as f64 - a as f64) * t) as u32;
+            let color = (mix(fa.0, fb.0) << 16) | (mix(fa.1, fb.1) << 8) | mix(fa.2, fb.2);
+            SeriesLine {
+                name: if i == 0 || i == n - 1 {
+                    format!("atr{period}")
+                } else {
+                    String::new()
+                },
+                color,
+                values: crate::indicators::atr::atr(candles, *period),
+            }
+        })
+        .collect();
+    Some(IndicatorSeries {
+        label: "ATR Family (2..24)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: Vec::new(),
+        lines,
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+    })
+}
+
+/// The Guppy ribbon (GMMA) on the price plot: the short group (3, 5, 8, 10,
+/// 12, 15) in one tone and the long group (30, 35, 40, 45, 50, 60) in
+/// another -- the groups separating and joining IS the trend's life cycle,
+/// the oldest ribbon in the book.
+fn ema_family_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    if closes.len() < 70 {
+        return None;
+    }
+    let short: [usize; 6] = [3, 5, 8, 10, 12, 15];
+    let long: [usize; 6] = [30, 35, 40, 45, 50, 60];
+    let mut lines = Vec::new();
+    for (group, periods, base) in [("s", &short, (0x22u32, 0xd3u32, 0xeeu32)), ("l", &long, (0xf4u32, 0x72u32, 0xb6u32))] {
+        for (i, period) in periods.iter().enumerate() {
+            let shade = 1.0 - i as f64 * 0.09; // later lines of a group dim a little
+            let color = ((base.0 as f64 * shade) as u32) << 16
+                | ((base.1 as f64 * shade) as u32) << 8
+                | (base.2 as f64 * shade) as u32;
+            lines.push(SeriesLine {
+                name: if i == 0 || i == periods.len() - 1 {
+                    format!("ema{group}{period}")
+                } else {
+                    String::new()
+                },
+                color,
+                values: crate::indicators::ema::ema(&closes, *period),
+            });
+        }
+    }
+    Some(IndicatorSeries {
+        label: "EMA Ribbon (GMMA)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: Vec::new(),
+        lines,
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Overlay,
     })
 }
 
@@ -517,6 +644,55 @@ mod tests {
             swing(&spec.lines[0].values),
             swing(&spec.lines[22].values)
         );
+    }
+
+    #[test]
+    fn the_macd_family_ribbon_keeps_the_ratio_and_the_zero() {
+        let spec = indicator_series("indicators.macd_family", &moving_series(300)).expect("spec");
+        assert_eq!(spec.lines.len(), 23);
+        assert_eq!(spec.levels, vec![0.0]);
+        // The slow=2x fast ratio means the slowest pair (24, 48) warms up
+        // last: its line starts later than the fastest pair's (2, 4).
+        let first = |values: &[Option<f64>]| values.iter().position(|v| v.is_some()).expect("some");
+        assert!(first(&spec.lines[22].values) > first(&spec.lines[0].values), "slower pairs warm up later");
+        // MACD lines of an oscillating series cross zero somewhere.
+        let vs: Vec<f64> = spec.lines[0].values.iter().flatten().copied().collect();
+        assert!(vs.iter().any(|v| *v > 0.0) && vs.iter().any(|v| *v < 0.0), "the fast line swings through zero");
+    }
+
+    #[test]
+    fn the_atr_family_is_twenty_three_positive_lines() {
+        let spec = indicator_series("indicators.atr_family", &moving_series(120)).expect("spec");
+        assert_eq!(spec.lines.len(), 23);
+        for line in &spec.lines {
+            for v in line.values.iter().flatten() {
+                assert!(*v > 0.0, "ATR is positive");
+            }
+        }
+    }
+
+    #[test]
+    fn the_gmma_ribbon_is_two_groups_of_prices() {
+        let candles = moving_series(200);
+        let spec = indicator_series("indicators.ema_family", &candles).expect("spec");
+        assert_eq!(spec.target, SeriesTarget::Overlay);
+        assert_eq!(spec.lines.len(), 12, "six short + six long");
+        let names: Vec<&str> = spec.lines.iter().map(|l| l.name.as_str()).filter(|n| !n.is_empty()).collect();
+        assert_eq!(names, vec!["emas3", "emas15", "emal30", "emal60"]);
+        // Every value is a price inside the traded range, and the long group
+        // warms up after the short group.
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for c in &candles {
+            lo = lo.min(c.low);
+            hi = hi.max(c.high);
+        }
+        for line in &spec.lines {
+            for v in line.values.iter().flatten() {
+                assert!(*v >= lo * 0.95 && *v <= hi * 1.05, "a price: {v}");
+            }
+        }
+        let first = |values: &[Option<f64>]| values.iter().position(|v| v.is_some()).expect("some");
+        assert!(first(&spec.lines[11].values) > first(&spec.lines[0].values), "ema60 after ema3");
     }
 
     #[test]

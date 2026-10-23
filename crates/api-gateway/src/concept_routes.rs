@@ -235,11 +235,23 @@ pub async fn scan(
                 .filter_map(market_data::concepts::as_concept_event),
         );
     }
-    // Bounded for the pane: the newest 200, chronological.
-    let start = events.len().saturating_sub(200);
+    // Bounded PER CONCEPT, not globally: a dense family (a fib ladder emits
+    // per bar) would otherwise push every sparse family (an RSI cross fires
+    // a dozen times in 500 bars) out of the newest-N window entirely, and an
+    // attached indicator would show no history exactly where it has some.
+    let mut per_concept: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut kept: Vec<market_data::concepts::ConceptEvent> = Vec::new();
+    for e in events.into_iter().rev() {
+        let count = per_concept.entry(e.concept_id.clone()).or_insert(0);
+        if *count < 50 {
+            *count += 1;
+            kept.push(e);
+        }
+    }
+    kept.reverse();
     Ok(Json(ConceptEventsResponse {
         symbol,
-        events: events.split_off(start),
+        events: kept,
     }))
 }
 

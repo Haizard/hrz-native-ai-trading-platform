@@ -249,6 +249,25 @@ pub enum EventKind {
     /// The RSI-PCA model's prediction crossing its rolling quantile
     /// extremes (neurotrader's idea, in-house).
     RsiPcaSignal,
+    /// RSI (14) entering oversold (buy-side) or overbought (sell-side).
+    RsiZoneCross,
+    /// Every RSI period 2..=24 in the same zone -- the family's strongest
+    /// statement, fired on entry.
+    RsiFamilyConsensus,
+    /// An RSI/price divergence confirmed at this bar.
+    RsiDivergenceSignal,
+    /// The MACD line crossing its signal.
+    MacdSignalCross,
+    /// The MACD line crossing zero.
+    MacdZeroCross,
+    /// The EMA 50 crossing the EMA 200 (golden/death).
+    EmaCross,
+    /// The SMA 50 crossing the SMA 200 (golden/death).
+    SmaCross,
+    /// A close outside the Bollinger band, in the break's direction.
+    BollingerBreakout,
+    /// ATR jumping past 1.5x its own mean -- volatility changing gear.
+    AtrExpansion,
 }
 
 impl EventKind {
@@ -350,11 +369,20 @@ impl EventKind {
             Self::FibConfluence => "fib_confluence",
             Self::FibTimeZone => "fib_time_zone",
             Self::RsiPcaSignal => "rsi_pca_signal",
+            Self::RsiZoneCross => "rsi_zone_cross",
+            Self::RsiFamilyConsensus => "rsi_family_consensus",
+            Self::RsiDivergenceSignal => "rsi_divergence_signal",
+            Self::MacdSignalCross => "macd_signal_cross",
+            Self::MacdZeroCross => "macd_zero_cross",
+            Self::EmaCross => "ema_cross",
+            Self::SmaCross => "sma_cross",
+            Self::BollingerBreakout => "bollinger_breakout",
+            Self::AtrExpansion => "atr_expansion",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 94] = [
+    pub const ALL: [Self; 103] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -449,6 +477,15 @@ impl EventKind {
         Self::FibConfluence,
         Self::FibTimeZone,
         Self::RsiPcaSignal,
+        Self::RsiZoneCross,
+        Self::RsiFamilyConsensus,
+        Self::RsiDivergenceSignal,
+        Self::MacdSignalCross,
+        Self::MacdZeroCross,
+        Self::EmaCross,
+        Self::SmaCross,
+        Self::BollingerBreakout,
+        Self::AtrExpansion,
     ];
 }
 
@@ -2159,6 +2196,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_chart_gaps(candles, symbol, &config));
     events.extend(crate::fibonacci::detect_fibonacci(candles, symbol, config.structure_lookback));
     events.extend(crate::rsi_pca::detect_rsi_pca(candles, symbol));
+    events.extend(crate::indicator_signals::detect_indicator_signals(candles, symbol));
     events.extend(detect_chart_patterns(candles, symbol, &config));
     events.extend(detect_volume_profile(candles, symbol));
     // Harmonics: the platform's own calibrated detector (the reference

@@ -62,6 +62,7 @@ pub mod smt;
 pub mod candlesticks;
 pub mod fibonacci;
 pub mod indicator_series;
+pub mod indicator_signals;
 pub mod rsi_pca;
 pub mod harmonics;
 pub mod liquidity;
