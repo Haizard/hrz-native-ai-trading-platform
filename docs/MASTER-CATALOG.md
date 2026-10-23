@@ -279,20 +279,20 @@ Plus `order_flow.delta_shift` in the registry. **Score: 9 ✅ / 15 ⚠️ / 2 �
 | 2 | Statistical arbitrage | ❌ | 17 | GARCH | ❌ |
 | 3 | Pairs trading | ❌ | 18 | Extreme-value | ❌ |
 | 4 | Cointegration | ❌ | 19 | Distribution-based | ❌ |
-| 5 | Z-score reversion | ❌ | 20 | Residual reversion | ❌ |
+| 5 | Z-score reversion | ✅ `indicators.zscore` | 20 | Residual reversion | ❌ |
 | 6 | Bollinger mean reversion | ⚠️ bands exist | 21 | Spread trading | ❌ |
 | 7 | Time-series momentum | ⚠️ no ROC yet | 22 | Correlation breakdown | ❌ |
 | 8 | Cross-sectional momentum | ❌ multi-symbol | 23 | Lead-lag | ❌ |
-| 9 | Trend factor models | ❌ | 24 | Entropy regime | ❌ |
-| 10 | Factor-based | ❌ | 25 | Change-point | ❌ |
-| 11 | Kalman filter | ❌ | 26 | Volatility clustering | ⚠️ ATR family shows it |
+| 9 | Trend factor models | ❌ | 24 | Entropy regime | ✅ `indicators.entropy` |
+| 10 | Factor-based | ❌ | 25 | Change-point | ✅ `indicators.changepoint` (CUSUM) |
+| 11 | Kalman filter | ✅ `indicators.kalman` (local-level) | 26 | Volatility clustering | ⚠️ ATR family shows it |
 | 12 | HMM regime | ❌ | 27 | Robust optimization | ➖ portfolio |
 | 13 | Bayesian models | ❌ | 28 | Walk-forward | ✅ RSI-PCA + backtester |
 | 14 | Monte Carlo | ✅ `forecast.rs` cone | 29 | Ensemble signals | ✅ the composer |
 | 15 | Autoregressive | ❌ | 30 | Meta-labeling | ❌ |
 | — | **Predictive PCA model** | ✅ `indicators.rsi_pca` | | | |
 
-**Score: 4 ✅ / 4 ⚠️ / 21 ❌ / 1 ➖**
+**Score: 8 ✅ / 4 ⚠️ / 17 ❌ / 1 ➖**
 
 ## 13. Algorithmic and AI
 

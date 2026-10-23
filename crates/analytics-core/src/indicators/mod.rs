@@ -23,6 +23,7 @@ pub mod macd;
 pub mod ichimoku;
 pub mod misc;
 pub mod oscillators;
+pub mod quant;
 pub mod rsi;
 pub mod sma;
 pub mod trend;

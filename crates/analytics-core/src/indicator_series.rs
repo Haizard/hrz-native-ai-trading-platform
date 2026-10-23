@@ -159,6 +159,10 @@ pub fn indicator_series(concept: &str, candles: &[Candle]) -> Option<IndicatorSe
         "indicators.anchored_vwap" => avwap_overlay(candles),
         "indicators.chandelier" => chandelier_overlay(candles),
         "indicators.hv" => hv_pane(candles),
+        "indicators.zscore" => zscore_pane(candles),
+        "indicators.kalman" => kalman_overlay(candles),
+        "indicators.changepoint" => changepoint_pane(candles),
+        "indicators.entropy" => entropy_pane(candles),
         "indicators.macd" => macd_pane(candles),
         "indicators.atr" => atr_pane(candles),
         "indicators.ema" => ema_overlay(candles),
@@ -760,6 +764,83 @@ fn hv_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
             SeriesLine { name: "hv".to_string(), color: 0xf59e0b, values: hv },
             SeriesLine { name: "rank".to_string(), color: 0x94a3b8, values: rank },
         ],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// The z-score (20): sigmas from home, the ±2 bands as levels.
+fn zscore_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let values = crate::indicators::quant::zscore(&closes, 20);
+    if values.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "Z-Score (20)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: vec![2.0, -2.0, 0.0],
+        lines: vec![SeriesLine { name: "z".to_string(), color: PRED_VIOLET, values }],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// The Kalman filter's local-level estimate, on the price plot.
+fn kalman_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let values = crate::indicators::quant::kalman(&closes, 0.01, 0.5);
+    Some(IndicatorSeries {
+        label: "Kalman".to_string(),
+        scale: SeriesScale::Auto,
+        levels: Vec::new(),
+        lines: vec![SeriesLine { name: "kalman".to_string(), color: 0x22d3ee, values }],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Overlay,
+        fills: Vec::new(),
+    })
+}
+
+/// The signed CUSUM stat (60): the line and the ±2.5 gate.
+fn changepoint_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let values = crate::indicators::quant::cusum_stat(&closes, 60);
+    if values.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "CUSUM (60)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: vec![2.5, -2.5, 0.0],
+        lines: vec![SeriesLine { name: "cusum".to_string(), color: 0xf59e0b, values }],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// Shannon entropy of returns (60, 6 bins), fixed 0..1.
+fn entropy_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let values = crate::indicators::quant::shannon_entropy(&closes, 60, 6);
+    if values.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "Entropy (60)".to_string(),
+        scale: SeriesScale::Fixed { min: 0.0, max: 1.0 },
+        levels: vec![0.85, 0.35],
+        lines: vec![SeriesLine { name: "H".to_string(), color: PRED_VIOLET, values }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,

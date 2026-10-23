@@ -406,6 +406,54 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         }
     }
 
+    // -- Z-score zone entries: leaving home by two sigmas, reversion side.
+    if n > 22 {
+        let v = crate::indicators::quant::zscore(&closes, 20);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p >= -2.0 && c < -2.0 {
+                push(EventKind::ZscoreZoneEntry, Some(Side::Buy), Some(c));
+            } else if p <= 2.0 && c > 2.0 {
+                push(EventKind::ZscoreZoneEntry, Some(Side::Sell), Some(c));
+            }
+        }
+    }
+
+    // -- Price crossing the Kalman estimate.
+    if n > 30 {
+        let v = crate::indicators::quant::kalman(&closes, 0.01, 0.5);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if closes[n - 2] <= p && closes[n - 1] > c {
+                push(EventKind::KalmanCross, Some(Side::Buy), None);
+            } else if closes[n - 2] >= p && closes[n - 1] < c {
+                push(EventKind::KalmanCross, Some(Side::Sell), None);
+            }
+        }
+    }
+
+    // -- The CUSUM change-point: the signed stat crossing its gate.
+    if n > 70 {
+        let v = crate::indicators::quant::cusum_stat(&closes, 60);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p.abs() < 2.5 && c >= 2.5 {
+                push(EventKind::ChangePoint, Some(Side::Buy), Some(c));
+            } else if p.abs() < 2.5 && c <= -2.5 {
+                push(EventKind::ChangePoint, Some(Side::Sell), Some(c));
+            }
+        }
+    }
+
+    // -- The entropy regimes: disorder (top) and order (bottom).
+    if n > 70 {
+        let v = crate::indicators::quant::shannon_entropy(&closes, 60, 6);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p < 0.85 && c >= 0.85 {
+                push(EventKind::EntropyRegimeShift, None, Some(c));
+            } else if p > 0.35 && c <= 0.35 {
+                push(EventKind::EntropyRegimeShift, None, Some(c));
+            }
+        }
+    }
+
     // -- MACD family consensus: EVERY ribbon line on the same side of zero.
     // The slowest pair (24, 48) is valid from bar 47; the consensus's ENTRY
     // is the event (being in it is not), so detection must start exactly

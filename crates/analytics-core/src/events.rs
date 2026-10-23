@@ -376,6 +376,14 @@ pub enum EventKind {
     AvwapCross,
     /// The volatility rank entering the top or bottom decile.
     HvRegimeShift,
+    /// The z-score entering beyond two sigmas (reversion side).
+    ZscoreZoneEntry,
+    /// Price crossing the Kalman filter's estimate.
+    KalmanCross,
+    /// The signed CUSUM stat crossing its gate -- the regime broke.
+    ChangePoint,
+    /// Return entropy entering the disorder or order regime.
+    EntropyRegimeShift,
 }
 
 impl EventKind {
@@ -534,11 +542,15 @@ impl EventKind {
             Self::ChandelierFlip => "chandelier_flip",
             Self::AvwapCross => "avwap_cross",
             Self::HvRegimeShift => "hv_regime_shift",
+            Self::ZscoreZoneEntry => "zscore_zone_entry",
+            Self::KalmanCross => "kalman_cross",
+            Self::ChangePoint => "change_point",
+            Self::EntropyRegimeShift => "entropy_regime_shift",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 151] = [
+    pub const ALL: [Self; 155] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -690,6 +702,10 @@ impl EventKind {
         Self::ChandelierFlip,
         Self::AvwapCross,
         Self::HvRegimeShift,
+        Self::ZscoreZoneEntry,
+        Self::KalmanCross,
+        Self::ChangePoint,
+        Self::EntropyRegimeShift,
     ];
 }
 
