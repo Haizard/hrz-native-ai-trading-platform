@@ -471,8 +471,12 @@ pub async fn backtest(
         // chase it).
         let qty = match &request.document.risk.sizing {
             SizeKind::Fixed { quantity } => Some(*quantity),
-            SizeKind::VolatilityAdjusted { risk_fraction } => signal.stop_level.map(|stop| {
-                let distance = (candles[signal.bar].close - stop).abs();
+            SizeKind::VolatilityAdjusted { risk_fraction } => stop.map(|stop_price| {
+                // The distance is to the stop the trade ACTUALLY brackets
+                // on -- sizing off the event's own level while the bracket
+                // is ATR-placed is how a 1% risk budget became a 35% loss.
+                let entry_bar = (signal.bar + 1).min(candles.len() - 1);
+                let distance = (candles[entry_bar].open - stop_price).abs();
                 analytics_core::risk::vol_adjusted_qty(knobs_initial_capital, *risk_fraction, distance)
             }),
             _ => None,
