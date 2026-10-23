@@ -406,6 +406,17 @@ pub enum EventKind {
     /// A swing extreme whose own cell carries heavy time -- unfinished
     /// business at the edge.
     PoorExtreme,
+    /// The ICT Silver Bullet: a sweep inside the window, a displaced FVG
+    /// after it.
+    SilverBullet,
+    /// The ICT Unicorn: a zone that is both a breaker and an FVG, with
+    /// price entering the overlap.
+    UnicornModel,
+    /// The 2022 mentorship model: yesterday's extreme swept, the character
+    /// change against the sweep.
+    Model2022,
+    /// The market maker model completed at the opposite pool.
+    MarketMakerModel,
 }
 
 impl EventKind {
@@ -578,11 +589,15 @@ impl EventKind {
             Self::SinglePrint => "single_print",
             Self::AcceptanceEvent => "acceptance_event",
             Self::PoorExtreme => "poor_extreme",
+            Self::SilverBullet => "silver_bullet",
+            Self::UnicornModel => "unicorn_model",
+            Self::Model2022 => "model2022",
+            Self::MarketMakerModel => "market_maker_model",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 165] = [
+    pub const ALL: [Self; 169] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -748,6 +763,10 @@ impl EventKind {
         Self::SinglePrint,
         Self::AcceptanceEvent,
         Self::PoorExtreme,
+        Self::SilverBullet,
+        Self::UnicornModel,
+        Self::Model2022,
+        Self::MarketMakerModel,
     ];
 }
 
@@ -2991,6 +3010,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(crate::regime::detect_mtf_alignment(candles, symbol));
     events.extend(crate::regime::detect_bias(candles, symbol));
     events.extend(crate::tpo::detect_auction(candles, symbol));
+    events.extend(crate::ict_models::detect_ict_models(candles, symbol));
     events.extend(detect_chart_gaps(candles, symbol, &config));
     events.extend(crate::fibonacci::detect_fibonacci(candles, symbol, config.structure_lookback));
     events.extend(crate::rsi_pca::detect_rsi_pca(candles, symbol));

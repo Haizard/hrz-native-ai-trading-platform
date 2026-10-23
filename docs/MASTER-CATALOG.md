@@ -134,21 +134,21 @@ All forty, including **upside gap two crows ✅** (`candles.upside_gap_two_crows
 
 | # | Concept | Status | # | Concept | Status |
 |---|---------|--------|---|---------|--------|
-| 1 | Silver Bullet | ❌ composite | 14 | Weekly bias | ✅ `session.weekly_bias` |
-| 2 | Unicorn Model | ❌ composite | 15 | Liquidity draw | ⚠️ premium/discount |
-| 3 | 2022 Model | ❌ composite | 16 | FVG entries | ⚠️ `smc.fvg` detects; entry logic is composition |
+| 1 | Silver Bullet | ✅ `smc.silver_bullet` (window + sweep + displaced FVG) | 14 | Weekly bias | ✅ `session.weekly_bias` |
+| 2 | Unicorn Model | ✅ `smc.unicorn` (breaker∩FVG, entry into the overlap) | 15 | Liquidity draw | ⚠️ premium/discount |
+| 3 | 2022 Model | ✅ `smc.model2022` (yesterday's sweep + character change) | 16 | FVG entries | ⚠️ `smc.fvg` detects; entry logic is composition |
 | 4 | Judas Swing | ✅ | `smc.judas_swing` | 17 | OB entries | ⚠️ same |
 | 5 | Power of Three | ✅ | `smc.power_of_three` | 18 | Breaker/mitigation entries | ⚠️ same |
 | 6 | OTE | ✅ `fib.ote` | 19 | Rejection block | ✅ |
-| 7 | MM Buy Model | ❌ composite | 20 | Balanced Price Range | ✅ `smc.bpr` |
-| 8 | MM Sell Model | ❌ composite | 21 | Volume imbalance | ✅ `analytics-core::imbalance` |
+| 7 | MM Buy Model | ✅ `smc.market_maker_model` (curve completes at the opposite pool) | 20 | Balanced Price Range | ✅ `smc.bpr` |
+| 8 | MM Sell Model | ✅ same | 21 | Volume imbalance | ✅ `analytics-core::imbalance` |
 | 9 | NY session model | ⚠️ kill zone only | 22 | Liquidity void | ⚠️ FVG marks it |
 | 10 | London model | ⚠️ kill zone only | 23 | SMT divergence | ✅ |
 | 11 | Asian range | ✅ | 24 | Consequent encroachment | ❌ |
 | 12 | Kill zones | ✅ both | 25 | Opening gap analysis | ❌ |
 | 13 | Daily bias | ✅ `session.daily_bias` | | | |
 
-**Score: 11 ✅ / 7 ⚠️ / 7 ❌** (the ❌ are composite *models* — the composer is where they get assembled)
+**Score: 16 ✅ / 7 ⚠️ / 2 ❌** (the 2 remaining are multi-day bias composites, honest compositions)
 
 ## 6. Technical Indicator Strategies
 

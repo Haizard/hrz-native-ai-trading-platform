@@ -55,6 +55,7 @@ pub mod events;
 pub mod footprint;
 pub mod forecast;
 pub mod iceberg;
+pub mod ict_models;
 pub mod imbalance;
 pub mod indicators;
 pub mod multiplier;
