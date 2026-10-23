@@ -780,7 +780,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
-            event_kinds: &[],
+            event_kinds: &[EventKind::MacdFamilyConsensus],
         },
         ConceptSpec {
             id: "indicators.atr_family",
@@ -792,7 +792,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
-            event_kinds: &[],
+            event_kinds: &[EventKind::AtrFamilyExpansion],
         },
         ConceptSpec {
             id: "indicators.ema_family",
@@ -804,7 +804,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: true,
-            event_kinds: &[],
+            event_kinds: &[EventKind::GmmaCross],
         },
         ConceptSpec {
             id: "indicators.macd",

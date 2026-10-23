@@ -1978,7 +1978,7 @@ pub fn build(request: &Request) -> Scene {
     scene.concept_shapes = request
         .concept_shapes
         .iter()
-        .filter_map(|shape| position_concept_shape(shape, &frame))
+        .flat_map(|shape| position_concept_shape(shape, &frame))
         .collect();
 
     // The live price, positioned on the same frame everything else uses -- and
@@ -2783,44 +2783,71 @@ pub enum ConceptShape {
 
 /// Position one concept shape into the draw vocabulary the shell already
 /// strokes (the script overlay's own Line/Label/Box).
-fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Option<crate::script::ScriptDraw> {
+fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::script::ScriptDraw> {
     let x_at = |ns: i64| frame.x_at_nanos(ns);
     let bar_w = ((frame.plot.w) / ((frame.to - frame.from) / frame.bar_nanos.max(1)).max(1) as f64).max(1e-9);
     match shape {
         ConceptShape::Zone { from_ns, to_ns, low, high, label, color } => {
             if !low.is_finite() || !high.is_finite() {
-                return None;
+                return Vec::new();
             }
-            Some(crate::script::ScriptDraw::Box {
-                x1: x_at(*from_ns),
-                y1: frame.y_at(*high),
-                x2: x_at(*to_ns).max(x_at(*from_ns) + bar_w * 0.6),
-                y2: frame.y_at(*low),
-                color: *color,
-                border_color: Some(*color),
-                border_width: 1.0,
-                border_style: "solid".to_string(),
-                fill_alpha: Some(0.18),
-            })
+            let (x1, x2) = (x_at(*from_ns), x_at(*to_ns).max(x_at(*from_ns) + bar_w * 0.6));
+            let (y1, y2) = (frame.y_at(*high), frame.y_at(*low));
+            vec![
+                // The fill is a WASH (0.08): candles stay readable through
+                // it, and overlapping zones tint rather than muddy -- the
+                // border carries the shape, the fill only hues.
+                crate::script::ScriptDraw::Box {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    color: *color,
+                    border_color: Some(*color),
+                    border_width: 1.0,
+                    border_style: "solid".to_string(),
+                    fill_alpha: Some(0.08),
+                },
+                // The zone's name, top-left INSIDE its own box: an order
+                // block says "order block", a fair value gap says so too.
+                crate::script::ScriptDraw::Label {
+                    x: x1 + 3.0,
+                    y: y1 + 10.0,
+                    text: label.clone(),
+                    color: *color,
+                },
+            ]
         }
         ConceptShape::Segment { from_ns, to_ns, price, label, color } => {
             if !price.is_finite() {
-                return None;
+                return Vec::new();
             }
-            Some(crate::script::ScriptDraw::Line {
-                x1: x_at(*from_ns),
-                y1: frame.y_at(*price),
-                x2: x_at(*to_ns).max(x_at(*from_ns) + bar_w * 0.6),
-                y2: frame.y_at(*price),
-                color: *color,
-                style: "dashed".to_string(),
-                width: 1.0,
-                extend: "none".to_string(),
-            })
+            let (x1, x2) = (x_at(*from_ns), x_at(*to_ns).max(x_at(*from_ns) + bar_w * 0.6));
+            let y = frame.y_at(*price);
+            vec![
+                crate::script::ScriptDraw::Line {
+                    x1,
+                    y1: y,
+                    x2,
+                    y2: y,
+                    color: *color,
+                    style: "dashed".to_string(),
+                    width: 1.0,
+                    extend: "none".to_string(),
+                },
+                // The level's name just above its own line, mid-span: a
+                // liquidity line says "liquidity", not a bare dash.
+                crate::script::ScriptDraw::Label {
+                    x: (x1 + x2) / 2.0,
+                    y: y - 4.0,
+                    text: label.clone(),
+                    color: *color,
+                },
+            ]
         }
         ConceptShape::CandleMark { at_ns, price, below, label, color } => {
             if !price.is_finite() {
-                return None;
+                return Vec::new();
             }
             // Below the low for bullish patterns, above the high for
             // bearish -- a fixed nudge so the text clears the wick.
@@ -2830,12 +2857,12 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Option<crate::
             } else {
                 frame.y_at(*price) - nudge
             };
-            Some(crate::script::ScriptDraw::Label {
+            vec![crate::script::ScriptDraw::Label {
                 x: x_at(*at_ns),
                 y,
                 text: label.clone(),
                 color: *color,
-            })
+            }]
         }
     }
 }
@@ -4055,15 +4082,58 @@ mod concept_shape_tests {
                 color: 0xcc26a69a,
             },
             &frame,
-        )
-        .expect("zone positions");
+        );
+        let zone = zone.into_iter().find(|d| matches!(d, crate::script::ScriptDraw::Box { .. }))
+            .expect("zone positions a box");
         let crate::script::ScriptDraw::Box { x1, x2, y1, y2, fill_alpha, .. } = zone else {
             panic!("a zone draws as a box");
         };
         assert!(x1 > frame.plot.x, "starts at the origin bar, not the chart's left edge");
         assert!(x2 < frame.plot.x + frame.plot.w, "ends at its end bar, not the chart's right edge");
         assert!(y1 < y2, "the band has height");
-        assert_eq!(fill_alpha, Some(0.18), "zones shade, not flood");
+        assert_eq!(fill_alpha, Some(0.08), "zones WASH, they do not flood -- price stays readable");
+    }
+
+    #[test]
+    fn a_zone_carries_its_name_inside_itself() {
+        let frame = frame_fixture();
+        let draws = position_concept_shape(
+            &ConceptShape::Zone {
+                from_ns: 2_000_000_000_000,
+                to_ns: 5_000_000_000_000,
+                low: 95.0,
+                high: 105.0,
+                label: "order_block".to_string(),
+                color: 0xcc26a69a,
+            },
+            &frame,
+        );
+        let label = draws.iter().find_map(|d| match d {
+            crate::script::ScriptDraw::Label { text, .. } => Some(text.clone()),
+            _ => None,
+        });
+        assert_eq!(label.expect("a zone is labelled"), "order_block", "the zone says what it is");
+    }
+
+    #[test]
+    fn a_segment_carries_its_name_above_itself() {
+        let frame = frame_fixture();
+        let draws = position_concept_shape(
+            &ConceptShape::Segment {
+                from_ns: 2_000_000_000_000,
+                to_ns: 5_000_000_000_000,
+                price: 100.0,
+                label: "equal_levels".to_string(),
+                color: 0xcc90a4ae,
+            },
+            &frame,
+        );
+        assert!(draws.iter().any(|d| matches!(d, crate::script::ScriptDraw::Line { .. })), "the line");
+        let label = draws.iter().find_map(|d| match d {
+            crate::script::ScriptDraw::Label { text, .. } => Some(text.clone()),
+            _ => None,
+        });
+        assert_eq!(label.expect("a segment is labelled"), "equal_levels");
     }
 
     #[test]
@@ -4079,7 +4149,7 @@ mod concept_shape_tests {
             },
             &frame,
         )
-        .expect("mark");
+        .into_iter().next().expect("mark");
         let above = position_concept_shape(
             &ConceptShape::CandleMark {
                 at_ns: 5_000_000_000_000,
@@ -4090,7 +4160,7 @@ mod concept_shape_tests {
             },
             &frame,
         )
-        .expect("mark");
+        .into_iter().next().expect("mark");
         let crate::script::ScriptDraw::Label { y: y_below, .. } = below else { panic!("label") };
         let crate::script::ScriptDraw::Label { y: y_above, .. } = above else { panic!("label") };
         // Canvas y grows downward: below the candle means a LARGER y than the
@@ -4111,8 +4181,9 @@ mod concept_shape_tests {
                 color: 0xcc26a69a,
             },
             &frame,
-        )
-        .expect("segment");
+        );
+        let segment = segment.into_iter().find(|d| matches!(d, crate::script::ScriptDraw::Line { .. }))
+            .expect("segment positions a line");
         let crate::script::ScriptDraw::Line { x1, x2, y1, y2, style, extend, .. } = segment else {
             panic!("a segment draws as a line");
         };

@@ -139,6 +139,80 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         }
     }
 
+    // -- MACD family consensus: EVERY ribbon line on the same side of zero.
+    // The slowest pair (24, 48) is valid from bar 47; the consensus's ENTRY
+    // is the event (being in it is not), so detection must start exactly
+    // there -- a later guard misses the entry and never fires at all.
+    if n > 47 {
+        let consensus = |i: usize, above: bool| {
+            crate::rsi_pca::RSI_PERIODS.iter().all(|fast| {
+                macd(&closes, *fast, fast * 2, 1)[i]
+                    .map_or(false, |m| if above { m.line > 0.0 } else { m.line < 0.0 })
+            })
+        };
+        let buy_now = consensus(n - 1, true);
+        let sell_now = consensus(n - 1, false);
+        if (buy_now && !consensus(n - 2, true)) || (sell_now && !consensus(n - 2, false)) {
+            let mean: f64 = crate::rsi_pca::RSI_PERIODS
+                .iter()
+                .filter_map(|fast| macd(&closes, *fast, fast * 2, 1)[n - 1].map(|m| m.line))
+                .sum::<f64>()
+                / crate::rsi_pca::RSI_PERIODS.len() as f64;
+            push(
+                EventKind::MacdFamilyConsensus,
+                Some(if buy_now { Side::Buy } else { Side::Sell }),
+                Some(mean),
+            );
+        }
+    }
+
+    // -- ATR family expansion: the family MEAN crossing 1.5x its own 20-bar
+    // mean -- volatility expanding across EVERY period at once, which is a
+    // regime change rather than one timeframe's noise. Neutral, edge-fired.
+    if n > 60 {
+        let family_mean = |i: usize| -> Option<f64> {
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for period in crate::rsi_pca::RSI_PERIODS {
+                if let Some(v) = crate::indicators::atr::atr(candles, period)[i] {
+                    sum += v;
+                    count += 1;
+                }
+            }
+            (count == crate::rsi_pca::RSI_PERIODS.len()).then(|| sum / count as f64)
+        };
+        let base: Vec<f64> = (n - 22..n - 2).filter_map(family_mean).collect();
+        if base.len() >= 10 {
+            if let (Some(curr), Some(prev)) = (family_mean(n - 1), family_mean(n - 2)) {
+                let mean = base.iter().sum::<f64>() / base.len() as f64;
+                if curr > 1.5 * mean && prev <= 1.5 * mean {
+                    push(EventKind::AtrFamilyExpansion, None, Some(curr / mean.max(f64::EPSILON)));
+                }
+            }
+        }
+    }
+
+    // -- The GMMA cross: the short group's mean crossing the long group's
+    // mean is the ribbon's trend-change statement (compression turning).
+    if n > 62 {
+        const SHORT: [usize; 6] = [3, 5, 8, 10, 12, 15];
+        const LONG: [usize; 6] = [30, 35, 40, 45, 50, 60];
+        let group = |periods: &[usize; 6], i: usize| -> Option<f64> {
+            let mut sum = 0.0;
+            for p in periods {
+                sum += ema(&closes, *p)[i]?;
+            }
+            Some(sum / periods.len() as f64)
+        };
+        if let (Some(sp), Some(lp), Some(sc), Some(lc)) = (group(&SHORT, n - 2), group(&LONG, n - 2), group(&SHORT, n - 1), group(&LONG, n - 1)) {
+            if sp <= lp && sc > lc {
+                push(EventKind::GmmaCross, Some(Side::Buy), Some(sc - lc));
+            } else if sp >= lp && sc < lc {
+                push(EventKind::GmmaCross, Some(Side::Sell), Some(sc - lc));
+            }
+        }
+    }
+
     // -- ATR expansion: volatility jumping past 1.5x its own 20-bar mean is
     // not directional -- it is the market changing gear. Edge-fired.
     if n > 36 {
@@ -266,6 +340,82 @@ mod tests {
             assert_eq!(b.side, Some(Side::Buy), "an upper break is buy-side");
             assert!(b.magnitude.expect("%b") > 1.0, "above the band is %B > 1");
         }
+    }
+
+    #[test]
+    fn the_gmma_cross_marks_the_trend_turn() {
+        // A downtrend into an uptrend: the short group crosses above the
+        // long group somewhere in the turn -- replay every prefix and count
+        // the bullish crosses (exactly one, on its own bar).
+        let mut closes: Vec<f64> = Vec::new();
+        let mut price = 100.0;
+        for _ in 0..80 {
+            price *= 0.994;
+            closes.push(price);
+        }
+        for _ in 0..40 {
+            price *= 1.008;
+            closes.push(price);
+        }
+        let candles = series_from(&closes);
+        let mut fires = 0;
+        for end in 63..closes.len() {
+            for e in detect_indicator_signals(&candles[..=end], "T") {
+                if e.kind == EventKind::GmmaCross && e.side == Some(Side::Buy) {
+                    assert_eq!(e.bar_time, candles[end].open_time, "stamped on its own bar");
+                    fires += 1;
+                }
+            }
+        }
+        assert_eq!(fires, 1, "one bullish GMMA cross in the turn");
+    }
+
+    #[test]
+    fn the_macd_family_consensus_needs_every_line_agreeing() {
+        // A long, smooth, strong trend: every fast/slow pair's MACD line is
+        // on the trend's side at the tail.
+        let mut closes: Vec<f64> = Vec::new();
+        let mut price = 100.0;
+        for _ in 0..120 {
+            price *= 1.006;
+            closes.push(price);
+        }
+        let candles = series_from(&closes);
+        let mut fired = false;
+        for end in 47..candles.len() {
+            if detect_indicator_signals(&candles[..=end], "T")
+                .iter()
+                .any(|e| e.kind == EventKind::MacdFamilyConsensus && e.side == Some(Side::Buy))
+            {
+                fired = true;
+            }
+        }
+        assert!(fired, "a uniform trend produces a family consensus");
+        // The structural negative: a sharp V-turn. Right after the turn the
+        // fast pairs read the rally (positive) while the slow pairs still
+        // read the fall (negative) -- the family CANNOT agree there, and a
+        // detector that fires is lying about the lag.
+        let mut turn: Vec<f64> = Vec::new();
+        let mut price = 100.0;
+        for _ in 0..60 {
+            price *= 0.995;
+            turn.push(price);
+        }
+        for _ in 0..12 {
+            price *= 1.03;
+            turn.push(price);
+        }
+        let choppy = series_from(&turn);
+        let mut choppy_fired = false;
+        for end in 60..70 {
+            if detect_indicator_signals(&choppy[..=end], "T")
+                .iter()
+                .any(|e| e.kind == EventKind::MacdFamilyConsensus)
+            {
+                choppy_fired = true;
+            }
+        }
+        assert!(!choppy_fired, "fast and slow straddle a sharp turn -- no consensus");
     }
 
     #[test]

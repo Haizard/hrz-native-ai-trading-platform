@@ -268,6 +268,13 @@ pub enum EventKind {
     BollingerBreakout,
     /// ATR jumping past 1.5x its own mean -- volatility changing gear.
     AtrExpansion,
+    /// Every MACD-family ribbon line on the same side of zero, fired on
+    /// entering the consensus.
+    MacdFamilyConsensus,
+    /// The ATR family's mean expanding past 1.5x itself across EVERY period.
+    AtrFamilyExpansion,
+    /// The GMMA ribbon's short group crossing its long group.
+    GmmaCross,
 }
 
 impl EventKind {
@@ -378,11 +385,14 @@ impl EventKind {
             Self::SmaCross => "sma_cross",
             Self::BollingerBreakout => "bollinger_breakout",
             Self::AtrExpansion => "atr_expansion",
+            Self::MacdFamilyConsensus => "macd_family_consensus",
+            Self::AtrFamilyExpansion => "atr_family_expansion",
+            Self::GmmaCross => "gmma_cross",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 103] = [
+    pub const ALL: [Self; 106] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -486,6 +496,9 @@ impl EventKind {
         Self::SmaCross,
         Self::BollingerBreakout,
         Self::AtrExpansion,
+        Self::MacdFamilyConsensus,
+        Self::AtrFamilyExpansion,
+        Self::GmmaCross,
     ];
 }
 
