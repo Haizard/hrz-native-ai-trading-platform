@@ -359,12 +359,21 @@ fn report_for(store: &EconStore, kind: &str) -> Result<ReleaseReport, ApiError> 
         .collect();
     let surprise = econ::surprise(release.actual, release.forecast, &trailing);
     let prev = list.iter().rev().nth(1);
-    let bias = econ::macro_bias_with_context(
-        &release,
-        &surprise,
-        prev.and_then(|p| p.unemployment),
-        prev.and_then(|p| p.earnings_change),
-    );
+    let bias = match kind {
+        // Fewer claims is a STRONGER labor market: the surprise negates
+        // (a miss below the mean is USD-supportive, not bearish).
+        "claims" => -surprise.sigma.clamp(-2.0, 2.0),
+        // The decision IS the bias: a quarter-point move is one unit, and
+        // the trailing distribution of rare decisions is too thin to
+        // normalize against (the sigma guard answers 0 for a reason).
+        "fomc" => ((release.actual - release.forecast) * 4.0).clamp(-2.0, 2.0),
+        _ => econ::macro_bias_with_context(
+            &release,
+            &surprise,
+            prev.and_then(|p| p.unemployment),
+            prev.and_then(|p| p.earnings_change),
+        ),
+    };
     Ok(ReleaseReport {
         release,
         surprise,
