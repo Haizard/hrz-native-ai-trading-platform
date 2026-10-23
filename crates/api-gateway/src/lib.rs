@@ -646,7 +646,12 @@ pub async fn builder_js() -> Result<axum::response::Response, StatusCode> {
 /// build-frontend` puts it there.
 pub async fn chart_wasm() -> Result<axum::response::Response, StatusCode> {
     Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/wasm")],
+        [
+            (axum::http::header::CONTENT_TYPE, "application/wasm"),
+            // The engine changes with the code: a cached wasm is the OLD
+            // chart long after the new one shipped. Same no-cache as app.js.
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+        ],
         read_frontend("chart_engine.wasm")?,
     )
         .into_response())

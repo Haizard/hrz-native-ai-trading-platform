@@ -807,6 +807,11 @@ function createChartPane(root, hooks = {}) {
     }
     ctx.drawImage(staticLayer, 0, 0, width, height);
 
+    // Concept zones and segments: UNDER the candles (a fill over the price
+    // is a curtain, not a measurement). Every frame, not the static layer --
+    // detections change on their own pulse and a cached zone is a stale one.
+    drawConceptShapes(ctx, scene, "under");
+
     // The engine says what to draw, so this is a dispatch rather than a decision.
     // Adding a chart type means adding a case here and a variant in Rust -- not
     // teaching JavaScript what a Heikin-Ashi candle is.
@@ -862,6 +867,9 @@ function createChartPane(root, hooks = {}) {
     // opinion about a price the candles own.
     drawScriptOverlays(ctx, scene, freshMarkerBars);
     drawIndicatorEvidence(ctx, scene);
+    // The concept labels: over the candles, under the user's own marks -- a
+    // zone's name under a candle is a name nobody reads.
+    drawConceptShapes(ctx, scene, "over");
     // The user's own marks, above everything: a drawing that could cover the
     // answer's levels, or the price labels, would be an annotation they cannot
     // read.
@@ -1567,6 +1575,51 @@ function createChartPane(root, hooks = {}) {
     }
   }
 
+  /// Concept shapes in two passes: `"under"` paints the zones and segments
+  /// (they sit BEHIND the candles -- a fill over the price is a curtain,
+  /// not a measurement), `"over"` paints their labels (a name under a
+  /// candle is a name nobody reads). Zones paint oldest first so a newer
+  /// zone's border wins where they overlap; the 0.08 wash keeps stacked
+  /// fills a tint rather than mud.
+  function drawConceptShapes(ctx, scene, phase) {
+    const shapes = scene.concept_shapes || [];
+    if (!shapes.length) return;
+    for (const o of shapes) {
+      if (phase === "under" && o.Box) {
+        const b = o.Box;
+        const plot = scene.plot;
+        const x = Math.max(Math.min(b.x1, b.x2), plot.x);
+        const right = Math.min(Math.max(b.x1, b.x2), plot.x + plot.w);
+        const w = right - x;
+        const y = Math.min(b.y1, b.y2);
+        const h = Math.abs(b.y2 - b.y1);
+        if (w <= 0 || h <= 0) continue;
+        ctx.fillStyle = rgbaFromPacked(b.color, b.fill_alpha ?? 0.08);
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = rgbaFromPacked(b.border_color != null ? b.border_color : b.color, b.border_color != null ? 1.0 : 0.8);
+        ctx.lineWidth = b.border_width || 1;
+        ctx.setLineDash(b.border_style === "dashed" ? [6, 4] : b.border_style === "dotted" ? [2, 3] : []);
+        ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.max(1, Math.round(w) - 1), Math.max(1, Math.round(h) - 1));
+        ctx.setLineDash([]);
+      } else if (phase === "under" && o.Line) {
+        const l = o.Line;
+        ctx.strokeStyle = rgbaFromPacked(l.color, 0.85);
+        ctx.lineWidth = l.width || 1.25;
+        ctx.setLineDash(l.style === "dashed" ? [6, 4] : l.style === "dotted" ? [2, 3] : []);
+        ctx.beginPath();
+        ctx.moveTo(l.x1, l.y1);
+        ctx.lineTo(l.x2, l.y2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else if (phase === "over" && o.Label) {
+        const lb = o.Label;
+        ctx.font = "600 9px ui-sans-serif, system-ui";
+        ctx.fillStyle = rgbaFromPacked(lb.color, 1.0);
+        ctx.fillText(lb.text, lb.x, lb.y);
+      }
+    }
+  }
+
   /// Overlay scripts (docs/23): polylines already mapped through the price
   /// pane's scale, painted under the user's drawings. Nothing computed here.
   function drawScriptOverlays(ctx, scene, freshMarkerBars = 0) {
@@ -1575,10 +1628,10 @@ function createChartPane(root, hooks = {}) {
     // A full overlay shape -- the loops below touch plots/markers/trendlines
     // too, and an undefined one throws the whole draw (which is exactly how
     // enabling a concept killed the pane).
-    const conceptOverlay = scene.concept_shapes && scene.concept_shapes.length
-      ? [{ objects: scene.concept_shapes, plots: [], markers: [], trendlines: [], links: [] }]
-      : [];
-    const overlays = [...conceptOverlay, ...(scene.script_overlays || [])];
+    // Concept detections paint in TWO passes now (see drawConceptShapes):
+    // zones and segments UNDER the candles, their labels over them. Only
+    // the scripts' own overlays ride this path.
+    const overlays = [...(scene.script_overlays || [])];
     if (!overlays.length) return;
     for (const overlay of overlays) {
       // Drawing objects (line.new/label.new/box.new): under the user's own
