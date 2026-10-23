@@ -73,6 +73,20 @@ pub enum SeriesTarget {
     Overlay,
 }
 
+/// An area fill between two value series (the Ichimoku cloud is the one
+/// that exists so far): the band between `upper` and `lower`, translucent.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SeriesFill {
+    /// The fill's name.
+    pub name: String,
+    /// 0xRRGGBB.
+    pub color: u32,
+    /// The band's upper edge, one value per candle.
+    pub upper: Vec<Option<f64>>,
+    /// The band's lower edge.
+    pub lower: Vec<Option<f64>>,
+}
+
 /// A point marker (a signal crossing).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SeriesMarker {
@@ -107,6 +121,9 @@ pub struct IndicatorSeries {
     pub bars: Option<SeriesBars>,
     /// Where this series draws.
     pub target: SeriesTarget,
+    /// Area fills between two series (empty for most).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fills: Vec<SeriesFill>,
 }
 
 const RSI_BLUE: u32 = 0x60a5fa;
@@ -133,6 +150,15 @@ pub fn indicator_series(concept: &str, candles: &[Candle]) -> Option<IndicatorSe
         "indicators.donchian" => donchian_overlay(candles),
         "indicators.supertrend" => supertrend_overlay(candles),
         "indicators.psar" => psar_overlay(candles),
+        "indicators.ichimoku" => ichimoku_overlay(candles),
+        "indicators.tsi" => tsi_pane(candles),
+        "indicators.awesome" => awesome_pane(candles),
+        "indicators.ad_line" => ad_pane(candles),
+        "indicators.cmf" => cmf_pane(candles),
+        "indicators.mfi" => mfi_pane(candles),
+        "indicators.anchored_vwap" => avwap_overlay(candles),
+        "indicators.chandelier" => chandelier_overlay(candles),
+        "indicators.hv" => hv_pane(candles),
         "indicators.macd" => macd_pane(candles),
         "indicators.atr" => atr_pane(candles),
         "indicators.ema" => ema_overlay(candles),
@@ -184,6 +210,7 @@ fn rsi_family_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -228,6 +255,7 @@ fn macd_family_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -267,6 +295,7 @@ fn atr_family_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -288,6 +317,7 @@ fn stochastic_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -307,6 +337,7 @@ fn cci_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -325,6 +356,7 @@ fn williams_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -344,6 +376,7 @@ fn roc_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -362,6 +395,7 @@ fn obv_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -385,6 +419,7 @@ fn adx_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -418,6 +453,7 @@ fn percent_b_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -441,6 +477,7 @@ fn keltner_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Overlay,
+        fills: Vec::new(),
     })
 }
 
@@ -464,6 +501,7 @@ fn donchian_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Overlay,
+        fills: Vec::new(),
     })
 }
 
@@ -487,6 +525,7 @@ fn supertrend_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Overlay,
+        fills: Vec::new(),
     })
 }
 
@@ -505,6 +544,227 @@ fn psar_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Overlay,
+        fills: Vec::new(),
+    })
+}
+
+/// The Ichimoku cloud: the five lines on the price plot, the kumo as a
+/// fill between the spans (its color follows the cloud's own side).
+fn ichimoku_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let ic = crate::indicators::ichimoku::ichimoku(candles, 9, 26, 52, 26);
+    if ic.kijun.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    // The cloud's color by its newest side (A over B is the bullish cloud).
+    let newest = (0..candles.len()).rev().find_map(|i| ic.senkou_a[i].zip(ic.senkou_b[i]));
+    let bull = newest.map_or(true, |(a, b)| a >= b);
+    let (upper, lower) = if bull {
+        (ic.senkou_a.clone(), ic.senkou_b.clone())
+    } else {
+        (ic.senkou_b.clone(), ic.senkou_a.clone())
+    };
+    Some(IndicatorSeries {
+        label: "Ichimoku (9, 26, 52)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: Vec::new(),
+        lines: vec![
+            SeriesLine { name: "tenkan".to_string(), color: 0x22d3ee, values: ic.tenkan },
+            SeriesLine { name: "kijun".to_string(), color: 0xf59e0b, values: ic.kijun },
+            SeriesLine { name: "chikou".to_string(), color: 0x94a3b8, values: ic.chikou },
+        ],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Overlay,
+        fills: vec![SeriesFill {
+            name: "kumo".to_string(),
+            color: if bull { 0x34d399 } else { 0xfb7185 },
+            upper,
+            lower,
+        }],
+    })
+}
+
+/// TSI (13, 25, 7): the line and its signal, bounded momentum, zero level.
+fn tsi_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let (line, signal) = crate::indicators::misc::tsi(&closes, 13, 25, 7);
+    if line.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "TSI (13, 25, 7)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: vec![0.0],
+        lines: vec![
+            SeriesLine { name: "tsi".to_string(), color: RSI_BLUE, values: line },
+            SeriesLine { name: "signal".to_string(), color: 0xf59e0b, values: signal },
+        ],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// The Awesome Oscillator: a histogram around zero.
+fn awesome_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let values = crate::indicators::misc::awesome(candles, 5, 34);
+    if values.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "Awesome (5, 34)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: vec![0.0],
+        lines: Vec::new(),
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: Some(SeriesBars {
+            name: "ao".to_string(),
+            color_up: 0x34d399,
+            color_down: 0xfb7185,
+            values,
+        }),
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// The A/D line: cumulative money-flow volume.
+fn ad_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let values = crate::indicators::misc::ad_line(candles);
+    Some(IndicatorSeries {
+        label: "A/D Line".to_string(),
+        scale: SeriesScale::Auto,
+        levels: Vec::new(),
+        lines: vec![SeriesLine { name: "ad".to_string(), color: 0x34d399, values }],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// CMF (20): the money-flow ratio around zero.
+fn cmf_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let values = crate::indicators::misc::cmf(candles, 20);
+    if values.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "CMF (20)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: vec![0.0],
+        lines: vec![SeriesLine { name: "cmf".to_string(), color: PRED_VIOLET, values }],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// MFI (14): the volume-weighted RSI, fixed 0..100, 80/20 bands.
+fn mfi_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let values = crate::indicators::misc::mfi(candles, 14);
+    if values.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "MFI (14)".to_string(),
+        scale: SeriesScale::Fixed { min: 0.0, max: 100.0 },
+        levels: vec![80.0, 20.0],
+        lines: vec![SeriesLine { name: "mfi".to_string(), color: RSI_BLUE, values }],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    })
+}
+
+/// Anchored VWAP: from the newest major swing high and swing low (the two
+/// anchors traders actually use), on the price plot.
+fn avwap_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let swings = crate::market_structure::find_swings(candles, 3);
+    let hi = swings.iter().rev().find(|s| s.kind == crate::market_structure::SwingKind::High);
+    let lo = swings.iter().rev().find(|s| s.kind == crate::market_structure::SwingKind::Low);
+    let mut lines = Vec::new();
+    if let Some(h) = hi {
+        lines.push(SeriesLine {
+            name: "avwap(high)".to_string(),
+            color: 0xfb7185,
+            values: crate::indicators::misc::anchored_vwap(candles, h.index),
+        });
+    }
+    if let Some(l) = lo {
+        lines.push(SeriesLine {
+            name: "avwap(low)".to_string(),
+            color: 0x34d399,
+            values: crate::indicators::misc::anchored_vwap(candles, l.index),
+        });
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "Anchored VWAP".to_string(),
+        scale: SeriesScale::Auto,
+        levels: Vec::new(),
+        lines,
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Overlay,
+        fills: Vec::new(),
+    })
+}
+
+/// The chandelier exit (22, 3): the long stop under the highs, the short
+/// stop over the lows -- on the price plot.
+fn chandelier_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let (long_stop, short_stop) = crate::indicators::misc::chandelier(candles, 22, 3.0);
+    if long_stop.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "Chandelier (22, 3)".to_string(),
+        scale: SeriesScale::Auto,
+        levels: Vec::new(),
+        lines: vec![
+            SeriesLine { name: "long stop".to_string(), color: 0x34d399, values: long_stop },
+            SeriesLine { name: "short stop".to_string(), color: 0xfb7185, values: short_stop },
+        ],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Overlay,
+        fills: Vec::new(),
+    })
+}
+
+/// Historical volatility (20) with its own percentile rank (126).
+fn hv_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+    let (hv, rank) = crate::indicators::misc::historical_volatility(candles, 20, 126);
+    if hv.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    Some(IndicatorSeries {
+        label: "HV (20) + rank".to_string(),
+        scale: SeriesScale::Auto,
+        levels: Vec::new(),
+        lines: vec![
+            SeriesLine { name: "hv".to_string(), color: 0xf59e0b, values: hv },
+            SeriesLine { name: "rank".to_string(), color: 0x94a3b8, values: rank },
+        ],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -546,6 +806,7 @@ fn ema_family_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Overlay,
+        fills: Vec::new(),
     })
 }
 
@@ -578,6 +839,7 @@ fn macd_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
             values: histogram,
         }),
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -597,6 +859,7 @@ fn atr_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -620,6 +883,7 @@ fn ema_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Overlay,
+        fills: Vec::new(),
     })
 }
 
@@ -643,6 +907,7 @@ fn sma_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Overlay,
+        fills: Vec::new(),
     })
 }
 
@@ -669,6 +934,7 @@ fn bollinger_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers: Vec::new(),
         bars: None,
         target: SeriesTarget::Overlay,
+        fills: Vec::new(),
     })
 }
 
@@ -724,6 +990,7 @@ fn rsi_pane(candles: &[Candle], period: usize, divergences: bool) -> Option<Indi
         markers,
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 
@@ -762,6 +1029,7 @@ fn rsi_pca_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         markers,
         bars: None,
         target: SeriesTarget::Pane,
+        fills: Vec::new(),
     })
 }
 

@@ -371,6 +371,11 @@ pub struct Request {
     /// frame the candles use. Absent means none.
     #[serde(default)]
     pub overlay_series: Vec<OverlaySeriesSpec>,
+    /// Area fills between two overlay series (the Ichimoku cloud): the
+    /// band between the two value lists, translucent, mapped through the
+    /// same frame. Absent means none.
+    #[serde(default)]
+    pub overlay_fills: Vec<OverlayFillSpec>,
     /// Pine-lite scripts (`docs/23`) to run over the request's candles.
     ///
     /// The engine vets nothing here -- the gateway already refused broken
@@ -450,6 +455,19 @@ pub struct SeriesLine {
     pub color: u32,
     /// One value per candle index; `None` is a gap.
     pub values: Vec<Option<f64>>,
+}
+
+/// One overlay fill: the band between two per-candle PRICE series.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverlayFillSpec {
+    /// The fill's name.
+    pub name: String,
+    /// 0xRRGGBB.
+    pub color: u32,
+    /// The band's upper edge, one price per candle (`None` is a gap).
+    pub upper: Vec<Option<f64>>,
+    /// The band's lower edge.
+    pub lower: Vec<Option<f64>>,
 }
 
 /// One overlay series on the price plot: a name, a colour, and one PRICE
@@ -536,6 +554,7 @@ impl Default for Request {
             snap: false,
             sub_panes: Vec::new(),
             overlay_series: Vec::new(),
+            overlay_fills: Vec::new(),
             scripts: Vec::new(),
         }
     }
@@ -1043,6 +1062,10 @@ pub struct Scene {
     /// Overlay series mapped onto the price plot, oldest first.
     #[serde(default)]
     pub overlay_lines: Vec<SceneOverlayLine>,
+    /// Overlay fills as positioned polygons (the Ichimoku cloud), painted
+    /// UNDER the overlay lines.
+    #[serde(default)]
+    pub overlay_fills: Vec<crate::script::ScriptDraw>,
     /// Pine-lite script panes (`docs/23`), after the built-in sub-panes.
     /// Always present and usually empty, like [`Scene::regions`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1561,6 +1584,7 @@ pub fn build(request: &Request) -> Scene {
         indicator: None,
         sub_panes: Vec::new(),
         overlay_lines: Vec::new(),
+        overlay_fills: Vec::new(),
         script_panes: Vec::new(),
         strategy_layers: Vec::new(),
         equity_panes: Vec::new(),
@@ -2144,6 +2168,49 @@ pub fn build(request: &Request) -> Scene {
                 points,
             });
         }
+    }
+
+    // Overlay fills: both edges through the price frame, the band as one
+    // Band per contiguous run where BOTH edges exist -- a gap in either
+    // never smears a fill across missing bars.
+    let (fill_price_min, fill_price_max) = (scene.price_min, scene.price_max);
+    for fill in &request.overlay_fills {
+        let point_at = |values: &[Option<f64>], index: usize| -> Option<Point> {
+            values
+                .iter()
+                .skip(window.from)
+                .nth(index)
+                .copied()
+                .flatten()
+                .map(|price| Point {
+                    x: plot.x + slot * (index as f64 + 0.5),
+                    y: price_to_y(price, fill_price_min, fill_price_max, &plot, scale_map),
+                })
+        };
+        let mut run_upper: Vec<Point> = Vec::new();
+        let mut run_lower: Vec<Point> = Vec::new();
+        let mut flush = |scene: &mut Scene, run_upper: &mut Vec<Point>, run_lower: &mut Vec<Point>| {
+            if run_upper.len() > 1 {
+                scene.overlay_fills.push(crate::script::ScriptDraw::Band {
+                    upper: run_upper.iter().map(|p| (p.x, p.y)).collect(),
+                    lower: run_lower.iter().map(|p| (p.x, p.y)).collect(),
+                    color: fill.color,
+                    fill_alpha: 0.16,
+                });
+            }
+            run_upper.clear();
+            run_lower.clear();
+        };
+        for index in 0..visible_real.len() {
+            match (point_at(&fill.upper, index), point_at(&fill.lower, index)) {
+                (Some(u), Some(l)) => {
+                    run_upper.push(u);
+                    run_lower.push(l);
+                }
+                _ => flush(&mut scene, &mut run_upper, &mut run_lower),
+            }
+        }
+        flush(&mut scene, &mut run_upper, &mut run_lower);
     }
 
     // Pine-lite scripts (`docs/23`), after the built-in sub-panes: each

@@ -153,22 +153,22 @@ All forty, including **upside gap two crows ✅** (`candles.upside_gap_two_crows
 ## 6. Technical Indicator Strategies
 
 **Trend:** MA crossover ✅ (`ema_cross`/`sma_cross`) · EMA pullback ⚠️ · SMA filter ✅ ·
-MACD trend ✅ · ADX ✅ (`indicators.adx` with ±DI) · Parabolic SAR ✅ (`indicators.psar`) · Supertrend ✅ (`indicators.supertrend`) · Ichimoku ❌ ·
+MACD trend ✅ · ADX ✅ (`indicators.adx` with ±DI) · Parabolic SAR ✅ (`indicators.psar`) · Supertrend ✅ (`indicators.supertrend`) · Ichimoku ✅ (`indicators.ichimoku`, five lines + kumo fill) ·
 MA ribbon ✅ (`indicators.ema_family`, GMMA) · Triple MA ✅ (`indicators.ema` stack)
 
 **Momentum:** RSI ✅ · RSI divergence ✅ · Stochastic ✅ (`indicators.stochastic`) · CCI ✅ (`indicators.cci`) · Williams %R ✅ (`indicators.williams_r`) ·
-ROC ✅ (`indicators.roc`) · Momentum ✅ (ROC is the momentum oscillator) · MACD divergence ✅ (`MacdDivergenceSignal` on `indicators.macd`) · TSI ❌ · Awesome ❌
+ROC ✅ (`indicators.roc`) · Momentum ✅ (ROC is the momentum oscillator) · MACD divergence ✅ (`MacdDivergenceSignal` on `indicators.macd`) · TSI ✅ (`indicators.tsi`) · Awesome ✅ (`indicators.awesome`)
 
 **Volatility:** Bollinger ✅ · Keltner ✅ (`indicators.keltner`) · ATR ✅ · Donchian ✅ (`indicators.donchian`) · StdDev bands ✅ (Bollinger is) ·
 BB squeeze ✅ (`BollingerSqueeze` on `indicators.bollinger_percent`) · ATR breakout ⚠️ (expansion) ·
-Volatility stop ✅ (`indicators.supertrend` is the ATR stop family) · Chandelier exit ❌ · HV regimes ⚠️
+Volatility stop ✅ (`indicators.supertrend` is the ATR stop family) · Chandelier exit ✅ (`indicators.chandelier`) · HV regimes ✅ (`indicators.hv` with percentile rank)
 
-**Volume:** OBV ✅ (`indicators.obv` + divergence signals) · VWAP ✅ (engine line) · Anchored VWAP ⚠️ · A/D ❌ · CMF ❌ · MFI ❌ ·
+**Volume:** OBV ✅ (`indicators.obv` + divergence signals) · VWAP ✅ (engine line) · Anchored VWAP ✅ (`indicators.anchored_vwap`) · A/D ✅ (`indicators.ad_line`) · CMF ✅ (`indicators.cmf`) · MFI ✅ (`indicators.mfi`) ·
 Volume profile ✅ · POC ✅ · VAH/VAL ✅ · Relative volume ⚠️ (`volume.spike`)
 
-**Score: 27 ✅ / 4 ⚠️ / 9 ❌** — Battery A landed 2026-10-23: the full classic shelf with panes,
-overlays, and per-bar signals. Remaining ❌: TSI, Awesome, Ichimoku, A/D, CMF, MFI, anchored VWAP,
-chandelier exit, HV regimes
+**Score: 36 ✅ / 4 ⚠️ / 0 ❌** — Battery A + the tail (2026-10-23): the ENTIRE classic shelf,
+every indicator with its pane or overlay AND its per-bar signals. The indicator family is complete
+per this list.
 
 ## 7. Volume, Order Flow and Footprint
 
@@ -431,8 +431,9 @@ Ordered by (a) the master list's priority column, (b) marginal cost on the exist
 
 All ten landed with canonical math (Wilder's own smoothing for ADX; Lane, Lambert, Williams,
 Granville, Keltner, Donchian pinned by hand-computed values), series panes/overlays, per-bar
-signals, and live verification on BTCUSDT 1h. Ichimoku deferred (a five-line system that deserves
-its own battery); TSI/Awesome/A-D/CMF/MFI/anchored-VWAP/chandelier remain as the indicator tail.
+signals, and live verification on BTCUSDT 1h. The indicator tail landed the same day: Ichimoku (five lines, the kumo as the engine's first
+overlay FILL), TSI, Awesome, A/D, CMF, MFI, anchored VWAP, chandelier, HV regimes -- the classic
+shelf is complete.
 
 ## Battery B — the missing pattern and level detectors ✅ DONE 2026-10-23
 

@@ -352,6 +352,30 @@ pub enum EventKind {
     DailyBias,
     /// The new week opening outside the closed week's range, with structure.
     WeeklyBias,
+    /// The Ichimoku tenkan crossing the kijun.
+    IchimokuTenkanKijunCross,
+    /// Price crossing the Ichimoku kijun.
+    IchimokuKijunCross,
+    /// A close out of the kumo, in the exit's direction.
+    IchimokuCloudBreakout,
+    /// Senkou A crossing senkou B (the cloud changing side).
+    IchimokuKumoTwist,
+    /// The TSI crossing its signal.
+    TsiCross,
+    /// The Awesome Oscillator crossing zero.
+    AwesomeZeroCross,
+    /// Price making the new extreme while the A/D line refuses it.
+    AdDivergence,
+    /// The CMF crossing zero.
+    CmfZeroCross,
+    /// MFI entering oversold (buy) or overbought (sell).
+    MfiZoneEntry,
+    /// The close crossing the chandelier's active stop.
+    ChandelierFlip,
+    /// Price crossing the anchored VWAP of the newest swing low.
+    AvwapCross,
+    /// The volatility rank entering the top or bottom decile.
+    HvRegimeShift,
 }
 
 impl EventKind {
@@ -498,11 +522,23 @@ impl EventKind {
             Self::MtfAlignment => "mtf_alignment",
             Self::DailyBias => "daily_bias",
             Self::WeeklyBias => "weekly_bias",
+            Self::IchimokuTenkanKijunCross => "ichimoku_tenkan_kijun_cross",
+            Self::IchimokuKijunCross => "ichimoku_kijun_cross",
+            Self::IchimokuCloudBreakout => "ichimoku_cloud_breakout",
+            Self::IchimokuKumoTwist => "ichimoku_kumo_twist",
+            Self::TsiCross => "tsi_cross",
+            Self::AwesomeZeroCross => "awesome_zero_cross",
+            Self::AdDivergence => "ad_divergence",
+            Self::CmfZeroCross => "cmf_zero_cross",
+            Self::MfiZoneEntry => "mfi_zone_entry",
+            Self::ChandelierFlip => "chandelier_flip",
+            Self::AvwapCross => "avwap_cross",
+            Self::HvRegimeShift => "hv_regime_shift",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 139] = [
+    pub const ALL: [Self; 151] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -642,6 +678,18 @@ impl EventKind {
         Self::MtfAlignment,
         Self::DailyBias,
         Self::WeeklyBias,
+        Self::IchimokuTenkanKijunCross,
+        Self::IchimokuKijunCross,
+        Self::IchimokuCloudBreakout,
+        Self::IchimokuKumoTwist,
+        Self::TsiCross,
+        Self::AwesomeZeroCross,
+        Self::AdDivergence,
+        Self::CmfZeroCross,
+        Self::MfiZoneEntry,
+        Self::ChandelierFlip,
+        Self::AvwapCross,
+        Self::HvRegimeShift,
     ];
 }
 

@@ -1054,6 +1054,19 @@ function createChartPane(root, hooks = {}) {
   /// engine mapped every point through the price frame; this paints the
   /// polylines and a small legend at the plot's top-left.
   function drawOverlayLines(ctx, scene) {
+    // The fills first (the Ichimoku cloud): a band UNDER the lines -- the
+    // cloud is the backdrop the lines are read against.
+    for (const draw of scene.overlay_fills || []) {
+      if (!draw.Band || draw.Band.upper.length < 2) continue;
+      const b = draw.Band;
+      ctx.beginPath();
+      ctx.moveTo(b.upper[0][0], b.upper[0][1]);
+      for (const [x, y] of b.upper) ctx.lineTo(x, y);
+      for (let i = b.lower.length - 1; i >= 0; i--) ctx.lineTo(b.lower[i][0], b.lower[i][1]);
+      ctx.closePath();
+      ctx.fillStyle = rgbaFromPacked(b.color, b.fill_alpha ?? 0.16);
+      ctx.fill();
+    }
     if (!scene.overlay_lines || !scene.overlay_lines.length) return;
     let legendX = scene.plot.x + 8;
     ctx.font = "9px ui-sans-serif, system-ui";
@@ -3260,6 +3273,8 @@ function createChartPane(root, hooks = {}) {
       request.overlay_series = registryOverlays.flatMap((p) =>
         p.lines.map((l) => ({ name: l.name, color: l.color, values: l.values }))
       );
+      const overlayFills = registryOverlays.flatMap((p) => p.fills || []);
+      if (overlayFills.length) request.overlay_fills = overlayFills;
     }
 
     // Pine-lite scripts (docs/23): sent as source + inputs, run by the engine
@@ -5658,7 +5673,13 @@ function createChartPane(root, hooks = {}) {
       if (spec.target === "overlay") {
         // Overlay series: prices, mapped by the engine through the price
         // frame -- the request's overlay_series, not a sub-pane.
-        out.push({ overlay: true, lines });
+        const fills = (spec.fills || []).map((f) => ({
+          name: f.name,
+          color: f.color,
+          upper: remapValues(f.upper),
+          lower: remapValues(f.lower),
+        }));
+        out.push({ overlay: true, lines, fills });
       } else {
         out.push({
           kind: "series",

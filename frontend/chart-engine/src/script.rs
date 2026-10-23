@@ -110,6 +110,18 @@ pub enum ScriptDraw {
         /// Fill alpha (Pine's linefill reads solid-ish: 0.45 default).
         fill_alpha: f64,
     },
+    /// A band between two polylines (the Ichimoku cloud): the upper edge
+    /// forward, the lower edge reversed, filled as one path.
+    Band {
+        /// The upper edge, oldest first.
+        upper: Vec<(f64, f64)>,
+        /// The lower edge, oldest first (the painter walks it reversed).
+        lower: Vec<(f64, f64)>,
+        /// Packed fill color.
+        color: u32,
+        /// Fill alpha.
+        fill_alpha: f64,
+    },
     /// `table.new` — a positioned cell grid; x/y is the panel's top-left.
     Table {
         /// Panel left edge.

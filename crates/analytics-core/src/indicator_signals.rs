@@ -19,6 +19,17 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     let Some(last) = candles.last() else { return out };
     let n = candles.len();
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    // -- Divergences on an oscillator line (OBV, the MACD line, the A/D
+    // line): the shared machinery lives in `oscillator_divergence` below.
+    {
+        let obv_series = crate::indicators::oscillators::obv(candles);
+        out.extend(oscillator_divergence(candles, &obv_series, EventKind::ObvDivergence, symbol));
+        let macd_line: Vec<Option<f64>> = macd(&closes, 12, 26, 9).iter().map(|p| p.map(|m| m.line)).collect();
+        out.extend(oscillator_divergence(candles, &macd_line, EventKind::MacdDivergenceSignal, symbol));
+        let ad_series = crate::indicators::misc::ad_line(candles);
+        out.extend(oscillator_divergence(candles, &ad_series, EventKind::AdDivergence, symbol));
+    }
+
     let mut push = |kind: EventKind, side: Option<Side>, magnitude: Option<f64>| {
         out.push(MarketEvent {
             kind,
@@ -34,6 +45,72 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
             formed_at: None,
         });
     };
+    // -- The CMF zero cross.
+    if n > 22 {
+        let v = crate::indicators::misc::cmf(candles, 20);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p <= 0.0 && c > 0.0 {
+                push(EventKind::CmfZeroCross, Some(Side::Buy), None);
+            } else if p >= 0.0 && c < 0.0 {
+                push(EventKind::CmfZeroCross, Some(Side::Sell), None);
+            }
+        }
+    }
+
+    // -- MFI zone entries.
+    if n > 16 {
+        let v = crate::indicators::misc::mfi(candles, 14);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p >= 20.0 && c < 20.0 {
+                push(EventKind::MfiZoneEntry, Some(Side::Buy), Some(c));
+            } else if p <= 80.0 && c > 80.0 {
+                push(EventKind::MfiZoneEntry, Some(Side::Sell), Some(c));
+            }
+        }
+    }
+
+    // -- The chandelier flip: the close crossing the active stop.
+    if n > 24 {
+        let (long_stop, short_stop) = crate::indicators::misc::chandelier(candles, 22, 3.0);
+        if let (Some(l), Some(s)) = (long_stop[n - 1], short_stop[n - 1]) {
+            if closes[n - 2] >= long_stop[n - 2].unwrap_or(l) && closes[n - 1] < l {
+                push(EventKind::ChandelierFlip, Some(Side::Sell), Some(l - closes[n - 1]));
+            } else if closes[n - 2] <= short_stop[n - 2].unwrap_or(s) && closes[n - 1] > s {
+                push(EventKind::ChandelierFlip, Some(Side::Buy), Some(closes[n - 1] - s));
+            }
+        }
+    }
+
+    // -- The anchored VWAP cross (against the newest swing-low anchor).
+    if n > 30 {
+        let swings = crate::market_structure::find_swings(candles, 3);
+        if let Some(anchor) = swings.iter().rev().find(|sp| sp.kind == crate::market_structure::SwingKind::Low) {
+            let v = crate::indicators::misc::anchored_vwap(candles, anchor.index);
+            if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+                if closes[n - 2] <= p && closes[n - 1] > c {
+                    push(EventKind::AvwapCross, Some(Side::Buy), None);
+                } else if closes[n - 2] >= p && closes[n - 1] < c {
+                    push(EventKind::AvwapCross, Some(Side::Sell), None);
+                }
+            }
+        }
+    }
+
+    // -- The HV regime: the volatility rank entering the top decile (the
+    // high-volatility regime) or the bottom one.
+    if n > 150 {
+        let (_, rank) = crate::indicators::misc::historical_volatility(candles, 20, 126);
+        if let (Some(p), Some(c)) = (rank[n - 2], rank[n - 1]) {
+            if p < 0.9 && c >= 0.9 {
+                push(EventKind::HvRegimeShift, None, Some(c));
+            } else if p > 0.1 && c <= 0.1 {
+                push(EventKind::HvRegimeShift, None, Some(c));
+            }
+        }
+    }
+
+
+
 
     // -- RSI zone crossings (14): entering oversold is the buy-side signal,
     // entering overbought the sell-side.
@@ -196,59 +273,6 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
     // -- Divergences on an oscillator line (OBV and the MACD line): price
     // makes the new extreme, the oscillator refuses it. Confirmed when the
     // second swing's `strength` bars complete -- i.e. exactly at the tail.
-    let mut divergence = |series: &[Option<f64>], kind: EventKind, out_kind: &str| {
-        let strength = 2;
-        if n < 40 {
-            return;
-        }
-        // The two newest price swing highs / lows in the last 30 bars.
-        let swing = |highs: bool| -> Option<(usize, usize)> {
-            let start = n - 31;
-            let mut found: Vec<usize> = Vec::new();
-            for i in (start + strength)..(n - strength) {
-                let price = if highs { candles[i].high } else { candles[i].low };
-                let is_swing = (1..=strength).all(|d| {
-                    let l = if highs { candles[i - d].high } else { candles[i - d].low };
-                    let r = if highs { candles[i + d].high } else { candles[i + d].low };
-                    if highs { price > l && price >= r } else { price < l && price <= r }
-                });
-                if is_swing {
-                    found.push(i);
-                }
-            }
-            if found.len() >= 2 {
-                Some((found[found.len() - 2], found[found.len() - 1]))
-            } else {
-                None
-            }
-        };
-        // Bearish: price higher high, oscillator lower high.
-        if let Some((a, b)) = swing(true) {
-            if candles[b].high > candles[a].high
-                && b + strength == n - 1
-                && matches!((series[a], series[b]), (Some(oa), Some(ob)) if ob < oa)
-            {
-                push(kind, Some(Side::Sell), series[b]);
-            }
-        }
-        // Bullish: price lower low, oscillator higher low.
-        if let Some((a, b)) = swing(false) {
-            if candles[b].low < candles[a].low
-                && b + strength == n - 1
-                && matches!((series[a], series[b]), (Some(oa), Some(ob)) if ob > oa)
-            {
-                push(kind, Some(Side::Buy), series[b]);
-            }
-        }
-        let _ = out_kind;
-    };
-    {
-        let obv_series = crate::indicators::oscillators::obv(candles);
-        divergence(&obv_series, EventKind::ObvDivergence, "obv");
-        let macd_line: Vec<Option<f64>> = macd(&closes, 12, 26, 9).iter().map(|p| p.map(|m| m.line)).collect();
-        divergence(&macd_line, EventKind::MacdDivergenceSignal, "macd");
-    }
-
     // -- ADX (14): the trend-strength cross -- ADX through 25 with the
     // dominant DI naming the side.
     if n > 30 {
@@ -322,6 +346,62 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
                 push(EventKind::PsarFlip, Some(Side::Buy), None);
             } else if was_below && !is_below {
                 push(EventKind::PsarFlip, Some(Side::Sell), None);
+            }
+        }
+    }
+
+
+    // -- The Ichimoku set: the tenkan/kijun cross, price crossing the
+    // kijun, a close OUT of the cloud, and the kumo twist (span A x B).
+    if n > 80 {
+        let ic = crate::indicators::ichimoku::ichimoku(candles, 9, 26, 52, 26);
+        if let (Some(tp), Some(tc), Some(kp), Some(kc)) = (ic.tenkan[n - 2], ic.tenkan[n - 1], ic.kijun[n - 2], ic.kijun[n - 1]) {
+            if tp <= kp && tc > kc {
+                push(EventKind::IchimokuTenkanKijunCross, Some(Side::Buy), Some(tc - kc));
+            } else if tp >= kp && tc < kc {
+                push(EventKind::IchimokuTenkanKijunCross, Some(Side::Sell), Some(tc - kc));
+            }
+            if closes[n - 2] <= kp && closes[n - 1] > kc {
+                push(EventKind::IchimokuKijunCross, Some(Side::Buy), None);
+            } else if closes[n - 2] >= kp && closes[n - 1] < kc {
+                push(EventKind::IchimokuKijunCross, Some(Side::Sell), None);
+            }
+        }
+        if let (Some(ap), Some(ac), Some(bp), Some(bc)) = (ic.senkou_a[n - 2], ic.senkou_a[n - 1], ic.senkou_b[n - 2], ic.senkou_b[n - 1]) {
+            if ap <= bp && ac > bc {
+                push(EventKind::IchimokuKumoTwist, Some(Side::Buy), Some(ac - bc));
+            } else if ap >= bp && ac < bc {
+                push(EventKind::IchimokuKumoTwist, Some(Side::Sell), Some(ac - bc));
+            }
+            let was_inside = closes[n - 2] >= ap.min(bp) && closes[n - 2] <= ap.max(bp);
+            if was_inside && closes[n - 1] > ac.max(bc) {
+                push(EventKind::IchimokuCloudBreakout, Some(Side::Buy), Some(closes[n - 1] - ac.max(bc)));
+            } else if was_inside && closes[n - 1] < ac.min(bc) {
+                push(EventKind::IchimokuCloudBreakout, Some(Side::Sell), Some(ac.min(bc) - closes[n - 1]));
+            }
+        }
+    }
+
+    // -- TSI x its signal.
+    if n > 40 {
+        let (line, signal) = crate::indicators::misc::tsi(&closes, 13, 25, 7);
+        if let (Some(lp), Some(lc), Some(sp), Some(sc)) = (line[n - 2], line[n - 1], signal[n - 2], signal[n - 1]) {
+            if lp <= sp && lc > sc {
+                push(EventKind::TsiCross, Some(Side::Buy), Some(lc - sc));
+            } else if lp >= sp && lc < sc {
+                push(EventKind::TsiCross, Some(Side::Sell), Some(lc - sc));
+            }
+        }
+    }
+
+    // -- The Awesome zero cross.
+    if n > 36 {
+        let v = crate::indicators::misc::awesome(candles, 5, 34);
+        if let (Some(p), Some(c)) = (v[n - 2], v[n - 1]) {
+            if p <= 0.0 && c > 0.0 {
+                push(EventKind::AwesomeZeroCross, Some(Side::Buy), None);
+            } else if p >= 0.0 && c < 0.0 {
+                push(EventKind::AwesomeZeroCross, Some(Side::Sell), None);
             }
         }
     }
@@ -416,6 +496,73 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
         }
     }
 
+    out
+}
+
+/// Price makes the new extreme; the oscillator refuses it. Confirmed when
+/// the second swing's `strength` bars complete -- i.e. exactly at the tail.
+/// Shared by every oscillator's divergence (OBV, MACD, A/D, RSI's cousin).
+fn oscillator_divergence(candles: &[Candle], series: &[Option<f64>], kind: EventKind, symbol: &str) -> Vec<MarketEvent> {
+    let mut out = Vec::new();
+    let n = candles.len();
+    let strength = 2;
+    if n < 40 {
+        return out;
+    }
+    let Some(last) = candles.last() else { return out };
+    let swing = |highs: bool| -> Option<(usize, usize)> {
+        let start = n - 31;
+        let mut found: Vec<usize> = Vec::new();
+        for i in (start + strength)..(n - strength) {
+            let price = if highs { candles[i].high } else { candles[i].low };
+            let is_swing = (1..=strength).all(|d| {
+                let l = if highs { candles[i - d].high } else { candles[i - d].low };
+                let r = if highs { candles[i + d].high } else { candles[i + d].low };
+                if highs { price > l && price >= r } else { price < l && price <= r }
+            });
+            if is_swing {
+                found.push(i);
+            }
+        }
+        if found.len() >= 2 {
+            Some((found[found.len() - 2], found[found.len() - 1]))
+        } else {
+            None
+        }
+    };
+    let mut push = |side: Side, value: Option<f64>| {
+        out.push(MarketEvent {
+            kind,
+            symbol: symbol.to_string(),
+            timeframe: last.timeframe,
+            bar_time: last.open_time,
+            close: last.close,
+            price: last.close,
+            side: Some(side),
+            zone_low: Some(last.low),
+            zone_high: Some(last.high),
+            magnitude: value,
+            formed_at: None,
+        });
+    };
+    // Bearish: price higher high, oscillator lower high.
+    if let Some((a, b)) = swing(true) {
+        if candles[b].high > candles[a].high
+            && b + strength == n - 1
+            && matches!((series[a], series[b]), (Some(oa), Some(ob)) if ob < oa)
+        {
+            push(Side::Sell, series[b]);
+        }
+    }
+    // Bullish: price lower low, oscillator higher low.
+    if let Some((a, b)) = swing(false) {
+        if candles[b].low < candles[a].low
+            && b + strength == n - 1
+            && matches!((series[a], series[b]), (Some(oa), Some(ob)) if ob > oa)
+        {
+            push(Side::Buy, series[b]);
+        }
+    }
     out
 }
 

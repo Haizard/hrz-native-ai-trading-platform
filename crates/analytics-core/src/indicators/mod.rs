@@ -20,6 +20,8 @@ pub mod atr;
 pub mod bollinger;
 pub mod ema;
 pub mod macd;
+pub mod ichimoku;
+pub mod misc;
 pub mod oscillators;
 pub mod rsi;
 pub mod sma;
