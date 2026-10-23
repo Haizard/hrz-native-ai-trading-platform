@@ -237,6 +237,11 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) = api_gateway::econ_routes::refresh_releases(&store, "cpi").await {
                     tracing::warn!("econ refresh (cpi): {e}");
                 }
+                for kind in ["fomc", "claims", "pce", "gdp"] {
+                    if let Err(e) = api_gateway::econ_routes::refresh_fred(&store, kind).await {
+                        tracing::warn!("econ refresh ({kind}): {e}");
+                    }
+                }
                 tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
             }
         });

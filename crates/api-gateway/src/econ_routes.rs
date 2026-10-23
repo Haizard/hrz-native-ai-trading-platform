@@ -138,6 +138,184 @@ pub async fn refresh_releases(store: &EconStore, kind: &str) -> Result<usize, St
     Ok(count)
 }
 
+const FRED_API_KEY_ENV: &str = "FRED_API_KEY";
+const FRED_API_KEY_DEFAULT: &str = "a62f9270e479cc5166b8e4a56344ad7c";
+
+fn fred_key() -> String {
+    std::env::var(FRED_API_KEY_ENV).unwrap_or_else(|_| FRED_API_KEY_DEFAULT.to_string())
+}
+
+/// Refresh the FRED-backed kinds: fomc (the funds target's change IS the
+/// decision), claims (weekly), pce (YoY), gdp (quarterly annualized QoQ).
+pub async fn refresh_fred(store: &EconStore, kind: &str) -> Result<usize, String> {
+    let client = reqwest::Client::new();
+    let key = fred_key();
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
+    let overrides = store.overrides.read().map_err(|e| e.to_string())?.clone();
+    let mut releases = Vec::new();
+    match kind {
+        "fomc" => {
+            let points = market_data::fred::fetch_fred(&client, &key, market_data::fred::SERIES_FUNDS_TARGET, 400).await?;
+            if points.len() < 3 {
+                return Err("FRED returned too few funds points".to_string());
+            }
+            for w in points.windows(2) {
+                let change = w[0].value - w[1].value;
+                if change.abs() > 1e-9 {
+                    let period = w[0].date[..7].to_string();
+                    let (forecast, source) = overrides
+                        .get(&format!("fomc:{period}"))
+                        .map(|(f, s)| (*f, s.clone()))
+                        .unwrap_or((0.0, "hold_default".to_string()));
+                    releases.push(econ::EconRelease {
+                        id: format!("fomc-{period}"),
+                        kind: "fomc".to_string(),
+                        period,
+                        release_ns: market_data::fred::date_ns(&w[0].date).unwrap_or(0),
+                        actual: change,
+                        unemployment: None,
+                        earnings_change: None,
+                        forecast,
+                        forecast_source: source,
+                        revision: None,
+                        retrieved_ns: now_ns,
+                    });
+                }
+            }
+        }
+        "claims" => {
+            let points = market_data::fred::fetch_fred(&client, &key, market_data::fred::SERIES_CLAIMS, 60).await?;
+            if points.len() < 10 {
+                return Err("FRED returned too few claims points".to_string());
+            }
+            // The last twelve weekly releases: the sigma needs the history
+            // (a store of one release has no trailing to normalize against).
+            for (i, p) in points.iter().take(12).enumerate() {
+                let trailing: Vec<f64> = points.iter().skip(i + 1).take(8).map(|q| q.value).collect();
+                let forecast_default = if trailing.is_empty() { p.value } else { trailing.iter().sum::<f64>() / trailing.len() as f64 };
+                let (forecast, source) = overrides
+                    .get(&format!("claims:{}", p.date))
+                    .map(|(f, s)| (*f, s.clone()))
+                    .unwrap_or((forecast_default, "trailing_mean".to_string()));
+                releases.push(econ::EconRelease {
+                    id: format!("claims-{}", p.date),
+                    kind: "claims".to_string(),
+                    period: p.date[..7].to_string(),
+                    release_ns: market_data::fred::date_ns(&p.date).unwrap_or(0),
+                    actual: p.value,
+                    unemployment: None,
+                    earnings_change: None,
+                    forecast,
+                    forecast_source: source,
+                    revision: None,
+                    retrieved_ns: now_ns,
+                });
+            }
+        }
+        "pce" => {
+            let points = market_data::fred::fetch_fred(&client, &key, market_data::fred::SERIES_PCE_LEVEL, 40).await?;
+            if points.len() < 14 {
+                return Err("FRED returned too few PCE points".to_string());
+            }
+            let yoy: Vec<(String, f64)> = (0..points.len().saturating_sub(12))
+                .map(|i| (points[i].date[..7].to_string(), (points[i].value / points[i + 12].value - 1.0) * 100.0))
+                .collect();
+            for (i, (period, actual)) in yoy.iter().enumerate() {
+                let trailing: Vec<f64> = yoy.iter().skip(i + 1).take(12).map(|(_, v)| *v).collect();
+                let forecast_default = if trailing.is_empty() { *actual } else { trailing.iter().sum::<f64>() / trailing.len() as f64 };
+                let (forecast, source) = overrides
+                    .get(&format!("pce:{period}"))
+                    .map(|(f, s)| (*f, s.clone()))
+                    .unwrap_or((forecast_default, "trailing_mean".to_string()));
+                releases.push(econ::EconRelease {
+                    id: format!("pce-{period}"),
+                    kind: "pce".to_string(),
+                    period: period.clone(),
+                    release_ns: market_data::fred::date_ns(&points[i].date).unwrap_or(0),
+                    actual: *actual,
+                    unemployment: None,
+                    earnings_change: None,
+                    forecast,
+                    forecast_source: source,
+                    revision: None,
+                    retrieved_ns: now_ns,
+                });
+            }
+        }
+        "gdp" => {
+            let points = market_data::fred::fetch_fred(&client, &key, market_data::fred::SERIES_REAL_GDP, 12).await?;
+            if points.len() < 3 {
+                return Err("FRED returned too few GDP points".to_string());
+            }
+            let annualized: Vec<f64> = (0..points.len() - 1).map(|i| (points[i].value / points[i + 1].value - 1.0) * 100.0 * 4.0).collect();
+            for (i, actual) in annualized.iter().enumerate() {
+                let trailing: Vec<f64> = annualized.iter().skip(i + 1).take(8).copied().collect();
+                let forecast_default = if trailing.is_empty() { *actual } else { trailing.iter().sum::<f64>() / trailing.len() as f64 };
+                let period = points[i].date[..7].to_string();
+                let (forecast, source) = overrides
+                    .get(&format!("gdp:{period}"))
+                    .map(|(f, s)| (*f, s.clone()))
+                    .unwrap_or((forecast_default, "trailing_mean".to_string()));
+                releases.push(econ::EconRelease {
+                    id: format!("gdp-{period}"),
+                    kind: "gdp".to_string(),
+                    period,
+                    release_ns: market_data::fred::date_ns(&points[i].date).unwrap_or(0),
+                    actual: *actual,
+                    unemployment: None,
+                    earnings_change: None,
+                    forecast,
+                    forecast_source: source,
+                    revision: None,
+                    retrieved_ns: now_ns,
+                });
+            }
+        }
+        _ => return Err(format!("unknown FRED kind `{kind}`")),
+    }
+    // The store is ASCENDING by release time (report_for reads the newest
+    // off the end); the FRED windows walk newest-first, so sort on insert.
+    releases.sort_by_key(|r| r.release_ns);
+    let count = releases.len();
+    store
+        .releases
+        .write()
+        .map_err(|e| e.to_string())?
+        .insert(kind.to_string(), releases);
+    Ok(count)
+}
+
+/// `GET /econ/macro`: the Fed's own numbers as one context -- the funds
+/// rate and its direction, the curve, the real yield, the dollar, and the
+/// composite the Quant Brain reads before any instrument.
+pub async fn macro_context(State(_state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = reqwest::Client::new();
+    let key = fred_key();
+    let f = market_data::fred::fetch_fred;
+    let (funds, dgs10, dgs2, dfii10, dollar) = (
+        f(&client, &key, market_data::fred::SERIES_FUNDS_TARGET, 300).await.map_err(ApiError::unavailable)?,
+        f(&client, &key, market_data::fred::SERIES_DGS10, 5).await.map_err(ApiError::unavailable)?,
+        f(&client, &key, market_data::fred::SERIES_DGS2, 5).await.map_err(ApiError::unavailable)?,
+        f(&client, &key, market_data::fred::SERIES_DFII10, 5).await.map_err(ApiError::unavailable)?,
+        f(&client, &key, market_data::fred::SERIES_DOLLAR, 300).await.map_err(ApiError::unavailable)?,
+    );
+    let ctx = market_data::fred::macro_context(&funds, &dgs10, &dgs2, &dfii10, &dollar)
+        .ok_or_else(|| ApiError::unavailable("FRED series too short for the context"))?;
+    Ok(Json(serde_json::json!({
+        "funds_rate": ctx.funds_rate,
+        "funds_direction": ctx.funds_direction,
+        "curve_2s10s": ctx.curve,
+        "real_yield_10y": ctx.real_yield,
+        "dollar_change_pct": ctx.dollar_change_pct,
+        "composite": ctx.composite,
+        "label": market_data::fred::context_label(ctx.composite),
+        "note": "the Fed's own numbers as one read: policy direction dominates, the curve warns, the real yield and the dollar weigh. This is the macro context; an instrument's reaction is still its own confirmation.",
+    })))
+}
+
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let yy = if m <= 2 { y - 1 } else { y };
     let era = yy.div_euclid(400);

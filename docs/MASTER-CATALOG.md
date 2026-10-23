@@ -346,7 +346,10 @@ the normalized surprise, the composite macro bias, the market-reaction report, a
 override that ends look-ahead bias. **The venue gate is the doctrine's own**: forex/crypto/basket
 get the macro channel; Deriv synthetics get `MACRO_UNDEFINED` — a random engine does not read the
 BLS. ✅ NFP (`econ.nfp`) · ✅ CPI (`econ.cpi`) · ✅ surprise-vs-consensus (the sigma model) ·
-⚠️ FOMC (needs a Fed source) · ⚠️ news sentiment (needs a news feed) · the rest stay gated.
+✅ FOMC (`econ.fomc`, the target's own change as data, via FRED) · ✅ PCE (`econ.pce`, the Fed's
+preferred gauge) · ✅ GDP (`econ.gdp`) · ✅ initial claims (`econ.claims`, the weekly pulse) ·
+✅ the macro context (`/econ/macro`: funds direction, the 2s10s curve, real yields, the dollar,
+one composite) · ⚠️ news sentiment (needs a news feed) · the rest stay gated.
 
 ## 17. Options, Volatility and Derivatives
 
