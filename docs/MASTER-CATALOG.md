@@ -359,17 +359,17 @@ expresses rather than a new detector. The detectors they compose are the ✅ ite
 | # | Concept | Status | # | Concept | Status |
 |---|---------|--------|---|---------|--------|
 | 1 | Market Profile | ⚠️ volume profile, not TPO | 11 | Failed auction | ⚠️ |
-| 2 | TPO | ❌ time-based profile | 12 | Acceptance above value | ⚠️ |
-| 3 | Value area rotation | ⚠️ `volume.value_area` | 13 | Acceptance below value | ⚠️ |
+| 2 | TPO | ✅ `analytics-core::tpo` (time-at-price) | 12 | Acceptance above value | ✅ `volume.acceptance` |
+| 3 | Value area rotation | ⚠️ `volume.value_area` | 13 | Acceptance below value | ✅ same |
 | 4 | POC trading | ✅ `volume.poc` | 14 | Value migration | ⚠️ |
-| 5 | Initial balance breakout | ❌ | 15 | Responsive buying | ⚠️ profile-delta fusion |
-| 6 | Initial balance reversal | ❌ | 16 | Responsive selling | ⚠️ |
-| 7 | Single prints | ❌ | 17 | Initiative buying | ⚠️ |
+| 5 | Initial balance breakout | ✅ `volume.initial_balance` | 15 | Responsive buying | ⚠️ profile-delta fusion |
+| 6 | Initial balance reversal | ✅ same | 16 | Responsive selling | ⚠️ |
+| 7 | Single prints | ✅ `volume.single_prints` | 17 | Initiative buying | ⚠️ |
 | 8 | Excess high/low | ❌ | 18 | Initiative selling | ⚠️ |
-| 9 | Poor high/low | ❌ | 19 | Balance-to-imbalance | ⚠️ |
+| 9 | Poor high/low | ✅ `volume.poor_extreme` | 19 | Balance-to-imbalance | ⚠️ |
 | 10 | Balance-area breakout | ⚠️ | 20 | Value-area reversion | ⚠️ |
 
-**Score: 1 ✅ / 13 ⚠️ / 6 ❌**
+**Score: 8 ✅ / 12 ⚠️ / 0 ❌**
 
 ## 22. Liquidity, Arbitrage and Microstructure
 

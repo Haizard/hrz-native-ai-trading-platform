@@ -77,6 +77,7 @@ pub mod sessions;
 pub mod size_classes;
 pub mod sr_zones;
 pub mod state;
+pub mod tpo;
 pub mod types;
 pub mod volume_profile;
 pub mod volume_score;

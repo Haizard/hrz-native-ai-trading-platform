@@ -395,6 +395,17 @@ pub enum EventKind {
     /// A touch of the Bollinger band that closes back inside -- the
     /// reversion entry.
     BollingerReversion,
+    /// A close beyond the session's initial balance, in the break's direction.
+    InitialBalanceBreakout,
+    /// A trade beyond the initial balance that closes back inside it.
+    InitialBalanceReversal,
+    /// A single-print level the market has not revisited.
+    SinglePrint,
+    /// Two consecutive closes beyond the value area's edge.
+    AcceptanceEvent,
+    /// A swing extreme whose own cell carries heavy time -- unfinished
+    /// business at the edge.
+    PoorExtreme,
 }
 
 impl EventKind {
@@ -562,11 +573,16 @@ impl EventKind {
             Self::GarchRegimeShift => "garch_regime_shift",
             Self::HmmRegimeShift => "hmm_regime_shift",
             Self::BollingerReversion => "bollinger_reversion",
+            Self::InitialBalanceBreakout => "initial_balance_breakout",
+            Self::InitialBalanceReversal => "initial_balance_reversal",
+            Self::SinglePrint => "single_print",
+            Self::AcceptanceEvent => "acceptance_event",
+            Self::PoorExtreme => "poor_extreme",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 160] = [
+    pub const ALL: [Self; 165] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -727,6 +743,11 @@ impl EventKind {
         Self::GarchRegimeShift,
         Self::HmmRegimeShift,
         Self::BollingerReversion,
+        Self::InitialBalanceBreakout,
+        Self::InitialBalanceReversal,
+        Self::SinglePrint,
+        Self::AcceptanceEvent,
+        Self::PoorExtreme,
     ];
 }
 
@@ -2969,6 +2990,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(crate::regime::detect_regime(candles, symbol));
     events.extend(crate::regime::detect_mtf_alignment(candles, symbol));
     events.extend(crate::regime::detect_bias(candles, symbol));
+    events.extend(crate::tpo::detect_auction(candles, symbol));
     events.extend(detect_chart_gaps(candles, symbol, &config));
     events.extend(crate::fibonacci::detect_fibonacci(candles, symbol, config.structure_lookback));
     events.extend(crate::rsi_pca::detect_rsi_pca(candles, symbol));
