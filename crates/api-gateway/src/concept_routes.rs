@@ -45,6 +45,11 @@ pub struct ConceptEntry {
     /// Whether it can run on the queried symbol (absent without `?symbol=`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub available: Option<bool>,
+    /// Whether it renders as an indicator sub-pane (the shell fetches its
+    /// series and the engine positions it).
+    pub pane: bool,
+    /// Whether it renders as overlay lines on the price plot.
+    pub overlay: bool,
 }
 
 /// `GET /concepts`: the catalog.
@@ -72,6 +77,8 @@ pub async fn concepts(
             parameters: c.parameters,
             required_channels: c.required_channels.names(),
             available: available.as_ref().map(|ids| ids.contains(&c.id)),
+            pane: c.pane,
+            overlay: c.overlay,
         })
         .collect();
     Ok(Json(entries))
