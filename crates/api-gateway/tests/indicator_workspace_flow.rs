@@ -167,7 +167,7 @@ async fn revision_restore_sets_active_revision() {
         .post(
             &format!("/indicator-workspaces/{workspace_id}/revisions"),
             json!({
-                "source": "name: rev1\nversion: '1'",
+                "source": "name: rev1\nversion: '1'\nkind: indicator\nmarket: BTCUSDT\ntimeframes:\n  entry: 5m",
                 "summary": "First revision",
                 "change_summary": "Initial",
                 "preview": valid_preview(),
@@ -183,7 +183,7 @@ async fn revision_restore_sets_active_revision() {
         .post(
             &format!("/indicator-workspaces/{workspace_id}/revisions"),
             json!({
-                "source": "name: rev2\nversion: '1'",
+                "source": "name: rev2\nversion: '1'\nkind: indicator\nmarket: BTCUSDT\ntimeframes:\n  entry: 5m",
                 "summary": "Second revision",
                 "change_summary": "Edit",
                 "preview": valid_preview_2(),
@@ -476,7 +476,7 @@ async fn single_revision_read_returns_source_and_preview() {
         .post(
             &format!("/indicator-workspaces/{workspace_id}/revisions"),
             json!({
-                "source": "name: my_indicator\nversion: '1'",
+                "source": "name: my_indicator\nversion: '1'\nkind: indicator\nmarket: BTCUSDT\ntimeframes:\n  entry: 5m",
                 "summary": "A test indicator",
                 "change_summary": "Created",
                 "preview": valid_preview(),
@@ -495,7 +495,7 @@ async fn single_revision_read_returns_source_and_preview() {
         )
         .await;
     assert_eq!(status, axum::http::StatusCode::OK);
-    assert_eq!(body["source"], "name: my_indicator\nversion: '1'");
+    assert_eq!(body["source"], "name: my_indicator\nversion: '1'\nkind: indicator\nmarket: BTCUSDT\ntimeframes:\n  entry: 5m");
     assert_eq!(body["summary"], "A test indicator");
     assert_eq!(body["status"], "validated");
     assert!(!body["preview"]["evidence"]
