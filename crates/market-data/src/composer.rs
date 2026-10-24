@@ -87,6 +87,10 @@ pub enum Condition {
         /// multi-timeframe rule).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeframe: Option<String>,
+        /// The event must be at least this many bars old (a confirmation
+        /// delay: "at least 5 bars after the sweep"). Default 0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_bars_since: Option<usize>,
     },
     /// Price retraced INTO the newest zone of a concept (the FVG to come
     /// back to, the order block to revisit): holds when the newest close
@@ -100,6 +104,32 @@ pub enum Condition {
         /// How far back the zone may have formed (default 20 bars).
         #[serde(default)]
         lookback_bars: Option<usize>,
+    },
+    /// The newest close against a leaf's own level (the swing, the zone
+    /// edge, the pool's price): "price above the swing", "close below the
+    /// distal edge", with an optional percent tolerance.
+    PriceVs {
+        /// Which side of the level the close must sit on.
+        side: PriceSide,
+        /// The concept whose newest event supplies the level.
+        concept: String,
+        /// Its timeframe when it differs from the document's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeframe: Option<String>,
+        /// How far back the level's event may be (default 20 bars).
+        #[serde(default)]
+        lookback_bars: Option<usize>,
+        /// The tolerance as a fraction of the level (0.002 = 0.2%).
+        #[serde(default)]
+        tolerance: f64,
+    },
+    /// The bar's own UTC hour must sit inside the window: "only in the New
+    /// York killzone", never an entry at 03:00.
+    TimeWindow {
+        /// The window's start hour UTC (inclusive).
+        start_hour: u32,
+        /// The window's end hour UTC (exclusive; may wrap past midnight).
+        end_hour: u32,
     },
     /// Every child must hold.
     All {
@@ -122,7 +152,24 @@ pub enum Condition {
         steps: Vec<SequenceStep>,
         /// The widest gap between consecutive steps.
         max_bars: usize,
+        /// The whole sequence must complete within this many bars of its
+        /// first step satisfying ("cancel if unfilled after 2 hours"). None
+        /// means no expiry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_after_bars: Option<usize>,
     },
+}
+
+/// The side of a level a `PriceVs` condition reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriceSide {
+    /// The close is at or above the level (plus tolerance).
+    Above,
+    /// The close is at or below the level (minus tolerance).
+    Below,
+    /// The close crossed the level this bar (either direction).
+    Cross,
 }
 
 /// One sequence step: a condition plus an optional per-step window.
@@ -145,6 +192,20 @@ pub struct RiskBlock {
     pub stop: StopKind,
     /// How size is chosen.
     pub sizing: SizeKind,
+    /// The exit's own conditions (a concept-based exit: "exit at the
+    /// opposite pool", "out when RSI hits 70"). Evaluated per bar while a
+    /// position is open; the protective stop always rides underneath.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<Condition>,
+    /// Partial exits at R multiples of the entry's own stop distance:
+    /// `[{at_r: 1.0, close_pct: 50}]` closes half at +1R.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partials: Vec<PartialExit>,
+    /// How the entry fills: the next bar's open (default), or a limit at the
+    /// satisfying zone's proximal edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<EntryMode>,
+
     /// The position-management rules (break-even and the ATR trail). Absent
     /// means the stop sits where it was placed.
     #[serde(default)]
@@ -152,6 +213,26 @@ pub struct RiskBlock {
     /// The account guards (daily/weekly loss, drawdown, streak, positions).
     #[serde(default)]
     pub guards: Option<analytics_core::risk::RiskGuards>,
+}
+
+/// One partial exit: at this R multiple, close this percent of the position.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PartialExit {
+    /// The R multiple from entry (1.0 = one stop-distance in profit).
+    pub at_r: f64,
+    /// The percent of the ORIGINAL position to close (50 = half).
+    pub close_pct: f64,
+}
+
+/// How the entry fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum EntryMode {
+    /// The next bar's open (the default everywhere).
+    MarketNextOpen,
+    /// A limit at the satisfying zone's proximal edge (the edge nearest the
+    /// signal's price).
+    LimitAtProximal,
 }
 
 /// Stop placement.
@@ -219,6 +300,99 @@ impl std::error::Error for ValidationError {}
 /// Validate a document against the registry: every concept id must exist,
 /// every window must be positive, and the tree's depth is bounded so a
 /// pathological document cannot wedge the evaluator.
+/// The conflict hints a document gets without failing: contradictions and
+/// duplicate measurements the validator can see before the backtest proves
+/// them slowly. Warnings never block; errors still do.
+pub fn warnings(doc: &Composition) -> Vec<String> {
+    let mut warnings = Vec::new();
+    // Direction contradictions within one `all` tree: a concept required
+    // bullish in one branch and bearish in another can never hold together.
+    fn collect_directions(cond: &Condition, out: &mut Vec<(String, DirectionReq, String)>, path: &str) {
+        match cond {
+            Condition::Concept { concept, direction, .. } => out.push((concept.clone(), *direction, path.to_string())),
+            Condition::All { conditions } | Condition::Any { conditions } => {
+                for (i, c) in conditions.iter().enumerate() {
+                    collect_directions(c, out, &format!("{path}.conditions[{i}]"));
+                }
+            }
+            Condition::Not { condition } => collect_directions(condition, out, &format!("{path}.condition")),
+            Condition::Sequence { steps, .. } => {
+                for (i, step) in steps.iter().enumerate() {
+                    collect_directions(&step.condition, out, &format!("{path}.steps[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut directions = Vec::new();
+    collect_directions(&doc.conditions, &mut directions, "conditions");
+    if let Condition::All { .. } = doc.conditions {
+        for a in &directions {
+            for b in &directions {
+                if a.0 == b.0 && a.1 != b.1 && a.1 != DirectionReq::Any && b.1 != DirectionReq::Any {
+                    warnings.push(format!(
+                        "contradiction: `{}` is required {:?} and {:?} in one `all` -- it can never hold",
+                        a.0, a.1, b.1
+                    ));
+                }
+            }
+        }
+    }
+    // Duplicate measurements: conditions from this known-overlap table measure
+    // the same quantity under two names.
+    const OVERLAP: &[(&[&str], &str)] = &[
+        (&["indicators.rsi", "indicators.stochastic", "indicators.williams_r", "indicators.mfi"], "the same oscillator zone under different names"),
+        (&["indicators.ema", "indicators.sma"], "two moving-average families measuring the same trend"),
+        (&["smc.fvg", "smc.bpr"], "two imbalance measurements with heavy overlap"),
+        (&["indicators.atr", "indicators.bollinger_percent"], "two volatility-width measurements"),
+    ];
+    let mut concept_ids: Vec<String> = Vec::new();
+    fn collect_ids(cond: &Condition, out: &mut Vec<String>) {
+        match cond {
+            Condition::Concept { concept, .. } => out.push(concept.clone()),
+            Condition::PriceVs { concept, .. } => out.push(concept.clone()),
+            Condition::Retrace { into, .. } => out.push(into.clone()),
+            Condition::All { conditions } | Condition::Any { conditions } => {
+                for c in conditions {
+                    collect_ids(c, out);
+                }
+            }
+            Condition::Not { condition } => collect_ids(condition, out),
+            Condition::Sequence { steps, .. } => {
+                for step in steps {
+                    collect_ids(&step.condition, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    collect_ids(&doc.conditions, &mut concept_ids);
+    for (group, reason) in OVERLAP {
+        let hits: Vec<&&str> = group.iter().filter(|id| concept_ids.iter().any(|c| c == **id)).collect();
+        if hits.len() > 1 {
+            warnings.push(format!(
+                "duplicate measurement: {} in one tree -- {}",
+                hits.iter().map(|h| format!("`{h}`")).collect::<Vec<_>>().join(" and "),
+                reason
+            ));
+        }
+    }
+    // The sequence gap trap: a step's own lookback longer than the
+    // sequence's max_bars means the step can outlive the sequence itself.
+    if let Condition::Sequence { steps, max_bars, .. } = &doc.conditions {
+        for (i, step) in steps.iter().enumerate() {
+            if step.lookback_bars.is_some_and(|lb| lb > *max_bars) {
+                warnings.push(format!(
+                    "steps[{i}]'s lookback exceeds the sequence's max_bars -- the step can hold past the sequence's own window"
+                ));
+            }
+        }
+    }
+    warnings
+}
+
+/// Validate a document against the registry: every concept id must exist,
+/// the tree must be shallow, the numbers must be positive.
 pub fn validate(doc: &Composition) -> Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
     if doc.name.trim().is_empty() {
@@ -298,6 +472,40 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
         return;
     }
     match cond {
+        Condition::TimeWindow { start_hour, end_hour } => {
+            if *start_hour > 23 || *end_hour > 24 {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: "hours must be 0..23 (start) and 0..24 (end), UTC".to_string(),
+                });
+            }
+            if start_hour == end_hour {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: "a zero-width time window never holds".to_string(),
+                });
+            }
+        }
+        Condition::PriceVs { concept, lookback_bars, tolerance, .. } => {
+            if crate::concepts::concept(concept).is_none() {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: format!("`{concept}` is not a registered concept (GET /concepts)"),
+                });
+            }
+            if *tolerance < 0.0 || *tolerance > 0.5 {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: "tolerance must be between 0 and 0.5 (a fraction of the level)".to_string(),
+                });
+            }
+            if lookback_bars.is_some_and(|w| w == 0) {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: "lookback_bars must be positive".to_string(),
+                });
+            }
+        }
         Condition::Concept { concept, lookback_bars, .. } => {
             if crate::concepts::concept(concept).is_none() {
                 errors.push(ValidationError {
@@ -334,7 +542,13 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
         Condition::Not { condition } => {
             validate_condition(condition, &format!("{path}.condition"), depth + 1, errors);
         }
-        Condition::Sequence { steps, max_bars } => {
+        Condition::Sequence { steps, max_bars, expires_after_bars } => {
+            if expires_after_bars.is_some_and(|w| w == 0) {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: "expires_after_bars must be positive".to_string(),
+                });
+            }
             if steps.len() < 2 {
                 errors.push(ValidationError {
                     path: path.to_string(),
@@ -412,6 +626,8 @@ pub struct Composer {
     leaves: Vec<(LeafKey, LeafState)>,
     fired: bool,
     last_close: Option<f64>,
+    prev_close: Option<f64>,
+    bar_time: Option<i64>,
 }
 
 impl Composer {
@@ -425,6 +641,8 @@ impl Composer {
             leaves: leaves.into_iter().map(|key| (key, LeafState::default())).collect(),
             fired: false,
             last_close: None,
+            prev_close: None,
+            bar_time: None,
         }
     }
 
@@ -434,9 +652,16 @@ impl Composer {
         &self.doc
     }
 
-    /// The newest close the retrace condition reads, set by the caller
-    /// with each bar's events.
+    /// The newest bar's own time, for the TimeWindow condition.
+    pub fn set_bar_time(&mut self, open_time: i64) {
+        self.bar_time = Some(open_time);
+    }
+
+    /// The newest close the retrace and PriceVs conditions read, set by
+    /// the caller with each bar's events. The previous close is tracked for
+    /// the cross rule.
     pub fn set_last_close(&mut self, close: f64) {
+        self.prev_close = self.last_close;
         self.last_close = Some(close);
     }
 
@@ -453,6 +678,32 @@ impl Composer {
                 state.level = event.price_level.or(event.zone_low);
                 if let (Some(lo), Some(hi)) = (event.zone_low, event.zone_high) {
                     state.zone = Some((lo, hi));
+                }
+            }
+        }
+        // The retrace latch: when the close sits inside a retrace leaf's
+        // zone this bar, the leaf counts as satisfied from now on -- "after
+        // price came back to the zone", latched, never "hold it every bar".
+        // The retrace latch reads the CONCEPT leaf's zone and writes the
+        // RETRACE leaf's satisfaction: the concept event never satisfies
+        // the retrace itself.
+        let mut retrace_latches: Vec<(LeafKey, usize)> = Vec::new();
+        for (key, state) in self.leaves.iter() {
+            if key.1.starts_with("retrace:") {
+                continue;
+            }
+            if let Some((lo, hi)) = state.zone {
+                if let Some(close) = self.last_close {
+                    if close >= lo && close <= hi {
+                        retrace_latches.push(((key.0.clone(), format!("retrace:{}", key.1)), bar));
+                    }
+                }
+            }
+        }
+        for (key, at) in retrace_latches {
+            if let Some((_, state)) = self.leaves.iter_mut().find(|(id, _)| id == &key) {
+                if state.satisfied_at.is_none() {
+                    state.satisfied_at = Some(at);
                 }
             }
         }
@@ -504,12 +755,25 @@ impl Composer {
 
     fn eval(&self, cond: &Condition, bar: usize) -> bool {
         match cond {
-            Condition::Concept { concept, timeframe, lookback_bars, .. } => {
-                self.leaf(&(timeframe.clone(), concept.clone()), lookback_bars.unwrap_or(DEFAULT_LOOKBACK_BARS), bar).is_some()
+            Condition::Concept { concept, timeframe, lookback_bars, min_bars_since, .. } => {
+                let lookback = lookback_bars.unwrap_or(DEFAULT_LOOKBACK_BARS);
+                let min_age = min_bars_since.unwrap_or(0);
+                match self.leaf(&(timeframe.clone(), concept.clone()), lookback, bar) {
+                    Some((at, _)) => bar - at >= min_age && bar - at <= lookback,
+                    None => false,
+                }
             }
             Condition::Retrace { into, timeframe, lookback_bars } => {
                 let lookback = lookback_bars.unwrap_or(20);
-                match self.leaf_zone(&(timeframe.clone(), into.clone()), lookback, bar) {
+                // The retrace LATCHES: the bar the close first entered the
+                // zone is the event, and it counts for the lookback's whole
+                // window -- "after price came back to the FVG" latched, never
+                // "hold it every bar or forget it".
+                let key = (timeframe.clone(), format!("retrace:{into}"));
+                if let Some((at, _)) = self.leaf(&key, lookback, bar) {
+                    return bar - at <= lookback;
+                }
+                match self.leaf_zone(&(timeframe.clone(), into.clone()), usize::MAX, bar) {
                     Some((_, lo, hi)) => {
                         let close = self.last_close.unwrap_or(f64::NAN);
                         close >= lo && close <= hi
@@ -517,10 +781,46 @@ impl Composer {
                     None => false,
                 }
             }
+            Condition::PriceVs { side, concept, timeframe, lookback_bars, tolerance } => {
+                let lookback = lookback_bars.unwrap_or(20);
+                let key = (timeframe.clone(), concept.clone());
+                match self.leaf(&key, lookback, bar) {
+                    Some((_, Some(level))) => {
+                        let close = self.last_close.unwrap_or(f64::NAN);
+                        let tol = level.abs() * tolerance;
+                        match side {
+                            PriceSide::Above => close >= level - tol,
+                            PriceSide::Below => close <= level + tol,
+                            PriceSide::Cross => {
+                                let prev_close = self.prev_close.unwrap_or(close);
+                                (prev_close - level).signum() != (close - level).signum()
+                            }
+                        }
+                    }
+                    _ => false,
+                }
+            }
+            Condition::TimeWindow { start_hour, end_hour } => {
+                const HOUR_NS: i64 = 3_600_000_000_000;
+                const DAY_NS: i64 = 24 * HOUR_NS;
+                match self.bar_time {
+                    Some(t) => {
+                        let hour = ((t % DAY_NS) / HOUR_NS) as u32;
+                        if start_hour <= end_hour {
+                            hour >= *start_hour && hour < *end_hour
+                        } else {
+                            hour >= *start_hour || hour < *end_hour
+                        }
+                    }
+                    None => false,
+                }
+            }
             Condition::All { conditions } => conditions.iter().all(|c| self.eval(c, bar)),
             Condition::Any { conditions } => conditions.iter().any(|c| self.eval(c, bar)),
             Condition::Not { condition } => !self.eval(condition, bar),
-            Condition::Sequence { steps, max_bars } => self.eval_sequence(steps, *max_bars, bar),
+            Condition::Sequence { steps, max_bars, expires_after_bars } => {
+                self.eval_sequence_expiring(steps, *max_bars, *expires_after_bars, bar)
+            }
         }
     }
 
@@ -528,7 +828,12 @@ impl Composer {
     /// `max_bars` of the previous step's satisfaction bar. Leaf satisfactions
     /// carry their bars; groups report the newest leaf bar inside them.
     fn eval_sequence(&self, steps: &[SequenceStep], max_bars: usize, bar: usize) -> bool {
+        self.eval_sequence_expiring(steps, max_bars, None, bar)
+    }
+
+    fn eval_sequence_expiring(&self, steps: &[SequenceStep], max_bars: usize, expires: Option<usize>, bar: usize) -> bool {
         let mut previous: Option<usize> = None;
+        let mut first_at: Option<usize> = None;
         for step in steps {
             let Some(at) = self.condition_bar(&step.condition, step.lookback_bars, bar) else {
                 return false;
@@ -538,7 +843,17 @@ impl Composer {
                     return false;
                 }
             }
+            if first_at.is_none() {
+                first_at = Some(at);
+            }
             previous = Some(at);
+        }
+        // The expiry: the whole sequence must complete within
+        // expires_after_bars of its first step -- "cancel if unfilled".
+        if let (Some(first), Some(limit)) = (first_at, expires) {
+            if bar - first > limit {
+                return false;
+            }
         }
         true
     }
@@ -552,6 +867,10 @@ impl Composer {
                 self.leaf(&(timeframe.clone(), concept.clone()), lookback_bars.or(lookback).unwrap_or(default), bar).map(|(at, _)| at)
             }
             Condition::Retrace { .. } => self.eval(cond, bar).then_some(bar),
+            Condition::TimeWindow { .. } => self.eval(cond, bar).then_some(bar),
+            Condition::PriceVs { concept, timeframe, lookback_bars, .. } => {
+                self.leaf(&(timeframe.clone(), concept.clone()), lookback_bars.or(lookback).unwrap_or(default), bar).map(|(at, _)| at)
+            }
             Condition::All { conditions } => {
                 let mut newest = 0;
                 for c in conditions {
@@ -567,10 +886,19 @@ impl Composer {
             // contributes nothing, so report the current bar when it holds.
             Condition::Not { condition } => (!self.eval(condition, bar)).then_some(bar),
             Condition::Retrace { .. } => self.eval(cond, bar).then_some(bar),
-            Condition::Sequence { steps, max_bars } => {
-                self.eval_sequence(steps, *max_bars, bar).then_some(bar)
+            Condition::Sequence { steps, max_bars, expires_after_bars } => {
+                self.eval_sequence_expiring(steps, *max_bars, *expires_after_bars, bar).then_some(bar)
             }
         }
+    }
+
+    /// The per-leaf state as the diagnostics report needs it: (key,
+    /// satisfied_at, level, zone). The "why no fire" report is built from these.
+    pub fn leaf_states(&self) -> Vec<(LeafKey, Option<usize>, Option<f64>, Option<(f64, f64)>)> {
+        self.leaves
+            .iter()
+            .map(|(key, state)| (key.clone(), state.satisfied_at, state.level, state.zone))
+            .collect()
     }
 
     /// The stop level for a structure stop: the newest satisfying event's
@@ -603,12 +931,27 @@ pub type LeafKey = (Option<String>, String);
 
 fn collect_leaves(cond: &Condition, out: &mut Vec<LeafKey>) {
     match cond {
-        Condition::Concept { concept, timeframe, .. } | Condition::Retrace { into: concept, timeframe, .. } => {
+        Condition::Concept { concept, timeframe, .. } | Condition::PriceVs { concept, timeframe, .. } => {
             let key = (timeframe.clone(), concept.clone());
             if !out.contains(&key) {
                 out.push(key);
             }
         }
+        Condition::Retrace { into, timeframe, .. } => {
+            // The retrace's leaf keys SEPARATELY from the concept's own: a
+            // 4h FVG and the retrace into it are different states (the
+            // concept event must not satisfy the retrace).
+            let key = (timeframe.clone(), format!("retrace:{into}"));
+            if !out.contains(&key) {
+                out.push(key);
+            }
+            // And the concept's own leaf, for the zone it carries.
+            let zone_key = (timeframe.clone(), into.clone());
+            if !out.contains(&zone_key) {
+                out.push(zone_key);
+            }
+        }
+        Condition::TimeWindow { .. } => {}
         Condition::All { conditions } | Condition::Any { conditions } => {
             for c in conditions {
                 collect_leaves(c, out);
@@ -629,6 +972,20 @@ fn collect_leaves(cond: &Condition, out: &mut Vec<LeafKey>) {
 /// candles (resampled by the caller, keyed by timeframe). Events feed the
 /// composer with their timeframe tag; the tree evaluates across them, and
 /// the retrace condition reads the base series' closes.
+/// The evaluation's full yield: the signals and the composer's own leaf
+/// states (the "why no fire" data) -- owned by no caller, shared by all.
+pub struct MtfEvaluation {
+    /// The fired signals.
+    pub signals: Vec<Signal>,
+    /// Per-leaf satisfaction state at the window's end.
+    pub diagnostics: Vec<(LeafKey, Option<usize>, Option<f64>, Option<(f64, f64)>)>,
+}
+
+/// The multi-timeframe evaluation, one core for every caller: the document
+/// (whose conditions may each carry their own timeframe), the base
+/// timeframe's candles, and each extra timeframe's resampled series, with
+/// the composer's leaf states yielded alongside the signals (the "why no
+/// fire" data).
 pub fn evaluate_mtf(
     doc: &Composition,
     config: &analytics_core::events::EventConfig,
@@ -636,7 +993,7 @@ pub fn evaluate_mtf(
     base_timeframe: analytics_core::types::Timeframe,
     base_candles: &[analytics_core::types::Candle],
     extra_series: &[(analytics_core::types::Timeframe, Vec<analytics_core::types::Candle>)],
-) -> Vec<Signal> {
+) -> MtfEvaluation {
     let mut composer = Composer::new(doc.clone());
     let mut signals = Vec::new();
     // Precompute each extra timeframe's per-bar events, keyed by its own
@@ -681,7 +1038,10 @@ pub fn evaluate_mtf(
         }
     }
     let _ = base_timeframe;
-    signals
+    MtfEvaluation {
+        signals,
+        diagnostics: composer.leaf_states(),
+    }
 }
 
 /// The timeframes a document involves: its own plus every condition's
@@ -796,6 +1156,185 @@ mod mtf_tests {
 }
 
 #[cfg(test)]
+mod feature_tests {
+    use super::*;
+    use crate::concepts::ConceptStatus;
+
+    fn event(concept: &str, direction: Direction, price: f64, zone: Option<(f64, f64)>) -> ConceptEvent {
+        ConceptEvent {
+            concept_id: concept.to_string(),
+            concept_version: "1.0.0".to_string(),
+            symbol: "T".to_string(),
+            timeframe: "1m".to_string(),
+            direction,
+            status: ConceptStatus::Confirmed,
+            event_time_ns: 0,
+            price_level: Some(price),
+            zone_low: zone.map(|z| z.0),
+            zone_high: zone.map(|z| z.1),
+            evidence: serde_json::json!({}),
+            bars: (0, 0),
+        }
+    }
+
+    fn doc_with(cond: Condition) -> Composition {
+        Composition {
+            name: "t".to_string(),
+            version: "1.0.0".to_string(),
+            timeframe: "1m".to_string(),
+            market: None,
+            side: CompositionSide::Long,
+            conditions: cond,
+            risk: RiskBlock {
+                stop: StopKind::Structure,
+                sizing: SizeKind::Fixed { quantity: 1.0 },
+                management: None,
+                guards: None,
+                exit: None,
+                partials: Vec::new(),
+                entry: None,
+            },
+            parameters: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn price_vs_reads_the_leafs_own_level() {
+        let doc = doc_with(Condition::PriceVs {
+            side: PriceSide::Above,
+            concept: "smc.bos".to_string(),
+            timeframe: None,
+            lookback_bars: None,
+            tolerance: 0.0,
+        });
+        let mut composer = Composer::new(doc);
+        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None);
+        composer.set_last_close(99.0);
+        assert!(composer.on_bar(6, &[], None).is_none(), "below the level fails");
+        composer.set_last_close(101.0);
+        assert!(composer.on_bar(7, &[], None).is_some(), "above the level holds");
+    }
+
+    #[test]
+    fn min_bars_since_delays_the_confirmation() {
+        let doc = doc_with(Condition::Concept {
+            concept: "smc.bos".to_string(),
+            direction: DirectionReq::Bullish,
+            lookback_bars: Some(10),
+            timeframe: None,
+            min_bars_since: Some(5),
+        });
+        let mut composer = Composer::new(doc);
+        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None);
+        assert!(composer.on_bar(8, &[], None).is_none(), "3 bars is too fresh");
+        assert!(composer.on_bar(11, &[], None).is_some(), "6 bars is old enough");
+    }
+
+    #[test]
+    fn the_time_window_gates_the_entry_hour() {
+        let doc = doc_with(Condition::All {
+            conditions: vec![
+                Condition::Concept {
+                    concept: "smc.bos".to_string(),
+                    direction: DirectionReq::Bullish,
+                    lookback_bars: Some(10),
+                    timeframe: None,
+                    min_bars_since: None,
+                },
+                Condition::TimeWindow { start_hour: 12, end_hour: 15 },
+            ],
+        });
+        let mut composer = Composer::new(doc);
+        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None);
+        // 04:00 UTC: outside the killzone.
+        composer.set_bar_time(4 * 3_600_000_000_000);
+        assert!(composer.on_bar(6, &[], None).is_none(), "outside the window fails");
+        // 13:30 UTC: inside.
+        composer.set_bar_time(13 * 3_600_000_000_000 + 30 * 60_000_000_000);
+        assert!(composer.on_bar(7, &[], None).is_some(), "inside the window holds");
+    }
+
+    #[test]
+    fn the_sequence_expires_unless_it_completes_in_time() {
+        let doc = doc_with(Condition::Sequence {
+            steps: vec![
+                SequenceStep {
+                    condition: Condition::Concept {
+                        concept: "smc.liquidity_sweep".to_string(),
+                        direction: DirectionReq::Bullish,
+                        lookback_bars: None,
+                        timeframe: None,
+                        min_bars_since: None,
+                    },
+                    lookback_bars: Some(50),
+                },
+                SequenceStep {
+                    condition: Condition::Concept {
+                        concept: "smc.bos".to_string(),
+                        direction: DirectionReq::Bullish,
+                        lookback_bars: None,
+                        timeframe: None,
+                        min_bars_since: None,
+                    },
+                    lookback_bars: Some(50),
+                },
+            ],
+            max_bars: 100,
+            expires_after_bars: Some(10),
+        });
+        let mut composer = Composer::new(doc);
+        let _ = composer.on_bar(5, &[event("smc.liquidity_sweep", Direction::Bullish, 100.0, None)], None);
+        // The confirmation at bar 18: 13 bars after the sweep -- expired.
+        let fired = composer.on_bar(18, &[event("smc.bos", Direction::Bullish, 100.0, None)], None);
+        assert!(fired.is_none(), "past the expiry, the sequence is dead");
+    }
+
+    #[test]
+    fn warnings_name_contradictions_and_duplicates() {
+        let doc = doc_with(Condition::All {
+            conditions: vec![
+                Condition::Concept {
+                    concept: "smc.bos".to_string(),
+                    direction: DirectionReq::Bullish,
+                    lookback_bars: None,
+                    timeframe: None,
+                    min_bars_since: None,
+                },
+                Condition::Concept {
+                    concept: "smc.bos".to_string(),
+                    direction: DirectionReq::Bearish,
+                    lookback_bars: None,
+                    timeframe: None,
+                    min_bars_since: None,
+                },
+            ],
+        });
+        let w = warnings(&doc);
+        assert!(w.iter().any(|m| m.contains("contradiction")), "the contradiction is named: {w:?}");
+        let dup = doc_with(Condition::All {
+            conditions: vec![
+                Condition::Concept {
+                    concept: "indicators.rsi".to_string(),
+                    direction: DirectionReq::Bullish,
+                    lookback_bars: None,
+                    timeframe: None,
+                    min_bars_since: None,
+                },
+                Condition::Concept {
+                    concept: "indicators.stochastic".to_string(),
+                    direction: DirectionReq::Bullish,
+                    lookback_bars: None,
+                    timeframe: None,
+                    min_bars_since: None,
+                },
+            ],
+        });
+        let w = warnings(&dup);
+        assert!(w.iter().any(|m| m.contains("duplicate measurement")), "the overlap is named: {w:?}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::concepts::ConceptStatus;
@@ -813,6 +1352,9 @@ mod tests {
                 sizing: SizeKind::Fixed { quantity: 1.0 },
                 management: None,
                 guards: None,
+                exit: None,
+                partials: Vec::new(),
+                entry: None,
             },
             parameters: std::collections::HashMap::new(),
         }
@@ -844,6 +1386,7 @@ mod tests {
                 concept: "smc.nope".to_string(),
                 direction: DirectionReq::Bullish,
                 lookback_bars: Some(0),
+                min_bars_since: None,
                 timeframe: None,
             })
         };
@@ -860,6 +1403,7 @@ mod tests {
                         concept: "smc.liquidity_sweep".to_string(),
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
+                        min_bars_since: None,
                         timeframe: None,
                     },
                     lookback_bars: None,
@@ -869,12 +1413,14 @@ mod tests {
                         concept: "smc.bos".to_string(),
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
+                        min_bars_since: None,
                         timeframe: None,
                     },
                     lookback_bars: None,
                 },
             ],
             max_bars: 10,
+            expires_after_bars: None,
         });
         assert!(validate(&good).is_ok());
     }
@@ -885,6 +1431,7 @@ mod tests {
             concept: "smc.bos".to_string(),
             direction: DirectionReq::Bullish,
             lookback_bars: Some(3),
+                min_bars_since: None,
                 timeframe: None,
         });
         let mut composer = Composer::new(document.clone());
@@ -909,6 +1456,7 @@ mod tests {
                         concept: "smc.liquidity_sweep".to_string(),
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
+                min_bars_since: None,
                 timeframe: None,
                     },
                     lookback_bars: None,
@@ -918,12 +1466,14 @@ mod tests {
                         concept: "smc.bos".to_string(),
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
+                min_bars_since: None,
                 timeframe: None,
                     },
                     lookback_bars: None,
                 },
             ],
             max_bars: 3,
+            expires_after_bars: None,
         });
         // Wrong order: bos before the sweep never fires.
         let mut composer = Composer::new(document.clone());
@@ -947,6 +1497,7 @@ mod tests {
                     concept: "smc.bos".to_string(),
                     direction: DirectionReq::Bullish,
                     lookback_bars: Some(5),
+                min_bars_since: None,
                 timeframe: None,
                 },
                 Condition::Not {
@@ -954,6 +1505,7 @@ mod tests {
                         concept: "volume.spike".to_string(),
                         direction: DirectionReq::Any,
                         lookback_bars: Some(2),
+                min_bars_since: None,
                 timeframe: None,
                     }),
                 },
@@ -974,6 +1526,7 @@ mod tests {
             concept: "smc.bos".to_string(),
             direction: DirectionReq::Bullish,
             lookback_bars: None,
+                min_bars_since: None,
                 timeframe: None,
         });
         // A trader's own swing lookback validates and lands on the engine knob.
@@ -1017,6 +1570,7 @@ mod tests {
                         concept: "smc.liquidity_sweep".to_string(),
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
+                min_bars_since: None,
                 timeframe: None,
                     },
                     lookback_bars: None,
@@ -1026,12 +1580,14 @@ mod tests {
                         concept: "smc.bos".to_string(),
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
+                min_bars_since: None,
                 timeframe: None,
                     },
                     lookback_bars: None,
                 },
             ],
             max_bars: 5,
+            expires_after_bars: None,
         });
         let mut composer = Composer::new(document.clone());
         composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 98.5)], None);

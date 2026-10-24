@@ -313,6 +313,7 @@ impl GatewayCompositionRunner {
 
     fn invalid_report(reason: String) -> ai_agent::tools::CompositionReport {
         ai_agent::tools::CompositionReport {
+            diagnostics: None,
             valid: false,
             errors: vec![reason],
             total_trades: 0.0,
@@ -337,6 +338,7 @@ impl GatewayCompositionRunner {
         let errors = market_data::composer::validate(document);
         if let Err(errors) = errors {
             return Ok(ai_agent::tools::CompositionReport {
+                diagnostics: None,
                 valid: false,
                 errors: errors.iter().map(|e| format!("{e}")).collect(),
                 total_trades: 0.0,
@@ -376,10 +378,59 @@ impl GatewayCompositionRunner {
                 }
             }
         }
-        let signals = market_data::composer::evaluate_mtf(document, &config, &symbol, tf, &candles, &extra_series);
+        let evaluation = market_data::composer::evaluate_mtf(document, &config, &symbol, tf, &candles, &extra_series);
+        let signals = evaluation.signals;
 
         // The intents and the run (the route's own conversion).
         let atrs = analytics_core::indicators::atr::atr(&candles, 14);
+        // The exit composer: the risk block's own conditions, evaluated per
+        // bar while a position is open ("exit at the opposite pool").
+        let mut exit_composer = document
+            .risk
+            .exit
+            .as_ref()
+            .map(|cond| market_data::composer::Composer::new(market_data::composer::Composition {
+                name: format!("{} (exit)", document.name),
+                version: document.version.clone(),
+                timeframe: document.timeframe.clone(),
+                market: document.market.clone(),
+                side: document.side,
+                conditions: cond.clone(),
+                risk: document.risk.clone(),
+                parameters: document.parameters.clone(),
+            }));
+        let mut open_entry_bar: Option<usize> = None;
+        let mut exit_intents: Vec<(usize, pine_lite::interp::Intent)> = Vec::new();
+        if exit_composer.is_some() {
+            for bar in 22..candles.len() {
+                let raw = analytics_core::events::detect_events(&candles[..=bar], &symbol, &config);
+                let events: Vec<market_data::concepts::ConceptEvent> = raw
+                    .iter()
+                    .filter(|e| e.bar_time == candles[bar].open_time)
+                    .filter_map(market_data::concepts::as_concept_event)
+                    .collect();
+                if let Some(composer) = exit_composer.as_mut() {
+                    composer.set_last_close(candles[bar].close);
+                    if open_entry_bar.is_some_and(|entry| bar > entry) {
+                        if composer.on_bar(bar, &events, None).is_some() {
+                            exit_intents.push((
+                                bar,
+                                pine_lite::interp::Intent::Exit {
+                                    id: "C".to_string(),
+                                    stop: None,
+                                    limit: None,
+                                    trail_points: None,
+                                    trail_offset: None,
+                                    trail_price: None,
+                                    qty_percent: None,
+                                },
+                            ));
+                            open_entry_bar = None;
+                        }
+                    }
+                }
+            }
+        }
         let mut intents: Vec<(usize, pine_lite::interp::Intent)> = Vec::new();
         for signal in &signals {
             let stop = match &document.risk.stop {
@@ -392,6 +443,24 @@ impl GatewayCompositionRunner {
                     })
                 }
             };
+            // The entry mode: the next bar's open by default, or a limit at
+            // the satisfying zone's proximal edge.
+            if matches!(document.risk.entry, Some(market_data::composer::EntryMode::LimitAtProximal)) {
+                if let Some(level) = signal.stop_level {
+                    intents.push((
+                        signal.bar,
+                        pine_lite::interp::Intent::Exit {
+                            id: "C".to_string(),
+                            stop: None,
+                            limit: Some(level),
+                            trail_points: None,
+                            trail_offset: None,
+                            trail_price: None,
+                            qty_percent: None,
+                        },
+                    ));
+                }
+            }
             intents.push((
                 signal.bar,
                 pine_lite::interp::Intent::Entry {
@@ -400,6 +469,39 @@ impl GatewayCompositionRunner {
                     qty: None,
                 },
             ));
+            // The partial exits at R multiples of the entry's own stop distance.
+            if !document.risk.partials.is_empty() {
+                if let Some(stop_price) = stop {
+                    let entry_bar = (signal.bar + 1).min(candles.len() - 1);
+                    let entry = candles[entry_bar].open;
+                    let distance = (entry - stop_price).abs();
+                    if distance > 0.0 {
+                        for partial in &document.risk.partials {
+                            let target = if signal.long {
+                                entry + distance * partial.at_r
+                            } else {
+                                entry - distance * partial.at_r
+                            };
+                            intents.push((
+                                signal.bar,
+                                pine_lite::interp::Intent::Exit {
+                                    id: "C".to_string(),
+                                    stop: None,
+                                    limit: Some(target),
+                                    trail_points: None,
+                                    trail_offset: None,
+                                    trail_price: None,
+                                    qty_percent: Some(partial.close_pct),
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+            // The concept exit: positions opened from here may be closed by
+            // the exit composer's own signal (its intents were computed
+            // above and merge in time order below).
+            open_entry_bar = Some(signal.bar);
             if let Some(stop) = stop {
                 intents.push((
                     signal.bar,
@@ -421,6 +523,10 @@ impl GatewayCompositionRunner {
             market_data::composer::SizeKind::VolatilityAdjusted { risk_fraction } => risk_fraction * 100.0,
             market_data::composer::SizeKind::Kelly { cap } => cap * 100.0,
         };
+        // The exit composer's intents merge in time order with the entry intents.
+        intents.extend(exit_intents);
+        intents.sort_by_key(|(bar, _)| *bar);
+
         let knobs = pine_lite::sim::StrategyHeader {
             default_qty_type: pine_lite::sim::QtyType::PercentOfEquity,
             default_qty_value: percent,
@@ -435,6 +541,22 @@ impl GatewayCompositionRunner {
         Ok(ai_agent::tools::CompositionReport {
             valid: true,
             errors: Vec::new(),
+            diagnostics: Some(ai_agent::tools::CompositionDiagnostics {
+                leaves: evaluation
+                    .diagnostics
+                    .iter()
+                    .map(|(key, at, level, zone)| ai_agent::tools::LeafDiagnostic {
+                        key: match &key.0 {
+                            Some(tf) => format!("{tf}:{}", key.1),
+                            None => key.1.clone(),
+                        },
+                        satisfied: at.is_some(),
+                        last_bar: *at,
+                        level: *level,
+                        zone: *zone,
+                    })
+                    .collect(),
+            }),
             total_trades: simulation.report.total_trades,
             win_rate: simulation.report.win_rate,
             profit_factor: simulation.report.profit_factor,
@@ -455,6 +577,7 @@ impl ai_agent::tools::CompositionRunner for GatewayCompositionRunner {
         };
         match market_data::composer::validate(&document) {
             Ok(()) => Ok(ai_agent::tools::CompositionReport {
+                diagnostics: None,
                 valid: true,
                 errors: Vec::new(),
                 total_trades: 0.0,
@@ -466,6 +589,7 @@ impl ai_agent::tools::CompositionRunner for GatewayCompositionRunner {
                 kelly_suggested: 0.0,
             }),
             Err(errors) => Ok(ai_agent::tools::CompositionReport {
+                diagnostics: None,
                 valid: false,
                 errors: errors.iter().map(|e| format!("{e}")).collect(),
                 total_trades: 0.0,

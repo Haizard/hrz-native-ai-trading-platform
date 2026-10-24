@@ -437,7 +437,8 @@ pub async fn backtest(
             }
         }
     }
-    let signals = market_data::composer::evaluate_mtf(&request.document, &config, &symbol, tf, &candles, &extra_series);
+    let evaluation = market_data::composer::evaluate_mtf(&request.document, &config, &symbol, tf, &candles, &extra_series);
+    let signals = evaluation.signals;
 
     // Signals become sim intents: entry at the signal bar (next-open fill,
     // like every other path), the structure stop from the satisfying level
@@ -564,6 +565,15 @@ pub async fn backtest(
             "win_rate": simulation.report.win_rate,
             "profit_factor": simulation.report.profit_factor,
             "max_drawdown": simulation.report.max_drawdown,
+        },
+        "diagnostics": {
+            "leaves": evaluation.diagnostics.iter().map(|(key, at, level, zone)| serde_json::json!({
+                "key": match &key.0 { Some(tf) => format!("{tf}:{}", key.1), None => key.1.clone() },
+                "satisfied": at.is_some(),
+                "last_bar": at,
+                "level": level,
+                "zone": zone,
+            })).collect::<Vec<_>>(),
         },
         "risk": {
             "risk_of_ruin": ruin,

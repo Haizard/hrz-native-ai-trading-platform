@@ -129,6 +129,9 @@ pub struct CompositionReport {
     pub valid: bool,
     /// The validation errors when invalid.
     pub errors: Vec<String>,
+    /// The "why no fire" data: per-leaf satisfaction state, present on runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<CompositionDiagnostics>,
     /// Trades taken.
     pub total_trades: f64,
     /// Win rate, percent.
@@ -143,6 +146,28 @@ pub struct CompositionReport {
     pub risk_of_ruin: f64,
     /// The Kelly suggestion from the same statistics.
     pub kelly_suggested: f64,
+}
+
+/// The "why no fire" report: every leaf's satisfaction state.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CompositionDiagnostics {
+    /// The leaves, in document order.
+    pub leaves: Vec<LeafDiagnostic>,
+}
+
+/// One leaf's diagnostics.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LeafDiagnostic {
+    /// The leaf's key (`4h:smc.fvg`, or the bare id).
+    pub key: String,
+    /// Whether it ever satisfied on the window.
+    pub satisfied: bool,
+    /// The last bar it satisfied at.
+    pub last_bar: Option<usize>,
+    /// Its level, when it carries one.
+    pub level: Option<f64>,
+    /// Its zone, when it carries one.
+    pub zone: Option<(f64, f64)>,
 }
 
 /// Runs composition documents (the concept-condition strategies) on the
