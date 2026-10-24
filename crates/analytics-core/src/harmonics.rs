@@ -124,6 +124,71 @@ fn last_five_alternating(pivots: &[Pivot]) -> Option<[Pivot; 5]> {
     Some([tail[0], tail[1], tail[2], tail[3], tail[4]])
 }
 
+/// The Wolfe Wave: five alternating pivots with the channel rules and the
+/// 1-4 target line. Bullish: lows 1-3-5 descend (each a new low), highs 2-4
+/// descend too (the channel narrows), and the target is the line through
+/// points 1 and 4, extended. Bearish mirrors it.
+fn detect_wolfe(candles: &[Candle], symbol: &str, pivots: &[Pivot]) -> Vec<MarketEvent> {
+    let mut out = Vec::new();
+    let Some(last) = candles.last() else { return out };
+    let Some(chain5) = last_five_alternating(pivots) else { return out };
+    let [p1, p2, p3, p4, p5] = chain5;
+    let line_at = |a: &Pivot, b: &Pivot, i: usize| -> f64 {
+        let ta = candles.iter().position(|c| c.open_time == a.time).unwrap_or(0) as f64;
+        let tb = candles.iter().position(|c| c.open_time == b.time).unwrap_or(1) as f64;
+        a.price + (b.price - a.price) * (i as f64 - ta) / (tb - ta).max(1.0)
+    };
+    let n = candles.len() - 1;
+    let bullish = !p1.high && p2.high && !p3.high && p4.high && !p5.high
+        && p3.price < p1.price
+        && p4.price < p2.price
+        && p5.price < p3.price
+        && p4.price > p5.price;
+    let bearish = p1.high && !p2.high && p3.high && !p4.high && p5.high
+        && p3.price > p1.price
+        && p4.price > p2.price
+        && p5.price > p3.price
+        && p4.price < p5.price;
+    if bullish {
+        let target = line_at(&p1, &p4, n + 10);
+        out.push(MarketEvent {
+            kind: EventKind::WolfeWave,
+            symbol: symbol.to_string(),
+            timeframe: last.timeframe,
+            bar_time: last.open_time,
+            close: last.close,
+            price: p5.price,
+            side: Some(crate::types::Side::Buy),
+            zone_low: Some(p5.price),
+            zone_high: Some(target),
+            magnitude: Some(target - p5.price),
+            formed_at: Some(p1.time),
+        });
+    } else if bearish {
+        let target = line_at(&p1, &p4, n + 10);
+        out.push(MarketEvent {
+            kind: EventKind::WolfeWave,
+            symbol: symbol.to_string(),
+            timeframe: last.timeframe,
+            bar_time: last.open_time,
+            close: last.close,
+            price: p5.price,
+            side: Some(crate::types::Side::Sell),
+            zone_low: Some(target),
+            zone_high: Some(p5.price),
+            magnitude: Some(p5.price - target),
+            formed_at: Some(p1.time),
+        });
+    }
+    out
+}
+
+/// Detect harmonic completions on the window, with the platform's own swing
+/// resolution (lookback 3, matching the rest of the structure machinery).
+pub fn detect_wolfe_waves(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
+    detect_wolfe(candles, symbol, &pivots(candles, 3))
+}
+
 /// Detect harmonic completions on the window, with the platform's own swing
 /// resolution (lookback 3, matching the rest of the structure machinery).
 pub fn detect_harmonics(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
@@ -193,6 +258,65 @@ pub fn detect_harmonics(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
 }
 
 #[cfg(test)]
+mod wolfe_tests {
+    use super::*;
+    use crate::types::Timeframe;
+
+    fn k(t: i64, o: f64, h: f64, l: f64, c: f64) -> Candle {
+        Candle {
+            symbol: "T".to_string(),
+            timeframe: Timeframe::H1,
+            open_time: t,
+            open: o,
+            high: h,
+            low: l,
+            close: c,
+            volume: 1.0,
+            buy_volume: 0.5,
+            sell_volume: 0.5,
+        }
+    }
+
+    #[test]
+    fn a_bullish_wolfe_completes_with_the_1_4_target() {
+        // The five pivots: L 100, H 106, L 98, H 104, L 96 -- descending
+        // lows and descending highs, the channel narrowing.
+        let mut candles: Vec<Candle> = (0..20).map(|i| k(i as i64 * 3_600_000_000_000, 102.0, 102.5, 101.5, 102.0)).collect();
+        // Same-type pivots need four or more bars between them (the
+        // lookback-3 rule respects three on each side): L20 H22 L26 H29 L32.
+        let path = [
+            (102.0, 102.2, 100.0, 100.4), // 20: p1 low 100
+            (100.4, 106.0, 100.2, 105.6), // 21
+            (105.6, 105.5, 104.0, 104.4), // 22: p2 high 106
+            (104.4, 104.5, 101.0, 101.4), // 23
+            (101.4, 101.6, 99.5, 99.9),   // 24
+            (99.9, 100.1, 98.0, 98.6),    // 25
+            (98.6, 98.8, 97.5, 97.9),     // 26: p3 low 98
+            (97.9, 100.0, 97.7, 99.8),    // 27
+            (99.8, 104.0, 99.6, 103.6),   // 28
+            (103.6, 103.5, 102.0, 102.4), // 29: p4 high 104
+            (102.4, 102.5, 100.5, 100.9), // 30
+            (100.9, 101.0, 98.5, 98.9),   // 31
+            (98.9, 99.0, 96.0, 96.6),     // 32: p5 low 96
+            (96.6, 98.0, 96.2, 97.8),     // 33: the turn begins
+            (97.8, 99.0, 97.6, 98.8),     // 34
+            (98.8, 99.4, 98.4, 99.2),     // 35: p5 confirms with three right
+            (99.2, 99.6, 98.8, 99.4),     // 36
+        ];
+        for (i, (o, h, l, c)) in path.iter().enumerate() {
+            candles.push(k((20 + i) as i64 * 3_600_000_000_000, *o, *h, *l, *c));
+        }
+        let events = detect_wolfe_waves(&candles, "T");
+        let w = events.iter().find(|e| e.kind == EventKind::WolfeWave);
+        assert!(w.is_some(), "the five-point wave completes");
+        let w = w.expect("checked");
+        assert_eq!(w.side, Some(crate::types::Side::Buy));
+        assert!((w.price - 96.0).abs() < 0.01, "the entry rides wave 5's low");
+        let target = w.zone_high.expect("the 1-4 line");
+        assert!(target > 96.0, "the target is above the entry");
+    }
+}
+
 mod tests {
     use super::*;
     use crate::types::Timeframe;

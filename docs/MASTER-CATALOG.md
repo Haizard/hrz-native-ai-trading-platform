@@ -59,7 +59,7 @@ volume-profile, footprint, CVD/delta, forecast, and sandbox machinery below the 
 | 1 | Support & Resistance | ✅ | `analytics-core::sr_zones` (repeated swings become zones) |
 | 2 | Horizontal Level Trading | ✅ | `pa.level_rejection` (touch/reject events) |
 | 3 | Trendline Trading | ✅ | `chart.trendline` (anchored, 3-touch, break) |
-| 4 | Trend Channel Trading | ⚠️ | channels inside flags/triangles; no standalone channel |
+| 4 | Trend Channel Trading | ✅ | `chart.trend_channel` (validated line + parallel) |
 | 5 | Breakout Trading | ✅ | `pa.breakout` |
 | 6 | Breakout-and-Retest | ✅ | `pa.retest` |
 | 7 | False Breakout | ✅ | `pa.failed_breakout` |
@@ -107,8 +107,8 @@ The analysis primitives live in `analytics-core::candlesticks` and feed every pa
 | 10 | Range analysis | ✅ | 25 | Volume confirmation | ⚠️ `volume.spike` separate |
 | 11 | Inside candles | ✅ | 26 | Session-based behavior | ⚠️ session concepts separate |
 | 12 | Outside candles | ✅ | 27 | Volatility classification | ⚠️ ATR only |
-| 13 | Expansion candles | ⚠️ ATR expansion | 28 | HTF candle bias | ❌ |
-| 14 | Compression candles | ⚠️ contraction | 29 | LTF entry confirmation | ❌ |
+| 13 | Expansion candles | ⚠️ ATR expansion | 28 | HTF candle bias | ✅ `session.htf_candle_bias` |
+| 14 | Compression candles | ⚠️ contraction | 29 | LTF entry confirmation | ⚠️ `smc.mtf_alignment` form |
 | 15 | Consecutive bullish | ⚠️ three-soldier form | 30 | OHLC relationship | ✅ |
 
 **Score: 14 ✅ / 14 ⚠️ / 2 ❌**
@@ -217,12 +217,12 @@ Plus `order_flow.delta_shift` in the registry. **Score: 9 ✅ / 15 ⚠️ / 2 �
 | # | Concept | Status | # | Concept | Status |
 |---|---------|--------|---|---------|--------|
 | 1 | Rally-Base-Rally | ⚠️ zone forms internal | 11 | Zone retest | ⚠️ `sd.zone_tested` |
-| 2 | Drop-Base-Drop | ⚠️ same | 12 | MTF zone alignment | ❌ |
+| 2 | Drop-Base-Drop | ⚠️ same | 12 | MTF zone alignment | ✅ `smc.mtf_zone_alignment` |
 | 3 | Rally-Base-Drop | ⚠️ same | 13 | S/D imbalance | ⚠️ |
-| 4 | Drop-Base-Rally | ⚠️ same | 14 | Zone compression | ❌ |
-| 5 | Fresh zones | ✅ lifecycle | 15 | Proximal/distal entries | ❌ |
+| 4 | Drop-Base-Rally | ⚠️ same | 14 | Zone compression | ✅ `sd.zone_compression` |
+| 5 | Fresh zones | ✅ lifecycle | 15 | Proximal/distal entries | ✅ `sd.proximal_distal` |
 | 6 | Tested zones | ✅ `sd.zone_tested` | 16 | Departure strength | ⚠️ displacement inside |
-| 7 | Zone strength scoring | ⚠️ | 17 | Zone-volume confirm | ⚠️ |
+| 7 | Zone strength scoring | ✅ `sd.zone_strength` (0-100 in the magnitude) | 17 | Zone-volume confirm | ⚠️ |
 | 8 | Supply rejection | ⚠️ | 18 | Zone-liquidity confluence | ⚠️ |
 | 9 | Demand rejection | ⚠️ | 19 | Failed zones | ✅ lifecycle invalidated |
 | 10 | Zone breakout | ⚠️ | 20 | Role-reversal zones | ⚠️ breaker form |
@@ -236,10 +236,10 @@ Plus `order_flow.delta_shift` in the registry. **Score: 9 ✅ / 15 ⚠️ / 2 �
 | 1 | Head & Shoulders | ✅ `chart.head_shoulders` | 19 | Rounding bottom | ✅ `chart.rounding_bottom_top` |
 | 2 | Inverse H&S | ✅  covers both (patterns.rs has the dedicated inverse detector) | 20 | Rounding top | ✅ same |
 | 3 | Double top | ✅ | 21 | Broadening | ✅ `chart.broadening` |
-| 4 | Double bottom | ✅ | 22 | Diamond top | ❌ |
-| 5 | Triple top | ✅ `chart.triple_top_bottom` | 23 | Diamond bottom | ❌ |
+| 4 | Double bottom | ✅ | 22 | Diamond top | ✅ `chart.diamond` |
+| 5 | Triple top | ✅ `chart.triple_top_bottom` | 23 | Diamond bottom | ✅ same |
 | 6 | Triple bottom | ✅ | 24 | Megaphone | ✅ (= broadening) |
-| 7 | Ascending triangle | ⚠️ `chart.triangle` | 25 | Wolfe Waves | ❌ |
+| 7 | Ascending triangle | ⚠️ `chart.triangle` | 25 | Wolfe Waves | ✅ `harmonics.wolfe_wave` (5 points, the 1-4 target line) |
 | 8 | Descending triangle | ⚠️ same | 26 | ABCD | ✅ `harmonics.abcd` |
 | 9 | Symmetrical triangle | ⚠️ same | 27 | Gartley | ✅ |
 | 10 | Rising wedge | ✅ `chart.wedge` | 28 | Bat | ✅ |

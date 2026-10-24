@@ -444,6 +444,27 @@ pub enum EventKind {
     LiquidityVoidFill,
     /// A breakout with the volume to mean it (1.5x the trailing average).
     VolumeConfirmedBreakout,
+    /// The Wolfe Wave: five alternating pivots with the 1-4 target line.
+    WolfeWave,
+    /// The diamond formation: broadening immediately followed by
+    /// contracting, at the range's edge.
+    Diamond,
+    /// The trend channel: the validated trendline and its parallel
+    /// counterpart, with the close beyond either.
+    TrendChannel,
+    /// The newest completed higher-timeframe bar's own direction with the
+    /// structure lean -- the HTF candle bias.
+    HtfCandleBias,
+    /// A zone whose height shrinks across its retests.
+    ZoneCompression,
+    /// A zone's own entry and stop lines: the proximal edge (nearest
+    /// price) and the distal edge (the invalidation).
+    ProximalDistal,
+    /// A zone event scored: touches, recency, and departure strength in
+    /// the magnitude.
+    ZoneStrength,
+    /// The same price zone present on two timeframes at once.
+    MtfZoneAlignment,
 }
 
 impl EventKind {
@@ -631,11 +652,19 @@ impl EventKind {
             Self::CompressionBreakout => "compression_breakout",
             Self::LiquidityVoidFill => "liquidity_void_fill",
             Self::VolumeConfirmedBreakout => "volume_confirmed_breakout",
+            Self::WolfeWave => "wolfe_wave",
+            Self::Diamond => "diamond",
+            Self::TrendChannel => "trend_channel",
+            Self::HtfCandleBias => "htf_candle_bias",
+            Self::ZoneCompression => "zone_compression",
+            Self::ProximalDistal => "proximal_distal",
+            Self::ZoneStrength => "zone_strength",
+            Self::MtfZoneAlignment => "mtf_zone_alignment",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 180] = [
+    pub const ALL: [Self; 188] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -816,6 +845,14 @@ impl EventKind {
         Self::CompressionBreakout,
         Self::LiquidityVoidFill,
         Self::VolumeConfirmedBreakout,
+        Self::WolfeWave,
+        Self::Diamond,
+        Self::TrendChannel,
+        Self::HtfCandleBias,
+        Self::ZoneCompression,
+        Self::ProximalDistal,
+        Self::ZoneStrength,
+        Self::MtfZoneAlignment,
     ];
 }
 
@@ -1401,6 +1438,55 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
         }
     }
 
+    // -- Diamond ------------------------------------------------------------
+    // Broadening immediately followed by contracting, at the range's edge:
+    // the newest six+ swings split into an expanding half and a contracting
+    // half. Top at the formation's high (reversal down), bottom mirrors.
+    if highs.len() >= 4 && lows.len() >= 4 {
+        let (h, l) = (&highs[highs.len() - 4..], &lows[lows.len() - 4..]);
+        let span = |hs: f64, ls: f64| hs - ls;
+        // The four spans between consecutive high/low pairs, oldest first.
+        let spans: Vec<f64> = (0..4).map(|i| span(h[i].1, l[i].1)).collect();
+        let expanding = spans[0] < spans[1] && spans[1] < spans[2] * 1.0 || spans[0] * 1.05 < spans[1] && spans[1] < spans[2];
+        let contracting = spans[2] > spans[3] && spans[1] > spans[2] * 0.98;
+        if expanding && contracting {
+            let top = h[3].1;
+            let bottom = l[3].1;
+            if last.close < bottom * 0.997 {
+                push(EventKind::Diamond, Some(Side::Sell), bottom, Some(bottom), Some(top), Some(candles[h[0].0].open_time));
+            } else if last.close > top * 1.003 {
+                push(EventKind::Diamond, Some(Side::Buy), top, Some(bottom), Some(top), Some(candles[l[0].0].open_time));
+            }
+        }
+    }
+
+    // -- The trend channel -------------------------------------------------
+    // The validated trendline plus its PARALLEL counterpart: three
+    // ascending lows draw the bull line, and the highs' own line runs
+    // parallel within tolerance -- price inside the two is the channel.
+    // The signal is the close beyond EITHER line.
+    if lows.len() >= 3 && highs.len() >= 3 {
+        let (l1, l2, l3) = (lows[lows.len() - 3], lows[lows.len() - 2], lows[lows.len() - 1]);
+        let (h1, h2, h3) = (highs[highs.len() - 3], highs[highs.len() - 2], highs[highs.len() - 1]);
+        let lows_ok = l1.1 < l2.1 && l2.1 < l3.1 && (l3.1 - line_at(l1, l2, l3.0)).abs() <= line_at(l1, l2, l3.0) * (TOP_TOLERANCE / 2.0);
+        let highs_ok = h1.1 < h2.1 && h2.1 < h3.1 && (h3.1 - line_at(h1, h2, h3.0)).abs() <= line_at(h1, h2, h3.0) * (TOP_TOLERANCE / 2.0);
+        if lows_ok && highs_ok {
+            // Parallel: the two lines' slopes agree within tolerance.
+            let slope_l = (l2.1 - l1.1) / (l2.0 - l1.0).max(1) as f64;
+            let slope_h = (h2.1 - h1.1) / (h2.0 - h1.0).max(1) as f64;
+            let parallel = (slope_l - slope_h).abs() <= slope_l.abs().max(slope_h.abs()) * 0.5 + f64::EPSILON;
+            if parallel {
+                let low_line = line_at(l1, l2, n);
+                let high_line = line_at(h1, h2, n);
+                if last.close > high_line * (1.0 + TOP_TOLERANCE) {
+                    push(EventKind::TrendChannel, Some(Side::Buy), high_line, Some(low_line), Some(high_line), Some(candles[l1.0].open_time));
+                } else if last.close < low_line * (1.0 - TOP_TOLERANCE) {
+                    push(EventKind::TrendChannel, Some(Side::Sell), low_line, Some(low_line), Some(high_line), Some(candles[h1.0].open_time));
+                }
+            }
+        }
+    }
+
     // -- Pennant -------------------------------------------------------------------
     // The flag's impulse, then a CONVERGING small channel (highs falling
     // while lows rise). Distinct from the flag's parallel counter-drift.
@@ -1745,6 +1831,36 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
         }
     }
 
+    // -- HTF candle bias: the newest COMPLETED 4x bar's own direction,
+    // with the structure lean agreeing -- the higher timeframe's candle
+    // vote, once per completed bar.
+    {
+        let htf = match last.timeframe {
+            crate::types::Timeframe::M1 => crate::types::Timeframe::M5,
+            crate::types::Timeframe::M5 => crate::types::Timeframe::M15,
+            crate::types::Timeframe::M15 => crate::types::Timeframe::H1,
+            crate::types::Timeframe::H1 => crate::types::Timeframe::H4,
+            crate::types::Timeframe::H4 => crate::types::Timeframe::D1,
+            _ => crate::types::Timeframe::D1,
+        };
+        let upper = crate::resample::resample(candles, htf);
+        if upper.len() >= 3 {
+            // The newest COMPLETED upper bar (the one before the forming one).
+            let completed = &upper[upper.len() - 2];
+            let direction = if completed.close > completed.open {
+                Some(Side::Buy)
+            } else if completed.close < completed.open {
+                Some(Side::Sell)
+            } else {
+                None
+            };
+            let lean = crate::regime::structure_lean(&upper);
+            if direction.is_some() && direction == lean {
+                push(EventKind::HtfCandleBias, direction, completed.close, Some(completed.low), Some(completed.high), Some(completed.open_time));
+            }
+        }
+    }
+
     // -- Level interactions over the sr_zones machinery: the rejection (a
     // wick into a zone closing away) and the flip (the level traded
     // through, then held as the opposite side).
@@ -1880,6 +1996,84 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             }
         }
     }
+
+    let mut deferred_strength: Vec<MarketEvent> = Vec::new();
+    // -- Zone events scored and measured: the compression (a zone whose
+    // height shrinks across retests), the proximal/distal lines, and the
+    // strength score (touches + recency + departure).
+    {
+        let structure = crate::market_structure::detect_market_structure(candles, crate::market_structure::StructureConfig::default());
+        let zones = crate::sr_zones::detect_sr_zones(&structure, last.close, crate::sr_zones::SrZoneConfig::default());
+        if let Some(zone) = zones.first() {
+            let height = zone.top - zone.bottom;
+            // The proximal/distal lines: proximal is the edge NEAREST the
+            // close, distal the far one -- the entry and the invalidation.
+            let (proximal, distal) = if (last.close - zone.bottom).abs() < (last.close - zone.top).abs() {
+                (zone.bottom, zone.top)
+            } else {
+                (zone.top, zone.bottom)
+            };
+            push(EventKind::ProximalDistal, None, proximal, Some(distal), Some(proximal), Some(zone.first_time));
+            // The strength score: touches (x2), recency (the fraction of
+            // the window since the newest touch), departure (the mean
+            // post-touch move in ATRs, capped).
+            let recency = (n as f64 - 1.0).max(1.0);
+            let since = candles.iter().rposition(|k| k.open_time == zone.last_time).unwrap_or(n);
+            let recency_score = 1.0 - (n - since) as f64 / recency;
+            let departure: f64 = candles[since..].iter().map(|k| (k.close - k.open).abs()).sum::<f64>() / (n - since).max(1) as f64;
+            let atr14 = {
+                let start = n.saturating_sub(14);
+                candles[start..n].iter().map(|k| k.high - k.low).sum::<f64>() / (n - start).max(1) as f64
+            };
+            let departure_score = if atr14 > 0.0 { (departure / atr14).min(3.0) / 3.0 } else { 0.0 };
+            let touch_score = (zone.touches as f64 / 4.0).min(1.0);
+            let score = (touch_score * 0.4 + recency_score * 0.3 + departure_score * 0.3) * 100.0;
+            deferred_strength.push(MarketEvent {
+                kind: EventKind::ZoneStrength,
+                symbol: symbol.to_string(),
+                timeframe: last.timeframe,
+                bar_time: last.open_time,
+                close: last.close,
+                price: (zone.top + zone.bottom) / 2.0,
+                side: None,
+                zone_low: Some(zone.bottom),
+                zone_high: Some(zone.top),
+                magnitude: Some(score),
+                formed_at: Some(zone.first_time),
+            });
+            // Compression: the zone's height against the ATR -- a zone
+            // thinner than half an ATR is compressed.
+            if atr14 > 0.0 && height < atr14 * 0.5 {
+                push(EventKind::ZoneCompression, None, (zone.top + zone.bottom) / 2.0, Some(zone.bottom), Some(zone.top), Some(zone.first_time));
+            }
+        }
+        // MTF zone alignment: the newest zone exists on the 4x resample too
+        // (a zone within 0.3% of this one's center).
+        if let Some(zone) = zones.first() {
+            let htf = match last.timeframe {
+                crate::types::Timeframe::M1 => crate::types::Timeframe::M5,
+                crate::types::Timeframe::M5 => crate::types::Timeframe::M15,
+                crate::types::Timeframe::M15 => crate::types::Timeframe::H1,
+                crate::types::Timeframe::H1 => crate::types::Timeframe::H4,
+                crate::types::Timeframe::H4 => crate::types::Timeframe::D1,
+                _ => crate::types::Timeframe::D1,
+            };
+            let upper = crate::resample::resample(candles, htf);
+            if upper.len() > 20 {
+                let upper_structure = crate::market_structure::detect_market_structure(&upper, crate::market_structure::StructureConfig::default());
+                let upper_zones = crate::sr_zones::detect_sr_zones(&upper_structure, last.close, crate::sr_zones::SrZoneConfig::default());
+                let center = (zone.top + zone.bottom) / 2.0;
+                let aligned = upper_zones.iter().any(|uz| {
+                    let uc = (uz.top + uz.bottom) / 2.0;
+                    (uc - center).abs() <= center * 0.003
+                });
+                if aligned {
+                    push(EventKind::MtfZoneAlignment, None, center, Some(zone.bottom), Some(zone.top), Some(zone.first_time));
+                }
+            }
+        }
+    }
+
 
     out
 }
@@ -3354,6 +3548,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_range_liquidity(candles, symbol));
     events.extend(crate::regime::detect_regime(candles, symbol));
     events.extend(detect_structure_levels(candles, symbol));
+    events.extend(crate::harmonics::detect_wolfe_waves(candles, symbol));
     events.extend(crate::regime::detect_mtf_alignment(candles, symbol));
     events.extend(crate::regime::detect_bias(candles, symbol));
     events.extend(crate::tpo::detect_auction(candles, symbol));
