@@ -304,15 +304,25 @@ pub struct GatewayCompositionRunner {
 }
 
 impl GatewayCompositionRunner {
-    /// Parse + validate a document, reporting rather than failing.
-    fn parse_document(document_json: &str) -> Result<market_data::composer::Composition, ai_agent::error::AgentError> {
-        let document: market_data::composer::Composition = serde_json::from_str(document_json).map_err(|e| {
-            ai_agent::error::AgentError::ToolFailed {
-                tool: "composition".into(),
-                reason: format!("the document is not a composition: {e}"),
-            }
-        })?;
-        Ok(document)
+    /// Parse + validate a document, reporting rather than failing. A
+    /// malformed document is an INVALID REPORT, never a hard failure: the
+    /// agent fixes and retries, and the error text is what it fixes against.
+    fn parse_document(document_json: &str) -> Result<market_data::composer::Composition, String> {
+        serde_json::from_str(document_json).map_err(|e| format!("the document is not a composition: {e}"))
+    }
+
+    fn invalid_report(reason: String) -> ai_agent::tools::CompositionReport {
+        ai_agent::tools::CompositionReport {
+            valid: false,
+            errors: vec![reason],
+            total_trades: 0.0,
+            win_rate: 0.0,
+            profit_factor: 0.0,
+            net_profit: 0.0,
+            max_drawdown: 0.0,
+            risk_of_ruin: 1.0,
+            kelly_suggested: 0.0,
+        }
     }
 
     /// The shared backtest core: the same path `/compositions/backtest`
@@ -440,7 +450,10 @@ impl GatewayCompositionRunner {
 #[async_trait::async_trait]
 impl ai_agent::tools::CompositionRunner for GatewayCompositionRunner {
     fn validate_composition(&self, document_json: &str) -> Result<ai_agent::tools::CompositionReport, ai_agent::error::AgentError> {
-        let document = Self::parse_document(document_json)?;
+        let document = match Self::parse_document(document_json) {
+            Ok(d) => d,
+            Err(reason) => return Ok(Self::invalid_report(reason)),
+        };
         match market_data::composer::validate(&document) {
             Ok(()) => Ok(ai_agent::tools::CompositionReport {
                 valid: true,
@@ -474,7 +487,10 @@ impl ai_agent::tools::CompositionRunner for GatewayCompositionRunner {
         timeframe: &str,
         limit: usize,
     ) -> Result<ai_agent::tools::CompositionReport, ai_agent::error::AgentError> {
-        let document = Self::parse_document(document_json)?;
+        let document = match Self::parse_document(document_json) {
+            Ok(d) => d,
+            Err(reason) => return Ok(Self::invalid_report(reason)),
+        };
         self.backtest_core(&document, symbol, timeframe, limit.min(1000).max(50)).await
     }
 
