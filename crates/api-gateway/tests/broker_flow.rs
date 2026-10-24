@@ -61,7 +61,7 @@ async fn the_picker_lists_brokers_the_platform_can_connect() {
     let body = h.ok("/brokers/available", Some(&user.token)).await;
     let venues = body.as_array().expect("an array");
 
-    assert_eq!(venues.len(), 1, "one broker is wired up today: {body}");
+    assert_eq!(venues.len(), 2, "two brokers are wired up today: {body}");
     assert_eq!(venues[0]["venue"], "binance");
     assert_eq!(venues[0]["name"], "Binance");
     assert!(
