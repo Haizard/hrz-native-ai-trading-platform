@@ -267,6 +267,253 @@ fn is_plain_yaml(name: &str) -> bool {
         && name.ends_with(".yaml")
 }
 
+/// The concept catalog for the agent: the registry served by trait, so the
+/// agent's own graph stays free of this crate.
+pub struct RegistryConceptCatalog;
+
+impl ai_agent::tools::ConceptCatalog for RegistryConceptCatalog {
+    fn search(&self, keyword: Option<&str>, library: Option<&str>) -> Vec<ai_agent::tools::ConceptInfo> {
+        market_data::concepts::concept_registry()
+            .iter()
+            .filter(|c| {
+                library.map_or(true, |l| c.id.starts_with(&format!("{l}.")))
+                    && keyword.map_or(true, |k| {
+                        let k = k.to_lowercase();
+                        c.id.to_lowercase().contains(&k)
+                            || c.name.to_lowercase().contains(&k)
+                            || c.description.to_lowercase().contains(&k)
+                    })
+            })
+            .map(|c| ai_agent::tools::ConceptInfo {
+                id: c.id.to_string(),
+                name: c.name.to_string(),
+                description: c.description.to_string(),
+                library: c.id.split('.').next().unwrap_or("").to_string(),
+                pane: c.pane,
+                overlay: c.overlay,
+            })
+            .collect()
+    }
+}
+
+/// The composition runner for the agent: validation, backtests, and the
+/// evidence read over the window service.
+pub struct GatewayCompositionRunner {
+    /// The window service, for candles and detection.
+    pub windows: market_data::WindowService,
+}
+
+impl GatewayCompositionRunner {
+    /// Parse + validate a document, reporting rather than failing.
+    fn parse_document(document_json: &str) -> Result<market_data::composer::Composition, ai_agent::error::AgentError> {
+        let document: market_data::composer::Composition = serde_json::from_str(document_json).map_err(|e| {
+            ai_agent::error::AgentError::ToolFailed {
+                tool: "composition".into(),
+                reason: format!("the document is not a composition: {e}"),
+            }
+        })?;
+        Ok(document)
+    }
+
+    /// The shared backtest core: the same path `/compositions/backtest`
+    /// runs, returned as the report struct.
+    async fn backtest_core(
+        &self,
+        document: &market_data::composer::Composition,
+        symbol: &str,
+        timeframe: &str,
+        limit: usize,
+    ) -> Result<ai_agent::tools::CompositionReport, ai_agent::error::AgentError> {
+        let errors = market_data::composer::validate(document);
+        if let Err(errors) = errors {
+            return Ok(ai_agent::tools::CompositionReport {
+                valid: false,
+                errors: errors.iter().map(|e| format!("{e}")).collect(),
+                total_trades: 0.0,
+                win_rate: 0.0,
+                profit_factor: 0.0,
+                net_profit: 0.0,
+                max_drawdown: 0.0,
+                risk_of_ruin: 1.0,
+                kelly_suggested: 0.0,
+            });
+        }
+        let tf: analytics_core::types::Timeframe = timeframe.parse().map_err(|_| ai_agent::error::AgentError::ToolFailed {
+            tool: "composition".into(),
+            reason: format!("`{timeframe}` is not a timeframe this platform serves"),
+        })?;
+        let symbol = symbol.to_uppercase();
+        let to_ns = crate::now_ns();
+        let from_ns = to_ns - limit as i64 * tf.nanos();
+        let window = self
+            .windows
+            .candles_capped(&symbol, tf, from_ns, to_ns, limit)
+            .await
+            .map_err(|e| ai_agent::error::AgentError::ToolFailed {
+                tool: "composition".into(),
+                reason: format!("no candles for {symbol}: {e}"),
+            })?;
+        let candles = window.candles;
+        // The signals: replay detection per bar, filter the composition's
+        // conditions against them (the composer's own engine).
+        let config = market_data::composer::event_config_for(&document.parameters);
+        let mut composer = market_data::composer::Composer::new(document.clone());
+        let mut signals: Vec<market_data::composer::Signal> = Vec::new();
+        for bar in 22..candles.len() {
+            let raw = analytics_core::events::detect_events(&candles[..=bar], &symbol, &config);
+            let events: Vec<market_data::concepts::ConceptEvent> = raw
+                .iter()
+                .filter_map(market_data::concepts::as_concept_event)
+                .collect();
+            if let Some(signal) = composer.on_bar(bar, &events) {
+                signals.push(signal);
+            }
+        }
+        // The intents and the run (the route's own conversion).
+        let atrs = analytics_core::indicators::atr::atr(&candles, 14);
+        let mut intents: Vec<(usize, pine_lite::interp::Intent)> = Vec::new();
+        for signal in &signals {
+            let stop = match &document.risk.stop {
+                market_data::composer::StopKind::Structure => signal.stop_level,
+                market_data::composer::StopKind::AtrMultiple { multiple } => {
+                    let entry_bar = (signal.bar + 1).min(candles.len() - 1);
+                    atrs[entry_bar].map(|atr| {
+                        let entry = candles[entry_bar].open;
+                        if signal.long { entry - multiple * atr } else { entry + multiple * atr }
+                    })
+                }
+            };
+            intents.push((
+                signal.bar,
+                pine_lite::interp::Intent::Entry {
+                    id: "C".to_string(),
+                    long: signal.long,
+                    qty: None,
+                },
+            ));
+            if let Some(stop) = stop {
+                intents.push((
+                    signal.bar,
+                    pine_lite::interp::Intent::Exit {
+                        id: "C".to_string(),
+                        stop: Some(stop),
+                        limit: None,
+                        trail_points: None,
+                        trail_offset: None,
+                        trail_price: None,
+                        qty_percent: None,
+                    },
+                ));
+            }
+        }
+        let percent = match &document.risk.sizing {
+            market_data::composer::SizeKind::FixedFractional { percent } => *percent,
+            market_data::composer::SizeKind::Fixed { .. } => 10.0,
+            market_data::composer::SizeKind::VolatilityAdjusted { risk_fraction } => risk_fraction * 100.0,
+            market_data::composer::SizeKind::Kelly { cap } => cap * 100.0,
+        };
+        let knobs = pine_lite::sim::StrategyHeader {
+            default_qty_type: pine_lite::sim::QtyType::PercentOfEquity,
+            default_qty_value: percent,
+            guards: document.risk.guards,
+            management: document.risk.management,
+            ..pine_lite::sim::StrategyHeader::default()
+        };
+        let simulation = pine_lite::sim::simulate(&intents, &candles, &knobs);
+        let w = simulation.report.win_rate / 100.0;
+        let payoff = simulation.report.profit_factor.max(0.01) * (1.0 - w).max(0.01) / w.max(0.01);
+        let risk_fraction = (percent / 100.0).max(0.001);
+        Ok(ai_agent::tools::CompositionReport {
+            valid: true,
+            errors: Vec::new(),
+            total_trades: simulation.report.total_trades,
+            win_rate: simulation.report.win_rate,
+            profit_factor: simulation.report.profit_factor,
+            net_profit: simulation.report.net_profit,
+            max_drawdown: simulation.report.max_drawdown,
+            risk_of_ruin: analytics_core::risk::risk_of_ruin(w, payoff, risk_fraction, 0.5),
+            kelly_suggested: analytics_core::risk::kelly_fraction(w, payoff),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl ai_agent::tools::CompositionRunner for GatewayCompositionRunner {
+    fn validate_composition(&self, document_json: &str) -> Result<ai_agent::tools::CompositionReport, ai_agent::error::AgentError> {
+        let document = Self::parse_document(document_json)?;
+        match market_data::composer::validate(&document) {
+            Ok(()) => Ok(ai_agent::tools::CompositionReport {
+                valid: true,
+                errors: Vec::new(),
+                total_trades: 0.0,
+                win_rate: 0.0,
+                profit_factor: 0.0,
+                net_profit: 0.0,
+                max_drawdown: 0.0,
+                risk_of_ruin: 0.0,
+                kelly_suggested: 0.0,
+            }),
+            Err(errors) => Ok(ai_agent::tools::CompositionReport {
+                valid: false,
+                errors: errors.iter().map(|e| format!("{e}")).collect(),
+                total_trades: 0.0,
+                win_rate: 0.0,
+                profit_factor: 0.0,
+                net_profit: 0.0,
+                max_drawdown: 0.0,
+                risk_of_ruin: 1.0,
+                kelly_suggested: 0.0,
+            }),
+        }
+    }
+
+    async fn run_composition(
+        &self,
+        document_json: &str,
+        symbol: &str,
+        timeframe: &str,
+        limit: usize,
+    ) -> Result<ai_agent::tools::CompositionReport, ai_agent::error::AgentError> {
+        let document = Self::parse_document(document_json)?;
+        self.backtest_core(&document, symbol, timeframe, limit.min(1000).max(50)).await
+    }
+
+    async fn signals(&self, symbol: &str, limit: usize) -> Result<Vec<ai_agent::tools::ConceptSignal>, ai_agent::error::AgentError> {
+        let symbol = symbol.to_uppercase();
+        let tf = analytics_core::types::Timeframe::H1;
+        let to_ns = crate::now_ns();
+        let from_ns = to_ns - 500 * tf.nanos();
+        let window = self
+            .windows
+            .candles_capped(&symbol, tf, from_ns, to_ns, 500)
+            .await
+            .map_err(|e| ai_agent::error::AgentError::ToolFailed {
+                tool: "concept_signals".into(),
+                reason: format!("no candles for {symbol}: {e}"),
+            })?;
+        let candles = window.candles;
+        let config = analytics_core::events::EventConfig::default();
+        let mut out = Vec::new();
+        for bar in 22..candles.len() {
+            let raw = analytics_core::events::detect_events(&candles[..=bar], &symbol, &config);
+            out.extend(
+                raw.iter()
+                    .filter(|e| e.bar_time == candles[bar].open_time)
+                    .filter_map(market_data::concepts::as_concept_event)
+                    .map(|e| ai_agent::tools::ConceptSignal {
+                        concept_id: e.concept_id,
+                        direction: format!("{:?}", e.direction).to_lowercase(),
+                        price: e.price_level.unwrap_or(0.0),
+                        bar_time: e.event_time_ns,
+                    }),
+            );
+        }
+        out.sort_by_key(|e| std::cmp::Reverse(e.bar_time));
+        out.truncate(limit.min(50));
+        Ok(out)
+    }
+}
+
 #[async_trait]
 impl BacktestRunner for WindowBacktestRunner {
     async fn run(
@@ -331,6 +578,83 @@ metadata:
         );
         std::fs::write(dir.path().join("test-sweep.yaml"), source).expect("written");
         dir
+    }
+
+    fn windows_off() -> ::market_data::WindowService {
+        let supervisor = crate::bots::BotSupervisor::new(crate::bots::FeedMode::Off);
+        ::market_data::WindowService::new(
+            supervisor.history(),
+            supervisor.live(),
+            ::market_data::BackfillClient::new("http://127.0.0.1:1"),
+        )
+    }
+
+    fn composition_runner_off() -> GatewayCompositionRunner {
+        GatewayCompositionRunner {
+            windows: windows_off(),
+        }
+    }
+
+    #[test]
+    fn the_catalog_search_serves_the_registry_by_keyword_and_library() {
+        let catalog = RegistryConceptCatalog;
+        use ai_agent::tools::ConceptCatalog;
+        let all = catalog.search(None, None);
+        assert!(all.len() > 150, "the full registry: {}", all.len());
+        let rsi = catalog.search(Some("rsi"), None);
+        assert!(rsi.iter().any(|c| c.id == "indicators.rsi"), "the keyword finds the concept");
+        assert!(rsi.iter().all(|c| {
+            let k = "rsi";
+            c.id.to_lowercase().contains(k) || c.name.to_lowercase().contains(k) || c.description.to_lowercase().contains(k)
+        }), "every hit matches the keyword");
+        let smc = catalog.search(None, Some("smc"));
+        assert!(smc.iter().all(|c| c.id.starts_with("smc.")), "the library filter holds");
+        assert!(smc.len() > 10, "the smc family is deep");
+    }
+
+    #[test]
+    fn validate_composition_reports_errors_and_passes_a_good_document() {
+        let runner = composition_runner_off();
+        use ai_agent::tools::CompositionRunner;
+        let bad = runner.validate_composition(r#"{"name": "x"}"#).expect("answered");
+        assert!(!bad.valid, "a non-composition is invalid");
+        let good = runner
+            .validate_composition(
+                r#"{
+                "name": "sweep-plus-rsi",
+                "version": "1.0.0",
+                "timeframe": "1h",
+                "side": "long",
+                "conditions": {"type": "all", "conditions": [
+                    {"type": "concept", "concept": "smc.liquidity_sweep", "direction": "bullish"},
+                    {"type": "concept", "concept": "indicators.rsi", "direction": "bullish"}
+                ]},
+                "risk": {"stop": {"type": "atr_multiple", "multiple": 2.0}, "sizing": {"type": "fixed_fractional", "percent": 1.0}}
+            }"#,
+            )
+            .expect("answered");
+        assert!(good.valid, "a two-family composition validates: {:?}", good.errors);
+        let unknown = runner
+            .validate_composition(
+                r#"{
+                "name": "x", "version": "1.0.0", "timeframe": "1h", "side": "long",
+                "conditions": {"type": "concept", "concept": "smc.not_a_concept", "direction": "bullish"},
+                "risk": {"stop": {"type": "structure"}, "sizing": {"type": "fixed_fractional", "percent": 1.0}}
+            }"#,
+            )
+            .expect("answered");
+        assert!(!unknown.valid, "an id the catalog does not list does not exist");
+    }
+
+    #[test]
+    fn run_composition_validates_before_running() {
+        let runner = composition_runner_off();
+        use ai_agent::tools::CompositionRunner;
+        let report = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(runner.run_composition(r#"{"name": "x"}"#, "BTCUSDT", "1h", 500))
+            .expect("answered");
+        assert!(!report.valid, "validation gates the run");
     }
 
     fn runner_at(dir: &Path) -> WindowBacktestRunner {

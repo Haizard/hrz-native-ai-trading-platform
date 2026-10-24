@@ -148,6 +148,7 @@ impl Harness {
         }));
         let metrics = Arc::new(Registry::new());
         let state = AppState {
+            econ: api_gateway::econ_routes::EconStore::default(),
             db: Some(Arc::new(database.clone())),
             agent,
             skills: Arc::new(ai_agent::SkillLibrary::new()),

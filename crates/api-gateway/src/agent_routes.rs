@@ -248,6 +248,16 @@ pub async fn ask(
     let backtests: Arc<dyn ai_agent::tools::BacktestRunner> = state.research.clone();
     request = request.with_backtests(backtests);
 
+    // The concept catalog and the composition runner: the strategy
+    // vocabulary and the way it gets tested. Same honesty as the other
+    // capabilities -- the tools report their absence when nothing is
+    // attached.
+    request = request.with_concept_catalog(std::sync::Arc::new(crate::research::RegistryConceptCatalog));
+    let composition_runner = std::sync::Arc::new(crate::research::GatewayCompositionRunner {
+        windows: state.windows.clone(),
+    });
+    request = request.with_compositions(composition_runner);
+
     // Web search rides the deployment, not the database: the SearXNG instance
     // is configuration, and the tool reports its absence when none is set.
     if let Some(searcher) = &state.web_search {

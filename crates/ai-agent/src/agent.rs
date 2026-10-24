@@ -302,6 +302,10 @@ pub struct AskRequest {
     /// attached"), exactly like the other capabilities: a host that attaches
     /// nothing gets an honest answer instead of a fabricated base rate.
     pub backtests: Option<Arc<dyn crate::tools::BacktestRunner>>,
+    /// The concept catalog, when attached.
+    pub concept_catalog: Option<Arc<dyn crate::tools::ConceptCatalog>>,
+    /// The composition runner, when attached.
+    pub compositions: Option<Arc<dyn crate::tools::CompositionRunner>>,
     /// The host's web search (the deployment's SearXNG), when attached.
     ///
     /// `None` is what `search_web` reports ("web search is not configured"),
@@ -343,6 +347,8 @@ impl AskRequest {
             snapshots: None,
             captures: None,
             backtests: None,
+            concept_catalog: None,
+            compositions: None,
             web_search: None,
             capabilities: None,
             concept_evidence: None,
@@ -442,6 +448,20 @@ impl AskRequest {
     #[must_use]
     pub fn with_backtests(mut self, runner: Arc<dyn crate::tools::BacktestRunner>) -> Self {
         self.backtests = Some(runner);
+        self
+    }
+
+    /// Attach the concept catalog (the composition vocabulary).
+    #[must_use]
+    pub fn with_concept_catalog(mut self, catalog: Arc<dyn crate::tools::ConceptCatalog>) -> Self {
+        self.concept_catalog = Some(catalog);
+        self
+    }
+
+    /// Attach the composition runner.
+    #[must_use]
+    pub fn with_compositions(mut self, runner: Arc<dyn crate::tools::CompositionRunner>) -> Self {
+        self.compositions = Some(runner);
         self
     }
 
@@ -954,6 +974,12 @@ impl Agent {
         }
         if let Some(runner) = &request.backtests {
             ctx = ctx.with_backtests(runner.as_ref());
+        }
+        if let Some(catalog) = &request.concept_catalog {
+            ctx = ctx.with_concept_catalog(catalog.as_ref());
+        }
+        if let Some(runner) = &request.compositions {
+            ctx = ctx.with_compositions(runner.as_ref());
         }
         if let Some(searcher) = &request.web_search {
             ctx = ctx.with_web_search(searcher.as_ref());
@@ -2038,6 +2064,15 @@ fn ask_system_prompt(
     out.push_str(
         "3. You answer by calling `submit_thesis`. Its fields are the product. \
          The narrative explains them; it does not replace them.\n",
+    );
+    out.push_str(
+        "6. When the request is to BUILD and TEST a strategy from the concept \
+         registry (the platform's detector families), the workflow is ordered \
+         and mandatory: `list_concepts` to get ids that exist, `concept_signals` \
+         to see what is firing, `compose_concept_strategy` to validate the \
+         document, `backtest_composition` for the numbers. Never answer a \
+         build-and-test request from `analyze_timeframe` or a generic thesis \
+         -- that is the analysis path, not the build path.\n",
     );
     out.push_str(
         "4. A condition you could not evaluate is `status: unknown`, never \

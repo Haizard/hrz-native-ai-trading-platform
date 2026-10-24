@@ -938,11 +938,13 @@ capability_requirements:
             .iter()
             .filter(|s| s.kind == SkillKind::Trading)
             .collect();
-        assert_eq!(tools.len(), 10, "the ten tool families ship: {tools:?}");
-        assert_eq!(
-            trading.len(),
-            9,
-            "the nine trading methodologies ship: {trading:?}"
+        // Floors, not exact counts: the library grows as skills ship, and
+        // the pin is that the founding families are all present, never that
+        // no new methodology may join them.
+        assert!(tools.len() >= 10, "the founding tool families ship: {tools:?}");
+        assert!(
+            trading.len() >= 9,
+            "the founding trading methodologies ship: {trading:?}"
         );
 
         // Every applies_to entry is a registered tool; every capability id is

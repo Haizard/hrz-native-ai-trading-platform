@@ -82,6 +82,87 @@ pub trait MarketDataSource: Send + Sync {
     ) -> Result<Option<i64>, AgentError>;
 }
 
+/// One concept as the catalog serves it to the agent: the vocabulary
+/// entry the composition's conditions are written in.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConceptInfo {
+    /// The catalog id (`smc.bos`).
+    pub id: String,
+    /// The display name.
+    pub name: String,
+    /// The one-sentence meaning.
+    pub description: String,
+    /// The library prefix (`smc`, `indicators`, `chart`...).
+    pub library: String,
+    /// Whether it renders a sub-pane series.
+    pub pane: bool,
+    /// Whether it renders overlay lines.
+    pub overlay: bool,
+}
+
+/// The concept catalog, reached by trait so the agent's dependency graph
+/// stays free of the registry's own crate.
+pub trait ConceptCatalog: Send + Sync {
+    /// Concepts matching an optional keyword (name, id, or description) and
+    /// an optional library prefix.
+    fn search(&self, keyword: Option<&str>, library: Option<&str>) -> Vec<ConceptInfo>;
+}
+
+/// One concept event as evidence: what fired, where, which way.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConceptSignal {
+    /// The concept id.
+    pub concept_id: String,
+    /// bullish | bearish | neutral.
+    pub direction: String,
+    /// The price it fired at.
+    pub price: f64,
+    /// The bar's open time, unix nanos.
+    pub bar_time: i64,
+}
+
+/// The composition backtest's report: the sim's headline stats and the risk
+/// analytics the run owes the reader.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CompositionReport {
+    /// Whether the document validated.
+    pub valid: bool,
+    /// The validation errors when invalid.
+    pub errors: Vec<String>,
+    /// Trades taken.
+    pub total_trades: f64,
+    /// Win rate, percent.
+    pub win_rate: f64,
+    /// Profit factor.
+    pub profit_factor: f64,
+    /// Net profit in account currency.
+    pub net_profit: f64,
+    /// Max drawdown, percent.
+    pub max_drawdown: f64,
+    /// Risk of ruin from the run's own statistics (0..1).
+    pub risk_of_ruin: f64,
+    /// The Kelly suggestion from the same statistics.
+    pub kelly_suggested: f64,
+}
+
+/// Runs composition documents (the concept-condition strategies) on the
+/// agent's behalf, plus validation and the evidence read.
+#[async_trait]
+pub trait CompositionRunner: Send + Sync {
+    /// Validate the document (as JSON text), no run.
+    fn validate_composition(&self, document_json: &str) -> Result<CompositionReport, AgentError>;
+    /// Validate and run it over the trailing `limit` candles of `timeframe`.
+    async fn run_composition(
+        &self,
+        document_json: &str,
+        symbol: &str,
+        timeframe: &str,
+        limit: usize,
+    ) -> Result<CompositionReport, AgentError>;
+    /// The newest concept events on a symbol (the evidence to compose from).
+    async fn signals(&self, symbol: &str, limit: usize) -> Result<Vec<ConceptSignal>, AgentError>;
+}
+
 /// Headline statistics from a backtest.
 ///
 /// Mirrors `backtester::BacktestReport`, deliberately by hand: `ai-agent` does
@@ -138,6 +219,18 @@ pub trait BacktestRunner: Send + Sync {
     ) -> Result<BacktestSummary, AgentError>;
 }
 
+impl std::fmt::Debug for dyn ConceptCatalog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConceptCatalog")
+    }
+}
+
+impl std::fmt::Debug for dyn CompositionRunner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CompositionRunner")
+    }
+}
+
 impl std::fmt::Debug for dyn BacktestRunner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The runner is a callback into the host's market data; printing it
@@ -166,6 +259,11 @@ pub struct ToolContext<'a> {
     pub data: &'a dyn MarketDataSource,
     /// Backtests, when the host provides them.
     pub backtests: Option<&'a dyn BacktestRunner>,
+    /// The concept catalog, when the host has one (the composition
+    /// vocabulary rides it).
+    pub concept_catalog: Option<&'a dyn ConceptCatalog>,
+    /// The composition runner, when the host has one.
+    pub compositions: Option<&'a dyn CompositionRunner>,
     /// Analytics tuning (bucket size, lookbacks, ...).
     pub config: MarketStateConfig,
     /// Bars of history each tool reads unless the model asks for a specific
@@ -249,6 +347,8 @@ impl<'a> ToolContext<'a> {
         Self {
             data,
             backtests: None,
+            concept_catalog: None,
+            compositions: None,
             config: MarketStateConfig::default(),
             default_lookback: 300,
             max_lookback: 2000,
@@ -304,6 +404,20 @@ impl<'a> ToolContext<'a> {
     #[must_use]
     pub fn with_backtests(mut self, backtests: &'a dyn BacktestRunner) -> Self {
         self.backtests = Some(backtests);
+        self
+    }
+
+    /// Attach the concept catalog (the composition vocabulary).
+    #[must_use]
+    pub fn with_concept_catalog(mut self, catalog: &'a dyn ConceptCatalog) -> Self {
+        self.concept_catalog = Some(catalog);
+        self
+    }
+
+    /// Attach the composition runner.
+    #[must_use]
+    pub fn with_compositions(mut self, runner: &'a dyn CompositionRunner) -> Self {
+        self.compositions = Some(runner);
         self
     }
 
@@ -637,6 +751,60 @@ impl ToolRegistry {
                     exposed_tool: None,
                 },
                 ToolSpec {
+                    name: "list_concepts".into(),
+                    description: LIST_CONCEPTS.into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "keyword": {"type": "string", "description": "Filter by name, id, or description (e.g. 'rsi', 'liquidity', 'breakout'); omit for the full catalog."},
+                            "library": {"type": "string", "description": "One family: smc | indicators | chart | candles | pa | volume | session | harmonics | fib | sd | order_flow | econ."}
+                        },
+                        "required": []
+                    }),
+                    exposed_tool: None,
+                },
+                ToolSpec {
+                    name: "concept_signals".into(),
+                    description: CONCEPT_SIGNALS.into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string", "description": "The instrument, e.g. BTCUSDT."},
+                            "concepts": {"type": "array", "items": {"type": "string"}, "description": "The concept ids to read; omit for all enabled."},
+                            "limit": {"type": "integer", "description": "Newest events to return (default 20, capped 50)."}
+                        },
+                        "required": ["symbol"]
+                    }),
+                    exposed_tool: None,
+                },
+                ToolSpec {
+                    name: "compose_concept_strategy".into(),
+                    description: COMPOSE_CONCEPT_STRATEGY.into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "document": {"type": "string", "description": "The composition as JSON text (keys: name, version, timeframe, side, conditions, risk). Validate before backtesting."}
+                        },
+                        "required": ["document"]
+                    }),
+                    exposed_tool: None,
+                },
+                ToolSpec {
+                    name: "backtest_composition".into(),
+                    description: BACKTEST_COMPOSITION.into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "document": {"type": "string", "description": "The composition as JSON text (the same shape compose_concept_strategy validates)."},
+                            "symbol": {"type": "string", "description": "The instrument, e.g. BTCUSDT."},
+                            "timeframe": {"type": "string", "description": "The resolution, e.g. '1h'."},
+                            "limit": {"type": "integer", "description": "Trailing candles to test over (default 500, capped 1000)."}
+                        },
+                        "required": ["document", "symbol"]
+                    }),
+                    exposed_tool: None,
+                },
+                ToolSpec {
                     name: "scan_market".into(),
                     description: SCAN_MARKET.into(),
                     input_schema: serde_json::json!({
@@ -758,6 +926,13 @@ impl ToolRegistry {
 
     /// Tool names, for logging and tests.
     #[must_use]
+    /// The four concept-strategy tools ride the base set (always exposed).
+    #[cfg(test)]
+    pub fn test_names() -> Vec<String> {
+        Self::market_analysis().names().into_iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The registry's tool names, in registration order.
     pub fn names(&self) -> Vec<&str> {
         self.specs.iter().map(|s| s.name.as_str()).collect()
     }
@@ -854,6 +1029,10 @@ impl ToolRegistry {
                 "look_at_chart" => look_at_chart_tool(ctx, &call.input).await,
         "create_indicator" => create_pipeline_tool("create_indicator", &call.input, "description").await,
         "create_strategy" => create_pipeline_tool("create_strategy", &call.input, "description").await,
+        "list_concepts" => list_concepts(ctx, &call.input).await,
+        "concept_signals" => concept_signals(ctx, &call.input).await,
+        "compose_concept_strategy" => compose_concept_strategy(ctx, &call.input).await,
+        "backtest_composition" => backtest_composition(ctx, &call.input).await,
         "scan_market" => scan_market_tool(&call.input).await,
             "compare_timeframes" => compare_timeframes(ctx, &call.input).await,
             "cross_timeframe_confluence" => cross_timeframe_confluence(ctx, &call.input).await,
@@ -1289,6 +1468,17 @@ fn timeframe_arg(args: &Value, tool: &str) -> Result<Timeframe, AgentError> {
         })
 }
 
+fn optional_string(args: &Value, key: &str, tool: &str) -> Result<Option<String>, AgentError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(AgentError::ToolFailed {
+            tool: tool.into(),
+            reason: format!("argument '{key}' must be a string"),
+        }),
+    }
+}
+
 fn optional_u64(args: &Value, key: &str, tool: &str) -> Result<Option<u64>, AgentError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1534,6 +1724,14 @@ const CREATE_INDICATOR: &str = "Create a chart indicator from a natural-language
     once the spec is agreed, passing the enriched description you settled on.";
 
 /// `create_strategy` — build a backtestable strategy from a description.
+const LIST_CONCEPTS: &str = "List the concept catalog -- every detector the platform runs, with its meaning and its family (smc, indicators, chart, candles, price action, volume, session, harmonics, fibonacci, supply/demand, order flow, econ). Call this FIRST when composing a strategy so the conditions are written in ids that exist. Filter by keyword or family.";
+
+const CONCEPT_SIGNALS: &str = "Read what the concepts are firing RIGHT NOW on an instrument -- the newest events with direction and price. Call after list_concepts to see what evidence the market is offering before composing from it.";
+
+const COMPOSE_CONCEPT_STRATEGY: &str = "Validate a composition document (a strategy written as concept conditions with a risk block) WITHOUT running it. The document is JSON with these keys: name, version ('1.0.0'), timeframe ('1h'), side ('long' or 'short'), conditions (one concept leaf {type 'concept', concept <id from list_concepts>, direction 'bullish'|'bearish'}, or nested {type 'all'|'any', conditions [...]}, or {type 'sequence', steps [...], max_bars n}), and risk (stop {type 'structure'} or {type 'atr_multiple', multiple n}; sizing {type 'fixed_fractional', percent n} or {type 'volatility_adjusted', risk_fraction n} or {type 'kelly', cap n}; optional management {break_even_r, trail_arm_r, trail_atr_mult}; optional guards). Returns valid + errors; fix and re-call until valid, THEN backtest_composition.";
+
+const BACKTEST_COMPOSITION: &str = "Backtest a validated composition over trailing candles: trades, win rate, profit factor, net profit, max drawdown, and the risk analytics (risk of ruin, Kelly) from the run's own statistics. Report the numbers honestly: a small trade count is not a verdict, and a losing strategy on this window is information, not failure.";
+
 const CREATE_STRATEGY: &str = "Create a backtestable trading strategy from a \
     natural-language description. Call this when the user asks to BUILD a \
     strategy, entries and exits, or a backtest. The pipeline generates the \
@@ -2763,6 +2961,70 @@ async fn create_pipeline_tool(tool: &str, args: &Value, field: &str) -> Result<V
 }
 
 /// `scan_market`: the ranked table lands in the chat.
+/// `list_concepts`: the composition vocabulary, from the host's catalog.
+async fn list_concepts(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "list_concepts";
+    let keyword = optional_string(args, "keyword", TOOL)?;
+    let library = optional_string(args, "library", TOOL)?;
+    let catalog = ctx.concept_catalog.ok_or_else(|| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: "no concept catalog is attached to this agent".into(),
+    })?;
+    let concepts = catalog.search(keyword.as_deref(), library.as_deref());
+    Ok(serde_json::json!({
+        "concepts": concepts,
+        "count": concepts.len(),
+        "note": "compose with conditions written in THESE ids; a concept the catalog does not list does not exist.",
+    }))
+}
+
+/// `concept_signals`: what the concepts are firing right now.
+async fn concept_signals(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "concept_signals";
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(20).clamp(1, 50) as usize;
+    let runner = ctx.compositions.ok_or_else(|| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: "no composition runner is attached to this agent".into(),
+    })?;
+    let events = runner.signals(&symbol, limit).await?;
+    Ok(serde_json::json!({
+        "symbol": symbol,
+        "events": events,
+        "note": "compose from evidence the market is actually offering; a signal that has not fired is a theory, not a setup.",
+    }))
+}
+
+/// `compose_concept_strategy`: validate the document, no run.
+async fn compose_concept_strategy(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "compose_concept_strategy";
+    let document = string_arg(args, "document", TOOL)?;
+    let runner = ctx.compositions.ok_or_else(|| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: "no composition runner is attached to this agent".into(),
+    })?;
+    let report = runner.validate_composition(&document)?;
+    Ok(serde_json::to_value(report)?)
+}
+
+/// `backtest_composition`: validate and run over trailing candles.
+async fn backtest_composition(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, AgentError> {
+    const TOOL: &str = "backtest_composition";
+    let document = string_arg(args, "document", TOOL)?;
+    let symbol = string_arg(args, "symbol", TOOL)?;
+    let timeframe = optional_string(args, "timeframe", TOOL)?.unwrap_or_else(|| "1h".to_string());
+    let limit = optional_u64(args, "limit", TOOL)?.unwrap_or(500).clamp(50, 1000) as usize;
+    let runner = ctx.compositions.ok_or_else(|| AgentError::ToolFailed {
+        tool: TOOL.into(),
+        reason: "no composition runner is attached to this agent".into(),
+    })?;
+    let report = runner.run_composition(&document, &symbol, &timeframe, limit).await?;
+    Ok(serde_json::json!({
+        "report": report,
+        "honest_read": "a small trade count is not a verdict, and a losing window is information: say what the numbers say, not what the user hoped.",
+    }))
+}
+
 async fn scan_market_tool(args: &Value) -> Result<Value, AgentError> {
     let criteria = args
         .get("criteria")
@@ -3890,6 +4152,14 @@ fn render_state(state: &MarketState, view: Option<&crate::capability_view::Capab
 
 #[cfg(test)]
 mod tests {
+#[test]
+fn the_concept_strategy_tools_are_in_the_base_set() {
+    let names = crate::tools::ToolRegistry::test_names();
+    for tool in ["list_concepts", "concept_signals", "compose_concept_strategy", "backtest_composition"] {
+        assert!(names.iter().any(|n| n == tool), "{tool} missing from the exposed set");
+    }
+}
+
     use super::*;
     use crate::llm_client::{ContentBlock, Message, Role};
 

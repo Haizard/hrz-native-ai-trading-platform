@@ -1,0 +1,44 @@
+# Schema v2 (docs/40). The skill for composing strategies from the concept
+# families and testing them -- the four-tool workflow, the composition
+# grammar, and the honest read of the result.
+name: "Concept Strategy Builder"
+version: "1.0"
+kind: trading
+artifact_kind: thesis
+category: "strategy-composition"
+knowledge: >
+  The platform's concept registry is the strategy vocabulary: every detector
+  across twelve families (smc, indicators, chart, candles, price action,
+  volume, session, harmonics, fibonacci, supply/demand, order flow, econ) is a
+  condition a composition can be built from. A composition is a JSON document:
+  a name, a timeframe, a side, a condition tree (concept leaves under all/any/
+  sequence), and a risk block (stop kind, sizing rule, optional management and
+  guards). It is validated first, then backtested over trailing candles.
+
+  What composes well: a structure concept for the setup (an SMC event, a chart
+  pattern, a price-action break), a confirmation from a DIFFERENT family (an
+  indicator agreeing, volume confirming, a session window timing it), and
+  never two conditions that measure the same thing twice (an RSI zone entry
+  and a stochastic zone entry are one vote wearing two names). Sessions gate;
+  they do not signal. Econ events are catalysts that frame, not entries.
+
+  The honest read of a backtest: the trade count decides what the numbers are
+  worth before any of them are read. Under ten trades is anecdote, not
+  evidence. A losing strategy on the window is information -- say what it says
+  (the conditions do not work HERE, on this instrument, on this timeframe),
+  not that the idea is dead. Risk of ruin above a few percent means the sizing
+  outruns the edge. Kelly suggested is a ceiling, never a target.
+rules:
+  - "THE WORKFLOW IS MANDATORY AND ORDERED: first `list_concepts`, then `concept_signals`, then `compose_concept_strategy`, then `backtest_composition`. Do NOT answer from `analyze_timeframe` or a generic thesis -- the user's request is to BUILD and TEST a strategy, and only these four tools do that."
+  - "Call `concept_signals` before composing from evidence: a condition that has not fired recently is a theory, and the market's own offering beats the agent's imagination."
+  - "Compose across families: at most one structure concept, at most one confirmation per family, and never two conditions measuring the same quantity under two names."
+  - "Always validate with `compose_concept_strategy` before backtesting, and fix and re-validate until valid."
+  - "Report the backtest's honest read: trade count first, then win rate and profit factor with the drawdown, and `risk_of_ruin` / `kelly_suggested` as the sizing verdict -- never a summary that hides a losing window behind a small sample."
+  - "When a strategy loses, diagnose before proposing a fix: the setup, the confirmation, the timing, the sizing, or the window -- one change at a time, re-backtest, and say which single change was tested."
+capability_requirements:
+  required: [{capability: candles}]
+  preferred: [{capability: derived_events}, {capability: sessions}, {capability: market_structure}]
+conditions:
+  timeframes: ["1h"]
+  risk:
+    max_risk_pct: 1.0
