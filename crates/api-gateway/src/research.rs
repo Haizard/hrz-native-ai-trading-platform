@@ -364,21 +364,20 @@ impl GatewayCompositionRunner {
                 reason: format!("no candles for {symbol}: {e}"),
             })?;
         let candles = window.candles;
-        // The signals: replay detection per bar, filter the composition's
-        // conditions against them (the composer's own engine).
+        // The signals: the multi-timeframe core, shared with the route --
+        // every condition's own timeframe is resampled from the base series
+        // and fed with its tag.
         let config = market_data::composer::event_config_for(&document.parameters);
-        let mut composer = market_data::composer::Composer::new(document.clone());
-        let mut signals: Vec<market_data::composer::Signal> = Vec::new();
-        for bar in 22..candles.len() {
-            let raw = analytics_core::events::detect_events(&candles[..=bar], &symbol, &config);
-            let events: Vec<market_data::concepts::ConceptEvent> = raw
-                .iter()
-                .filter_map(market_data::concepts::as_concept_event)
-                .collect();
-            if let Some(signal) = composer.on_bar(bar, &events) {
-                signals.push(signal);
+        let mut extra_series = Vec::new();
+        for name in market_data::composer::involved_timeframes(document) {
+            if let Ok(extra) = name.parse::<analytics_core::types::Timeframe>() {
+                if extra != tf && extra.nanos() > tf.nanos() {
+                    extra_series.push((extra, analytics_core::resample::resample(&candles, extra)));
+                }
             }
         }
+        let signals = market_data::composer::evaluate_mtf(document, &config, &symbol, tf, &candles, &extra_series);
+
         // The intents and the run (the route's own conversion).
         let atrs = analytics_core::indicators::atr::atr(&candles, 14);
         let mut intents: Vec<(usize, pine_lite::interp::Intent)> = Vec::new();

@@ -225,6 +225,10 @@ impl Decisions {
 /// path speaks.
 #[derive(Debug)]
 pub struct ComposerStrategy {
+    /// The decision timeframe's own resolution.
+    decision_tf: analytics_core::types::Timeframe,
+    /// Extra timeframes already fed, by their completed-bar close time.
+    extra_fed: std::collections::HashMap<analytics_core::types::Timeframe, i64>,
     composer: market_data::composer::Composer,
     symbol: String,
     /// The monotonic decision-bar counter (the composer's lookback clock).
@@ -240,10 +244,12 @@ impl ComposerStrategy {
     pub fn new(document: market_data::composer::Composition, symbol: &str) -> Self {
         Self {
             config: market_data::composer::event_config_for(&document.parameters),
+            decision_tf: document.timeframe.parse().unwrap_or(analytics_core::types::Timeframe::M5),
             composer: market_data::composer::Composer::new(document),
             symbol: symbol.to_string(),
             bar: 0,
             history: Vec::new(),
+            extra_fed: std::collections::HashMap::new(),
         }
     }
 
@@ -262,9 +268,19 @@ impl ComposerStrategy {
         let view = ctx.timeframes.get(&ctx.decision_timeframe)?;
         self.history.push(view.candle.clone());
         // The detection window: the engine's structure lookback needs ~2x
-        // plus margin; 240 bars bounds it like the runtime's own ladder.
-        if self.history.len() > 240 {
-            self.history.drain(..self.history.len() - 240);
+        // plus margin -- and an MTF document needs it MULTIPLIED by the
+        // largest resample factor its conditions name (a 4h condition on a
+        // 1m document wants 240x240 base bars to have any upstream at all,
+        // bounded at a sane ceiling).
+        let factor = market_data::composer::involved_timeframes(self.composer.document())
+            .iter()
+            .filter_map(|name| name.parse::<analytics_core::types::Timeframe>().ok())
+            .map(|extra| (extra.nanos() / self.decision_tf.nanos().max(1)).max(1) as usize)
+            .max()
+            .unwrap_or(1);
+        let depth = (240 * factor).min(50_000);
+        if self.history.len() > depth {
+            self.history.drain(..self.history.len() - depth);
         }
         let raw = analytics_core::events::detect_events(&self.history, &self.symbol, &self.config);
         let events: Vec<_> = raw
@@ -272,7 +288,35 @@ impl ComposerStrategy {
             .filter(|e| e.bar_time == view.candle.open_time)
             .filter_map(market_data::concepts::as_concept_event)
             .collect();
-        let fired = self.composer.on_bar(self.bar as usize, &events);
+        // The extra timeframes' events, fed with their tags: resample the
+        // history upstream, detect on the newest completed extra bar, and
+        // feed it when the decision bar reaches the extra bar's close.
+        for name in market_data::composer::involved_timeframes(self.composer.document()) {
+            if let Ok(extra) = name.parse::<analytics_core::types::Timeframe>() {
+                if extra.nanos() <= self.decision_tf.nanos() {
+                    continue;
+                }
+                let resampled = analytics_core::resample::resample(&self.history, extra);
+                if resampled.len() < 2 {
+                    continue;
+                }
+                // The newest COMPLETED extra bar (the one before the forming one).
+                let completed_idx = resampled.len() - 2;
+                let completed_time = resampled[completed_idx].open_time + extra.nanos();
+                if completed_time != self.extra_fed.get(&extra).copied().unwrap_or(0) {
+                    let raw_extra = analytics_core::events::detect_events(&resampled[..=completed_idx], &self.symbol, &self.config);
+                    let extra_events: Vec<_> = raw_extra
+                        .iter()
+                        .filter_map(market_data::concepts::as_concept_event)
+                        .collect();
+                    let tf_name = extra.to_string();
+                    let _ = self.composer.on_bar(self.bar as usize, &extra_events, Some(&tf_name));
+                    self.extra_fed.insert(extra, completed_time);
+                }
+            }
+        }
+        self.composer.set_last_close(view.candle.close);
+        let fired = self.composer.on_bar(self.bar as usize, &events, None);
         self.bar += 1;
         let fired = fired?;
 

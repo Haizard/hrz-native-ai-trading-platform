@@ -425,24 +425,19 @@ pub async fn backtest(
         ));
     }
 
-    // Replay: per bar, detect on the trailing window, wrap, feed the state
-    // machine. The engine's own config is the default (the composition's
-    // parameters ride the registry's defaults in v1).
+    // Replay: the multi-timeframe core, shared with the agent's runner --
+    // every condition's own timeframe is resampled from the base series and
+    // fed with its tag.
     let config = market_data::composer::event_config_for(&request.document.parameters);
-    let mut composer = Composer::new(request.document.clone());
-    let mut signals: Vec<market_data::composer::Signal> = Vec::new();
-    let warmup = 22; // the structure lookback's own minimum window
-    for bar in warmup..candles.len() {
-        let raw = analytics_core::events::detect_events(&candles[..=bar], &symbol, &config);
-        let events: Vec<_> = raw
-            .iter()
-            .filter(|e| e.bar_time == candles[bar].open_time)
-            .filter_map(market_data::concepts::as_concept_event)
-            .collect();
-        if let Some(signal) = composer.on_bar(bar, &events) {
-            signals.push(signal);
+    let mut extra_series = Vec::new();
+    for name in market_data::composer::involved_timeframes(&request.document) {
+        if let Ok(extra) = name.parse::<analytics_core::types::Timeframe>() {
+            if extra != tf && extra.nanos() > tf.nanos() {
+                extra_series.push((extra, analytics_core::resample::resample(&candles, extra)));
+            }
         }
     }
+    let signals = market_data::composer::evaluate_mtf(&request.document, &config, &symbol, tf, &candles, &extra_series);
 
     // Signals become sim intents: entry at the signal bar (next-open fill,
     // like every other path), the structure stop from the satisfying level
