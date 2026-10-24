@@ -417,6 +417,33 @@ pub enum EventKind {
     Model2022,
     /// The market maker model completed at the opposite pool.
     MarketMakerModel,
+    /// A close breaking a swing AGAINST the prevailing trend -- the
+    /// distinct shift, not the continuation BOS already carries.
+    Mss,
+    /// The dealing range's own 50% line, as its own level.
+    Equilibrium,
+    /// The newest FVG's 50% midpoint (ICT's consequent encroachment).
+    ConsequentEncroachment,
+    /// Today's open against yesterday's close: the overnight gap, sized.
+    OpeningGap,
+    /// The UTC day's first-hour range broken, in the break's direction.
+    OpeningRangeBreakout,
+    /// A trade through the active trendline that closes back behind it.
+    TrendlineSweep,
+    /// A wick into a support/resistance level that closes away from it --
+    /// the rejection event the zone alone never named.
+    LevelRejection,
+    /// A close through a level, then the level holding as the OPPOSITE
+    /// side on the retest -- support become resistance, or the mirror.
+    LevelFlip,
+    /// The fused compression breakout: a contracted range broken WITH a
+    /// displacement body.
+    CompressionBreakout,
+    /// A fair value gap traded fully back through -- the void's own
+    /// lifecycle, completed.
+    LiquidityVoidFill,
+    /// A breakout with the volume to mean it (1.5x the trailing average).
+    VolumeConfirmedBreakout,
 }
 
 impl EventKind {
@@ -593,11 +620,22 @@ impl EventKind {
             Self::UnicornModel => "unicorn_model",
             Self::Model2022 => "model2022",
             Self::MarketMakerModel => "market_maker_model",
+            Self::Mss => "mss",
+            Self::Equilibrium => "equilibrium",
+            Self::ConsequentEncroachment => "consequent_encroachment",
+            Self::OpeningGap => "opening_gap",
+            Self::OpeningRangeBreakout => "opening_range_breakout",
+            Self::TrendlineSweep => "trendline_sweep",
+            Self::LevelRejection => "level_rejection",
+            Self::LevelFlip => "level_flip",
+            Self::CompressionBreakout => "compression_breakout",
+            Self::LiquidityVoidFill => "liquidity_void_fill",
+            Self::VolumeConfirmedBreakout => "volume_confirmed_breakout",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 169] = [
+    pub const ALL: [Self; 180] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -767,6 +805,17 @@ impl EventKind {
         Self::UnicornModel,
         Self::Model2022,
         Self::MarketMakerModel,
+        Self::Mss,
+        Self::Equilibrium,
+        Self::ConsequentEncroachment,
+        Self::OpeningGap,
+        Self::OpeningRangeBreakout,
+        Self::TrendlineSweep,
+        Self::LevelRejection,
+        Self::LevelFlip,
+        Self::CompressionBreakout,
+        Self::LiquidityVoidFill,
+        Self::VolumeConfirmedBreakout,
     ];
 }
 
@@ -1535,6 +1584,303 @@ pub fn detect_range_liquidity(candles: &[Candle], symbol: &str) -> Vec<MarketEve
             formed_at: Some(candles[idx].open_time),
         });
     }
+    out
+}
+
+/// The five level-and-structure gap fills: MSS (the counter-trend break),
+/// equilibrium (the range's own 50%), consequent encroachment (the newest
+/// FVG's midpoint), the opening gap, and the opening-range breakout.
+pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
+    let mut out = Vec::new();
+    if candles.len() < 30 {
+        return out;
+    }
+    let n = candles.len() - 1;
+    let last = &candles[n];
+    let mut push = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>, formed: Option<i64>| {
+        out.push(MarketEvent {
+            kind,
+            symbol: symbol.to_string(),
+            timeframe: last.timeframe,
+            bar_time: last.open_time,
+            close: last.close,
+            price,
+            side,
+            zone_low: low,
+            zone_high: high,
+            magnitude: None,
+            formed_at: formed,
+        });
+    };
+
+    // -- MSS: the newest two swings define the prevailing trend; a close
+    // through the newest swing AGAINST it is the shift (a break WITH it is
+    // continuation, which BOS already names).
+    {
+        let lb = 3;
+        let mut highs: Vec<(usize, f64)> = Vec::new();
+        let mut lows: Vec<(usize, f64)> = Vec::new();
+        for i in lb..n.saturating_sub(lb) {
+            if (i - lb..=i + lb).all(|j| j == i || candles[j].high < candles[i].high) {
+                highs.push((i, candles[i].high));
+            }
+            if (i - lb..=i + lb).all(|j| j == i || candles[j].low > candles[i].low) {
+                lows.push((i, candles[i].low));
+            }
+        }
+        let trend = match (highs.len() >= 2, lows.len() >= 2) {
+            (true, true) => {
+                let (h1, h2) = (highs[highs.len() - 2].1, highs[highs.len() - 1].1);
+                let (l1, l2) = (lows[lows.len() - 2].1, lows[lows.len() - 1].1);
+                if h2 > h1 && l2 > l1 {
+                    Some(Side::Buy)
+                } else if h2 < h1 && l2 < l1 {
+                    Some(Side::Sell)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(trend) = trend {
+            // The swing that invalidates the trend: for an uptrend, the
+            // newest swing LOW; the close below it is the shift.
+            let (level, breaks) = match trend {
+                Side::Buy => (lows.last().map(|(_, p)| *p), last.close < lows.last().map(|(_, p)| *p).unwrap_or(f64::MIN)),
+                Side::Sell => (highs.last().map(|(_, p)| *p), last.close > highs.last().map(|(_, p)| *p).unwrap_or(f64::MAX)),
+            };
+            let prev_close = candles[n - 1].close;
+            let prev_held = match trend {
+                Side::Buy => prev_close >= lows.last().map(|(_, p)| *p).unwrap_or(f64::MIN),
+                Side::Sell => prev_close <= highs.last().map(|(_, p)| *p).unwrap_or(f64::MAX),
+            };
+            if breaks && prev_held {
+                if let Some(level) = level {
+                    push(EventKind::Mss, Some(match trend { Side::Buy => Side::Sell, Side::Sell => Side::Buy }), level, Some(level), Some(level), None);
+                }
+            }
+        }
+    }
+
+    // -- Equilibrium: the dealing range's 50% line, from the newest
+    // lookback-5 swings (the same range ERL draws on).
+    {
+        let lb = 5;
+        let mut range_hi = f64::MIN;
+        let mut range_lo = f64::MAX;
+        let mut found = false;
+        for i in lb..n.saturating_sub(lb) {
+            if (i - lb..=i + lb).all(|j| j == i || candles[j].high < candles[i].high) {
+                range_hi = range_hi.max(candles[i].high);
+                found = true;
+            }
+            if (i - lb..=i + lb).all(|j| j == i || candles[j].low > candles[i].low) {
+                range_lo = range_lo.min(candles[i].low);
+                found = true;
+            }
+        }
+        if found && range_hi > range_lo {
+            let mid = (range_hi + range_lo) / 2.0;
+            push(EventKind::Equilibrium, None, mid, Some(range_lo), Some(range_hi), None);
+        }
+    }
+
+    // -- Consequent encroachment: the newest fresh FVG's 50% midpoint.
+    {
+        for i in (3..=n).rev() {
+            let (a, b, c) = (&candles[i - 2], &candles[i - 1], &candles[i]);
+            if c.low > a.high {
+                let mid = (a.high + c.low) / 2.0;
+                push(EventKind::ConsequentEncroachment, Some(Side::Buy), mid, Some(a.high), Some(c.low), Some(a.open_time));
+                break;
+            }
+            if c.high < a.low {
+                let mid = (a.low + c.high) / 2.0;
+                push(EventKind::ConsequentEncroachment, Some(Side::Sell), mid, Some(c.high), Some(a.low), Some(a.open_time));
+                break;
+            }
+        }
+    }
+
+    // -- The opening gap: today's first bar's open against yesterday's last
+    // close, sized as a percent of the close. A gap under 0.05% is no gap.
+    {
+        const DAY_NS: i64 = 3_600_000_000_000 * 24;
+        let today = last.open_time.div_euclid(DAY_NS);
+        let today_first = candles.iter().position(|k| k.open_time.div_euclid(DAY_NS) == today);
+        if let Some(first_idx) = today_first {
+            if first_idx > 0 {
+                let prev_close = candles[first_idx - 1].close;
+                let gap = last.open - prev_close;
+                if prev_close > 0.0 && (gap / prev_close).abs() >= 0.0005 && candles[first_idx].open_time == last.open_time {
+                    push(
+                        EventKind::OpeningGap,
+                        Some(if gap > 0.0 { Side::Buy } else { Side::Sell }),
+                        prev_close,
+                        Some(prev_close.min(last.open)),
+                        Some(prev_close.max(last.open)),
+                        Some(candles[first_idx].open_time),
+                    );
+                }
+            }
+        }
+    }
+
+    // -- The opening range breakout: the UTC day's first four bars' range,
+    // broken on the tail in the break's direction (the asian range's rule,
+    // generalized to the chart's own session).
+    {
+        const DAY_NS: i64 = 3_600_000_000_000 * 24;
+        let today = last.open_time.div_euclid(DAY_NS);
+        let day_bars: Vec<&Candle> = candles.iter().filter(|k| k.open_time.div_euclid(DAY_NS) == today).collect();
+        if day_bars.len() > 4 {
+            let ib_hi = day_bars[..4].iter().map(|k| k.high).fold(f64::MIN, f64::max);
+            let ib_lo = day_bars[..4].iter().map(|k| k.low).fold(f64::MAX, f64::min);
+            let prev = &candles[n - 1];
+            if prev.close <= ib_hi && last.close > ib_hi {
+                push(EventKind::OpeningRangeBreakout, Some(Side::Buy), ib_hi, Some(ib_lo), Some(ib_hi), Some(day_bars[0].open_time));
+            } else if prev.close >= ib_lo && last.close < ib_lo {
+                push(EventKind::OpeningRangeBreakout, Some(Side::Sell), ib_lo, Some(ib_lo), Some(ib_hi), Some(day_bars[0].open_time));
+            }
+        }
+    }
+
+    // -- Level interactions over the sr_zones machinery: the rejection (a
+    // wick into a zone closing away) and the flip (the level traded
+    // through, then held as the opposite side).
+    {
+        let structure = crate::market_structure::detect_market_structure(candles, crate::market_structure::StructureConfig::default());
+        let zones = crate::sr_zones::detect_sr_zones(&structure, last.close, crate::sr_zones::SrZoneConfig::default());
+        for zone in zones.iter().rev().take(4) {
+            let (lo, hi) = (zone.bottom, zone.top);
+            // Rejection: the wick enters, the close leaves, on the tail.
+            let wick_in = last.low <= hi && last.high >= lo;
+            let close_out = last.close < lo || last.close > hi;
+            if wick_in && close_out {
+                push(
+                    EventKind::LevelRejection,
+                    Some(if last.close > hi { Side::Buy } else { Side::Sell }),
+                    (lo + hi) / 2.0,
+                    Some(lo),
+                    Some(hi),
+                    Some(zone.first_time),
+                );
+                break;
+            }
+            // The flip: the zone traded through (close beyond it) and the
+            // retest held the far side.
+            let through_up = candles[n - 1].close > hi && last.close > hi && last.low <= hi && last.close > hi;
+            let through_dn = candles[n - 1].close < lo && last.close < lo && last.high >= lo && last.close < lo;
+            if through_up {
+                push(EventKind::LevelFlip, Some(Side::Buy), hi, Some(lo), Some(hi), Some(zone.first_time));
+                break;
+            }
+            if through_dn {
+                push(EventKind::LevelFlip, Some(Side::Sell), lo, Some(lo), Some(hi), Some(zone.first_time));
+                break;
+            }
+        }
+    }
+
+    // -- The fused compression breakout: a range_contraction-shaped
+    // squeeze broken with a displacement body (2x the average).
+    {
+        let lookback = 20.min(n - 1);
+        if lookback >= 10 {
+            let window = &candles[n - lookback..n];
+            let (mut hi, mut lo) = (f64::MIN, f64::MAX);
+            for k in window {
+                hi = hi.max(k.high);
+                lo = lo.min(k.low);
+            }
+            let range = hi - lo;
+            let mean_range: f64 = window.iter().map(|k| k.high - k.low).sum::<f64>() / window.len() as f64;
+            let contracted = range < mean_range * 3.0; // the squeeze: the whole window inside 3 mean-ranges
+            let body = (last.close - last.open).abs();
+            let mean_body: f64 = window.iter().map(|k| (k.close - k.open).abs()).sum::<f64>() / window.len() as f64;
+            let displaced = mean_body > 0.0 && body >= 2.0 * mean_body;
+            if contracted && displaced && last.close > hi {
+                push(EventKind::CompressionBreakout, Some(Side::Buy), hi, Some(lo), Some(hi), None);
+            } else if contracted && displaced && last.close < lo {
+                push(EventKind::CompressionBreakout, Some(Side::Sell), lo, Some(lo), Some(hi), None);
+            }
+        }
+    }
+
+    // -- The void fill: the newest open FVG traded fully back through (the
+    // lifecycle's completion, from open to filled).
+    {
+        for i in (3..=n - 1).rev() {
+            let (a, c) = (&candles[i - 2], &candles[i]);
+            if c.low > a.high {
+                // Bullish gap: filled when a later close trades back below
+                // the gap's bottom (a.high).
+                if last.close < a.high {
+                    push(EventKind::LiquidityVoidFill, Some(Side::Sell), a.high, Some(a.high), Some(c.low), Some(a.open_time));
+                    break;
+                }
+            } else if c.high < a.low && last.close > a.low {
+                push(EventKind::LiquidityVoidFill, Some(Side::Buy), a.low, Some(c.high), Some(a.low), Some(a.open_time));
+                break;
+            }
+        }
+    }
+
+    // -- The volume-confirmed breakout: a close beyond the 20-bar extreme
+    // with at least 1.5x the trailing average volume.
+    {
+        let lookback = 20.min(n);
+        if lookback >= 10 {
+            let hi = candles[n - lookback..n].iter().map(|k| k.high).fold(f64::MIN, f64::max);
+            let lo = candles[n - lookback..n].iter().map(|k| k.low).fold(f64::MAX, f64::min);
+            let mean_vol: f64 = candles[n - lookback..n].iter().map(|k| k.volume).sum::<f64>() / lookback as f64;
+            let confirmed = mean_vol > 0.0 && last.volume >= 1.5 * mean_vol;
+            if confirmed && last.close > hi && candles[n - 1].close <= hi {
+                push(EventKind::VolumeConfirmedBreakout, Some(Side::Buy), hi, Some(lo), Some(hi), None);
+            } else if confirmed && last.close < lo && candles[n - 1].close >= lo {
+                push(EventKind::VolumeConfirmedBreakout, Some(Side::Sell), lo, Some(lo), Some(hi), None);
+            }
+        }
+    }
+
+    // -- The trendline sweep: with an active validated trendline (three
+    // touches), a trade through it that closes back behind it. The line
+    // math mirrors the trendline detector's own.
+    {
+        let lb = 3;
+        let mut lows: Vec<(usize, f64)> = Vec::new();
+        let mut highs: Vec<(usize, f64)> = Vec::new();
+        for i in lb..n.saturating_sub(lb) {
+            if (i - lb..=i + lb).all(|j| j == i || candles[j].low > candles[i].low) {
+                lows.push((i, candles[i].low));
+            }
+            if (i - lb..=i + lb).all(|j| j == i || candles[j].high < candles[i].high) {
+                highs.push((i, candles[i].high));
+            }
+        }
+        let line_at = |a: (usize, f64), b: (usize, f64), i: usize| -> f64 {
+            a.1 + (b.1 - a.1) * (i - a.0) as f64 / (b.0 - a.0).max(1) as f64
+        };
+        if lows.len() >= 3 {
+            let (l1, l2, l3) = (lows[lows.len() - 3], lows[lows.len() - 2], lows[lows.len() - 1]);
+            if l1.1 < l2.1 && l2.1 < l3.1 && (l3.1 - line_at(l1, l2, l3.0)).abs() <= line_at(l1, l2, l3.0) * 0.0015 {
+                let level = line_at(l1, l2, n);
+                if last.low < level * 0.997 && last.close > level {
+                    push(EventKind::TrendlineSweep, Some(Side::Buy), level, Some(last.low), Some(level), Some(candles[l1.0].open_time));
+                }
+            }
+        }
+        if highs.len() >= 3 {
+            let (h1, h2, h3) = (highs[highs.len() - 3], highs[highs.len() - 2], highs[highs.len() - 1]);
+            if h1.1 > h2.1 && h2.1 > h3.1 && (h3.1 - line_at(h1, h2, h3.0)).abs() <= line_at(h1, h2, h3.0) * 0.0015 {
+                let level = line_at(h1, h2, n);
+                if last.high > level * 1.003 && last.close < level {
+                    push(EventKind::TrendlineSweep, Some(Side::Sell), level, Some(level), Some(last.high), Some(candles[h1.0].open_time));
+                }
+            }
+        }
+    }
+
     out
 }
 
@@ -3007,6 +3353,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
     events.extend(detect_displacement(candles, symbol));
     events.extend(detect_range_liquidity(candles, symbol));
     events.extend(crate::regime::detect_regime(candles, symbol));
+    events.extend(detect_structure_levels(candles, symbol));
     events.extend(crate::regime::detect_mtf_alignment(candles, symbol));
     events.extend(crate::regime::detect_bias(candles, symbol));
     events.extend(crate::tpo::detect_auction(candles, symbol));

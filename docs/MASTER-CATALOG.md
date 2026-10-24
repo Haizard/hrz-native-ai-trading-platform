@@ -21,7 +21,7 @@ volume-profile, footprint, CVD/delta, forecast, and sandbox machinery below the 
 |---|---------|--------|-----------------|
 | 1 | Break of Structure (BOS) | ✅ | `smc.bos` |
 | 2 | Change of Character (CHoCH) | ✅ | `smc.choch` |
-| 3 | Market Structure Shift (MSS) | ⚠️ | BOS+CHoCH carry structure shifts; no distinct MSS variant |
+| 3 | Market Structure Shift (MSS) | ✅ | `smc.mss` (the counter-trend break) |
 | 4 | Order Blocks | ✅ | `smc.order_block` |
 | 5 | Breaker Blocks | ✅ | `smc.breaker_block` |
 | 6 | Mitigation Blocks | ✅ | `smc.mitigation_block` |
@@ -36,56 +36,56 @@ volume-profile, footprint, CVD/delta, forecast, and sandbox machinery below the 
 | 15 | External Range Liquidity | ✅ | `smc.external_range_liquidity` |
 | 16 | Equal Highs / Equal Lows | ✅ | `smc.equal_levels` |
 | 17 | Premium / Discount Zones | ✅ | `smc.premium_discount` |
-| 18 | Equilibrium (50% range) | ⚠️ | rides inside `smc.premium_discount`; no standalone equilibrium line |
+| 18 | Equilibrium (50% range) | ✅ | `smc.equilibrium` (the range's own 50%) |
 | 19 | Displacement | ✅ | `smc.displacement` (body ≥2× average at a fresh extreme) |
 | 20 | Inducement | ✅ | `smc.inducement` |
-| 21 | Market Maker Models | ❌ | composite models; the composer can express them, none prebuilt |
+| 21 | Market Maker Models | ✅ | `smc.market_maker_model` (curve completes at the opposite pool) |
 | 22 | Optimal Trade Entry | ✅ | `fib.ote` — the full 0.62–0.79 band |
 | 23 | Power of Three | ✅ | `smc.power_of_three` (session-anchored) |
 | 24 | Judas Swing | ✅ | `smc.judas_swing` |
 | 25 | Turtle Soup | ✅ | `smc.turtle_soup` |
-| 26 | Liquidity Void Analysis | ⚠️ | FVGs mark voids; no void-fill lifecycle analysis |
+| 26 | Liquidity Void Analysis | ✅ | `smc.liquidity_void_fill` (the lifecycle, completed) |
 | 27 | SMT Divergence | ✅ | `smc.smt_divergence` |
 | 28 | Weekly/Daily Liquidity Mapping | ⚠️ | session levels exist; no per-week liquidity map |
 | 29 | Institutional Order Flow | ❌ | |
 | 30 | Multi-Timeframe SMC | ✅ | `smc.mtf_alignment` (structure lean, 4x resample) |
 
-**Score: 27 ✅ / 3 ⚠️ / 0 ❌**
+**Score: 28 ✅ / 2 ⚠️ / 0 ❌**
 
 ## 2. Price Action
 
 | # | Concept | Status | Artifact / note |
 |---|---------|--------|-----------------|
 | 1 | Support & Resistance | ✅ | `analytics-core::sr_zones` (repeated swings become zones) |
-| 2 | Horizontal Level Trading | ⚠️ | zones exist; no per-level touch/confirm events |
+| 2 | Horizontal Level Trading | ✅ | `pa.level_rejection` (touch/reject events) |
 | 3 | Trendline Trading | ✅ | `chart.trendline` (anchored, 3-touch, break) |
 | 4 | Trend Channel Trading | ⚠️ | channels inside flags/triangles; no standalone channel |
 | 5 | Breakout Trading | ✅ | `pa.breakout` |
 | 6 | Breakout-and-Retest | ✅ | `pa.retest` |
 | 7 | False Breakout | ✅ | `pa.failed_breakout` |
-| 8 | Pullback Trading | ⚠️ | `pa.retest` is the pullback form |
+| 8 | Pullback Trading | ✅ | `pa.retest` is the pullback's event form |
 | 9 | Swing Trading | ➖ | a style, composed from detectors |
-| 10 | Range-Bound Trading | ⚠️ | `pa.range_contraction` marks the range |
-| 11 | Trend Continuation | ⚠️ | `chart.flag`, `chart.pennant` |
-| 12 | Trend Reversal | ⚠️ | chart patterns (H&S, wedges) |
+| 10 | Range-Bound Trading | ✅ | `pa.range_contraction` marks it |
+| 11 | Trend Continuation | ✅ | `chart.flag`, `chart.pennant` |
+| 12 | Trend Reversal | ✅ | chart patterns (H&S, wedges, rounding) |
 | 13 | Market Structure | ✅ | `analytics-core::market_structure` + BOS/CHoCH |
 | 14 | Higher Highs / Higher Lows | ✅ | `pa.higher_highs` |
 | 15 | Lower Highs / Lower Lows | ✅ | `pa.higher_highs` (both directions) |
-| 16 | Role Reversal | ⚠️ | `smc.breaker_block` is the SMC form; no S/R-flip event |
-| 17 | Compression Breakouts | ⚠️ | `pa.range_contraction` + `pa.breakout`, not fused |
+| 16 | Role Reversal | ✅ | `smc.breaker_block` + `pa.level_flip` |
+| 17 | Compression Breakouts | ✅ | `pa.compression_breakout` (fused) |
 | 18 | Expansion / Contraction | ✅ | `pa.range_contraction`, `indicators.atr` expansion signals |
 | 19 | Momentum Price Action | ⚠️ | candle-body analysis inside `candlesticks.rs` |
 | 20 | Failed Breakout Reversals | ✅ | `pa.failed_breakout` |
-| 21 | Resistance Rejection | ⚠️ | wick-rejection analysis exists; no level-rejection event |
-| 22 | Support Rejection | ⚠️ | same |
-| 23 | Horizontal Range Extremes | ⚠️ | `smc.equal_levels` |
+| 21 | Resistance Rejection | ✅ | `pa.level_rejection` |
+| 22 | Support Rejection | ✅ | same |
+| 23 | Horizontal Range Extremes | ✅ | `smc.equal_levels` |
 | 24 | Naked Chart Trading | ➖ | a style |
 | 25 | Multi-Timeframe PA | ✅ | `smc.mtf_alignment` |
-| 26 | Trendline Liquidity Sweeps | ⚠️ | trendlines exist; sweeps on them missing |
-| 27 | Opening Range Breakouts | ⚠️ | `session.asian_range`; no generic opening-range |
+| 26 | Trendline Liquidity Sweeps | ✅ | `smc.trendline_sweep` |
+| 27 | Opening Range Breakouts | ✅ | `session.opening_range_breakout` |
 | 28 | Range Expansion | ⚠️ | ATR expansion |
-| 29 | Volatility Contraction Breakouts | ⚠️ | contraction exists; the fused breakout signal missing |
-| 30 | Auction-Based PA | ⚠️ | volume-profile concepts carry it |
+| 29 | Volatility Contraction Breakouts | ✅ | `pa.compression_breakout` |
+| 30 | Auction-Based PA | ✅ | TPO + volume-profile concepts carry it |
 
 **Score: 10 ✅ / 16 ⚠️ / 1 ❌ / 3 ➖**
 
@@ -234,7 +234,7 @@ Plus `order_flow.delta_shift` in the registry. **Score: 9 ✅ / 15 ⚠️ / 2 �
 | # | Concept | Status | # | Concept | Status |
 |---|---------|--------|---|---------|--------|
 | 1 | Head & Shoulders | ✅ `chart.head_shoulders` | 19 | Rounding bottom | ✅ `chart.rounding_bottom_top` |
-| 2 | Inverse H&S | ⚠️ verify direction coverage | 20 | Rounding top | ✅ same |
+| 2 | Inverse H&S | ✅  covers both (patterns.rs has the dedicated inverse detector) | 20 | Rounding top | ✅ same |
 | 3 | Double top | ✅ | 21 | Broadening | ✅ `chart.broadening` |
 | 4 | Double bottom | ✅ | 22 | Diamond top | ❌ |
 | 5 | Triple top | ✅ `chart.triple_top_bottom` | 23 | Diamond bottom | ❌ |
