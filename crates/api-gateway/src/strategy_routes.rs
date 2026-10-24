@@ -825,6 +825,172 @@ pub async fn backtest(
         .await?
         .ok_or_else(|| ApiError::not_found("no such strategy"))?;
 
+    // The composition branch: a Concept-Registry document (it carries
+    // `conditions`) runs the composer's own backtest core -- the same
+    // engine /compositions/backtest serves -- and stores the report under
+    // the strategy it ran.
+    if row.document.get("conditions").is_some() {
+        let composition: market_data::composer::Composition =
+            serde_json::from_value(row.document.clone()).map_err(|e| {
+                ApiError::bad_request("COMPOSITION_PARSE_FAILED", format!("the stored document is not a composition: {e}"))
+            })?;
+        let tf: analytics_core::types::Timeframe = composition.timeframe.parse().map_err(|_| {
+            ApiError::bad_request("TIMEFRAME_INVALID", format!("`{}` is not a timeframe this platform serves", composition.timeframe))
+        })?;
+        let symbol = request.symbol.to_uppercase();
+        let from_ns = parse_date_ns(&request.from)?;
+        let to_ns = parse_date_ns(&request.to)? + 86_400 * 1_000_000_000;
+        let limit = (((to_ns - from_ns) / tf.nanos()) as usize).clamp(50, 1000);
+        let window = state
+            .windows
+            .candles_capped(&symbol, tf, from_ns, to_ns, limit)
+            .await
+            .map_err(|e| ApiError::bad_request("WINDOW_THIN", format!("no candles for {symbol}: {e}")))?;
+        let candles = window.candles;
+        let config = market_data::composer::event_config_for(&composition.parameters);
+        let mut extra_series = Vec::new();
+        for name in market_data::composer::involved_timeframes(&composition) {
+            if let Ok(extra) = name.parse::<analytics_core::types::Timeframe>() {
+                if extra != tf && extra.nanos() > tf.nanos() {
+                    extra_series.push((extra, analytics_core::resample::resample(&candles, extra)));
+                }
+            }
+        }
+        let mut extra_symbols: Vec<(String, Vec<analytics_core::types::Candle>)> = Vec::new();
+        if let Some(sym2) = &composition.symbol2 {
+            let sym2 = sym2.to_uppercase();
+            let window2 = state
+                .windows
+                .candles_capped(&sym2, tf, from_ns, to_ns, limit)
+                .await
+                .map_err(|e| ApiError::bad_request("SYMBOL2_THIN", format!("no candles for {sym2}: {e}")))?;
+            extra_symbols.push((sym2, window2.candles));
+        }
+        let evaluation = market_data::composer::evaluate_mtf(&composition, &config, &symbol, tf, &candles, &extra_series, &extra_symbols);
+        let signals = evaluation.signals;
+        let atrs = analytics_core::indicators::atr(&candles, 14);
+        let mut intents: Vec<(usize, pine_lite::interp::Intent)> = Vec::new();
+        for signal in &signals {
+            let stop = match &composition.risk.stop {
+                market_data::composer::StopKind::Structure => signal.stop_level,
+                market_data::composer::StopKind::AtrMultiple { multiple } => {
+                    let entry_bar = (signal.bar + 1).min(candles.len() - 1);
+                    atrs[entry_bar].map(|atr| {
+                        let entry = candles[entry_bar].open;
+                        if signal.long { entry - multiple * atr } else { entry + multiple * atr }
+                    })
+                }
+            };
+            intents.push((
+                signal.bar,
+                pine_lite::interp::Intent::Entry {
+                    id: "C".to_string(),
+                    long: signal.long,
+                    qty: None,
+                },
+            ));
+            if let Some(stop) = stop {
+                intents.push((
+                    signal.bar,
+                    pine_lite::interp::Intent::Exit {
+                        id: "C".to_string(),
+                        stop: Some(stop),
+                        limit: None,
+                        trail_points: None,
+                        trail_offset: None,
+                        trail_price: None,
+                        qty_percent: None,
+                    },
+                ));
+            }
+            if !composition.risk.partials.is_empty() {
+                if let Some(stop) = stop {
+                    let entry_bar = (signal.bar + 1).min(candles.len() - 1);
+                    let entry = candles[entry_bar].open;
+                    let distance = (entry - stop).abs();
+                    if distance > 0.0 {
+                        for partial in &composition.risk.partials {
+                            let target = if signal.long {
+                                entry + distance * partial.at_r
+                            } else {
+                                entry - distance * partial.at_r
+                            };
+                            intents.push((
+                                signal.bar,
+                                pine_lite::interp::Intent::Exit {
+                                    id: "C".to_string(),
+                                    stop: None,
+                                    limit: Some(target),
+                                    trail_points: None,
+                                    trail_offset: None,
+                                    trail_price: None,
+                                    qty_percent: Some(partial.close_pct),
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        intents.sort_by_key(|(bar, _)| *bar);
+        let percent = match &composition.risk.sizing {
+            market_data::composer::SizeKind::FixedFractional { percent } => *percent,
+            market_data::composer::SizeKind::Fixed { .. } => 10.0,
+            market_data::composer::SizeKind::VolatilityAdjusted { risk_fraction } => risk_fraction * 100.0,
+            market_data::composer::SizeKind::Kelly { cap } => cap * 100.0,
+        };
+        let knobs = pine_lite::sim::StrategyHeader {
+            default_qty_type: pine_lite::sim::QtyType::PercentOfEquity,
+            default_qty_value: percent,
+            guards: composition.risk.guards,
+            management: composition.risk.management,
+            ..pine_lite::sim::StrategyHeader::default()
+        };
+        let simulation = pine_lite::sim::simulate(&intents, &candles, &knobs);
+        let report = serde_json::json!({
+            "net_profit": simulation.report.net_profit,
+            "total_trades": simulation.report.total_trades,
+            "win_rate": simulation.report.win_rate,
+            "profit_factor": simulation.report.profit_factor,
+            "max_drawdown": simulation.report.max_drawdown,
+            "signals": signals.len(),
+            "diagnostics": evaluation.diagnostics.iter().map(|(key, at, level, zone)| serde_json::json!({
+                "key": match (&key.0, &key.1) {
+                    (Some(sym), Some(tf)) => format!("{sym}:{tf}:{}", key.2),
+                    (None, Some(tf)) => format!("{tf}:{}", key.2),
+                    (Some(sym), None) => format!("{sym}:{}", key.2),
+                    (None, None) => key.2.clone(),
+                },
+                "satisfied": at.is_some(),
+                "last_bar": at,
+                "level": level,
+                "zone": zone,
+            })).collect::<Vec<_>>(),
+        });
+        db::strategies::create_backtest(
+            database.pool(),
+            id,
+            &symbol,
+            from_ns,
+            to_ns,
+            &report,
+        )
+        .await?;
+        return Ok((
+            StatusCode::OK,
+            Json(BacktestResponse {
+                id: id.to_string(),
+                strategy_id: id.to_string(),
+                symbol: symbol.clone(),
+                from: from_ns,
+                to: to_ns,
+                created_at: crate::now_ns(),
+                report,
+                equity_plot: None,
+            }),
+        ));
+    }
+
     // docs/24 S4: the inline pair must be complete and the representation
     // known. Vetting itself happens in the branch below -- a script that
     // does not vet (pyramiding>0, `strategy.risk.*`, unknown syntax) is the

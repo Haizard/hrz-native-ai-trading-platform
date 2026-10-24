@@ -169,6 +169,14 @@ struct Position {
     /// Fraction the armed exit closes when it triggers (Pine's
     /// qty_percent); None = the whole position.
     exit_pct: Option<f64>,
+    /// Stacked partial exits: pending (limit, percent-of-original) pairs.
+    /// A ladder the document armed at entry -- half at +1R, the rest at
+    /// +2R -- filled independently of the bracket, which stays the
+    /// protection underneath.
+    partials: Vec<(f64, f64)>,
+    /// The entry's own quantity, for partial-exit percentages (Pine's
+    /// qty_percent reads percent of the ENTRY, not of the remainder).
+    original_qty: f64,
     /// Trailing-stop activation distance from the entry (price units).
     trail_points: Option<f64>,
     /// Trailing-stop activation as an absolute price.
@@ -304,6 +312,9 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
     let mut pending_stop: Option<f64> = None;
     let mut pending_limit: Option<f64> = None;
     let mut pending_pct: Option<f64> = None;
+    // Stacked partial rungs queued before the entry fills: they attach to
+    // the position the moment it opens (the partial ladder arms at entry).
+    let mut pending_partials: Vec<(f64, f64)> = Vec::new();
     let mut pending_trail: (Option<f64>, Option<f64>, Option<f64>) = (None, None, None);
     // strategy.risk.* limits, settable per intent from the next bar on.
     let mut risk_max_qty: Option<f64> = None;
@@ -413,6 +424,8 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                                 stop: pending_stop.take(),
                                 limit: pending_limit.take(),
                                 exit_pct: pending_pct.take(),
+                                partials: std::mem::take(&mut pending_partials),
+                                original_qty: qty,
                                 trail_points: pending_trail.0.take(),
                                 trail_price: pending_trail.1.take(),
                                 trail_offset: pending_trail.2.take(),
@@ -611,6 +624,50 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
             }
         }
 
+        // 2c. The partial ladder: each armed rung fills at its own level,
+        // closing its percent of the ORIGINAL quantity (Pine's qty_percent
+        // reads percent of the entry). The bracket stays armed underneath.
+        if let Some(pos) = &mut position {
+            let mut hit_idx: Option<usize> = None;
+            for (i, (limit, _)) in pos.partials.iter().enumerate() {
+                let hit = if pos.long { c.high >= *limit } else { c.low <= *limit };
+                if hit {
+                    hit_idx = Some(i);
+                    break;
+                }
+            }
+            if let Some(i) = hit_idx {
+                let (limit, pct) = pos.partials[i];
+                let mut pos = position.take().expect("checked above");
+                let price = limit_fill_price(pos.long, c.open, limit);
+                let closed_qty = (pos.original_qty * (pct / 100.0)).min(pos.qty);
+                let frac = (closed_qty / pos.qty).clamp(0.0, 1.0);
+                let (closed_qty, pnl) = close_leg(&mut pos, frac, price, knobs);
+                realized += pnl;
+                closed += 1.0;
+                if pnl > 0.0 { risk_state.consecutive_losses = 0; } else { risk_state.consecutive_losses += 1; }
+                if pnl > 0.0 {
+                    wins += 1.0;
+                    gross_win += pnl;
+                } else {
+                    gross_loss -= pnl;
+                }
+                sim.orders.push(SimOrder {
+                    bar,
+                    kind: OrderKind::Limit,
+                    long: pos.long,
+                    qty: closed_qty,
+                    price,
+                    stop: pos.stop,
+                    pnl: Some(pnl),
+                });
+                pos.partials.remove(i);
+                if pos.qty > 1e-12 {
+                    position = Some(pos);
+                }
+            }
+        }
+
         // 3. Mark the account at this close.
         let open_pnl_mark = position.as_ref().map_or(0.0, |p| open_pnl(p, c.close, knobs));
         let equity = knobs.initial_capital + realized + open_pnl_mark;
@@ -712,6 +769,19 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
             match intent {
                 Intent::Exit { stop, limit, qty_percent, trail_points, trail_price, trail_offset, .. } => {
                     let mut armed = false;
+                    // The stacked partial: a limit with a fraction and no
+                    // stop is one rung of the partial ladder, not the
+                    // bracket -- append it, and the per-bar fill below
+                    // closes each rung at its own level.
+                    if stop.is_none() && limit.is_some() && qty_percent.is_some() {
+                        let rung = (limit.expect("checked"), qty_percent.expect("checked"));
+                        match &mut position {
+                            Some(pos) => pos.partials.push(rung),
+                            None => pending_partials.push(rung),
+                        }
+                        armed = true;
+                    }
+                    if !armed {
                     if let Some(s) = stop {
                         if let Some(pos) = &mut position {
                             pos.stop = Some(*s);
@@ -741,6 +811,7 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
                             pos.exit_pct = *qty_percent;
                         }
                         pending_pct = *qty_percent;
+                    }
                     }
                     if !armed {
                         pending = Some(Intent::Close { id: None, qty_percent: *qty_percent });
@@ -793,6 +864,80 @@ pub fn simulate(intents: &[(usize, Intent)], candles: &[Candle], knobs: &Strateg
         max_drawdown: max_dd,
     };
     sim
+}
+
+#[cfg(test)]
+mod partial_tests {
+    use super::*;
+    use analytics_core::types::{Candle, Timeframe};
+
+    fn k(bar: usize, o: f64, h: f64, l: f64, c: f64) -> Candle {
+        Candle {
+            symbol: "T".to_string(),
+            timeframe: Timeframe::H1,
+            open_time: bar as i64 * 3_600_000_000_000,
+            open: o,
+            high: h,
+            low: l,
+            close: c,
+            volume: 1.0,
+            buy_volume: 0.5,
+            sell_volume: 0.5,
+        }
+    }
+
+    #[test]
+    fn stacked_partials_ladder_out_of_the_position() {
+        // Entry at bar 0; the ladder: half at 105 (+1R from a 5-wide stop),
+        // the rest at 110 (+2R). Two rungs, two bars, the position halves
+        // then closes.
+        let candles = vec![
+            k(0, 100.0, 100.5, 99.5, 100.0),
+            k(1, 100.0, 106.0, 99.8, 105.5), // the first rung touches
+            k(2, 105.5, 111.0, 105.0, 110.5), // the second rung touches
+        ];
+        let intents = vec![
+            (0, Intent::Entry { id: "C".to_string(), long: true, qty: None }),
+            (0, Intent::Exit {
+                id: "C".to_string(),
+                stop: Some(95.0),
+                limit: None,
+                trail_points: None,
+                trail_offset: None,
+                trail_price: None,
+                qty_percent: None,
+            }),
+            (0, Intent::Exit {
+                id: "C".to_string(),
+                stop: None,
+                limit: Some(105.0),
+                trail_points: None,
+                trail_offset: None,
+                trail_price: None,
+                qty_percent: Some(50.0),
+            }),
+            (0, Intent::Exit {
+                id: "C".to_string(),
+                stop: None,
+                limit: Some(110.0),
+                trail_points: None,
+                trail_offset: None,
+                trail_price: None,
+                qty_percent: Some(50.0),
+            }),
+        ];
+        let knobs = StrategyHeader::default();
+        let sim = simulate(&intents, &candles, &knobs);
+        let limits: Vec<_> = sim.orders.iter().filter(|o| o.kind == OrderKind::Limit).collect();
+        assert_eq!(limits.len(), 2, "both rungs filled: {:?}", sim.orders.iter().map(|o| (o.kind, o.qty)).collect::<Vec<_>>());
+        assert!(limits[0].qty > 0.0 && limits[1].qty > 0.0);
+        // Each rung closed half of the ORIGINAL quantity.
+        let entry = sim.orders.iter().find(|o| o.kind == OrderKind::Entry).expect("entry");
+        let half = entry.qty / 2.0;
+        assert!((limits[0].qty - half).abs() < 1e-9, "the first rung closed half the entry: {} vs {half}", limits[0].qty);
+        assert!((limits[1].qty - half).abs() < 1e-9, "the second rung closed the other half: {} vs {half}", limits[1].qty);
+        assert_eq!(sim.report.total_trades, 2.0, "two partial closes");
+    }
 }
 
 #[cfg(test)]

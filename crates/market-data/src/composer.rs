@@ -34,6 +34,10 @@ pub struct Composition {
     /// `DERIV:VOLATILITY 75`). Absent for analysis-only compositions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub market: Option<String>,
+    /// The second instrument, when the document reads across instruments
+    /// (the leader in a lead-follow pair).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol2: Option<String>,
     /// Which side it trades.
     pub side: CompositionSide,
     /// The condition tree.
@@ -77,6 +81,11 @@ pub enum Condition {
     Concept {
         /// The registry id.
         concept: String,
+        /// The instrument this leaf reads, when it differs from the
+        /// document's market (the cross-instrument rule: "BTC leads, ETH
+        /// confirms").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        symbol: Option<String>,
         /// The required reading.
         direction: DirectionReq,
         /// How far back a matching event still counts (default 10 bars).
@@ -131,6 +140,40 @@ pub enum Condition {
         /// The window's end hour UTC (exclusive; may wrap past midnight).
         end_hour: u32,
     },
+    /// An indicator's own value as the condition: a threshold ("RSI above
+    /// 70", "ADX above 25") or a price touch against the indicator's line
+    /// ("price touches the EMA-50", "crosses the supertrend").
+    Indicator {
+        /// The indicator's id in the indicator-series vocabulary
+        /// (`indicators.rsi`, `indicators.ema.50`, `indicators.supertrend`...).
+        indicator: String,
+        /// The relation to read.
+        relation: IndicatorRelation,
+        /// The constant for threshold relations (70 for "RSI above 70").
+        /// Absent for touch relations.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<f64>,
+        /// Its timeframe when it differs from the document's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeframe: Option<String>,
+    },
+    /// The newest event's own magnitude against a constant: "a sweep
+    /// extending at least 0.5%", "a volume spike above 2x", "a zone
+    /// strength above 60".
+    Magnitude {
+        /// The concept whose newest event supplies the magnitude.
+        concept: String,
+        /// The comparison.
+        op: MagnitudeOp,
+        /// The constant.
+        value: f64,
+        /// Its timeframe when it differs from the document's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeframe: Option<String>,
+        /// How far back the event may be (default 20 bars).
+        #[serde(default)]
+        lookback_bars: Option<usize>,
+    },
     /// Every child must hold.
     All {
         /// The children.
@@ -170,6 +213,35 @@ pub enum PriceSide {
     Below,
     /// The close crossed the level this bar (either direction).
     Cross,
+}
+
+/// The comparison a `Magnitude` condition reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MagnitudeOp {
+    /// The magnitude is at or above the constant.
+    Above,
+    /// The magnitude is at or below the constant.
+    Below,
+}
+
+/// What an `Indicator` condition reads: a threshold against a constant, or
+/// a price touch against the indicator's own line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndicatorRelation {
+    /// The indicator's value is at or above the constant.
+    Above,
+    /// The indicator's value is at or below the constant.
+    Below,
+    /// The indicator's value crossed the constant this bar.
+    Cross,
+    /// The close touched the indicator's line from above (a pullback to it).
+    TouchDown,
+    /// The close touched the indicator's line from below.
+    TouchUp,
+    /// The close crossed the indicator's line this bar, either direction.
+    CrossLine,
 }
 
 /// One sequence step: a condition plus an optional per-step window.
@@ -408,6 +480,47 @@ pub fn validate(doc: &Composition) -> Result<(), Vec<ValidationError>> {
         });
     }
     validate_condition(&doc.conditions, "conditions", 0, &mut errors);
+    // The down-timeframe rule: resampling only walks UP (a 1m series makes
+    // 4h bars; a 4h series cannot make 1m bars). A condition below the
+    // document's own timeframe would silently never see an event.
+    if let Ok(base) = doc.timeframe.parse::<analytics_core::types::Timeframe>() {
+        fn check_down(cond: &Condition, base: analytics_core::types::Timeframe, path: &str, errors: &mut Vec<ValidationError>) {
+            let tf = match cond {
+                Condition::Concept { timeframe, .. } | Condition::Retrace { timeframe, .. }
+                | Condition::PriceVs { timeframe, .. } | Condition::Indicator { timeframe, .. }
+                | Condition::Magnitude { timeframe, .. } => timeframe.clone(),
+                _ => None,
+            };
+            if let Some(t) = tf {
+                if let Ok(cond_tf) = t.parse::<analytics_core::types::Timeframe>() {
+                    if cond_tf.nanos() < base.nanos() {
+                        errors.push(ValidationError {
+                            path: path.to_string(),
+                            message: format!(
+                                "`{t}` is below the document's own timeframe ({}) -- write the document at the smallest timeframe and put the conditions above it",
+                                base
+                            ),
+                        });
+                    }
+                }
+            }
+            match cond {
+                Condition::All { conditions } | Condition::Any { conditions } => {
+                    for (i, c) in conditions.iter().enumerate() {
+                        check_down(c, base, &format!("{path}.conditions[{i}]"), errors);
+                    }
+                }
+                Condition::Not { condition } => check_down(condition, base, &format!("{path}.condition"), errors),
+                Condition::Sequence { steps, .. } => {
+                    for (i, step) in steps.iter().enumerate() {
+                        check_down(&step.condition, base, &format!("{path}.steps[{i}]"), errors);
+                    }
+                }
+                _ => {}
+            }
+        }
+        check_down(&doc.conditions, base, "conditions", &mut errors);
+    }
     // Parameter overrides must name a registered concept, one of ITS
     // parameters, and a value inside the declared range -- a mistyped knob
     // must not silently become a different strategy.
@@ -472,6 +585,46 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
         return;
     }
     match cond {
+        Condition::Magnitude { concept, value, lookback_bars, .. } => {
+            if crate::concepts::concept(concept).is_none() {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: format!("`{concept}` is not a registered concept (GET /concepts)"),
+                });
+            }
+            if *value < 0.0 {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: "a magnitude constant must be non-negative".to_string(),
+                });
+            }
+            if lookback_bars.is_some_and(|w| w == 0) {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: "lookback_bars must be positive".to_string(),
+                });
+            }
+        }
+        Condition::Indicator { indicator, relation, level, .. } => {
+            let id = indicator.strip_prefix("indicators.").unwrap_or(indicator);
+            let known = [
+                "rsi", "ema", "sma", "macd", "supertrend", "keltner", "bollinger", "vwap", "adx", "atr",
+                "stochastic", "cci", "williams_r", "roc", "obv", "cmf", "mfi", "ad_line", "tsi", "psar", "donchian",
+            ];
+            let base = id.split('.').next().unwrap_or(id);
+            if !known.contains(&base) {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: format!("`{indicator}` is not an indicator this platform serves (known: rsi, ema, sma, macd, supertrend, keltner, bollinger, vwap, adx, atr, stochastic, cci, williams_r, roc, obv, cmf, mfi, ad_line, tsi, psar, donchian)"),
+                });
+            }
+            if matches!(relation, IndicatorRelation::Above | IndicatorRelation::Below | IndicatorRelation::Cross) && level.is_none() {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    message: "a threshold relation needs a constant `level`".to_string(),
+                });
+            }
+        }
         Condition::TimeWindow { start_hour, end_hour } => {
             if *start_hour > 23 || *end_hour > 24 {
                 errors.push(ValidationError {
@@ -614,6 +767,7 @@ pub struct Signal {
 #[derive(Debug, Clone, Default)]
 struct LeafState {
     zone: Option<(f64, f64)>,
+    magnitude: Option<f64>,
     satisfied_at: Option<usize>,
     level: Option<f64>,
 }
@@ -628,6 +782,8 @@ pub struct Composer {
     last_close: Option<f64>,
     prev_close: Option<f64>,
     bar_time: Option<i64>,
+    /// Per-leaf indicator values at the current and previous bar.
+    indicator_values: std::collections::HashMap<String, (Option<f64>, Option<f64>)>,
 }
 
 impl Composer {
@@ -643,6 +799,7 @@ impl Composer {
             last_close: None,
             prev_close: None,
             bar_time: None,
+            indicator_values: std::collections::HashMap::new(),
         }
     }
 
@@ -650,6 +807,12 @@ impl Composer {
     #[must_use]
     pub fn document(&self) -> &Composition {
         &self.doc
+    }
+
+    /// The indicator values for one leaf at the current bar (and the
+    /// previous bar), set by the caller alongside each bar's events.
+    pub fn set_indicator_values(&mut self, key: &str, current: Option<f64>, previous: Option<f64>) {
+        self.indicator_values.insert(key.to_string(), (current, previous));
     }
 
     /// The newest bar's own time, for the TimeWindow condition.
@@ -668,9 +831,9 @@ impl Composer {
     /// Feed the events of one bar (bar index `bar`) for one timeframe
     /// (None = the document's own), then evaluate. Returns a signal exactly
     /// on the satisfaction edge.
-    pub fn on_bar(&mut self, bar: usize, events: &[ConceptEvent], timeframe: Option<&str>) -> Option<Signal> {
+    pub fn on_bar(&mut self, bar: usize, events: &[ConceptEvent], timeframe: Option<&str>, symbol: Option<&str>) -> Option<Signal> {
         for event in events {
-            let key = (timeframe.map(str::to_string), event.concept_id.clone());
+            let key = (symbol.map(str::to_string), timeframe.map(str::to_string), event.concept_id.clone());
             if let Some((_, state)) = self.leaves.iter_mut().find(|(id, _)| id == &key) {
                 // The newest matching event wins the slot; an older one must
                 // not overwrite it (events of one bar arrive unordered).
@@ -678,6 +841,9 @@ impl Composer {
                 state.level = event.price_level.or(event.zone_low);
                 if let (Some(lo), Some(hi)) = (event.zone_low, event.zone_high) {
                     state.zone = Some((lo, hi));
+                }
+                if let Some(m) = event.evidence.get("magnitude").and_then(serde_json::Value::as_f64) {
+                    state.magnitude = Some(m);
                 }
             }
         }
@@ -689,13 +855,13 @@ impl Composer {
         // the retrace itself.
         let mut retrace_latches: Vec<(LeafKey, usize)> = Vec::new();
         for (key, state) in self.leaves.iter() {
-            if key.1.starts_with("retrace:") {
+            if key.2.starts_with("retrace:") {
                 continue;
             }
             if let Some((lo, hi)) = state.zone {
                 if let Some(close) = self.last_close {
                     if close >= lo && close <= hi {
-                        retrace_latches.push(((key.0.clone(), format!("retrace:{}", key.1)), bar));
+                        retrace_latches.push(((key.0.clone(), key.1.clone(), format!("retrace:{}", key.2)), bar));
                     }
                 }
             }
@@ -755,10 +921,10 @@ impl Composer {
 
     fn eval(&self, cond: &Condition, bar: usize) -> bool {
         match cond {
-            Condition::Concept { concept, timeframe, lookback_bars, min_bars_since, .. } => {
+            Condition::Concept { concept, timeframe, symbol, lookback_bars, min_bars_since, .. } => {
                 let lookback = lookback_bars.unwrap_or(DEFAULT_LOOKBACK_BARS);
                 let min_age = min_bars_since.unwrap_or(0);
-                match self.leaf(&(timeframe.clone(), concept.clone()), lookback, bar) {
+                match self.leaf(&(symbol.clone(), timeframe.clone(), concept.clone()), lookback, bar) {
                     Some((at, _)) => bar - at >= min_age && bar - at <= lookback,
                     None => false,
                 }
@@ -769,11 +935,11 @@ impl Composer {
                 // zone is the event, and it counts for the lookback's whole
                 // window -- "after price came back to the FVG" latched, never
                 // "hold it every bar or forget it".
-                let key = (timeframe.clone(), format!("retrace:{into}"));
+                let key = (None, timeframe.clone(), format!("retrace:{into}"));
                 if let Some((at, _)) = self.leaf(&key, lookback, bar) {
                     return bar - at <= lookback;
                 }
-                match self.leaf_zone(&(timeframe.clone(), into.clone()), usize::MAX, bar) {
+                match self.leaf_zone(&(None, timeframe.clone(), into.clone()), usize::MAX, bar) {
                     Some((_, lo, hi)) => {
                         let close = self.last_close.unwrap_or(f64::NAN);
                         close >= lo && close <= hi
@@ -783,7 +949,7 @@ impl Composer {
             }
             Condition::PriceVs { side, concept, timeframe, lookback_bars, tolerance } => {
                 let lookback = lookback_bars.unwrap_or(20);
-                let key = (timeframe.clone(), concept.clone());
+                let key = (None, timeframe.clone(), concept.clone());
                 match self.leaf(&key, lookback, bar) {
                     Some((_, Some(level))) => {
                         let close = self.last_close.unwrap_or(f64::NAN);
@@ -798,6 +964,61 @@ impl Composer {
                         }
                     }
                     _ => false,
+                }
+            }
+            Condition::Indicator { indicator, relation, level, timeframe } => {
+                let key = match timeframe {
+                    Some(tf) => format!("{tf}:{indicator}"),
+                    None => indicator.clone(),
+                };
+                let (current, previous) = self
+                    .indicator_values
+                    .get(&key)
+                    .copied()
+                    .unwrap_or((None, None));
+                match relation {
+                    IndicatorRelation::Above | IndicatorRelation::Below | IndicatorRelation::Cross => {
+                        let (Some(c), Some(l)) = (current, *level) else {
+                            return false;
+                        };
+                        match relation {
+                            IndicatorRelation::Above => c >= l,
+                            IndicatorRelation::Below => c <= l,
+                            _ => {
+                                let prev = previous.unwrap_or(c);
+                                (prev - l).signum() != (c - l).signum()
+                            }
+                        }
+                    }
+                    IndicatorRelation::TouchDown | IndicatorRelation::TouchUp | IndicatorRelation::CrossLine => {
+                        let (Some(c), Some(close)) = (current, self.last_close) else {
+                            return false;
+                        };
+                        let prev_close = self.prev_close.unwrap_or(close);
+                        match relation {
+                            IndicatorRelation::TouchDown => close >= c && prev_close >= c && close <= c * 1.001,
+                            IndicatorRelation::TouchUp => close <= c && prev_close <= c && close >= c * 0.999,
+                            IndicatorRelation::CrossLine => (prev_close - c).signum() != (close - c).signum(),
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+            }
+            Condition::Magnitude { concept, op, value, timeframe, lookback_bars } => {
+                let lookback = lookback_bars.unwrap_or(20);
+                let key = (None, timeframe.clone(), concept.clone());
+                match self.leaf(&key, lookback, bar) {
+                    Some((_, _)) => {
+                        let m = self.leaves.iter().find(|(id, _)| id == &key).and_then(|(_, st)| st.magnitude);
+                        match m {
+                            Some(m) => match op {
+                                MagnitudeOp::Above => m >= *value,
+                                MagnitudeOp::Below => m <= *value,
+                            },
+                            None => false,
+                        }
+                    }
+                    None => false,
                 }
             }
             Condition::TimeWindow { start_hour, end_hour } => {
@@ -863,13 +1084,16 @@ impl Composer {
     fn condition_bar(&self, cond: &Condition, lookback: Option<usize>, bar: usize) -> Option<usize> {
         let default = lookback.unwrap_or(DEFAULT_LOOKBACK_BARS);
         match cond {
-            Condition::Concept { concept, timeframe, lookback_bars, .. } => {
-                self.leaf(&(timeframe.clone(), concept.clone()), lookback_bars.or(lookback).unwrap_or(default), bar).map(|(at, _)| at)
+            Condition::Concept { concept, timeframe, symbol, lookback_bars, .. } => {
+                self.leaf(&(symbol.clone(), timeframe.clone(), concept.clone()), lookback_bars.or(lookback).unwrap_or(default), bar).map(|(at, _)| at)
             }
             Condition::Retrace { .. } => self.eval(cond, bar).then_some(bar),
-            Condition::TimeWindow { .. } => self.eval(cond, bar).then_some(bar),
+            Condition::Magnitude { concept, timeframe, lookback_bars, .. } => {
+                self.leaf(&(None, timeframe.clone(), concept.clone()), lookback_bars.or(lookback).unwrap_or(default), bar).map(|(at, _)| at)
+            }
+            Condition::TimeWindow { .. } | Condition::Indicator { .. } => self.eval(cond, bar).then_some(bar),
             Condition::PriceVs { concept, timeframe, lookback_bars, .. } => {
-                self.leaf(&(timeframe.clone(), concept.clone()), lookback_bars.or(lookback).unwrap_or(default), bar).map(|(at, _)| at)
+                self.leaf(&(None, timeframe.clone(), concept.clone()), lookback_bars.or(lookback).unwrap_or(default), bar).map(|(at, _)| at)
             }
             Condition::All { conditions } => {
                 let mut newest = 0;
@@ -915,9 +1139,11 @@ impl Composer {
         self.leaves
             .iter()
             .filter(|(_, state)| state.satisfied_at.is_some())
-            .map(|(key, _)| match &key.0 {
-                Some(tf) => format!("{tf}:{}", key.1),
-                None => key.1.clone(),
+            .map(|(key, _)| match (&key.0, &key.1) {
+                (Some(sym), Some(tf)) => format!("{sym}:{tf}:{}", key.2),
+                (None, Some(tf)) => format!("{tf}:{}", key.2),
+                (Some(sym), None) => format!("{sym}:{}", key.2),
+                (None, None) => key.2.clone(),
             })
             .collect()
     }
@@ -927,12 +1153,18 @@ impl Composer {
 /// A leaf's own key: the timeframe it reads (None = the document's own)
 /// and the concept id. Two conditions on one concept at two timeframes are
 /// two leaves -- the multi-timeframe rule makes them different states.
-pub type LeafKey = (Option<String>, String);
+pub type LeafKey = (Option<String>, Option<String>, String);
 
 fn collect_leaves(cond: &Condition, out: &mut Vec<LeafKey>) {
     match cond {
-        Condition::Concept { concept, timeframe, .. } | Condition::PriceVs { concept, timeframe, .. } => {
-            let key = (timeframe.clone(), concept.clone());
+        Condition::Concept { concept, timeframe, symbol, .. } => {
+            let key = (symbol.clone(), timeframe.clone(), concept.clone());
+            if !out.contains(&key) {
+                out.push(key);
+            }
+        }
+        Condition::PriceVs { concept, timeframe, .. } | Condition::Magnitude { concept, timeframe, .. } => {
+            let key = (None, timeframe.clone(), concept.clone());
             if !out.contains(&key) {
                 out.push(key);
             }
@@ -941,17 +1173,17 @@ fn collect_leaves(cond: &Condition, out: &mut Vec<LeafKey>) {
             // The retrace's leaf keys SEPARATELY from the concept's own: a
             // 4h FVG and the retrace into it are different states (the
             // concept event must not satisfy the retrace).
-            let key = (timeframe.clone(), format!("retrace:{into}"));
+            let key = (None, timeframe.clone(), format!("retrace:{into}"));
             if !out.contains(&key) {
                 out.push(key);
             }
             // And the concept's own leaf, for the zone it carries.
-            let zone_key = (timeframe.clone(), into.clone());
+            let zone_key = (None, timeframe.clone(), into.clone());
             if !out.contains(&zone_key) {
                 out.push(zone_key);
             }
         }
-        Condition::TimeWindow { .. } => {}
+        Condition::TimeWindow { .. } | Condition::Indicator { .. } => {}
         Condition::All { conditions } | Condition::Any { conditions } => {
             for c in conditions {
                 collect_leaves(c, out);
@@ -993,9 +1225,91 @@ pub fn evaluate_mtf(
     base_timeframe: analytics_core::types::Timeframe,
     base_candles: &[analytics_core::types::Candle],
     extra_series: &[(analytics_core::types::Timeframe, Vec<analytics_core::types::Candle>)],
+    extra_symbols: &[(String, Vec<analytics_core::types::Candle>)],
 ) -> MtfEvaluation {
     let mut composer = Composer::new(doc.clone());
     let mut signals = Vec::new();
+    // The Indicator leaves: their ids, keyed (timeframe, id) as the
+    // composer's setter keys them.
+    fn indicator_leaves(cond: &Condition, out: &mut Vec<(Option<String>, String)>) {
+        match cond {
+            Condition::Indicator { indicator, timeframe, .. } => {
+                let key = (timeframe.clone(), indicator.clone());
+                if !out.contains(&key) {
+                    out.push(key);
+                }
+            }
+            Condition::All { conditions } | Condition::Any { conditions } => {
+                for c in conditions {
+                    indicator_leaves(c, out);
+                }
+            }
+            Condition::Not { condition } => indicator_leaves(condition, out),
+            Condition::Sequence { steps, .. } => {
+                for step in steps {
+                    indicator_leaves(&step.condition, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut ind_leaves = Vec::new();
+    indicator_leaves(&doc.conditions, &mut ind_leaves);
+    // Each leaf's series over the base candles (timeframe overrides read the
+    // extra series below), keyed by its setter key.
+    let mut indicator_series: std::collections::HashMap<String, Vec<Option<f64>>> = std::collections::HashMap::new();
+    fn parse_indicator(id: &str) -> Option<(String, usize)> {
+        let stripped = id.strip_prefix("indicators.").unwrap_or(id);
+        let mut parts = stripped.split('.');
+        let base = parts.next()?.to_string();
+        let period = parts.next().and_then(|p| p.parse::<usize>().ok()).unwrap_or(match base.as_str() {
+            "rsi" | "atr" | "stochastic" | "cci" | "williams_r" | "roc" | "mfi" | "tsi" => 14,
+            "ema" | "sma" | "keltner" | "bollinger" | "donchian" => 20,
+            _ => 14,
+        });
+        Some((base, period))
+    }
+    fn series_of(base: &str, period: usize, candles: &[analytics_core::types::Candle]) -> Option<Vec<Option<f64>>> {
+        use analytics_core::indicators;
+        let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+        Some(match base {
+            "rsi" => indicators::rsi(&closes, period),
+            "ema" => indicators::ema(&closes, period),
+            "sma" => indicators::sma(&closes, period),
+            "atr" => indicators::atr(candles, period),
+            "adx" => indicators::trend::adx(candles, period).0,
+            "supertrend" => indicators::trend::supertrend(candles, period, 3.0).into_iter().map(|st| st.map(|(line, _)| line)).collect(),
+            "keltner" => indicators::trend::keltner(candles, period, period, 2.0).into_iter().map(|k| k.map(|(mid, _, _)| mid)).collect(),
+            "bollinger" => indicators::bollinger(&closes, period, 2.0).into_iter().map(|b| b.map(|b| b.middle)).collect(),
+            "donchian" => indicators::trend::donchian(candles, period).into_iter().map(|d| d.map(|(mid, _, _)| mid)).collect(),
+            "obv" => indicators::oscillators::obv(candles),
+            "cmf" => indicators::misc::cmf(candles, period),
+            "mfi" => indicators::misc::mfi(candles, period),
+            "cci" => indicators::oscillators::cci(candles, period),
+            "williams_r" => indicators::oscillators::williams_r(candles, period),
+            "roc" => indicators::oscillators::roc(&closes, period),
+            "ad_line" => indicators::misc::ad_line(candles),
+            "tsi" => indicators::misc::tsi(&closes, period, period.max(6) / 2, 3).0,
+            "stochastic" => indicators::oscillators::stochastic(candles, period, 3).0,
+            "macd" => indicators::macd(&closes, 12, 26, 9).into_iter().map(|m| m.map(|m| m.histogram)).collect(),
+            _ => return None,
+        })
+    }
+    for (tf_name, id) in &ind_leaves {
+        if let Some((base, period)) = parse_indicator(id) {
+            let key = match tf_name {
+                Some(tf) => format!("{tf}:{id}"),
+                None => id.clone(),
+            };
+            // The timeframe override reads its own series once those are
+            // computed below; for now the base series.
+            if tf_name.is_none() {
+                if let Some(values) = series_of(&base, period, base_candles) {
+                    indicator_series.insert(key, values);
+                }
+            }
+        }
+    }
     // Precompute each extra timeframe's per-bar events, keyed by its own
     // bar time; the base walk consumes them in time order.
     let mut extra_events: Vec<(String, Vec<(i64, Vec<ConceptEvent>)>)> = Vec::new();
@@ -1012,6 +1326,54 @@ pub fn evaluate_mtf(
         }
         extra_events.push((tf.to_string(), per_bar));
     }
+    // The Indicator leaves on extra timeframes: their series over those
+    // series, mapped onto the base bars by open-time alignment.
+    for (tf_name, id) in &ind_leaves {
+        let Some(tf_str) = tf_name else { continue };
+        let Ok(tf) = tf_str.parse::<analytics_core::types::Timeframe>() else { continue };
+        let Some((_, candles)) = extra_series.iter().find(|(etf, _)| *etf == tf) else { continue };
+        let Some((base, period)) = parse_indicator(id) else { continue };
+        let Some(values) = series_of(&base, period, candles) else { continue };
+        let key = format!("{tf_str}:{id}");
+        // Align onto base bars: for each base bar, the newest extra bar at
+        // or before its time.
+        let mut aligned = vec![None; base_candles.len()];
+        let mut prev = vec![None; base_candles.len()];
+        let mut cursor = 0;
+        for (i, candle) in base_candles.iter().enumerate() {
+            let mut cur = None;
+            let mut prv = None;
+            while cursor < candles.len() && candles[cursor].open_time <= candle.open_time {
+                prv = if cursor > 0 { values[cursor - 1] } else { None };
+                cur = values[cursor];
+                cursor += 1;
+            }
+            if cursor > 0 {
+                cur = values[cursor - 1];
+            }
+            aligned[i] = cur;
+            prev[i] = prv;
+        }
+        indicator_series.insert(format!("{key}@prev"), prev);
+        indicator_series.insert(key, aligned);
+    }
+    // The cross-instrument events: detection over the second symbol's
+    // candles, fed with its symbol tag in time order against the base bars.
+    let mut symbol_events: Vec<(String, Vec<(i64, Vec<ConceptEvent>)>)> = Vec::new();
+    for (sym, candles) in extra_symbols {
+        let mut per_bar = Vec::new();
+        for bar in 22..candles.len() {
+            let raw = analytics_core::events::detect_events(&candles[..=bar], sym, config);
+            let events: Vec<ConceptEvent> = raw
+                .iter()
+                .filter(|e| e.bar_time == candles[bar].open_time)
+                .filter_map(crate::concepts::as_concept_event)
+                .collect();
+            per_bar.push((candles[bar].open_time, events));
+        }
+        symbol_events.push((sym.clone(), per_bar));
+    }
+    let mut symbol_cursors: Vec<usize> = symbol_events.iter().map(|_| 0).collect();
     let mut cursors: Vec<usize> = extra_events.iter().map(|_| 0).collect();
     for bar in 22..base_candles.len() {
         let bar_time = base_candles[bar].open_time;
@@ -1023,17 +1385,40 @@ pub fn evaluate_mtf(
             }
             if !due.is_empty() {
                 let tf_name = extra_events[ei].0.clone();
-                let _ = composer.on_bar(bar, &due, Some(&tf_name));
+                let _ = composer.on_bar(bar, &due, Some(&tf_name), None);
+            }
+        }
+        for (si, (sym, per_bar)) in symbol_events.iter().enumerate() {
+            let mut due: Vec<ConceptEvent> = Vec::new();
+            while symbol_cursors[si] < per_bar.len() && per_bar[symbol_cursors[si]].0 <= bar_time {
+                due.extend(per_bar[symbol_cursors[si]].1.iter().cloned());
+                symbol_cursors[si] += 1;
+            }
+            if !due.is_empty() {
+                let sym = sym.clone();
+                let _ = composer.on_bar(bar, &due, None, Some(&sym));
             }
         }
         composer.set_last_close(base_candles[bar].close);
+        composer.set_bar_time(bar_time);
+        for (key, values) in &indicator_series {
+            if key.ends_with("@prev") {
+                continue;
+            }
+            let current = values.get(bar).copied().flatten();
+            let previous = indicator_series
+                .get(&format!("{key}@prev"))
+                .and_then(|p| p.get(bar).copied().flatten())
+                .or_else(|| bar.checked_sub(1).and_then(|b| values.get(b).copied().flatten()));
+            composer.set_indicator_values(key, current, previous);
+        }
         let raw = analytics_core::events::detect_events(&base_candles[..=bar], symbol, config);
         let events: Vec<ConceptEvent> = raw
             .iter()
             .filter(|e| e.bar_time == base_candles[bar].open_time)
             .filter_map(crate::concepts::as_concept_event)
             .collect();
-        if let Some(signal) = composer.on_bar(bar, &events, None) {
+        if let Some(signal) = composer.on_bar(bar, &events, None, None) {
             signals.push(signal);
         }
     }
@@ -1120,16 +1505,16 @@ mod mtf_tests {
 
         let mut composer = Composer::new(doc);
         // The 4h FVG fires (its zone 100..101), fed with its timeframe tag.
-        let _ = composer.on_bar(10, &[event("smc.fvg", Direction::Bearish, 100.5, Some((100.0, 101.0)))], Some("4h"));
-        assert_eq!(composer.on_bar(11, &[], None), None, "no signal on the FVG alone");
+        let _ = composer.on_bar(10, &[event("smc.fvg", Direction::Bearish, 100.5, Some((100.0, 101.0)))], Some("4h"), None);
+        assert_eq!(composer.on_bar(11, &[], None, None), None, "no signal on the FVG alone");
         // The retrace: the close lands inside the zone (100.5).
         composer.set_last_close(100.5);
-        assert_eq!(composer.on_bar(12, &[], None), None, "retraced, but the 1m confirmation has not come");
+        assert_eq!(composer.on_bar(12, &[], None, None), None, "retraced, but the 1m confirmation has not come");
         // The close leaves the zone before the BOS: the retrace's lookback
         // is per-bar state, not latched -- the sequence needs the 1m BOS
         // while the close still sits inside (or recently sat inside). The
         // BOS fires on the 1m series (None = the document's timeframe).
-        let fired = composer.on_bar(13, &[event("smc.bos", Direction::Bearish, 100.2, None)], None);
+        let fired = composer.on_bar(13, &[event("smc.bos", Direction::Bearish, 100.2, None)], None, None);
         assert!(fired.is_some(), "the full sequence fires the sell");
         let signal = fired.expect("checked");
         assert!(!signal.long, "a sell, as the user defined it");
@@ -1147,11 +1532,156 @@ mod mtf_tests {
         }))
         .expect("parses");
         let mut composer = Composer::new(doc);
-        let _ = composer.on_bar(10, &[event("smc.fvg", Direction::Bearish, 100.5, Some((100.0, 101.0)))], Some("4h"));
+        let _ = composer.on_bar(10, &[event("smc.fvg", Direction::Bearish, 100.5, Some((100.0, 101.0)))], Some("4h"), None);
         composer.set_last_close(102.0);
-        assert!(composer.on_bar(11, &[], None).is_none(), "outside the zone is no retrace");
+        assert!(composer.on_bar(11, &[], None, None).is_none(), "outside the zone is no retrace");
         composer.set_last_close(100.5);
-        assert!(composer.on_bar(12, &[], None).is_some(), "inside the zone IS the retrace");
+        assert!(composer.on_bar(12, &[], None, None).is_some(), "inside the zone IS the retrace");
+    }
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::*;
+    use crate::concepts::ConceptStatus;
+
+    fn event_at(concept: &str, direction: Direction, price: f64, magnitude: Option<f64>) -> ConceptEvent {
+        ConceptEvent {
+            concept_id: concept.to_string(),
+            concept_version: "1.0.0".to_string(),
+            symbol: "T".to_string(),
+            timeframe: "1m".to_string(),
+            direction,
+            status: ConceptStatus::Confirmed,
+            event_time_ns: 0,
+            price_level: Some(price),
+            zone_low: None,
+            zone_high: None,
+            evidence: serde_json::json!({"magnitude": magnitude}),
+            bars: (0, 0),
+        }
+    }
+
+    fn doc_with(cond: Condition) -> Composition {
+        Composition {
+            name: "t".to_string(),
+            version: "1.0.0".to_string(),
+            timeframe: "1m".to_string(),
+            market: None,
+            symbol2: None,
+            side: CompositionSide::Long,
+            conditions: cond,
+            risk: RiskBlock {
+                stop: StopKind::Structure,
+                sizing: SizeKind::Fixed { quantity: 1.0 },
+                management: None,
+                guards: None,
+                exit: None,
+                partials: Vec::new(),
+                entry: None,
+            },
+            parameters: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn the_magnitude_condition_reads_the_events_own_magnitude() {
+        let doc = doc_with(Condition::Magnitude {
+            concept: "smc.liquidity_sweep".to_string(),
+            op: MagnitudeOp::Above,
+            value: 0.5,
+            timeframe: None,
+            lookback_bars: None,
+        });
+        let mut composer = Composer::new(doc);
+        // A 0.3% sweep: below the floor.
+        let _ = composer.on_bar(5, &[event_at("smc.liquidity_sweep", Direction::Bullish, 100.0, Some(0.3))], None, None);
+        assert!(composer.on_bar(6, &[], None, None).is_none(), "0.3 is below the 0.5 floor");
+        // A 0.7% sweep: above it.
+        let fired = composer.on_bar(8, &[event_at("smc.liquidity_sweep", Direction::Bullish, 100.0, Some(0.7))], None, None);
+        assert!(fired.is_some(), "0.7 is above the floor");
+    }
+
+    #[test]
+    fn the_indicator_threshold_reads_the_series() {
+        let doc = doc_with(Condition::Indicator {
+            indicator: "indicators.rsi".to_string(),
+            relation: IndicatorRelation::Above,
+            level: Some(70.0),
+            timeframe: None,
+        });
+        let mut composer = Composer::new(doc);
+        composer.set_indicator_values("indicators.rsi", Some(65.0), Some(60.0));
+        assert!(composer.on_bar(5, &[], None, None).is_none(), "65 is below 70");
+        composer.set_indicator_values("indicators.rsi", Some(75.0), Some(65.0));
+        assert!(composer.on_bar(6, &[], None, None).is_some(), "75 is above 70");
+    }
+
+    #[test]
+    fn the_indicator_touch_reads_price_against_the_line() {
+        let doc = doc_with(Condition::Indicator {
+            indicator: "indicators.ema.50".to_string(),
+            relation: IndicatorRelation::TouchDown,
+            level: None,
+            timeframe: None,
+        });
+        let mut composer = Composer::new(doc);
+        // The close approaches the EMA from above and touches it.
+        composer.set_indicator_values("indicators.ema.50", Some(100.0), None);
+        composer.set_last_close(102.0);
+        let _ = composer.on_bar(5, &[], None, None);
+        composer.set_indicator_values("indicators.ema.50", Some(100.0), None);
+        composer.set_last_close(100.05);
+        assert!(composer.on_bar(6, &[], None, None).is_some(), "the pullback to the line is the touch");
+    }
+
+    #[test]
+    fn the_cross_instrument_leaf_reads_the_second_symbol() {
+        let doc = doc_with(Condition::All {
+            conditions: vec![
+                Condition::Concept {
+                    concept: "smc.bos".to_string(),
+                    symbol: Some("ETHUSDT".to_string()),
+                    direction: DirectionReq::Bullish,
+                    lookback_bars: None,
+                    timeframe: None,
+                    min_bars_since: None,
+                },
+                Condition::Concept {
+                    concept: "smc.bos".to_string(),
+                    symbol: None,
+                    direction: DirectionReq::Bullish,
+                    lookback_bars: None,
+                    timeframe: None,
+                    min_bars_since: None,
+                },
+            ],
+        });
+        let mut composer = Composer::new(doc);
+        // ETH's BOS alone: the leader moved, the follower has not confirmed.
+        let _ = composer.on_bar(5, &[event_at("smc.bos", Direction::Bullish, 100.0, None)], None, Some("ETHUSDT"));
+        assert!(composer.on_bar(6, &[], None, None).is_none(), "the follower's confirmation is still owed");
+        // BTC's own BOS: the pair is aligned.
+        let fired = composer.on_bar(7, &[event_at("smc.bos", Direction::Bullish, 100.0, None)], None, None);
+        assert!(fired.is_some(), "BTC leads, ETH confirmed -- the pair fires");
+    }
+
+    #[test]
+    fn the_down_timeframe_condition_fails_validation_loudly() {
+        let mut doc = doc_with(Condition::Concept {
+            concept: "smc.bos".to_string(),
+            symbol: None,
+            direction: DirectionReq::Bullish,
+            lookback_bars: None,
+            timeframe: Some("1m".to_string()),
+            min_bars_since: None,
+        });
+        doc.timeframe = "4h".to_string();
+        let errors = validate(&doc).expect_err("a down-timeframe condition is an error");
+        assert!(
+            errors.iter().any(|e| e.message.contains("below the document's own timeframe")),
+            "the error names the rule: {errors:?}"
+        );
     }
 }
 
@@ -1183,6 +1713,7 @@ mod feature_tests {
             version: "1.0.0".to_string(),
             timeframe: "1m".to_string(),
             market: None,
+            symbol2: None,
             side: CompositionSide::Long,
             conditions: cond,
             risk: RiskBlock {
@@ -1208,26 +1739,27 @@ mod feature_tests {
             tolerance: 0.0,
         });
         let mut composer = Composer::new(doc);
-        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None);
+        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None, None);
         composer.set_last_close(99.0);
-        assert!(composer.on_bar(6, &[], None).is_none(), "below the level fails");
+        assert!(composer.on_bar(6, &[], None, None).is_none(), "below the level fails");
         composer.set_last_close(101.0);
-        assert!(composer.on_bar(7, &[], None).is_some(), "above the level holds");
+        assert!(composer.on_bar(7, &[], None, None).is_some(), "above the level holds");
     }
 
     #[test]
     fn min_bars_since_delays_the_confirmation() {
         let doc = doc_with(Condition::Concept {
             concept: "smc.bos".to_string(),
+            symbol: None,
             direction: DirectionReq::Bullish,
             lookback_bars: Some(10),
             timeframe: None,
             min_bars_since: Some(5),
         });
         let mut composer = Composer::new(doc);
-        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None);
-        assert!(composer.on_bar(8, &[], None).is_none(), "3 bars is too fresh");
-        assert!(composer.on_bar(11, &[], None).is_some(), "6 bars is old enough");
+        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None, None);
+        assert!(composer.on_bar(8, &[], None, None).is_none(), "3 bars is too fresh");
+        assert!(composer.on_bar(11, &[], None, None).is_some(), "6 bars is old enough");
     }
 
     #[test]
@@ -1236,6 +1768,7 @@ mod feature_tests {
             conditions: vec![
                 Condition::Concept {
                     concept: "smc.bos".to_string(),
+                    symbol: None,
                     direction: DirectionReq::Bullish,
                     lookback_bars: Some(10),
                     timeframe: None,
@@ -1245,13 +1778,13 @@ mod feature_tests {
             ],
         });
         let mut composer = Composer::new(doc);
-        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None);
+        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None, None);
         // 04:00 UTC: outside the killzone.
         composer.set_bar_time(4 * 3_600_000_000_000);
-        assert!(composer.on_bar(6, &[], None).is_none(), "outside the window fails");
+        assert!(composer.on_bar(6, &[], None, None).is_none(), "outside the window fails");
         // 13:30 UTC: inside.
         composer.set_bar_time(13 * 3_600_000_000_000 + 30 * 60_000_000_000);
-        assert!(composer.on_bar(7, &[], None).is_some(), "inside the window holds");
+        assert!(composer.on_bar(7, &[], None, None).is_some(), "inside the window holds");
     }
 
     #[test]
@@ -1261,6 +1794,7 @@ mod feature_tests {
                 SequenceStep {
                     condition: Condition::Concept {
                         concept: "smc.liquidity_sweep".to_string(),
+                        symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
                         timeframe: None,
@@ -1271,6 +1805,7 @@ mod feature_tests {
                 SequenceStep {
                     condition: Condition::Concept {
                         concept: "smc.bos".to_string(),
+                        symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
                         timeframe: None,
@@ -1283,9 +1818,9 @@ mod feature_tests {
             expires_after_bars: Some(10),
         });
         let mut composer = Composer::new(doc);
-        let _ = composer.on_bar(5, &[event("smc.liquidity_sweep", Direction::Bullish, 100.0, None)], None);
+        let _ = composer.on_bar(5, &[event("smc.liquidity_sweep", Direction::Bullish, 100.0, None)], None, None);
         // The confirmation at bar 18: 13 bars after the sweep -- expired.
-        let fired = composer.on_bar(18, &[event("smc.bos", Direction::Bullish, 100.0, None)], None);
+        let fired = composer.on_bar(18, &[event("smc.bos", Direction::Bullish, 100.0, None)], None, None);
         assert!(fired.is_none(), "past the expiry, the sequence is dead");
     }
 
@@ -1295,6 +1830,7 @@ mod feature_tests {
             conditions: vec![
                 Condition::Concept {
                     concept: "smc.bos".to_string(),
+                    symbol: None,
                     direction: DirectionReq::Bullish,
                     lookback_bars: None,
                     timeframe: None,
@@ -1302,6 +1838,7 @@ mod feature_tests {
                 },
                 Condition::Concept {
                     concept: "smc.bos".to_string(),
+                    symbol: None,
                     direction: DirectionReq::Bearish,
                     lookback_bars: None,
                     timeframe: None,
@@ -1315,6 +1852,7 @@ mod feature_tests {
             conditions: vec![
                 Condition::Concept {
                     concept: "indicators.rsi".to_string(),
+                    symbol: None,
                     direction: DirectionReq::Bullish,
                     lookback_bars: None,
                     timeframe: None,
@@ -1322,6 +1860,7 @@ mod feature_tests {
                 },
                 Condition::Concept {
                     concept: "indicators.stochastic".to_string(),
+                    symbol: None,
                     direction: DirectionReq::Bullish,
                     lookback_bars: None,
                     timeframe: None,
@@ -1345,6 +1884,7 @@ mod tests {
             version: "1.0.0".to_string(),
             timeframe: "15m".to_string(),
             market: None,
+            symbol2: None,
             side: CompositionSide::Long,
             conditions,
             risk: RiskBlock {
@@ -1384,6 +1924,7 @@ mod tests {
             timeframe: "9m".to_string(),
             ..doc(Condition::Concept {
                 concept: "smc.nope".to_string(),
+                symbol: None,
                 direction: DirectionReq::Bullish,
                 lookback_bars: Some(0),
                 min_bars_since: None,
@@ -1401,6 +1942,7 @@ mod tests {
                 SequenceStep {
                     condition: Condition::Concept {
                         concept: "smc.liquidity_sweep".to_string(),
+                        symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
                         min_bars_since: None,
@@ -1411,6 +1953,7 @@ mod tests {
                 SequenceStep {
                     condition: Condition::Concept {
                         concept: "smc.bos".to_string(),
+                        symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
                         min_bars_since: None,
@@ -1429,22 +1972,23 @@ mod tests {
     fn a_leaf_holds_within_its_lookback_and_expires_after_it() {
         let document = doc(Condition::Concept {
             concept: "smc.bos".to_string(),
+            symbol: None,
             direction: DirectionReq::Bullish,
             lookback_bars: Some(3),
                 min_bars_since: None,
                 timeframe: None,
         });
         let mut composer = Composer::new(document.clone());
-        assert!(composer.on_bar(0, &[event("smc.bos", Direction::Bullish, 100.0)], None).is_some());
+        assert!(composer.on_bar(0, &[event("smc.bos", Direction::Bullish, 100.0)], None, None).is_some());
         // Edge-triggered: the same bar must not fire twice.
-        assert!(composer.on_bar(0, &[], None).is_none());
-        assert!(composer.on_bar(3, &[], None).is_none(), "still inside the lookback, already fired");
+        assert!(composer.on_bar(0, &[], None, None).is_none());
+        assert!(composer.on_bar(3, &[], None, None).is_none(), "still inside the lookback, already fired");
         // The lookback lapses without a fresh event.
         for bar in 4..=4 {
-            assert!(composer.on_bar(bar, &[], None).is_none());
+            assert!(composer.on_bar(bar, &[], None, None).is_none());
         }
         // A fresh event re-arms it.
-        assert!(composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 105.0)], None).is_some());
+        assert!(composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 105.0)], None, None).is_some());
     }
 
     #[test]
@@ -1454,6 +1998,7 @@ mod tests {
                 SequenceStep {
                     condition: Condition::Concept {
                         concept: "smc.liquidity_sweep".to_string(),
+                        symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
                 min_bars_since: None,
@@ -1464,6 +2009,7 @@ mod tests {
                 SequenceStep {
                     condition: Condition::Concept {
                         concept: "smc.bos".to_string(),
+                        symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
                 min_bars_since: None,
@@ -1477,16 +2023,16 @@ mod tests {
         });
         // Wrong order: bos before the sweep never fires.
         let mut composer = Composer::new(document.clone());
-        composer.on_bar(0, &[event("smc.bos", Direction::Bullish, 100.0)], None);
-        assert!(composer.on_bar(1, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)], None).is_none());
+        composer.on_bar(0, &[event("smc.bos", Direction::Bullish, 100.0)], None, None);
+        assert!(composer.on_bar(1, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)], None, None).is_none());
         // Right order inside the window: sweep at 0, bos at 2 (gap 2 <= 3).
         let mut composer = Composer::new(document.clone());
-        composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)], None);
-        assert!(composer.on_bar(2, &[event("smc.bos", Direction::Bullish, 100.0)], None).is_some());
+        composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)], None, None);
+        assert!(composer.on_bar(2, &[event("smc.bos", Direction::Bullish, 100.0)], None, None).is_some());
         // Right order but too wide: gap 4 > 3.
         let mut composer = Composer::new(document.clone());
-        composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)], None);
-        assert!(composer.on_bar(4, &[event("smc.bos", Direction::Bullish, 100.0)], None).is_none());
+        composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)], None, None);
+        assert!(composer.on_bar(4, &[event("smc.bos", Direction::Bullish, 100.0)], None, None).is_none());
     }
 
     #[test]
@@ -1495,6 +2041,7 @@ mod tests {
             conditions: vec![
                 Condition::Concept {
                     concept: "smc.bos".to_string(),
+                    symbol: None,
                     direction: DirectionReq::Bullish,
                     lookback_bars: Some(5),
                 min_bars_since: None,
@@ -1503,6 +2050,7 @@ mod tests {
                 Condition::Not {
                     condition: Box::new(Condition::Concept {
                         concept: "volume.spike".to_string(),
+                        symbol: None,
                         direction: DirectionReq::Any,
                         lookback_bars: Some(2),
                 min_bars_since: None,
@@ -1512,18 +2060,19 @@ mod tests {
             ],
         });
         let mut composer = Composer::new(document.clone());
-        composer.on_bar(0, &[event("volume.spike", Direction::Neutral, 100.0)], None);
+        composer.on_bar(0, &[event("volume.spike", Direction::Neutral, 100.0)], None, None);
         // The spike vetoes within its lookback.
-        assert!(composer.on_bar(1, &[event("smc.bos", Direction::Bullish, 100.0)], None).is_none());
+        assert!(composer.on_bar(1, &[event("smc.bos", Direction::Bullish, 100.0)], None, None).is_none());
         // The spike's lookback (2 bars) lapses at bar 4 while the bos's (5)
         // still holds -- so the veto lifts and the group fires here.
-        assert!(composer.on_bar(4, &[], None).is_some(), "the lapsed veto lets the bos through");
+        assert!(composer.on_bar(4, &[], None, None).is_some(), "the lapsed veto lets the bos through");
     }
 
     #[test]
     fn parameter_overrides_validate_and_reach_the_engine_config() {
         let mut document = doc(Condition::Concept {
             concept: "smc.bos".to_string(),
+            symbol: None,
             direction: DirectionReq::Bullish,
             lookback_bars: None,
                 min_bars_since: None,
@@ -1568,6 +2117,7 @@ mod tests {
                 SequenceStep {
                     condition: Condition::Concept {
                         concept: "smc.liquidity_sweep".to_string(),
+                        symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
                 min_bars_since: None,
@@ -1578,6 +2128,7 @@ mod tests {
                 SequenceStep {
                     condition: Condition::Concept {
                         concept: "smc.bos".to_string(),
+                        symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
                 min_bars_since: None,
@@ -1590,9 +2141,9 @@ mod tests {
             expires_after_bars: None,
         });
         let mut composer = Composer::new(document.clone());
-        composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 98.5)], None);
+        composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 98.5)], None, None);
         let signal = composer
-            .on_bar(1, &[event("smc.bos", Direction::Bullish, 101.0)], None)
+            .on_bar(1, &[event("smc.bos", Direction::Bullish, 101.0)], None, None)
             .expect("fires");
         assert_eq!(signal.bar, 1);
         assert!(signal.long);

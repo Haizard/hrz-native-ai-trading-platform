@@ -310,13 +310,13 @@ impl ComposerStrategy {
                         .filter_map(market_data::concepts::as_concept_event)
                         .collect();
                     let tf_name = extra.to_string();
-                    let _ = self.composer.on_bar(self.bar as usize, &extra_events, Some(&tf_name));
+                    let _ = self.composer.on_bar(self.bar as usize, &extra_events, Some(&tf_name), None);
                     self.extra_fed.insert(extra, completed_time);
                 }
             }
         }
         self.composer.set_last_close(view.candle.close);
-        let fired = self.composer.on_bar(self.bar as usize, &events, None);
+        let fired = self.composer.on_bar(self.bar as usize, &events, None, None);
         self.bar += 1;
         let fired = fired?;
 

@@ -378,7 +378,21 @@ impl GatewayCompositionRunner {
                 }
             }
         }
-        let evaluation = market_data::composer::evaluate_mtf(document, &config, &symbol, tf, &candles, &extra_series);
+        // The cross-instrument series: the document's second symbol, when it has one.
+        let mut extra_symbols: Vec<(String, Vec<analytics_core::types::Candle>)> = Vec::new();
+        if let Some(sym2) = &document.symbol2 {
+            let sym2 = sym2.to_uppercase();
+            let window2 = self
+                .windows
+                .candles_capped(&sym2, tf, from_ns, to_ns, limit)
+                .await
+                .map_err(|e| ai_agent::error::AgentError::ToolFailed {
+                    tool: "composition".into(),
+                    reason: format!("no candles for {sym2}: {e}"),
+                })?;
+            extra_symbols.push((sym2, window2.candles));
+        }
+        let evaluation = market_data::composer::evaluate_mtf(document, &config, &symbol, tf, &candles, &extra_series, &extra_symbols);
         let signals = evaluation.signals;
 
         // The intents and the run (the route's own conversion).
@@ -394,6 +408,7 @@ impl GatewayCompositionRunner {
                 version: document.version.clone(),
                 timeframe: document.timeframe.clone(),
                 market: document.market.clone(),
+                symbol2: document.symbol2.clone(),
                 side: document.side,
                 conditions: cond.clone(),
                 risk: document.risk.clone(),
@@ -412,7 +427,7 @@ impl GatewayCompositionRunner {
                 if let Some(composer) = exit_composer.as_mut() {
                     composer.set_last_close(candles[bar].close);
                     if open_entry_bar.is_some_and(|entry| bar > entry) {
-                        if composer.on_bar(bar, &events, None).is_some() {
+                        if composer.on_bar(bar, &events, None, None).is_some() {
                             exit_intents.push((
                                 bar,
                                 pine_lite::interp::Intent::Exit {
@@ -546,9 +561,11 @@ impl GatewayCompositionRunner {
                     .diagnostics
                     .iter()
                     .map(|(key, at, level, zone)| ai_agent::tools::LeafDiagnostic {
-                        key: match &key.0 {
-                            Some(tf) => format!("{tf}:{}", key.1),
-                            None => key.1.clone(),
+                        key: match (&key.0, &key.1) {
+                            (Some(sym), Some(tf)) => format!("{sym}:{tf}:{}", key.2),
+                            (None, Some(tf)) => format!("{tf}:{}", key.2),
+                            (Some(sym), None) => format!("{sym}:{}", key.2),
+                            (None, None) => key.2.clone(),
                         },
                         satisfied: at.is_some(),
                         last_bar: *at,

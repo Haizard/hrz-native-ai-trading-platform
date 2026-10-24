@@ -437,7 +437,18 @@ pub async fn backtest(
             }
         }
     }
-    let evaluation = market_data::composer::evaluate_mtf(&request.document, &config, &symbol, tf, &candles, &extra_series);
+    // The cross-instrument series: the document's second symbol, when it has one.
+    let mut extra_symbols: Vec<(String, Vec<analytics_core::types::Candle>)> = Vec::new();
+    if let Some(sym2) = &request.document.symbol2 {
+        let sym2 = sym2.to_uppercase();
+        let window2 = state
+            .windows
+            .candles_capped(&sym2, tf, from_ns, to_ns, request.limit)
+            .await
+            .map_err(|e| ApiError::bad_request("SYMBOL2_THIN", format!("no candles for {sym2}: {e}")))?;
+        extra_symbols.push((sym2, window2.candles));
+    }
+    let evaluation = market_data::composer::evaluate_mtf(&request.document, &config, &symbol, tf, &candles, &extra_series, &extra_symbols);
     let signals = evaluation.signals;
 
     // Signals become sim intents: entry at the signal bar (next-open fill,
@@ -568,7 +579,12 @@ pub async fn backtest(
         },
         "diagnostics": {
             "leaves": evaluation.diagnostics.iter().map(|(key, at, level, zone)| serde_json::json!({
-                "key": match &key.0 { Some(tf) => format!("{tf}:{}", key.1), None => key.1.clone() },
+                "key": match (&key.0, &key.1) {
+                    (Some(sym), Some(tf)) => format!("{sym}:{tf}:{}", key.2),
+                    (None, Some(tf)) => format!("{tf}:{}", key.2),
+                    (Some(sym), None) => format!("{sym}:{}", key.2),
+                    (None, None) => key.2.clone(),
+                },
                 "satisfied": at.is_some(),
                 "last_bar": at,
                 "level": level,
