@@ -68,11 +68,14 @@ const PROFILE_ROWS: f64 = 40.0;
 /// table the reference layouts show -- volume, delta, CVD, ask, bid, delta % --
 /// as three text rows, plus its own header and the time labels underneath.
 const SUMMARY_HEIGHT: f64 = 52.0;
-/// Height of one sub-pane (RSI and friends), before clamping.
+/// Height of one sub-pane (RSI and friends). A pane never compresses: a
+/// trader who stacked eight panes asked for eight panes, and each one keeps
+/// its own 90 pixels. The stack scrolls instead of shrinking.
 const SUB_PANE_HEIGHT: f64 = 90.0;
-/// The most canvas sub-panes may take in total, so three of them cannot
-/// squeeze the price plot into a strip.
-const SUB_PANES_MAX_TOTAL: f64 = 220.0;
+/// The price plot's floor: however many panes the stack carries, the chart
+/// keeps at least this much height for price itself. The pane budget is
+/// whatever the canvas leaves above it.
+const PRICE_PLOT_FLOOR: f64 = 200.0;
 /// Vertical gap between the price plot and the first sub-pane, and between
 /// panes. A pane that touches its neighbour shares a pixel row with it.
 const SUB_PANE_GAP: f64 = 8.0;
@@ -366,6 +369,10 @@ pub struct Request {
     /// Absent means no sub-panes, and an older request keeps meaning that.
     #[serde(default)]
     pub sub_panes: Vec<SubPaneSpec>,
+    /// The pane stack's scroll offset in pixels (the stack never compresses;
+    /// panes beyond the visible budget wait below the fold for this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_scroll: Option<f64>,
     /// Overlay series on the price plot itself (EMA stacks, Bollinger
     /// bands): per-candle PRICE values the engine maps through the same
     /// frame the candles use. Absent means none.
@@ -553,6 +560,7 @@ impl Default for Request {
             last_price: None,
             snap: false,
             sub_panes: Vec::new(),
+            pane_scroll: None,
             overlay_series: Vec::new(),
             overlay_fills: Vec::new(),
             scripts: Vec::new(),
@@ -1531,7 +1539,7 @@ pub fn build(request: &Request) -> Scene {
     // A gap before every pane -- including the first -- so the last pane's
     // bottom edge lands exactly on the bottom padding line, never inside the
     // time-axis strip.
-    let sub_total: f64 = sub_height.iter().copied().sum::<f64>()
+    let sub_total_full: f64 = sub_height.iter().copied().sum::<f64>()
         + SUB_PANE_GAP * sub_height.len() as f64;
     // Footprint mode's bottom pad carries the per-column stats band *and* the
     // time labels under it; the other modes just need the time-axis strip. A
@@ -1552,6 +1560,11 @@ pub fn build(request: &Request) -> Scene {
     } else {
         PAD_LEFT
     };
+    // The pane budget: the space the canvas leaves above the price plot's
+    // floor. Panes within the budget are visible; the stack's overflow
+    // waits below the fold for the scroll.
+    let pane_budget = (height - PAD_TOP - bottom_pad - PRICE_PLOT_FLOOR).max(0.0);
+    let sub_total = sub_total_full.min(pane_budget);
     let plot = Plot {
         x: left_pad,
         y: PAD_TOP,
@@ -2126,7 +2139,13 @@ pub fn build(request: &Request) -> Scene {
     // refuse anything in it. The visible slice is what they measure -- an RSI
     // over the whole series beside candles showing a tenth of it would disagree
     // with its own chart, the same way a whole-series profile would.
-    let mut pane_top = plot.y + plot.h + SUB_PANE_GAP;
+    // The stack walks down from the price plot, shifted by the scroll. A
+    // pane that does not fit entirely above the time-axis strip waits below
+    // the fold: hidden completely, counted honestly, never half-drawn.
+    let pane_scroll = request.pane_scroll.unwrap_or(0.0).max(0.0);
+    let fold_y = height - bottom_pad;
+    let mut pane_top = plot.y + plot.h + SUB_PANE_GAP - pane_scroll;
+    let mut below_fold = 0usize;
     for (spec, height) in request.sub_panes.iter().zip(sub_height.iter().copied()) {
         let pane_plot = Plot {
             x: plot.x,
@@ -2134,6 +2153,20 @@ pub fn build(request: &Request) -> Scene {
             w: plot.w,
             h: height,
         };
+        pane_top += height + SUB_PANE_GAP;
+        // Both folds clip: below the time-axis strip (waiting for the
+        // scroll), and above the pane region (scrolled past -- a pane that
+        // would paint over the price plot is hidden, never half-drawn). The
+        // note counts the actionable direction only: panes still below the
+        // fold are the ones the scroll reaches for.
+        let region_top = plot.y + plot.h + SUB_PANE_GAP;
+        if pane_plot.y + pane_plot.h > fold_y + 0.5 {
+            below_fold += 1;
+            continue;
+        }
+        if pane_plot.y < region_top - 0.5 {
+            continue;
+        }
         match sub_pane(spec, visible_real, window.from, slot, &pane_plot) {
             Some(pane) => scene.sub_panes.push(pane),
             None => add_note(
@@ -2141,7 +2174,12 @@ pub fn build(request: &Request) -> Scene {
                 "a requested sub-pane had nothing to measure and is not drawn".to_string(),
             ),
         }
-        pane_top += height + SUB_PANE_GAP;
+    }
+    if below_fold > 0 {
+        add_note(
+            &mut scene.note,
+            format!("{below_fold} pane(s) below the fold -- scroll the pane stack to reach them"),
+        );
     }
 
     // Overlay series (EMA stacks, Bollinger bands): per-candle PRICES mapped
@@ -2337,8 +2375,10 @@ fn sub_pane_heights(panes: &[SubPaneSpec], script_pane_count: usize) -> Vec<f64>
     if count == 0 {
         return Vec::new();
     }
-    let available = (SUB_PANE_HEIGHT * count as f64).min(SUB_PANES_MAX_TOTAL);
-    vec![available / count as f64; count]
+    // Every pane its own full height. The pane budget decides how many are
+    // VISIBLE (the price plot keeps its floor); the rest wait below the
+    // fold for the scroll, and the scene says how many are waiting.
+    vec![SUB_PANE_HEIGHT; count]
 }
 
 /// Build one sub-pane, or `None` when the measurement has nothing to show.
@@ -7186,6 +7226,48 @@ mod tests {
         });
         let parsed: ScenePane = serde_json::from_value(old).expect("old scenes still parse");
         assert_eq!(parsed.value_max, 0.0, "the shell's tag guard treats 0..0 as no range");
+    }
+
+    #[test]
+    fn a_deep_stack_never_compresses_and_the_fold_counts_the_hidden() {
+        // Eight panes on a 600px canvas: the price plot keeps its floor,
+        // every visible pane keeps its full 90px, and the rest wait below
+        // the fold with the count on the note.
+        let mut request = request(120);
+        request.height = 600.0;
+        for _ in 0..8 {
+            request.sub_panes.push(SubPaneSpec::Rsi {
+                period: 14,
+                overbought: 70.0,
+                oversold: 30.0,
+            });
+        }
+        let scene = build(&request);
+        assert!(scene.plot.h >= PRICE_PLOT_FLOOR - 1e-9, "the price plot keeps its floor: {}", scene.plot.h);
+        for pane in &scene.sub_panes {
+            assert!((pane.plot.h - SUB_PANE_HEIGHT).abs() < 1e-9, "no pane compresses: {}", pane.plot.h);
+        }
+        let visible = scene.sub_panes.len();
+        assert!(visible < 8, "not all eight fit on 600px");
+        assert!(
+            scene.note.iter().any(|n| n.contains("below the fold")),
+            "the fold names the hidden count: {:?}",
+            scene.note
+        );
+        // The scroll brings the hidden panes into view. Five pane-heights is
+        // past the clamp the shell would apply (the last pane's bottom meeting
+        // the fold), so every pane has had its turn and none is left below.
+        request.pane_scroll = Some(5.0 * (SUB_PANE_HEIGHT + SUB_PANE_GAP));
+        let scrolled = build(&request);
+        assert_eq!(
+            scrolled.sub_panes.len(),
+            visible,
+            "the same budget, shifted (the last panes have risen into the budget)"
+        );
+        assert!(
+            !scrolled.note.iter().any(|n| n.contains("below the fold")),
+            "scrolled far enough, the fold is empty"
+        );
     }
 
     #[test]
