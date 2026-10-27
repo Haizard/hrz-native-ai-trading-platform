@@ -74,54 +74,119 @@ async fn publish(h: &common::Harness, token: &str, title: &str) -> Value {
 }
 
 #[tokio::test]
-async fn free_cannot_browse_and_core_can() {
+async fn free_can_browse_the_catalog() {
     let Some(h) = common::Harness::new().await else {
         return;
     };
     let free = h.register().await;
     let (status, body) = h.get("/community/indicators", Some(&free.token)).await;
-    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
-    assert_eq!(body["error"]["details"]["feature"], "community_browse");
-
-    let core = h.register_with_plan("core").await;
-    let (status, body) = h.get("/community/indicators", Some(&core.token)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    // The catalog is global, so the assertion is about the shape and the
-    // gate, not about a count some earlier test run could have left behind.
+    // The catalog is global, so the assertion is about the shape, not about a
+    // count some earlier test run could have left behind.
     assert!(body["items"].is_array());
     assert!(body["total"].as_i64().unwrap() >= 0);
 
     free.cleanup(&h.database).await;
-    core.cleanup(&h.database).await;
 }
 
 #[tokio::test]
-async fn core_cannot_publish_and_elite_can() {
+async fn free_can_publish_a_validated_revision() {
     let Some(h) = common::Harness::new().await else {
         return;
     };
-    let core = h.register_with_plan("core").await;
-    let (workspace_id, revision_id) = workspace_with_revision(&h, &core.token).await;
-    let (status, body) = h
-        .post(
-            "/community/indicators",
-            json!({ "workspace_id": workspace_id, "revision_id": revision_id, "title": "Nope" }),
-            Some(&core.token),
-        )
-        .await;
-    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
-    assert_eq!(body["error"]["details"]["feature"], "community_publish");
-
-    let elite = h.register_with_plan("elite").await;
-    let item = publish(&h, &elite.token, "Liquidity sweep + FVG").await;
+    let free = h.register().await;
+    let item = publish(&h, &free.token, "Liquidity sweep + FVG").await;
     assert_eq!(item["author_tier"], "publish");
     assert_eq!(
         item["source"],
         "name: community\nversion: '1'\nkind: indicator\nmarket: BTCUSDT\ntimeframes:\n  entry: 5m"
     );
 
-    core.cleanup(&h.database).await;
-    elite.cleanup(&h.database).await;
+    free.cleanup(&h.database).await;
+}
+
+#[tokio::test]
+async fn the_author_chooses_public_or_private_and_can_switch_later() {
+    let Some(h) = common::Harness::new().await else {
+        return;
+    };
+    let author = h.register().await;
+    let stranger = h.register().await;
+    let (workspace_id, revision_id) = workspace_with_revision(&h, &author.token).await;
+
+    let (status, body) = h
+        .post(
+            "/community/indicators",
+            json!({
+                "workspace_id": workspace_id,
+                "revision_id": revision_id,
+                "title": "A private study",
+                "visibility": "private",
+            }),
+            Some(&author.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["status"], "unlisted", "private is unlisted: {body}");
+    let slug = body["slug"].as_str().unwrap().to_string();
+
+    // A private item is invisible to strangers, but the author still sees it
+    // and manages it under "published by me".
+    let (status, body) = h
+        .get(&format!("/community/indicators/{slug}"), Some(&stranger.token))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let mine = h.ok("/community/indicators/mine", Some(&author.token)).await;
+    assert!(
+        mine["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["slug"] == slug),
+        "the private item is in the author's own list: {mine}"
+    );
+
+    // Public again.
+    let (status, body) = h
+        .patch(
+            &format!("/community/indicators/{slug}"),
+            json!({ "status": "listed" }),
+            Some(&author.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "listed");
+    let detail = h
+        .ok(&format!("/community/indicators/{slug}"), Some(&stranger.token))
+        .await;
+    assert_eq!(detail["slug"], slug);
+
+    // Private again, and the refusal names the field that was wrong.
+    let (status, body) = h
+        .patch(
+            &format!("/community/indicators/{slug}"),
+            json!({ "status": "unlisted" }),
+            Some(&author.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .post(
+            "/community/indicators",
+            json!({
+                "workspace_id": workspace_id,
+                "revision_id": revision_id,
+                "title": "Bad visibility",
+                "visibility": "semi-private",
+            }),
+            Some(&author.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "COMMUNITY_METADATA_INVALID");
+
+    author.cleanup(&h.database).await;
+    stranger.cleanup(&h.database).await;
 }
 
 #[tokio::test]
@@ -356,6 +421,21 @@ async fn unlisting_hides_the_item_but_keeps_installed_copies() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"]["code"], "COMMUNITY_NOT_LISTED");
 
+    // Relisting makes it findable again without republishing anything.
+    let (status, body) = h
+        .patch(
+            &format!("/community/indicators/{slug}"),
+            json!({ "status": "listed" }),
+            Some(&author.token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "listed");
+    let relisted = h
+        .ok(&format!("/community/indicators/{slug}"), Some(&core.token))
+        .await;
+    assert_eq!(relisted["slug"], slug);
+
     author.cleanup(&h.database).await;
     core.cleanup(&h.database).await;
 }
@@ -418,13 +498,13 @@ async fn desk_priority_sorts_first() {
 }
 
 #[tokio::test]
-async fn free_cannot_install() {
+async fn free_can_install() {
     let Some(h) = common::Harness::new().await else {
         return;
     };
     let author = h.register_with_plan("elite").await;
     let free = h.register().await;
-    let item = publish(&h, &author.token, "Paid only").await;
+    let item = publish(&h, &author.token, "Open to everyone").await;
     let slug = item["slug"].as_str().unwrap();
     let (status, body) = h
         .post(
@@ -433,8 +513,8 @@ async fn free_cannot_install() {
             Some(&free.token),
         )
         .await;
-    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
-    assert_eq!(body["error"]["details"]["feature"], "community_browse");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["already_installed"], false);
 
     author.cleanup(&h.database).await;
     free.cleanup(&h.database).await;

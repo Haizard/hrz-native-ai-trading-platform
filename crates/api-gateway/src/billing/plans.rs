@@ -197,9 +197,9 @@ pub struct Features {
     pub dedicated_onboarding: bool,
     /// What the community indicator library allows.
     ///
-    /// Browsing and publishing are separate gates: `CommunityIndicators` is
-    /// the entitlement, and [`Feature::CommunityBrowse`] /
-    /// [`Feature::CommunityPublish`] are what a route enforces.
+    /// The library is open to every plan, the way a public script library is:
+    /// browsing, installing and publishing are not paywalled. The level only
+    /// decides catalog placement, not access.
     pub community_indicators: CommunityIndicators,
 }
 
@@ -207,13 +207,9 @@ pub struct Features {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CommunityIndicators {
-    /// No access.
-    None,
-    /// Browse and install public indicators.
-    Browse,
-    /// Browse and publish.
-    Publish,
-    /// Browse, publish, and get review priority.
+    /// Browse, install, and publish.
+    Included,
+    /// Included, and featured sorting favors the author.
     Priority,
 }
 
@@ -263,7 +259,7 @@ pub const PLANS: [Plan; 5] = [
             byo_model_key: false,
             priority_support: false,
             dedicated_onboarding: false,
-            community_indicators: CommunityIndicators::None,
+            community_indicators: CommunityIndicators::Included,
         },
     },
     Plan {
@@ -293,7 +289,7 @@ pub const PLANS: [Plan; 5] = [
             byo_model_key: false,
             priority_support: false,
             dedicated_onboarding: false,
-            community_indicators: CommunityIndicators::Browse,
+            community_indicators: CommunityIndicators::Included,
         },
     },
     Plan {
@@ -323,7 +319,7 @@ pub const PLANS: [Plan; 5] = [
             byo_model_key: false,
             priority_support: true,
             dedicated_onboarding: false,
-            community_indicators: CommunityIndicators::Browse,
+            community_indicators: CommunityIndicators::Included,
         },
     },
     Plan {
@@ -353,7 +349,7 @@ pub const PLANS: [Plan; 5] = [
             byo_model_key: true,
             priority_support: true,
             dedicated_onboarding: false,
-            community_indicators: CommunityIndicators::Publish,
+            community_indicators: CommunityIndicators::Included,
         },
     },
     Plan {
@@ -417,10 +413,6 @@ pub enum Feature {
     ByoModelKey,
     /// Any live bot at all.
     LiveBots,
-    /// Browsing and installing from the community library.
-    CommunityBrowse,
-    /// Publishing to the community library.
-    CommunityPublish,
 }
 
 impl Feature {
@@ -432,8 +424,6 @@ impl Feature {
             Self::AdvancedOrderflow => "orderflow_advanced",
             Self::ByoModelKey => "byo_model_key",
             Self::LiveBots => "live_bots",
-            Self::CommunityBrowse => "community_browse",
-            Self::CommunityPublish => "community_publish",
         }
     }
 
@@ -443,8 +433,6 @@ impl Feature {
         match self {
             Self::Orderflow => PlanId::Core,
             Self::AdvancedOrderflow | Self::ByoModelKey | Self::LiveBots => PlanId::Pro,
-            Self::CommunityBrowse => PlanId::Core,
-            Self::CommunityPublish => PlanId::Elite,
         }
     }
 
@@ -459,16 +447,6 @@ impl Feature {
             Self::AdvancedOrderflow => features.orderflow_advanced,
             Self::ByoModelKey => features.byo_model_key,
             Self::LiveBots => false,
-            Self::CommunityBrowse => matches!(
-                features.community_indicators,
-                CommunityIndicators::Browse
-                    | CommunityIndicators::Publish
-                    | CommunityIndicators::Priority
-            ),
-            Self::CommunityPublish => matches!(
-                features.community_indicators,
-                CommunityIndicators::Publish | CommunityIndicators::Priority
-            ),
         }
     }
 }
@@ -626,13 +604,17 @@ mod tests {
     }
 
     #[test]
-    fn community_browsing_starts_at_core_and_publishing_at_elite() {
-        assert!(!Feature::CommunityBrowse.allowed_by(&plan(PlanId::Free).features));
-        assert!(Feature::CommunityBrowse.allowed_by(&plan(PlanId::Core).features));
-        assert!(!Feature::CommunityPublish.allowed_by(&plan(PlanId::Core).features));
-        assert!(Feature::CommunityPublish.allowed_by(&plan(PlanId::Elite).features));
-        assert_eq!(Feature::CommunityBrowse.minimum_plan(), PlanId::Core);
-        assert_eq!(Feature::CommunityPublish.minimum_plan(), PlanId::Elite);
+    fn community_access_is_included_in_every_plan() {
+        for id in PlanId::ALL {
+            let level = plan(id).features.community_indicators;
+            assert!(
+                matches!(
+                    level,
+                    CommunityIndicators::Included | CommunityIndicators::Priority
+                ),
+                "{id:?} should include community access"
+            );
+        }
         assert_eq!(
             plan(PlanId::Desk).features.community_indicators,
             CommunityIndicators::Priority

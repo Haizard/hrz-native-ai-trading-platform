@@ -23,6 +23,13 @@
 - Every new public item in `crates/db` needs `#![deny(missing_docs)]`-compatible docs.
 - The shell escapes every server string it renders (`escapeHtml`) and never injects source as HTML.
 
+> **Amendment (2026-10-27, after execution):** the owner directed that community
+> indicators be freely accessible like the libraries on TradingView, LuxAlgo and MT5.
+> Every plan now carries `Included`; Desk's `Priority` is catalog placement only.
+> Tasks below that describe `Feature::CommunityBrowse` / `Feature::CommunityPublish`
+> or Core/Elite gating record the original plan, and were superseded by the
+> un-gating change. `docs/52` and `docs/53` are authoritative.
+
 ---
 
 ## Phase 1 — Community Indicators

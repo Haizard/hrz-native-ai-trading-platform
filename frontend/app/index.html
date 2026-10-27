@@ -2662,6 +2662,12 @@
             <div class="row"><input id="wsPublishTags" placeholder="tags, comma separated" /></div>
             <div class="row"><input id="wsPublishName" placeholder="Display name (optional)" /></div>
             <div class="row">
+              <select id="wsPublishVisibility">
+                <option value="public" selected>Public — listed in the community catalog</option>
+                <option value="private">Private — only you can find it</option>
+              </select>
+            </div>
+            <div class="row">
               <button type="button" id="wsPublishSend" class="primary">Publish</button>
               <button type="button" id="wsPublishCancel">Cancel</button>
             </div>
@@ -2842,9 +2848,9 @@
     </div>
 
     <!--
-      Community indicators (docs/53). Browsing starts on Core and publishing
-      on Elite; the pane shows the gate rather than a catalog the server will
-      refuse, and every action still answers for itself.
+      Community indicators (docs/53). Open to every plan, like a script library
+      on TradingView or MT5: an account is the only requirement, and every
+      action still answers for itself.
     -->
     <div class="pane" id="pane-community" hidden>
       <h2>Community</h2>
@@ -2852,10 +2858,6 @@
         Indicators published by other users. Install a copy into your own
         workspace; it is yours to edit and will not change under you.
       </p>
-      <div id="communityLocked" hidden>
-        <p class="empty">Browsing the community library starts on Core.</p>
-        <button type="button" id="communityUpgrade">See plans</button>
-      </div>
       <div id="communityBody" hidden>
         <div class="row">
           <input id="communitySearch" type="search" placeholder="Search indicators…" />

@@ -7,11 +7,13 @@
 //! ([`routes`]). Together they answer one question -- **what may this user do
 //! right now** -- and make every route ask it rather than guessing.
 //!
-//! ## Community indicators are one matrix, two gates
+//! ## Community indicators are open to every plan
 //!
-//! `community_indicators` is the plan's tier; browsing starts at Core and
-//! publishing at Elite. Both are ordinary [`Feature`] gates, so a refusal is the
-//! same 402 `PLAN_FEATURE_REQUIRED` as every other paid capability.
+//! The library is not a paid gate: browsing, installing and publishing are
+//! available on Free, the way a public script library is. The plan's
+//! `community_indicators` level only decides catalog placement -- Desk authors
+//! sort first in `featured`. Abuse is bounded by platform constants in the
+//! community routes, not by plan limits (`docs/53`).
 //!
 //! ## Errors are 402, not 403
 //!
@@ -318,25 +320,6 @@ mod tests {
         assert_eq!(
             error.details().and_then(|d| d.get("required_plan")),
             Some(&serde_json::json!("pro"))
-        );
-    }
-
-    #[test]
-    fn community_publishing_is_a_402_not_a_roadmap() {
-        let error: ApiError = BillingError::FeatureRequired {
-            feature: Feature::CommunityPublish,
-            plan: PlanId::Core,
-        }
-        .into();
-        assert_eq!(error.status(), StatusCode::PAYMENT_REQUIRED);
-        assert_eq!(error.code(), "PLAN_FEATURE_REQUIRED");
-        assert_eq!(
-            error.details().and_then(|d| d.get("feature")),
-            Some(&serde_json::json!("community_publish"))
-        );
-        assert_eq!(
-            error.details().and_then(|d| d.get("required_plan")),
-            Some(&serde_json::json!("elite"))
         );
     }
 }

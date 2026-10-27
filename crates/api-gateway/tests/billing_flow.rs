@@ -39,8 +39,9 @@ async fn the_catalog_is_public_and_a_new_account_starts_on_free() {
     assert_eq!(catalog["mode"], "internal");
     assert_eq!(catalog["credit_costs"]["chart_analysis"], 3);
     assert_eq!(catalog["community_indicators_available"], true);
-    assert_eq!(plans[0]["features"]["community_indicators"], "none");
-    assert_eq!(plans[1]["features"]["community_indicators"], "browse");
+    assert_eq!(plans[0]["features"]["community_indicators"], "included");
+    assert_eq!(plans[1]["features"]["community_indicators"], "included");
+    assert_eq!(plans[4]["features"]["community_indicators"], "priority");
 
     let user = h.register().await;
     let entitlements = h.ok("/billing/subscription", Some(&user.token)).await;

@@ -32,8 +32,8 @@ prerequisite for the feature to be real.
   that saves a round trip; every route still checks.
 - **No paid feature is advertised before it exists.** Every level in the
   matrix is enforced by a real route. Community indicators used to be a
-  reserved row; it is now a working library (`docs/53`), and the matrix
-  describes what the server actually does.
+  reserved row; it is now a working library (`docs/53`) that is included on
+  every plan, and the matrix describes what the server actually does.
 
 ## The matrix
 
@@ -61,7 +61,7 @@ for comparison copy only.
 | Bring your own model key | — | — | — | ✓ | ✓ |
 | Priority support | — | — | ✓ | ✓ | ✓ |
 | Dedicated onboarding | — | — | — | — | ✓ |
-| Community indicators | — | browse | browse | publish | priority |
+| Community indicators | ✓ | ✓ | ✓ | ✓ | ✓ + priority |
 
 `max_concurrent` matches `max_panes` on every rung on purpose. The shell keeps
 one market stream per pane, and the market socket itself is public
@@ -70,11 +70,12 @@ account. The pane a signed-in user may open is the part a plan can honestly
 limit, and that is the enforced bound. Per-user stream counting on the server
 is therefore not a separate check.
 
-Features are booleans except community indicators, which has four levels
-(`none`, `browse`, `publish`, `priority`). The levels are enforced by
-`Feature::CommunityBrowse` (Core+) and `Feature::CommunityPublish` (Elite+);
-`priority` additionally orders an author's items first in the catalog's
-featured sort. See `docs/53` for the library itself.
+Features are booleans except community indicators, whose level is `included`
+or `priority`. The library is not a paywall: every plan can browse, install,
+publish and manage its own items, as on TradingView, LuxAlgo and MT5. Desk's
+`priority` only orders an author's items first in the catalog's featured sort.
+No route refuses a community request for plan reasons, so there is no
+`PLAN_FEATURE_REQUIRED` on this path. See `docs/53` for the library itself.
 
 ## The lifecycle
 
@@ -197,8 +198,6 @@ than hidden behind a global lock.
 | `POST /ws/agent/{session_id}` ask/author turns | weighted AI credits |
 | `POST /providers` (user model key) | `byo_model_key` feature |
 | Concept/indicator backtests | backtest unit + `history_days` clamp |
-| `GET /community/indicators…` reads, install, update, report | `community_browse` feature |
-| `POST/PATCH /community/indicators…` publish-family writes | `community_publish` feature |
 
 Anonymous callers on the order-flow reads are treated as Free, so a public
 deployment does not leak a paid read through an unauthenticated call. When the
@@ -220,21 +219,25 @@ than refusing to work at all.
 
 ## Community indicators
 
-The library is implemented and enforced (`docs/53`). The ladder:
+The library is implemented and open to every plan (`docs/53`), the way a
+script library works on TradingView, LuxAlgo and MT5: an account is the only
+requirement.
 
-| Plan | Level | What it unlocks |
+| Plan | Level | What it gets |
 |---|---|---|
-| Free | `none` | — |
-| Core | `browse` | search, read, install, update, report |
-| Pro | `browse` | same |
-| Elite | `publish` | browse plus publish and manage own items |
-| Desk | `priority` | publish plus priority placement in the featured sort |
+| Free | `included` | browse, search, install, update, report, publish, manage own items |
+| Core | `included` | same |
+| Pro | `included` | same |
+| Elite | `included` | same |
+| Desk | `priority` | same, plus priority placement in the featured sort |
 
-A route outside the user's level answers `402 PLAN_FEATURE_REQUIRED` with
-`details.required_plan`; there is no separate "unavailable" code. The limits on
-publishing, versions and installs (25 / 50 / 100) are abuse bounds in the
-community routes, not plan limits — a plan decides whether a user may publish,
-the bounds decide how much one account can add to a shared list.
+No community route answers `402 PLAN_FEATURE_REQUIRED`; the only refusals are
+ownership, status and the abuse bounds. The author decides whether an item is
+public or private at publish time and can switch it later; private items stay
+visible to their author only. Those bounds on publishing, versions and installs
+(25 / 50 / 100) are in the community routes, not the plan matrix — a shared list
+needs a cap per account, and selling a higher cap would sell more spam. The
+moderation console is the part still deferred.
 
 `GET /billing/plans` and `GET /billing/subscription` report
 `community_indicators_available: true` whenever a database is configured, which
@@ -302,9 +305,8 @@ The side panel's **Plan** tab (`#pane-billing`) renders:
 - AI-credit and backtest meters for the current period;
 - cancel / resume, or a sign-in prompt when signed out;
 - a monthly/annual toggle and the five plan cards, with the current rung
-  marked and community indicators shown as `browse + install`,
-  `browse + publish`, or `browse + publish + priority placement` (Free: not
-  included);
+  marked and community indicators shown as `included` on every plan, or
+  `included + priority placement` on Desk;
 - the billing mode and, when billing is unavailable, why.
 
 The catalog (`GET /billing/plans`) is public, so the cards render before
@@ -344,8 +346,8 @@ deduplicates to at most one toast every four seconds. A 402 is a hint with
 - a five-panel layout is 402 on Free and 201 on Core;
 - the sixth backtest is 402 on Free, with `used` 5 of 5;
 - `/candles` is clamped to 31 days on Free and unlimited on Elite;
-- the catalog reports community indicators available, with `none` on Free and
-  `browse` from Core.
+- the catalog reports community indicators available, with `included` on Free
+  through Elite and `priority` on Desk.
 
 `plans.rs` and `service.rs` carry unit tests for price ordering, the annual
 discount, the Free rung, trial conversion, renewal, cancellation expiry, and

@@ -1,10 +1,12 @@
 //! `/community/indicators`: the community indicator library (`docs/53`).
 //!
-//! ## Browse is one level, publish is another
+//! ## Open to every plan
 //!
-//! Every route enforces `Feature::CommunityBrowse`; publish-family routes
-//! additionally enforce `Feature::CommunityPublish`. A refusal is the same 402
-//! `PLAN_FEATURE_REQUIRED` as every other feature.
+//! Browsing, installing and publishing are not paid gates: the library is the
+//! platform's public script shelf, and a Free account can use all of it. A
+//! plan only affects catalog placement -- Desk authors sort first in
+//! `featured`. Abuse is bounded by the platform constants below, not by plan
+//! limits.
 //!
 //! ## Re-vetting is the gate, not the stored report
 //!
@@ -21,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::UserContext;
-use crate::billing::{enforce_feature, CommunityIndicators, Entitlements, Feature};
+use crate::billing::{CommunityIndicators, Entitlements};
 use crate::error::ApiError;
 use crate::extract::{ApiJson, ApiQuery};
 use crate::AppState;
@@ -191,8 +193,21 @@ fn revet(
 fn tier_of(entitlements: &Entitlements) -> &'static str {
     match entitlements.features.community_indicators {
         CommunityIndicators::Priority => "priority",
-        _ => "publish",
+        CommunityIndicators::Included => "publish",
     }
+}
+
+/// The tier recorded for an author at publish time.
+///
+/// Publishing is open to every plan, so this is placement, not permission:
+/// Desk authors sort first in `featured`, everyone else is an ordinary
+/// published author. A deployment with no billing service records the
+/// ordinary tier.
+async fn publish_tier(state: &AppState, user_id: Uuid) -> Result<&'static str, ApiError> {
+    let Some(billing) = state.billing.as_ref() else {
+        return Ok("publish");
+    };
+    Ok(tier_of(&billing.entitlements(user_id).await?))
 }
 
 /// One catalog row as the catalog and author views render it.
@@ -376,7 +391,6 @@ pub async fn list(
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<Json<CommunityList>, ApiError> {
     let database = database(&state)?;
-    enforce_feature(&state, user.user_id, Feature::CommunityBrowse).await?;
     let limit = i64::from(query.limit.unwrap_or(24).clamp(1, 50));
     let offset = i64::from(query.offset.unwrap_or(0));
     let sort = query.sort.as_deref().unwrap_or("featured");
@@ -404,7 +418,6 @@ pub async fn installed(
     user: UserContext,
 ) -> Result<Json<CommunityList>, ApiError> {
     let database = database(&state)?;
-    enforce_feature(&state, user.user_id, Feature::CommunityBrowse).await?;
     let rows = db::list_community_installs(database.pool(), user.user_id).await?;
     Ok(Json(CommunityList {
         items: rows
@@ -421,7 +434,6 @@ pub async fn mine(
     user: UserContext,
 ) -> Result<Json<CommunityList>, ApiError> {
     let database = database(&state)?;
-    enforce_feature(&state, user.user_id, Feature::CommunityPublish).await?;
     let rows = db::list_author_indicators(database.pool(), user.user_id).await?;
     Ok(Json(CommunityList {
         items: rows
@@ -439,7 +451,6 @@ pub async fn get(
     Path(slug): Path<String>,
 ) -> Result<Json<CommunityDetail>, ApiError> {
     let database = database(&state)?;
-    enforce_feature(&state, user.user_id, Feature::CommunityBrowse).await?;
     let item = db::get_community_indicator(database.pool(), &slug)
         .await?
         .ok_or_else(unknown)?;
@@ -466,6 +477,11 @@ pub struct PublishBody {
     /// Display name; a generated handle when omitted.
     #[serde(default)]
     pub author_name: Option<String>,
+    /// `public` (default) or `private`. Private hides the item from the
+    /// catalog and from strangers; the author, and anyone who already
+    /// installed a copy, keep access.
+    #[serde(default)]
+    pub visibility: Option<String>,
 }
 
 /// `POST /community/indicators`
@@ -475,9 +491,7 @@ pub async fn publish(
     ApiJson(body): ApiJson<PublishBody>,
 ) -> Result<(StatusCode, Json<CommunityDetail>), ApiError> {
     let database = database(&state)?;
-    let entitlements = enforce_feature(&state, user.user_id, Feature::CommunityPublish)
-        .await?
-        .ok_or_else(|| ApiError::unavailable("billing is not configured"))?;
+    let tier = publish_tier(&state, user.user_id).await?;
     let workspace = db::get_indicator_workspace(database.pool(), user.user_id, body.workspace_id)
         .await?
         .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
@@ -516,6 +530,11 @@ pub async fn publish(
     let summary = clean_summary(body.summary.as_deref().unwrap_or(revision.summary.as_str()))?;
     let tags = clean_tags(&body.tags)?;
     let author_name = clean_author_name(body.author_name.as_deref(), user.user_id)?;
+    let status = match body.visibility.as_deref() {
+        None | Some("public") => "listed",
+        Some("private") => "unlisted",
+        Some(_) => return Err(metadata("visibility is `public` or `private`")),
+    };
 
     let published = db::count_author_indicators(database.pool(), user.user_id).await?;
     if published >= MAX_PUBLISHED_INDICATORS {
@@ -533,7 +552,8 @@ pub async fn publish(
             summary,
             tags,
             author_name,
-            author_tier: tier_of(&entitlements).to_string(),
+            author_tier: tier.to_string(),
+            status: status.to_string(),
             version: db::NewCommunityVersion {
                 source: revision.source.clone(),
                 summary: revision.summary.clone(),
@@ -572,7 +592,6 @@ pub async fn add_version(
     ApiJson(body): ApiJson<VersionBody>,
 ) -> Result<(StatusCode, Json<CommunityDetail>), ApiError> {
     let database = database(&state)?;
-    enforce_feature(&state, user.user_id, Feature::CommunityPublish).await?;
     let item = db::get_community_indicator(database.pool(), &slug)
         .await?
         .ok_or_else(unknown)?;
@@ -677,7 +696,6 @@ pub async fn patch(
     ApiJson(body): ApiJson<PatchBody>,
 ) -> Result<Json<CommunityDetail>, ApiError> {
     let database = database(&state)?;
-    enforce_feature(&state, user.user_id, Feature::CommunityPublish).await?;
     let item = db::get_community_indicator(database.pool(), &slug)
         .await?
         .ok_or_else(unknown)?;
@@ -729,7 +747,6 @@ pub async fn install(
     Path(slug): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let database = database(&state)?;
-    enforce_feature(&state, user.user_id, Feature::CommunityBrowse).await?;
     let item = db::get_community_indicator(database.pool(), &slug)
         .await?
         .ok_or_else(unknown)?;
@@ -798,7 +815,6 @@ pub async fn update(
     Path(slug): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let database = database(&state)?;
-    enforce_feature(&state, user.user_id, Feature::CommunityBrowse).await?;
     let item = db::get_community_indicator(database.pool(), &slug)
         .await?
         .ok_or_else(unknown)?;
@@ -863,7 +879,6 @@ pub async fn report(
     ApiJson(body): ApiJson<ReportBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let database = database(&state)?;
-    enforce_feature(&state, user.user_id, Feature::CommunityBrowse).await?;
     let item = db::get_community_indicator(database.pool(), &slug)
         .await?
         .ok_or_else(unknown)?;

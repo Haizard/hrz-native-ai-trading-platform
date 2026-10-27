@@ -133,6 +133,8 @@ pub struct NewCommunityItem {
     pub author_name: String,
     /// `publish` or `priority`.
     pub author_tier: String,
+    /// `listed` (public) or `unlisted` (private), chosen at publish time.
+    pub status: String,
     /// The version payload.
     pub version: NewCommunityVersion,
 }
@@ -505,8 +507,8 @@ pub async fn create_community_indicator(
                    status, current_version_id, install_count, report_count, created_at, updated_at";
     let row = sqlx::query(&format!(
         "INSERT INTO community_indicators \
-             (author_user_id, slug, title, summary, tags, author_name, author_tier) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {columns}"
+             (author_user_id, slug, title, summary, tags, author_name, author_tier, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {columns}"
     ))
     .bind(author_user_id)
     .bind(slug)
@@ -515,6 +517,7 @@ pub async fn create_community_indicator(
     .bind(&new.tags)
     .bind(&new.author_name)
     .bind(&new.author_tier)
+    .bind(&new.status)
     .fetch_one(&mut *tx)
     .await?;
     let indicator = indicator_from(&row)?;

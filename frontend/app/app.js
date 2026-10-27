@@ -12763,8 +12763,8 @@ async function clearAiModel() {
 // entitlements the server sent: a *hint* the shell uses to disable what the
 // plan cannot do, never the authority. The server refuses the action with a
 // 402 regardless, and `billingUpgradePrompt` turns that refusal into the one
-// sentence the user needs. The community library is real (docs/53): browse
-// starts on Core, publishing on Elite, and those are ordinary 402s.
+// sentence the user needs. The community library is real (docs/53) and open to
+// every plan; Desk's priority is placement, not access.
 // ---------------------------------------------------------------------------
 
 let billingCatalog = null; // the last `GET /billing/plans`
@@ -12826,24 +12826,12 @@ let communityItems = [];
 let communityDetailItem = null;
 let communityLoading = false;
 
-const communityLevel = () => {
-  const features = billingFeatures();
-  return features ? features.community_indicators : "none";
-};
-const canBrowseCommunity = () => ["browse", "publish", "priority"].includes(communityLevel());
-const canPublishCommunity = () => ["publish", "priority"].includes(communityLevel());
-
+/// The library is open to every plan (`docs/53`): the tab needs an account,
+/// not a rung. Desk's extra is catalog placement, not access.
 function communityVisible() {
   const signedIn = Boolean(token());
-  const browse = signedIn && canBrowseCommunity();
-  el("communityLocked").hidden = browse;
-  el("communityBody").hidden = !browse;
-  if (!browse) {
-    el("communityLocked").querySelector(".empty").textContent = signedIn
-      ? "Browsing the community library starts on Core."
-      : "Sign in to browse the community library.";
-  }
-  return browse;
+  el("communityBody").hidden = !signedIn;
+  return signedIn;
 }
 
 async function loadCommunity() {
@@ -12882,15 +12870,7 @@ async function loadCommunity() {
     }
     list.innerHTML = communityItems.map(communityCard).join("");
   } catch (e) {
-    if (billingUpgradePrompt(e)) {
-      list.innerHTML = `<p class="empty">${
-        communityView === "mine"
-          ? "Publishing community indicators starts on Elite — open Plan to compare."
-          : "Browsing the community library starts on Core."
-      }</p>`;
-    } else {
-      list.innerHTML = `<p class="error">${escapeHtml(e.message)}</p>`;
-    }
+    list.innerHTML = `<p class="error">${escapeHtml(e.message)}</p>`;
   } finally {
     communityLoading = false;
   }
@@ -12899,12 +12879,14 @@ async function loadCommunity() {
 function communityCard(item) {
   const installed = communityView === "installed";
   const badge = item.author_tier === "priority" ? `<span class="up">priority</span>` : "";
+  const privateBadge = item.status === "unlisted" ? `<span class="muted">private</span>` : "";
   const tags = (item.tags || []).map((t) => `#${escapeHtml(t)}`).join(" ");
   return `
     <div class="ws-revision">
       <div class="row">
         <strong>${escapeHtml(item.title)}</strong>
         ${badge}
+        ${privateBadge}
         <span class="muted">v${item.version}</span>
         <span class="spacer"></span>
         <span class="muted">${item.install_count} install${item.install_count === 1 ? "" : "s"}</span>
@@ -12923,7 +12905,7 @@ async function openCommunityDetail(slug) {
   try {
     communityDetailItem = await api(`/community/indicators/${encodeURIComponent(slug)}`);
   } catch (e) {
-    if (!billingUpgradePrompt(e)) pageToast(e.message);
+    pageToast(e.message);
     return;
   }
   const item = communityDetailItem;
@@ -12935,6 +12917,15 @@ async function openCommunityDetail(slug) {
         item.update_available ? " — update available" : " — up to date"
       }</p>`
     : "";
+  const visibility = item.is_author
+    ? `<p class="muted">${
+        item.status === "listed"
+          ? "Public — anyone can find and install it in the community catalog."
+          : "Private — hidden from the catalog. People who already installed it keep their copy."
+      }</p>`
+    : item.status === "unlisted"
+      ? `<p class="muted">This indicator is private.</p>`
+      : "";
   host.hidden = false;
   host.innerHTML = `
     <h3 class="section">${escapeHtml(item.title)}</h3>
@@ -12942,13 +12933,14 @@ async function openCommunityDetail(slug) {
     <p class="muted" style="font-size:11px">${escapeHtml(item.author_name)} · v${item.version} · ${
       item.install_count
     } installs</p>
+    ${visibility}
     ${installed}
     <div class="row">
       ${
         item.is_author
           ? `<button type="button" data-community-status="${escapeHtml(item.slug)}" data-community-next="${
               item.status === "listed" ? "unlisted" : "listed"
-            }">${item.status === "listed" ? "Unlist" : "Relist"}</button>`
+            }">${item.status === "listed" ? "Make private" : "Make public"}</button>`
           : `<button type="button" data-community-install="${escapeHtml(item.slug)}">Install</button>
              <button type="button" data-community-report="${escapeHtml(item.slug)}">Report</button>`
       }
@@ -12978,7 +12970,7 @@ async function installCommunity(slug) {
     await loadCommunity();
     await openWorkspaceById(result.workspace_id);
   } catch (e) {
-    if (!billingUpgradePrompt(e)) el("communityMsg").textContent = e.message;
+    el("communityMsg").textContent = e.message;
   }
 }
 
@@ -12992,7 +12984,7 @@ async function updateCommunity(slug) {
     pageToast("Updated — a new revision is active in your workspace.");
     await openCommunityDetail(slug);
   } catch (e) {
-    if (!billingUpgradePrompt(e)) pageToast(e.message);
+    pageToast(e.message);
   }
 }
 
@@ -13007,20 +12999,36 @@ async function reportCommunity(slug) {
     });
     pageToast(result.already_reported ? "You already reported this." : "Reported.");
   } catch (e) {
-    if (!billingUpgradePrompt(e)) pageToast(e.message);
+    pageToast(e.message);
   }
 }
 
 async function setCommunityStatus(slug, status) {
+  const makingPrivate = status === "unlisted";
+  if (
+    makingPrivate &&
+    !confirm(
+      "Make this indicator private? It disappears from the community catalog. " +
+        "Anyone who already installed it keeps their copy.",
+    )
+  ) {
+    return;
+  }
   try {
     await api(`/community/indicators/${encodeURIComponent(slug)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ status }),
     });
+    pageToast(
+      makingPrivate
+        ? "Private — hidden from the community catalog."
+        : "Public — anyone can find and install it in the catalog.",
+    );
     await openCommunityDetail(slug);
+    await loadCommunity();
   } catch (e) {
-    if (!billingUpgradePrompt(e)) pageToast(e.message);
+    pageToast(e.message);
   }
 }
 
@@ -13213,15 +13221,10 @@ function paintBillingPlans() {
       if (plan.features.byo_model_key) features.push("your own model key");
       if (plan.features.priority_support) features.push("priority support");
       if (plan.features.dedicated_onboarding) features.push("dedicated onboarding");
-      const community = plan.features.community_indicators;
       const communityText =
-        community === "none"
-          ? "not included"
-          : community === "browse"
-            ? "browse + install"
-            : community === "publish"
-              ? "browse + publish"
-              : "browse + publish + priority placement";
+        plan.features.community_indicators === "priority"
+          ? "included + priority placement"
+          : "included";
       const annualNote =
         billingCycle === "annual" && plan.pricing.monthly_cents > 0
           ? ` · ${centsText(plan.pricing.annual_effective_monthly_cents)}/mo billed yearly`
@@ -13563,7 +13566,6 @@ el("authorChips").addEventListener("click", (event) => {
   });
   el("communityTag").addEventListener("change", loadCommunity);
   el("communitySort").addEventListener("change", loadCommunity);
-  el("communityUpgrade").addEventListener("click", () => selectPane("billing"));
   el("pane-community").addEventListener("click", (event) => {
     const open = event.target.closest("[data-community-open]");
     if (open) return openCommunityDetail(open.dataset.communityOpen);
@@ -14149,11 +14151,6 @@ async function loadRevisions(wsId) {
 let wsPublishTarget = null; // { wsId, revId } while the form is open
 
 function openPublishForm(wsId, revId) {
-  if (!canPublishCommunity()) {
-    pageToast("Publishing community indicators starts on Elite.");
-    selectPane("billing");
-    return;
-  }
   const ws = wsWorkspaces.find((w) => w.id === wsId);
   wsPublishTarget = { wsId, revId };
   el("wsPublishForm").hidden = false;
@@ -14161,6 +14158,7 @@ function openPublishForm(wsId, revId) {
   el("wsPublishSummary").value = "";
   el("wsPublishTags").value = "";
   el("wsPublishName").value = "";
+  el("wsPublishVisibility").value = "public";
   el("wsPublishMsg").textContent = "";
 }
 
@@ -14173,6 +14171,7 @@ async function sendPublish() {
     .map((tag) => tag.trim())
     .filter(Boolean);
   const authorName = el("wsPublishName").value.trim();
+  const visibility = el("wsPublishVisibility").value;
   const msg = el("wsPublishMsg");
   msg.textContent = "publishing…";
   try {
@@ -14186,13 +14185,18 @@ async function sendPublish() {
         summary: summary || undefined,
         tags,
         author_name: authorName || undefined,
+        visibility,
       }),
     });
     msg.textContent = `Published as ${body.slug}.`;
     el("wsPublishForm").hidden = true;
-    pageToast(`Published "${body.title}" to the community.`);
+    pageToast(
+      visibility === "private"
+        ? `Published "${body.title}" privately — only you can find it.`
+        : `Published "${body.title}" to the community.`,
+    );
   } catch (e) {
-    if (!billingUpgradePrompt(e)) msg.textContent = e.message;
+    msg.textContent = e.message;
   }
 }
 

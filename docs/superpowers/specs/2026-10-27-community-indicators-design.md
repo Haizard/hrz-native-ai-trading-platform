@@ -4,12 +4,13 @@
 
 Let a user publish a validated indicator they built in the AI indicator studio, let
 another user discover it, install a pinned copy into their own workspace, and attach it
-to a chart. The library is the paid community tier the subscription matrix already
-reserves: browse from Core, publish from Elite, priority placement from Desk.
+to a chart. The library is open to every plan, the way a script library works on
+TradingView, LuxAlgo and MT5: an account is the only requirement. Desk's extra is
+priority placement, not access.
 
-This is infrastructure, not a marketplace. It creates the durable objects, the
-entitlement checks, the install path and the UI. Ratings, follows, payouts and an
-operator moderation console are out of scope for this release.
+This is infrastructure, not a marketplace. It creates the durable objects, the install
+path and the UI. Ratings, follows, payouts and an operator moderation console are out of
+scope for this release.
 
 ## Decisions taken
 
@@ -229,8 +230,8 @@ refusal.
 ## Lifecycle
 
 ```text
-publish (validated revision, re-vetted)
-  → listed
+publish (validated revision, re-vetted, public or private)
+  → listed (public) or unlisted (private)
       → author publishes a new version (listed item's version N+1)
       → author unlists → unlisted → author relists → listed
       → operator removes → removed (terminal for the author)
@@ -238,62 +239,58 @@ publish (validated revision, re-vetted)
 ```
 
 - A `removed` item cannot be relisted or gain versions by its author.
-- An `unlisted` item is visible to its author (and to a user who already installed it,
-  through their install row) but not in the public catalog.
+- An `unlisted` (private) item's catalog detail is visible to its author only; it does
+  not appear in the public catalog, and installers keep the forked workspace they
+  already own but cannot update it until the item is public again.
 - Versions are append-only. There is no edit-in-place and no delete-version route.
 
 ## Entitlements
 
-The matrix already carries the levels; this release makes them real.
+There is no access gate. Community indicators are included on every plan; the
+level exists only to order the catalog.
 
-| Action | Required level | Plans |
-|---|---|---|
-| List and read the catalog | `browse` | Core, Pro, Elite, Desk |
-| Install, update, report | `browse` | Core, Pro, Elite, Desk |
-| Publish, add a version, edit metadata, unlist | `publish` | Elite, Desk |
-| Priority badge and default-sort placement | `priority` | Desk |
+| Action | Plans |
+|---|---|
+| List and read the catalog, install, update, report | every plan |
+| Publish, add a version, edit metadata, unlist | every plan (own items only) |
+| Priority badge and default-sort placement | Desk |
 
 Billing changes:
 
-- Replace `Feature::CommunityIndicators` with `Feature::CommunityBrowse` and
-  `Feature::CommunityPublish`.
-  - `CommunityBrowse` → `CommunityIndicators::Browse | Publish | Priority`.
-  - `CommunityPublish` → `CommunityIndicators::Publish | Priority`.
-  - `minimum_plan`: Core for browse, Elite for publish.
-  - The `allowed_by` implementation reads the level; it no longer returns `false` for
-    every plan.
-- Delete the special case in `From<BillingError> for ApiError` that turned a community
-  feature refusal into `501 COMMUNITY_INDICATORS_UNAVAILABLE`. A refusal is now the same
-  `402 PLAN_FEATURE_REQUIRED` as every other feature, with
-  `details.feature = "community_browse" | "community_publish"` and
-  `details.required_plan`.
+- `Feature::CommunityBrowse` and `Feature::CommunityPublish` are removed.
+  `CommunityIndicators` becomes two levels, `Included` and `Priority`, and every plan
+  carries `Included` except Desk (`Priority`). No route calls `enforce_feature` on a
+  community request, so the path never answers `402 PLAN_FEATURE_REQUIRED`.
+- Publishing copies the author's level into `author_tier` (`publish` or `priority`) so
+  the featured sort can favor Desk without a billing read per catalog row.
 - `GET /billing/plans` and `GET /billing/subscription` report
   `community_indicators_available: true` whenever the library can serve requests
   (`state.db.is_some()` for the public catalog; true inside `BillingService`, which only
   exists with a database).
-- Update `docs/52` and the frontend plan cards: no "reserved" language.
+- Update `docs/52` and the frontend plan cards: every plan says `included`, Desk says
+  `included + priority placement`.
 
-Degraded mode is unchanged: with no billing service, `enforce_feature` returns `None`
-and a route proceeds. A deployment without a database cannot serve community routes at
-all, because every one of them reads or writes the database.
+A deployment without a database cannot serve community routes at all, because every one
+of them reads or writes the database. With a database and no billing service, publishing
+records `author_tier = "publish"` and every route proceeds, matching every other feature.
 
 ## API
 
 All routes are under `/community`, require a bearer token, and return the standard
 error envelope. `{slug}` is the catalog slug.
 
-| Method | Path | Level | Purpose |
+| Method | Path | Access | Purpose |
 |---|---|---|---|
-| GET | `/community/indicators` | browse | Search/list the catalog |
-| GET | `/community/indicators/installed` | browse | The caller's installs |
-| GET | `/community/indicators/mine` | publish | The caller's published items |
-| GET | `/community/indicators/{slug}` | browse | Detail, source, versions, install state |
-| POST | `/community/indicators` | publish | Publish a validated revision |
-| POST | `/community/indicators/{slug}/versions` | publish + author | Publish version N+1 |
-| PATCH | `/community/indicators/{slug}` | publish + author | Title/summary/tags/status |
-| POST | `/community/indicators/{slug}/install` | browse | Fork the current version |
-| POST | `/community/indicators/{slug}/update` | browse + installer | Apply the current version |
-| POST | `/community/indicators/{slug}/report` | browse | Report the item |
+| GET | `/community/indicators` | any account | Search/list the catalog |
+| GET | `/community/indicators/installed` | any account | The caller's installs |
+| GET | `/community/indicators/mine` | any account | The caller's published items |
+| GET | `/community/indicators/{slug}` | any account | Detail, source, versions, install state |
+| POST | `/community/indicators` | any account | Publish a validated revision |
+| POST | `/community/indicators/{slug}/versions` | author | Publish version N+1 |
+| PATCH | `/community/indicators/{slug}` | author | Title/summary/tags/status |
+| POST | `/community/indicators/{slug}/install` | any account | Fork the current version |
+| POST | `/community/indicators/{slug}/update` | installer | Apply the current version |
+| POST | `/community/indicators/{slug}/report` | any account | Report the item |
 
 Static paths (`installed`, `mine`) take precedence over `{slug}` in Axum 0.8.
 
@@ -332,9 +329,14 @@ everyone but its author (who sees the status in `mine`).
   "title": "Liquidity sweep + FVG",
   "summary": "Sweep of a prior low, displacement, then an unmitigated FVG.",
   "tags": ["smc", "fvg"],
-  "author_name": "Optional display name"
+  "author_name": "Optional display name",
+  "visibility": "public (default) | private"
 }
 ```
+
+- `visibility` maps to `status`: `public` → `listed`, `private` → `unlisted`. The author
+  can switch later through `PATCH`, without publishing a new version. Anything else is
+  `400 COMMUNITY_METADATA_INVALID`.
 
 - `revision_id` is optional; absent means the workspace's `active_revision_id`.
 - The workspace and revision must belong to the caller, or `404`.
@@ -401,7 +403,7 @@ Update:
 
 | Status | Code | When |
 |---|---|---|
-| 402 | `PLAN_FEATURE_REQUIRED` | browse/publish level missing |
+| 402 | (never on this path) | community access is included on every plan |
 | 404 | `NOT_FOUND` | unknown, unlisted, or not the caller's row |
 | 409 | `COMMUNITY_REVISION_NOT_VALIDATED` | publish an unvalidated/rejected revision |
 | 409 | `COMMUNITY_ALREADY_CURRENT` | update with no newer version |
@@ -411,7 +413,7 @@ Update:
 | 409 | `COMMUNITY_PUBLISH_LIMIT_REACHED` | 25 published items |
 | 409 | `COMMUNITY_VERSION_LIMIT_REACHED` | 50 versions on one item |
 | 422 | `COMMUNITY_SOURCE_INVALID` | re-vetting failed; `details.issues` |
-| 400 | `COMMUNITY_METADATA_INVALID` | title/summary/tags/name bounds |
+| 400 | `COMMUNITY_METADATA_INVALID` | title/summary/tags/name/visibility bounds |
 | 503 | database or billing unavailable | deployment problem |
 
 ## Security
@@ -438,48 +440,49 @@ Update:
 
 A new **Community** tab in the aside, next to Chat.
 
-- Free / signed out: a locked state explaining that browsing starts on Core, with a
-  button that switches to the Plan tab. `billingUpgradePrompt` handles a 402 from any
-  call the same way it already does.
-- Browsing (Core+): search box, tag filter, sort select, and a grid of cards. Each card
+- Signed out: the tab's body is hidden; signed in, every view is available.
+- Browsing: search box, tag filter, sort select, and a grid of cards. Each card
   shows title, author + priority badge, summary, tags, install count, and an
   Install / Installed / Update button.
 - Detail: source (collapsible, read-only), validation summary, versions, and a Report
-  action. The author sees Edit metadata / Unlist instead of Report.
+  action. The author sees the visibility state with **Make private** / **Make public**
+  instead of Report.
 - **Published by me** and **Installed** toggles reuse the list; Installed rows link to
   the owned workspace (switching to the Indicator tab and opening it).
 - Publishing lives where the artifact is: a **Publish** action in the indicator
-  workspace's revision area, enabled when the active revision is `validated` and the
-  plan is Elite+. A small inline form collects title, summary, tags and display name.
-  Success shows the slug and a link to the Community tab.
-- The plan pane replaces "reserved, not built yet" with the actual tier wording:
-  browse, browse + publish, browse + publish + priority placement.
+  workspace's revision area, enabled when the active revision is `validated`. A small
+  inline form collects title, summary, tags, display name and visibility (public by
+  default). Success shows the slug and a link to the Community tab.
+- The plan pane replaces "reserved, not built yet" with the actual wording: `included`
+  on every plan, `included + priority placement` on Desk.
 - All network state is loaded lazily when the tab opens, like the billing pane, and
   refreshed after sign-in.
 
 ## Tests
 
-New `crates/api-gateway/tests/community_flow.rs`, using the real router and database
-(`register_with_plan`):
+New `crates/api-gateway/tests/community_flow.rs`, using the real router and database:
 
-1. Free cannot list or read; Core can.
-2. Core cannot publish; Elite can. The detail's source equals the revision's source.
+1. Free lists the catalog and reads a detail.
+2. Free publishes a validated revision; the detail's source equals the revision's source.
 3. Publishing a workspace the caller does not own is 404.
 4. A rejected revision cannot be published (409).
-5. Core installs an Elite item: a new owned workspace with one revision, identical
+5. Free installs an item: a new owned workspace with one revision, identical
    source, install count 1. A second install is idempotent and does not duplicate.
 6. Author adds version 2; installer sees `update_available`; update appends revision 2
    and moves the pin; a second update is 409.
-7. Unlisting hides the item from others, keeps the installed copy, and refuses updates.
+7. Unlisting hides the item from others, keeps the installed copy, refuses updates, and
+   relisting makes it findable again.
 8. Report is idempotent and counts once.
 9. Desk publishes with `author_tier = "priority"` and sorts first in `featured`.
-10. Free cannot install (402 with `feature=community_browse`).
+10. An author publishes private, strangers get 404, the item is in `mine`, and switching
+    back to public restores access.
 11. A non-author cannot add a version or patch metadata (404).
 12. Metadata and source bounds return the named 400/422.
 
 Unit tests:
 
-- `plans.rs`: browse/publish ladders, `minimum_plan`, and that Priority satisfies both.
+- `plans.rs`: every plan carries `Included`, Desk carries `Priority`, and price ordering
+  still holds.
 - Slug and metadata normalization helpers.
 
 Verification: `cargo test -p api-gateway --lib`, the new `community_flow` test,
@@ -492,7 +495,7 @@ Verification: `cargo test -p api-gateway --lib`, the new `community_flow` test,
 - `crates/db/src/community.rs` (new) and `crates/db/src/lib.rs` (export)
 - `crates/api-gateway/src/community_routes.rs` (new)
 - `crates/api-gateway/src/lib.rs` (mount `/community/*`)
-- `crates/api-gateway/src/billing/plans.rs` (browse/publish features, comments)
+- `crates/api-gateway/src/billing/plans.rs` (`Included`/`Priority` levels, comments)
 - `crates/api-gateway/src/billing/mod.rs` (remove the 501 special case)
 - `crates/api-gateway/src/billing/routes.rs`, `service.rs` (availability true)
 - `frontend/app/index.html` (Community tab/pane, plan copy)
@@ -509,5 +512,5 @@ Verification: `cargo test -p api-gateway --lib`, the new `community_flow` test,
 - Ratings, reviews, follows, author profiles, notifications and payouts.
 - Community-published **skills** (methodology documents) and **strategies**.
 - Automatic updates for installed indicators. Updates stay explicit.
-- Paid or gated community items. Everything listed is installable by any browsing plan.
+- Paid or gated community items. Everything listed is installable by any account.
 - Search ranking beyond `ILIKE` plus tag filter.
