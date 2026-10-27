@@ -746,6 +746,14 @@ window.fetch = async (path, options = {}) => {
     return json(200, scan);
   }
 
+  if (url.startsWith("/concepts")) {
+    // The series-concept catalog a pane consults once an indicator is attached.
+    // None are enabled in this fixture, but the route's contract is an *array*;
+    // the generic `{}` fallback made the first attach crash the shell, which
+    // stopped every section after the drawing checks from running at all.
+    return json(200, []);
+  }
+
   if (url.startsWith("/capabilities")) {
     const agent = backend.agentCapability;
     return json(200, {
@@ -920,6 +928,41 @@ const realPageNow = window.Date.now.bind(window.Date);
 const pageClock = { offset: 0 };
 window.Date.now = () => realPageNow() + pageClock.offset;
 
+// --- what the page may believe about visibility -------------------------------
+//
+// jsdom implements no `IntersectionObserver`, and the shell deliberately treats
+// a DOM without one as "every pane is on screen". That fallback is right for a
+// browser missing the API, but under this harness it would leave the wall's
+// pause/resume path -- the reason a hundred charts do not mean a hundred
+// sockets -- completely unexercised.
+//
+// So this stub is the API's shape and nothing more. `observe` records the node;
+// `__intersect` plays the platform's part and delivers a change to every
+// observer watching it. It reports how many heard, so a check can tell "the
+// shell never observed this pane" apart from "the shell ignored the change".
+const observers = [];
+window.IntersectionObserver = class IntersectionObserver {
+  constructor(callback, options) {
+    this.callback = callback;
+    this.options = options;
+    this.targets = new Set();
+    observers.push(this);
+  }
+  observe(target) { this.targets.add(target); }
+  unobserve(target) { this.targets.delete(target); }
+  disconnect() { this.targets.clear(); }
+  takeRecords() { return []; }
+};
+window.__intersect = (target, isIntersecting) => {
+  let heard = 0;
+  for (const observer of observers) {
+    if (!observer.targets.has(target)) continue;
+    heard += 1;
+    observer.callback([{ target, isIntersecting }], observer);
+  }
+  return heard;
+};
+
 const script = document.createElement("script");
 script.textContent = shell;
 document.head.appendChild(script);
@@ -1053,8 +1096,11 @@ const narrowBlock = mediaBlockAt(900);
 
 check(
   "there is a breakpoint that narrows the panel",
-  /width:\s*300px/.test(ruleIn(panelBlock, "aside")),
-  ruleIn(panelBlock, "aside").trim() || "(no aside rule)"
+  // Through the custom property, not a hard `aside { width }`: the splitters
+  // write the same property, and a hard width in the media query would outrank
+  // a dragged one and silently undo the drag below 1100px.
+  /--aside-w:\s*300px/.test(ruleIn(panelBlock, ":root")),
+  ruleIn(panelBlock, ":root").trim() || "(no :root rule)"
 );
 check(
   "and one that puts the panel below the chart",
@@ -1330,6 +1376,11 @@ console.log("\na save that fails");
 
 backend.failCreate = 500;
 const beforeFailure = backend.drawings.length;
+// The refused click above finished a placement, and a finished placement
+// disarms the tool (single-shot, like TradingView). Without this the next drag
+// is a cursor pan and the save path is never entered -- which is how these two
+// checks stayed red while the shell was fine.
+pickTool("trendline");
 pointer("pointerdown", 200, 150);
 await settle();
 pointer("pointermove", 600, 320);
@@ -1362,6 +1413,8 @@ backend.failCreate = null;
 console.log("\ndeleting");
 
 const beforeDelete = backend.drawings.length;
+// Same re-arm: the failed save also finished a placement.
+pickTool("trendline");
 pointer("pointerdown", 260, 160);
 await settle();
 pointer("pointermove", 470, 300);
@@ -1434,6 +1487,9 @@ await settle();
 pointer("pointerup", 520, 240);
 await settle();
 await settle();
+// A placed shape disarms the tool, so the second shape needs the same arming
+// as the first -- otherwise "two shapes" is one shape and a pan.
+pickTool("trendline");
 pointer("pointerdown", 300, 280);
 await settle();
 pointer("pointermove", 620, 330);
@@ -2295,9 +2351,13 @@ async function twoCharts() {
     paneNode(2).classList.contains("active"),
     `active: ${activeIndexes()}`
   );
+  // Three panes in this fixture share ETHUSDT/5m, so the stream is not the
+  // closed pane's to take: the hub counts readers, and the survivors are still
+  // readers. "One socket per pane" would fail here by closing a channel the
+  // remaining charts are drawing from.
   check(
-    "and its market channel was closed with it, not left running",
-    openSocketsFor("/ws/market/").length === marketBeforeClose - 1,
+    "a chart that shared its series leaves the shared channel running",
+    openSocketsFor("/ws/market/").length === marketBeforeClose,
     `${marketBeforeClose} open before, ${openSocketsFor("/ws/market/").length} after`
   );
   check(
@@ -2306,8 +2366,18 @@ async function twoCharts() {
     splitButton.disabled ? "still disabled" : "enabled"
   );
 
-  paneNode(1).querySelector(".close").click();
+  // The other half of the refcount: the first pane is the page's only BTCUSDT
+  // chart, so closing it is the last reader leaving and the channel goes.
+  const uniqueBefore = openSocketsFor("/ws/market/").length;
+  paneNode(0).querySelector(".close").click();
   await settle();
+  await settle();
+  check(
+    "and a chart whose series no one else held closes that channel",
+    openSocketsFor("/ws/market/").length === uniqueBefore - 1,
+    `${uniqueBefore} open before, ${openSocketsFor("/ws/market/").length} after`
+  );
+
   paneNode(1).querySelector(".close").click();
   await settle();
 
@@ -2743,15 +2813,20 @@ console.log("\nthe scanner");
 
 const scanOut = document.getElementById("scanOut");
 const scanGo = document.getElementById("scanGo");
-const scanTab = document.querySelector('.tabs button[data-pane="scan"]');
 
-scanTab.click();
+// The tab row no longer carries Scan: the six agent tabs retired and the chat's
+// environments became the front door, leaving this pane in the DOM as the
+// surface that renders the last `/scan` answer. There is therefore no tab to
+// click -- but the pane and its controls are the reader this section is about,
+// and `selectPane` is the shell's own reveal path, so the checks drive that.
+// Asserting a tab existed would assert against a design already retired.
+window.selectPane("scan");
 await settle();
 
 check(
-  "the scan panel is reachable from the tab strip",
+  "the scan pane exists and can be shown",
   document.getElementById("pane-scan").hidden === false,
-  "a route with no reader is a route only its own tests can reach"
+  "the chat's Scan environment is its front door; the pane still renders the answer"
 );
 check(
   "and it opens saying what to do, not showing an empty table",
@@ -3015,6 +3090,11 @@ await inOne(
   async () => {
     const noticeSocket = openBooks().at(-1);
     deliver(noticeSocket, { type: "notice", message: noticeText });
+    // The frame first, then the close -- the order a browser delivers them in.
+    // Delivered and closed in one synchronous block, both writes land in the
+    // same MutationObserver batch and only the last text is ever seen, which
+    // made an unguarded `onclose` look correct.
+    await settle();
     noticeSocket.close();
     await settle();
   },
@@ -3225,6 +3305,270 @@ check(
 pointer("pointerdown", 400, 300, 0);
 pointer("pointerup", 400, 300, 0);
 await settle();
+
+// --- the wall -----------------------------------------------------------------
+//
+// The row layout stops at four because two rows of two is what stays readable.
+// The wall is the other answer to the same question: the user picks the column
+// count and the rows accumulate, scrolling both ways, up to a hundred charts.
+//
+// Three claims make it a wall and not just a bigger split: the cells are direct
+// children of one grid (no row wrappers, no row splitters), the column count is
+// the user's and survives a reload, and the cap is a hundred counted by the
+// control rather than a number in a comment. The fourth is the one a hundred
+// charts makes necessary -- offscreen panes must give up their streams, or the
+// wall is a hundred live channels.
+
+console.log("\nthe wall");
+
+const MAX_GRID = 100;
+const layoutModeSelect = document.getElementById("layoutMode");
+const columnsSelect = document.getElementById("chartCols");
+const addChart = document.getElementById("split");
+const chartsWall = document.getElementById("charts");
+const splitOption = layoutModeSelect.querySelector('option[value="split"]');
+
+check(
+  "the page ships in the row layout, with each chart inside a row wrapper",
+  chartsWall.classList.contains("gridLayout") === false &&
+    paneNode(0).parentElement.classList.contains("chartRow"),
+  paneNode(0).parentElement.className
+);
+
+layoutModeSelect.value = "grid";
+change(layoutModeSelect);
+await settle();
+
+check(
+  "choosing Grid turns the chart area into one wall",
+  chartsWall.classList.contains("gridLayout") === true,
+  chartsWall.className
+);
+check(
+  "and its cells are direct children, with no row wrappers left over",
+  paneNodes().length === 1 &&
+    paneNode(0).parentElement === chartsWall &&
+    chartsWall.querySelectorAll(".chartRow").length === 0 &&
+    chartsWall.querySelectorAll(".row-splitter").length === 0,
+  `${chartsWall.querySelectorAll(".chartRow").length} rows, ` +
+    `${chartsWall.querySelectorAll(".row-splitter").length} splitters`
+);
+check(
+  "and the column control appears, because a wall has columns to choose",
+  columnsSelect.hidden === false,
+  columnsSelect.hidden ? "hidden" : "shown"
+);
+
+// The column count is a custom property on the container rather than a class per
+// count: the CSS rule consumes the number, so the only observable is the number.
+columnsSelect.value = "4";
+change(columnsSelect);
+await settle();
+check(
+  "the wall takes the column count the user picks",
+  chartsWall.style.getPropertyValue("--chart-cols") === "4",
+  `--chart-cols: ${chartsWall.style.getPropertyValue("--chart-cols") || "(unset)"}`
+);
+check(
+  "and the choice is written down, so a reload opens the same wall",
+  JSON.parse(window.localStorage.getItem("atp.chartLayout") || "{}").columns === 4,
+  window.localStorage.getItem("atp.chartLayout")
+);
+
+// Five charts: one more than the row layout can hold. In the wall that is a
+// fifth cell; in split it was a disabled button and a stopped page.
+for (let i = 0; i < 4; i += 1) {
+  addChart.click();
+  await settle();
+}
+await settle();
+
+check(
+  "adding in the wall appends a cell, not a row",
+  paneNodes().length === 5 && paneNodes().every((p) => p.parentElement === chartsWall),
+  `${paneNodes().length} panes, ${chartsWall.querySelectorAll(".chartRow").length} rows`
+);
+check(
+  "and five charts fit where the row layout stops at four",
+  paneNodes().length === 5 && addChart.disabled === false,
+  `${paneNodes().length} panes, add ${addChart.disabled ? "disabled" : "enabled"}`
+);
+check(
+  "and the split option says why it cannot take them, instead of dropping four",
+  splitOption.disabled === true,
+  splitOption.disabled ? "disabled" : "still offered"
+);
+check(
+  "and the add control names the wall's own cap, not the row layout's",
+  addChart.title.includes(`(5/${MAX_GRID})`),
+  addChart.title
+);
+
+layoutModeSelect.value = "split";
+change(layoutModeSelect);
+await settle();
+check(
+  "switching back to rows is refused while the wall holds more than four",
+  chartsWall.classList.contains("gridLayout") === true && paneNodes().length === 5,
+  `${paneNodes().length} panes, grid ${chartsWall.classList.contains("gridLayout")}`
+);
+
+// Closing back to four is the one change that makes the rows legal again.
+// Guarded, not asserted: under the "wall caps at four" mutation the fifth pane
+// never exists, and reaching into `paneNode(4)` would throw and end the run --
+// a crash reports less than a failing check, and the cap check below is the one
+// that names that defect.
+const fifthPane = paneNode(4);
+if (fifthPane) fifthPane.querySelector(".close").click();
+await settle();
+check(
+  "closing one chart re-offers the layout that can hold the rest",
+  splitOption.disabled === false,
+  splitOption.disabled ? "still disabled" : "offered"
+);
+
+layoutModeSelect.value = "split";
+change(layoutModeSelect);
+await settle();
+check(
+  "and taking it rebuilds two-column rows around the charts that remain",
+  chartsWall.classList.contains("gridLayout") === false &&
+    chartsWall.querySelectorAll(".chartRow").length === 2 &&
+    paneNodes().length === 4 &&
+    paneNodes().every((p) => p.parentElement.classList.contains("chartRow")),
+  `${chartsWall.querySelectorAll(".chartRow").length} rows, ${paneNodes().length} panes`
+);
+check(
+  "and the column control goes away with the grid it describes",
+  columnsSelect.hidden === true,
+  columnsSelect.hidden ? "hidden" : "shown"
+);
+
+// --- what a hundred charts may not cost --------------------------------------
+//
+// Back to the wall for the two claims that only matter once it is big. The
+// visibility gate first: a pane that scrolls out of view gives up its market
+// channel and its per-frame rebuild, and comes back with both when it returns.
+// The stream is page-level, so this is observable as one socket closing -- the
+// pane itself and its DOM stay exactly where they were.
+
+layoutModeSelect.value = "grid";
+change(layoutModeSelect);
+await settle();
+
+const watchedPane = paneNode(3);
+const watchedSymbol = watchedPane.querySelector(".symbol");
+// ETHUSDT is the fixture's second instrument, and every other cell here reads
+// BTCUSDT, so this pane is the only reader of its series -- which is what makes
+// the channel closing a statement about *this* pane rather than about a
+// neighbour still holding it.
+watchedSymbol.value = "ETHUSDT";
+change(watchedSymbol);
+await settle();
+await settle();
+await settle();
+
+const watchedKey = "/ws/market/ETHUSDT/5m";
+const watchedOpen = () => openSocketsFor(watchedKey).length;
+check(
+  "the pane chosen to leave the screen holds a market channel of its own",
+  watchedOpen() === 1,
+  `${watchedOpen()} open for ${watchedKey}`
+);
+
+const heard = window.__intersect(watchedPane, false);
+await settle();
+await settle();
+check(
+  "the page's observer is watching the wall, so leaving the screen is a fact it knows",
+  heard >= 1,
+  `${heard} observer(s) heard the change`
+);
+check(
+  "a pane that scrolls off screen keeps its DOM but gives up its channel",
+  paneNodes().length === 4 && watchedOpen() === 0,
+  `${paneNodes().length} panes, ${watchedOpen()} open for ${watchedKey}`
+);
+const pausedBadge = watchedPane.querySelector(".feedStatus");
+check(
+  "and it says it is paused rather than calling a deliberate close a failure",
+  pausedBadge.textContent.includes("paused") && pausedBadge.dataset.state === "idle",
+  `${pausedBadge.dataset.state}: ${pausedBadge.textContent}`
+);
+
+// The other half of "gives up": no scene is rebuilt for a cell nobody sees. A
+// wheel is the strongest gesture to try, because it always repaints when visible.
+const framesBeforePausedWheel = engine.frames.length;
+wheel(3, 120);
+await settle();
+await settle();
+check(
+  "and a gesture on it does not rebuild a scene nobody can see",
+  engine.frames.length === framesBeforePausedWheel,
+  `${engine.frames.length - framesBeforePausedWheel} scene(s) built`
+);
+
+window.__intersect(watchedPane, true);
+await settle();
+await settle();
+await settle();
+check(
+  "scrolling back into view reopens a channel of its own",
+  watchedOpen() === 1,
+  `${watchedOpen()} open for ${watchedKey}`
+);
+check(
+  "and the badge stops saying paused",
+  !watchedPane.querySelector(".feedStatus").textContent.includes("paused"),
+  watchedPane.querySelector(".feedStatus").textContent
+);
+
+// The cap. Driving to it is the only way to see the control stop; a number in a
+// title proves what the page *says*, not what it does. The loop is bounded by
+// the cap itself, so a page that never disables the button fails the run rather
+// than hanging it.
+let guard = 0;
+while (!addChart.disabled && paneNodes().length < MAX_GRID && guard < MAX_GRID + 10) {
+  addChart.click();
+  guard += 1;
+}
+await settle();
+await settle();
+await settle();
+
+check(
+  "the wall stops at a hundred charts",
+  paneNodes().length === MAX_GRID && addChart.disabled === true,
+  `${paneNodes().length} panes, add ${addChart.disabled ? "disabled" : "enabled"}`
+);
+check(
+  "and the control says so rather than quietly doing nothing",
+  addChart.title.includes(`(${MAX_GRID}/${MAX_GRID})`),
+  addChart.title
+);
+const pastCap = window.addPane();
+check(
+  "and the guard refuses a hundred-and-first even when called directly",
+  pastCap === null && paneNodes().length === MAX_GRID,
+  `${paneNodes().length} panes`
+);
+
+// Every cell added in the wall cloned the pane the user was on, so they share
+// its series. The hub counts readers, not panes: a hundred charts on a handful
+// of series is a handful of sockets, and the whole wall costs what the series
+// cost, not what the cells cost.
+const streamsAtCap = openSocketsFor("/ws/market/").length;
+check(
+  "a hundred charts do not open a hundred market streams",
+  streamsAtCap > 0 && streamsAtCap <= 5,
+  `${streamsAtCap} stream(s) for ${paneNodes().length} charts`
+);
+check(
+  "and the wall still has its cells as direct children at the cap",
+  paneNodes().every((p) => p.parentElement === chartsWall) &&
+    chartsWall.querySelectorAll(".chartRow").length === 0,
+  `${chartsWall.querySelectorAll(".chartRow").length} rows`
+);
 
 // --- nothing threw -----------------------------------------------------------
 //

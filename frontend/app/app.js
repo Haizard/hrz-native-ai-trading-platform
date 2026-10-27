@@ -647,7 +647,13 @@ function createChartPane(root, hooks = {}) {
       // Storage full or denied: the pins stay live for the session either way.
     }
   }
-  let socket = null; // this pane's live candle channel
+  // The live stream is page-level (`subscribeMarket`): a pane names the series
+  // it wants and the hub fans one websocket out to every pane on that series.
+  // What this pane owns is its *subscription* -- and whether it is on screen at
+  // all, because an offscreen pane holds no stream and skips its repaints.
+  let liveKey = ""; // the `SYMBOL/timeframe` this pane is subscribed to
+  let liveSubscribed = false;
+  let visible = true;
   // The instruments this pane may show, as the page last read them. Held here
   // because the pane owns its selects and has to rebuild them when the symbol
   // changes -- but the page reads the list once, since four panes asking four
@@ -762,6 +768,7 @@ function createChartPane(root, hooks = {}) {
   let staticSceneId = 0; // Bumped whenever `scene` is replaced.
 
   function draw() {
+    if (!visible) return;
     // The freshest N bars whose script markers count as "just happened" and
     // so get the pulsing halo. 3 bars on any timeframe: a 1m signal pulses for
     // 3 minutes, a 1h one for 3 hours -- the event's own clock, not the UI's.
@@ -3132,6 +3139,11 @@ function createChartPane(root, hooks = {}) {
   /// price floor in a single implementation, in Rust, where the tests reach them.
   function render(gesture = null) {
     if (!wasm) return;
+    // A wall of a hundred charts cannot rebuild a hundred scenes per tick for
+    // charts nobody is looking at. Visibility is the gate rather than a second
+    // paused flag: `setVisible(true)` refetches and renders, so nothing that
+    // happened off screen is lost -- it simply was not paid for twice.
+    if (!visible) return;
     const wrap = el("chart").parentElement;
     const request = {
       candles,
@@ -5264,6 +5276,17 @@ function createChartPane(root, hooks = {}) {
       );
       return;
     }
+    // Off screen is a third honest state, not a failure: the wall closed the
+    // channel on purpose, and saying "offline" there would report a problem the
+    // user does not have. The reading is replaced the moment the pane returns.
+    if (live.state === "paused") {
+      set(
+        "idle",
+        "paused · off screen",
+        "This chart is off screen, so it holds no market channel. It reopens when the chart scrolls back into view."
+      );
+      return;
+    }
     // Open, and no bar yet. A closed-candle feed says nothing until a bar closes,
     // so this is the honest reading for up to a whole bar after connecting --
     // "live" here would be a claim about data that has not arrived.
@@ -5309,181 +5332,196 @@ function createChartPane(root, hooks = {}) {
 
   /// Follow the live candle channel.
   ///
-  /// The token goes in the query string because a browser cannot set a header on
-  /// a WebSocket handshake. The channel is public anyway, but passing the token
-  /// when we have one keeps the code honest about which channels need it.
+  /// The channel itself is page-level (`subscribeMarket`): the hub opens one
+  /// websocket per instrument+timeframe and fans its frames out to every pane
+  /// showing that series. This function only says *which* series this pane
+  /// wants, and whether it is on screen to want it -- a wall can hold a
+  /// hundred charts, and a hundred sockets for a handful of series would be a
+  /// hundred copies of one stream.
   function connectLive() {
-    // A select with no options has nothing to aim at. Wiring fires `connectLive`
-    // on every series change, including the one a symbol change makes while the
-    // timeframe list is being rebuilt -- and a channel to `/ws/market//` can only
-    // 404, over and over, with the backoff hiding it from everyone but the log.
-    // Refused here rather than retried there.
-    if (!el("symbol").value || !el("timeframe").value) {
+    const symbol = el("symbol").value;
+    const timeframe = el("timeframe").value;
+    // A select with no options has nothing to aim at. Wiring fires
+    // `connectLive` on every series change, including the one a symbol change
+    // makes while the timeframe list is being rebuilt -- and a channel to
+    // `/ws/market//` can only 404, over and over, with the backoff hiding it
+    // from everyone but the log. Refused here rather than retried there.
+    if (!symbol || !timeframe) {
+      if (liveSubscribed) {
+        unsubscribeMarket(liveKey, onMarketEvent);
+        liveSubscribed = false;
+      }
+      liveKey = "";
       live.state = "idle";
+      live.at = 0;
+      live.bar = 0;
       refreshLiveBadge();
       return;
     }
-    // Closing a socket that has not opened yet is what makes a browser say
-    // "WebSocket is closed before the connection is established" -- and it
-    // throws away a handshake already in flight, so a pane that is re-pointed
-    // quickly pays for several connections to use one. A socket still
-    // connecting is told to close itself when it gets there instead.
-    //
-    // Captured, because `socket` is about to point at the new one and a closure
-    // over the variable would close the socket we are trying to open.
-    if (socket) {
-      const stale = socket;
-      if (stale.readyState === WebSocket.OPEN) stale.close();
-      else stale.onopen = () => stale.close();
-    }
-    const symbol = el("symbol").value;
-    const timeframe = el("timeframe").value;
-    const scheme = location.protocol === "https:" ? "wss" : "ws";
-    const query = token() ? `?token=${encodeURIComponent(token())}` : "";
 
-    // A reconnect is a new channel, so the old reading is not evidence about the
-    // new one. Reset before opening rather than after: the gap between the two
-    // would otherwise show the previous socket's age against the new socket.
-    live.state = "connecting";
-    live.at = 0;
-    live.bar = 0;
-    // Any reconnect this socket had scheduled is its own funeral: the new
-    // connection is the plan now, and a timer left running would close it a
-    // few seconds later for a death that already stopped mattering.
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = 0;
+    const key = marketKey(symbol, timeframe);
+    if (key !== liveKey || !liveSubscribed) {
+      if (liveSubscribed) {
+        unsubscribeMarket(liveKey, onMarketEvent);
+        liveSubscribed = false;
+      }
+      // A different series is a different channel, so the old reading is not
+      // evidence about the new one. A *reconnect* to the same series keeps the
+      // age: the badge's count is about how long since data arrived, and the
+      // arrival did happen.
+      if (key !== liveKey) {
+        liveKey = key;
+        live.at = 0;
+        live.bar = 0;
+      }
+      live.state = "connecting";
+    }
+
+    if (!visible) {
+      live.state = "paused";
+      refreshLiveBadge();
+      return;
+    }
+
+    // A pane already subscribed to this series is asking again -- `Reload`, or
+    // any other refresh whose tail calls `connectLive`. If the channel had
+    // refused or died, that ask is the user's way back: reopen it rather than
+    // leaving a dead reading on screen. A healthy channel is left alone.
+    if (liveSubscribed) {
+      const state = marketState(liveKey);
+      if (state === "nofeed" || state === "offline") reconnectMarket(liveKey);
+    }
+
+    if (!liveSubscribed) {
+      // Set before subscribing: the hub answers synchronously when the channel
+      // is already open for another pane, and that answer must land in a pane
+      // that already considers itself subscribed.
+      liveSubscribed = true;
+      subscribeMarket(liveKey, onMarketEvent);
     }
     refreshLiveBadge();
+  }
 
-    const ws = new WebSocket(
-      `${scheme}://${location.host}/ws/market/${symbol}/${timeframe}${query}`
-    );
-    socket = ws;
-    ws.onopen = () => {
-      if (socket !== ws) return;
+  /// One event from the shared market channel.
+  ///
+  /// Every pane on the series receives the same frame object; the merge into
+  /// this pane's `candles` stays per pane because two panes may hold different
+  /// windows (a 500-bar chart and a 200-bar one), which is why the hub forwards
+  /// the frame rather than maintaining one candle list.
+  function onMarketEvent(event) {
+    if (!liveSubscribed) return;
+    if (event.type === "connecting") {
+      live.state = "connecting";
+      refreshLiveBadge();
+      return;
+    }
+    if (event.type === "open") {
       live.state = "open";
       refreshLiveBadge();
-    };
-    ws.onmessage = async (event) => {
-      // Same guard as `onopen`: a frame from a channel this pane has already
-      // left is not evidence about the one it is on now.
-      if (socket !== ws) return;
-      let frame;
-      try {
-        // Binary frames arrive as Blobs (see `decodeFrame`); decoding them
-        // wrong is what kept this chart frozen until a reload.
-        frame = await decodeFrame(event);
-      } catch { return; }
-
-      if (frame.type === "data") {
-        // Replace the last candle if it is the same bucket, append a newer one,
-        // and drop an older one. The server publishes forming frames and closes
-        // from one task in order -- a bucket's close, then the next bucket's
-        // forming bar -- but this pane also survives reconnects, lag and a
-        // window that was refetched mid-stream -- anywhere the frame sequence
-        // can hiccup. In-order frames are handled in order, out-of-order ones
-        // refused: the chart never moves backwards. One path for every frame,
-        // because a forming bar and the close that supersedes it are the same
-        // event at two moments, not two kinds of data. This is the only
-        // market-data decision this file makes, and it is about identity, not
-        // value.
-        const incoming = frame.payload;
-        const last = candles[candles.length - 1];
-        if (last && incoming.open_time < last.open_time) {
-          // stale frame for a bucket already superseded
-        } else if (last && last.open_time === incoming.open_time) {
-          candles[candles.length - 1] = incoming;
-        } else {
-          candles.push(incoming);
-        }
-        if (candles.length > Number(el("limit").value) + 50) candles.shift();
-        // The live price is the newest bar's own close -- on a forming frame,
-        // its last trade. Written before the repaint so the price line and the
-        // newest bar move in the same frame rather than one after the other.
-        lastPrice = incoming.close;
-        // Stamped on arrival rather than on the bar's own time: a replayed bar
-        // arrives now, and "is the feed alive" is a question about arrivals.
-        live.at = Date.now();
-        live.bar = incoming.open_time;
-        // The ladder's forming candle is built from the same trades this frame
-        // summarizes, so the frame marks the ladder stale and the poll (or the
-        // next timer wake, however late a throttled tab's timers fire) refetches
-        // it. Without this the footprint fetched once and froze while the price
-        // line kept moving -- the "price moves, footprint does not" report.
-        markFootprintDirty();
-        // A frame outranks a notice, and this is the only place that can say so.
-        // The server explains a silence; it does not promise the silence lasts --
-        // `MARKET_FEED` being off means *this gateway* opens no feed, not that
-        // nothing will ever publish into the bus, and a channel that was told
-        // there is no feed still forwards a candle that arrives. Without this,
-        // that candle would make the age tick while the badge went on saying
-        // "no feed", which is the badge contradicting its own evidence.
-        live.state = "open";
-        render();
-      } else if (frame.type === "notice") {
-        // The server's explanation outranks the engine's note. "The feed is not
-        // configured" is why the candles are not moving; the engine's own note
-        // would be a true answer to a different question. A close does not erase
-        // it -- `onclose` deliberately leaves the message alone, because a socket
-        // that closed is not a reason to forget why.
-        feedNotice = frame.message;
-        live.state = "nofeed";
-        el("chartNote").textContent = feedNotice;
-        refreshLiveBadge();
-      } else if (frame.type === "lagged") {
-        // The gap is real: refetch the window and open a fresh channel, rather
-        // than redrawing a chart with a hole in it and a note nobody reads.
-        // The old socket is replaced on purpose; `connectLive` closes it, and
-        // its guards keep a superseded socket from speaking for the pane.
-        refresh().then(connectLive);
-      }
-    };
-    ws.onclose = () => {
-      // A superseded socket must not speak for this pane: it would null the
-      // *new* one and set the badge from the death of the old, which is a chart
-      // reporting on a channel nobody is using.
-      if (socket !== ws) return;
-      socket = null;
+      return;
+    }
+    if (event.type === "offline") {
       // `nofeed` outranks `offline`: the channel closing is not news when the
       // server has already said why, and "offline" beside "no feed is
       // configured" would be two answers to one question.
       if (live.state !== "nofeed") live.state = "offline";
       refreshLiveBadge();
-      // A closed channel used to stay closed until a reload, which is how a
-      // chart ends up "live" with candles that stopped arriving an hour ago.
-      // The feed dies for ordinary reasons -- a network blip, a deploy -- and
-      // a chart that cannot recover from one is a chart that lies. Reconnect
-      // with backoff; the reset inside `connectLive` clears the stale reading.
-      // `nofeed` is *not* retried: the server has said why nothing will arrive,
-      // and hammering it will not change `MARKET_FEED`.
-      if (live.state !== "nofeed") scheduleReconnect();
-    };
+      return;
+    }
+    if (event.type === "notice") {
+      // The server's explanation outranks the engine's note. "The feed is not
+      // configured" is why the candles are not moving; the engine's own note
+      // would be a true answer to a different question. The hub does not retry
+      // a no-feed channel, and neither does a pane.
+      feedNotice = event.message;
+      live.state = "nofeed";
+      el("chartNote").textContent = feedNotice;
+      refreshLiveBadge();
+      return;
+    }
+    if (event.type === "lagged") {
+      // The gap is real: refetch the window rather than redrawing a chart with
+      // a hole in it. The hub has already replaced the channel, so this pane's
+      // subscription stays where it is.
+      refresh();
+      return;
+    }
+    if (event.type !== "data") return;
+
+    const incoming = event.frame;
+    // Replace the last candle if it is the same bucket, append a newer one,
+    // and drop an older one. The server publishes forming frames and closes
+    // from one task in order -- a bucket's close, then the next bucket's
+    // forming bar -- but this pane also survives reconnects, lag and a window
+    // that was refetched mid-stream -- anywhere the frame sequence can hiccup.
+    // In-order frames are handled in order, out-of-order ones refused: the
+    // chart never moves backwards. One path for every frame, because a forming
+    // bar and the close that supersedes it are the same event at two moments,
+    // not two kinds of data. This is the only market-data decision this file
+    // makes, and it is about identity, not value.
+    const last = candles[candles.length - 1];
+    if (last && incoming.open_time < last.open_time) {
+      // stale frame for a bucket already superseded
+    } else if (last && last.open_time === incoming.open_time) {
+      candles[candles.length - 1] = incoming;
+    } else {
+      candles.push(incoming);
+    }
+    if (candles.length > Number(el("limit").value) + 50) candles.shift();
+    // The live price is the newest bar's own close -- on a forming frame, its
+    // last trade. Written before the repaint so the price line and the newest
+    // bar move in the same frame rather than one after the other.
+    lastPrice = incoming.close;
+    // Stamped on arrival rather than on the bar's own time: a replayed bar
+    // arrives now, and "is the feed alive" is a question about arrivals.
+    live.at = Date.now();
+    live.bar = incoming.open_time;
+    // The ladder's forming candle is built from the same trades this frame
+    // summarizes, so the frame marks the ladder stale and the poll (or the
+    // next timer wake, however late a throttled tab's timers fire) refetches
+    // it. Without this the footprint fetched once and froze while the price
+    // line kept moving -- the "price moves, footprint does not" report.
+    markFootprintDirty();
+    // A frame outranks a notice, and this is the only place that can say so.
+    // The server explains a silence; it does not promise the silence lasts --
+    // `MARKET_FEED` being off means *this gateway* opens no feed, not that
+    // nothing will ever publish into the bus, and a channel that was told
+    // there is no feed still forwards a candle that arrives. Without this,
+    // that candle would make the age tick while the badge went on saying
+    // "no feed", which is the badge contradicting its own evidence.
+    live.state = "open";
+    render();
   }
-  // ---------------------------------------------------------------------------
-  // This pane's own listeners
-  // ---------------------------------------------------------------------------
 
-  /// The pending reconnect, if there is one. Pane state rather than page state:
-  /// two panes watch two channels, and one dying must not reschedule the other.
-  let reconnectTimer = 0;
-
-  /// Reopen the channel after a close, with backoff.
+  /// Pause this pane when it leaves the screen, resume it when it returns.
   ///
-  /// The feed dies for ordinary reasons -- a network blip, a gateway deploy --
-  /// and a chart that needs a reload to recover is a chart that quietly lies
-  /// for as long as the outage lasts. Backoff rather than an immediate retry,
-  /// because a gateway that is restarting will refuse a burst of reconnects
-  /// just as it refused the first, and capped at five seconds so recovery is
-  /// quick once the endpoint is back.
-  function scheduleReconnect() {
-    if (reconnectTimer) return;
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = 0;
-      // The pane may have been re-pointed (or closed) while waiting; closing
-      // and re-opening here is what `connectLive` already handles.
-      connectLive();
-    }, 2000 + Math.floor(Math.random() * 3000));
+  /// The wall can hold a hundred charts; the screen can hold a dozen at once.
+  /// An offscreen pane keeps its DOM -- its scroll position, its controls, its
+  /// drawings -- but gives up the two expensive things: the shared market
+  /// subscription and the per-frame scene rebuild. Resuming refetches, because
+  /// the candles moved while nothing was listening and a pane that was not a
+  /// subscriber cannot recover those frames any other way.
+  function setVisible(on) {
+    on = !!on;
+    if (visible === on) return;
+    visible = on;
+    if (!on) {
+      if (liveSubscribed) {
+        unsubscribeMarket(liveKey, onMarketEvent);
+        liveSubscribed = false;
+      }
+      live.state = "paused";
+      live.at = 0;
+      live.bar = 0;
+      stopFootprintPoll();
+      refreshLiveBadge();
+      return;
+    }
+    // Both, in this order: the channel may still be open for a pane beside it,
+    // and the window that moved while this one was off screen is fetched
+    // whether or not the channel exists.
+    connectLive();
+    refresh().then(() => { if (visible) connectLive(); });
   }
 
   // ---------------------------------------------------------------------------
@@ -5540,12 +5578,34 @@ function createChartPane(root, hooks = {}) {
   /// while a child is expanded so the rows provide the positioning context.
   function setExpanded(expanded) {
     const charts = el("charts");
+    // In grid mode the charts area is a scroll container, so "expand over
+    // everything" has to mean the *visible* box: scrolled halfway down the
+    // wall, `inset: 0` would otherwise put the pane above the viewport. The
+    // origin is restored on the way back, so collapsing returns the user to
+    // the cell they expanded.
+    if (layoutMode === "grid") {
+      if (expanded) {
+        expandedScroll = { top: charts.scrollTop, left: charts.scrollLeft };
+        charts.scrollTop = 0;
+        charts.scrollLeft = 0;
+      }
+    }
     root.classList.toggle("exp", expanded);
     charts.classList.toggle("exp-ing", expanded);
     el("expBtn").title = expanded ? "Back to the grid" : "Expand this chart over the others";
     if (expanded) draw();
-    else for (const pane of panes) pane.redraw();
+    else {
+      if (layoutMode === "grid" && expandedScroll) {
+        charts.scrollTop = expandedScroll.top;
+        charts.scrollLeft = expandedScroll.left;
+        expandedScroll = null;
+      }
+      for (const pane of panes) pane.redraw();
+    }
   }
+
+  /// The scroll origin an expanded pane covered, restored when it collapses.
+  let expandedScroll = null;
 
   /// Close the context menu, returning the hosted controls to the pane.
   ///
@@ -6809,6 +6869,11 @@ function createChartPane(root, hooks = {}) {
     /// rebuild. What the page's resize listener calls.
     redraw() { if (scene) scheduleRender(); },
 
+    /// The page's visibility gate for the grid: the observer that watches the
+    /// chart wall calls this as panes scroll in and out. Not a user control,
+    /// which is why it takes the state rather than toggling.
+    setVisible,
+
     /// Re-fetch this pane's drawings from the API and repaint, when the agent
     /// may have drawn on this symbol. The pane's drawings come from the server,
     /// so an object the run created -- the model's own, or the orchestrator's
@@ -6957,31 +7022,29 @@ function createChartPane(root, hooks = {}) {
     paintTitle,
 
     /// Take this pane off the page. Its own listeners go with its elements; the
-    /// four things that outlive them are the channel, a frame waiting for one,
-    /// the clock the live badge counts with, and any reconnect the channel had
-    /// scheduled.
+    /// things that outlive them are its subscription to the shared channel, a
+    /// frame waiting for one, and the clock the live badge counts with. The
+    /// channel itself is only closed when the last pane on the series leaves --
+    /// that refcount is the hub's, not this pane's.
     destroy() {
       // A pane that is gone must not be left hosting the shared menu: the next
       // `closeMenu` from any pane would file this one's controls into a pane
       // that no longer exists.
       closeMenu();
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = 0;
+      if (liveSubscribed) {
+        unsubscribeMarket(liveKey, onMarketEvent);
+        liveSubscribed = false;
       }
-      if (socket) socket.close();
       if (gestureFrame) {
         cancelAnimationFrame(gestureFrame);
         gestureFrame = 0;
       }
       // A pane that is gone must not keep a timer running: the badge would be
-      // written into a detached element forever, and a closed pane's channel
-      // would go on being described by a chart that no longer exists.
+      // written into a detached element forever.
       if (liveTimer) {
         clearInterval(liveTimer);
         liveTimer = 0;
       }
-      socket = null;
     },
   };
 
@@ -7003,12 +7066,34 @@ function createChartPane(root, hooks = {}) {
 // that. What a chart does with itself is `createChartPane`'s business.
 // ---------------------------------------------------------------------------
 
-/// How many charts a page may hold.
+/// How many charts the **split** layout may hold.
 ///
-/// Four, because past that no pane is readable -- and because an uncapped "add"
-/// button is a way to make the page unusable by accident. The layout is a row,
-/// so this is also what keeps each pane wider than its own toolbar.
+/// Four, because past that no pane is readable in a two-column row -- and
+/// because an uncapped "add" button is a way to make the page unusable by
+/// accident. The row layout has no honest way to show more, so this is also
+/// what keeps each pane wider than its own toolbar.
 const MAX_PANES = 4;
+
+/// How many charts the **grid** layout may hold.
+///
+/// A hundred is the wall's ceiling, not a recommendation: ten columns of ten,
+/// with every cell at least 220px so a chart is still a chart. The page caps it
+/// because a thousand panes is not a workspace, and every pane is a DOM clone
+/// with a canvas and its own controls.
+const MAX_PANES_GRID = 100;
+
+/// Where the layout choice is remembered between visits.
+const LAYOUT_KEY = "atp.chartLayout";
+
+/// `split` -- the row layout with draggable row splitters -- or `grid` -- one
+/// scrolling wall whose width the columns select owns.
+let layoutMode = "split";
+
+/// How many columns the wall shows, 1..10.
+let gridColumns = 2;
+
+/// The number of panes the current layout can hold.
+const paneCap = () => (layoutMode === "grid" ? MAX_PANES_GRID : MAX_PANES);
 
 /// The panes, oldest first.
 const panes = [];
@@ -7041,6 +7126,385 @@ let coverage = [];
 /// when it is touched, which is the only gesture a keyboard-less page has for
 /// saying "this one".
 let activePane = null;
+
+// ---------------------------------------------------------------------------
+// The layout: kept rows, or a grid wall
+//
+// The panes do not know which one they are in. A mode change only moves their
+// nodes and rewrites the container's class, so an arrangement keeps every
+// pane's own state -- series, viewport, drawings, subscription -- while the
+// page decides how the cells are sized and how they scroll.
+// ---------------------------------------------------------------------------
+
+/// A pane's element, for the observer that watches the wall. Keyed by node
+/// rather than by id: the pane already *is* its node, and an id would be a
+/// second name for the same thing.
+const paneByRoot = new WeakMap();
+
+/// The visibility observer, or null before the page builds it -- and in a DOM
+/// without `IntersectionObserver`, where every pane is treated as on screen.
+let paneObserver = null;
+
+/// Put the current mode on the container. Custom properties rather than a
+/// class per column count: one rule consumes the number, and the number is the
+/// only thing a change has to write.
+function applyLayoutClass() {
+  const charts = el("charts");
+  if (!charts) return;
+  charts.classList.toggle("gridLayout", layoutMode === "grid");
+  charts.style.setProperty("--chart-cols", String(gridColumns));
+}
+
+/// Restore the layout choice from the last visit, falling back to the split
+/// rows when there is nothing stored or the blob is not readable.
+function loadLayoutPrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}");
+    if (saved.mode === "grid" || saved.mode === "split") layoutMode = saved.mode;
+    const columns = Number(saved.columns);
+    if (Number.isInteger(columns) && columns >= 1 && columns <= 10) {
+      gridColumns = columns;
+    }
+  } catch { /* private mode or a corrupt blob: the defaults are the layout */ }
+  applyLayoutClass();
+}
+
+function persistLayout() {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ mode: layoutMode, columns: gridColumns }));
+  } catch { /* the layout still works; it just will not be remembered */ }
+}
+
+/// Keep the header controls saying what the layout is, and disable the modes
+/// and actions that cannot honestly run.
+///
+/// The split option is disabled while the wall holds more than four charts:
+/// the row layout cannot show them, and a mode switch that silently dropped a
+/// hundred charts would be the worst possible way to find that out.
+function syncLayoutControls() {
+  const mode = el("layoutMode");
+  if (mode) {
+    mode.value = layoutMode;
+    const split = mode.querySelector('option[value="split"]');
+    if (split) split.disabled = panes.length > MAX_PANES;
+  }
+  const columns = el("chartCols");
+  if (columns) {
+    columns.value = String(gridColumns);
+    columns.hidden = layoutMode !== "grid";
+  }
+  const add = el("split");
+  if (add) {
+    add.disabled = panes.length >= paneCap();
+    add.title = layoutMode === "grid"
+      ? `Add a chart to the wall (${panes.length}/${MAX_PANES_GRID})`
+      : "Add another chart beside this one";
+  }
+}
+
+/// Set how many columns the wall shows. Only a *grid* control: split rows own
+/// their two columns and must not be re-templated by it.
+function setGridColumns(value) {
+  const columns = Math.max(1, Math.min(10, Number(value) || 1));
+  if (columns === gridColumns) return;
+  gridColumns = columns;
+  applyLayoutClass();
+  persistLayout();
+  syncLayoutControls();
+  for (const pane of panes) pane.redraw();
+}
+
+/// Switch layouts, moving the panes rather than rebuilding them.
+function setLayoutMode(mode) {
+  if (mode !== "grid" && mode !== "split") return;
+  if (mode === layoutMode) return;
+  // The select disables this option, so reaching here means a programmatic
+  // change. Refuse rather than close charts to fit.
+  if (mode === "split" && panes.length > MAX_PANES) {
+    syncLayoutControls();
+    return;
+  }
+  layoutMode = mode;
+  rebuildLayoutStructure();
+  applyLayoutClass();
+  syncLayoutControls();
+  persistLayout();
+  // Every pane has a new box to measure. `redraw` coalesces them into one
+  // rebuild each, which is the same path a window resize takes.
+  for (const pane of panes) pane.redraw();
+}
+
+/// Move the existing panes into the structure the mode calls for.
+///
+/// The panes are detached first. Appending one into a new parent moves it, but
+/// the rows it left behind would stay as empty flex children -- and removing
+/// the wrappers while their panes were still inside would take the panes with
+/// them.
+function rebuildLayoutStructure() {
+  const charts = el("charts");
+  for (const pane of panes) pane.root.remove();
+  for (const child of [...charts.children]) {
+    if (child.classList.contains("chartRow") || child.classList.contains("row-splitter")) {
+      child.remove();
+    }
+  }
+  if (layoutMode === "grid") {
+    for (const pane of panes) charts.appendChild(pane.root);
+    return;
+  }
+  for (let i = 0; i < panes.length; i += 2) {
+    if (i > 0) charts.appendChild(newRowSplitter());
+    const row = document.createElement("div");
+    row.className = "chartRow";
+    row.appendChild(panes[i].root);
+    if (panes[i + 1]) row.appendChild(panes[i + 1].root);
+    // Two panes in a row is the grid's whole point, and a bootstrap row ships
+    // with `.single` -- only this append can end that. Kept as a class rather
+    // than left to `:has()` alone so the column count never depends on one
+    // selector being supported.
+    row.classList.toggle("single", !panes[i + 1]);
+    charts.appendChild(row);
+  }
+}
+
+/// The handle between two kept rows.
+function newRowSplitter() {
+  const splitter = document.createElement("button");
+  splitter.className = "splitter row-splitter";
+  splitter.type = "button";
+  splitter.setAttribute("aria-label", "Drag to resize the chart rows");
+  return splitter;
+}
+
+/// Watch a pane for coming on and off screen.
+function observePane(pane) {
+  paneByRoot.set(pane.root, pane);
+  if (!paneObserver && typeof IntersectionObserver === "function") {
+    paneObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const watched = paneByRoot.get(entry.target);
+        if (watched) watched.setVisible(entry.isIntersecting);
+      }
+    }, {
+      root: el("charts"),
+      // A pane is worth resuming just before it is visible: a prefetch at the
+      // edge hides the reconnect behind the scroll rather than showing it.
+      rootMargin: "120px 0px",
+    });
+  }
+  if (paneObserver) paneObserver.observe(pane.root);
+}
+
+function unobservePane(pane) {
+  paneByRoot.delete(pane.root);
+  if (paneObserver) paneObserver.unobserve(pane.root);
+}
+
+// ---------------------------------------------------------------------------
+// The market hub
+//
+// One websocket per instrument+timeframe, shared by every pane showing that
+// series. The feed is a page-level fact -- two panes on BTCUSDT/5m are two
+// views of one stream -- and a subscription each would multiply the sockets,
+// the reconnects and the decode work for no new information. A channel lives
+// while at least one pane wants it, and closes when the last one leaves.
+//
+// Decoding happens here, once per frame. Merging does not: each pane holds its
+// own bar window (a 500-bar chart and a 200-bar one), so the hub forwards the
+// decoded bar and the pane decides where it belongs.
+// ---------------------------------------------------------------------------
+
+const marketChannels = new Map();
+
+function marketKey(symbol, timeframe) {
+  return `${symbol}/${timeframe}`;
+}
+
+/// Ask for a series' frames. `listener` is called with `{type, ...}` events:
+/// `connecting`, `open`, `data` (with `frame`), `notice` (with `message`),
+/// `offline`, and `lagged`.
+function subscribeMarket(key, listener) {
+  let channel = marketChannels.get(key);
+  if (!channel) {
+    channel = {
+      key,
+      socket: null,
+      timer: 0,
+      listeners: new Set(),
+      state: "idle",
+      notice: "",
+    };
+    marketChannels.set(key, channel);
+  }
+  channel.listeners.add(listener);
+  // A pane joining a healthy channel should not spend a bar saying "waiting"
+  // while the frames are already flowing, so the cached state is replayed now.
+  if (channel.state === "open") listener({ type: "open" });
+  else if (channel.state === "nofeed") listener({ type: "notice", message: channel.notice });
+  else if (channel.state === "connecting") listener({ type: "connecting" });
+  if (!channel.socket && !channel.timer && channel.state !== "nofeed") {
+    openMarketChannel(channel);
+  }
+}
+
+/// Stop wanting a series. The last listener closes the socket and forgets the
+/// channel; the others are unaffected.
+function unsubscribeMarket(key, listener) {
+  const channel = marketChannels.get(key);
+  if (!channel) return;
+  channel.listeners.delete(listener);
+  if (channel.listeners.size) return;
+  if (channel.timer) {
+    clearTimeout(channel.timer);
+    channel.timer = 0;
+  }
+  if (channel.socket) {
+    const stale = channel.socket;
+    channel.socket = null;
+    // Closing a socket that has not opened yet throws away a handshake already
+    // in flight; `closeMarketSocket` tells it to close itself when it gets
+    // there instead.
+    closeMarketSocket(stale);
+  }
+  marketChannels.delete(key);
+}
+
+/// What the shared channel for a series is doing, or "" when there is none.
+function marketState(key) {
+  const channel = marketChannels.get(key);
+  return channel ? channel.state : "";
+}
+
+/// Close a market socket, deferring past a handshake already in flight.
+///
+/// A socket still CONNECTING is told to close itself when it gets there -- a
+/// `close()` now would throw the handshake away and, in a browser, log the
+/// "closed before the connection is established" warning. The test is numeric
+/// rather than `WebSocket.OPEN` because a stubbed WebSocket need not define the
+/// class constants, and treating "unknown" as open left the socket running.
+function closeMarketSocket(ws) {
+  if (ws.readyState === 0) ws.onopen = () => ws.close();
+  else ws.close();
+}
+
+/// Ask the server again for a series whose channel had refused or died.
+///
+/// Only used for an explicit re-ask (a reload), never on a timer: the retry
+/// backoff owns ordinary reconnects, and a no-feed channel is *not* retried
+/// automatically because the server has already said why.
+function reconnectMarket(key) {
+  const channel = marketChannels.get(key);
+  if (!channel) return;
+  if (channel.timer) {
+    clearTimeout(channel.timer);
+    channel.timer = 0;
+  }
+  if (channel.socket) {
+    const stale = channel.socket;
+    channel.socket = null;
+    closeMarketSocket(stale);
+  }
+  channel.state = "connecting";
+  channel.notice = "";
+  openMarketChannel(channel);
+}
+
+function notifyMarket(channel, event) {
+  for (const listener of [...channel.listeners]) {
+    try {
+      listener(event);
+    } catch {
+      // One pane's failure is not the channel's: the other panes on the series
+      // still need the frame.
+    }
+  }
+}
+
+/// Open the one socket for a channel. The token goes in the query string
+/// because a browser cannot set a header on a WebSocket handshake; the channel
+/// is public anyway, but passing it keeps the code honest about which channels
+/// need it.
+function openMarketChannel(channel) {
+  if (channel.socket || channel.timer) return;
+  const [symbol, timeframe] = channel.key.split("/");
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const query = token() ? `?token=${encodeURIComponent(token())}` : "";
+  channel.state = "connecting";
+  channel.notice = "";
+  notifyMarket(channel, { type: "connecting" });
+
+  const ws = new WebSocket(
+    `${scheme}://${location.host}/ws/market/${symbol}/${timeframe}${query}`
+  );
+  channel.socket = ws;
+  ws.onopen = () => {
+    // A superseded socket must not speak for the channel: it would set the
+    // state from the death or birth of a connection nobody is using.
+    if (channel.socket !== ws) return;
+    channel.state = "open";
+    notifyMarket(channel, { type: "open" });
+  };
+  ws.onmessage = async (event) => {
+    if (channel.socket !== ws) return;
+    let frame;
+    try {
+      // Binary frames arrive as Blobs (see `decodeFrame`); decoding them wrong
+      // is what kept the chart frozen until a reload. Decoded once here, then
+      // handed to every pane rather than once per pane.
+      frame = await decodeFrame(event);
+    } catch { return; }
+    if (channel.socket !== ws) return;
+
+    if (frame.type === "data") {
+      channel.state = "open";
+      notifyMarket(channel, { type: "data", frame: frame.payload });
+    } else if (frame.type === "notice") {
+      // The server's explanation outranks any pane's own note. A close does not
+      // erase it: a socket that closed is not a reason to forget why.
+      channel.state = "nofeed";
+      channel.notice = frame.message;
+      notifyMarket(channel, { type: "notice", message: channel.notice });
+    } else if (frame.type === "lagged") {
+      // The gap is real. Panes refetch their windows, and the channel is
+      // replaced so the undelivered backlog is not replayed into charts that
+      // have already moved on.
+      notifyMarket(channel, { type: "lagged" });
+      const stale = channel.socket;
+      channel.socket = null;
+      if (stale) closeMarketSocket(stale);
+      if (channel.listeners.size) {
+        channel.state = "connecting";
+        openMarketChannel(channel);
+      }
+    }
+  };
+  ws.onclose = () => {
+    if (channel.socket !== ws) return;
+    channel.socket = null;
+    // `nofeed` outranks `offline`: the channel closing is not news when the
+    // server has already said why, and "offline" beside "no feed is
+    // configured" would be two answers to one question.
+    if (channel.state !== "nofeed") channel.state = "offline";
+    notifyMarket(channel, { type: "offline" });
+    // A closed channel used to stay closed until a reload, which is how a
+    // chart ends up "live" with candles that stopped arriving an hour ago. The
+    // feed dies for ordinary reasons, and a chart that cannot recover is a
+    // chart that lies. `nofeed` is *not* retried: the server has said why
+    // nothing will arrive, and hammering it will not change `MARKET_FEED`.
+    if (channel.listeners.size && channel.state !== "nofeed") scheduleMarketRetry(channel);
+  };
+}
+
+/// Reopen a channel after a close, with backoff. The timer belongs to the
+/// channel, not to a pane: one dying pane must not close a stream its
+/// neighbours are still reading.
+function scheduleMarketRetry(channel) {
+  if (channel.timer) return;
+  channel.timer = setTimeout(() => {
+    channel.timer = 0;
+    if (channel.listeners.size) openMarketChannel(channel);
+  }, 2000 + Math.floor(Math.random() * 3000));
+}
 
 /// Make `pane` the one the aside follows.
 ///
@@ -7385,35 +7849,34 @@ function nextFrame(symbol, from, wanted) {
 /// step with it. The clone is reset, because a copy of a chart is not the same
 /// thing as a new chart -- see `reset`.
 function addPane() {
-  if (panes.length >= MAX_PANES || !activePane) return null;
+  if (panes.length >= paneCap() || !activePane) return null;
 
   // Cloned from the *active* pane rather than the first one: "another chart of
   // what I am looking at" is the intent, and the chart the user is looking at is
   // the one they just touched.
   const node = activePane.root.cloneNode(true);
 
-  // The pane lands in a **row wrapper** -- two panes per row, a new row (and
-  // its splitter) opened only when the current one is full. The wrapper, not
-  // the page, owns the 2-column layout, so "add chart" never produces a pane
-  // too thin to read and the row splitter always has exactly two things to
-  // split.
-  let row = activePane.root.closest(".chartRow");
-  if (!row || row.querySelectorAll(".chartPane").length >= 2) {
-    const splitter = document.createElement("button");
-    splitter.className = "splitter row-splitter";
-    splitter.type = "button";
-    splitter.setAttribute("aria-label", "Drag to resize the chart rows");
-    el("charts").appendChild(splitter);
-    row = document.createElement("div");
-    row.className = "chartRow";
-    el("charts").appendChild(row);
+  if (layoutMode === "grid") {
+    // The wall is one grid, not a stack of row wrappers: the pane is a direct
+    // child and the container's template places it. No splitter, because a
+    // grid has no row pairs to drag between.
+    el("charts").appendChild(node);
+  } else {
+    // The pane lands in a **row wrapper** -- two panes per row, a new row (and
+    // its splitter) opened only when the current one is full. The wrapper, not
+    // the page, owns the 2-column layout, so "add chart" never produces a pane
+    // too thin to read and the row splitter always has exactly two things to
+    // split.
+    let row = activePane.root.closest(".chartRow");
+    if (!row || row.querySelectorAll(".chartPane").length >= 2) {
+      el("charts").appendChild(newRowSplitter());
+      row = document.createElement("div");
+      row.className = "chartRow";
+      el("charts").appendChild(row);
+    }
+    row.appendChild(node);
+    row.classList.toggle("single", row.querySelectorAll(".chartPane").length < 2);
   }
-  row.appendChild(node);
-  // Two panes in a row is the grid's whole point, and the bootstrap row ships
-  // with `.single` (one column) -- only this append can end that. Kept as a
-  // class rather than left to `:has()` alone so the column count never depends
-  // on one selector being supported.
-  row.classList.toggle("single", row.querySelectorAll(".chartPane").length < 2);
 
   const pane = createChartPane(node, {
     onSymbolChange: (which) => { if (which === activePane) connectBook(); },
@@ -7432,10 +7895,18 @@ function addPane() {
     nextFrame(activePane.symbol(), activePane.timeframe(), wanted)
   );
 
+  observePane(pane);
+
   // Marked active before anything is fetched, so the aside is already about the
   // chart the user just asked for rather than the one it was cloned from.
   setActive(pane);
   refreshCloseButtons();
+  // A new cell at the far end of a wall is otherwise a chart the user cannot
+  // see. `nearest` scrolls only as far as it must, and only where the element
+  // actually is.
+  if (layoutMode === "grid" && typeof node.scrollIntoView === "function") {
+    node.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
   return pane;
 }
 
@@ -7529,6 +8000,7 @@ function closePane(pane) {
   const at = panes.indexOf(pane);
   if (at < 0) return;
   const row = pane.root.closest(".chartRow");
+  unobservePane(pane);
   pane.destroy();
   pane.root.remove();
   panes.splice(at, 1);
@@ -7574,7 +8046,10 @@ function refreshCloseButtons() {
   for (const pane of panes) {
     pane.root.querySelector(".close").hidden = panes.length < 2;
   }
-  el("split").disabled = panes.length >= MAX_PANES;
+  // The add button, the mode select and the columns select all depend on how
+  // many panes the current layout holds; one writer keeps the three from
+  // disagreeing about whether the page has room.
+  syncLayoutControls();
   // The status bar counts the panes on screen, so "how much am I looking at"
   // is answered without counting title bars.
   const count = document.getElementById("sbCharts");
@@ -7583,17 +8058,22 @@ function refreshCloseButtons() {
 
 /// Build the first pane from the markup, and make it the active one.
 function openFirstPane() {
-  // The markup ships one pane; wrap it in the row structure the rest of the
-  // panes are added to, so every pane's parent is a `.chartRow` from here on.
+  // The markup ships one pane; in split mode it is wrapped in the row
+  // structure the rest of the panes are added to, so every pane's parent is a
+  // `.chartRow` from here on. In grid mode the pane is already a direct child
+  // of the wall and stays one.
   const node = el("charts").querySelector(".chartPane");
-  const row = document.createElement("div");
-  row.className = "chartRow single";
-  node.replaceWith(row);
-  row.appendChild(node);
+  if (layoutMode === "split") {
+    const row = document.createElement("div");
+    row.className = "chartRow single";
+    node.replaceWith(row);
+    row.appendChild(node);
+  }
   const pane = createChartPane(node, {
     onSymbolChange: (which) => { if (which === activePane) connectBook(); },
   });
   panes.push(pane);
+  observePane(pane);
   setActive(pane);
   return pane;
 }
@@ -12210,7 +12690,11 @@ el("authorChips").addEventListener("click", (event) => {
   // -------------------------------------------------------------------------
 
   // The first pane, built from the markup. Before the engine is loaded, because a
-  // failed engine load is something a pane has to be able to say.
+  // failed engine load is something a pane has to be able to say. The layout is
+  // restored first: it decides whether that pane is wrapped in a row or laid
+  // straight into the wall, and moving it afterwards would be a reflow for
+  // nothing.
+  loadLayoutPrefs();
   openFirstPane();
   refreshCloseButtons();
   wireSplitters();
@@ -12244,6 +12728,12 @@ el("authorChips").addEventListener("click", (event) => {
     const pane = addPane();
     if (pane) pane.refresh().then(pane.connectLive);
   });
+
+  // The layout controls. They act on the *page*, like the add button: the mode
+  // moves panes and the columns resize the wall, and neither describes a
+  // series, so both live in the header rather than in a pane's bar.
+  el("layoutMode").addEventListener("change", (event) => setLayoutMode(event.target.value));
+  el("chartCols").addEventListener("change", (event) => setGridColumns(event.target.value));
 
   // Delete removes the active pane's selected drawing; Escape cancels -- a
   // drawing in progress first, and the tool after that; Ctrl+Z / Ctrl+Y (and

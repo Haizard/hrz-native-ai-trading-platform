@@ -694,9 +694,10 @@ CPU calc   GPU-friendly buffers
   `tools/shell_check.mjs` are now copied from a live `GET /symbols`.
 
   **There is always at least one pane.** Closing the last one is refused rather than leaving an
-  empty page with no way back, and the control that would do it is not drawn. Adding stops at
-  four: past that nothing is readable, and an uncapped button is a way to make the page
-  unusable by accident.
+  empty page with no way back, and the control that would do it is not drawn. The *row* layout
+  stops adding at four: past that the cells stop being readable, and an uncapped button is a way
+  to make the page unusable by accident. "More than four" is a different layout, not a bigger
+  row — see *The wall* below.
 
   **How any of this is checked.** `tools/shell_check.mjs` loads the page into a DOM and drives
   it — `#split`, a wheel, a symbol change, a drawing gesture, a close — and asserts the two
@@ -705,21 +706,58 @@ CPU calc   GPU-friendly buffers
   not rebuild the other, a shape drawn in the second must be stored against the second's
   instrument. Counting panes would pass for a shell where the second pane is a view of the
   first, which is the only way this feature can be wrong quietly. The channels carry the
-  positive half: `/ws/market/SYMBOL/TIMEFRAME` is a per-pane claim and `/ws/orderbook/SYMBOL` is
-  a page-level one, so which socket is open says which chart the page thinks it is showing.
+  positive half: `/ws/market/SYMBOL/TIMEFRAME` is a *series* claim (one socket however many
+  panes show it) and `/ws/orderbook/SYMBOL` is the page's one book, so which socket is open
+  says which series the page is reading.
 
   Every one of those checks was then run against the bug it names — the pane boundary replaced
   by a document-wide lookup, the clone replaced by the node itself, the cap removed, the last
-  close button unguarded, `destroy` not closing its channel — by `tools/guard_check.py`, which
-  patches one thing, runs the harness, and requires the named check to fail. Two of them did
-  not, which is how the harness came to be sending a non-bubbling `change` event: no browser
-  sends one, the page listens on the container, and the check that needed it had been passing
-  because the pane it was about happened to be active already.
+  close button unguarded, `destroy` leaving its subscription on the shared hub — by
+  `tools/guard_check.py`, which patches one thing, runs the harness, and requires the named
+  check to fail. Two of them did not, which is how the harness came to be sending a
+  non-bubbling `change` event: no browser sends one, the page listens on the container, and the
+  check that needed it had been passing because the pane it was about happened to be active
+  already.
 
-  **What a pane does not do yet.** It cannot be reordered or resized against its neighbour, and
-  there is no layout beyond the row — a stack and a grid are the obvious next shapes. Two panes
-  on one symbol also fetch that symbol's candles twice, which is correct and wasteful in equal
-  measure.
+  **What a pane does not do yet.** It cannot be reordered or resized against its neighbour; the
+  wall's cells are all the same size and the column count is the only size control. Two panes
+  on one symbol still fetch that symbol's candles twice over HTTP — the *live* stream is
+  shared, the history request is not.
+
+  ### The wall: a hundred charts
+
+  Added 2026-10-26. The row layout answered "show me a second chart"; it could not answer "show
+  me the market" without producing four charts and then refusing. The request was explicit: up
+  to a hundred panes. Three decisions made that a wall rather than a bigger row.
+
+  | decision | why |
+  |---|---|
+  | **two modes, one set of panes** — Split (1–4, two per row with draggable row splitters) and Grid (columns 1–10, rows auto, cells at least 220px, scrolling both ways) | the four-pane arrangement is still the right one for comparing two or three series; the wall is for breadth. Switching modes *moves* the existing nodes, so every pane keeps its series, window, drawings and subscription. Nothing is rebuilt. |
+  | **one websocket per series, not per pane** — a page-level hub keyed `SYMBOL/timeframe`, refcounted by its listeners | a hundred panes on five series is five streams of the same information. The hub decodes each frame once and fans it out; a pane closing only closes the channel when the last reader leaves it. Retries back off 2–5s; a `nofeed` notice is not retried, because the server has already said why. |
+  | **visible only** — an `IntersectionObserver` on the wall, `rootMargin: 120px` | offscreen panes unsubscribe from the hub, skip `render`/`draw`, and say `paused · off screen` on the badge. Scrolling back refetches the window and reopens the channel, because the candles moved while nothing was listening. A DOM without `IntersectionObserver` treats every pane as visible — the old behavior, and correct for that DOM. |
+
+  The grid owns the columns through one custom property (`--chart-cols`), and the panes are its
+  direct children — no row wrappers, no splitters. Mode and column count persist in
+  `localStorage["atp.chartLayout"]`. The split option is disabled while the wall holds more than
+  four rather than dropping charts to fit; the add control names the cap (`(n/100)`) and goes
+  disabled at a hundred. Expanding a pane in a scrolling wall saves the scroll origin and
+  restores it on collapse.
+
+  **How the wall is checked.** jsdom has no `IntersectionObserver`, so the harness supplies the
+  API's shape and a `__intersect(node, false)` hook that plays the platform's part. That is what
+  makes the pause path observable at all: the check asserts the pane's socket closes, the badge
+  says paused, a wheel builds no scene, and returning reopens a channel. The harness then drives
+  the wall to its actual cap — a hundred clicks — and asserts the control disabled, a
+  hundred-and-first `addPane()` refused, and no more than five market streams for a hundred
+  charts. Each of
+  those claims has a mutation that must break it, including "the observer never says you left
+  the screen" and "every pane opens its own channel for a shared series".
+
+  **What the wall does not do yet.** Panes cannot be dragged to reorder or resized individually;
+  a cell is the column count's size. Pane *nodes* all exist from the moment they are added — only
+  their streams and their rendering are gated — so a hundred empty canvases is still a hundred
+  DOM subtrees. And the per-pane history fetch remains: the wall shares the live channel, not
+  the backfill.
 
   ### What this interaction does not do yet
 
@@ -766,7 +804,8 @@ CPU calc   GPU-friendly buffers
   page-level, and what happens when there are four of them and the window is narrow. All three
   are now written down under *More than one chart* above, and built. The layout half is the same
   question as *The layout: what gives way when the window narrows*, because four panes in a row
-  and one pane in a row are the same flex container.
+  and one pane in a row are the same flex container. (The grid wall added later is a different
+  container with a different cap; see *The wall: a hundred charts*.)
 
   The one thing that made it cheap was already true and is worth naming: `build_scene` is a
   pure function of its request, so a pane is a *view* of a stateless engine and the second pane

@@ -19,6 +19,7 @@ Two things it learned the hard way, both of which are the point of running it:
 Usage: python tools/guard_check.py [substring-of-a-description]
 """
 import atexit
+import os
 import re
 import shutil
 import signal
@@ -30,20 +31,23 @@ ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "frontend" / "app" / "app.js"
 HARNESS = ROOT / "tools" / "shell_check.mjs"
 BACKUP = ROOT / "target" / "guard_backup"
-NODE = "C:/Users/haizard/.workbuddy-ai/binaries/node/versions/22.22.2-2/node.exe"
-NODE_PATH = "C:/Users/haizard/.workbuddy-ai/binaries/node/workspace/node_modules"
+# Resolved rather than hardcoded: the managed Node runtime's path is a fact about
+# one machine. `NODE=...` overrides, `node` on PATH is the default, and jsdom is
+# found through the caller's NODE_PATH (the harness exits 2 without it, which this
+# script reports as "the harness reported no failure at all", so it surfaces).
+NODE = os.environ.get("NODE") or shutil.which("node") or "node"
+NODE_PATH = os.environ.get("NODE_PATH", "")
 
-EL_BOUNDARY = (
-    "PANE_ELS.has(name) ? root.querySelector(`.${name}`) : document.getElementById(name);"
-)
-# The market socket, as `connectLive` builds it. Rewritten when `connectLive`
-# started keeping a handle on the socket it opened, so a superseded one cannot
-# speak for the pane -- a mutation anchored on the old one-liner would silently
-# stop matching, and a mutation that does not apply is a guard that never runs.
+EL_BOUNDARY = '    return root.querySelector(`.${name}`);'
+# The market socket, as `openMarketChannel` builds it. It moved there from
+# `connectLive` when the page started sharing one channel per series, so the
+# anchor moved with it -- a mutation written against the old one-liner would
+# silently stop matching, and a mutation that does not apply is a guard that
+# never runs.
 SOCKET = (
-    "    const ws = new WebSocket(\n"
-    "      `${scheme}://${location.host}/ws/market/${symbol}/${timeframe}${query}`\n"
-    "    );"
+    "  const ws = new WebSocket(\n"
+    "    `${scheme}://${location.host}/ws/market/${symbol}/${timeframe}${query}`\n"
+    "  );"
 )
 
 # (description, file, find, replace, checks that must fail)
@@ -52,7 +56,7 @@ MUTATIONS = [
         "a pane reads the first pane's controls instead of its own",
         APP,
         EL_BOUNDARY,
-        "PANE_ELS.has(name) ? document.querySelector(`.${name}`) : document.getElementById(name);",
+        '    return document.querySelector(`.${name}`);',
         # Not "and it opens on the same instrument as the chart it came from": the
         # clone carries the first pane's option list, so its symbol select already
         # reads BTCUSDT before `fillSeries` runs. That check is worth having -- it
@@ -120,17 +124,17 @@ MUTATIONS = [
     (
         "the new pane is the first pane's node, not a clone of it",
         APP,
-        '  const node = activePane.root.cloneNode(true);\n  el("charts").appendChild(node);',
-        '  const node = activePane.root;\n  el("charts").appendChild(node);',
+        "  const node = activePane.root.cloneNode(true);",
+        "  const node = activePane.root;",
         ["adding a chart puts a second one beside it"],
     ),
     (
         "every pane opens the first pane's channel",
         APP,
         SOCKET,
-        "    const ws = new WebSocket(\n"
-        "      `${scheme}://${location.host}/ws/market/BTCUSDT/5m${query}`\n"
-        "    );",
+        "  const ws = new WebSocket(\n"
+        "    `${scheme}://${location.host}/ws/market/BTCUSDT/5m${query}`\n"
+        "  );",
         ["and each one holds its own market channel"],
     ),
     (
@@ -159,15 +163,15 @@ MUTATIONS = [
     (
         "the add button stays live past the cap",
         APP,
-        '  el("split").disabled = panes.length >= MAX_PANES;',
+        "    add.disabled = panes.length >= paneCap();",
         "",
         ["and the button that would add a fifth says so instead of refusing"],
     ),
     (
         "the add button never comes back",
         APP,
-        '  el("split").disabled = panes.length >= MAX_PANES;',
-        '  el("split").disabled = true;',
+        "    add.disabled = panes.length >= paneCap();",
+        "    add.disabled = true;",
         ["adding a chart puts a second one beside it"],
     ),
     (
@@ -187,9 +191,16 @@ MUTATIONS = [
     (
         "a closed pane leaves its market channel running",
         APP,
-        "    destroy() {\n      if (socket) socket.close();",
-        "    destroy() {\n      if (false && socket) socket.close();",
-        ["and its market channel was closed with it, not left running"],
+        "      closeMenu();\n"
+        "      if (liveSubscribed) {\n"
+        "        unsubscribeMarket(liveKey, onMarketEvent);\n"
+        "        liveSubscribed = false;\n"
+        "      }",
+        "      closeMenu();\n"
+        "      if (liveSubscribed) {\n"
+        "        liveSubscribed = false;\n"
+        "      }",
+        ["and a chart whose series no one else held closes that channel"],
     ),
     (
         "the last pane is closable",
@@ -234,16 +245,20 @@ MUTATIONS = [
     (
         "a notice on the market channel is ignored",
         APP,
-        '      } else if (frame.type === "notice") {',
-        "      } else if (false) {",
+        "    } else if (frame.type === \"notice\") {\n"
+        "      // The server's explanation outranks any pane's own note.",
+        "    } else if (false) {\n"
+        "      // The server's explanation outranks any pane's own note.",
         ["a notice on the market channel reaches the strip under the chart"],
     ),
     (
         "the notice is written to the strip but not held",
         APP,
-        '        feedNotice = frame.message;\n        live.state = "nofeed";\n'
-        '        el("chartNote").textContent = feedNotice;',
-        '        live.state = "nofeed";\n        el("chartNote").textContent = frame.message;',
+        "      feedNotice = event.message;\n"
+        '      live.state = "nofeed";\n'
+        "      el(\"chartNote\").textContent = feedNotice;",
+        '      live.state = "nofeed";\n'
+        "      el(\"chartNote\").textContent = event.message;",
         ["and it survives the render a pan would have triggered"],
     ),
     (
@@ -276,8 +291,8 @@ MUTATIONS = [
     (
         "the badge never learns that a frame arrived",
         APP,
-        "        live.at = Date.now();",
-        "        live.at = 0;",
+        "    live.at = Date.now();",
+        "    live.at = 0;",
         ["a bar on the channel makes the badge say live, with the age as the evidence"],
     ),
     (
@@ -297,8 +312,8 @@ MUTATIONS = [
     (
         "a refused channel is not remembered as refused",
         APP,
-        '        live.state = "nofeed";',
-        '        live.state = "offline";',
+        '      live.state = "nofeed";',
+        '      live.state = "offline";',
         ["a channel the server refused to feed says so, rather than saying offline"],
     ),
     (
@@ -325,8 +340,8 @@ MUTATIONS = [
     (
         "a candle published after a notice does not outrank the notice",
         APP,
-        '        live.state = "open";\n        render();',
-        "        render();",
+        '    live.state = "open";\n    render();',
+        "    render();",
         ["and a candle published by something else outranks the notice"],
     ),
     # The order book. Three ways its channel ends and three different things the
@@ -425,6 +440,143 @@ MUTATIONS = [
         '    <p class="muted">Scan complete.</p>',
         ["and the server's own summary is shown, not a sentence invented here"],
     ),
+    # --- the wall -------------------------------------------------------------
+    #
+    # The row layout and the grid are one page with two arrangements. These
+    # mutations each break one of the claims that make the wall a wall: that it
+    # is one container rather than stacked rows, that the columns are the user's,
+    # that the choice survives a reload, and that its cap is a hundred rather
+    # than the row layout's four.
+    (
+        "grid mode keeps the row wrappers it was supposed to replace",
+        APP,
+        "  if (layoutMode === \"grid\") {\n"
+        "    for (const pane of panes) charts.appendChild(pane.root);\n"
+        "    return;\n"
+        "  }",
+        "  if (layoutMode === \"grid\") {\n"
+        "    for (let i = 0; i < panes.length; i += 2) {\n"
+        "      const row = document.createElement(\"div\");\n"
+        "      row.className = \"chartRow\";\n"
+        "      row.appendChild(panes[i].root);\n"
+        "      if (panes[i + 1]) row.appendChild(panes[i + 1].root);\n"
+        "      charts.appendChild(row);\n"
+        "    }\n"
+        "    return;\n"
+        "  }",
+        ["and its cells are direct children, with no row wrappers left over"],
+    ),
+    (
+        "the grid class is never put on the chart area",
+        APP,
+        '  charts.classList.toggle("gridLayout", layoutMode === "grid");',
+        '  charts.classList.toggle("gridLayout", false);',
+        ["choosing Grid turns the chart area into one wall"],
+    ),
+    (
+        "the column control is shown in the row layout too",
+        APP,
+        '    columns.hidden = layoutMode !== "grid";',
+        "    columns.hidden = false;",
+        ["and the column control goes away with the grid it describes"],
+    ),
+    (
+        "the column count the user picks is ignored",
+        APP,
+        "  if (columns === gridColumns) return;\n  gridColumns = columns;",
+        "  if (columns === gridColumns) return;\n  gridColumns = 2;",
+        ["the wall takes the column count the user picks"],
+    ),
+    (
+        "the layout choice is never written down",
+        APP,
+        "    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ mode: layoutMode, columns: gridColumns }));",
+        "    void LAYOUT_KEY;",
+        ["and the choice is written down, so a reload opens the same wall"],
+    ),
+    (
+        "the split option stays open to a wall it cannot show",
+        APP,
+        "    if (split) split.disabled = panes.length > MAX_PANES;",
+        "    if (split) split.disabled = false;",
+        ["and the split option says why it cannot take them, instead of dropping four"],
+    ),
+    (
+        "switching back to rows drops the charts that do not fit",
+        APP,
+        '  if (mode === "split" && panes.length > MAX_PANES) {\n'
+        "    syncLayoutControls();\n"
+        "    return;\n"
+        "  }",
+        "",
+        ["switching back to rows is refused while the wall holds more than four"],
+    ),
+    (
+        "the wall caps at the row layout's four",
+        APP,
+        "const MAX_PANES_GRID = 100;",
+        "const MAX_PANES_GRID = 4;",
+        [
+            "and five charts fit where the row layout stops at four",
+            "the wall stops at a hundred charts",
+        ],
+    ),
+    # --- what a hundred charts may not cost ----------------------------------
+    #
+    # The visibility gate and the shared hub are the reason a wall of a hundred
+    # is affordable at all. One mutation takes the gate away, one makes the gate
+    # never see a departure, one leaves the subscription behind, and one gives
+    # every pane its own channel for a series that should have one.
+    (
+        "an offscreen pane still rebuilds its scene",
+        APP,
+        "    if (!visible) return;\n    const wrap = el(\"chart\").parentElement;",
+        "    const wrap = el(\"chart\").parentElement;",
+        ["and a gesture on it does not rebuild a scene nobody can see"],
+    ),
+    (
+        "the observer never tells a pane it left the screen",
+        APP,
+        "        if (watched) watched.setVisible(entry.isIntersecting);",
+        "        if (watched) watched.setVisible(true);",
+        ["a pane that scrolls off screen keeps its DOM but gives up its channel"],
+    ),
+    (
+        "an offscreen pane keeps its market channel",
+        APP,
+        "    if (!on) {\n"
+        "      if (liveSubscribed) {\n"
+        "        unsubscribeMarket(liveKey, onMarketEvent);\n"
+        "        liveSubscribed = false;\n"
+        "      }",
+        "    if (!on) {\n"
+        "      if (liveSubscribed) {\n"
+        "        liveSubscribed = false;\n"
+        "      }",
+        ["a pane that scrolls off screen keeps its DOM but gives up its channel"],
+    ),
+    (
+        "an offscreen pane calls a deliberate close a failure",
+        APP,
+        '      live.state = "paused";\n      live.at = 0;',
+        '      live.state = "offline";\n      live.at = 0;',
+        ["and it says it is paused rather than calling a deliberate close a failure"],
+    ),
+    (
+        "a pane that scrolls back does not reopen its channel",
+        APP,
+        "    connectLive();\n    refresh().then(() => { if (visible) connectLive(); });",
+        "    refresh().then(() => {});",
+        ["scrolling back into view reopens a channel of its own"],
+    ),
+    (
+        "each pane opens its own channel for a shared series",
+        APP,
+        "function marketKey(symbol, timeframe) {\n  return `${symbol}/${timeframe}`;\n}",
+        "let marketUnto = 0;\nfunction marketKey(symbol, timeframe) {\n"
+        "  return `${symbol}/${timeframe}#${(marketUnto += 1)}`;\n}",
+        ["a hundred charts do not open a hundred market streams"],
+    ),
 ]
 
 originals = {}
@@ -450,6 +602,12 @@ signal.signal(signal.SIGINT, on_signal)
 
 
 def run_harness():
+    # Inherit the caller's environment: the harness needs jsdom through
+    # NODE_PATH, and the previous Windows-only literal made this script a fact
+    # about one machine rather than a tool.
+    env = dict(os.environ)
+    if NODE_PATH:
+        env["NODE_PATH"] = NODE_PATH
     proc = subprocess.run(
         [NODE, "tools/shell_check.mjs"],
         cwd=str(ROOT),
@@ -457,7 +615,7 @@ def run_harness():
         text=True,
         encoding="utf-8",
         errors="replace",
-        env={"NODE_PATH": NODE_PATH, "SYSTEMROOT": "C:\\Windows", "PATH": "C:\\Windows"},
+        env=env,
     )
     out = (proc.stdout or "") + (proc.stderr or "")
     failed = set()

@@ -88,6 +88,12 @@
     clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
   }
   h1 span { color: var(--muted); font-weight: 400; }
+  /* The layout pair sits beside the add button. The columns select exists
+     only in grid mode, so the two never offer a control that would do
+     nothing in the current layout. */
+  #layoutCtl { display: flex; align-items: center; gap: 6px; }
+  #layoutCtl select { padding: 4px 6px; font-size: 12px; }
+  #layoutCtl select[hidden] { display: none; }
   select, input, button, textarea {
     background: var(--panel-2); color: var(--text);
     border: 1px solid transparent; border-radius: 6px;
@@ -162,6 +168,27 @@
   }
   .chartRow:has(> .chartPane:only-child) { grid-template-columns: 1fr; }
   .chartRow.single { grid-template-columns: 1fr; }
+  /*
+    The grid wall. Split mode keeps the row wrappers above; grid mode drops
+    them and lays every pane straight into one scrolling grid, so a hundred
+    charts are one element to scroll rather than fifty rows to manage.
+
+    `--chart-cols` is written by the page from the columns select. The cell
+    has a floor as well as a share: ten columns on a laptop are narrower than
+    a toolbar, so the wall scrolls sideways rather than squeezing the charts
+    into sticks. Rows do the same down the page.
+  */
+  #charts.gridLayout {
+    display: grid;
+    grid-template-columns: repeat(var(--chart-cols, 2), minmax(220px, 1fr));
+    grid-auto-rows: minmax(220px, 1fr);
+    gap: 1px; overflow: auto;
+    background: var(--line);
+  }
+  #charts.gridLayout > .chartPane { border: 0; background: var(--bg); }
+  /* Collapsed in a wall: the title bar is the pane, and the cell keeps its
+     height so the grid does not reflow around it. */
+  #charts.gridLayout > .chartPane.min { align-self: start; }
   /*
     Splitters. A 6px hit area (3px visible line, 3px invisible breathing room
     each side -- a 1px handle is a fine motor test), `col-resize`/`row-resize`
@@ -405,8 +432,10 @@
   .chartPane.exp { position: absolute; inset: 0; z-index: 30; }
   /* `.exp-ing` is belt-and-braces: `#charts` is relative either way, so an
      expanded pane always has its positioning context even if a future edit
-     moves the base rule. */
-  #charts.exp-ing { position: relative; }
+     moves the base rule. `overflow: hidden` is what keeps the wall from
+     scrolling out from under the expanded pane -- the pane expands at the
+     scroll origin, which `setExpanded` restores to before showing it. */
+  #charts.exp-ing { position: relative; overflow: hidden; }
   /*
     The right-click chart menu. It is a plain positioned column that *hosts*
     the pane's real controls while open (see `wireContextMenu`), so there is no
@@ -1053,6 +1082,10 @@
     /* One pane per row on a narrow screen: 450px per column is under the
        width a candlestick chart stops being readable at. */
     .chartRow { grid-template-columns: 1fr; }
+    /* One column on a phone, whatever the columns select says: a 220px cell
+       is already the floor a chart stops being readable at, and ten of them
+       do not fit. The rows keep their own height and scroll instead. */
+    #charts.gridLayout { grid-template-columns: 1fr; grid-auto-rows: minmax(260px, auto); }
     .chartPane { border-left: 0; border-top: 1px solid var(--line); }
     .chartPane:first-child { border-top: 0; }
     .chartWrap { flex: 0 0 auto; height: 60vh; min-height: 260px; }
@@ -1757,7 +1790,33 @@
     already there. Everything that describes a series -- symbol, timeframe, bar
     count, chart type, zones, Fit -- belongs to a pane and lives in its bar.
   -->
-  <button id="split" title="Add a second chart beside this one">＋ Panels</button>
+  <button id="split" title="Add another chart beside this one">＋ Panels</button>
+  <!--
+    How the charts are arranged. Split is the four-pane row layout the page
+    grew up with, splitter handles included. Grid is the wall: up to a
+    hundred panes in one scrolling grid whose width the columns select sets.
+    The split option is disabled while the wall holds more than four charts --
+    the row layout has no honest way to show them -- and comes back as the
+    wall shrinks.
+  -->
+  <div id="layoutCtl">
+    <select id="layoutMode" aria-label="Chart layout" title="Split: up to four charts in rows. Grid: a scrolling wall of up to 100.">
+      <option value="split">Split</option>
+      <option value="grid">Grid</option>
+    </select>
+    <select id="chartCols" aria-label="Grid columns" title="How many chart columns the grid shows" hidden>
+      <option value="1">1 col</option>
+      <option value="2" selected>2 cols</option>
+      <option value="3">3 cols</option>
+      <option value="4">4 cols</option>
+      <option value="5">5 cols</option>
+      <option value="6">6 cols</option>
+      <option value="7">7 cols</option>
+      <option value="8">8 cols</option>
+      <option value="9">9 cols</option>
+      <option value="10">10 cols</option>
+    </select>
+  </div>
   <span class="spacer"></span>
   <span id="session">not signed in</span>
   <button id="signinToggle" class="primary">Sign in</button>

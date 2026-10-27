@@ -46,7 +46,9 @@ the native unit tests nor the browser exercise.
 
 Built: candlestick/heikin-ashi/bar/line/area/footprint chart modes, volume profile,
 VWAP/POC/VAH/VAL levels, delta/CVD strip, thesis overlay, backtest and paper-bot panes,
-session auth, and the strategy editor in **natural-language and raw-DSL modes**.
+session auth, the strategy editor in **natural-language and raw-DSL modes**, and a chart
+layout with a four-pane split or a scrolling grid wall of up to 100 panes that share one
+live stream per series.
 
 Not built: the **visual builder** editor mode (the third of `docs/14`'s three), the
 DOM/order-book panel — it has no feed, `/ws/orderbook/{symbol}` answers 503 — and
