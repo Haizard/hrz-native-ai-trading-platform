@@ -25,6 +25,7 @@ pub mod broker_accounts;
 pub mod chart_sessions;
 pub mod chart_snapshots;
 pub mod chats;
+pub mod community;
 pub mod config;
 pub mod drawings;
 pub mod error;
@@ -41,8 +42,10 @@ pub mod repositories;
 pub mod retention;
 pub mod skills;
 pub mod strategies;
+pub mod subscriptions;
 pub mod users;
 pub mod watch;
+pub mod workspace_state;
 
 pub use agent_memory::{
     forget as forget_memory, recall as recall_memories, remember, MemoryRow, NewMemory,
@@ -53,7 +56,9 @@ pub use provider_configs::{
     NewProviderConfig, ProviderConfigRow, SealedProviderKey,
 };
 
-pub use bots::{create_bot, delete_bot, get_bot, list_bots, set_status, BotRow, STATUSES};
+pub use bots::{
+    create_bot, delete_bot, find_bot_by_key, get_bot, list_bots, set_status, BotRow, STATUSES,
+};
 pub use broker_accounts::{
     broker_account_for_bot, broker_account_secrets, count_bots_for_broker_account,
     create_broker_account, delete_broker_account, get_broker_account, list_broker_accounts,
@@ -70,9 +75,17 @@ pub use chart_snapshots::{
     NewChartSnapshot,
 };
 pub use chats::{
-    append_turn, conversation_owned, create_conversation, delete_conversation,
-    get_conversation, list_conversations, list_turns, ConversationSummary, NewTurn, TurnRow,
-    MAX_CONVERSATIONS,
+    append_turn, conversation_owned, create_conversation, delete_conversation, get_conversation,
+    list_conversations, list_turns, ConversationSummary, NewTurn, TurnRow, MAX_CONVERSATIONS,
+};
+pub use community::{
+    count_author_indicators, count_community_installs, create_community_indicator,
+    create_community_version, get_community_indicator, get_community_indicator_by_id,
+    get_community_install, get_community_version, install_community_indicator,
+    list_author_indicators, list_community_indicators, list_community_installs,
+    list_community_versions, report_community_indicator, update_community_indicator,
+    update_community_install, CommunityIndicatorRow, CommunityInstallRow, CommunityListItem,
+    CommunityVersionRow, InstallOutcome, NewCommunityItem, NewCommunityVersion, UpdateOutcome,
 };
 pub use config::DatabaseConfig;
 pub use drawings::{
@@ -81,9 +94,10 @@ pub use drawings::{
 };
 pub use error::DbError;
 pub use indicator_workspaces::{
-    approve_indicator_bot_draft, create_indicator_bot_draft, create_indicator_revision,
-    create_indicator_workspace, create_indicator_workspace_message, delete_indicator_workspace,
-    get_indicator_bot_draft, get_indicator_revision, get_indicator_workspace,
+    approve_indicator_bot_draft, count_indicator_alert_preferences, create_indicator_bot_draft,
+    create_indicator_revision, create_indicator_workspace, create_indicator_workspace_message,
+    delete_indicator_workspace, get_indicator_bot_draft, get_indicator_revision,
+    get_indicator_workspace, indicator_alert_preference_exists,
     list_enabled_indicator_alert_preferences, list_indicator_alert_preferences,
     list_indicator_bot_drafts, list_indicator_revisions, list_indicator_workspace_messages,
     list_indicator_workspaces, restore_indicator_revision, set_indicator_alert_preference,
@@ -108,9 +122,7 @@ pub use paper::{
     set_bot_status, strategy_paper_record, AuditEvent, BotSummary, ExecutedTrade, Notification,
     StrategyPaperRecord,
 };
-pub use pattern_library::{
-    delete_pattern, insert_pattern, list_patterns, NewPattern, PatternRow,
-};
+pub use pattern_library::{delete_pattern, insert_pattern, list_patterns, NewPattern, PatternRow};
 pub use repositories::TradeCoverage;
 pub use repositories::{dt_to_ns, ns_to_dt};
 pub use retention::{
@@ -126,7 +138,13 @@ pub use strategies::{
     get_strategy, list_backtests, list_strategies, newest_backtest_for_symbol, BacktestRow,
     StrategyRow,
 };
+pub use subscriptions::{
+    consume_usage, count_active_bots, count_chart_sessions, count_enabled_watch_monitors,
+    count_watch_monitors, get_subscription, record_billing_event, set_cancel_at_period_end,
+    upsert_subscription, usage_for_period, SubscriptionRow, SubscriptionWrite, UsageRow,
+};
 pub use users::{create_user, delete_user, find_by_email, find_by_id, normalize_email, UserRow};
+pub use workspace_state::{get_workspace_state, put_workspace_state};
 
 /// Embedded migrations from `crates/db/migrations`.
 ///

@@ -10,6 +10,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::auth::UserContext;
+use crate::billing::{enforce_capacity, Resource};
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::AppState;
@@ -62,6 +63,23 @@ pub async fn create_monitor(
                 &format!("`{timeframe}` is not a resolution the engine accepts"),
             )
         })?;
+    let existing =
+        db::watch::find_watch_monitor(database.pool(), user.user_id, &symbol, &timeframe).await?;
+    match &existing {
+        // A brand-new scope is a new watcher, and the saved total is capped.
+        None => {
+            let saved = db::count_watch_monitors(database.pool(), user.user_id).await?;
+            enforce_capacity(&state, user.user_id, Resource::Watchers, saved).await?;
+        }
+        // Refreshing a live monitor changes its skill, not the watcher count.
+        Some(monitor) if monitor.enabled => {}
+        // A disabled monitor being switched back on is a watcher waking up,
+        // and the enabled total is capped.
+        Some(_) => {
+            let enabled = db::count_enabled_watch_monitors(database.pool(), user.user_id).await?;
+            enforce_capacity(&state, user.user_id, Resource::Watchers, enabled).await?;
+        }
+    }
     let monitor = db::watch::upsert_watch_monitor(
         database.pool(),
         user.user_id,
@@ -92,6 +110,19 @@ pub async fn patch_monitor(
     ApiJson(body): ApiJson<PatchMonitorBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let database = database(&state)?;
+    if body.enabled {
+        if let Some(existing) = db::watch::list_watch_monitors(database.pool(), user.user_id)
+            .await?
+            .into_iter()
+            .find(|monitor| monitor.id == id)
+        {
+            if !existing.enabled {
+                let enabled =
+                    db::count_enabled_watch_monitors(database.pool(), user.user_id).await?;
+                enforce_capacity(&state, user.user_id, Resource::Watchers, enabled).await?;
+            }
+        }
+    }
     let monitor =
         db::watch::set_watch_monitor_enabled(database.pool(), user.user_id, id, body.enabled)
             .await?
@@ -134,7 +165,6 @@ pub async fn list_events(
     .await?;
     Ok(Json(serde_json::json!({ "events": events })))
 }
-
 
 /// The database, or the honest 503 every other route makes when it is absent.
 fn database(state: &AppState) -> Result<&std::sync::Arc<db::Database>, ApiError> {

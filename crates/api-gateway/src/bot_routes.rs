@@ -42,6 +42,7 @@ use trading_engine::{
 };
 
 use crate::auth::UserContext;
+use crate::billing::{enforce_capacity, Resource};
 use crate::bots::BotSupervisor;
 use crate::broker_routes;
 use crate::error::ApiError;
@@ -323,8 +324,8 @@ pub async fn create(
     // document it has always been. The kind is decided by the document's
     // shape, not by a new column.
     if source.contains("\"conditions\"") {
-        let composition: market_data::composer::Composition =
-            serde_json::from_str(&source).map_err(|e| {
+        let composition: market_data::composer::Composition = serde_json::from_str(&source)
+            .map_err(|e| {
                 ApiError::bad_request(
                     "COMPOSITION_INVALID",
                     format!("the stored document looks like a composition but does not parse: {e}"),
@@ -400,6 +401,37 @@ pub async fn create(
     .await
 }
 
+/// Refuse a new bot the plan cannot hold.
+///
+/// Paused bots still count: they hold their position and their slot, and
+/// resuming one must not be a way to exceed the cap. An idempotent replay is
+/// not a new bot -- the key already names a row, and refusing the retry would
+/// turn a successful create into an error on the second attempt.
+async fn enforce_bot_capacity(
+    state: &AppState,
+    database: &db::Database,
+    user_id: Uuid,
+    mode: &str,
+    idempotency_key: Option<&str>,
+) -> Result<(), ApiError> {
+    if let Some(key) = idempotency_key {
+        if db::find_bot_by_key(database.pool(), user_id, key)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+    }
+    let resource = if mode == "live" {
+        Resource::LiveBots
+    } else {
+        Resource::PaperBots
+    };
+    let current = db::count_active_bots(database.pool(), user_id, mode).await?;
+    enforce_capacity(state, user_id, resource, current).await?;
+    Ok(())
+}
+
 /// Build and start a paper bot.
 #[allow(clippy::too_many_arguments)]
 async fn start_paper(
@@ -414,6 +446,7 @@ async fn start_paper(
     rolling: strategy_runtime::RollingConfig,
     idempotency_key: Option<&str>,
 ) -> Result<(StatusCode, Json<BotResponse>), ApiError> {
+    enforce_bot_capacity(state, database, user.user_id, "paper", idempotency_key).await?;
     // The row first, so a crash between this and the start below leaves a
     // `running` bot with no task -- visible and recoverable -- rather than a
     // task with nowhere to write.
@@ -502,7 +535,11 @@ async fn start_composition_bot(
         return Err(ApiError::coded(
             StatusCode::UNPROCESSABLE_ENTITY,
             "COMPOSITION_INVALID",
-            errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
         ));
     }
     let symbol = composition.market.clone().ok_or_else(|| {
@@ -514,6 +551,14 @@ async fn start_composition_bot(
     })?;
     let symbol = symbol.to_uppercase();
     let idempotency_key = checked_idempotency_key(request.idempotency_key.as_deref())?;
+    enforce_bot_capacity(
+        state,
+        database,
+        user.user_id,
+        "paper",
+        idempotency_key.as_deref(),
+    )
+    .await?;
 
     let limits = RiskLimits {
         max_risk_pct: request.max_risk_pct.unwrap_or(1.0),
@@ -553,7 +598,9 @@ async fn start_composition_bot(
             ),
         },
     );
-    state.bots.start(bot_id, user.user_id, database.clone(), bot);
+    state
+        .bots
+        .start(bot_id, user.user_id, database.clone(), bot);
 
     Ok((
         StatusCode::CREATED,
@@ -599,6 +646,8 @@ async fn start_live(
         ));
     };
     let venue = venue.to_ascii_lowercase();
+
+    enforce_bot_capacity(state, database, user.user_id, "live", idempotency_key).await?;
 
     // Resolved *before* the gate, and its problems reported *with* the gate's.
     //

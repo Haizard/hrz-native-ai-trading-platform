@@ -353,6 +353,7 @@ mod tests {
         AppState {
             econ: crate::econ_routes::EconStore::default(),
             db: None,
+            billing: None,
             agent: None,
             skills: Arc::new(ai_agent::SkillLibrary::new()),
             auth: None,

@@ -42,15 +42,30 @@ pub fn composition_system_prompt(symbol: &str) -> String {
                 .map(|p| format!("{} (default {}, {}..{})", p.name, p.default, p.min, p.max))
                 .collect::<Vec<_>>()
                 .join("; ");
-            format!("- `{}` — {}. {}{}", c.id, c.name, c.description,
-                if params.is_empty() { String::new() } else { format!(" Parameters: {params}.") })
+            format!(
+                "- `{}` — {}. {}{}",
+                c.id,
+                c.name,
+                c.description,
+                if params.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Parameters: {params}.")
+                }
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");
     let unavailable = market_data::concepts::concept_registry()
         .iter()
         .filter(|c| !market_data::concepts::available_for(symbol).contains(c))
-        .map(|c| format!("- `{}` — needs {} which {symbol} does not serve", c.id, c.required_channels.names().join(", ")))
+        .map(|c| {
+            format!(
+                "- `{}` — needs {} which {symbol} does not serve",
+                c.id,
+                c.required_channels.names().join(", ")
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     format!(
@@ -116,7 +131,9 @@ pub async fn generate_composition(
     let tools = vec![tool];
     let mut messages = vec![Message {
         role: Role::User,
-        content: vec![ContentBlock::Text(format!("## Strategy description\n{description}"))],
+        content: vec![ContentBlock::Text(format!(
+            "## Strategy description\n{description}"
+        ))],
     }];
     let mut report = String::from("no composition was submitted");
     let mut last_document: Option<market_data::composer::Composition> = None;
@@ -128,7 +145,9 @@ pub async fn generate_composition(
                 system: Some(system.clone()),
                 messages: messages.clone(),
                 tools: tools.clone(),
-                tool_choice: Some(ai_agent::llm_client::ToolChoice::Tool("submit_composition".to_string())),
+                tool_choice: Some(ai_agent::llm_client::ToolChoice::Tool(
+                    "submit_composition".to_string(),
+                )),
                 max_tokens,
                 temperature: 0.2,
             })
@@ -157,7 +176,9 @@ pub async fn generate_composition(
             .get("document")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "the tool call carried no document".to_string())
-            .and_then(|text| serde_json::from_str(text).map_err(|e| format!("the document did not parse: {e}")));
+            .and_then(|text| {
+                serde_json::from_str(text).map_err(|e| format!("the document did not parse: {e}"))
+            });
         match parsed {
             Ok(document) => {
                 last_errors = market_data::composer::validate(&document)
@@ -222,7 +243,10 @@ mod tests {
                     }],
                 },
                 stop_reason: StopReason::ToolUse,
-                usage: Usage { input_tokens: None, output_tokens: None },
+                usage: Usage {
+                    input_tokens: None,
+                    output_tokens: None,
+                },
             },
             LlmResponse {
                 message: Message {
@@ -237,39 +261,70 @@ mod tests {
                     }],
                 },
                 stop_reason: StopReason::ToolUse,
-                usage: Usage { input_tokens: None, output_tokens: None },
+                usage: Usage {
+                    input_tokens: None,
+                    output_tokens: None,
+                },
             },
         ]);
         let generated = generate_composition(&llm, "BTCUSDT", "a bos play", 4096)
             .await
             .expect("generated");
-        assert!(generated.valid, "the repair fixed it: {:?}", generated.errors);
+        assert!(
+            generated.valid,
+            "the repair fixed it: {:?}",
+            generated.errors
+        );
         assert_eq!(generated.attempts, 2, "one refusal, one fix");
-        assert_eq!(generated.document.expect("doc").conditions, market_data::composer::Condition::Concept {
-            concept: "smc.bos".to_string(),
-            direction: market_data::composer::DirectionReq::Bullish,
-            lookback_bars: None,
-        });
+        assert_eq!(
+            generated.document.expect("doc").conditions,
+            market_data::composer::Condition::Concept {
+                concept: "smc.bos".to_string(),
+                symbol: None,
+                direction: market_data::composer::DirectionReq::Bullish,
+                lookback_bars: None,
+                timeframe: None,
+                min_bars_since: None,
+            }
+        );
         // The repair message went back with the registry's own words.
         let requests = llm.requests();
         assert_eq!(requests.len(), 2, "a refusal, then the fix");
         let repair = requests[1].messages.last().expect("repair message");
         let repair_text = format!("{repair:?}");
-        assert!(repair_text.contains("smc.ob"), "the refusal named the invented id: {repair_text}");
-        assert!(repair_text.contains("not a registered concept"), "{repair_text}");
+        assert!(
+            repair_text.contains("smc.ob"),
+            "the refusal named the invented id: {repair_text}"
+        );
+        assert!(
+            repair_text.contains("not a registered concept"),
+            "{repair_text}"
+        );
     }
 
     #[test]
     fn the_prompt_carries_the_gated_catalog_and_the_schema() {
         let prompt = composition_system_prompt("BTCUSDT");
         assert!(prompt.contains("`smc.bos`"), "the catalog is in the prompt");
-        assert!(prompt.contains("`order_flow.delta_shift`"), "the full list too");
+        assert!(
+            prompt.contains("`order_flow.delta_shift`"),
+            "the full list too"
+        );
         assert!(prompt.contains("submit"), "the tool instruction");
-        assert!(prompt.contains("\"type\": \"sequence\""), "the schema example");
-        assert!(!prompt.contains("unavailable on BTCUSDT"), "spot gates nothing");
+        assert!(
+            prompt.contains("\"type\": \"sequence\""),
+            "the schema example"
+        );
+        assert!(
+            !prompt.contains("unavailable on BTCUSDT"),
+            "spot gates nothing"
+        );
 
         let deriv = composition_system_prompt("DERIV:VOLATILITY 10");
-        assert!(deriv.contains("unavailable on DERIV:VOLATILITY 10"), "the refusal list");
+        assert!(
+            deriv.contains("unavailable on DERIV:VOLATILITY 10"),
+            "the refusal list"
+        );
         assert!(deriv.contains("trades_aggressor"), "with the reason");
     }
 }

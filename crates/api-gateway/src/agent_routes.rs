@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use ai_agent::{AgentAnswer, AskRequest, StrategyRequest};
 
 use crate::auth::UserContext;
+use crate::billing::{
+    enforce_usage, UsageMetric, CREDIT_CHART_ANALYSIS, CREDIT_STRATEGY_GENERATION,
+};
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::market_data::WindowMarketData;
@@ -168,6 +171,16 @@ pub async fn ask(
     ApiJson(body): ApiJson<AskBody>,
 ) -> Result<Json<AskResponse>, ApiError> {
     check_agent_limit(&state, &user)?;
+    // Plan credits are a second, monthly limit: the rate limit bounds a burst,
+    // this bounds the month's spend. Charged before the agent is resolved, so
+    // a request that cannot pay does no model work.
+    enforce_usage(
+        &state,
+        user.user_id,
+        UsageMetric::AiCredit,
+        CREDIT_CHART_ANALYSIS,
+    )
+    .await?;
     // The user's own provider when they stored one, the deployment primary
     // otherwise -- the precedence lives in [`resolve_agent`], not here.
     let agent = crate::provider_routes::resolve_agent(&state, &user).await?;
@@ -236,7 +249,9 @@ pub async fn ask(
         // Snapshots ride the same grant (`docs/45`): the agent's captures land
         // under the asking user's id, stamped created_by = ai at the door.
         request = request.with_snapshots(ai_agent::SnapshotsContext::new(
-            Arc::new(crate::market_data::DbSnapshotStore::new(Arc::clone(database))),
+            Arc::new(crate::market_data::DbSnapshotStore::new(Arc::clone(
+                database,
+            ))),
             user.user_id.to_string(),
         ));
     }
@@ -252,7 +267,8 @@ pub async fn ask(
     // vocabulary and the way it gets tested. Same honesty as the other
     // capabilities -- the tools report their absence when nothing is
     // attached.
-    request = request.with_concept_catalog(std::sync::Arc::new(crate::research::RegistryConceptCatalog));
+    request =
+        request.with_concept_catalog(std::sync::Arc::new(crate::research::RegistryConceptCatalog));
     let composition_runner = std::sync::Arc::new(crate::research::GatewayCompositionRunner {
         windows: state.windows.clone(),
     });
@@ -269,7 +285,9 @@ pub async fn ask(
     // needs those numbers, and the registry is the one place they come from.
     // Newest 12, from the last six hours of the watcher's lane.
     {
-        let lane = state.events.watch(&body.symbol.to_uppercase(), state.bots.history());
+        let lane = state
+            .events
+            .watch(&body.symbol.to_uppercase(), state.bots.history());
         let since = crate::now_ns() - 6 * 3_600_000_000_000;
         let lines: Vec<String> = lane
             .since(Some(since))
@@ -293,8 +311,13 @@ pub async fn ask(
                 };
                 format!(
                     "[{} v{}] {} {}{} {} -- {}",
-                    e.concept_id, e.concept_version, dir, e.concept_id.split('.').nth(1).unwrap_or(&e.concept_id),
-                    level, zone, match e.status {
+                    e.concept_id,
+                    e.concept_version,
+                    dir,
+                    e.concept_id.split('.').nth(1).unwrap_or(&e.concept_id),
+                    level,
+                    zone,
+                    match e.status {
                         market_data::concepts::ConceptStatus::Forming => "forming",
                         market_data::concepts::ConceptStatus::Confirmed => "confirmed",
                         market_data::concepts::ConceptStatus::Invalidated => "invalidated",
@@ -365,6 +388,13 @@ pub async fn generate_strategy(
     ApiJson(body): ApiJson<GenerateStrategyBody>,
 ) -> Result<Json<GenerateStrategyResponse>, ApiError> {
     check_agent_limit(&state, &user)?;
+    enforce_usage(
+        &state,
+        user.user_id,
+        UsageMetric::AiCredit,
+        CREDIT_STRATEGY_GENERATION,
+    )
+    .await?;
     // The same funnel `ask` uses: one precedence rule, no per-route spelling.
     let agent = crate::provider_routes::resolve_agent(&state, &user).await?;
 
@@ -430,7 +460,6 @@ pub(crate) fn to_response_with_chart(
         trace: include_trace.then_some(answer.trace),
     }
 }
-
 
 /// Body of `POST /agent/captures`: the shell's half of the capture
 /// rendezvous (`docs/48`).

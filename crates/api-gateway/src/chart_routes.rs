@@ -42,6 +42,7 @@ use ai_agent::MarketDataSource;
 use analytics_core::types::Timeframe;
 
 use crate::auth::UserContext;
+use crate::billing::{enforce_capacity, Resource};
 use crate::error::ApiError;
 use crate::extract::{ApiJson, ApiQuery};
 use crate::AppState;
@@ -132,10 +133,7 @@ pub struct SessionsResponse {
     pub sessions: Vec<SessionResponse>,
 }
 
-fn session_response(
-    row: &db::ChartSessionRow,
-    panels: Vec<db::ChartPanelRow>,
-) -> SessionResponse {
+fn session_response(row: &db::ChartSessionRow, panels: Vec<db::ChartPanelRow>) -> SessionResponse {
     SessionResponse {
         id: row.id.to_string(),
         name: row.name.clone(),
@@ -156,6 +154,10 @@ fn session_response(
     }
 }
 
+/// The grid's hard ceiling. Plans cap lower; this is what the engine's grid
+/// layout can render at all, so a session past it could not be restored.
+const MAX_SESSION_PANELS: usize = 100;
+
 /// Validate and convert a save body. Every panel's timeframe must be one the
 /// engine knows: a session the engine cannot restore is a save that lied.
 fn prepare_session(body: &SessionBody) -> Result<db::NewChartSession, ApiError> {
@@ -165,11 +167,11 @@ fn prepare_session(body: &SessionBody) -> Result<db::NewChartSession, ApiError> 
             "a session needs a name",
         ));
     }
-    if body.panels.len() > 16 {
+    if body.panels.len() > MAX_SESSION_PANELS {
         return Err(ApiError::bad_request(
             "invalid_session",
             format!(
-                "{} panels is past the grid's 16; split the workspace",
+                "{} panels is past the grid's {MAX_SESSION_PANELS}; split the workspace",
                 body.panels.len()
             ),
         ));
@@ -212,6 +214,21 @@ fn prepare_session(body: &SessionBody) -> Result<db::NewChartSession, ApiError> 
 }
 
 /// `GET /chart-sessions`
+/// The grid hard ceiling is per save; the plan's pane cap is per account.
+///
+/// `require_capacity` refuses when `current >= limit`, so the question asked
+/// here is about the *last* panel: a session of exactly the plan's cap fits,
+/// and one more does not.
+async fn enforce_panel_capacity(
+    state: &AppState,
+    user_id: Uuid,
+    panels: usize,
+) -> Result<(), ApiError> {
+    let current = (panels as i64).saturating_sub(1);
+    enforce_capacity(state, user_id, Resource::Panes, current).await?;
+    Ok(())
+}
+
 pub async fn list_sessions(
     State(state): State<AppState>,
     user: UserContext,
@@ -234,12 +251,12 @@ pub async fn create_session(
 ) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
     let database = database(&state)?;
     let new = prepare_session(&body)?;
+    let saved = db::count_chart_sessions(database.pool(), user.user_id).await?;
+    enforce_capacity(&state, user.user_id, Resource::Layouts, saved).await?;
+    enforce_panel_capacity(&state, user.user_id, new.panels.len()).await?;
     let row = db::create_chart_session(database.pool(), user.user_id, &new).await?;
     let panels = db::list_chart_panels(database.pool(), row.id).await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(session_response(&row, panels)),
-    ))
+    Ok((StatusCode::CREATED, Json(session_response(&row, panels))))
 }
 
 /// `GET /chart-sessions/{id}`
@@ -266,6 +283,7 @@ pub async fn update_session(
     let database = database(&state)?;
     let id = row_id(&id, "SESSION")?;
     let new = prepare_session(&body)?;
+    enforce_panel_capacity(&state, user.user_id, new.panels.len()).await?;
     let row = db::update_chart_session(database.pool(), user.user_id, id, &new)
         .await?
         .ok_or_else(|| unknown("SESSION"))?;
@@ -326,6 +344,9 @@ pub async fn restore_session(
             })
             .collect(),
     };
+    let saved = db::count_chart_sessions(database.pool(), user.user_id).await?;
+    enforce_capacity(&state, user.user_id, Resource::Layouts, saved).await?;
+    enforce_panel_capacity(&state, user.user_id, copy.panels.len()).await?;
     let created = db::create_chart_session(database.pool(), user.user_id, &copy).await?;
     let created_panels = db::list_chart_panels(database.pool(), created.id).await?;
     Ok((
@@ -453,7 +474,10 @@ pub async fn capture_snapshot(
     let timeframe = body.timeframe.parse::<Timeframe>().map_err(|_| {
         ApiError::bad_request(
             "unknown_timeframe",
-            format!("`{}` is not a timeframe this platform supports", body.timeframe),
+            format!(
+                "`{}` is not a timeframe this platform supports",
+                body.timeframe
+            ),
         )
     })?;
 
@@ -477,14 +501,14 @@ pub async fn capture_snapshot(
     let candles = data
         .candles(&symbol, timeframe, from, latest + timeframe.nanos())
         .await
-        .map_err(|e| ApiError::unavailable(format!("candles for {symbol} are not available: {e}")))?;
+        .map_err(|e| {
+            ApiError::unavailable(format!("candles for {symbol} are not available: {e}"))
+        })?;
     let price = candles.last().map(|c| c.close).ok_or_else(|| {
         ApiError::unavailable(format!("no candles for {symbol} {timeframe} in the window"))
     })?;
-    let structure = ai_agent::structure_digest(
-        &candles,
-        analytics_core::MarketStateConfig::default(),
-    );
+    let structure =
+        ai_agent::structure_digest(&candles, analytics_core::MarketStateConfig::default());
 
     // The user's drawings, frozen in the same shape the agent's captures
     // carry, ids included -- the compare diff is by identity.
@@ -670,7 +694,10 @@ pub async fn save_pattern(
     if !matches!(body.direction.as_str(), "bullish" | "bearish" | "neutral") {
         return Err(ApiError::bad_request(
             "invalid_direction",
-            format!("`{}` is not a direction; bullish, bearish or neutral", body.direction),
+            format!(
+                "`{}` is not a direction; bullish, bearish or neutral",
+                body.direction
+            ),
         ));
     }
     if !(0.0..=1.0).contains(&body.confidence) || !body.confidence.is_finite() {
@@ -687,7 +714,9 @@ pub async fn save_pattern(
         if !value.is_finite() || value <= 0.0 {
             return Err(ApiError::bad_request(
                 "invalid_level",
-                format!("`{name}` must be a positive price; a pattern without its levels is a label"),
+                format!(
+                    "`{name}` must be a positive price; a pattern without its levels is a label"
+                ),
             ));
         }
     }
@@ -700,7 +729,10 @@ pub async fn save_pattern(
     body.timeframe.parse::<Timeframe>().map_err(|_| {
         ApiError::bad_request(
             "unknown_timeframe",
-            format!("`{}` is not a timeframe this platform supports", body.timeframe),
+            format!(
+                "`{}` is not a timeframe this platform supports",
+                body.timeframe
+            ),
         )
     })?;
 
@@ -796,7 +828,10 @@ pub async fn scan_patterns(
     let timeframe = body.timeframe.parse::<Timeframe>().map_err(|_| {
         ApiError::bad_request(
             "unknown_timeframe",
-            format!("`{}` is not a timeframe this platform supports", body.timeframe),
+            format!(
+                "`{}` is not a timeframe this platform supports",
+                body.timeframe
+            ),
         )
     })?;
     let mut symbols: Vec<String> = Vec::new();
@@ -854,7 +889,16 @@ pub async fn scan_patterns(
     let mut rows = Vec::with_capacity(symbols.len());
     for symbol in &symbols {
         state.bots.ensure_feed_for(symbol);
-        let row = scan_one(&data, symbol, timeframe, lookback, &kinds, &config, min_confidence).await;
+        let row = scan_one(
+            &data,
+            symbol,
+            timeframe,
+            lookback,
+            &kinds,
+            &config,
+            min_confidence,
+        )
+        .await;
         rows.push(row);
     }
 
@@ -895,8 +939,7 @@ async fn scan_one(
                 candles.len()
             ));
         }
-        let structure =
-            analytics_core::detect_market_structure(&candles, Default::default());
+        let structure = analytics_core::detect_market_structure(&candles, Default::default());
         let mut matches = match kinds {
             // Every kind at once, then narrowed below -- one pass over the
             // swings, not one per kind.
@@ -979,10 +1022,9 @@ fn unknown(resource: &str) -> ApiError {
 }
 
 fn database(state: &AppState) -> Result<&std::sync::Arc<db::Database>, ApiError> {
-    state
-        .db
-        .as_ref()
-        .ok_or_else(|| ApiError::unavailable("no database configured; this resource cannot be stored"))
+    state.db.as_ref().ok_or_else(|| {
+        ApiError::unavailable("no database configured; this resource cannot be stored")
+    })
 }
 
 #[cfg(test)]
@@ -1033,13 +1075,17 @@ mod tests {
         let body = SessionBody {
             name: "everything".into(),
             is_template: false,
-            panels: panels(&[
-                "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P",
-                "Q",
-            ]),
+            panels: (0..=MAX_SESSION_PANELS)
+                .map(|index| PanelBody {
+                    symbol: format!("S{index}"),
+                    timeframe: "1m".into(),
+                    chart_type: None,
+                    indicators: serde_json::json!([]),
+                })
+                .collect(),
         };
-        let err = prepare_session(&body).expect_err("17 panels is past the grid");
-        assert!(err.message().contains("16"), "{}", err.message());
+        let err = prepare_session(&body).expect_err("101 panels is past the grid");
+        assert!(err.message().contains("100"), "{}", err.message());
     }
 
     #[test]
@@ -1074,8 +1120,18 @@ mod tests {
         assert_eq!(wire["is_template"], true);
         assert_eq!(wire["created_at"], 1_700_000_000_000_i64);
         let panel = &wire["panels"][0];
-        for key in ["id", "position", "symbol", "timeframe", "chart_type", "indicators"] {
-            assert!(panel.get(key).is_some(), "the panel wire lost `{key}`: {panel}");
+        for key in [
+            "id",
+            "position",
+            "symbol",
+            "timeframe",
+            "chart_type",
+            "indicators",
+        ] {
+            assert!(
+                panel.get(key).is_some(),
+                "the panel wire lost `{key}`: {panel}"
+            );
         }
     }
 

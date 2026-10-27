@@ -522,6 +522,48 @@ pub async fn list_indicator_alert_preferences(
         .map_err(Into::into)
 }
 
+/// Count every alert preference the user has saved, across workspaces.
+pub async fn count_indicator_alert_preferences(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<i64, DbError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM indicator_alert_preferences ap \
+         JOIN indicator_workspaces w ON w.id = ap.workspace_id \
+         WHERE w.user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}
+
+/// Whether one alert preference already exists.
+///
+/// The save route is an upsert; updating an existing preference is not a new
+/// alert and must not be refused because the user is at the plan's cap.
+pub async fn indicator_alert_preference_exists(
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    revision_id: Uuid,
+    event_name: &str,
+) -> Result<bool, DbError> {
+    let exists: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM indicator_alert_preferences ap \
+         JOIN indicator_workspaces w ON w.id = ap.workspace_id \
+         WHERE ap.workspace_id = $1 AND ap.revision_id = $2 AND ap.event_name = $3 \
+           AND w.user_id = $4",
+    )
+    .bind(workspace_id)
+    .bind(revision_id)
+    .bind(event_name)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(exists.is_some())
+}
+
 /// List all bot drafts for an owned workspace.
 pub async fn list_indicator_bot_drafts(
     pool: &PgPool,

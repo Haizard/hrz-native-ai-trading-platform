@@ -32,7 +32,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 use tracing::warn;
@@ -47,39 +47,42 @@ use crate::auth::AuthConfig;
 pub mod agent_routes;
 pub mod auth;
 pub mod auth_routes;
+pub mod billing;
 pub mod bot_routes;
 pub mod bots;
 pub mod broker_routes;
 pub mod capabilities;
-pub mod dom;
 pub mod captures;
-pub mod watch_routes;
-pub mod watcher;
-pub mod documents;
 pub mod chart_routes;
 pub mod chat_routes;
+pub mod community_routes;
+pub mod composition_codegen;
+pub mod concept_routes;
+pub mod documents;
+pub mod dom;
 pub mod drawing_routes;
+pub mod econ_routes;
 pub mod error;
 pub mod event_engine;
 pub mod extract;
 pub mod footprint_routes;
 pub mod indicator_alerts;
-pub mod parameter_sweep;
 pub mod indicator_preview;
 pub mod indicator_workspace_routes;
 pub mod market_data;
 pub mod market_routes;
 pub mod metrics;
 pub mod orderflow_routes;
-pub mod plot;
+pub mod parameter_sweep;
 pub mod pine_cheatsheet;
-pub mod trade_routes;
-pub mod composition_codegen;
-pub mod concept_routes;
-pub mod econ_routes;
 pub mod pine_codegen;
+pub mod plot;
 pub mod provider_routes;
 pub mod rate_limit;
+pub mod trade_routes;
+pub mod watch_routes;
+pub mod watcher;
+pub mod workspace_routes;
 // docs/38 Phase A: the host's BacktestRunner for the agent — backtests over
 // the window service, skills resolved to reference strategies.
 pub mod research;
@@ -102,6 +105,13 @@ pub struct AppState {
     pub econ: econ_routes::EconStore,
     /// Database handle. `None` when running without a database configured.
     pub db: Option<Arc<Database>>,
+    /// Subscriptions, entitlements and usage metering (`docs/52`).
+    ///
+    /// `None` when there is no database: a deployment that cannot store a
+    /// subscription says so at `/billing/*`. Gated routes then fall back to
+    /// Free behavior rather than granting a paid capability -- there is no
+    /// store to meter or record one in.
+    pub billing: Option<Arc<billing::BillingService>>,
     /// The agent. `None` when Bedrock is not configured.
     pub agent: Option<Arc<Agent>>,
     /// Skill library, loaded from disk at startup.
@@ -297,7 +307,10 @@ pub fn router(state: AppState) -> Router {
         .route("/concept-events/scan", get(concept_routes::scan))
         .route("/econ/latest", get(econ_routes::latest))
         .route("/econ/next", get(econ_routes::next))
-        .route("/econ/forecast", axum::routing::post(econ_routes::forecast_override))
+        .route(
+            "/econ/forecast",
+            axum::routing::post(econ_routes::forecast_override),
+        )
         .route("/econ/reaction", get(econ_routes::reaction))
         .route("/econ/macro", get(econ_routes::macro_context))
         .route("/news/latest", get(econ_routes::news_latest))
@@ -312,6 +325,48 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/register", post(auth_routes::register))
         .route("/auth/login", post(auth_routes::login))
         .route("/auth/me", get(auth_routes::me))
+        // Subscriptions (`docs/52`). The catalog is public so a pricing page
+        // can render before sign-in; everything about a subscription is
+        // owner-scoped, and the webhook is authenticated by its HMAC signature
+        // rather than by a session.
+        .route("/billing/plans", get(billing::plans_route))
+        .route("/billing/subscription", get(billing::entitlements))
+        .route("/billing/usage", get(billing::usage))
+        .route("/billing/subscribe", post(billing::subscribe))
+        .route("/billing/cancel", post(billing::cancel))
+        .route("/billing/resume", post(billing::resume))
+        .route("/billing/webhook", post(billing::webhook))
+        // Community indicators (`docs/53`). Browsing starts at Core and
+        // publishing at Elite; both gates live in the handlers.
+        .route(
+            "/community/indicators",
+            get(community_routes::list).post(community_routes::publish),
+        )
+        .route(
+            "/community/indicators/installed",
+            get(community_routes::installed),
+        )
+        .route("/community/indicators/mine", get(community_routes::mine))
+        .route(
+            "/community/indicators/{slug}",
+            get(community_routes::get).patch(community_routes::patch),
+        )
+        .route(
+            "/community/indicators/{slug}/versions",
+            post(community_routes::add_version),
+        )
+        .route(
+            "/community/indicators/{slug}/install",
+            post(community_routes::install),
+        )
+        .route(
+            "/community/indicators/{slug}/update",
+            post(community_routes::update),
+        )
+        .route(
+            "/community/indicators/{slug}/report",
+            post(community_routes::report),
+        )
         .route("/candles", get(market_routes::candles))
         .route("/symbols", get(market_routes::symbols))
         // Both literal paths must be registered before any `/symbols/{symbol}`
@@ -480,6 +535,13 @@ pub fn router(state: AppState) -> Router {
             "/chart-sessions/{id}/restore",
             post(chart_routes::restore_session),
         )
+        // The whole shell workspace, as one opaque snapshot (`docs/54`). A
+        // pane is a view, not a saved layout: it takes no plan slot, and
+        // restoring it is one read rather than N chart-session reads.
+        .route(
+            "/workspace",
+            get(workspace_routes::get).put(workspace_routes::put),
+        )
         // Point-in-time captures. The agent's take_snapshot tool and this
         // route write the same table; `created_by` says which door.
         .route(
@@ -513,7 +575,10 @@ pub fn router(state: AppState) -> Router {
         .route("/ws/events/{symbol}", get(event_engine::stream))
         .route("/agent/ask", post(agent_routes::ask))
         .route("/agent/captures", post(agent_routes::upload_capture))
-        .route("/watch-monitors", get(watch_routes::list_monitors).post(watch_routes::create_monitor))
+        .route(
+            "/watch-monitors",
+            get(watch_routes::list_monitors).post(watch_routes::create_monitor),
+        )
         .route(
             "/watch-monitors/{id}",
             axum::routing::patch(watch_routes::patch_monitor).delete(watch_routes::delete_monitor),

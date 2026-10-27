@@ -114,10 +114,12 @@ async fn check_monitor(
             return Ok(false);
         }
     }
-    let timeframe: Timeframe = monitor
-        .timeframe
-        .parse()
-        .map_err(|_| format!("monitor names a resolution the engine does not: {}", monitor.timeframe))?;
+    let timeframe: Timeframe = monitor.timeframe.parse().map_err(|_| {
+        format!(
+            "monitor names a resolution the engine does not: {}",
+            monitor.timeframe
+        )
+    })?;
     // The window: the newest candle and the one before it, because "crossed"
     // is a statement about two closes.
     let latest = data
@@ -127,7 +129,12 @@ async fn check_monitor(
         .ok_or_else(|| format!("no candles stored for {}", monitor.symbol))?;
     let width = timeframe.nanos();
     let candles = data
-        .candles(&monitor.symbol, timeframe, latest - 3 * width, latest + width)
+        .candles(
+            &monitor.symbol,
+            timeframe,
+            latest - 3 * width,
+            latest + width,
+        )
         .await
         .map_err(|e| e.to_string())?;
     if candles.len() < 2 {
@@ -150,10 +157,9 @@ async fn check_monitor(
             continue;
         };
         // The zone cooldown: one touch, one event, however long price loiters.
-        if let Some(last) =
-            db::watch::latest_watch_event_for_drawing(pool, monitor.id, drawing.id)
-                .await
-                .map_err(|e| e.to_string())?
+        if let Some(last) = db::watch::latest_watch_event_for_drawing(pool, monitor.id, drawing.id)
+            .await
+            .map_err(|e| e.to_string())?
         {
             if (Utc::now() - last).num_minutes() < i64::from(monitor.cooldown_minutes) {
                 continue;
@@ -332,6 +338,16 @@ async fn run_for_touch(
     state.bots.ensure_feed_for(&monitor.symbol.to_uppercase());
 
     let data = WindowMarketData::new(state.windows.clone());
+    // A watcher wake is a full agent run and costs the same credits as any
+    // other; without a balance the run is skipped rather than given away.
+    crate::billing::enforce_usage(
+        state,
+        monitor.user_id,
+        crate::billing::UsageMetric::AiCredit,
+        crate::billing::CREDIT_WATCHER_RUN,
+    )
+    .await
+    .map_err(|e| format!("the run was not charged: {}", e.message()))?;
     let answer = agent
         .ask(&ask, &data)
         .await
@@ -365,7 +381,12 @@ mod tests {
         }
     }
 
-    fn drawing(kind: &str, p1: f64, p2: Option<f64>, label: Option<&str>) -> db::drawings::DrawingRow {
+    fn drawing(
+        kind: &str,
+        p1: f64,
+        p2: Option<f64>,
+        label: Option<&str>,
+    ) -> db::drawings::DrawingRow {
         db::drawings::DrawingRow {
             id: uuid::Uuid::new_v4(),
             symbol: "BTCUSDT".to_string(),

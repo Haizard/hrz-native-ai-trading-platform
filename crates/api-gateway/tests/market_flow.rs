@@ -203,12 +203,16 @@ async fn a_window_the_buffer_covers_costs_nothing_to_serve() {
     let Some(h) = Harness::new().await else {
         return;
     };
+    // The bars are seeded at the epoch, so a Free account's 31-day history
+    // clamp would hide them before the buffer is ever consulted. This test is
+    // about serving from RAM, not about the clamp, so it asks as Elite.
+    let user = h.register_with_plan("elite").await;
     seed(&h, "BTCUSDT", "1m", 20, 60_000_000_000);
 
     let (status, body) = h
         .get(
             "/candles?symbol=BTCUSDT&timeframe=1m&from=0&to=1200000000000",
-            None,
+            Some(&user.token),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -217,6 +221,8 @@ async fn a_window_the_buffer_covers_costs_nothing_to_serve() {
     assert_eq!(candles.len(), 20, "twenty 1m bars in a 20-minute window");
     assert_eq!(body["source"]["memory"], 20, "every one of them from RAM");
     assert_eq!(body["source"]["venue"], 0, "and none from the venue");
+
+    user.cleanup(&h.database).await;
 }
 
 /// A window reaching further back than the buffer is served by the venue, and
@@ -231,6 +237,9 @@ async fn a_window_older_than_the_buffer_still_returns_what_ram_has() {
     let Some(h) = Harness::new().await else {
         return;
     };
+    // Same reason as the RAM-only test above: the seeded bars are decades old,
+    // and the plan's history clamp would answer first if this asked as Free.
+    let user = h.register_with_plan("elite").await;
     seed(&h, "BTCUSDT", "1m", 5, 60_000_000_000);
 
     // Starting well before the buffer's first bar, so the gap has to be asked
@@ -238,7 +247,7 @@ async fn a_window_older_than_the_buffer_still_returns_what_ram_has() {
     let (status, body) = h
         .get(
             "/candles?symbol=BTCUSDT&timeframe=1m&from=-600000000000&to=600000000000",
-            None,
+            Some(&user.token),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -247,6 +256,8 @@ async fn a_window_older_than_the_buffer_still_returns_what_ram_has() {
     assert_eq!(candles.len(), 5, "the buffered bars survive a failed fetch");
     assert_eq!(body["source"]["memory"], 5);
     assert_eq!(body["source"]["venue"], 0, "the venue refused");
+
+    user.cleanup(&h.database).await;
 }
 
 #[tokio::test]

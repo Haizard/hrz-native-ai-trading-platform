@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 
 use analytics_core::types::{Side, Timeframe};
 use analytics_core::{
-    bar_delta_stats_window, build_profile_memory, calculate_cvd_by_size,
-    calculate_vpin_series, delta_by_size_per_candle, detect_icebergs, SizeClass,
-    SizeClassConfig, VpinConfig,
+    bar_delta_stats_window, build_profile_memory, calculate_cvd_by_size, calculate_vpin_series,
+    delta_by_size_per_candle, detect_icebergs, SizeClass, SizeClassConfig, VpinConfig,
 };
 
+use crate::billing::{enforce_feature_optional, Feature};
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
 use crate::AppState;
@@ -65,7 +65,9 @@ fn parse_window(query: &WindowQuery) -> Result<ParsedWindow, ApiError> {
         timeframe,
         limit: query.limit.unwrap_or(120).clamp(1, MAX_CANDLES),
         from_to: match (query.from, query.to) {
-            (Some(from), Some(to)) => Some((from.saturating_mul(1_000_000), to.saturating_mul(1_000_000))),
+            (Some(from), Some(to)) => {
+                Some((from.saturating_mul(1_000_000), to.saturating_mul(1_000_000)))
+            }
             _ => None,
         },
     })
@@ -80,12 +82,25 @@ fn parse_window(query: &WindowQuery) -> Result<ParsedWindow, ApiError> {
 async fn load_window(
     state: &AppState,
     window: &ParsedWindow,
-) -> Result<(Vec<analytics_core::Candle>, Vec<analytics_core::Trade>, bool), ApiError> {
+) -> Result<
+    (
+        Vec<analytics_core::Candle>,
+        Vec<analytics_core::Trade>,
+        bool,
+    ),
+    ApiError,
+> {
     state.bots.ensure_feed_for(&window.symbol);
     let (candles, _) = match window.from_to {
         Some((from_ns, to_ns)) => {
-            crate::market_routes::candles_in(state, &window.symbol, window.timeframe, from_ns, to_ns)
-                .await
+            crate::market_routes::candles_in(
+                state,
+                &window.symbol,
+                window.timeframe,
+                from_ns,
+                to_ns,
+            )
+            .await
         }
         None => {
             let (from_ns, to_ns) = crate::market_routes::window_ending_at_newest(
@@ -94,8 +109,14 @@ async fn load_window(
                 window.timeframe,
                 window.limit,
             );
-            crate::market_routes::candles_in(state, &window.symbol, window.timeframe, from_ns, to_ns)
-                .await
+            crate::market_routes::candles_in(
+                state,
+                &window.symbol,
+                window.timeframe,
+                from_ns,
+                to_ns,
+            )
+            .await
         }
     };
     if candles.is_empty() {
@@ -111,7 +132,9 @@ async fn load_window(
     let tape = state.bots.live().tape(&window.symbol);
     let (from_ns, to_ns) = window.from_to.unwrap_or((
         candles.first().map_or(0, |c| c.open_time),
-        candles.last().map_or(i64::MAX, |c| c.open_time + c.timeframe.nanos()),
+        candles
+            .last()
+            .map_or(i64::MAX, |c| c.open_time + c.timeframe.nanos()),
     ));
     let trades = tape.range(from_ns, to_ns);
     let has_trades = !trades.is_empty();
@@ -165,8 +188,10 @@ pub struct BarDeltaWindowResponse {
 /// 404 when the window holds no candles.
 pub async fn bar_delta_stats(
     State(state): State<AppState>,
+    user: crate::auth::OptionalUserContext,
     ApiQuery(query): ApiQuery<WindowQuery>,
 ) -> Result<Json<BarDeltaWindowResponse>, ApiError> {
+    enforce_feature_optional(&state, user.0.map(|u| u.user_id), Feature::Orderflow).await?;
     let window = parse_window(&query)?;
     let (candles, trades, has_trades) = load_window(&state, &window).await?;
 
@@ -278,8 +303,10 @@ pub struct SizeResponse {
 /// 404 when the window holds no candles.
 pub async fn delta_by_size(
     State(state): State<AppState>,
+    user: crate::auth::OptionalUserContext,
     ApiQuery(query): ApiQuery<SizeQuery>,
 ) -> Result<Json<SizeResponse>, ApiError> {
+    enforce_feature_optional(&state, user.0.map(|u| u.user_id), Feature::Orderflow).await?;
     let window = parse_window(&WindowQuery {
         symbol: query.symbol.clone(),
         timeframe: query.timeframe.clone(),
@@ -288,8 +315,14 @@ pub async fn delta_by_size(
         to: query.to,
     })?;
     let config = SizeClassConfig {
-        small_below: query.small_below.filter(|v| *v > 0.0).unwrap_or(SizeClassConfig::default().small_below),
-        medium_below: query.medium_below.filter(|v| *v > 0.0).unwrap_or(SizeClassConfig::default().medium_below),
+        small_below: query
+            .small_below
+            .filter(|v| *v > 0.0)
+            .unwrap_or(SizeClassConfig::default().small_below),
+        medium_below: query
+            .medium_below
+            .filter(|v| *v > 0.0)
+            .unwrap_or(SizeClassConfig::default().medium_below),
     };
     let (candles, trades, has_trades) = load_window(&state, &window).await?;
 
@@ -399,8 +432,15 @@ pub struct MemoryResponse {
 /// 404 when the window holds no candles.
 pub async fn profile_memory(
     State(state): State<AppState>,
+    user: crate::auth::OptionalUserContext,
     ApiQuery(query): ApiQuery<MemoryQuery>,
 ) -> Result<Json<MemoryResponse>, ApiError> {
+    enforce_feature_optional(
+        &state,
+        user.0.map(|u| u.user_id),
+        Feature::AdvancedOrderflow,
+    )
+    .await?;
     let window = parse_window(&WindowQuery {
         symbol: query.symbol.clone(),
         timeframe: query.timeframe.clone(),
@@ -411,7 +451,10 @@ pub async fn profile_memory(
     let (candles, trades, has_trades) = load_window(&state, &window).await?;
 
     let low = candles.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
-    let high = candles.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
+    let high = candles
+        .iter()
+        .map(|c| c.high)
+        .fold(f64::NEG_INFINITY, f64::max);
     let bucket_size = query
         .bucket_size
         .filter(|size| size.is_finite() && *size > 0.0)
@@ -503,8 +546,15 @@ pub struct IcebergsResponse {
 /// 404 when no depth history exists yet for the symbol.
 pub async fn icebergs(
     State(state): State<AppState>,
+    user: crate::auth::OptionalUserContext,
     ApiQuery(query): ApiQuery<IcebergQuery>,
 ) -> Result<Json<IcebergsResponse>, ApiError> {
+    enforce_feature_optional(
+        &state,
+        user.0.map(|u| u.user_id),
+        Feature::AdvancedOrderflow,
+    )
+    .await?;
     let symbol = query.symbol.to_uppercase();
     state.bots.ensure_feed_for(&symbol);
     let seconds = query.seconds.unwrap_or(120).clamp(5, 600) as i64;
@@ -630,8 +680,15 @@ pub struct VpinResponse {
 /// 404 when the window holds no candles.
 pub async fn vpin(
     State(state): State<AppState>,
+    user: crate::auth::OptionalUserContext,
     ApiQuery(query): ApiQuery<VpinQuery>,
 ) -> Result<Json<VpinResponse>, ApiError> {
+    enforce_feature_optional(
+        &state,
+        user.0.map(|u| u.user_id),
+        Feature::AdvancedOrderflow,
+    )
+    .await?;
     let window = parse_window(&WindowQuery {
         symbol: query.symbol.clone(),
         timeframe: query.timeframe.clone(),
@@ -642,15 +699,12 @@ pub async fn vpin(
     let (candles, trades, has_trades) = load_window(&state, &window).await?;
 
     let config = VpinConfig {
-        bucket_volume: query
-            .bucket_volume
-            .filter(|v| *v > 0.0)
-            .unwrap_or_else(|| {
-                // One bucket per ~0.5% of the window's volume: activity-paced
-                // sampling without hard-coding an instrument-specific size.
-                let total: f64 = candles.iter().map(|c| c.volume).sum();
-                (total / 200.0).max(1.0)
-            }),
+        bucket_volume: query.bucket_volume.filter(|v| *v > 0.0).unwrap_or_else(|| {
+            // One bucket per ~0.5% of the window's volume: activity-paced
+            // sampling without hard-coding an instrument-specific size.
+            let total: f64 = candles.iter().map(|c| c.volume).sum();
+            (total / 200.0).max(1.0)
+        }),
         buckets: query.buckets.unwrap_or(50).clamp(2, 500),
     };
     let series = calculate_vpin_series(&trades, &config);

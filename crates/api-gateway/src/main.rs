@@ -142,6 +142,21 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         econ: api_gateway::econ_routes::EconStore::default(),
+        // Subscriptions need a store. Without one, billing routes say so and
+        // every gated route behaves as Free rather than inventing a plan.
+        billing: db.as_ref().map(|database| {
+            let service = api_gateway::billing::BillingService::from_env(Arc::clone(database));
+            match service.mode() {
+                api_gateway::billing::BillingMode::Internal => info!(
+                    "BILLING_MODE=internal: subscriptions are granted by the API without a \
+                     payment provider"
+                ),
+                api_gateway::billing::BillingMode::Provider => {
+                    info!("BILLING_MODE=provider: subscriptions activate through signed webhooks")
+                }
+            }
+            Arc::new(service)
+        }),
         db,
         agent,
         skills: Arc::new(skills),
@@ -196,9 +211,9 @@ async fn main() -> anyhow::Result<()> {
             market_rx,
         );
 
-    // The zone watcher (docs/48): monitors check in from their own task, so a
-    // slow tick never holds the market loops.
-    api_gateway::watcher::spawn(state.clone());
+        // The zone watcher (docs/48): monitors check in from their own task, so a
+        // slow tick never holds the market loops.
+        api_gateway::watcher::spawn(state.clone());
 
         // Retention: the market tables have no other bound. `xtask collect`
         // and the backfills write candles, trades and book snapshots; without
@@ -253,7 +268,8 @@ async fn main() -> anyhow::Result<()> {
                     .map(|d| d.as_nanos() as i64)
                     .unwrap_or(0);
                 let next_nfp = market_data::econ::next_nfp_release(now_ns);
-                let in_window = (next_nfp - now_ns) < 20 * 60 * 1_000_000_000 && (next_nfp - now_ns) > -30 * 60 * 1_000_000_000;
+                let in_window = (next_nfp - now_ns) < 20 * 60 * 1_000_000_000
+                    && (next_nfp - now_ns) > -30 * 60 * 1_000_000_000;
                 let sleep_secs = if in_window { 30 } else { 6 * 3600 };
                 tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
             }

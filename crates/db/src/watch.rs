@@ -93,6 +93,28 @@ pub async fn upsert_watch_monitor(
     .map_err(Into::into)
 }
 
+/// The user's monitor for one scope, when one exists.
+///
+/// The create path reads this before applying a cap: toggling an existing
+/// monitor is an update, not a new watcher, and must not be refused because the
+/// user is already at their limit.
+pub async fn find_watch_monitor(
+    pool: &PgPool,
+    user_id: Uuid,
+    symbol: &str,
+    timeframe: &str,
+) -> Result<Option<WatchMonitor>, DbError> {
+    sqlx::query_as::<_, WatchMonitor>(
+        "SELECT * FROM watch_monitors WHERE user_id = $1 AND symbol = $2 AND timeframe = $3",
+    )
+    .bind(user_id)
+    .bind(symbol)
+    .bind(timeframe)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
 /// The user's own monitors, newest first -- the panel's list.
 pub async fn list_watch_monitors(
     pool: &PgPool,
@@ -109,8 +131,10 @@ pub async fn list_watch_monitors(
 
 /// Every enabled monitor, every user -- the watcher loop's read, each tick.
 pub async fn list_enabled_watch_monitors(pool: &PgPool) -> Result<Vec<WatchMonitor>, DbError> {
-    sqlx::query_as::<_, WatchMonitor>("SELECT * FROM watch_monitors WHERE enabled ORDER BY created_at")
-        .fetch_all(pool)
+    sqlx::query_as::<_, WatchMonitor>(
+        "SELECT * FROM watch_monitors WHERE enabled ORDER BY created_at",
+    )
+    .fetch_all(pool)
     .await
     .map_err(Into::into)
 }
@@ -139,11 +163,7 @@ pub async fn set_watch_monitor_enabled(
 }
 
 /// Delete one of the user's own monitors; its events cascade with it.
-pub async fn delete_watch_monitor(
-    pool: &PgPool,
-    user_id: Uuid,
-    id: Uuid,
-) -> Result<bool, DbError> {
+pub async fn delete_watch_monitor(pool: &PgPool, user_id: Uuid, id: Uuid) -> Result<bool, DbError> {
     let result = sqlx::query("DELETE FROM watch_monitors WHERE id = $1 AND user_id = $2")
         .bind(id)
         .bind(user_id)

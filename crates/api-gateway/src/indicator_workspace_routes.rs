@@ -12,10 +12,13 @@ use trading_engine::Decisions;
 use uuid::Uuid;
 
 use crate::auth::UserContext;
+use crate::billing::{
+    enforce_usage, UsageMetric, CREDIT_REVIEW, CREDIT_STRATEGY_GENERATION, CREDIT_WORKSPACE_TURN,
+};
 use crate::error::ApiError;
 use crate::extract::ApiJson;
-use crate::AppState;
 use crate::venue_routes;
+use crate::AppState;
 
 const DEFAULT_LIMIT: i64 = 50;
 
@@ -473,8 +476,7 @@ pub async fn create_message_stream(
     Path(id): Path<Uuid>,
     ApiJson(body): ApiJson<CreateMessageBody>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let (tx, rx) =
-        futures::channel::mpsc::unbounded::<crate::pine_codegen::GenerationEvent>();
+    let (tx, rx) = futures::channel::mpsc::unbounded::<crate::pine_codegen::GenerationEvent>();
     let task = tokio::spawn(run_workspace_turn(state, user, id, body, Some(tx)));
     let progress = rx.map(|event| {
         Ok(event_frame(
@@ -484,10 +486,9 @@ pub async fn create_message_stream(
     });
     let final_frame = futures::stream::once(async move {
         let frame = match task.await {
-            Ok(Ok((_, Json(response)))) => event_frame(
-                "done",
-                serde_json::to_value(&response).unwrap_or_default(),
-            ),
+            Ok(Ok((_, Json(response)))) => {
+                event_frame("done", serde_json::to_value(&response).unwrap_or_default())
+            }
             Ok(Err(err)) => {
                 // The plain route's own error shape rides along, so the
                 // shell's message is the one the plain path would have shown.
@@ -497,7 +498,10 @@ pub async fn create_message_stream(
                     .await
                     .unwrap_or_default();
                 let body = String::from_utf8_lossy(&bytes).into_owned();
-                event_frame("error", serde_json::json!({ "status": status, "body": body }))
+                event_frame(
+                    "error",
+                    serde_json::json!({ "status": status, "body": body }),
+                )
             }
             Err(join) => event_frame(
                 "error",
@@ -532,9 +536,7 @@ async fn run_workspace_turn(
     user: UserContext,
     id: Uuid,
     body: CreateMessageBody,
-    progress: Option<
-        futures::channel::mpsc::UnboundedSender<crate::pine_codegen::GenerationEvent>,
-    >,
+    progress: Option<futures::channel::mpsc::UnboundedSender<crate::pine_codegen::GenerationEvent>>,
 ) -> Result<(StatusCode, Json<WorkspaceTurnResponse>), ApiError> {
     let progress = progress.as_ref();
     if body.content.trim().is_empty() {
@@ -629,6 +631,13 @@ async fn run_workspace_turn(
     // tuning a layer's settings, removing a layer -- and the model must see
     // them where it reads the ask.
     let content = content_with_preferences(&ask, &workspace.memory);
+    enforce_usage(
+        &state,
+        user.user_id,
+        UsageMetric::AiCredit,
+        CREDIT_WORKSPACE_TURN,
+    )
+    .await?;
     let generated = crate::pine_codegen::generate_script(
         agent.llm().as_ref(),
         crate::pine_codegen::script_system_prompt(&workspace.symbol, &workspace.timeframe),
@@ -639,15 +648,12 @@ async fn run_workspace_turn(
         // sources qualify: legacy YAML concept documents must not ride along
         // as "the current script" -- the model would mimic their shape.
         match workspace.active_revision_id {
-            Some(active_id) => db::get_indicator_revision(
-                database.pool(),
-                user.user_id,
-                id,
-                active_id,
-            )
-            .await?
-            .map(|active| active.source)
-            .filter(|source| source.trim_start().starts_with("//@pine_lite")),
+            Some(active_id) => {
+                db::get_indicator_revision(database.pool(), user.user_id, id, active_id)
+                    .await?
+                    .map(|active| active.source)
+                    .filter(|source| source.trim_start().starts_with("//@pine_lite"))
+            }
             None => None,
         }
         .as_deref(),
@@ -861,6 +867,27 @@ pub async fn set_alert(
         .is_none()
     {
         return Err(ApiError::not_found("indicator revision not found"));
+    }
+    // Re-saving an existing preference is an update; only a new alert is
+    // checked against the plan's alert cap.
+    if !db::indicator_alert_preference_exists(
+        database(&state)?.pool(),
+        user.user_id,
+        id,
+        body.revision_id,
+        body.event_name.trim(),
+    )
+    .await?
+    {
+        let saved =
+            db::count_indicator_alert_preferences(database(&state)?.pool(), user.user_id).await?;
+        crate::billing::enforce_capacity(
+            &state,
+            user.user_id,
+            crate::billing::Resource::Alerts,
+            saved,
+        )
+        .await?;
     }
     let saved = db::set_indicator_alert_preference(
         database(&state)?.pool(),
@@ -1080,6 +1107,7 @@ pub async fn review_revision(
     let agent = state.agent.as_ref().ok_or_else(|| {
         ApiError::unavailable("the agent is not configured: set AWS_BEDROCK_REGION, AWS_BEDROCK_MODEL_ID and AWS credentials")
     })?;
+    enforce_usage(&state, user.user_id, UsageMetric::AiCredit, CREDIT_REVIEW).await?;
     let request = ai_agent::ReviewRequest {
         document_source: row.source,
         original_request,
@@ -1094,7 +1122,10 @@ pub async fn review_revision(
             })
             .collect(),
     };
-    let review = agent.review_document(&request).await.map_err(ApiError::from)?;
+    let review = agent
+        .review_document(&request)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(ReviewResponse { review }))
 }
 
@@ -1209,11 +1240,8 @@ pub async fn promote_revision(
 
     // The capability view (docs/39): tool results carry their provenance.
     let (provider, symbol_class) = venue_routes::market_scope();
-    let capabilities = ai_agent::CapabilityView::new(
-        state.capability_registry.clone(),
-        provider,
-        symbol_class,
-    );
+    let capabilities =
+        ai_agent::CapabilityView::new(state.capability_registry.clone(), provider, symbol_class);
 
     // The revision's concepts come from the stored preview, which is where
     // the generator put them; a revision whose preview predates concepts is
@@ -1241,9 +1269,7 @@ pub async fn promote_revision(
          .mitigated, .top, .bottom). Entry instruction: {instruction}. Workspace: \
          {}. Symbol: {}. timeframes.entry MUST be exactly `{}`. The concepts, in \
          their JSON form, one per line: {concepts_yaml}",
-        workspace.name,
-        workspace.symbol,
-        workspace.timeframe
+        workspace.name, workspace.symbol, workspace.timeframe
     );
 
     let mut request =
@@ -1251,7 +1277,17 @@ pub async fn promote_revision(
     request.max_attempts = Some(5);
     request = request.with_capabilities(capabilities);
 
-    let generated = agent.generate_strategy(&request).await.map_err(ApiError::from)?;
+    enforce_usage(
+        &state,
+        user.user_id,
+        UsageMetric::AiCredit,
+        CREDIT_STRATEGY_GENERATION,
+    )
+    .await?;
+    let generated = agent
+        .generate_strategy(&request)
+        .await
+        .map_err(ApiError::from)?;
     let attempts = generated.attempts;
     let document = generated.document().clone();
     let yaml = generated.yaml.clone();
@@ -1455,7 +1491,13 @@ pub async fn submit_script(
                 .map(|e| {
                     strategy_dsl::ValidationIssue::new(
                         "script",
-                        format!("line {} col {} [{}]: {}", e.span.line, e.span.col, pine_lite::kind_name(e.kind), e.message),
+                        format!(
+                            "line {} col {} [{}]: {}",
+                            e.span.line,
+                            e.span.col,
+                            pine_lite::kind_name(e.kind),
+                            e.message
+                        ),
                     )
                 })
                 .collect(),
@@ -1522,7 +1564,8 @@ pub async fn submit_script(
     )
     .await?
     .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
-    let mut memory = serde_json::json!({"representation": "pine-lite", "revision": revision.revision_number});
+    let mut memory =
+        serde_json::json!({"representation": "pine-lite", "revision": revision.revision_number});
     // Same preservation as the generation path (docs/30).
     if let Some(prefs) = workspace.memory.get("preferences") {
         memory["preferences"] = prefs.clone();
@@ -1564,14 +1607,21 @@ mod tests {
         assert_eq!(prefs.len(), 2);
         // An exact duplicate is a no-op -- tuning back and forth must not flood.
         memory = merge_preference(&memory, "The user set Length to 21 on \"RSI\"");
-        assert_eq!(memory["preferences"].as_array().unwrap().len(), 2, "deduped");
+        assert_eq!(
+            memory["preferences"].as_array().unwrap().len(),
+            2,
+            "deduped"
+        );
         // Past the cap the oldest note falls off.
         for i in 0..MAX_PREFERENCES + 5 {
             memory = merge_preference(&memory, &format!("note {i}"));
         }
         let prefs = memory["preferences"].as_array().unwrap();
         assert_eq!(prefs.len(), MAX_PREFERENCES, "capped");
-        assert_eq!(prefs.last().unwrap(), &serde_json::json!(format!("note {}", MAX_PREFERENCES + 4)));
+        assert_eq!(
+            prefs.last().unwrap(),
+            &serde_json::json!(format!("note {}", MAX_PREFERENCES + 4))
+        );
     }
 
     #[test]
@@ -1585,7 +1635,10 @@ mod tests {
         let memory = serde_json::json!({"preferences": ["The user set Length to 21 on \"RSI\""]});
         let content = content_with_preferences("make it faster", &memory);
         assert!(content.starts_with("make it faster"), "the ask comes first");
-        assert!(content.contains("Standing preferences"), "the block is labeled");
+        assert!(
+            content.contains("Standing preferences"),
+            "the block is labeled"
+        );
         assert!(content.contains("Length to 21"), "the note rides along");
         // No preferences: the content is untouched, not decorated.
         let plain = content_with_preferences("make it faster", &serde_json::json!({}));

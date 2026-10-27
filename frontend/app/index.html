@@ -1177,6 +1177,44 @@
   }
   .aiCurrent .muted { display: block; font-size: 11.5px; }
 
+  /* Subscription (docs/52): the current plan, its meters, then the matrix. */
+  #pane-billing h2 { margin: 4px 0 6px; font-size: 16px; }
+  .billingCurrent {
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    margin-bottom: 10px; background: var(--panel-2);
+  }
+  .billingCurrent .planName { font-weight: 650; font-size: 14px; }
+  .billingCurrent .muted { display: block; font-size: 11.5px; }
+  .billingMeter { margin-top: 8px; }
+  .billingMeterLabel {
+    display: flex; justify-content: space-between; font-size: 11.5px;
+    color: var(--muted); margin-bottom: 3px;
+  }
+  .billingMeterTrack {
+    height: 5px; border-radius: 999px; background: var(--line); overflow: hidden;
+  }
+  .billingMeterFill {
+    height: 100%; border-radius: 999px; background: var(--accent, #2962ff);
+  }
+  .billingMeterFill.full { background: var(--down, #ef4444); }
+  .planCard {
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    margin-bottom: 8px; background: var(--panel-2);
+  }
+  .planCard.current { border-color: var(--accent, #2962ff); }
+  .planCardHead { display: flex; align-items: baseline; gap: 8px; }
+  .planCardHead .name { font-weight: 650; }
+  .planCardHead .price { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .planCard .tagline { font-size: 11.5px; color: var(--muted); margin: 3px 0 6px; }
+  .planCard dl {
+    display: grid; grid-template-columns: auto 1fr; gap: 1px 8px;
+    margin: 0; font-size: 11.5px;
+  }
+  .planCard dt { color: var(--muted); }
+  .planCard dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .planCard .planAction { margin-top: 8px; display: flex; gap: 6px; align-items: center; }
+  .planReserved { font-size: 11px; color: var(--muted); font-style: italic; }
+
   /* ================= DESIGN LAYER: institutional dark =================
      Token-driven restyle. Appended last so equal-specificity rules here win.
      References: Coinbase Prime / Voltrex — near-black ground, 1px borders,
@@ -2221,6 +2259,9 @@
       
       <button role="tab" data-pane="book" aria-selected="false">Book</button>
       <button role="tab" data-pane="brokers" aria-selected="false">Brokers</button>
+      <button role="tab" data-pane="indicator" aria-selected="false">Studio</button>
+      <button role="tab" data-pane="community" aria-selected="false">Community</button>
+      <button role="tab" data-pane="billing" aria-selected="false">Plan</button>
       
       <button role="tab" data-pane="trade" aria-selected="false">Trade</button>
       <button type="button" id="asideHide" title="Hide the side panel" aria-label="Hide the side panel">»</button>
@@ -2612,6 +2653,20 @@
         <details class="ws-extra">
           <summary>Revisions</summary>
           <div id="wsRevisions"><p class="empty">No revisions yet.</p></div>
+          <!-- Publishing (docs/53): one validated revision becomes a community
+               item. The form sits under the revision list because that is the
+               row it was opened from. -->
+          <div id="wsPublishForm" hidden>
+            <div class="row"><input id="wsPublishTitle" placeholder="Title" /></div>
+            <div class="row"><input id="wsPublishSummary" placeholder="One-line summary" /></div>
+            <div class="row"><input id="wsPublishTags" placeholder="tags, comma separated" /></div>
+            <div class="row"><input id="wsPublishName" placeholder="Display name (optional)" /></div>
+            <div class="row">
+              <button type="button" id="wsPublishSend" class="primary">Publish</button>
+              <button type="button" id="wsPublishCancel">Cancel</button>
+            </div>
+            <p id="wsPublishMsg" class="muted"></p>
+          </div>
         </details>
         <!-- The code panel: the workspace's documents as files, Pine-editor
              style. Each revision is one read-only-via-chat "file"; the editor
@@ -2784,6 +2839,68 @@
         <button id="aiClear" class="danger" title="Remove your model and return to the platform's primary">Use platform model</button>
         <span id="aiMsg" class="muted"></span>
       </div>
+    </div>
+
+    <!--
+      Community indicators (docs/53). Browsing starts on Core and publishing
+      on Elite; the pane shows the gate rather than a catalog the server will
+      refuse, and every action still answers for itself.
+    -->
+    <div class="pane" id="pane-community" hidden>
+      <h2>Community</h2>
+      <p class="muted" id="communityLead">
+        Indicators published by other users. Install a copy into your own
+        workspace; it is yours to edit and will not change under you.
+      </p>
+      <div id="communityLocked" hidden>
+        <p class="empty">Browsing the community library starts on Core.</p>
+        <button type="button" id="communityUpgrade">See plans</button>
+      </div>
+      <div id="communityBody" hidden>
+        <div class="row">
+          <input id="communitySearch" type="search" placeholder="Search indicators…" />
+          <select id="communitySort" title="Order">
+            <option value="featured">Featured</option>
+            <option value="new">Newest</option>
+            <option value="popular">Most installed</option>
+          </select>
+        </div>
+        <div class="row">
+          <input id="communityTag" type="text" placeholder="tag" />
+          <button type="button" data-community-view="catalog" class="primary">Catalog</button>
+          <button type="button" data-community-view="installed">Installed</button>
+          <button type="button" data-community-view="mine">Published by me</button>
+        </div>
+        <div id="communityList"><p class="empty">Open this tab to load the library.</p></div>
+        <div id="communityDetail" hidden></div>
+        <p id="communityMsg" class="muted"></p>
+      </div>
+    </div>
+
+    <!--
+      Subscription (docs/52). The plan catalog is public so it renders before
+      sign-in; the current plan and usage need a token. Community indicators
+      are part of the matrix now that the library exists (docs/53).
+    -->
+    <div class="pane" id="pane-billing" hidden>
+      <h2>Plan</h2>
+      <p class="muted" id="billingLead">
+        Every route is metered against the plan below. Usage resets when the
+        current period rolls over.
+      </p>
+      <div id="billingCurrent"><p class="empty">Sign in to see your plan.</p></div>
+      <div class="row" id="billingActions"></div>
+
+      <h3 class="section">Plans</h3>
+      <div class="row">
+        <select id="billingCycle" title="Billing cycle">
+          <option value="monthly">Monthly</option>
+          <option value="annual">Annual</option>
+        </select>
+        <span class="muted" id="billingModeNote"></span>
+      </div>
+      <div id="billingPlans"><p class="empty">Loading plans…</p></div>
+      <p class="muted" id="billingMsg"></p>
     </div>
   </aside>
 

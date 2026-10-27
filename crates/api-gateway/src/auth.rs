@@ -310,6 +310,50 @@ impl FromRequestParts<crate::AppState> for UserContext {
     }
 }
 
+/// The authenticated caller, when one is present, on a route that also serves
+/// anonymous callers.
+///
+/// The market-data reads are public, but their *depth and features* depend on
+/// the caller's plan. This extractor is how those routes learn who is asking
+/// without becoming protected: no header means `None` (Free), a valid header
+/// means the user, and an invalid header is still a 401 -- a client that sent a
+/// token is not anonymous, and silently treating a broken session as a free
+/// one would hide an expiry from every chart in the app.
+#[derive(Debug, Clone)]
+pub struct OptionalUserContext(pub Option<UserContext>);
+
+impl FromRequestParts<crate::AppState> for OptionalUserContext {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &crate::AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let Some(auth) = state.auth.as_ref() else {
+            return Ok(Self(None));
+        };
+        let Some(token) = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+        else {
+            return Ok(Self(None));
+        };
+
+        let claims = auth.verify(token, now_seconds())?;
+        let user_id = claims
+            .user_id()
+            .ok_or_else(|| ApiError::unauthorized("the token's subject is not a user id"))?;
+        Ok(Self(Some(UserContext {
+            user_id,
+            email: claims.email,
+        })))
+    }
+}
+
 /// Authenticate a token that arrived outside a header.
 ///
 /// Only the WebSocket channels use this. A browser cannot set an

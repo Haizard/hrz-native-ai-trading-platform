@@ -165,6 +165,29 @@ pub async fn create_bot_with_key(
     Ok((existing, false))
 }
 
+/// Read the bot a client idempotency key already produced, if any.
+///
+/// Plan caps use this before counting: a retry of `POST /bots` must return the
+/// bot it already made, not be refused because that bot filled the last slot.
+///
+/// # Errors
+/// Returns [`DbError::Pool`] if the query fails.
+pub async fn find_bot_by_key(
+    pool: &PgPool,
+    user_id: Uuid,
+    idempotency_key: &str,
+) -> Result<Option<BotRow>, DbError> {
+    let row = sqlx::query(
+        "SELECT id, user_id, strategy_id, mode, status, venue, broker_account_id, created_at \
+         FROM bots WHERE user_id = $1 AND idempotency_key = $2",
+    )
+    .bind(user_id)
+    .bind(idempotency_key)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(from_row).transpose().map_err(Into::into)
+}
+
 /// Read one bot, if this user owns it.
 ///
 /// # Errors

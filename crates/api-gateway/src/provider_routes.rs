@@ -35,6 +35,7 @@ use zeroize::Zeroizing;
 use ai_agent::{Agent, OpenAiCompatConfig, ProviderId};
 
 use crate::auth::UserContext;
+use crate::billing::{enforce_feature, Feature};
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::AppState;
@@ -145,6 +146,10 @@ pub async fn put(
         )
     })?;
     let vault = vault(&state)?;
+
+    // Bringing your own model key is a Pro-and-up feature: it bypasses the
+    // platform's metered provider, so it is priced rather than free.
+    enforce_feature(&state, user.user_id, Feature::ByoModelKey).await?;
 
     let provider = ProviderId::from_name(&body.provider).ok_or_else(|| {
         ApiError::bad_request(
@@ -419,20 +424,20 @@ pub(crate) async fn merged_library(state: &AppState, user: &UserContext) -> ai_a
     let Some(database) = state.db.as_ref() else {
         return shipped();
     };
-    let rows =
-        match db::skills::list_skills(database.pool(), user.user_id, db::skills::MAX_SKILLS).await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::warn!(
-                    target: "api_gateway",
-                    user = %user.user_id,
-                    error = %e,
-                    "could not load the user's skills; the agent runs on the shipped library"
-                );
-                return shipped();
-            }
-        };
+    let rows = match db::skills::list_skills(database.pool(), user.user_id, db::skills::MAX_SKILLS)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                target: "api_gateway",
+                user = %user.user_id,
+                error = %e,
+                "could not load the user's skills; the agent runs on the shipped library"
+            );
+            return shipped();
+        }
+    };
     if rows.is_empty() {
         return shipped();
     }
@@ -464,7 +469,10 @@ pub(crate) async fn merged_library(state: &AppState, user: &UserContext) -> ai_a
 /// Every owned version is kept — `skill_id` pins a version — while a shipped
 /// skill whose name the user owns is dropped entirely, so the agent can never
 /// quote the shipped copy of a skill the user has revised.
-fn merge_skill_sets(shipped: &[ai_agent::Skill], owned: Vec<ai_agent::Skill>) -> ai_agent::SkillLibrary {
+fn merge_skill_sets(
+    shipped: &[ai_agent::Skill],
+    owned: Vec<ai_agent::Skill>,
+) -> ai_agent::SkillLibrary {
     let owned_names: std::collections::BTreeSet<String> =
         owned.iter().map(|skill| skill.name.clone()).collect();
     let merged: Vec<ai_agent::Skill> = shipped
@@ -536,7 +544,10 @@ mod tests {
 
     #[test]
     fn the_users_copy_wins_by_name_not_by_id() {
-        let shipped = vec![skill("Liquidity Sweep", "2.0"), skill("Footprint Absorption", "1.0")];
+        let shipped = vec![
+            skill("Liquidity Sweep", "2.0"),
+            skill("Footprint Absorption", "1.0"),
+        ];
         // Same name (the merge key is the exact name string, as in
         // `GET /skills`), a revision the user published for themselves.
         let owned = vec![skill("Liquidity Sweep", "2.1")];
@@ -566,14 +577,14 @@ mod tests {
         let library = merge_skill_sets(&shipped, owned);
         assert!(library.by_id("sweep-v2").is_some());
         assert_eq!(
-            library
-                .by_id("sweep-v2")
-                .expect("v2 pinned")
-                .version,
+            library.by_id("sweep-v2").expect("v2 pinned").version,
             "2.1",
             "an id pins the newest of its major line"
         );
-        assert!(library.by_id("sweep-v1").is_none(), "the shipped v1 is superseded");
+        assert!(
+            library.by_id("sweep-v1").is_none(),
+            "the shipped v1 is superseded"
+        );
     }
 
     #[test]

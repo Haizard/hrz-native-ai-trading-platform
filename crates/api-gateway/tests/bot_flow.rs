@@ -430,7 +430,9 @@ async fn live_mode_without_an_opt_in_is_refused_with_every_reason() {
     let Some(h) = Harness::new().await else {
         return;
     };
-    let user = h.register().await;
+    // The live gate is what this test is about; the Free rung has no live bot
+    // allowance at all, so the account buys the rung that has one.
+    let user = h.register_with_plan("pro").await;
     let strategy_id = strategy(&h, &user.token).await;
 
     // docs/11 and docs/15 gate live trading behind a paper track record, a
@@ -690,7 +692,8 @@ async fn notifications_do_not_leak_between_bots() {
     let Some(h) = Harness::new().await else {
         return;
     };
-    let user = h.register().await;
+    // Two bots need Core's three-bot allowance; Free carries one.
+    let user = h.register_with_plan("core").await;
     let strategy_id = strategy(&h, &user.token).await;
 
     let first = h
@@ -833,7 +836,8 @@ async fn a_retried_create_makes_one_bot_not_two() {
     let Some(h) = Harness::new().await else {
         return;
     };
-    let user = h.register().await;
+    // The deliberate second bot needs Core's allowance; Free carries one.
+    let user = h.register_with_plan("core").await;
     let strategy_id = strategy(&h, &user.token).await;
 
     let body = json!({ "strategy_id": strategy_id, "idempotency_key": "retry-same-key" });

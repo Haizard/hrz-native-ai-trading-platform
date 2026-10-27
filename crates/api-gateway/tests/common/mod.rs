@@ -150,6 +150,13 @@ impl Harness {
         let state = AppState {
             econ: api_gateway::econ_routes::EconStore::default(),
             db: Some(Arc::new(database.clone())),
+            // Internal mode, so a test can subscribe without a provider or a
+            // card. The webhook path is exercised separately with an explicit
+            // secret.
+            billing: Some(Arc::new(api_gateway::billing::BillingService::new(
+                Arc::new(database.clone()),
+                api_gateway::billing::BillingConfig::internal(),
+            ))),
             agent,
             skills: Arc::new(ai_agent::SkillLibrary::new()),
             auth: secret.map(|secret| Arc::new(AuthConfig::new(secret))),
@@ -257,6 +264,30 @@ impl Harness {
         }
     }
 
+    /// Register an account and put it on `plan`.
+    ///
+    /// A test that needs more than the Free rung allows (a second bot, a live
+    /// bot) must buy the plan for it, exactly as a customer would. Loosening
+    /// the matrix for tests would leave the enforcement this suite is supposed
+    /// to prove untested.
+    pub async fn register_with_plan(&self, plan: &str) -> TestUser {
+        let user = self.register().await;
+        let key = format!("test-subscribe-{}", uuid::Uuid::new_v4());
+        let (status, body) = self
+            .post(
+                "/billing/subscribe",
+                serde_json::json!({ "plan": plan, "cycle": "monthly", "idempotency_key": key }),
+                Some(&user.token),
+            )
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "subscribing to {plan} failed: {body}"
+        );
+        user
+    }
+
     /// POST a JSON body, optionally authenticated.
     pub async fn post(&self, path: &str, body: Value, token: Option<&str>) -> (StatusCode, Value) {
         let mut builder = Request::builder()
@@ -356,6 +387,19 @@ impl Harness {
             .await
     }
 
+    /// PATCH a JSON body, optionally authenticated.
+    pub async fn patch(&self, path: &str, body: Value, token: Option<&str>) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method("PATCH")
+            .uri(path)
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        self.send(builder.body(Body::from(body.to_string())).expect("request"))
+            .await
+    }
+
     /// DELETE a path, optionally authenticated.
     pub async fn delete(&self, path: &str, token: Option<&str>) -> (StatusCode, Value) {
         let mut builder = Request::builder().method("DELETE").uri(path);
@@ -434,7 +478,20 @@ pub struct TestUser {
 
 impl TestUser {
     /// Delete the account. Call this at the end of every test.
+    ///
+    /// Indicator workspaces reference `users` without a cascade, so they are
+    /// removed first. A test that exercises the community library creates
+    /// workspaces through routes that do not hand back every id; this is the
+    /// one place that guarantees the account's rows are gone.
     pub async fn cleanup(self, database: &db::Database) {
+        let workspaces = db::list_indicator_workspaces(database.pool(), self.id, 1_000)
+            .await
+            .expect("the test must leave nothing behind");
+        for workspace in workspaces {
+            db::delete_indicator_workspace(database.pool(), self.id, workspace.id)
+                .await
+                .expect("the test must leave nothing behind");
+        }
         db::users::delete_user(database.pool(), self.id)
             .await
             .expect("the test must leave nothing behind");

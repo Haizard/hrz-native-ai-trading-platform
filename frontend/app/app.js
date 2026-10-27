@@ -75,6 +75,17 @@ function paintSession() {
   el("session").textContent = value ? "signed in" : "not signed in";
   el("signinToggle").textContent = value ? "Sign out" : "Sign in";
   applyAuthGate();
+  if (!value) {
+    // Entitlements belong to the account. A shell that kept the last user's
+    // plan would hold their pane cap and feature gates after they left.
+    billingState = null;
+    refreshBillingPane();
+    syncLayoutControls();
+    // The workspace snapshot belongs to the account too. A signed-out page
+    // must never write its default panes over the snapshot it just left.
+    workspaceReady = false;
+    workspaceSavedJSON = "";
+  }
 }
 
 /// The home page is the door; the workstation is the room. A token opens it:
@@ -168,6 +179,18 @@ async function authenticate(register, emailId, passwordId, msgId) {
     // composer's skill pin stays empty until the user happens to open the
     // Skills tab, which reads as "skills are broken" when they are not.
     loadSkills();
+    // The plan is account-level: the pane cap and feature gates it drives
+    // change the moment this session exists.
+    loadBilling();
+    // The workspace is account-level too (docs/54): bring back the panes and
+    // the tab this user left instead of leaving the signed-out default page.
+    loadWorkspaceState().then(async (saved) => {
+      if (!saved) return;
+      await restoreWorkspace(saved, coverage);
+      for (const pane of panes) {
+        if (pane.symbol()) pane.refresh().then(() => pane.connectLive());
+      }
+    });
   } catch (e) {
     msg.textContent = e.message;
   }
@@ -215,6 +238,9 @@ async function api(path, options = {}) {
     thrown.code = error && error.code;
     thrown.status = response.status;
     thrown.details = error && error.details;
+    // One refusal wording for every caller. The prompt filters to the codes it
+    // knows, so a plain 400 passes through untouched.
+    billingUpgradePrompt(thrown);
     throw thrown;
   }
   return body;
@@ -2459,12 +2485,31 @@ function createChartPane(root, hooks = {}) {
         ""
       ));
     }
+    // The base order-flow fields are on Core; the deeper reads are on Pro.
+    // Naming the rung here is better than a strip that silently omits them.
+    if (orderflow.advanced_locked) {
+      parts.push(field("advanced", "Pro plan", "muted"));
+    }
     if (parts.length) {
       node.innerHTML = parts.join("");
       node.hidden = false;
     } else {
       node.hidden = true;
     }
+  }
+
+  /// The order-flow strip when the plan does not include it. The same place
+  /// the numbers would sit -- an empty box would read as "nothing happened".
+  function renderOrderflowLocked() {
+    const node = el("orderflowPanel");
+    if (!node) return;
+    if (el("mode").value !== "footprint" || !footprint) {
+      node.hidden = true;
+      return;
+    }
+    node.innerHTML =
+      '<span class="muted">Order flow is part of the Core plan — open Plan to upgrade.</span>';
+    node.hidden = false;
   }
 
   /// Pull the order-flow intelligence for the current footprint window.
@@ -2474,6 +2519,16 @@ function createChartPane(root, hooks = {}) {
   /// route being unavailable must not blank the others.
   async function loadOrderflow() {
     if (!footprint || !footprint.candles.length) return;
+    const features = billingFeatures();
+    // The server refuses these with a 402; asking anyway turns "upgrade" into
+    // three silent failures in a strip that then reads as "no flow here".
+    // One sentence, in the place the numbers would be, is the honest answer.
+    if (features && !features.orderflow) {
+      orderflow = {};
+      renderOrderflowLocked();
+      return;
+    }
+    const advanced = !features || features.orderflow_advanced;
     const symbol = el("symbol").value;
     const timeframe = el("timeframe").value;
     const first = footprint.candles[0];
@@ -2485,7 +2540,7 @@ function createChartPane(root, hooks = {}) {
     const [size, stats, memory] = await Promise.allSettled([
       api(`/delta-by-size?${qs}`),
       api(`/bar-delta-stats?${qs}`),
-      api(`/profile-memory?${qs}`),
+      advanced ? api(`/profile-memory?${qs}`) : Promise.resolve(null),
     ]);
 
     orderflow = {};
@@ -2501,7 +2556,7 @@ function createChartPane(root, hooks = {}) {
     if (stats.status === "fulfilled" && stats.value.candles) {
       orderflow.bar_stats = stats.value.candles;
     }
-    if (memory.status === "fulfilled" && memory.value.sessions?.length) {
+    if (memory.status === "fulfilled" && memory.value && memory.value.sessions?.length) {
       const session = memory.value.sessions[memory.value.sessions.length - 1];
       orderflow.flipped_levels = session.levels.filter((l) => l.flipped_control).length;
       orderflow.poc_text = (() => {
@@ -2512,27 +2567,32 @@ function createChartPane(root, hooks = {}) {
         return best ? best.price_level.toPrecision(6) : null;
       })();
     }
+    if (!advanced) orderflow.advanced_locked = true;
 
     // Iceberg candidates and VPIN ride their own windows; both fail soft.
-    try {
-      const icebergs = await api(`/icebergs?symbol=${symbol}`);
-      if (icebergs.icebergs?.length) {
-        const best = icebergs.icebergs[0];
-        orderflow.icebergs = `${icebergs.icebergs.length} (best ${best.ratio.toFixed(1)}x @ ${best.price.toPrecision(6)})`;
-      } else if (icebergs.snapshots > 0) {
-        orderflow.icebergs = "none in window";
+    if (advanced) {
+      try {
+        const icebergs = await api(`/icebergs?symbol=${symbol}`);
+        if (icebergs.icebergs?.length) {
+          const best = icebergs.icebergs[0];
+          orderflow.icebergs = `${icebergs.icebergs.length} (best ${best.ratio.toFixed(1)}x @ ${best.price.toPrecision(6)})`;
+        } else if (icebergs.snapshots > 0) {
+          orderflow.icebergs = "none in window";
+        }
+      } catch {
+        // no depth history yet: the field stays absent
       }
-    } catch {
-      // no depth history yet: the field stays absent
     }
-    try {
-      const vpin = await api(`/vpin?${qs}`);
-      if (vpin.latest) {
-        orderflow.vpin_text = vpin.latest.vpin.toFixed(2);
-        orderflow.vpin_class = vpin.latest.vpin >= 0.6 ? "fail" : vpin.latest.vpin >= 0.3 ? "" : "pass";
+    if (advanced) {
+      try {
+        const vpin = await api(`/vpin?${qs}`);
+        if (vpin.latest) {
+          orderflow.vpin_text = vpin.latest.vpin.toFixed(2);
+          orderflow.vpin_class = vpin.latest.vpin >= 0.6 ? "fail" : vpin.latest.vpin >= 0.3 ? "" : "pass";
+        }
+      } catch {
+        // VPIN stays absent from the strip rather than showing a stale one.
       }
-    } catch {
-      // VPIN stays absent from the strip rather than showing a stale one.
     }
 
     renderOrderflowPanel();
@@ -6633,6 +6693,7 @@ function createChartPane(root, hooks = {}) {
       diffIndicator = null;
       renderNow();
       syncIndicatorChip();
+      noteWorkspaceChange();
     },
 
     /// Attach a vetted Pine-lite script (docs/23) to this chart as a LAYER
@@ -6662,11 +6723,52 @@ function createChartPane(root, hooks = {}) {
       else attachedScripts.push(layer);
       renderNow();
       syncIndicatorChip();
+      noteWorkspaceChange();
     },
 
     /// Every attached script layer, for the chips and the attach paths.
     attachedScripts() {
       return attachedScripts;
+    },
+
+    /// The durable half of this pane: what a refresh must bring back.
+    snapshot() {
+      return {
+        symbol: el("symbol").value,
+        timeframe: el("timeframe").value,
+        mode: el("mode").value,
+        limit: el("limit").value,
+        indicator: indicator ? JSON.parse(JSON.stringify(indicator)) : null,
+        scripts: attachedScripts.map((script) => ({
+          source: script.source,
+          inputs: script.inputs || {},
+          name: script.name,
+          inputsSpec: Array.isArray(script.inputsSpec) ? script.inputsSpec : [],
+          visible: script.visible !== false,
+        })),
+      };
+    },
+
+    /// Re-apply a snapshot's series-independent half. The page fills the
+    /// series first; this restores the mode, the bar limit and the layers.
+    applyState(saved) {
+      if (!saved) return;
+      if (saved.mode) el("mode").value = saved.mode;
+      if (saved.limit) el("limit").value = saved.limit;
+      indicator = saved.indicator || null;
+      attachedScripts = (Array.isArray(saved.scripts) ? saved.scripts : [])
+        .filter((script) => script && typeof script.source === "string")
+        .map((script) => ({
+          source: script.source,
+          inputs: script.inputs || {},
+          name: script.name,
+          inputsSpec: Array.isArray(script.inputsSpec) ? script.inputsSpec : [],
+          visible: script.visible !== false,
+        }));
+      layerSettingsFor = null;
+      renderNow();
+      syncIndicatorChip();
+      noteWorkspaceChange();
     },
 
     /// Show or hide one script layer (docs/25). Hiding withholds the layer
@@ -6678,6 +6780,7 @@ function createChartPane(root, hooks = {}) {
       layer.visible = !!visible;
       renderNow();
       syncIndicatorChip();
+      noteWorkspaceChange();
     },
 
     /// Remove one script layer by index.
@@ -6691,6 +6794,7 @@ function createChartPane(root, hooks = {}) {
       renderNow();
       syncIndicatorChip();
       renderLayerSettingsPopover();
+      noteWorkspaceChange();
     },
 
     /// Open (or toggle) one layer's settings popover (docs/25). Only one is
@@ -6714,6 +6818,7 @@ function createChartPane(root, hooks = {}) {
       renderNow();
       syncIndicatorChip();
       renderLayerSettingsPopover();
+      noteWorkspaceChange();
     },
 
     /// Overlay an older revision under the attached one, for the diff view:
@@ -6751,6 +6856,7 @@ function createChartPane(root, hooks = {}) {
       indicator = null;
       renderNow();
       syncIndicatorChip();
+      noteWorkspaceChange();
     },
 
     /// This pane's attached indicator, for the picker and the chip. The page
@@ -6840,6 +6946,7 @@ function createChartPane(root, hooks = {}) {
       // derived from the data rather than naming `5m` here.
       else el("timeframe").value = deepestFrame(symbol);
       paintTitle();
+      noteWorkspaceChange();
     },
 
     /// Put a freshly cloned pane back to its starting state.
@@ -7092,8 +7199,17 @@ let layoutMode = "split";
 /// How many columns the wall shows, 1..10.
 let gridColumns = 2;
 
-/// The number of panes the current layout can hold.
-const paneCap = () => (layoutMode === "grid" ? MAX_PANES_GRID : MAX_PANES);
+/// The number of panes the current layout can hold -- the smaller of what the
+/// layout can draw and what the plan allows. The plan cap is a hint: the
+/// server refuses the create either way, and a signed-out shell has no plan to
+/// read, so it falls back to the layout's own ceiling.
+const paneCap = () => {
+  const layoutCap = layoutMode === "grid" ? MAX_PANES_GRID : MAX_PANES;
+  const limits = billingState && billingState.limits;
+  return limits && limits.max_panes >= 0
+    ? Math.min(layoutCap, limits.max_panes)
+    : layoutCap;
+};
 
 /// The panes, oldest first.
 const panes = [];
@@ -7126,6 +7242,10 @@ let coverage = [];
 /// when it is touched, which is the only gesture a keyboard-less page has for
 /// saying "this one".
 let activePane = null;
+
+// The aside tab currently shown. Kept beside `activePane` because both are
+// "where the user is", and both are restored on refresh (docs/54).
+let activeTabName = "chat";
 
 // ---------------------------------------------------------------------------
 // The layout: kept rows, or a grid wall
@@ -7175,6 +7295,77 @@ function persistLayout() {
   } catch { /* the layout still works; it just will not be remembered */ }
 }
 
+// ---------------------------------------------------------------------------
+// The workspace snapshot (docs/54)
+//
+// The page is a set of panes, and a refresh used to lose all of them: the
+// panes existed only in memory. The server keeps one opaque snapshot per
+// user; the shell writes it on change (debounced) and restores it before the
+// first fetch. Signed-out visitors keep the old localStorage-only behavior.
+// ---------------------------------------------------------------------------
+
+let workspaceReady = false;
+let workspaceSaveTimer = 0;
+let workspaceSavedJSON = "";
+let pendingIndicatorWorkspaceId = null;
+
+/// The snapshot the server stores. `version` is the schema the shell wrote;
+/// the route refuses anything else, so an old tab cannot corrupt a new page.
+function workspaceSnapshot() {
+  return {
+    version: 1,
+    layout: { mode: layoutMode, columns: gridColumns },
+    activePane: Math.max(0, panes.indexOf(activePane)),
+    activeTab: activeTabName,
+    indicatorWorkspaceId: wsActiveId,
+    panes: panes.map((pane) => pane.snapshot()),
+  };
+}
+
+/// Persist soon, not on every candle. A burst of attach/change events is one
+/// write; the window is short enough that a refresh a second later still sees it.
+function scheduleWorkspaceSave() {
+  if (!workspaceReady || !token()) return;
+  if (workspaceSaveTimer) return;
+  workspaceSaveTimer = setTimeout(() => {
+    workspaceSaveTimer = 0;
+    saveWorkspaceState();
+  }, 800);
+}
+
+/// Called from the pane API and the page's own mutation points.
+function noteWorkspaceChange() {
+  scheduleWorkspaceSave();
+}
+
+async function saveWorkspaceState() {
+  if (!workspaceReady || !token()) return;
+  const snapshot = workspaceSnapshot();
+  const encoded = JSON.stringify(snapshot);
+  if (encoded === workspaceSavedJSON) return;
+  try {
+    await api("/workspace", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state: snapshot }),
+    });
+    workspaceSavedJSON = encoded;
+  } catch {
+    // A lost save is not worth a toast mid-drag; the next change retries.
+  }
+}
+
+/// Read the snapshot, or null when signed out / nothing saved.
+async function loadWorkspaceState() {
+  if (!token()) return null;
+  try {
+    const body = await api("/workspace");
+    return body && body.state ? body.state : null;
+  } catch {
+    return null;
+  }
+}
+
 /// Keep the header controls saying what the layout is, and disable the modes
 /// and actions that cannot honestly run.
 ///
@@ -7197,9 +7388,12 @@ function syncLayoutControls() {
   if (add) {
     add.disabled = panes.length >= paneCap();
     add.title = layoutMode === "grid"
-      ? `Add a chart to the wall (${panes.length}/${MAX_PANES_GRID})`
+      ? `Add a chart to the wall (${panes.length}/${paneCap()})`
       : "Add another chart beside this one";
   }
+  // Panes are cloned after this runs, so the plan's feature gates are applied
+  // here: every layout change is also the moment a new select.mode appears.
+  refreshWorkspaceGates();
 }
 
 /// Set how many columns the wall shows. Only a *grid* control: split rows own
@@ -7212,6 +7406,7 @@ function setGridColumns(value) {
   persistLayout();
   syncLayoutControls();
   for (const pane of panes) pane.redraw();
+  scheduleWorkspaceSave();
 }
 
 /// Switch layouts, moving the panes rather than rebuilding them.
@@ -7232,6 +7427,7 @@ function setLayoutMode(mode) {
   // Every pane has a new box to measure. `redraw` coalesces them into one
   // rebuild each, which is the same path a window resize takes.
   for (const pane of panes) pane.redraw();
+  scheduleWorkspaceSave();
 }
 
 /// Move the existing panes into the structure the mode calls for.
@@ -7526,6 +7722,7 @@ function setActive(pane) {
   // change what the toolbar's buttons would act on.
   refreshGlobalTools();
   syncIndicatorChip();
+  scheduleWorkspaceSave();
 }
 
 /// The global drawing toolbar: the standalone twin of the right-click menu's
@@ -7848,7 +8045,7 @@ function nextFrame(symbol, from, wanted) {
 /// described, and a second description in JavaScript is a second thing to keep in
 /// step with it. The clone is reset, because a copy of a chart is not the same
 /// thing as a new chart -- see `reset`.
-function addPane() {
+function addPane(saved = null) {
   if (panes.length >= paneCap() || !activePane) return null;
 
   // Cloned from the *active* pane rather than the first one: "another chart of
@@ -7887,13 +8084,16 @@ function addPane() {
   // The same instrument on the *next* timeframe up that can fill a chart. An
   // "Add chart" that produced an identical chart would look like nothing had
   // happened, and comparing two timeframes is what a second chart is for; either
-  // dropdown changes it.
-  const wanted = Number(node.querySelector(".limit").value) || 0;
-  pane.fillSeries(
-    coverage,
-    activePane.symbol(),
-    nextFrame(activePane.symbol(), activePane.timeframe(), wanted)
-  );
+  // dropdown changes it. A restored pane skips this: its own snapshot is the
+  // series it is meant to show.
+  if (!saved) {
+    const wanted = Number(node.querySelector(".limit").value) || 0;
+    pane.fillSeries(
+      coverage,
+      activePane.symbol(),
+      nextFrame(activePane.symbol(), activePane.timeframe(), wanted)
+    );
+  }
 
   observePane(pane);
 
@@ -7907,6 +8107,7 @@ function addPane() {
   if (layoutMode === "grid" && typeof node.scrollIntoView === "function") {
     node.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
+  scheduleWorkspaceSave();
   return pane;
 }
 
@@ -8035,6 +8236,7 @@ function closePane(pane) {
     activePane = null;
     setActive(panes[Math.max(0, at - 1)]);
   }
+  scheduleWorkspaceSave();
 }
 
 /// Show the close buttons only when closing is possible, and the add button only
@@ -8076,6 +8278,55 @@ function openFirstPane() {
   observePane(pane);
   setActive(pane);
   return pane;
+}
+
+/// Apply the saved layout without losing the panes already built.
+function applyWorkspaceLayout(saved) {
+  const layout = saved && saved.layout;
+  if (!layout) return;
+  if (layout.mode === "grid" || layout.mode === "split") {
+    if (layoutMode !== layout.mode) setLayoutMode(layout.mode);
+  }
+  const columns = Number(layout.columns);
+  if (Number.isInteger(columns) && columns >= 1 && columns <= 10 && columns !== gridColumns) {
+    setGridColumns(columns);
+  }
+}
+
+/// Bring the page back to a saved snapshot. Called once after coverage loads.
+async function restoreWorkspace(saved, entries) {
+  if (!saved || !Array.isArray(saved.panes) || !saved.panes.length) {
+    return false;
+  }
+  applyWorkspaceLayout(saved);
+
+  // Trim or grow to the saved count. `closePane` refuses the last pane, and
+  // the snapshot already guarantees at least one; the loop stops at one.
+  while (panes.length > saved.panes.length && panes.length > 1) {
+    closePane(panes[panes.length - 1]);
+  }
+  while (panes.length < saved.panes.length && panes.length < paneCap()) {
+    if (!addPane({})) break;
+  }
+
+  for (let index = 0; index < panes.length; index += 1) {
+    const pane = panes[index];
+    const state = saved.panes[index] || {};
+    pane.applyState(state);
+    pane.fillSeries(entries, state.symbol || undefined, state.timeframe || undefined);
+  }
+
+  const active = Number(saved.activePane);
+  if (Number.isInteger(active) && active >= 0 && active < panes.length) {
+    setActive(panes[active]);
+  }
+  syncIndicatorChip();
+  if (typeof saved.activeTab === "string") selectPane(saved.activeTab);
+  if (saved.indicatorWorkspaceId) pendingIndicatorWorkspaceId = saved.indicatorWorkspaceId;
+
+  workspaceReady = true;
+  workspaceSavedJSON = JSON.stringify(workspaceSnapshot());
+  return true;
 }
 
 /*
@@ -8615,11 +8866,12 @@ async function onAgentFrame(event) {
         applyAuthorFrame(frame.payload.author);
         return;
       }
-      if (frame.type === "notice") {
+      if (frame.type === "error" || frame.type === "notice") {
         authorHistory.push({ role: "assistant", text: frame.message });
         asking = false;
         paintAsk();
         renderTranscript();
+        if (frame.type === "error") billingUpgradePrompt(frame);
         return;
       }
     } catch (e) {
@@ -8690,6 +8942,16 @@ function applyAgentFrame(frame, turn) {
     if (frame.payload.capabilities) {
       updateMcpStatus(frame.payload.capabilities);
     }
+  } else if (frame.type === "error") {
+    // A billing refusal from a socket turn. Same code and wording as the REST
+    // path, so one exhausted quota reads the same wherever it happened.
+    turn.error = frame.message;
+    thesis = null;
+    asking = false;
+    paintAsk();
+    renderTranscript();
+    redrawThesis();
+    billingUpgradePrompt(frame);
   } else if (frame.type === "notice") {
     // In the interview a notice is an answer in the conversation, not an
     // error on a thesis turn.
@@ -12494,10 +12756,606 @@ async function clearAiModel() {
 }
 
 // ---------------------------------------------------------------------------
+// Subscription (docs/52)
+//
+// The catalog is public -- a pricing list has to render signed out -- while the
+// user's own entitlements sit behind the token. `billingState` is the last
+// entitlements the server sent: a *hint* the shell uses to disable what the
+// plan cannot do, never the authority. The server refuses the action with a
+// 402 regardless, and `billingUpgradePrompt` turns that refusal into the one
+// sentence the user needs. The community library is real (docs/53): browse
+// starts on Core, publishing on Elite, and those are ordinary 402s.
+// ---------------------------------------------------------------------------
+
+let billingCatalog = null; // the last `GET /billing/plans`
+let billingState = null; // the last `GET /billing/subscription`, or null
+let billingCycle = "monthly"; // the cycle the price list is showing
+let billingLoad = null; // the in-flight load, shared by the tab and a sign-in
+let billingPromptAt = 0; // throttles a burst of 402s to one prompt
+
+const BILLING_STATUS_TEXT = {
+  free: "Free",
+  trialing: "Trial",
+  active: "Active",
+  past_due: "Payment due",
+  canceled: "Canceled",
+  expired: "Expired",
+};
+
+const BILLING_PROMPT_CODES = new Set([
+  "AI_CREDITS_EXHAUSTED",
+  "BACKTEST_QUOTA_EXCEEDED",
+  "PLAN_LIMIT_REACHED",
+  "PLAN_FEATURE_REQUIRED",
+  "SUBSCRIPTION_REQUIRED",
+]);
+
+/// The last plan's feature set, or null when the shell does not know it
+/// (signed out, billing off, before the first load). Callers read null as
+/// "do not gate" -- the server still refuses what it must.
+function billingFeatures() {
+  return billingState ? billingState.features : null;
+}
+
+/// A 402 as one line the user can act on.
+///
+/// Called from `api()` and from the agent socket, so a quota reads the same
+/// whether it was spent over HTTP or over the channel.
+function billingUpgradePrompt(error) {
+  if (!error || !BILLING_PROMPT_CODES.has(error.code)) return false;
+  const now = Date.now();
+  // A panel can fire several metered calls at once; one toast, not five.
+  if (now - billingPromptAt < 4000) return true;
+  billingPromptAt = now;
+  let message = error.message || "That action is outside your plan.";
+  if (error.code !== "SUBSCRIPTION_REQUIRED") {
+    message = `${message} Open Plan to compare plans.`;
+  }
+  pageToast(message);
+  const line = el("billingMsg");
+  if (line) line.textContent = message;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Community indicators (docs/53)
+// ---------------------------------------------------------------------------
+
+let communityView = "catalog";
+let communityItems = [];
+let communityDetailItem = null;
+let communityLoading = false;
+
+const communityLevel = () => {
+  const features = billingFeatures();
+  return features ? features.community_indicators : "none";
+};
+const canBrowseCommunity = () => ["browse", "publish", "priority"].includes(communityLevel());
+const canPublishCommunity = () => ["publish", "priority"].includes(communityLevel());
+
+function communityVisible() {
+  const signedIn = Boolean(token());
+  const browse = signedIn && canBrowseCommunity();
+  el("communityLocked").hidden = browse;
+  el("communityBody").hidden = !browse;
+  if (!browse) {
+    el("communityLocked").querySelector(".empty").textContent = signedIn
+      ? "Browsing the community library starts on Core."
+      : "Sign in to browse the community library.";
+  }
+  return browse;
+}
+
+async function loadCommunity() {
+  const list = el("communityList");
+  if (!communityVisible()) return;
+  if (communityLoading) return;
+  communityLoading = true;
+  list.innerHTML = `<p class="empty">Loading…</p>`;
+  el("communityMsg").textContent = "";
+  try {
+    const path =
+      communityView === "installed"
+        ? "/community/indicators/installed"
+        : communityView === "mine"
+          ? "/community/indicators/mine"
+          : (() => {
+              const params = new URLSearchParams();
+              const q = el("communitySearch").value.trim();
+              const tag = el("communityTag").value.trim();
+              if (q) params.set("q", q);
+              if (tag) params.set("tag", tag);
+              params.set("sort", el("communitySort").value);
+              return `/community/indicators?${params}`;
+            })();
+    const body = await api(path);
+    communityItems = Array.isArray(body.items) ? body.items : [];
+    if (!communityItems.length) {
+      list.innerHTML = `<p class="empty">${
+        communityView === "mine"
+          ? "You have not published an indicator yet — open an indicator workspace and use Publish."
+          : communityView === "installed"
+            ? "Nothing installed yet."
+            : "No indicators match that search."
+      }</p>`;
+      return;
+    }
+    list.innerHTML = communityItems.map(communityCard).join("");
+  } catch (e) {
+    if (billingUpgradePrompt(e)) {
+      list.innerHTML = `<p class="empty">${
+        communityView === "mine"
+          ? "Publishing community indicators starts on Elite — open Plan to compare."
+          : "Browsing the community library starts on Core."
+      }</p>`;
+    } else {
+      list.innerHTML = `<p class="error">${escapeHtml(e.message)}</p>`;
+    }
+  } finally {
+    communityLoading = false;
+  }
+}
+
+function communityCard(item) {
+  const installed = communityView === "installed";
+  const badge = item.author_tier === "priority" ? `<span class="up">priority</span>` : "";
+  const tags = (item.tags || []).map((t) => `#${escapeHtml(t)}`).join(" ");
+  return `
+    <div class="ws-revision">
+      <div class="row">
+        <strong>${escapeHtml(item.title)}</strong>
+        ${badge}
+        <span class="muted">v${item.version}</span>
+        <span class="spacer"></span>
+        <span class="muted">${item.install_count} install${item.install_count === 1 ? "" : "s"}</span>
+      </div>
+      <div class="muted">${escapeHtml(item.summary)}</div>
+      <div class="muted" style="font-size:11px">${escapeHtml(item.author_name)} ${tags}</div>
+      <div class="row" style="margin-top:4px">
+        <button type="button" data-community-open="${escapeHtml(item.slug)}">Open</button>
+        ${installed ? "" : `<button type="button" data-community-install="${escapeHtml(item.slug)}">Install</button>`}
+      </div>
+    </div>`;
+}
+
+async function openCommunityDetail(slug) {
+  const host = el("communityDetail");
+  try {
+    communityDetailItem = await api(`/community/indicators/${encodeURIComponent(slug)}`);
+  } catch (e) {
+    if (!billingUpgradePrompt(e)) pageToast(e.message);
+    return;
+  }
+  const item = communityDetailItem;
+  const versions = (item.versions || [])
+    .map((v) => `<li>v${v.version_number} — ${escapeHtml(v.summary)}</li>`)
+    .join("");
+  const installed = item.installed
+    ? `<p class="muted">Installed v${item.installed.version}${
+        item.update_available ? " — update available" : " — up to date"
+      }</p>`
+    : "";
+  host.hidden = false;
+  host.innerHTML = `
+    <h3 class="section">${escapeHtml(item.title)}</h3>
+    <p class="muted">${escapeHtml(item.summary)}</p>
+    <p class="muted" style="font-size:11px">${escapeHtml(item.author_name)} · v${item.version} · ${
+      item.install_count
+    } installs</p>
+    ${installed}
+    <div class="row">
+      ${
+        item.is_author
+          ? `<button type="button" data-community-status="${escapeHtml(item.slug)}" data-community-next="${
+              item.status === "listed" ? "unlisted" : "listed"
+            }">${item.status === "listed" ? "Unlist" : "Relist"}</button>`
+          : `<button type="button" data-community-install="${escapeHtml(item.slug)}">Install</button>
+             <button type="button" data-community-report="${escapeHtml(item.slug)}">Report</button>`
+      }
+      ${
+        item.installed && item.update_available
+          ? `<button type="button" data-community-update="${escapeHtml(item.slug)}">Update</button>`
+          : ""
+      }
+      <button type="button" data-community-close="1">Close</button>
+    </div>
+    <details><summary>Source</summary><pre style="white-space:pre-wrap;font-size:11px">${escapeHtml(item.source)}</pre></details>
+    <details><summary>Versions</summary><ul>${versions}</ul></details>`;
+}
+
+async function installCommunity(slug) {
+  el("communityMsg").textContent = "installing…";
+  try {
+    const result = await api(`/community/indicators/${encodeURIComponent(slug)}/install`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    el("communityMsg").textContent = result.already_installed
+      ? "Already installed — opening the workspace."
+      : "Installed. Opening the workspace.";
+    communityView = "installed";
+    await loadCommunity();
+    await openWorkspaceById(result.workspace_id);
+  } catch (e) {
+    if (!billingUpgradePrompt(e)) el("communityMsg").textContent = e.message;
+  }
+}
+
+async function updateCommunity(slug) {
+  try {
+    await api(`/community/indicators/${encodeURIComponent(slug)}/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    pageToast("Updated — a new revision is active in your workspace.");
+    await openCommunityDetail(slug);
+  } catch (e) {
+    if (!billingUpgradePrompt(e)) pageToast(e.message);
+  }
+}
+
+async function reportCommunity(slug) {
+  const reason = prompt("Reason: spam, misleading, malicious, copyright, other", "spam");
+  if (!reason) return;
+  try {
+    const result = await api(`/community/indicators/${encodeURIComponent(slug)}/report`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason }),
+    });
+    pageToast(result.already_reported ? "You already reported this." : "Reported.");
+  } catch (e) {
+    if (!billingUpgradePrompt(e)) pageToast(e.message);
+  }
+}
+
+async function setCommunityStatus(slug, status) {
+  try {
+    await api(`/community/indicators/${encodeURIComponent(slug)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    await openCommunityDetail(slug);
+  } catch (e) {
+    if (!billingUpgradePrompt(e)) pageToast(e.message);
+  }
+}
+
+/// Open an indicator workspace from elsewhere in the shell (an install).
+async function openWorkspaceById(workspaceId) {
+  selectPane("indicator");
+  await selectWorkspace(workspaceId);
+}
+
+function centsText(cents) {
+  const dollars = cents / 100;
+  return Number.isInteger(dollars) ? `$${dollars}` : `$${dollars.toFixed(2)}`;
+}
+
+function planPriceText(plan) {
+  if (plan.pricing.monthly_cents === 0) return "Free";
+  return billingCycle === "annual"
+    ? `${centsText(plan.pricing.annual_cents)}/yr`
+    : `${centsText(plan.pricing.monthly_cents)}/mo`;
+}
+
+function limitText(value) {
+  return value < 0 ? "Unlimited" : value.toLocaleString();
+}
+
+function paintBillingModeNote() {
+  const note = el("billingModeNote");
+  if (!note) return;
+  if (!billingCatalog) { note.textContent = ""; return; }
+  if (!billingCatalog.billing_available) {
+    note.textContent = "Billing is not configured here; every account runs on Free.";
+  } else if (billingCatalog.mode === "provider") {
+    note.textContent = "Subscriptions are handled by the payment provider.";
+  } else {
+    note.textContent =
+      `No card is charged on this deployment: a new plan starts a ${billingCatalog.trial_days}-day trial ` +
+      "and then renews internally. Cancel stops it at the period end.";
+  }
+}
+
+/// One usage meter: a label, a reading, and a bar only when the plan has a
+/// finite cap. `-1` is unlimited throughout the API, so it renders as a
+/// reading with no bar rather than a full bar.
+function billingMeter(label, line) {
+  if (!line) return "";
+  const unlimited = line.limit < 0;
+  const pct = unlimited
+    ? 0
+    : Math.min(100, line.limit > 0 ? (line.used / line.limit) * 100 : 100);
+  const reading = unlimited
+    ? `${line.used.toLocaleString()} used · unlimited`
+    : `${line.used.toLocaleString()} / ${line.limit.toLocaleString()}`;
+  return (
+    `<div class="billingMeter"><div class="billingMeterLabel">` +
+    `<span>${escapeHtml(label)}</span><span>${reading}</span></div>` +
+    (unlimited
+      ? ""
+      : `<div class="billingMeterTrack"><div class="billingMeterFill${
+          pct >= 100 ? " full" : ""
+        }" style="width:${pct.toFixed(1)}%"></div></div>`) +
+    `</div>`
+  );
+}
+
+function paintBillingCurrent() {
+  const out = el("billingCurrent");
+  const actions = el("billingActions");
+  if (!out) return;
+  if (!billingState) {
+    out.innerHTML = token()
+      ? '<p class="empty">Your plan could not be read. Open this tab again to retry.</p>'
+      : '<p class="empty">Sign in to see your plan and this period\'s usage.</p>';
+    if (actions) actions.innerHTML = "";
+    return;
+  }
+
+  const state = billingState;
+  const plan = billingCatalog
+    ? billingCatalog.plans.find((candidate) => candidate.id === state.plan)
+    : null;
+  const statusText =
+    BILLING_STATUS_TEXT[state.subscription.status] || state.subscription.status;
+  const cycle = state.subscription.cycle === "annual" ? "annual" : "monthly";
+  const price = !plan
+    ? state.plan
+    : state.plan === "free"
+      ? "Free"
+      : `${centsText(
+          cycle === "annual" ? plan.pricing.annual_cents : plan.pricing.monthly_cents
+        )}/${cycle === "annual" ? "yr" : "mo"}`;
+
+  const periodEnd = new Date(state.subscription.period_end);
+  const endText = Number.isNaN(periodEnd.getTime())
+    ? ""
+    : periodEnd.toLocaleDateString();
+  const lines = [
+    `${price} · ${state.subscription.cancel_at_period_end ? "ends" : "renews"} ${endText}`,
+  ];
+  if (state.subscription.status === "trialing" && state.subscription.trial_end) {
+    const trialEnd = new Date(state.subscription.trial_end);
+    if (!Number.isNaN(trialEnd.getTime())) {
+      lines.push(`trial ends ${trialEnd.toLocaleDateString()}`);
+    }
+  }
+
+  const resets = new Date(state.usage.resets_at);
+  out.innerHTML =
+    `<div class="billingCurrent">` +
+    `<div class="planName">${escapeHtml(plan ? plan.name : state.plan)} · ${escapeHtml(statusText)}</div>` +
+    `<span class="muted">${escapeHtml(lines.join(" · "))}</span>` +
+    billingMeter("AI credits", state.usage.ai_credits) +
+    billingMeter("Backtests", state.usage.backtests) +
+    `<span class="muted">Usage resets ${
+      Number.isNaN(resets.getTime()) ? "at the next period" : escapeHtml(resets.toLocaleDateString())
+    }</span>` +
+    `</div>`;
+
+  if (actions) {
+    const managed = ["trialing", "active", "past_due", "canceled"].includes(
+      state.subscription.status
+    );
+    actions.innerHTML =
+      (managed && state.subscription.cancel_at_period_end
+        ? '<button type="button" data-billing-act="resume">Resume subscription</button>'
+        : managed
+          ? '<button type="button" data-billing-act="cancel">Cancel subscription</button>'
+          : "") +
+      '<button type="button" data-billing-act="refresh">Refresh</button>';
+  }
+}
+
+/// What the action under a plan card says. The server is the one that decides;
+/// this only stops the shell offering a button it knows will be refused.
+function billingPlanAction(plan, current, order) {
+  if (!billingCatalog.billing_available) {
+    return '<button type="button" disabled>Unavailable here</button>';
+  }
+  if (plan.id === current) {
+    return '<button type="button" disabled>Current plan</button>';
+  }
+  if (!token()) {
+    return '<button type="button" data-billing-signin="1">Sign in</button>';
+  }
+  if (plan.id === "free") {
+    return '<button type="button" disabled>Included</button>';
+  }
+  if (billingCatalog.mode === "provider") {
+    return '<button type="button" disabled title="Subscriptions are managed by the payment provider.">Provider checkout</button>';
+  }
+  const verb = !current
+    ? "Subscribe"
+    : order.indexOf(plan.id) < order.indexOf(current)
+      ? "Switch"
+      : "Upgrade";
+  return `<button type="button" class="primary" data-billing-plan="${escapeHtml(plan.id)}">${verb}</button>`;
+}
+
+function paintBillingPlans() {
+  const node = el("billingPlans");
+  if (!node) return;
+  if (!billingCatalog) {
+    node.innerHTML = '<p class="empty">Loading plans…</p>';
+    return;
+  }
+  if (!billingCatalog.plans.length) {
+    node.innerHTML = '<p class="empty">This deployment has no plan catalog.</p>';
+    return;
+  }
+  const current = billingState ? billingState.plan : "";
+  const order = billingCatalog.plans.map((plan) => plan.id);
+
+  node.innerHTML = billingCatalog.plans
+    .map((plan) => {
+      const limits = plan.limits;
+      const rows = [
+        ["Charts per layout", limitText(limits.max_panes)],
+        ["Saved layouts", limitText(limits.max_layouts)],
+        ["Alerts", limitText(limits.max_alerts)],
+        ["Zone watchers", limitText(limits.max_watchers)],
+        ["AI credits / period", limitText(limits.max_ai_credits)],
+        ["Backtests / period", limitText(limits.max_backtests)],
+        ["History", limits.history_days < 0 ? "Unlimited" : `${limits.history_days} days`],
+        ["Paper bots", limitText(limits.max_paper_bots)],
+        ["Live bots", limitText(limits.max_live_bots)],
+        ["Streams", limitText(limits.max_concurrent)],
+      ];
+      const features = [];
+      if (plan.features.orderflow) features.push("order flow");
+      if (plan.features.orderflow_advanced) features.push("advanced order flow");
+      if (plan.features.byo_model_key) features.push("your own model key");
+      if (plan.features.priority_support) features.push("priority support");
+      if (plan.features.dedicated_onboarding) features.push("dedicated onboarding");
+      const community = plan.features.community_indicators;
+      const communityText =
+        community === "none"
+          ? "not included"
+          : community === "browse"
+            ? "browse + install"
+            : community === "publish"
+              ? "browse + publish"
+              : "browse + publish + priority placement";
+      const annualNote =
+        billingCycle === "annual" && plan.pricing.monthly_cents > 0
+          ? ` · ${centsText(plan.pricing.annual_effective_monthly_cents)}/mo billed yearly`
+          : "";
+
+      return (
+        `<div class="planCard${plan.id === current ? " current" : ""}">` +
+        `<div class="planCardHead"><span class="name">${escapeHtml(plan.name)}</span>` +
+        `<span class="price">${escapeHtml(planPriceText(plan))}</span></div>` +
+        `<div class="tagline">${escapeHtml(plan.tagline)}${escapeHtml(annualNote)}</div>` +
+        (features.length
+          ? `<div class="tagline">${escapeHtml(features.join(" · "))}</div>`
+          : "") +
+        `<dl>${rows
+          .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`)
+          .join("")}</dl>` +
+        `<p class="planReserved">Community indicators: ${escapeHtml(communityText)}</p>` +
+        `<div class="planAction">${billingPlanAction(plan, current, order)}</div>` +
+        `</div>`
+      );
+    })
+    .join("");
+}
+
+function refreshBillingPane() {
+  paintBillingModeNote();
+  paintBillingCurrent();
+  paintBillingPlans();
+}
+
+async function loadBilling() {
+  if (billingLoad) return billingLoad;
+  billingLoad = (async () => {
+    try {
+      billingCatalog = await api("/billing/plans");
+      const cycleSelect = el("billingCycle");
+      if (cycleSelect) billingCycle = cycleSelect.value || billingCycle;
+      billingState = token()
+        ? await api("/billing/subscription").catch(() => null)
+        : null;
+    } catch (e) {
+      const line = el("billingMsg");
+      if (line) line.textContent = `Plans unavailable: ${e.message}`;
+    } finally {
+      billingLoad = null;
+      refreshBillingPane();
+      // The plan's pane ceiling and feature gates live in the layout controls.
+      syncLayoutControls();
+    }
+  })();
+  return billingLoad;
+}
+
+async function subscribePlan(planId) {
+  const line = el("billingMsg");
+  if (!token()) {
+    if (line) line.textContent = "Sign in from the home page first.";
+    return;
+  }
+  if (line) line.textContent = "starting…";
+  const key =
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    billingState = await api("/billing/subscribe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ plan: planId, cycle: billingCycle, idempotency_key: key }),
+    });
+    const plan = billingCatalog && billingCatalog.plans.find((candidate) => candidate.id === planId);
+    if (line) {
+      line.textContent =
+        billingState.subscription.status === "trialing"
+          ? `${plan ? plan.name : planId} is on a ${billingCatalog.trial_days}-day trial.`
+          : `${plan ? plan.name : planId} is active.`;
+    }
+    refreshBillingPane();
+    syncLayoutControls();
+  } catch (e) {
+    if (line) line.textContent = e.message;
+  }
+}
+
+async function cancelSubscription() {
+  const line = el("billingMsg");
+  if (line) line.textContent = "canceling…";
+  try {
+    billingState = await api("/billing/cancel", { method: "POST" });
+    if (line) line.textContent = "Your plan stops at the end of the current period.";
+    refreshBillingPane();
+  } catch (e) {
+    if (line) line.textContent = e.message;
+  }
+}
+
+async function resumeSubscription() {
+  const line = el("billingMsg");
+  if (line) line.textContent = "resuming…";
+  try {
+    billingState = await api("/billing/resume", { method: "POST" });
+    if (line) line.textContent = "Your plan will renew.";
+    refreshBillingPane();
+  } catch (e) {
+    if (line) line.textContent = e.message;
+  }
+}
+
+/// Apply the plan's feature flags to controls the shell draws itself.
+///
+/// Only footprint is gated in the UI today. The deeper order-flow reads are
+/// skipped inside `loadOrderflow`, and every other gated route answers for
+/// itself -- the chart cannot know, for example, whether a stored model key is
+/// allowed before it tries to save one.
+function refreshWorkspaceGates() {
+  const features = billingFeatures();
+  const orderflow = !features || features.orderflow;
+  for (const select of document.querySelectorAll("select.mode")) {
+    const footprint = select.querySelector('option[value="footprint"]');
+    if (!footprint) continue;
+    footprint.disabled = !orderflow;
+    footprint.textContent = orderflow
+      ? "Footprint (volume by price)"
+      : "Footprint — Core plan";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
 
 function selectPane(name) {
+  activeTabName = name;
+  scheduleWorkspaceSave();
   for (const button of document.querySelectorAll(".tabs button")) {
     button.setAttribute("aria-selected", String(button.dataset.pane === name));
   }
@@ -12519,6 +13377,12 @@ function selectPane(name) {
   // another tab (or by the API) must not be shown stale by a cached copy.
   if (name === "brokers") { refreshBrokers(); loadBrokerCatalog(); }
   if (name === "aimodel") refreshAiModel();
+  // The plan is read on open, because a period can roll over -- or another tab
+  // can subscribe -- while this one sits on a chart.
+  if (name === "billing") loadBilling();
+  // The community library is read on open for the same reason: someone else's
+  // publish, unlisting or update must not be shown stale.
+  if (name === "community") loadCommunity();
   // The watchlist ticks only while it is on screen: a hidden pane's prices
   // nobody can see are five-second requests for nothing, and reopening the
   // pane re-prices it immediately anyway.
@@ -12659,7 +13523,66 @@ el("authorChips").addEventListener("click", (event) => {
   // Seed both selects once so the panes are ready before they are ever opened.
   paintAiProviderOptions("");
   paintAiModelHints();
-  
+
+  // Subscription: the catalog is public, so the price list can paint before
+  // sign-in; the entitlements half arrives when there is a token.
+  el("billingCycle").addEventListener("change", () => {
+    billingCycle = el("billingCycle").value;
+    paintBillingPlans();
+  });
+  el("billingPlans").addEventListener("click", (event) => {
+    const plan = event.target.closest("[data-billing-plan]");
+    if (plan) { subscribePlan(plan.dataset.billingPlan); return; }
+    if (event.target.closest("[data-billing-signin]")) {
+      el("billingMsg").textContent = "Sign in from the home page first.";
+    }
+  });
+  el("billingActions").addEventListener("click", (event) => {
+    const action = event.target.closest("[data-billing-act]");
+    if (!action) return;
+    if (action.dataset.billingAct === "cancel") cancelSubscription();
+    else if (action.dataset.billingAct === "resume") resumeSubscription();
+    else loadBilling();
+  });
+  loadBilling();
+
+  // Community (docs/53): the view buttons re-use one list, and every action
+  // inside it is delegated -- cards are re-rendered on every load.
+  for (const button of document.querySelectorAll("[data-community-view]")) {
+    button.addEventListener("click", () => {
+      communityView = button.dataset.communityView;
+      for (const other of document.querySelectorAll("[data-community-view]")) {
+        other.classList.toggle("primary", other === button);
+      }
+      el("communityDetail").hidden = true;
+      loadCommunity();
+    });
+  }
+  el("communitySearch").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") loadCommunity();
+  });
+  el("communityTag").addEventListener("change", loadCommunity);
+  el("communitySort").addEventListener("change", loadCommunity);
+  el("communityUpgrade").addEventListener("click", () => selectPane("billing"));
+  el("pane-community").addEventListener("click", (event) => {
+    const open = event.target.closest("[data-community-open]");
+    if (open) return openCommunityDetail(open.dataset.communityOpen);
+    const install = event.target.closest("[data-community-install]");
+    if (install) return installCommunity(install.dataset.communityInstall);
+    const update = event.target.closest("[data-community-update]");
+    if (update) return updateCommunity(update.dataset.communityUpdate);
+    const report = event.target.closest("[data-community-report]");
+    if (report) return reportCommunity(report.dataset.communityReport);
+    const status = event.target.closest("[data-community-status]");
+    if (status) return setCommunityStatus(status.dataset.communityStatus, status.dataset.communityNext);
+    if (event.target.closest("[data-community-close]")) el("communityDetail").hidden = true;
+  });
+  el("wsPublishSend").addEventListener("click", sendPublish);
+  el("wsPublishCancel").addEventListener("click", () => {
+    el("wsPublishForm").hidden = true;
+    wsPublishTarget = null;
+  });
+
   // Load skills for the skill selector dropdown
   loadSkills();
 
@@ -12717,8 +13640,13 @@ el("authorChips").addEventListener("click", (event) => {
     (event) => setActive(ownerOf(event.target)),
     true
   );
-  // A change to a pane's controls is a claim on the aside too.
-  el("charts").addEventListener("change", (event) => setActive(ownerOf(event.target)));
+  // A change to a pane's controls is a claim on the aside too -- and a change
+  // worth remembering: symbol, timeframe, mode and limit all live in the
+  // snapshot.
+  el("charts").addEventListener("change", (event) => {
+    setActive(ownerOf(event.target));
+    scheduleWorkspaceSave();
+  });
   el("charts").addEventListener("click", (event) => {
     const pane = ownerOf(event.target);
     if (pane && event.target.closest(".close")) closePane(pane);
@@ -13027,7 +13955,15 @@ el("authorChips").addEventListener("click", (event) => {
   // The instrument list comes before the first fetch: a pane reads its symbol
   // from its own select, and an empty select would ask for `symbol=`.
   const entries = await loadCoverage();
-  for (const pane of panes) pane.fillSeries(entries, pane.symbol() || undefined);
+  // The saved workspace is restored before the first fetch, so the page opens
+  // on the chart the user left rather than flashing the default one.
+  const savedWorkspace = await loadWorkspaceState();
+  const restored = await restoreWorkspace(savedWorkspace, entries);
+  if (!restored) {
+    for (const pane of panes) pane.fillSeries(entries, pane.symbol() || undefined);
+    workspaceReady = true;
+    scheduleWorkspaceSave();
+  }
   // The watchlist's default rows are exactly this list; repainting it here
   // means the pane is never opened to an empty list after instruments load.
   // The venue's whole listing follows async, so the default view grows from
@@ -13036,9 +13972,11 @@ el("authorChips").addEventListener("click", (event) => {
   renderWatchlist();
   loadWatchlistUniverse();
 
-  if (activePane.symbol()) {
-    await activePane.refresh();
-    activePane.connectLive();
+  // Every pane fetches its own series, not just the active one: a restored
+  // workspace can open on a wall of charts, and a wall of empty boxes reads as
+  // broken until each one is touched.
+  for (const pane of panes) {
+    if (pane.symbol()) pane.refresh().then(() => pane.connectLive());
   }
   // The DOM opens its own socket rather than riding the chart's: the two have
   // different reconnection stories, and the book has to be able to say "no
@@ -13078,6 +14016,14 @@ async function loadWorkspaces() {
   el_.querySelectorAll(".ws-item").forEach(item => {
     item.onclick = () => selectWorkspace(item.dataset.id);
   });
+  // A refresh that was inside a conversation reopens it (docs/54). The
+  // restored id is consumed once: from then on the tab opens on the list, the
+  // same way it does after every other visit.
+  const preferred = pendingIndicatorWorkspaceId;
+  pendingIndicatorWorkspaceId = null;
+  if (preferred && wsWorkspaces.some((ws) => ws.id === preferred)) {
+    await selectWorkspace(preferred);
+  }
 }
 
 // Leaving a conversation returns to the list and forgets the selection, so
@@ -13088,6 +14034,7 @@ function showWorkspaceList() {
   wsActiveId = null;
   el("wsActive").hidden = true;
   el("wsListView").hidden = false;
+  scheduleWorkspaceSave();
   loadWorkspaces();
 }
 
@@ -13097,6 +14044,7 @@ async function selectWorkspace(id) {
   // lands the next time that workspace loads.
   if (wsGenAbort && id !== wsActiveId) wsGenAbort.abort();
   wsActiveId = id;
+  scheduleWorkspaceSave();
   // Re-fetch workspace list so active_revision_id is current (a new
   // revision may have been created since the last load).
   await loadWorkspaces();
@@ -13185,12 +14133,68 @@ async function loadRevisions(wsId) {
           <button onclick="restoreRevision('${wsId}','${r.id}')" title="Set as active">Restore</button>
           <button onclick="viewRevision('${wsId}','${r.id}')" title="View source and preview">View</button>
           <button onclick="openCodeFile('${wsId}','${r.id}')" title="Open this revision's source in the code panel">Code</button>
+          ${r.status === "validated" ? `<button onclick="openPublishForm('${wsId}','${r.id}')" title="Publish this revision to the community">Publish</button>` : ""}
           ${isActive ? '' : `<button onclick="diffRevision('${wsId}','${r.id}')" title="Draw this revision faded under the active one, to see what changed">Diff vs active</button>`}
         </div>
       </div>
     `;
   }).join("");
   renderCodeFiles();
+}
+
+// ---------------------------------------------------------------------------
+// Publishing a revision (docs/53)
+// ---------------------------------------------------------------------------
+
+let wsPublishTarget = null; // { wsId, revId } while the form is open
+
+function openPublishForm(wsId, revId) {
+  if (!canPublishCommunity()) {
+    pageToast("Publishing community indicators starts on Elite.");
+    selectPane("billing");
+    return;
+  }
+  const ws = wsWorkspaces.find((w) => w.id === wsId);
+  wsPublishTarget = { wsId, revId };
+  el("wsPublishForm").hidden = false;
+  el("wsPublishTitle").value = (ws && ws.name) || "My indicator";
+  el("wsPublishSummary").value = "";
+  el("wsPublishTags").value = "";
+  el("wsPublishName").value = "";
+  el("wsPublishMsg").textContent = "";
+}
+
+async function sendPublish() {
+  if (!wsPublishTarget) return;
+  const title = el("wsPublishTitle").value.trim();
+  const summary = el("wsPublishSummary").value.trim();
+  const tags = el("wsPublishTags").value
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+  const authorName = el("wsPublishName").value.trim();
+  const msg = el("wsPublishMsg");
+  msg.textContent = "publishing…";
+  try {
+    const body = await api("/community/indicators", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        workspace_id: wsPublishTarget.wsId,
+        revision_id: wsPublishTarget.revId,
+        title,
+        summary: summary || undefined,
+        tags,
+        author_name: authorName || undefined,
+      }),
+    });
+    msg.textContent = `Published as ${body.slug}.`;
+    el("wsPublishForm").hidden = true;
+    pageToast(`Published "${body.title}" to the community.`);
+  } catch (e) {
+    if (!billingUpgradePrompt(e)) msg.textContent = e.message;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // The code panel: the workspace's revisions as files, Pine-editor style.
@@ -13358,7 +14362,7 @@ function wireCodePanel() {
     save.dataset.wired = "1";
   }
 }
-wireCodePanel();}
+wireCodePanel();
 
 /// Attach a revision's indicator to a chart the user picks.
 ///

@@ -45,6 +45,7 @@ use backtester::script_strategy::ScriptStrategy;
 use strategy_runtime::{RuntimeConfig, StrategyEngine};
 
 use crate::auth::UserContext;
+use crate::billing::{enforce_usage, BillingError, Entitlements, UsageMetric};
 use crate::error::ApiError;
 use crate::extract::{ApiJson, ApiQuery};
 use crate::now_ns;
@@ -343,6 +344,8 @@ pub async fn parameter_sweep(
             "`to` must not be before `from`",
         ));
     }
+    let entitlements = enforce_usage(&state, user.user_id, UsageMetric::Backtest, 1).await?;
+    let (from_ns, _) = clamp_history(&entitlements, from_ns, to_ns, source_timeframe)?;
     let symbol = request.symbol.to_uppercase();
 
     let document: strategy_dsl::StrategyDocument = serde_json::from_value(row.document.clone())
@@ -364,13 +367,8 @@ pub async fn parameter_sweep(
         to_ns: to_ns - 1,
         series,
     };
-    let parameters = crate::parameter_sweep::sweep(&input).map_err(|e| {
-        ApiError::coded(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "SWEEP_REFUSED",
-            e,
-        )
-    })?;
+    let parameters = crate::parameter_sweep::sweep(&input)
+        .map_err(|e| ApiError::coded(StatusCode::UNPROCESSABLE_ENTITY, "SWEEP_REFUSED", e))?;
     Ok(Json(SweepResponse { parameters }))
 }
 
@@ -409,8 +407,8 @@ pub async fn create(
     // composition carries `conditions` and validates against the registry;
     // everything else is the DSL document.
     if request.source.contains("\"conditions\"") {
-        let composition: market_data::composer::Composition =
-            serde_json::from_str(&request.source).map_err(|e| {
+        let composition: market_data::composer::Composition = serde_json::from_str(&request.source)
+            .map_err(|e| {
                 ApiError::bad_request(
                     "COMPOSITION_PARSE_FAILED",
                     format!("the composition could not be parsed: {e}"),
@@ -420,7 +418,11 @@ pub async fn create(
             return Err(ApiError::coded(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "COMPOSITION_INVALID",
-                errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
+                errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
             ));
         }
         let created_by = request.created_by.unwrap_or_else(|| "developer_sdk".into());
@@ -801,6 +803,40 @@ pub async fn validate_stored(
 /// # Errors
 /// 404 when the strategy is not the caller's; 422 when the window has no data
 /// or the document no longer runs.
+/// Clamp a requested backtest window to the plan's history depth.
+///
+/// Depth is an entitlement, not a hard error: a Free window that reaches past
+/// the plan starts at the entitled edge instead. Only a window the clamp
+/// leaves too short to say anything meaningful is refused, and that refusal
+/// is a 402 naming the depth so the client can offer the upgrade.
+fn clamp_history(
+    entitlements: &Option<Entitlements>,
+    from_ns: i64,
+    to_ns: i64,
+    timeframe: Timeframe,
+) -> Result<(i64, bool), ApiError> {
+    let Some(entitlements) = entitlements else {
+        return Ok((from_ns, false));
+    };
+    let days = entitlements.limits.history_days;
+    if days < 0 {
+        return Ok((from_ns, false));
+    }
+    let earliest = to_ns - days * 86_400 * 1_000_000_000;
+    if from_ns >= earliest {
+        return Ok((from_ns, false));
+    }
+    if (to_ns - earliest) / timeframe.nanos() < 30 {
+        return Err(BillingError::LimitReached {
+            resource: "history_days".to_string(),
+            limit: days,
+            plan: entitlements.plan,
+        }
+        .into());
+    }
+    Ok((earliest, true))
+}
+
 pub async fn backtest(
     State(state): State<AppState>,
     user: UserContext,
@@ -832,20 +868,39 @@ pub async fn backtest(
     if row.document.get("conditions").is_some() {
         let composition: market_data::composer::Composition =
             serde_json::from_value(row.document.clone()).map_err(|e| {
-                ApiError::bad_request("COMPOSITION_PARSE_FAILED", format!("the stored document is not a composition: {e}"))
+                ApiError::bad_request(
+                    "COMPOSITION_PARSE_FAILED",
+                    format!("the stored document is not a composition: {e}"),
+                )
             })?;
         let tf: analytics_core::types::Timeframe = composition.timeframe.parse().map_err(|_| {
-            ApiError::bad_request("TIMEFRAME_INVALID", format!("`{}` is not a timeframe this platform serves", composition.timeframe))
+            ApiError::bad_request(
+                "TIMEFRAME_INVALID",
+                format!(
+                    "`{}` is not a timeframe this platform serves",
+                    composition.timeframe
+                ),
+            )
         })?;
         let symbol = request.symbol.to_uppercase();
         let from_ns = parse_date_ns(&request.from)?;
         let to_ns = parse_date_ns(&request.to)? + 86_400 * 1_000_000_000;
+        if to_ns <= from_ns {
+            return Err(ApiError::bad_request(
+                "WINDOW_INVALID",
+                "`to` must not be before `from`",
+            ));
+        }
+        let entitlements = enforce_usage(&state, user.user_id, UsageMetric::Backtest, 1).await?;
+        let (from_ns, _) = clamp_history(&entitlements, from_ns, to_ns, tf)?;
         let limit = (((to_ns - from_ns) / tf.nanos()) as usize).clamp(50, 1000);
         let window = state
             .windows
             .candles_capped(&symbol, tf, from_ns, to_ns, limit)
             .await
-            .map_err(|e| ApiError::bad_request("WINDOW_THIN", format!("no candles for {symbol}: {e}")))?;
+            .map_err(|e| {
+                ApiError::bad_request("WINDOW_THIN", format!("no candles for {symbol}: {e}"))
+            })?;
         let candles = window.candles;
         let config = market_data::composer::event_config_for(&composition.parameters);
         let mut extra_series = Vec::new();
@@ -863,10 +918,20 @@ pub async fn backtest(
                 .windows
                 .candles_capped(&sym2, tf, from_ns, to_ns, limit)
                 .await
-                .map_err(|e| ApiError::bad_request("SYMBOL2_THIN", format!("no candles for {sym2}: {e}")))?;
+                .map_err(|e| {
+                    ApiError::bad_request("SYMBOL2_THIN", format!("no candles for {sym2}: {e}"))
+                })?;
             extra_symbols.push((sym2, window2.candles));
         }
-        let evaluation = market_data::composer::evaluate_mtf(&composition, &config, &symbol, tf, &candles, &extra_series, &extra_symbols);
+        let evaluation = market_data::composer::evaluate_mtf(
+            &composition,
+            &config,
+            &symbol,
+            tf,
+            &candles,
+            &extra_series,
+            &extra_symbols,
+        );
         let signals = evaluation.signals;
         let atrs = analytics_core::indicators::atr(&candles, 14);
         let mut intents: Vec<(usize, pine_lite::interp::Intent)> = Vec::new();
@@ -877,7 +942,11 @@ pub async fn backtest(
                     let entry_bar = (signal.bar + 1).min(candles.len() - 1);
                     atrs[entry_bar].map(|atr| {
                         let entry = candles[entry_bar].open;
-                        if signal.long { entry - multiple * atr } else { entry + multiple * atr }
+                        if signal.long {
+                            entry - multiple * atr
+                        } else {
+                            entry + multiple * atr
+                        }
                     })
                 }
             };
@@ -936,7 +1005,9 @@ pub async fn backtest(
         let percent = match &composition.risk.sizing {
             market_data::composer::SizeKind::FixedFractional { percent } => *percent,
             market_data::composer::SizeKind::Fixed { .. } => 10.0,
-            market_data::composer::SizeKind::VolatilityAdjusted { risk_fraction } => risk_fraction * 100.0,
+            market_data::composer::SizeKind::VolatilityAdjusted { risk_fraction } => {
+                risk_fraction * 100.0
+            }
             market_data::composer::SizeKind::Kelly { cap } => cap * 100.0,
         };
         let knobs = pine_lite::sim::StrategyHeader {
@@ -967,15 +1038,8 @@ pub async fn backtest(
                 "zone": zone,
             })).collect::<Vec<_>>(),
         });
-        db::strategies::create_backtest(
-            database.pool(),
-            id,
-            &symbol,
-            from_ns,
-            to_ns,
-            &report,
-        )
-        .await?;
+        db::strategies::create_backtest(database.pool(), id, &symbol, from_ns, to_ns, &report)
+            .await?;
         return Ok((
             StatusCode::OK,
             Json(BacktestResponse {
@@ -1031,6 +1095,17 @@ pub async fn backtest(
             "`to` must not be before `from`",
         ));
     }
+    // Depth is measured on the timeframe the strategy actually enters on; a
+    // source timeframe only supplies the bars it is resampled from.
+    let entry_timeframe = row
+        .document
+        .get("timeframes")
+        .and_then(|timeframes| timeframes.get("entry"))
+        .and_then(|name| name.as_str())
+        .and_then(|name| name.parse::<Timeframe>().ok())
+        .unwrap_or(source_timeframe);
+    let entitlements = enforce_usage(&state, user.user_id, UsageMetric::Backtest, 1).await?;
+    let (from_ns, _) = clamp_history(&entitlements, from_ns, to_ns, entry_timeframe)?;
 
     let symbol = request.symbol.to_uppercase();
     let replay_config = ReplayConfig {
@@ -1051,11 +1126,7 @@ pub async fn backtest(
     // (docs/24 S4).
     let (report_json, equity) = if let Some(pine_source) = inline_source {
         let mut script = ScriptStrategy::new(&pine_source).map_err(|e| {
-            ApiError::coded(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "STRATEGY_NOT_RUNNABLE",
-                e,
-            )
+            ApiError::coded(StatusCode::UNPROCESSABLE_ENTITY, "STRATEGY_NOT_RUNNABLE", e)
         })?;
         // A script declares no timeframe map: it runs on one series, named
         // `entry` like the engine's single-timeframe documents.

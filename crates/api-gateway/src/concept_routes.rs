@@ -11,8 +11,8 @@
 //!   the same events `/events` serves, projected through the registry so the
 //!   chart, the thesis agent, and the skills read one shape.
 
-use axum::Json;
 use axum::extract::{Query, State};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
@@ -57,15 +57,12 @@ pub async fn concepts(
     State(_state): State<AppState>,
     Query(query): Query<ConceptsQuery>,
 ) -> Result<Json<Vec<ConceptEntry>>, ApiError> {
-    let available: Option<Vec<&'static str>> = query
-        .symbol
-        .as_deref()
-        .map(|symbol| {
-            market_data::concepts::available_for(symbol)
-                .into_iter()
-                .map(|c| c.id)
-                .collect()
-        });
+    let available: Option<Vec<&'static str>> = query.symbol.as_deref().map(|symbol| {
+        market_data::concepts::available_for(symbol)
+            .into_iter()
+            .map(|c| c.id)
+            .collect()
+    });
     let entries = market_data::concepts::concept_registry()
         .iter()
         .map(|c| ConceptEntry {
@@ -143,7 +140,13 @@ pub async fn smt(
     let symbol_a = query.symbol_a.to_uppercase();
     let symbol_b = query.symbol_b.to_uppercase();
     let tf: analytics_core::types::Timeframe = query.timeframe.parse().map_err(|_| {
-        ApiError::bad_request("TIMEFRAME_UNKNOWN", format!("`{}` is not a timeframe this platform serves", query.timeframe))
+        ApiError::bad_request(
+            "TIMEFRAME_UNKNOWN",
+            format!(
+                "`{}` is not a timeframe this platform serves",
+                query.timeframe
+            ),
+        )
     })?;
     let limit = query.limit.unwrap_or(400).clamp(60, 1000);
     let to_ns = crate::now_ns();
@@ -185,7 +188,10 @@ pub async fn smt(
             bars: (d.prior_time, d.newest_time),
         })
         .collect();
-    Ok(Json(ConceptEventsResponse { symbol: symbol_a, events }))
+    Ok(Json(ConceptEventsResponse {
+        symbol: symbol_a,
+        events,
+    }))
 }
 
 /// `/concept-events/scan` query: a full replay over the chart's own candles.
@@ -212,7 +218,13 @@ pub async fn scan(
 ) -> Result<Json<ConceptEventsResponse>, ApiError> {
     let symbol = query.symbol.to_uppercase();
     let tf: analytics_core::types::Timeframe = query.timeframe.parse().map_err(|_| {
-        ApiError::bad_request("TIMEFRAME_UNKNOWN", format!("`{}` is not a timeframe this platform serves", query.timeframe))
+        ApiError::bad_request(
+            "TIMEFRAME_UNKNOWN",
+            format!(
+                "`{}` is not a timeframe this platform serves",
+                query.timeframe
+            ),
+        )
     })?;
     let limit = query.limit.unwrap_or(500).clamp(50, 1000);
     let to_ns = crate::now_ns();
@@ -239,7 +251,8 @@ pub async fn scan(
     // per bar) would otherwise push every sparse family (an RSI cross fires
     // a dozen times in 500 bars) out of the newest-N window entirely, and an
     // attached indicator would show no history exactly where it has some.
-    let mut per_concept: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut per_concept: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
     let mut kept: Vec<market_data::concepts::ConceptEvent> = Vec::new();
     for e in events.into_iter().rev() {
         let count = per_concept.entry(e.concept_id.clone()).or_insert(0);
@@ -292,16 +305,30 @@ pub async fn indicator_series(
 ) -> Result<Json<IndicatorSeriesResponse>, ApiError> {
     let symbol = query.symbol.to_uppercase();
     let tf: analytics_core::types::Timeframe = query.timeframe.parse().map_err(|_| {
-        ApiError::bad_request("TIMEFRAME_UNKNOWN", format!("`{}` is not a timeframe this platform serves", query.timeframe))
+        ApiError::bad_request(
+            "TIMEFRAME_UNKNOWN",
+            format!(
+                "`{}` is not a timeframe this platform serves",
+                query.timeframe
+            ),
+        )
     })?;
     // The concept must be a registered pane concept: an unregistered id is a
     /// client bug, and a non-pane id is a category error, both 400s.
     let spec_entry = market_data::concepts::concept_registry()
         .iter()
         .find(|c| c.id == query.concept)
-        .ok_or_else(|| ApiError::bad_request("CONCEPT_UNKNOWN", format!("`{}` is not a registered concept", query.concept)))?;
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "CONCEPT_UNKNOWN",
+                format!("`{}` is not a registered concept", query.concept),
+            )
+        })?;
     if !spec_entry.pane && !spec_entry.overlay {
-        return Err(ApiError::bad_request("CONCEPT_NOT_A_PANE", format!("`{}` has no indicator series", query.concept)));
+        return Err(ApiError::bad_request(
+            "CONCEPT_NOT_A_PANE",
+            format!("`{}` has no indicator series", query.concept),
+        ));
     }
     let limit = query.limit.unwrap_or(500).clamp(50, 1000);
     let to_ns = crate::now_ns();
@@ -320,7 +347,9 @@ pub async fn indicator_series(
         let symbol2 = query
             .symbol2
             .as_deref()
-            .ok_or_else(|| ApiError::bad_request("PAIR_INCOMPLETE", "the pairs concept needs `symbol2`"))?
+            .ok_or_else(|| {
+                ApiError::bad_request("PAIR_INCOMPLETE", "the pairs concept needs `symbol2`")
+            })?
             .to_uppercase();
         let window2 = state
             .windows
@@ -329,7 +358,8 @@ pub async fn indicator_series(
             .map_err(|e| ApiError::unavailable(format!("no candles for {symbol2}: {e}")))?;
         let candles2 = window2.candles;
         // Align by open_time: only bars BOTH instruments printed.
-        let times2: std::collections::BTreeMap<i64, f64> = candles2.iter().map(|c| (c.open_time, c.close)).collect();
+        let times2: std::collections::BTreeMap<i64, f64> =
+            candles2.iter().map(|c| (c.open_time, c.close)).collect();
         let mut times = Vec::new();
         let mut a = Vec::new();
         let mut b = Vec::new();
@@ -341,7 +371,10 @@ pub async fn indicator_series(
             }
         }
         if a.len() < 80 {
-            return Err(ApiError::unavailable(format!("only {} shared bars for {symbol}/{symbol2}", a.len())));
+            return Err(ApiError::unavailable(format!(
+                "only {} shared bars for {symbol}/{symbol2}",
+                a.len()
+            )));
         }
         let (z_line, _spread, gate) = analytics_core::indicators::quant::pair_spread(&a, &b, 60);
         let spec = analytics_core::indicator_series::pair_series(
@@ -349,10 +382,19 @@ pub async fn indicator_series(
             gate,
             format!("{symbol}/{symbol2} spread"),
         );
-        return Ok(Json(IndicatorSeriesResponse { symbol, times, spec }));
+        return Ok(Json(IndicatorSeriesResponse {
+            symbol,
+            times,
+            spec,
+        }));
     }
     let spec = analytics_core::indicator_series::indicator_series(&query.concept, &candles)
-        .ok_or_else(|| ApiError::bad_request("SERIES_UNAVAILABLE", format!("`{}` produced no series over this window", query.concept)))?;
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "SERIES_UNAVAILABLE",
+                format!("`{}` produced no series over this window", query.concept),
+            )
+        })?;
     Ok(Json(IndicatorSeriesResponse {
         symbol,
         times: candles.iter().map(|c| c.open_time).collect(),
@@ -392,6 +434,7 @@ pub struct SignalReport {
 /// `POST /compositions/backtest`: validate, replay, simulate, report.
 pub async fn backtest(
     State(state): State<AppState>,
+    user: crate::auth::UserContext,
     crate::extract::ApiJson(request): crate::extract::ApiJson<BacktestRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     use market_data::composer::{Composer, SizeKind, StopKind};
@@ -409,11 +452,47 @@ pub async fn backtest(
         .parse::<analytics_core::types::Timeframe>()
         .expect("validated above");
     let symbol = request.symbol.to_uppercase();
+
+    // The backtest allowance is charged before any window is read. A invalid
+    // document above costs nothing: the user never got as far as a run.
+    let entitlements = crate::billing::enforce_usage(
+        &state,
+        user.user_id,
+        crate::billing::UsageMetric::Backtest,
+        1,
+    )
+    .await?;
+    let plan_id = entitlements
+        .as_ref()
+        .map_or(crate::billing::PlanId::Free, |entitlements| {
+            entitlements.plan
+        });
+    let limits = crate::billing::plan(plan_id).limits;
+
     let to_ns = crate::now_ns();
-    let from_ns = to_ns - request.limit as i64 * tf.nanos();
+    let mut limit = request.limit;
+    let mut from_ns = to_ns - limit as i64 * tf.nanos();
+    let mut history_clamped = false;
+    if limits.history_days >= 0 {
+        let earliest = to_ns - limits.history_days * 86_400 * 1_000_000_000;
+        if from_ns < earliest {
+            from_ns = earliest;
+            limit = ((to_ns - earliest) / tf.nanos()).max(0) as usize;
+            history_clamped = true;
+        }
+    }
+    if limit < 30 {
+        return Err(crate::billing::BillingError::LimitReached {
+            resource: "history_days".to_string(),
+            limit: limits.history_days,
+            plan: plan_id,
+        }
+        .into());
+    }
+
     let window = state
         .windows
-        .candles_capped(&symbol, tf, from_ns, to_ns, request.limit)
+        .candles_capped(&symbol, tf, from_ns, to_ns, limit)
         .await
         .map_err(|e| ApiError::unavailable(format!("no candles for {symbol}: {e}")))?;
     let candles = window.candles;
@@ -421,7 +500,10 @@ pub async fn backtest(
         return Err(ApiError::coded(
             axum::http::StatusCode::UNPROCESSABLE_ENTITY,
             "BACKTEST_WINDOW_THIN",
-            format!("only {} bars for {symbol} {tf} -- a composition needs history to mean anything", candles.len()),
+            format!(
+                "only {} bars for {symbol} {tf} -- a composition needs history to mean anything",
+                candles.len()
+            ),
         ));
     }
 
@@ -445,10 +527,20 @@ pub async fn backtest(
             .windows
             .candles_capped(&sym2, tf, from_ns, to_ns, request.limit)
             .await
-            .map_err(|e| ApiError::bad_request("SYMBOL2_THIN", format!("no candles for {sym2}: {e}")))?;
+            .map_err(|e| {
+                ApiError::bad_request("SYMBOL2_THIN", format!("no candles for {sym2}: {e}"))
+            })?;
         extra_symbols.push((sym2, window2.candles));
     }
-    let evaluation = market_data::composer::evaluate_mtf(&request.document, &config, &symbol, tf, &candles, &extra_series, &extra_symbols);
+    let evaluation = market_data::composer::evaluate_mtf(
+        &request.document,
+        &config,
+        &symbol,
+        tf,
+        &candles,
+        &extra_series,
+        &extra_symbols,
+    );
     let signals = evaluation.signals;
 
     // Signals become sim intents: entry at the signal bar (next-open fill,
@@ -465,7 +557,11 @@ pub async fn backtest(
                 let entry_bar = (signal.bar + 1).min(candles.len() - 1);
                 atrs[entry_bar].map(|atr| {
                     let entry = candles[entry_bar].open;
-                    if signal.long { entry - multiple * atr } else { entry + multiple * atr }
+                    if signal.long {
+                        entry - multiple * atr
+                    } else {
+                        entry + multiple * atr
+                    }
                 })
             }
         };
@@ -484,7 +580,11 @@ pub async fn backtest(
                 // is ATR-placed is how a 1% risk budget became a 35% loss.
                 let entry_bar = (signal.bar + 1).min(candles.len() - 1);
                 let distance = (candles[entry_bar].open - stop_price).abs();
-                analytics_core::risk::vol_adjusted_qty(knobs_initial_capital, *risk_fraction, distance)
+                analytics_core::risk::vol_adjusted_qty(
+                    knobs_initial_capital,
+                    *risk_fraction,
+                    distance,
+                )
             }),
             _ => None,
         };
@@ -513,8 +613,12 @@ pub async fn backtest(
     }
     let knobs = pine_lite::sim::StrategyHeader {
         default_qty_type: match &request.document.risk.sizing {
-            SizeKind::FixedFractional { .. } | SizeKind::Kelly { .. } => pine_lite::sim::QtyType::PercentOfEquity,
-            SizeKind::Fixed { .. } | SizeKind::VolatilityAdjusted { .. } => pine_lite::sim::QtyType::Fixed,
+            SizeKind::FixedFractional { .. } | SizeKind::Kelly { .. } => {
+                pine_lite::sim::QtyType::PercentOfEquity
+            }
+            SizeKind::Fixed { .. } | SizeKind::VolatilityAdjusted { .. } => {
+                pine_lite::sim::QtyType::Fixed
+            }
         },
         default_qty_value: match &request.document.risk.sizing {
             SizeKind::FixedFractional { percent } => *percent,
@@ -563,6 +667,8 @@ pub async fn backtest(
         "name": request.document.name,
         "symbol": symbol,
         "timeframe": request.document.timeframe,
+        "history_days": limits.history_days,
+        "history_clamped": history_clamped,
         "bars": candles.len(),
         "signals": signals.iter().map(|s| SignalReport {
             bar: s.bar,
@@ -630,6 +736,13 @@ pub async fn generate(
         ));
     }
     let agent = crate::provider_routes::resolve_agent(&state, &user).await?;
+    crate::billing::enforce_usage(
+        &state,
+        user.user_id,
+        crate::billing::UsageMetric::AiCredit,
+        crate::billing::CREDIT_STRATEGY_GENERATION,
+    )
+    .await?;
     let generated = crate::composition_codegen::generate_composition(
         agent.llm().as_ref(),
         &symbol,

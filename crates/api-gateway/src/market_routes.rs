@@ -91,6 +91,12 @@ pub struct CandlesResponse {
     pub candles: Vec<Candle>,
     /// Where the bars came from.
     pub source: CandleSourceResponse,
+    /// The plan's history depth in days; `-1` for unlimited.
+    pub history_days: i64,
+    /// Whether the requested window reached past the plan's depth and was
+    /// shortened. The shell uses it to offer an upgrade rather than silently
+    /// showing a chart that starts later than the user asked.
+    pub history_clamped: bool,
 }
 
 /// Most candles a single request may return.
@@ -99,6 +105,7 @@ const MAX_LIMIT: usize = 5000;
 /// `GET /candles`
 pub async fn candles(
     State(state): State<AppState>,
+    user: crate::auth::OptionalUserContext,
     ApiQuery(query): ApiQuery<CandlesQuery>,
 ) -> Result<Json<CandlesResponse>, ApiError> {
     let timeframe: Timeframe = query.timeframe.parse().map_err(|_| {
@@ -127,6 +134,34 @@ pub async fn candles(
         _ => window_ending_at_newest(&history, &symbol, timeframe, limit),
     };
 
+    // History depth is a plan entitlement, not a hard cap: a Free request for
+    // a year keeps working and simply starts at the end of the entitled
+    // window. Anonymous callers are Free when billing is configured; a
+    // deployment without billing keeps the old unrestricted behavior.
+    let history_days = match user.0 {
+        Some(user) => crate::billing::entitlements_optional(&state, Some(user.user_id))
+            .await?
+            .map_or(-1, |entitlements| entitlements.limits.history_days),
+        None if state.billing.is_some() => {
+            crate::billing::plan(crate::billing::PlanId::Free)
+                .limits
+                .history_days
+        }
+        None => -1,
+    };
+    let mut history_clamped = false;
+    let from_ns = if history_days >= 0 {
+        let oldest = to_ns - history_days * 86_400 * 1_000_000_000;
+        if from_ns < oldest {
+            history_clamped = true;
+            oldest
+        } else {
+            from_ns
+        }
+    } else {
+        from_ns
+    };
+
     let (candles, source) = candles_in(&state, &symbol, timeframe, from_ns, to_ns).await;
 
     Ok(Json(CandlesResponse {
@@ -134,6 +169,8 @@ pub async fn candles(
         timeframe: timeframe.to_string(),
         candles,
         source,
+        history_days,
+        history_clamped,
     }))
 }
 
@@ -514,7 +551,11 @@ pub async fn symbols(State(state): State<AppState>) -> Result<Json<Vec<SymbolRes
     // Deriv instruments, namespaced: the picker's Deriv section. The fetch
     // path (WindowService + the preview pools) resolves these ids already.
     for instrument in ::market_data::deriv::DERIV_INSTRUMENTS {
-        let prefix = if instrument.product == "synthetic" { "DERIV" } else { "DERIV-FX" };
+        let prefix = if instrument.product == "synthetic" {
+            "DERIV"
+        } else {
+            "DERIV-FX"
+        };
         names.push(format!("{prefix}:{}", instrument.symbol));
     }
 

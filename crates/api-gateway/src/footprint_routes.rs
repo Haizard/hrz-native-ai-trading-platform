@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use analytics_core::types::{Side, Timeframe};
 use analytics_core::{build_footprints, detect_imbalances_with, ImbalanceConfig};
 
+use crate::billing::{enforce_feature_optional, Feature};
 use crate::error::ApiError;
 use crate::extract::ApiQuery;
 use crate::AppState;
@@ -226,8 +227,10 @@ pub async fn coverage(
 /// imbalances", and the client has to be able to tell them apart.
 pub async fn footprint(
     State(state): State<AppState>,
+    user: crate::auth::OptionalUserContext,
     ApiQuery(query): ApiQuery<FootprintQuery>,
 ) -> Result<Json<FootprintResponse>, ApiError> {
+    enforce_feature_optional(&state, user.0.map(|u| u.user_id), Feature::Orderflow).await?;
     let timeframe: Timeframe = query.timeframe.parse().map_err(|e| {
         ApiError::bad_request(
             "TIMEFRAME_INVALID",

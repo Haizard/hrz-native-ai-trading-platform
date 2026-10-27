@@ -64,6 +64,7 @@ use uuid::Uuid;
 use analytics_core::types::{Candle, OrderBookSnapshot};
 
 use crate::auth::UserContext;
+use crate::billing::{enforce_usage, UsageMetric, CREDIT_AUTHOR_TURN, CREDIT_CHART_ANALYSIS};
 use crate::bots::BotEvent;
 use crate::error::ApiError;
 use crate::AppState;
@@ -207,6 +208,27 @@ pub(crate) enum Frame<'a> {
     /// Something went wrong that the client should know about but which does
     /// not close the socket.
     Notice { message: String },
+    /// A refusal the client can act on: a plan limit or a missing feature.
+    ///
+    /// Carries the same `code` and `details` as the HTTP error envelope, so
+    /// the socket's upgrade prompt is the same prompt an HTTP route surfaces.
+    Error {
+        code: String,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
+    },
+}
+
+impl Frame<'static> {
+    /// Map an API error onto the socket's error frame, keeping its code.
+    fn from_api_error(error: &crate::error::ApiError) -> Self {
+        Self::Error {
+            code: error.code().to_string(),
+            message: error.message().to_string(),
+            details: error.details().cloned(),
+        }
+    }
 }
 
 fn json_frame(frame: &Frame<'_>) -> String {
@@ -708,6 +730,20 @@ where
         }
     };
 
+    // The socket is the same paid call as `POST /agent/ask`, so it spends the
+    // same credits. Charged after the provider resolved, so an unconfigured
+    // agent is never billed for a run that could not happen.
+    if let Err(e) = enforce_usage(
+        state,
+        user.user_id,
+        UsageMetric::AiCredit,
+        CREDIT_CHART_ANALYSIS,
+    )
+    .await
+    {
+        return Some(Frame::from_api_error(&e));
+    }
+
     // Timed from here, so the number covers the whole paid run: the market
     // reads, every model turn, and every tool. A latency measured around the
     // provider call alone would miss the window reconstructions that
@@ -777,13 +813,15 @@ where
         }
     }
     let ask_document = match &request.document {
-        Some(attachment) => match crate::documents::prepare(&attachment.name, &attachment.data_base64) {
-            Ok(prepared) => Some(ai_agent::AuthorDocument {
-                name: prepared.name,
-                text: prepared.text,
-            }),
-            Err(reason) => return Some(Frame::Notice { message: reason }),
-        },
+        Some(attachment) => {
+            match crate::documents::prepare(&attachment.name, &attachment.data_base64) {
+                Ok(prepared) => Some(ai_agent::AuthorDocument {
+                    name: prepared.name,
+                    text: prepared.text,
+                }),
+                Err(reason) => return Some(Frame::Notice { message: reason }),
+            }
+        }
         None => None,
     };
     if !ask_images.is_empty() || ask_document.is_some() {
@@ -944,12 +982,18 @@ where
 /// saves the confirmed draft, and the whole beat is usually one model call.
 /// The frame carries `author` so the panel can tell the interview's reply
 /// from a thesis answer arriving on the same socket.
-async fn run_author(state: &AppState, user: &UserContext, request: AgentWsRequest) -> Option<Frame<'static>> {
+async fn run_author(
+    state: &AppState,
+    user: &UserContext,
+    request: AgentWsRequest,
+) -> Option<Frame<'static>> {
     let agent = match crate::provider_routes::resolve_agent(state, user).await {
         Ok(agent) => agent,
-        Err(e) => return Some(Frame::Notice {
-            message: e.message().to_string(),
-        }),
+        Err(e) => {
+            return Some(Frame::Notice {
+                message: e.message().to_string(),
+            })
+        }
     };
     // The interview's only write is the finished skill, and there is nothing
     // to save into without a database -- said plainly, the same posture the
@@ -964,13 +1008,15 @@ async fn run_author(state: &AppState, user: &UserContext, request: AgentWsReques
     // The attachment is read here, at the boundary: bytes in, bounded text
     // out, and an unreadable file is a plain notice rather than a failed run.
     let document = match request.document {
-        Some(attachment) => match crate::documents::prepare(&attachment.name, &attachment.data_base64) {
-            Ok(prepared) => Some(ai_agent::AuthorDocument {
-                name: prepared.name,
-                text: prepared.text,
-            }),
-            Err(reason) => return Some(Frame::Notice { message: reason }),
-        },
+        Some(attachment) => {
+            match crate::documents::prepare(&attachment.name, &attachment.data_base64) {
+                Ok(prepared) => Some(ai_agent::AuthorDocument {
+                    name: prepared.name,
+                    text: prepared.text,
+                }),
+                Err(reason) => return Some(Frame::Notice { message: reason }),
+            }
+        }
         None => None,
     };
     // Images get the same boundary treatment: type and size checked here,
@@ -1007,6 +1053,18 @@ async fn run_author(state: &AppState, user: &UserContext, request: AgentWsReques
             )),
         ),
     };
+    // One authoring beat is one paid model call; charged after the boundary
+    // checks so a malformed attachment is never billed.
+    if let Err(e) = enforce_usage(
+        state,
+        user.user_id,
+        UsageMetric::AiCredit,
+        CREDIT_AUTHOR_TURN,
+    )
+    .await
+    {
+        return Some(Frame::from_api_error(&e));
+    }
     Some(match agent.author_skill(&author_request).await {
         Ok(answer) => Frame::Data {
             payload: serde_json::json!({
