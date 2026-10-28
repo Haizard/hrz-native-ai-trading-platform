@@ -48,17 +48,17 @@
 }
 
 .billingMeterFill {
-  height: 100%; border-radius: 999px; background: var(--accent, #2962ff);
+  height: 100%; border-radius: 999px; background: var(--accent);
 }
 
-.billingMeterFill.full { background: var(--down, #ef4444); }
+.billingMeterFill.full { background: var(--down); }
 
 .planCard {
   border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
   margin-bottom: 8px; background: var(--panel-2);
 }
 
-.planCard.current { border-color: var(--accent, #2962ff); }
+.planCard.current { border-color: var(--accent); }
 
 .planCardHead { display: flex; align-items: baseline; gap: 8px; }
 

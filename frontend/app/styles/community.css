@@ -72,7 +72,7 @@
 
 .libRow .type-indicator { color: var(--accent); background: var(--accent-dim); }
 
-.libRow .type-skill { color: var(--warn); background: rgba(237, 181, 65, 0.10); }
+.libRow .type-skill { color: var(--warn); background: var(--warn-soft); }
 
 .libRow .type-strategy { color: var(--up); background: var(--up-dim); }
 

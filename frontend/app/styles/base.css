@@ -78,7 +78,7 @@ h1 { font-size: 13px; font-weight: 700; margin: 0 8px 0 0; letter-spacing: .02em
    pairs a glyph with its name. Pure CSS, so nothing extra to load. */
 h1::before {
   content: ""; width: 14px; height: 14px; flex: 0 0 auto;
-  background: linear-gradient(135deg, var(--accent), #6d8cff);
+  background: linear-gradient(135deg, var(--accent), var(--ai));
   border-radius: 4px;
   clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
 }
@@ -93,9 +93,9 @@ h3.section { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; let
    loudest thing on an otherwise quiet dark screen. */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 
-::-webkit-scrollbar-thumb { background: #2a2e39; border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 4px; }
 
-::-webkit-scrollbar-thumb:hover { background: #363b47; }
+::-webkit-scrollbar-thumb:hover { background: var(--control-line); }
 
 ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
 
@@ -135,5 +135,5 @@ h1 span { color: var(--muted); font-weight: 500; text-transform: none; letter-sp
 /* ---- Links & status ---- */
 a { color: var(--accent); text-decoration: none; }
 
-a:hover { color: #5ea9ff; }
+a:hover { color: var(--accent); }
 

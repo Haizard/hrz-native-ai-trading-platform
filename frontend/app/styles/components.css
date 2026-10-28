@@ -14,7 +14,7 @@ input, textarea { font-family: var(--mono); font-size: 12px; }
 
 button { cursor: pointer; font-size: 12px; }
 
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
 button.primary:hover { filter: brightness(1.1); border-color: var(--accent); }
 
@@ -26,7 +26,7 @@ button.primary:hover { filter: brightness(1.1); border-color: var(--accent); }
 */
 button.danger { border-color: var(--down); color: var(--down); background: transparent; }
 
-button.danger:hover { background: var(--down); border-color: var(--down); color: #fff; }
+button.danger:hover { background: var(--down); border-color: var(--down); color: var(--accent-ink); }
 
 button:disabled { opacity: .5; cursor: default; }
 
@@ -38,7 +38,7 @@ button:disabled { opacity: .5; cursor: default; }
 .pageToast {
   position: fixed; top: 52px; left: 50%; transform: translate(-50%, -6px);
   z-index: 60; padding: 7px 14px; border-radius: 8px;
-  background: var(--panel, #161a22); border: 1px solid var(--warn, #fbbf24);
+  background: var(--panel); border: 1px solid var(--warn);
   color: var(--text); font-size: 12px; max-width: min(560px, 90vw);
   opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease;
 }
@@ -116,15 +116,15 @@ button:hover { color: var(--text); background: var(--bg-overlay); }
 button:active { transform: translateY(0.5px); }
 
 button.primary {
-  background: var(--accent); border-color: transparent; color: #ffffff;
-  box-shadow: 0 1px 3px rgba(74, 158, 255, 0.35);
+  background: var(--accent); border-color: transparent; color: var(--accent-ink);
+  box-shadow: 0 1px 3px var(--accent-line);
 }
 
-button.primary:hover { background: #5ea9ff; color: #ffffff; box-shadow: 0 2px 8px rgba(74, 158, 255, 0.45); }
+button.primary:hover { background: var(--accent); color: var(--accent-ink); box-shadow: 0 2px 8px var(--accent-line); }
 
-button.danger { background: var(--down); border-color: transparent; color: #ffffff; }
+button.danger { background: var(--down); border-color: transparent; color: var(--accent-ink); }
 
-button.danger:hover { background: #ff5a6e; }
+button.danger:hover { background: var(--down); }
 
 button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 
