@@ -6439,30 +6439,94 @@ function createChartPane(root, hooks = {}) {
     el("chart").addEventListener("pointerdown", closeMenu);
   }
 
+  /* ---- The series commands -------------------------------------------------
+   *
+   * Every path that changes this pane's series goes through one of these: the
+   * pane's own controls (bound in `wire` below), the instrument bar (through
+   * `paneApi`), and a restored snapshot. That is what makes the bar a
+   * projection -- it calls the same function the hidden select calls, so there
+   * is nothing to keep in step and no way for the two to disagree.
+   */
+
+  function applyReload() {
+    resetViewport();
+    refresh().then(connectLive);
+    notifyPane();
+  }
+
+  function applyBars(value) {
+    el("limit").value = String(value);
+    // A smaller limit drops bars the old array still holds, so the candles go
+    // and are refetched at the new count.
+    resetSeries();
+    refresh().then(connectLive);
+    notifyPane();
+  }
+
+  function applyZones(on) {
+    el("zones").setAttribute("aria-pressed", on ? "true" : "false");
+    // A redraw, not a refetch: the zones are detected from the candles the
+    // engine already has, so there is nothing new to ask the backend for.
+    render();
+    notifyPane();
+  }
+
+  function applyMode(value) {
+    el("mode").value = value;
+    // A mode change throws the zoom away. The footprint fetches its own window
+    // and the engine re-fits, which it must: a viewport resolved against candle
+    // prices makes the ladder's levels vanish behind the old axis.
+    resetViewport();
+    refresh();
+    paintTitle();
+    notifyPane();
+  }
+
+  function applyTimeframe(value) {
+    el("timeframe").value = value;
+    // These change the series itself, so the window means nothing afterwards --
+    // a bar index into the old series is not a bar in the new one.
+    resetSeries();
+    refresh().then(connectLive);
+    paintTitle();
+    notifyPane();
+  }
+
+  function applySymbol(value) {
+    el("symbol").value = value;
+    // A different instrument has different timeframes, so the list is rebuilt
+    // before the fetch that reads the chosen one.
+    fillTimeframes(value);
+    // Everything about the old series goes before the fetch: candles, window
+    // and indicator.
+    resetSeries();
+    // The concept explorer follows the instrument.
+    enabledConcepts = new Set();
+    conceptEvents = [];
+    conceptCatalog = null;
+    refreshConceptCatalog();
+    refresh().then(connectLive);
+    paintTitle();
+    notifyPane();
+    if (hooks.onSymbolChange) hooks.onSymbolChange(paneApi);
+  }
+
+  function applyFit() {
+    followLive = true;
+    // Following the edge again means the ladder should live again too.
+    startFootprintPoll();
+    applyGesture({ kind: "fit" });
+  }
+
   /// Attach the listeners that are about *this* pane: its canvas, its tool
   /// buttons, its series selects, its own reload. The two that are not -- the
   /// keyboard and the resize -- stay on the window and are routed to the active
   /// pane, because a keyboard has no way to say which canvas it means.
   function wire() {
     wireChrome();
-    el("load").addEventListener("click", () => {
-      resetViewport();
-      refresh().then(connectLive);
-    });
-    // The bar count is part of the series: a smaller limit drops bars the old
-    // array still holds, so the candles go and are refetched at the new count.
-    el("limit").addEventListener("change", () => {
-      resetSeries();
-      refresh().then(connectLive);
-    });
-    // A redraw, not a refetch: the zones are detected from the candles the engine
-    // already has, so there is nothing new to ask the backend for.
-    el("zones").addEventListener("click", (event) => {
-      const button = event.currentTarget;
-      const on = button.getAttribute("aria-pressed") !== "true";
-      button.setAttribute("aria-pressed", on ? "true" : "false");
-      render();
-    });
+    el("load").addEventListener("click", applyReload);
+    el("limit").addEventListener("change", () => applyBars(el("limit").value));
+    el("zones").addEventListener("click", () => applyZones(!zonesOn()));
     // The forecast cone (docs/35). A redraw, not a refetch, for the same
     // reason as Zones: the simulation runs on the candles the engine
     // already has.
@@ -6479,56 +6543,10 @@ function createChartPane(root, hooks = {}) {
       el("volScale").title = `What-if: scale the window's volatility — ×${volScaleValue()}`;
       scheduleRender();
     });
-    // Changing the chart type can change the *window* (a footprint uses the span
-    // that has trades), so it refetches rather than just redrawing.
-    el("mode").addEventListener("change", () => {
-      // A mode change throws the zoom away. The footprint fetches its own window
-      // and the engine re-fits, which it must: a viewport resolved against candle
-      // prices makes the ladder's levels vanish behind the old axis (footprint
-      // mode fetches its own data, so the price range of the previous mode has
-      // nothing to say about the ladder's). The shell_check probe caught exactly
-      // this as `scene.footprint: null` after switching modes.
-      resetViewport();
-      refresh();
-      paintTitle();
-    });
-    // These change the series itself, so the window means nothing afterwards -- a
-    // bar index into the old series is not a bar in the new one, and the limit
-    // select changes how many exist at all. A limit change can also *drop* bars
-    // the old array still holds, so the candles go too.
-    el("timeframe").addEventListener("change", () => {
-      resetSeries();
-      refresh().then(connectLive);
-      paintTitle();
-    });
-    el("symbol").addEventListener("change", () => {
-    // A different instrument has different timeframes, so the list is rebuilt
-    // before the fetch that reads the chosen one.
-    fillTimeframes(el("symbol").value);
-    // Everything about the old series goes before the fetch: candles, window
-    // and indicator. A fetch that fails now shows an empty chart and its
-    // error, not the previous instrument under the new one's name.
-    resetSeries();
-    // The concept explorer follows the instrument: a new symbol gets its own
-    // availability-gated catalog, and the old symbol's events leave with it.
-    enabledConcepts = new Set();
-    conceptEvents = [];
-    conceptCatalog = null;
-    refreshConceptCatalog();
-    refresh().then(connectLive);
-    paintTitle();
-      if (hooks.onSymbolChange) hooks.onSymbolChange(paneApi);
-    });
-    // Fit is also where following resumes: "show the whole series again"
-    // includes the bars that arrive next, and a button that refits while the
-    // chart stays frozen behind the live edge would have to be pressed every
-    // few seconds to do its one job.
-    el("fit").addEventListener("click", () => {
-      followLive = true;
-      // Following the edge again means the ladder should live again too.
-      startFootprintPoll();
-      applyGesture({ kind: "fit" });
-    });
+    el("mode").addEventListener("change", () => applyMode(el("mode").value));
+    el("timeframe").addEventListener("change", () => applyTimeframe(el("timeframe").value));
+    el("symbol").addEventListener("change", () => applySymbol(el("symbol").value));
+    el("fit").addEventListener("click", applyFit);
     // The scale toggle. Like the zones toggle: one request knob, the engine
     // does everything else. `aria-pressed` *is* the button's state, the
     // same arrangement the zones button uses.
@@ -6686,6 +6704,30 @@ function createChartPane(root, hooks = {}) {
     /// one answer: whatever the next request will use is what this returns.
     symbol: () => el("symbol").value,
     timeframe: () => el("timeframe").value,
+    mode: () => el("mode").value,
+    bars: () => Number(el("limit").value),
+    zones: () => zonesOn(),
+    maximized: () => root.classList.contains("exp"),
+    /// The ladder this pane actually has, for the instrument bar. Read from
+    /// the select rather than from `coverage`: the bar may not offer a rung
+    /// the pane cannot chart, and the select is what a request reads.
+    frames: () => [...el("timeframe").options].map((option) => ({ value: option.value, label: option.textContent })),
+    modes: () => [...el("mode").options].map((option) => ({ value: option.value, label: option.textContent })),
+
+    /// The series commands the instrument bar calls. Each is the function this
+    /// pane's own control is bound to, so the bar and the hidden controls
+    /// cannot disagree about what "set the symbol" means.
+    setSymbol: (value) => applySymbol(value),
+    setTimeframe: (value) => applyTimeframe(value),
+    setBars: (value) => applyBars(value),
+    setMode: (value) => applyMode(value),
+    setZones: (on) => applyZones(Boolean(on)),
+    fit: () => applyFit(),
+    reload: () => applyReload(),
+    toggleMaximize: () => {
+      setExpanded(!root.classList.contains("exp"));
+      notifyPane();
+    },
 
     /// Attach a generated indicator to this chart. A revision preview whose
     /// `concepts` survived is attached **live**: the engine re-detects its
@@ -6775,6 +6817,7 @@ function createChartPane(root, hooks = {}) {
       renderNow();
       syncIndicatorChip();
       noteWorkspaceChange();
+      notifyPane();
     },
 
     /// Show or hide one script layer (docs/25). Hiding withholds the layer
@@ -6953,6 +6996,7 @@ function createChartPane(root, hooks = {}) {
       else el("timeframe").value = deepestFrame(symbol);
       paintTitle();
       noteWorkspaceChange();
+      notifyPane();
     },
 
     /// Put a freshly cloned pane back to its starting state.
@@ -7714,6 +7758,17 @@ function scheduleMarketRetry(channel) {
   }, 2000 + Math.floor(Math.random() * 3000));
 }
 
+/// Announce that the active chart's own state moved -- its series, its
+/// overlay, its attachment.
+///
+/// One event for every path that can change it, so the listeners (the
+/// instrument bar, the status bar) never keep a list of call sites in step.
+/// The detail carries the pane for a listener that wants it; everything else
+/// re-reads through the facade, which is the only source of truth.
+function notifyPane() {
+  document.dispatchEvent(new CustomEvent("hrz:pane", { detail: { pane: activePane } }));
+}
+
 /// Make `pane` the one the aside follows.
 ///
 /// Called from a capture-phase listener on the pane, so it is set *before* the
@@ -7955,6 +8010,11 @@ function syncIndicatorChip() {
         .join("");
     }
   }
+  // The instrument bar is a projection: it re-reads the active chart whenever
+  // the chart changes under it. One event from every path that can change a
+  // series or an overlay -- the pane's own controls, the bar's commands, a
+  // restored snapshot -- so no listener keeps a list of call sites in step.
+  notifyPane();
 }
 
 /// Remove the active pane's attached CONCEPT-layer indicator. Script layers
@@ -12355,36 +12415,44 @@ function renderWatchlist() {
   }
 }
 
-/// Chart a watchlist row on the active pane.
+/// Make sure the page's instrument list contains `symbol`.
 ///
-/// The one piece that has to be careful: a searched symbol may not be in the
-/// pane's series list yet (the list is built from what the platform has
-/// charted). It is appended with a full, zero-coverage timeframe ladder --
-/// `/candles` fetches history on demand, so coverage is not a permission --
-/// and the selects are rebuilt before the fetch that reads them.
+/// The list is built from what the platform has charted, so a symbol found by
+/// search may not be in it yet. It is appended with a full, zero-coverage
+/// timeframe ladder -- `/candles` fetches history on demand, so coverage is
+/// not a permission -- and every pane's selects are rebuilt, because the list
+/// is shared by the whole page. Each pane keeps the instrument *and the
+/// timeframe* it was showing: a symbol arriving elsewhere must not re-frame a
+/// chart the user is reading.
+/// Returns true when the list grew.
+function ensureCoverage(symbol) {
+  if (!symbol || coverage.some((entry) => entry.symbol === symbol)) return false;
+  coverage = [
+    ...coverage,
+    {
+      symbol,
+      timeframes: ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"].map((t) => ({
+        timeframe: t,
+        candles: 0,
+        first: 0,
+        last: 0,
+      })),
+    },
+  ];
+  for (const pane of panes) {
+    pane.fillSeries(coverage, pane.symbol() || undefined, pane.timeframe() || undefined);
+  }
+  return true;
+}
+
+/// Chart a watchlist row on the active pane.
 function chartFromWatchlist(symbol) {
   if (!activePane) return;
-  const known = coverage.some((entry) => entry.symbol === symbol);
-  if (!known) {
-    coverage = [
-      ...coverage,
-      {
-        symbol,
-        timeframes: ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"].map((t) => ({
-          timeframe: t,
-          candles: 0,
-          first: 0,
-          last: 0,
-        })),
-      },
-    ];
-    // Every pane shares the page's instrument list; adding to it rebuilds
-    // each pane's options so the new symbol is not a one-pane fiction.
-    for (const pane of panes) pane.fillSeries(coverage, pane.symbol() || undefined);
-    activePane.fillSeries(coverage, symbol, "15m");
-  } else {
-    activePane.fillSeries(coverage, symbol);
-  }
+  // 15m is the deliberate starting rung for an instrument with no history:
+  // the ladder is zero-coverage everywhere, so "the deepest series" would be
+  // whichever entry happened to come first.
+  const added = ensureCoverage(symbol);
+  activePane.fillSeries(coverage, symbol, added ? "15m" : undefined);
   setActive(activePane);
   activePane.refresh().then(() => activePane.connectLive());
 }
@@ -13398,6 +13466,7 @@ function paintIcons(scope = document) {
 
 async function main() {
   if (window.Shell) Shell.init();
+  if (window.InstrumentBar) InstrumentBar.init();
   paintSession();
   paintIcons(document);
   // The toggle's glyph names the theme a click would switch *to*, so repainting
@@ -13986,6 +14055,40 @@ function showWorkspaceList() {
   loadWorkspaces();
 }
 
+/// Attach a workspace's active revision to a chart, if it has one.
+///
+/// Extracted from `selectWorkspace`, which needs exactly this after loading a
+/// chat: the instrument bar's Attach menu asks the same question without
+/// opening the chat. The fork between "a pine-lite revision attaches as code"
+/// and "a document revision attaches as a preview" lives here, once.
+/// Answers a sentence describing what happened, or "" when there was nothing
+/// to attach.
+async function attachWorkspaceRevision(ws, target) {
+  if (!ws || !target || !ws.active_revision_id) return "";
+  const rev = await api(`/indicator-workspaces/${ws.id}/revisions/${ws.active_revision_id}`);
+  const preview = rev.preview;
+  if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
+    target.attachScript({
+      source: rev.source,
+      inputs: {},
+      name: (preview && preview.name) || ws.name,
+      inputsSpec: Array.isArray(rev.validation.inputs) ? rev.validation.inputs : [],
+    });
+    syncIndicatorChip();
+    return `Attached script "${(preview && preview.name) || ws.name}" to ${target.symbol()} ${target.timeframe()} — it re-runs on every candle`;
+  }
+  const live = preview && Array.isArray(preview.concepts) && preview.concepts.length > 0;
+  if (preview && (live || !ws.symbol || ws.symbol === target.symbol())) {
+    target.attachIndicator(preview);
+    syncIndicatorChip();
+    const liveNote = live
+      ? " — it keeps detecting on every new candle of any chart it is attached to"
+      : "";
+    return `Attached "${preview.name || ws.name}" to ${target.symbol()} ${target.timeframe()}${liveNote}`;
+  }
+  return "";
+}
+
 async function selectWorkspace(id) {
   // Switching chats stops waiting for the previous chat's in-flight answer
   // (docs/29): the generation may still finish server-side, and its message
@@ -14003,43 +14106,10 @@ async function selectWorkspace(id) {
   el("wsActiveName").textContent = ws.name;
   el("wsChatMsg").textContent = "";
   await Promise.all([loadRevisions(id), loadMessages(id), loadAlerts(id)]);
-  // Auto-attach the active revision to the active chart, if one exists.
-  //
-  // A live revision (one carrying its concepts) attaches to any chart -- a
-  // concept is a shape, and the engine detects it on whatever series the pane
-  // holds, including a different symbol or timeframe than the generator used.
-  // A snapshot-only preview only ever attaches to the symbol it was computed
-  // from: its coordinates are meaningless over another instrument.
   if (ws.active_revision_id && activePane) {
     try {
-      const rev = await api(`/indicator-workspaces/${id}/revisions/${ws.active_revision_id}`);
-      const preview = rev.preview;
-      // A pine-lite revision attaches as CODE: the source goes back to the
-      // engine, which re-runs it on this chart's candles every frame. A
-      // document revision attaches as the concepts/preview pair, as before.
-      if (rev.validation && rev.validation.engine === "pine-lite-v1" && rev.source) {
-        // A layer (docs/25): joins whatever is already on the chart. The
-        // validation record carries the input declarations, so the layer's
-        // settings form needs no re-vet.
-        activePane.attachScript({
-          source: rev.source,
-          inputs: {},
-          name: (preview && preview.name) || ws.name,
-          inputsSpec: Array.isArray(rev.validation.inputs) ? rev.validation.inputs : [],
-        });
-        syncIndicatorChip();
-        pageToast(`Attached script "${(preview && preview.name) || ws.name}" to ${activePane.symbol()} ${activePane.timeframe()} — it re-runs on every candle`);
-      } else {
-        const live = preview && Array.isArray(preview.concepts) && preview.concepts.length > 0;
-        if (preview && (live || !ws.symbol || ws.symbol === activePane.symbol())) {
-          activePane.attachIndicator(preview);
-          syncIndicatorChip();
-          const liveNote = live
-            ? " — it keeps detecting on every new candle of any chart it is attached to"
-            : "";
-          pageToast(`Attached "${preview.name || ws.name}" to ${activePane.symbol()} ${activePane.timeframe()}${liveNote}`);
-        }
-      }
+      const message = await attachWorkspaceRevision(ws, activePane);
+      if (message) pageToast(message);
     } catch (e) {
       pageToast(`Failed to attach indicator: ${e.message}`);
     }
@@ -15195,10 +15265,28 @@ window.HRZApp = {
     // The feed badge is one page-level node inside the chart toolbar (the
     // active pane writes it), not a child of a pane root -- so it is read by id.
     const badge = el("feedStatus");
+    const attached = activePane.attachedIndicator();
     return {
-      symbol: activePane.symbol ? activePane.symbol() : "",
-      timeframe: activePane.timeframe ? activePane.timeframe() : "",
+      symbol: activePane.symbol(),
+      timeframe: activePane.timeframe(),
       feed: badge ? badge.dataset.state || "" : "",
+      mode: activePane.mode(),
+      bars: activePane.bars(),
+      zones: activePane.zones(),
+      maximized: activePane.maximized(),
+      frames: activePane.frames(),
+      modes: activePane.modes(),
+      indicator: attached
+        ? {
+            name: attached.name || "generated indicator",
+            live: Array.isArray(attached.concepts) && attached.concepts.length > 0,
+          }
+        : null,
+      layers: activePane.attachedScripts().map((layer, index) => ({
+        index,
+        name: layer.name || "script",
+        visible: layer.visible !== false,
+      })),
     };
   },
   noteChange: () => noteWorkspaceChange(),
@@ -15245,6 +15333,63 @@ window.HRZApp = {
       return;
     }
     chartFromWatchlist(symbol);
+  },
+
+  // --- the instrument bar's commands (Task 11) ------------------------------
+
+  /// Move the active chart to a symbol the search found. The instrument list is
+  /// built from what the platform has charted, so a venue symbol may not be in
+  /// it yet; `ensureCoverage` adds it -- and rebuilds every pane's selects,
+  /// keeping each pane's timeframe -- before the pane's `setSymbol` runs.
+  /// Without that the select would silently keep its old option.
+  setActiveSymbol(symbol) {
+    if (!activePane || !symbol) return;
+    const wanted = String(symbol).toUpperCase();
+    ensureCoverage(wanted);
+    activePane.setSymbol(wanted);
+  },
+
+  setActiveTimeframe: (frame) => { if (activePane) activePane.setTimeframe(frame); },
+  setActiveBars: (bars) => { if (activePane) activePane.setBars(bars); },
+  setActiveMode: (mode) => { if (activePane) activePane.setMode(mode); },
+  setActiveZones: (on) => { if (activePane) activePane.setZones(on); },
+  fitActivePane: () => { if (activePane) activePane.fit(); },
+  reloadActivePane: () => { if (activePane) activePane.reload(); },
+  toggleMaximize: () => { if (activePane) activePane.toggleMaximize(); },
+  detachActiveIndicator: () => detachIndicator(),
+  setLayerVisible: (index, visible) => { if (activePane) activePane.setScriptVisible(index, visible); },
+  removeLayer: (index) => { if (activePane) activePane.removeScriptAt(index); },
+
+  /// Attach a saved indicator to the active chart without opening Studio.
+  /// The workspace is read rather than taken from the cached list, because
+  /// that list is only loaded when Studio opens and the bar can be used on a
+  /// page where it never has been. The attach itself is the same helper
+  /// `selectWorkspace` uses, so both paths attach identically.
+  async attachWorkspace(id) {
+    if (!activePane) return "Open a chart first.";
+    try {
+      const ws = await api(`/indicator-workspaces/${id}`);
+      const message = await attachWorkspaceRevision(ws, activePane);
+      return message || `"${ws.name}" has nothing to attach to this chart.`;
+    } catch (error) {
+      return `Could not attach: ${error.message}`;
+    }
+  },
+
+  /// Save the active chart as a PNG the user can keep. The capture path is the
+  /// same one the AI chat attaches, so the file is the chart the model sees:
+  /// no crosshair, no hover, the plot at device resolution.
+  async saveScreenshot() {
+    if (!activePane) return "Open a chart first.";
+    const shot = captureChart(activePane.canvas, activePane.timeframe());
+    if (!shot) return "The chart is not ready to save yet.";
+    const link = document.createElement("a");
+    link.href = `data:${shot.media_type};base64,${shot.data}`;
+    link.download = `${activePane.symbol()}-${activePane.timeframe()}.png`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    return `Saved ${activePane.symbol()} ${activePane.timeframe()}.`;
   },
 };
 

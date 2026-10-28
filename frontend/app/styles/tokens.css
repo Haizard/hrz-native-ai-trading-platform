@@ -75,6 +75,7 @@
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   --topbar-h: 44px;
+  --bar-h: 40px;
   --rail-w: 48px;
   --status-h: 24px;
   --watch-w: 260px;

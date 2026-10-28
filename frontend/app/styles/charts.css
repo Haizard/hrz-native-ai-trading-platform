@@ -10,7 +10,6 @@
 #inspectorHost { display: flex; flex: 0 0 var(--inspector-w); width: var(--inspector-w); min-height: 0; }
 #inspectorHost[hidden] { display: none; }
 #inspectorHost > aside { width: 100%; flex: 1 1 auto; }
-.chartToolbar { flex: 0 0 36px; }
 #dock {
   display: flex; flex-direction: column; flex: 0 0 auto;
   height: var(--dock-h); min-height: 0;
@@ -741,3 +740,125 @@
 
 #wlRows .watchRow .star:hover { color: var(--warn); }
 
+
+/* ---- The instrument bar --------------------------------------------------- */
+/* 40px, not the old 36: the bar carries 28px segmented controls and a symbol
+   button with its own padding, and a strip that clips its own buttons reads as
+   broken. It belongs to the *active* chart; the panes' own controls stay in
+   their hidden bars exactly where they were. */
+.instrumentBar {
+  display: flex; align-items: center; gap: var(--space-2);
+  flex: 0 0 var(--bar-h); height: var(--bar-h);
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-panel);
+  min-width: 0;
+}
+.barGroup { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+.barGroup + .barGroup {
+  padding-left: var(--space-2); margin-left: var(--space-1);
+  border-left: 1px solid var(--line);
+}
+.barSpacer { flex: 1 1 auto; min-width: var(--space-2); }
+.barMarker { display: none; }
+/* No active chart: the series controls have nothing to act on. The panel
+   toggles stay live -- they are about the page, not the instrument. */
+.instrumentBar[data-state="empty"] .barGroup:not([data-bar-group="chrome"]) { visibility: hidden; }
+
+/* The symbol button is the bar's anchor: the strip always states which
+   instrument the controls act on. Mono, because a symbol is an identifier. */
+.barSymbol {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  height: 28px; padding: 0 var(--space-2);
+  border: 1px solid transparent; border-radius: var(--radius-1);
+  background: transparent; color: var(--text-1);
+  font: 600 var(--text-sm)/1 var(--font-mono);
+  white-space: nowrap;
+}
+.barSymbol:hover { background: var(--bg-raised); }
+.barSymbol[aria-expanded="true"] { background: var(--bg-raised); border-color: var(--line-strong); }
+.barSymbol svg { width: 12px; height: 12px; color: var(--text-3); }
+.barSymbolName { overflow: hidden; text-overflow: ellipsis; }
+.instrumentBar .hrz-seg { height: 28px; }
+.instrumentBar .hrz-seg__item { padding: 0 6px; font-size: 11px; }
+.instrumentBar select.hrz-select { width: auto; height: 28px; }
+#barBars { width: 64px; }
+
+/* The attached-indicator chip: a dot, a name and a ×. The script layers are a
+   count ("+2") rather than more chips -- the bar is a strip, not a list, and
+   their own panel is one press away. */
+.barChip {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  max-width: 220px; height: 26px; padding: 0 var(--space-1) 0 var(--space-2);
+  border: 1px solid var(--accent-line); border-radius: 999px;
+  background: var(--accent-soft); color: var(--text-1);
+  font-size: var(--text-xs); white-space: nowrap;
+}
+.barChip[hidden] { display: none; }
+.barChipDot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+.barChipName { overflow: hidden; text-overflow: ellipsis; }
+.barChipBtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0;
+  border: 0; border-radius: 50%; background: transparent; color: var(--text-2);
+}
+.barChipBtn:hover { background: var(--bg-overlay); color: var(--down); }
+.barChipBtn svg { width: 12px; height: 12px; }
+
+/* Compact: the same controls, tightened -- only the groups that do not fit
+   have moved into More, so this buys back the padding they were using. */
+.instrumentBar[data-width="compact"] { gap: var(--space-1); }
+.instrumentBar[data-width="compact"] .barGroup { gap: 2px; }
+.instrumentBar[data-width="compact"] .barGroup + .barGroup { padding-left: var(--space-1); }
+.instrumentBar[data-width="tight"] .barSymbol { max-width: 96px; }
+.instrumentBar[data-width="tight"] .barSymbolName { max-width: 60px; }
+
+/* ---- The bar's panels -----------------------------------------------------
+   Permanent fixed panels, shown and hidden, rather than `HRZUI.popover`:
+   three of them HOLD the app's live controls (#split, #layoutMode, #chartCols)
+   and a popover that removes its content on close would take them, and their
+   listeners, off the page. Fixed and outside #chartColumn, so a later
+   `contain` on the column cannot clip them. */
+.barPop {
+  position: fixed; left: var(--pop-left, 0); top: var(--pop-top, 0);
+  z-index: 60; width: max-content; min-width: 240px; max-width: 320px;
+  max-height: min(420px, 70vh); overflow: auto;
+  padding: var(--space-2);
+  border: 1px solid var(--line-strong); border-radius: var(--radius-2);
+  background: var(--bg-overlay); box-shadow: var(--shadow-2);
+}
+.barPop[hidden] { display: none; }
+.barPop--symbol { width: 320px; }
+.barPopTitle {
+  margin: var(--space-1) var(--space-1) var(--space-2);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.barPopList { display: flex; flex-direction: column; gap: 1px; }
+.barPopStack { display: flex; flex-direction: column; gap: var(--space-2); align-items: flex-start; }
+.barPopStack .barGroup { flex-wrap: wrap; }
+.barPopStack .barGroup + .barGroup {
+  border-left: 0; border-top: 1px solid var(--line);
+  padding-left: 0; margin-left: 0;
+  padding-top: var(--space-2); margin-top: var(--space-2);
+}
+.barPopItem {
+  display: flex; align-items: center; gap: var(--space-2);
+  width: 100%; min-width: 0; padding: var(--space-2);
+  border: 0; border-radius: var(--radius-1);
+  background: transparent; color: var(--text-1); text-align: left;
+  font-size: var(--text-sm);
+}
+.barPopItem:hover, .barPopItem:focus-visible { background: var(--bg-raised); }
+.barPopItem[aria-pressed="true"] { color: var(--accent); }
+.barPopMain { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.barPopMeta { flex: 0 0 auto; font: var(--text-2xs)/1 var(--font-mono); color: var(--text-3); }
+.barPopIcon { display: inline-flex; color: var(--text-2); }
+.barPopIcon svg { width: 14px; height: 14px; }
+.barPopRow { display: flex; align-items: center; gap: var(--space-1); }
+.barPopRow--end { justify-content: flex-end; padding-top: var(--space-2); }
+.barPopNote { margin: var(--space-2) var(--space-1) 0; color: var(--text-3); font-size: var(--text-xs); }
+.barPopNote:empty { display: none; }
+.barPopField { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-2); }
+#layoutCtl { display: flex; gap: var(--space-1); }
+#layoutCtl select { width: auto; flex: 1 1 auto; }

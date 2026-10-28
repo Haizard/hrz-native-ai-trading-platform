@@ -165,6 +165,8 @@
     if (rail) rail.classList.toggle("hideRail", state.watchlistCollapsed);
     if (splitter) splitter.classList.toggle("hideRail", state.watchlistCollapsed);
     if (reveal) reveal.hidden = !state.watchlistCollapsed;
+    const toggle = el("watchlistToggle");
+    if (toggle) toggle.setAttribute("aria-pressed", String(state.watchlistCollapsed));
   }
 
   function syncInspector() {
@@ -180,6 +182,8 @@
     }
     const ai = el("aiBtn");
     if (ai) ai.setAttribute("aria-pressed", String(open && state.inspectorTab === "ai"));
+    const toggle = el("inspectorToggle");
+    if (toggle) toggle.setAttribute("aria-pressed", String(open));
   }
 
   function syncStudio() {

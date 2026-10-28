@@ -625,6 +625,26 @@ window.fetch = async (path, options = {}) => {
     };
   }
 
+  // The instrument bar's search. Ahead of `/symbols` on purpose: `startsWith`
+  // does not know about path segments, and `/symbols/search` starts with
+  // `/symbols` -- so a mock below this one would swallow every search.
+  if (url.startsWith("/symbols/search")) {
+    const query = (queryOf(url).get("q") ?? "").toUpperCase();
+    const all = backend.symbols.map((entry) => ({
+      symbol: entry.symbol,
+      base: entry.symbol.replace(/USDT$/, ""),
+      quote: "USDT",
+      trading: true,
+    }));
+    return json(200, {
+      query,
+      results: all.filter((entry) => entry.symbol.includes(query)),
+      indexed: all.length,
+      fetched_at: FIXTURE_NOW_MS,
+      stale: false,
+    });
+  }
+
   if (url.startsWith("/symbols")) {
     // The list the page builds every pane's selects from. An instrument the page
     // cannot chart, or a timeframe it has no bars for, would be a selector option
@@ -1123,6 +1143,12 @@ const paletteView = document.createElement("script");
 paletteView.textContent = await readFile(join(root, "frontend/app/views/palette.js"), "utf8");
 document.head.appendChild(paletteView);
 
+// The instrument bar, likewise: it only defines `window.InstrumentBar` and
+// binds document listeners, reaching `HRZApp` inside them.
+const instrumentBarView = document.createElement("script");
+instrumentBarView.textContent = await readFile(join(root, "frontend/app/views/instrument_bar.js"), "utf8");
+document.head.appendChild(instrumentBarView);
+
 // These checks are about the chart wall and the panels beside it. A fresh
 // account has no snapshot, so without a route the shell opens on Dashboard
 // and every chart pane is behind a hidden section.
@@ -1222,6 +1248,208 @@ check(
   [...paneNode().querySelector(".timeframe").options].map((o) => o.value).join(",") ===
     "1m,5m,15m,1h,4h,1d",
   [...paneNode().querySelector(".timeframe").options].map((o) => o.value).join(",")
+);
+
+// --- the instrument bar ------------------------------------------------------
+//
+// The bar is a projection of the active pane, not a second set of controls. The
+// checks drive it the way a user does -- press a frame, pick a symbol -- and
+// then read the *pane's* own selects back, because "the bar says 1h" and "the
+// chart is on 1h" are different claims and only the second one matters.
+
+console.log("\nthe instrument bar");
+
+const barNode = () => document.getElementById("instrumentBar");
+
+// The bar repaints on the next animation frame after the chart changes under it
+// -- one coalesced frame, so a pane that fills its symbol, its ladder and its
+// overlay in three steps paints once. jsdom does not guarantee a frame inside
+// the 30ms these checks otherwise settle for, so anything that reads a value the
+// *bar* painted waits for that value; a bar that never projects the chart is a
+// timeout, not a skip.
+await waitFor(
+  () => document.getElementById("barSymbolName").textContent === "BTCUSDT",
+  "the instrument bar to project the chart it opened on"
+);
+
+check(
+  "the instrument bar sits at the top of the chart column",
+  barNode() && barNode().parentElement.id === "chartColumn" &&
+    barNode().nextElementSibling && barNode().nextElementSibling.id === "globalTools",
+  barNode() ? barNode().parentElement.id : "missing"
+);
+check(
+  "it names the active chart's symbol",
+  document.getElementById("barSymbolName").textContent === "BTCUSDT",
+  document.getElementById("barSymbolName").textContent
+);
+check(
+  "and offers the ladder the pane actually has",
+  [...document.querySelectorAll("#barFrames [data-frame]")].map((b) => b.dataset.frame).join(",") ===
+    "1m,5m,15m,1h,4h",
+  [...document.querySelectorAll("#barFrames [data-frame]")].map((b) => b.dataset.frame).join(",")
+);
+check(
+  "with the pane's own frame pressed",
+  document.querySelector('#barFrames [data-frame="5m"]').getAttribute("aria-pressed") === "true",
+  document.querySelector('#barFrames [data-frame="5m"]').getAttribute("aria-pressed")
+);
+check(
+  "and the chart type segmented from the pane's own select",
+  [...document.querySelectorAll("#barModes [data-mode]")].map((b) => b.dataset.mode).join(",") ===
+    "candles,heikin_ashi,bars,line,area,footprint",
+  [...document.querySelectorAll("#barModes [data-mode]")].map((b) => b.dataset.mode).join(",")
+);
+
+document.querySelector('#barFrames [data-frame="1h"]').click();
+await settle();
+check(
+  "pressing a frame moves the pane's own timeframe select",
+  selectIn(PANE, "timeframe") === "1h",
+  selectIn(PANE, "timeframe")
+);
+await waitFor(
+  () =>
+    document.querySelector('#barFrames [data-frame="1h"]').getAttribute("aria-pressed") === "true",
+  "the bar to follow the pane's frame back"
+);
+check(
+  "and the bar follows the pane back",
+  document.querySelector('#barFrames [data-frame="1h"]').getAttribute("aria-pressed") === "true",
+  document.querySelector('#barFrames [data-frame="1h"]').getAttribute("aria-pressed")
+);
+
+document.querySelector('#barModes [data-mode="bars"]').click();
+await settle();
+check(
+  "pressing a chart type moves the pane's own select",
+  selectIn(PANE, "mode") === "bars",
+  selectIn(PANE, "mode")
+);
+
+document.getElementById("barZones").click();
+await settle();
+check(
+  "the bar's Zones toggle drives the pane's own toggle",
+  paneNode().querySelector(".zones").getAttribute("aria-pressed") === "true",
+  paneNode().querySelector(".zones").getAttribute("aria-pressed")
+);
+document.getElementById("barZones").click();
+await settle();
+
+document.getElementById("barSymbol").click();
+const searchInput = document.getElementById("symbolPopInput");
+check(
+  "the symbol panel opens with the caret in its field",
+  document.getElementById("symbolPop").hidden === false && document.activeElement === searchInput,
+  `hidden=${document.getElementById("symbolPop").hidden} focused=${document.activeElement && document.activeElement.id}`
+);
+searchInput.value = "eth";
+searchInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+await waitFor(
+  () => document.querySelector('#symbolPopList [data-symbol="ETHUSDT"]'),
+  "the symbol search results"
+);
+check(
+  "the search lists the matching instrument",
+  document.querySelectorAll("#symbolPopList [data-symbol]").length === 1,
+  `${document.querySelectorAll("#symbolPopList [data-symbol]").length} results`
+);
+document.querySelector('#symbolPopList [data-symbol="ETHUSDT"]').click();
+await settle();
+check(
+  "picking it moves the active chart",
+  selectIn(PANE, "symbol") === "ETHUSDT",
+  selectIn(PANE, "symbol")
+);
+check("and the panel closes behind it", document.getElementById("symbolPop").hidden === true);
+// The field the search was typed into went away with the panel, so the caret
+// has to go back to the button that opened it -- otherwise the page holds focus
+// on a hidden input, and the window-level shortcuts that ask "is the user
+// typing?" stop working for the rest of the session.
+check(
+  "and picking hands the caret back to the button that opened the panel",
+  document.activeElement === document.getElementById("barSymbol"),
+  document.activeElement && document.activeElement.id
+);
+
+// The strip narrows by moving groups into More, never by cloning them: `#split`
+// and the layout selects are the app's nodes and carry its listeners, so a copy
+// would be a control that looks live and does nothing.
+const columnWidth = (width) => {
+  // The bar measures its *own* box, so that is what gets pinned; the column is
+  // pinned too because it is the thing the user drags, and a headless DOM gives
+  // both zero.
+  for (const id of ["instrumentBar", "chartColumn"]) {
+    Object.defineProperty(document.getElementById(id), "clientWidth", {
+      value: width,
+      configurable: true,
+    });
+  }
+  window.InstrumentBar.measure();
+};
+
+columnWidth(800);
+check(
+  "at 800px the indicator and pane groups move into More",
+  document.getElementById("moreGroups").querySelector('[data-bar-group="indicators"]') &&
+    document.getElementById("moreGroups").querySelector('[data-bar-group="panes"]') &&
+    document.querySelector('#instrumentBar [data-bar-group="view"]') &&
+    document.querySelector('#instrumentBar [data-bar-group="instrument"]'),
+  [...document.querySelectorAll("#instrumentBar > .barGroup")].map((g) => g.dataset.barGroup).join(",")
+);
+check(
+  "and the moved group is the same node, not a copy",
+  document.getElementById("moreGroups").querySelector("#split") === document.getElementById("split")
+);
+
+columnWidth(700);
+check(
+  "at 700px the view group joins them, and the symbol stays",
+  document.getElementById("moreGroups").querySelector('[data-bar-group="view"]') &&
+    document.querySelector('#instrumentBar [data-bar-group="instrument"]') &&
+    document.querySelector('#instrumentBar [data-bar-group="chrome"]'),
+  [...document.querySelectorAll("#instrumentBar > .barGroup")].map((g) => g.dataset.barGroup).join(",")
+);
+
+columnWidth(1400);
+check(
+  "widening again puts every group back in its own place",
+  [...document.querySelectorAll("#instrumentBar > .barGroup")].map((g) => g.dataset.barGroup).join(",") ===
+    "instrument,view,indicators,panes,chrome",
+  [...document.querySelectorAll("#instrumentBar > .barGroup")].map((g) => g.dataset.barGroup).join(",")
+);
+check("and More stops offering moved controls", document.getElementById("moreSection").hidden === true);
+
+// Back to the state the rest of the file expects: the checks after this one
+// assume the first chart on 5m, candles, zones off.
+document.querySelector('#barFrames [data-frame="5m"]').click();
+await settle();
+document.querySelector('#barModes [data-mode="candles"]').click();
+await settle();
+check(
+  "and the bar restored the chart the later checks assume",
+  selectIn(PANE, "timeframe") === "5m" && selectIn(PANE, "mode") === "candles",
+  `${selectIn(PANE, "timeframe")} ${selectIn(PANE, "mode")}`
+);
+
+// The symbol check above moved the active pane to ETHUSDT, and the live-feed,
+// drawing and book checks after this point are written against BTCUSDT -- so the
+// block leaves the chart on the instrument it was found on, through the same
+// panel a user would.
+document.getElementById("barSymbol").click();
+searchInput.value = "btc";
+searchInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+await waitFor(
+  () => document.querySelector('#symbolPopList [data-symbol="BTCUSDT"]'),
+  "the symbol search to find BTCUSDT again"
+);
+document.querySelector('#symbolPopList [data-symbol="BTCUSDT"]').click();
+await settle();
+check(
+  "and the bar leaves the chart on the symbol the rest of the file assumes",
+  selectIn(PANE, "symbol") === "BTCUSDT",
+  selectIn(PANE, "symbol")
 );
 
 // --- the layout at a narrow width --------------------------------------------

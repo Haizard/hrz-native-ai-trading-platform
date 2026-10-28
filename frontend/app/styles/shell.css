@@ -102,13 +102,6 @@
 .sbSave[data-state="saving"] { color: var(--warn); }
 .sbSave[data-state="failed"] { color: var(--down); }
 .sbPlan { color: var(--text-2); }
-.chartToolbar {
-  display: flex; align-items: center; gap: var(--space-2);
-  height: 36px; flex: 0 0 36px; padding: 0 var(--space-2);
-  border-bottom: 1px solid var(--line); background: var(--bg-panel);
-}
-.chartToolbar .spacer { flex: 1 1 auto; }
-.chartToolbar select { width: auto; }
 #utcClock { color: var(--text-1); }
 .mono { font-family: var(--font-mono); }
 

@@ -241,44 +241,86 @@
        says "above the chart grid"; the wrapper is what makes that true in the
        DOM and not only in prose. -->
   <div id="chartColumn">
-    <div id="chartToolbar" class="chartToolbar">
-      <button id="split" class="hrz-btn hrz-btn--secondary hrz-btn--sm" type="button"
-              title="Add another chart beside this one">
-        <span data-icon="plus"></span> Panel
-      </button>
-      <div id="layoutCtl">
-        <select id="layoutMode" class="hrz-select" aria-label="Chart layout"
-                title="Split: up to four charts in rows. Grid: a scrolling wall of up to 100.">
-          <option value="split">Split</option>
-          <option value="grid">Grid</option>
-        </select>
-        <select id="chartCols" class="hrz-select" aria-label="Grid columns"
-                title="How many chart columns the grid shows" hidden>
-          <option value="1">1 col</option>
-          <option value="2" selected>2 cols</option>
-          <option value="3">3 cols</option>
-          <option value="4">4 cols</option>
-          <option value="5">5 cols</option>
-          <option value="6">6 cols</option>
-          <option value="7">7 cols</option>
-          <option value="8">8 cols</option>
-          <option value="9">9 cols</option>
-          <option value="10">10 cols</option>
+    <div id="instrumentBar" class="instrumentBar" role="toolbar" aria-label="Active chart controls" data-state="empty" data-width="wide">
+      <div class="barGroup" data-bar-group="instrument">
+        <button id="barSymbol" class="barSymbol" type="button" aria-haspopup="true"
+                aria-expanded="false" aria-controls="symbolPop"
+                title="Search the venue for an instrument">
+          <span class="barSymbolName" id="barSymbolName">—</span>
+          <span data-icon="chevron-down"></span>
+        </button>
+        <div class="hrz-seg hrz-seg--sm" id="barFrames" role="group" aria-label="Timeframe"></div>
+        <button id="barFrameMore" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-controls="framesPop"
+                aria-label="All timeframes" title="All timeframes">
+          <span data-icon="chevron-down"></span>
+        </button>
+        <select id="barBars" class="hrz-select" aria-label="How many bars to load" title="How many bars to load">
+          <option value="200">200</option>
+          <option value="500">500</option>
+          <option value="1000">1000</option>
         </select>
       </div>
-      <span class="spacer"></span>
-      <button id="watchlistToggle" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
-              aria-label="Toggle watchlist" title="Toggle watchlist" disabled>
-        <span data-icon="panel-left"></span>
-      </button>
-      <button id="inspectorToggle" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
-              aria-label="Toggle inspector" title="Toggle inspector" disabled>
-        <span data-icon="panel-right"></span>
-      </button>
-      <button id="dockToggle" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
-              aria-label="Toggle bottom dock" title="Bottom dock" disabled>
-        <span data-icon="panel-bottom"></span>
-      </button>
+      <div class="barGroup" data-bar-group="view">
+        <div class="hrz-seg hrz-seg--sm" id="barModes" role="group" aria-label="Chart type"></div>
+        <button id="barZones" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button" aria-pressed="false"
+                title="Draw the supply and demand zones the engine detects">Zones</button>
+        <button id="barFit" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button"
+                title="Show the whole series again (all the bars, and a price axis fitted to them)">Fit</button>
+        <button id="barReload" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+                aria-label="Reload this chart" title="Reload this chart">
+          <span data-icon="refresh"></span>
+        </button>
+      </div>
+      <div class="barGroup" data-bar-group="indicators">
+        <span class="barChip" id="barIndicator" hidden>
+          <span class="barChipDot" aria-hidden="true"></span>
+          <span class="barChipName" id="barIndicatorName"></span>
+          <button id="barIndicatorDetach" class="barChipBtn" type="button"
+                  aria-label="Detach this indicator" title="Detach this indicator">
+            <span data-icon="close"></span>
+          </button>
+        </span>
+        <button id="barAttach" class="hrz-btn hrz-btn--secondary hrz-btn--sm" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-controls="attachPop">Attach</button>
+        <button id="barLayers" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-controls="layersPop" hidden>Layers</button>
+      </div>
+      <div class="barGroup" data-bar-group="panes">
+        <button id="barLayout" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-controls="layoutPop"
+                aria-label="Chart layout" title="Split or grid layout">
+          <span data-icon="grid"></span>
+        </button>
+        <button id="split" class="hrz-btn hrz-btn--secondary hrz-btn--sm" type="button"
+                title="Add another chart beside this one">
+          <span data-icon="plus"></span> Pane
+        </button>
+        <button id="barMaximize" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+                aria-pressed="false" aria-label="Expand this chart" title="Expand this chart">
+          <span data-icon="maximize"></span>
+        </button>
+      </div>
+      <span class="barSpacer"></span>
+      <div class="barGroup" data-bar-group="chrome">
+        <button id="watchlistToggle" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+                aria-label="Toggle watchlist" title="Toggle watchlist" disabled>
+          <span data-icon="panel-left"></span>
+        </button>
+        <button id="inspectorToggle" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+                aria-label="Toggle inspector" title="Toggle inspector" disabled>
+          <span data-icon="panel-right"></span>
+        </button>
+        <button id="dockToggle" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+                aria-label="Toggle bottom dock" title="Bottom dock" disabled>
+          <span data-icon="panel-bottom"></span>
+        </button>
+        <button id="chartMoreBtn" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-controls="chartMore"
+                aria-label="More chart actions" title="More">
+          <span data-icon="more-horizontal"></span>
+        </button>
+      </div>
     </div>
     <div id="globalTools" class="globalTools" role="toolbar" aria-label="Drawing tools for the active chart" hidden></div>
     <div id="charts">
@@ -1346,10 +1388,82 @@
   <p class="shortcutsFoot">Shortcuts are ignored while you are typing in a field.</p>
 </dialog>
 
+<div class="barPop barPop--symbol" id="symbolPop" role="dialog" aria-label="Find an instrument" hidden>
+  <input type="search" id="symbolPopInput" class="hrz-input"
+         placeholder="Search BTC, ETH, SOL…" aria-label="Search instruments" autocomplete="off" />
+  <div class="barPopList" id="symbolPopList"></div>
+  <p class="barPopNote" id="symbolPopNote" role="status"></p>
+</div>
+
+<div class="barPop" id="framesPop" role="dialog" aria-label="All timeframes" hidden>
+  <p class="barPopTitle">Timeframe</p>
+  <div class="barPopList" id="framesPopList"></div>
+</div>
+
+<div class="barPop" id="attachPop" role="dialog" aria-label="Attach an indicator" hidden>
+  <p class="barPopTitle">Your indicators</p>
+  <div class="barPopList" id="attachPopList"></div>
+  <p class="barPopNote" id="attachPopNote" role="status"></p>
+  <div class="barPopRow barPopRow--end">
+    <button id="attachStudio" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">Open Studio</button>
+    <button id="attachCommunity" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">Community library</button>
+  </div>
+</div>
+
+<div class="barPop" id="layersPop" role="dialog" aria-label="Script layers" hidden>
+  <p class="barPopTitle">Script layers</p>
+  <div class="barPopList" id="layersPopList"></div>
+</div>
+
+<div class="barPop" id="layoutPop" role="dialog" aria-label="Chart layout" hidden>
+  <p class="barPopTitle">Layout</p>
+  <div class="barPopField">
+    <div id="layoutCtl">
+      <select id="layoutMode" class="hrz-select" aria-label="Chart layout"
+              title="Split: up to four charts in rows. Grid: a scrolling wall of up to 100.">
+        <option value="split">Split</option>
+        <option value="grid">Grid</option>
+      </select>
+      <select id="chartCols" class="hrz-select" aria-label="Grid columns"
+              title="How many chart columns the grid shows" hidden>
+        <option value="1">1 col</option>
+        <option value="2" selected>2 cols</option>
+        <option value="3">3 cols</option>
+        <option value="4">4 cols</option>
+        <option value="5">5 cols</option>
+        <option value="6">6 cols</option>
+        <option value="7">7 cols</option>
+        <option value="8">8 cols</option>
+        <option value="9">9 cols</option>
+        <option value="10">10 cols</option>
+      </select>
+    </div>
+  </div>
+  <p class="barPopNote">Split shows up to four charts in rows. Grid is a scrolling wall of up to 100.</p>
+</div>
+
+<div class="barPop" id="chartMore" role="dialog" aria-label="More chart actions" hidden>
+  <div id="moreSection" hidden>
+    <p class="barPopTitle">More controls</p>
+    <div class="barPopStack" id="moreGroups"></div>
+  </div>
+  <div class="barPopList">
+    <button id="moreShot" class="barPopItem" type="button">
+      <span class="barPopIcon" data-icon="camera"></span>
+      <span class="barPopMain">Save chart image</span>
+    </button>
+    <button id="moreKeys" class="barPopItem" type="button">
+      <span class="barPopIcon" data-icon="command"></span>
+      <span class="barPopMain">Keyboard shortcuts</span>
+    </button>
+  </div>
+</div>
+
 <script src="/assets/ui/icons.js"></script>
 <script src="/assets/ui/components.js"></script>
 <script src="/assets/views/shell.js"></script>
 <script src="/assets/views/palette.js"></script>
+<script src="/assets/views/instrument_bar.js"></script>
 <script src="builder.js"></script>
 <script src="app.js"></script>
 </body>
