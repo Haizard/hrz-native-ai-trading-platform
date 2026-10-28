@@ -65,6 +65,7 @@
   --space-6: 24px;
   --space-7: 32px;
   --space-8: 40px;
+  --page-pad: var(--space-6);
 
   --radius-1: 4px;
   --radius-2: 6px;

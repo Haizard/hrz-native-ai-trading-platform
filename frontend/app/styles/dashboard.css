@@ -14,7 +14,7 @@
 
 .dashInner {
   width: 100%; max-width: 1440px; margin: 0 auto;
-  padding: var(--space-6);
+  padding: var(--page-pad);
   display: flex; flex-direction: column; gap: var(--space-4);
 }
 

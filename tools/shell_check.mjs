@@ -2371,18 +2371,15 @@ change(backFrame);
 await waitFor(() => selectIn(0, "timeframe") === "5m", "the pane to return to 5m");
 await settle();
 
-// --- the layout at a narrow width --------------------------------------------
+// --- the frame at every width -------------------------------------------------
 //
-// jsdom lays nothing out, so these read the stylesheet rather than measure the
-// page -- the same trade `packaging.rs` makes for the Docker image, and for the
-// same reason: the alternative is asserting nothing about it at all.
-//
-// They are not "a media query exists". A media query on its own changes nothing;
-// what stops the chart being squeezed to nothing is that `main` stacks *and* the
-// chart is given a height of its own, because a column that shares one height
-// between a chart and a panel hands the chart whatever the panel leaves.
+// jsdom lays nothing out, so the breakpoint checks read responsive.css the way
+// the old 1100/900 checks read the inline block. They are not "a media query
+// exists": each one asserts the declaration that makes the width work. The DOM
+// half is the phone's navigation, which is a second route to the same
+// destinations and must not be a second router.
 
-console.log("\nthe layout at a narrow width");
+console.log("\nthe frame at every width");
 
 const styleFiles = [
   "tokens", "base", "components", "shell", "charts", "dashboard",
@@ -2395,12 +2392,10 @@ const styleText = (
     )
   )
 ).join("\n");
-const mediaBlockAt = (width) => {
-  const at = styleText.indexOf(`@media (max-width: ${width}px)`);
-  if (at < 0) return "";
-  const next = styleText.indexOf("@media", at + 1);
-  return styleText.slice(at, next < 0 ? styleText.length : next);
-};
+const responsiveText = await readFile(
+  join(root, "frontend/app/styles/responsive.css"),
+  "utf8"
+);
 /// The declarations of one rule inside a block, or "" if it is not there.
 ///
 /// The selector is escaped before it goes into a pattern, because selectors are
@@ -2412,60 +2407,82 @@ const ruleIn = (block, selector) => {
   const found = new RegExp(`(^|[\\s,])${escaped}\\s*\\{([^}]*)\\}`).exec(block);
   return found ? found[2] : "";
 };
+const responsiveBlock = (width) => {
+  const at = responsiveText.indexOf(`@media (max-width: ${width}px)`);
+  if (at < 0) return "";
+  const next = responsiveText.indexOf("@media", at + 1);
+  return responsiveText.slice(at, next < 0 ? responsiveText.length : next);
+};
 
-const panelBlock = mediaBlockAt(1100);
-const narrowBlock = mediaBlockAt(900);
+check(
+  "the old 1100 and 900 breakpoints are gone",
+  !styleText.includes("@media (max-width: 1100px)") &&
+    !styleText.includes("@media (max-width: 900px)"),
+  `1100=${styleText.indexOf("@media (max-width: 1100px)")} 900=${styleText.indexOf("@media (max-width: 900px)")}`
+);
+check(
+  "three breakpoints, widest first",
+  responsiveText.indexOf("@media (max-width: 1279px)") >= 0 &&
+    responsiveText.indexOf("@media (max-width: 1279px)") <
+      responsiveText.indexOf("@media (max-width: 1023px)") &&
+    responsiveText.indexOf("@media (max-width: 1023px)") <
+      responsiveText.indexOf("@media (max-width: 767px)"),
+  `${responsiveText.indexOf("@media (max-width: 1279px)")} < ${responsiveText.indexOf("@media (max-width: 1023px)")} < ${responsiveText.indexOf("@media (max-width: 767px)")}`
+);
+check(
+  "at 1279 the inspector narrows through the property the splitter writes",
+  /--aside-w:\s*320px/.test(ruleIn(responsiveBlock(1279), ":root")),
+  ruleIn(responsiveBlock(1279), ":root").trim() || "(no :root rule)"
+);
+check(
+  "at 1023 the panels leave the row and the controls grow to a finger",
+  /position:\s*fixed/.test(ruleIn(responsiveBlock(1023), "#sideWatch")) &&
+    /position:\s*fixed/.test(ruleIn(responsiveBlock(1023), "#inspectorHost")) &&
+    /position:\s*fixed/.test(ruleIn(responsiveBlock(1023), "#dock")) &&
+    /min-height:\s*44px/.test(ruleIn(responsiveBlock(1023), ".hrz-tab")) &&
+    /--bar-h:\s*52px/.test(ruleIn(responsiveBlock(1023), ":root")),
+  ruleIn(responsiveBlock(1023), "#sideWatch").trim().slice(0, 60) || "(no drawer)"
+);
+check(
+  "at 767 the rail and status bar give way to the bottom nav",
+  /display:\s*none/.test(ruleIn(responsiveBlock(767), "#rail")) &&
+    /display:\s*none/.test(ruleIn(responsiveBlock(767), "#statusbar")) &&
+    /display:\s*flex/.test(ruleIn(responsiveBlock(767), ".phoneNav")) &&
+    /--topbar-h:\s*48px/.test(ruleIn(responsiveBlock(767), ":root")),
+  ruleIn(responsiveBlock(767), ":root").trim() || "(no :root rule)"
+);
+check(
+  "and the wall stacks one chart per screen",
+  /display:\s*block/.test(ruleIn(responsiveBlock(767), ".chartRow")) &&
+    /100dvh/.test(ruleIn(responsiveBlock(767), ".chartRow .chartPane")),
+  ruleIn(responsiveBlock(767), ".chartRow .chartPane").trim().slice(0, 60) ||
+    "(no .chartPane rule)"
+);
+check(
+  "page padding follows one token, 24 then 16 then 12",
+  /--page-pad:\s*var\(--space-6\)/.test(styleText) &&
+    /--page-pad:\s*var\(--space-4\)/.test(responsiveBlock(1023)) &&
+    /--page-pad:\s*var\(--space-3\)/.test(responsiveBlock(767)),
+  `24=${/--page-pad:\s*var\(--space-6\)/.test(styleText)} 16=${/--page-pad:\s*var\(--space-4\)/.test(responsiveBlock(1023))} 12=${/--page-pad:\s*var\(--space-3\)/.test(responsiveBlock(767))}`
+);
 
 check(
-  "there is a breakpoint that narrows the panel",
-  // Through the custom property, not a hard `aside { width }`: the splitters
-  // write the same property, and a hard width in the media query would outrank
-  // a dragged one and silently undo the drag below 1100px.
-  /--aside-w:\s*300px/.test(ruleIn(panelBlock, ":root")),
-  ruleIn(panelBlock, ":root").trim() || "(no :root rule)"
+  "the bottom nav is the rail on a phone",
+  document.querySelectorAll("#phoneNav [data-dest]").length === 6 &&
+    document.getElementById("phoneNav").hidden === false,
+  `${document.querySelectorAll("#phoneNav [data-dest]").length} destinations · hidden=${document.getElementById("phoneNav").hidden}`
 );
+document.querySelector("#phoneNav [data-dest='dashboard']").click();
+await settle();
 check(
-  "and one that puts the panel below the chart",
-  // The Charts destination is the row that stacks (the frame's `#mainView`
-  // does not lay panels out), and its inspector host takes the aside's share.
-  /flex-direction:\s*column/.test(ruleIn(narrowBlock, "#dest-charts")) &&
-    /width:\s*auto/.test(ruleIn(narrowBlock, "#inspectorHost")),
-  ruleIn(narrowBlock, "#dest-charts").trim() || "(no #dest-charts rule)"
+  "and its buttons are the router, not a second one",
+  document.getElementById("dest-dashboard").hidden === false &&
+    document.querySelector("#phoneNav [data-dest='dashboard']").getAttribute("aria-current") === "page" &&
+    document.querySelector("#rail [data-dest='dashboard']").getAttribute("aria-current") === "page",
+  `phone=${document.querySelector("#phoneNav [data-dest='dashboard']").getAttribute("aria-current")} rail=${document.querySelector("#rail [data-dest='dashboard']").getAttribute("aria-current")}`
 );
-check(
-  "where the chart is given a height of its own, not a share of the column",
-  /height:\s*60vh/.test(ruleIn(narrowBlock, ".chartWrap")) &&
-    /min-height:/.test(ruleIn(narrowBlock, ".chartWrap")),
-  ruleIn(narrowBlock, ".chartWrap").trim() || "(no .chartWrap rule)"
-);
-check(
-  "and the page scrolls rather than holding one viewport",
-  /height:\s*auto/.test(ruleIn(narrowBlock, "html, body")),
-  ruleIn(narrowBlock, "html, body").trim() || "(no html, body rule)"
-);
-check(
-  "and the panes stack, so two charts are not two 450px charts",
-  /grid-template-columns:\s*1fr/.test(ruleIn(narrowBlock, ".chartRow")) &&
-    /border-left:\s*0/.test(ruleIn(narrowBlock, ".chartPane")),
-  ruleIn(narrowBlock, ".chartRow").trim() || "(no .chartRow rule)"
-);
-check(
-  "and the panel is full width with its border moved to the seam",
-  /width:\s*auto/.test(ruleIn(narrowBlock, "aside")) &&
-    /border-left:\s*0/.test(ruleIn(narrowBlock, "aside")) &&
-    /border-top:/.test(ruleIn(narrowBlock, "aside")),
-  ruleIn(narrowBlock, "aside").trim() || "(no aside rule)"
-);
-// Order is load-bearing, not cosmetic. Both blocks match at 800px, and both set
-// `aside { width }`; if the stacking one came first the narrowing one would win
-// and the panel would be a 300px column under a full-width chart.
-check(
-  "and the stacking breakpoint comes second, so it wins at the widths that match both",
-  styleText.indexOf("@media (max-width: 900px)") >
-    styleText.indexOf("@media (max-width: 1100px)") &&
-    styleText.indexOf("@media (max-width: 900px)") > 0,
-  `${styleText.indexOf("@media (max-width: 900px)")} > ${styleText.indexOf("@media (max-width: 1100px)")}`
-);
+document.querySelector("#phoneNav [data-dest='charts']").click();
+await settle();
 
 // --- placing a drawing -------------------------------------------------------
 //

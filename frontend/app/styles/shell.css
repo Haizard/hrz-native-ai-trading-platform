@@ -60,8 +60,8 @@
 #mainView[hidden] { display: none; }
 .destination { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .destination[hidden] { display: none; }
-.destHeading { margin: 0; padding: var(--space-6) var(--space-6) 0; font-size: var(--text-lg); }
-.destHost { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 0 var(--space-6) var(--space-6); }
+.destHeading { margin: 0; padding: var(--page-pad) var(--page-pad) 0; font-size: var(--text-lg); }
+.destHost { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 0 var(--page-pad) var(--page-pad); }
 #dest-dashboard, #dest-studio, #dest-community, #dest-bots, #dest-account { overflow: auto; }
 #dest-charts { flex-direction: row; overflow: hidden; }
 #panePark { display: none; }

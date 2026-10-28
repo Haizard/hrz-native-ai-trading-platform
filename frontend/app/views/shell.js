@@ -98,6 +98,11 @@
   let openedWorkspaceId = "";
 
   const el = (id) => document.getElementById(id);
+  /// The rail and the phone's bottom nav are the same navigation. Every
+  /// selector that used to name the rail names both, so a destination cannot
+  /// be current in one place and not the other.
+  const destButtons = () =>
+    document.querySelectorAll("#rail [data-dest], #phoneNav [data-dest]");
   const paint = (id, text) => {
     const node = el(id);
     if (node) node.textContent = text;
@@ -308,7 +313,7 @@
       title.textContent = TITLES[state.destination] || "";
       title.hidden = !state.destination;
     }
-    for (const button of document.querySelectorAll("#rail [data-dest]")) {
+    for (const button of destButtons()) {
       if (button.dataset.dest === state.destination) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
@@ -407,7 +412,12 @@
 
   function syncChrome() {
     const signedIn = isSignedIn();
-    for (const button of document.querySelectorAll("#rail [data-dest]")) button.disabled = !signedIn;
+    for (const button of destButtons()) button.disabled = !signedIn;
+    // The bottom nav is outside #frame, so the frame's own hide does not reach
+    // it: a signed-out phone must not list destinations into a frame that is
+    // not there. CSS shows it only below 768; this attribute is the other half.
+    const phone = el("phoneNav");
+    if (phone) phone.hidden = !signedIn;
     for (const id of [
       "aiBtn",
       "paletteBtn",
@@ -835,7 +845,7 @@
   /* ---- Wiring ------------------------------------------------------------- */
 
   function wire() {
-    for (const button of document.querySelectorAll("#rail [data-dest]")) {
+    for (const button of destButtons()) {
       button.addEventListener("click", () => go(button.dataset.dest));
     }
     const ai = el("aiBtn");

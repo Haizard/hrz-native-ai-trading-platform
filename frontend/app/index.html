@@ -42,6 +42,7 @@
   </a>
   <span id="destTitle" class="destTitle" hidden>Charts</span>
   <button id="paletteBtn" class="paletteBtn" type="button" aria-haspopup="dialog" disabled>
+    <span data-icon="search" data-icon-size="14"></span>
     <span class="u-grow">Search or jump to…</span>
     <kbd class="paletteKey">⌘K</kbd>
   </button>
@@ -1540,6 +1541,42 @@
     </section>
   </main>
 </div>
+
+<!--
+  The second destination list, for a width with no room for the rail. It is a
+  copy of the rail's six buttons rather than a copy of their behaviour: the Shell
+  reads `#rail [data-dest], #phoneNav [data-dest]` as one set, so `aria-current`
+  and `disabled` are written on both and cannot disagree.
+
+  It ships `hidden` and `disabled` like the rail: a signed-out phone must not be
+  handed a door into a frame that is not there. `Shell.syncChrome` owns both.
+-->
+<nav id="phoneNav" class="phoneNav" aria-label="Destinations" hidden>
+  <button type="button" class="phoneNav__btn" data-dest="dashboard" aria-label="Dashboard" disabled>
+    <span data-icon="activity" data-icon-size="20"></span>
+    <span class="phoneNav__label">Dashboard</span>
+  </button>
+  <button type="button" class="phoneNav__btn" data-dest="charts" aria-label="Charts" disabled>
+    <span data-icon="chart" data-icon-size="20"></span>
+    <span class="phoneNav__label">Charts</span>
+  </button>
+  <button type="button" class="phoneNav__btn" data-dest="studio" aria-label="Studio" disabled>
+    <span data-icon="sparkles" data-icon-size="20"></span>
+    <span class="phoneNav__label">Studio</span>
+  </button>
+  <button type="button" class="phoneNav__btn" data-dest="community" aria-label="Community" disabled>
+    <span data-icon="globe" data-icon-size="20"></span>
+    <span class="phoneNav__label">Community</span>
+  </button>
+  <button type="button" class="phoneNav__btn" data-dest="bots" aria-label="Bots" disabled>
+    <span data-icon="zap" data-icon-size="20"></span>
+    <span class="phoneNav__label">Bots</span>
+  </button>
+  <button type="button" class="phoneNav__btn" data-dest="account" aria-label="Account" disabled>
+    <span data-icon="user" data-icon-size="20"></span>
+    <span class="phoneNav__label">Account</span>
+  </button>
+</nav>
 
 <!--
   The status bar: the thin bottom strip the reference product keeps -- what

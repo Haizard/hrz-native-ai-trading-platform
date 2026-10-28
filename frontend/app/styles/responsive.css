@@ -1,80 +1,209 @@
-/*
-  Responsive layout.
+/* ===========================================================================
+   The frame from the desk down to the phone.
 
-  The page is a fixed-height column -- a header, a chart that takes what is
-  left, and a panel beside it -- and that fails on a narrow screen in one
-  specific way: the panel defaults to 460px, so at 800px the chart is already
-  under half the width and at 500px it is nothing at all. The chart is the
-  surface the page exists for, so the panel is what gives way, in two steps.
+   Loaded last, because every rule here is an override: at a given width it
+   must beat the base layout rather than tie with it. The Dashboard's own
+   breakpoints stay in dashboard.css -- a page's grid is its own business --
+   and these rules never write a dashboard property except the page padding,
+   which is a frame concern.
 
-  `1100px` narrows the panel. Still side by side: the chart is the thing being
-  read and the panel is a reference beside it, and 300px still holds a table
-  and a paragraph.
+     1279  the inspector and the watchlist stop both fitting beside a chart
+     1023  those panels become overlays over the chart, and every control a
+           finger lands on grows to 44px
+      767  the rail and status bar give way to the bottom nav, the top bar
+           grows to 48, and the wall stacks one chart per screen
 
-  `900px` gives up on side by side and puts the panel below the chart. That is
-  why the body stops being `height: 100%` here -- a column that shares one
-  height between a chart and a panel gives the chart whatever the panel's
-  content leaves, which is the same failure with the axis swapped. The chart
-  gets a height of its own instead, in viewport units so it still scales, with
-  a floor so it stays usable on a short one.
+   Nothing here hides a control that has no other route: the watchlist,
+   inspector and dock all keep the instrument bar's toggles. The pane chip bar
+   and touch gestures are Spec 3's; below 768 the wall is a vertical column of
+   full-height charts until then.
+   ========================================================================= */
 
-  That height is also what the engine is told the plot is: `draw()` measures
-  `wrap.clientHeight`, so this rule and the candle count on screen are not
-  independent.
-*/
-@media (max-width: 1100px) {
-  /* The media queries set the *defaults* for narrow screens through the same
-     custom properties the splitters write -- a hard `width` here would
-     outrank `var(--aside-w)` and silently break the drag below 1100px. A
-     drag writes the property inline on :root, which beats this rule, so a
-     resized layout survives a window that crosses 1100px either way. */
-  :root { --aside-w: 300px; --watch-w: 210px; }
+/* Not part of the desktop frame; the 767 block turns it on. */
+.phoneNav { display: none; }
+
+/* ---- 1279: narrower columns ---------------------------------------------- */
+@media (max-width: 1279px) {
+  /* Through the custom properties, not a hard width: the splitters write
+     these inline on :root, and a hard width in a media query would outrank a
+     dragged one and silently undo the drag below 1280. */
+  :root { --aside-w: 320px; --watch-w: 240px; }
 }
 
-@media (max-width: 900px) {
-  html, body { height: auto; }
-  #dest-charts { flex-direction: column; }
-  /* The inspector host takes the aside's old share of the stacked row: the
-     wrapper is what the flex layout sees now. */
-  #inspectorHost { width: auto; flex: 0 0 auto; }
-  /*
-    The rail stacks too, and being first in the row it would land above the
-    charts. Below the point where side-by-side gives up, the default list
-    lives back inside the aside's tab: the rail's pane is hidden there and
-    the pane's original tab shows the same ids in the same code path.
-  */
-  #sideWatch, #splitWatch { display: none; }
-  /*
-    The panes stack too. Side by side at 900px is 450px each, which is under
-    the width a candlestick chart stops being readable at -- and the panel
-    below needs a full width as well. Each pane gets its own height instead,
-    for the same reason the single chart did.
-  */
-  /* One pane per row on a narrow screen: 450px per column is under the
-     width a candlestick chart stops being readable at. */
-  .chartRow { grid-template-columns: 1fr; }
-  /* One column on a phone, whatever the columns select says: a 220px cell
-     is already the floor a chart stops being readable at, and ten of them
-     do not fit. The rows keep their own height and scroll instead. */
-  #charts.gridLayout { grid-template-columns: 1fr; grid-auto-rows: minmax(260px, auto); }
-  .chartPane { border-left: 0; border-top: 1px solid var(--line); }
-  .chartPane:first-child { border-top: 0; }
-  .chartWrap { flex: 0 0 auto; height: 60vh; min-height: 260px; }
-  aside {
-    width: auto; flex: 0 0 auto;
+/* ---- 1023: the panels leave the row -------------------------------------- */
+@media (max-width: 1023px) {
+  :root { --page-pad: var(--space-4); --bar-h: 52px; }
+
+  /* A finger is not a mouse. The bar grows to hold 44px controls rather than
+     clipping them, and the tabs grow with it. */
+  .instrumentBar .hrz-btn,
+  .instrumentBar .barSymbol,
+  .instrumentBar select.hrz-select,
+  .instrumentBar .hrz-seg { height: 44px; min-height: 44px; }
+  .instrumentBar .hrz-seg__item { height: 44px; min-height: 44px; padding: 0 var(--space-2); }
+  .instrumentBar .barChip { height: 34px; }
+  #topbar .hrz-btn { min-height: 44px; }
+  #topbar .hrz-btn--icon { min-width: 44px; }
+  .hrz-tabs { height: auto; min-height: 44px; }
+  .hrz-tab { min-height: 44px; }
+  .hrz-input, .hrz-select { min-height: 44px; }
+  .hrz-panel__head { height: auto; min-height: 44px; }
+  .dockTabs { height: 48px; flex-basis: 48px; }
+  .dockTabs .hrz-tabs, .dockTabs .hrz-tab { height: 44px; }
+  /* The compact table is a mouse table; at a tablet its rows are targets. */
+  .hrz-table--compact td, .hrz-table--compact th { height: 44px; }
+
+  /* The watchlist leaves the row and becomes a drawer over the chart. It is
+     still the same element, so the ticker, the favourites and every row
+     handler are unchanged -- only where the browser puts the box. */
+  #sideWatch {
+    position: fixed; z-index: 45;
+    top: var(--topbar-h); bottom: var(--status-h); left: var(--rail-w);
+    width: min(320px, 80vw);
+    border-right: 1px solid var(--line-strong);
+    background: var(--bg-panel); box-shadow: var(--shadow-2);
+  }
+  #splitWatch, #railShow, #asideShow { display: none; }
+
+  /* The inspector is the same idea on the other edge. #inspectorHost is the
+     element the shell hides, so `hidden` still wins over this block. */
+  #inspectorHost {
+    position: fixed; z-index: 45;
+    top: var(--topbar-h); right: 0; bottom: var(--status-h);
+    width: min(var(--inspector-w), 86vw); flex-basis: auto;
+    border-left: 1px solid var(--line-strong);
+    background: var(--bg-panel); box-shadow: var(--shadow-2);
+  }
+  #inspectorHost[hidden] { display: none; }
+
+  /* The dock is a sheet over the foot of the chart, not a third column that
+     leaves the candles nothing. */
+  #dock {
+    position: fixed; z-index: 44;
+    left: var(--rail-w); right: 0; bottom: var(--status-h);
+    height: min(50vh, 360px);
+    border-left: 1px solid var(--line-strong);
+    box-shadow: var(--shadow-2);
+  }
+  #dock[hidden] { display: none; }
+}
+
+/* ---- 767: the phone frame ------------------------------------------------ */
+@media (max-width: 767px) {
+  :root {
+    --page-pad: var(--space-3);
+    --topbar-h: 48px;
+    --phone-nav-h: 56px;
+  }
+
+  /* No rail, no status: the bottom nav is the destination list and the
+     instrument bar states the chart. */
+  #rail { display: none; }
+  #statusbar { display: none; }
+
+  #topbar { gap: var(--space-1); padding: 0 var(--space-2); }
+  .brandWord, #session, #connDotTop { display: none; }
+  #paletteBtn {
+    width: 44px; height: 44px; min-width: 44px; padding: 0; margin: 0;
+    justify-content: center;
+  }
+  #paletteBtn .u-grow, #paletteBtn .paletteKey { display: none; }
+  #paletteBtn [data-icon] { display: inline-flex; }
+
+  .phoneNav {
+    display: flex; flex: 0 0 auto;
+    height: calc(var(--phone-nav-h) + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--bg-panel); border-top: 1px solid var(--line);
+  }
+  .phoneNav[hidden] { display: none; }
+  .phoneNav__btn {
+    flex: 1 1 0; min-width: 0; min-height: var(--phone-nav-h);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px; padding: 0;
+    border: 0; background: transparent; color: var(--text-3);
+    font: var(--text-2xs)/1 var(--font-ui);
+  }
+  .phoneNav__btn[disabled] { opacity: 0.45; }
+  .phoneNav__btn[aria-current="page"] { color: var(--accent); }
+  .phoneNav__label {
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* The panels are sheets above the nav now. 1023 positioned them for a
+     tablet; only the edges and the bottom change. */
+  #sideWatch, #inspectorHost, #dock {
+    top: auto; left: 0; right: 0;
+    bottom: calc(var(--phone-nav-h) + env(safe-area-inset-bottom));
+    width: auto;
+    border-left: 0; border-right: 0; border-top: 1px solid var(--line-strong);
+    border-radius: var(--radius-3) var(--radius-3) 0 0;
+  }
+  #sideWatch { height: min(60vh, 460px); max-height: 60vh; }
+  #inspectorHost { height: min(70vh, 600px); max-height: 70vh; }
+  #dock { height: min(50vh, 360px); }
+
+  /* The wall is a column of screens, not two 170px charts. It scrolls; each
+     pane keeps a height a candle can be read at. */
+  #dest-charts { flex-direction: column; overflow: hidden; }
+  #charts { overflow: auto; }
+  .chartRow { display: block; flex: 0 0 auto; }
+  .chartRow .chartPane {
+    height: calc(100vh - var(--topbar-h) - var(--phone-nav-h) - var(--bar-h));
+    height: calc(100dvh - var(--topbar-h) - var(--phone-nav-h) - var(--bar-h));
+    min-height: 300px;
     border-left: 0; border-top: 1px solid var(--line);
   }
-  /*
-    Six controls in a row do not fit a phone, and the toolbar is an overlay --
-    so anything past the right edge is not merely clipped, it is unreachable.
-    It wraps instead.
-  */
-  .tools { flex-wrap: wrap; max-width: calc(100% - 24px); }
-  /* Two fields and a button in one unwrapped row overflow a phone. */
+  #charts .chartRow:first-child .chartPane:first-child { border-top: 0; }
+  .chartWrap { flex: 1 1 auto; height: auto; min-height: 0; }
+  #charts.gridLayout {
+    display: grid; grid-template-columns: 1fr;
+    grid-auto-rows: minmax(300px, 70dvh);
+  }
+  #charts.gridLayout > .chartPane { height: auto; min-height: 300px; }
+
+  /* Six controls do not fit; the toolbar is an overlay, so anything past the
+     edge is unreachable rather than merely clipped. It scrolls, with the
+     instrument pinned left and the panel toggles pinned right. */
+  .tools { flex-wrap: wrap; max-width: calc(100% - var(--page-pad)); }
+  .instrumentBar {
+    overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none;
+    gap: var(--space-1);
+  }
+  .instrumentBar::-webkit-scrollbar { display: none; }
+  .instrumentBar > .barGroup { flex: 0 0 auto; }
+  .instrumentBar .barSpacer { display: none; }
+  .instrumentBar [data-bar-group="instrument"] {
+    position: sticky; left: 0; z-index: 2;
+    padding-right: var(--space-2); background: var(--bg-panel);
+  }
+  .instrumentBar [data-bar-group="chrome"] {
+    position: sticky; right: 0; z-index: 2;
+    padding-left: var(--space-2); background: var(--bg-panel);
+  }
+  .barPop { max-width: calc(100vw - 2 * var(--space-2)); }
+
+  /* A dialog is a sheet on a phone. The palette and the shortcut sheet are
+     the two that open from the top bar. */
+  .hrz-dialog {
+    position: fixed; inset: auto 0 0 0;
+    width: 100%; max-width: 100%; max-height: 85vh;
+    margin: 0;
+    border-radius: var(--radius-3) var(--radius-3) 0 0;
+  }
+
+  /* Home is rebuilt in Spec 4; until then it keeps the phone shape it had. */
   #signin { flex-wrap: wrap; }
   #signin input { flex: 1 1 140px; min-width: 0; }
-  .homeInner { padding: 24px 16px; }
+  .homeInner { padding: var(--space-4) var(--space-3); }
   .marketGrid { grid-template-columns: 1fr; }
   .homeHero h1 { font-size: 26px; }
 }
 
+/* 320px is the narrowest width the acceptance matrix names. Six labels at
+   11px do not fit under four icons, so the icons carry the nav with their
+   accessible names; the labels come back at 360. */
+@media (max-width: 359px) {
+  .phoneNav__label { display: none; }
+}
