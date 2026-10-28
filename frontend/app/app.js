@@ -528,7 +528,7 @@ function buildScene(request) {
 /// that rule would let a pane shadow a page-level id by accident -- and a pane
 /// that quietly answered for `#thesis` would be a bug nothing points at.
 const PANE_ELS = new Set([
-  "chart", "chartWrap", "tools", "chartMsg", "chartHint", "chartNote",
+  "chart", "chartWrap", "tools", "chartMsg", "chartNote",
   "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "forecast", "volScale", "fit", "logScale", "pctScale",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
   "magnet", "aiLayer", "profileAnchor", "undo", "redo",
@@ -553,6 +553,187 @@ function frameMinutes(frame) {
   const parts = /^(\d+)([smhdw])$/.exec(String(frame));
   if (!parts) return Number.POSITIVE_INFINITY;
   return Number(parts[1]) * FRAME_UNITS[parts[2]];
+}
+
+// ---------------------------------------------------------------------------
+// Chart appearance
+//
+// A canvas cannot read a CSS custom property -- `var(--up)` is not a colour to
+// `fillStyle` -- so the plot's palette is a literal. It is a literal *derived*
+// from the theme, though: one function, two preferences, one answer per pane,
+// so a white shell never holds a black chart and a trader who cannot separate
+// red from green never has to squint at one.
+// ---------------------------------------------------------------------------
+const CHART_SETTINGS_KEY = "hrz.chart";
+
+/// The chart's display choices, from localStorage with the shipped defaults.
+///
+/// Deliberately *not* in the workspace snapshot: a colour-vision choice is
+/// about the reader, not the layout, and restoring a colleague's shared
+/// workspace must not repaint the candles green.
+function chartSettings() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(CHART_SETTINGS_KEY) || "null"); } catch { saved = null; }
+  return {
+    cvd: Boolean(saved && saved.cvd),
+    grid: !saved || saved.grid !== false,
+  };
+}
+
+// The canvas palette, matched to the LuxAlgo-grade shell in index.html:
+// TV-standard candle colours, a #131722 plot on #171b26 panels, and the
+// same blue accent the chrome uses -- the chart and its frame are one
+// product, not two palettes that happen to share a screen.
+const CHART_PALETTE_DARK = {
+  up: "#2ebd85",
+  down: "#f6465d",
+  wick: "#7a8499",
+  profile: "#232a38",
+  value: "#4a9eff",
+  grid: "#161b26",
+  text: "#8a93a6",
+  vwap: "#edb541",
+  poc: "#d6dbe4",
+  vah: "#787b86",
+  val: "#787b86",
+  entry: "#4a9eff",
+  stop: "#f6465d",
+  target: "#2ebd85",
+  // The rest of the engine's overlay vocabulary. A level an answer *cited*
+  // rather than one of the three trade prices is deliberately the quiet
+  // grey-blue the other reference levels use -- it is context, not a plan --
+  // and `other` is the text colour so a role the palette does not cover draws
+  // as an annotation rather than as something with a meaning it does not have.
+  level: "#787b86",
+  other: "#787b86",
+  // The drawing tools, one colour per kind so two shapes on the same chart are
+  // told apart by what they are rather than by which was drawn first.
+  trendline: "#4a9eff",
+  hline: "#edb541",
+  rect: "#9564e2",
+  fib: "#4caf8e",
+  fib_extension: "#26a69a",
+  // The kinds the registry added. Distinct hues, one per kind, so a ray and
+  // a trendline on the same chart are told apart by what they are; the
+  // ruler is the value-area blue because it measures, like the fib.
+  vline: "#d6dbe4",
+  ray: "#edb541",
+  extended: "#787b86",
+  measure: "#4a9eff",
+  // The 2026-09 parity kinds. Distinct hues again, one per kind; the
+  // position boxes take the entry/stop/target vocabulary above because
+  // that is what they *are* drawn from.
+  channel: "#4caf8e",
+  angle: "#d6dbe4",
+  arc: "#edb541",
+  circle: "#9564e2",
+  triangle: "#f59e0b",
+  position_long: "#2ebd85",
+  position_short: "#f6465d",
+  dateprice_range: "#4a9eff",
+  // The footprint ladder. Buy-aggressed volume is the ask side winning and
+  // sell-aggressed is the bid side winning, which is the same convention the
+  // level colours above already follow -- a level drawn green means the same
+  // thing in both panels. `footValue` is the value area, and is the profile
+  // blue rather than a new colour, because it is the same concept.
+  footBuy: "#9564e2",
+  footSell: "#4a9eff",
+  footValue: "#4a9eff",
+  // The two bands the engine ships with. A concept a client defined has no
+  // entry here -- it cannot, we have never heard of it -- which is what the
+  // side fallback below is for.
+  demand: "#2ebd85",
+  supply: "#f6465d",
+  // Keyed by the region's `side`, the direction expected to react from the
+  // band. Every region carries one, so an unfamiliar band reads as a direction
+  // instead of as grey.
+  buy: "#2ebd85",
+  sell: "#f6465d",
+  // Sub-panes draw on a slightly darker field than the price plot. It is a
+  // palette entry rather than a literal in `drawSubPanes` because the light
+  // theme needs the opposite wash.
+  subPane: "rgba(13, 17, 26, 0.65)",
+};
+
+/// The same roles at the depth a white plot needs: the TV hue is too pale to
+/// read on #ffffff (a 2px candle at #2ebd85 on white is a pencil line), so the
+/// light column keeps every hue's *meaning* and darkens it to the token value
+/// the chrome already uses for the same concept.
+const CHART_PALETTE_LIGHT = {
+  up: "#067a4d",
+  down: "#d92d3f",
+  wick: "#8b95a5",
+  profile: "#e6ecf3",
+  value: "#2563eb",
+  grid: "#e7ecf2",
+  text: "#5f6b7a",
+  vwap: "#b45309",
+  poc: "#1f2937",
+  vah: "#6b7686",
+  val: "#6b7686",
+  entry: "#2563eb",
+  stop: "#d92d3f",
+  target: "#067a4d",
+  level: "#6b7686",
+  other: "#6b7686",
+  trendline: "#2563eb",
+  hline: "#b45309",
+  rect: "#7c3aed",
+  fib: "#0f7b6c",
+  fib_extension: "#0f766e",
+  vline: "#1f2937",
+  ray: "#b45309",
+  extended: "#6b7686",
+  measure: "#2563eb",
+  channel: "#0f7b6c",
+  angle: "#1f2937",
+  arc: "#b45309",
+  circle: "#7c3aed",
+  triangle: "#b45309",
+  position_long: "#067a4d",
+  position_short: "#d92d3f",
+  dateprice_range: "#2563eb",
+  footBuy: "#7c3aed",
+  footSell: "#2563eb",
+  footValue: "#2563eb",
+  demand: "#067a4d",
+  supply: "#d92d3f",
+  buy: "#067a4d",
+  sell: "#d92d3f",
+  subPane: "rgba(226, 232, 240, 0.55)",
+};
+
+/// The colour-blind pair, in both themes.
+///
+/// Blue and orange survive every common form of colour-vision difference --
+/// they differ in *luminance* as well as hue, which green and red do not.
+/// Only the pair that carries "up or down" changes: entry, stop and target are
+/// a trade's three prices and keep their own colours, because a stop is not a
+/// candle and confusing the two is worse than re-learning a shade.
+const CHART_CVD = {
+  up: "#2962ff",
+  down: "#ff6d00",
+  demand: "#2962ff",
+  supply: "#ff6d00",
+  buy: "#2962ff",
+  sell: "#ff6d00",
+  position_long: "#2962ff",
+  position_short: "#ff6d00",
+  footBuy: "#2962ff",
+  footSell: "#ff6d00",
+};
+
+/// One palette per (theme, settings). The two preferences are applied here
+/// rather than at each drawing call, so "grid off" is one transparent entry
+/// instead of a condition in twenty painters.
+function chartPalette(
+  theme = document.documentElement.dataset.theme || "dark",
+  settings = chartSettings()
+) {
+  const palette = { ...(theme === "light" ? CHART_PALETTE_LIGHT : CHART_PALETTE_DARK) };
+  if (settings.cvd) Object.assign(palette, CHART_CVD);
+  if (!settings.grid) palette.grid = "rgba(0, 0, 0, 0)";
+  return palette;
 }
 
 /// One chart, and everything that belongs to it.
@@ -725,76 +906,9 @@ function createChartPane(root, hooks = {}) {
   // Every coordinate below comes from the scene. The only arithmetic is the
   // device-pixel-ratio scale, which is a display concern rather than a market one.
   // ---------------------------------------------------------------------------
-  // The canvas palette, matched to the LuxAlgo-grade shell in index.html:
-  // TV-standard candle colours, a #131722 plot on #171b26 panels, and the
-  // same blue accent the chrome uses -- the chart and its frame are one
-  // product, not two palettes that happen to share a screen.
-  const COLORS = {
-    up: "#2ebd85",
-    down: "#f6465d",
-    wick: "#7a8499",
-    profile: "#232a38",
-    value: "#4a9eff",
-    grid: "#161b26",
-    text: "#8a93a6",
-    vwap: "#edb541",
-    poc: "#d6dbe4",
-    vah: "#787b86",
-    val: "#787b86",
-    entry: "#4a9eff",
-    stop: "#f6465d",
-    target: "#2ebd85",
-    // The rest of the engine's overlay vocabulary. A level an answer *cited*
-    // rather than one of the three trade prices is deliberately the quiet
-    // grey-blue the other reference levels use -- it is context, not a plan --
-    // and `other` is the text colour so a role the palette does not cover draws
-    // as an annotation rather than as something with a meaning it does not have.
-    level: "#787b86",
-    other: "#787b86",
-    // The drawing tools, one colour per kind so two shapes on the same chart are
-    // told apart by what they are rather than by which was drawn first.
-    trendline: "#4a9eff",
-    hline: "#edb541",
-    rect: "#9564e2",
-    fib: "#4caf8e",
-    fib_extension: "#26a69a",
-    // The kinds the registry added. Distinct hues, one per kind, so a ray and
-    // a trendline on the same chart are told apart by what they are; the
-    // ruler is the value-area blue because it measures, like the fib.
-    vline: "#d6dbe4",
-    ray: "#edb541",
-    extended: "#787b86",
-    measure: "#4a9eff",
-    // The 2026-09 parity kinds. Distinct hues again, one per kind; the
-    // position boxes take the entry/stop/target vocabulary above because
-    // that is what they *are* drawn from.
-    channel: "#4caf8e",
-    angle: "#d6dbe4",
-    arc: "#edb541",
-    circle: "#9564e2",
-    triangle: "#f59e0b",
-    position_long: "#2ebd85",
-    position_short: "#f6465d",
-    dateprice_range: "#4a9eff",
-    // The footprint ladder. Buy-aggressed volume is the ask side winning and
-    // sell-aggressed is the bid side winning, which is the same convention the
-    // level colours above already follow -- a level drawn green means the same
-    // thing in both panels. `footValue` is the value area, and is the profile
-    // blue rather than a new colour, because it is the same concept.
-    footBuy: "#9564e2",
-    footSell: "#4a9eff",
-    footValue: "#4a9eff",
-    // The two bands the engine ships with. A concept a client defined has no
-    // entry here -- it cannot, we have never heard of it -- which is what the
-    // side fallback below is for.
-    demand: "#2ebd85",
-    supply: "#f6465d",
-    // Keyed by the region's `side`, the direction expected to react from the
-    // band. Every region carries one, so an unfamiliar band reads as a direction
-    // instead of as grey.
-    buy: "#2ebd85",
-    sell: "#f6465d",
-  };
+  // The palette is a `let`: a theme switch or a colour-blind choice replaces it
+  // on a live pane -- see `setPalette` on the pane API.
+  let COLORS = chartPalette();
 
   // The static-layer cache: everything that only changes when the *scene*
   // changes, pre-rendered once and blitted each frame. A live chart re-draws
@@ -1141,7 +1255,7 @@ function createChartPane(root, hooks = {}) {
     for (const pane of scene.sub_panes) {
       // Pane background and frame -- a slightly darker field than the price
       // plot, so the eye reads "separate measurement" at a glance.
-      ctx.fillStyle = "rgba(13, 17, 26, 0.65)";
+      ctx.fillStyle = COLORS.subPane;
       ctx.fillRect(pane.plot.x, pane.plot.y, pane.plot.w, pane.plot.h);
       ctx.strokeStyle = COLORS.grid;
       ctx.lineWidth = 1;
@@ -1264,7 +1378,7 @@ function createChartPane(root, hooks = {}) {
     if (!scene.script_panes || !scene.script_panes.length) return;
     for (const pane of scene.script_panes) {
       // Pane background and frame, matching drawSubPanes' look.
-      ctx.fillStyle = "rgba(13, 17, 26, 0.65)";
+      ctx.fillStyle = COLORS.subPane;
       ctx.fillRect(pane.plot.x, pane.plot.y, pane.plot.w, pane.plot.h);
       ctx.strokeStyle = COLORS.grid;
       ctx.lineWidth = 1;
@@ -1471,7 +1585,7 @@ function createChartPane(root, hooks = {}) {
   function drawEquityPanes(ctx, scene) {
     if (!scene.equity_panes || !scene.equity_panes.length) return;
     for (const pane of scene.equity_panes) {
-      ctx.fillStyle = "rgba(13, 17, 26, 0.65)";
+      ctx.fillStyle = COLORS.subPane;
       ctx.fillRect(pane.plot.x, pane.plot.y, pane.plot.w, pane.plot.h);
       ctx.strokeStyle = COLORS.grid;
       ctx.lineWidth = 1;
@@ -7039,6 +7153,17 @@ function createChartPane(root, hooks = {}) {
     /// rebuild. What the page's resize listener calls.
     redraw() { if (scene) scheduleRender(); },
 
+    /// Swap this pane's palette and repaint. Called by the page for every pane
+    /// on a theme switch or a candle-colour choice.
+    setPalette(next) {
+      COLORS = next;
+      // The static layers are pre-rendered *in* these colours, so a palette
+      // change throws the buffer away rather than merely re-blitting it -- the
+      // grid would otherwise keep the previous theme's colour forever.
+      staticLayerKey = null;
+      if (scene) scheduleRender();
+    },
+
     /// The page's visibility gate for the grid: the observer that watches the
     /// chart wall calls this as panes scroll in and out. Not a user control,
     /// which is why it takes the state rather than toggling.
@@ -7838,6 +7963,27 @@ function setActive(pane) {
 /// aside already follows -- press anything on a chart and it becomes the one
 /// the controls mean -- and the toolbar's label names the chart it will draw
 /// on, so the binding is stated where the click happens.
+/// One icon per tool group, for the rail. A group the engine added later falls
+/// back to the generic chart mark, so a new group is an odd icon rather than a
+/// blank square.
+const TOOL_GROUP_ICONS = {
+  lines: "trending-up",
+  shapes: "shapes",
+  measurement: "ruler",
+  positions: "square",
+};
+
+/// An icon for the rail, with a lettered fallback: a sprite that failed to load
+/// should cost a glyph, never eleven blank buttons.
+function railIcon(name) {
+  if (window.HRZUI && HRZUI.icon) return HRZUI.icon(name, { size: 16 });
+  const span = document.createElement("span");
+  span.className = "railGlyph";
+  span.setAttribute("aria-hidden", "true");
+  span.textContent = name.slice(0, 1).toUpperCase();
+  return span;
+}
+
 const globalTools = {
   node: null,
   built: false,
@@ -7857,9 +8003,12 @@ const globalTools = {
     which.id = "globalToolsWhich";
     frag.appendChild(which);
 
+    // Icon-only: the rail is 36px wide and a label would not fit. The name
+    // lives in the tooltip and the accessible label instead.
     const cursor = document.createElement("button");
     cursor.dataset.tool = "cursor";
-    cursor.textContent = "Cursor";
+    cursor.appendChild(railIcon("mouse-pointer-2"));
+    cursor.setAttribute("aria-label", "Cursor");
     cursor.title = "Select a drawing, move its anchors, or pan the chart";
     frag.appendChild(cursor);
 
@@ -7879,8 +8028,9 @@ const globalTools = {
       wrap.className = "toolGroup";
       const trigger = document.createElement("button");
       trigger.className = "toolGroupTrigger";
-      trigger.textContent = group.label;
-      trigger.title = group.tools.map((t) => t.label).join(", ");
+      trigger.appendChild(railIcon(TOOL_GROUP_ICONS[group.name] || "chart"));
+      trigger.title = group.label;
+      trigger.setAttribute("aria-label", group.label);
       trigger.dataset.group = group.name;
       trigger.dataset.groupLabel = group.label;
       trigger.setAttribute("aria-haspopup", "true");
@@ -7920,17 +8070,25 @@ const globalTools = {
     // own undo stack, magnet and AI layer are the ones that move, because
     // drawings are per pane and a global toggle over "all panes" would be a
     // different feature.
+    // A hairline between "what the next click draws" and "how the chart
+    // behaves": one column, two kinds of control.
+    const sep = document.createElement("span");
+    sep.className = "railSep";
+    sep.setAttribute("aria-hidden", "true");
+    frag.appendChild(sep);
+
     const controls = [
       ["button[data-magnet]", "Magnet", "Snap new drawings to nearby open, high, low, close and value-area prices", "magnet"],
-      ["button[data-ai-layer]", "AI", "Show objects the AI agent drew on the active chart, with the reason it gave for each", "aiLayer"],
-      ["button[data-profile-anchor]", "Profile", "Anchor the volume profile to the plot's left edge instead of the right", "profileAnchor"],
-      ["button[data-undo]", "Undo", "Undo the last drawing change on the active chart (Ctrl+Z)", "undo"],
-      ["button[data-redo]", "Redo", "Redo an undone drawing change on the active chart (Ctrl+Y)", "redo"],
+      ["button[data-ai-layer]", "AI", "Show objects the AI agent drew on the active chart, with the reason it gave for each", "sparkles"],
+      ["button[data-profile-anchor]", "Profile", "Anchor the volume profile to the plot's left edge instead of the right", "panel-left"],
+      ["button[data-undo]", "Undo", "Undo the last drawing change on the active chart (Ctrl+Z)", "undo-2"],
+      ["button[data-redo]", "Redo", "Redo an undone drawing change on the active chart (Ctrl+Y)", "redo-2"],
     ];
-    for (const [attr, label, title] of controls) {
+    for (const [attr, label, title, iconName] of controls) {
       const button = document.createElement("button");
       button.setAttribute(attr.match(/data-[a-z-]+/)[0], "");
-      button.textContent = label;
+      button.appendChild(railIcon(iconName));
+      button.setAttribute("aria-label", label);
       button.title = title;
       frag.appendChild(button);
     }
@@ -8061,35 +8219,47 @@ function detachIndicator() {
   syncIndicatorChip();
 }
 
-/// Re-derive every global button's state from the active pane. Derived,
-/// never stored -- the same rule the pane toolbars follow for `aria-pressed`.
+/// Re-derive every rail button's state from the active pane. Derived, never
+/// stored -- the same rule the pane toolbars follow for `aria-pressed`.
 function refreshGlobalTools() {
   const node = globalTools.node;
-  // No pane, no binding: the row hides rather than aiming at nothing.
   if (!node) return;
+  // The rail is a layout element: hiding it would pull 36px out from under the
+  // wall every time the last pane closed. No pane means no binding, which means
+  // every button is off, not that the rail is gone.
+  node.hidden = false;
+  node.dataset.empty = activePane ? "false" : "true";
+  for (const button of node.querySelectorAll("button")) button.disabled = !activePane;
+  const which = document.getElementById("globalToolsWhich");
   if (!activePane) {
-    node.hidden = true;
+    if (which) which.textContent = "No chart";
     return;
   }
-  node.hidden = false;
-  const which = document.getElementById("globalToolsWhich");
-  if (which) {
-    which.textContent = `${activePane.symbol() || "—"} · ${activePane.timeframe() || "—"}`;
-  }
+  const name = `${activePane.symbol() || "—"} · ${activePane.timeframe() || "—"}`;
+  if (which) which.textContent = name;
+  // Sighted users read the binding from the rail's tooltip; the label is the
+  // same sentence for a screen reader. Neither is painted in the rail.
+  node.title = name;
+  node.setAttribute("aria-label", `Drawing tools for ${name}`);
+
   const tool = activePane.currentTool();
   for (const button of node.querySelectorAll("button[data-tool]")) {
     button.setAttribute("aria-pressed", String(button.dataset.tool === tool));
   }
   // Group triggers relabel themselves with the armed tool, as the pane
   // toolbars' `refreshGroupTriggers` does: the trigger carries its group's
-  // name, and the armed tool belongs to at most one group.
+  // name, and the armed tool belongs to at most one group. The armed tool goes
+  // into the *name*, not the button's text -- a 28px square has no room for
+  // "Lines · trendline", and the flyout's own row already shows it pressed.
   for (const trigger of node.querySelectorAll(".toolGroupTrigger")) {
     const base = trigger.dataset.groupLabel;
     if (!base) continue;
     const armed = toolRegistry.some(
       (entry) => entry.group === trigger.dataset.group && entry.kind === tool
     );
-    trigger.textContent = armed ? `${base} · ${tool}` : base;
+    const label = armed ? `${base} · ${tool}` : base;
+    trigger.setAttribute("aria-label", label);
+    trigger.title = label;
   }
   const magnet = node.querySelector("[data-magnet]");
   if (magnet) magnet.setAttribute("aria-pressed", String(activePane.magnetOn()));
@@ -8101,6 +8271,115 @@ function refreshGlobalTools() {
   if (undo) undo.disabled = !activePane.canUndo();
   const redo = node.querySelector("[data-redo]");
   if (redo) redo.disabled = !activePane.canRedo();
+}
+
+// ---------------------------------------------------------------------------
+// Chart appearance, wired
+// ---------------------------------------------------------------------------
+
+/// Paint every pane from the current theme and settings. One place, so a theme
+/// switch and a settings change cannot disagree about which pane got what.
+function applyChartPalette() {
+  const settings = chartSettings();
+  const theme = document.documentElement.dataset.theme || "dark";
+  for (const pane of panes) pane.setPalette(chartPalette(theme, settings));
+  paintChartSettings(settings);
+}
+
+/// Paint the two surfaces that show the settings -- the dialog and the More
+/// panel's row. Both read the store; neither holds a copy of it.
+function paintChartSettings(settings = chartSettings()) {
+  for (const button of document.querySelectorAll("#chartSettings [data-cvd]")) {
+    button.setAttribute("aria-pressed", String((button.dataset.cvd === "true") === settings.cvd));
+  }
+  const grid = document.getElementById("csGrid");
+  if (grid) grid.checked = settings.grid;
+  const more = document.getElementById("moreCvd");
+  if (more) more.setAttribute("aria-pressed", String(settings.cvd));
+}
+
+function setChartSetting(name, on) {
+  const settings = chartSettings();
+  settings[name] = !!on;
+  try {
+    localStorage.setItem(CHART_SETTINGS_KEY, JSON.stringify(settings));
+  } catch { /* private mode: the choice lasts this session */ }
+  applyChartPalette();
+}
+
+function openChartSettings() {
+  const dialog = document.getElementById("chartSettings");
+  if (!dialog) return;
+  paintChartSettings();
+  // jsdom implements `<dialog>`'s property but not `showModal`; a page that
+  // cannot show it modally still shows it.
+  if (typeof dialog.showModal === "function") {
+    try { dialog.showModal(); return; } catch { /* fall through */ }
+  }
+  dialog.open = true;
+}
+
+function wireChartSettings() {
+  const dialog = document.getElementById("chartSettings");
+  if (!dialog) return;
+  dialog.addEventListener("click", (event) => {
+    const choice = event.target.closest("[data-cvd]");
+    if (choice) setChartSetting("cvd", choice.dataset.cvd === "true");
+  });
+  const grid = document.getElementById("csGrid");
+  if (grid) grid.addEventListener("change", () => setChartSetting("grid", grid.checked));
+  const reset = document.getElementById("csReset");
+  if (reset) {
+    reset.addEventListener("click", () => {
+      // Reset is "forget the choices", not "write the defaults": the store then
+      // reads as a browser that never chose, which is the state that keeps
+      // working if the defaults ever change.
+      try { localStorage.removeItem(CHART_SETTINGS_KEY); } catch { /* nothing cached */ }
+      applyChartPalette();
+    });
+  }
+  paintChartSettings();
+}
+
+function wireChartTheme() {
+  applyChartPalette();
+  window.addEventListener("hrz:theme", () => applyChartPalette());
+}
+
+// The gesture coach. Shown once per browser, on the chart itself, because the
+// gestures are the part of the product no menu can teach: a wheel that zooms
+// has to be tried to be believed, and a right-click that opens a menu is the
+// one place a browser habit guesses wrong.
+const COACH_KEY = "hrz.coach.charts";
+
+function maybeShowCoach() {
+  const node = document.getElementById("chartCoach");
+  if (!node || !activePane) return;
+  let seen = false;
+  try { seen = localStorage.getItem(COACH_KEY) === "1"; } catch { seen = true; }
+  node.hidden = seen;
+}
+
+function dismissCoach() {
+  const node = document.getElementById("chartCoach");
+  if (node) node.hidden = true;
+  try { localStorage.setItem(COACH_KEY, "1"); } catch { /* it may show again; nothing breaks */ }
+}
+
+function wireCoach() {
+  const keys = document.getElementById("coachKeys");
+  if (keys) {
+    keys.addEventListener("click", () => {
+      dismissCoach();
+      if (window.HRZPalette) HRZPalette.shortcuts();
+    });
+  }
+  const agree = document.getElementById("coachAgree");
+  if (agree) agree.addEventListener("click", dismissCoach);
+  // A pane can arrive after boot -- a restored workspace, a new chart, a
+  // sign-in -- so the first activation is another chance to show it.
+  document.addEventListener("hrz:pane", maybeShowCoach);
+  document.addEventListener("hrz:auth", maybeShowCoach);
 }
 
 /// What a new pane should open on: the next timeframe up that can fill a chart.
@@ -14274,7 +14553,16 @@ el("authorChips").addEventListener("click", (event) => {
   // different reconnection stories, and the book has to be able to say "no
   // depth feed" without the chart looking broken.
   connectBook();
+  // After the panes exist and before the shell routes: a theme or a stored
+  // preference is a property of the chart, so it is applied to the charts that
+  // are already on the page.
+  wireChartTheme();
+  wireChartSettings();
+  wireCoach();
   if (window.Shell) Shell.start();
+  // After `start()`, because the coach needs a chart to be about -- and on a
+  // restored workspace that chart exists only once the shell has routed.
+  maybeShowCoach();
 }
 
 // ---------------------------------------------------------------------------
@@ -15672,6 +15960,11 @@ window.HRZApp = {
     link.remove();
     return `Saved ${activePane.symbol()} ${activePane.timeframe()}.`;
   },
+
+  chartPalette: () => chartPalette(),
+  chartSettings: () => chartSettings(),
+  setChartSetting,
+  openChartSettings,
 };
 
 main();

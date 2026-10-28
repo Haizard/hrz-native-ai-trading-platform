@@ -70,13 +70,6 @@
     It wraps instead.
   */
   .tools { flex-wrap: wrap; max-width: calc(100% - 24px); }
-  /*
-    The hint is one line of monospace prose, and at this width it would run off
-    the right edge rather than under the toolbar. Given a right edge it wraps
-    and stays readable; it is kept rather than hidden because the chart's
-    gestures are still not discoverable without it.
-  */
-  .chartHint { display: none; }
   /* Two fields and a button in one unwrapped row overflow a phone. */
   #signin { flex-wrap: wrap; }
   #signin input { flex: 1 1 140px; min-width: 0; }

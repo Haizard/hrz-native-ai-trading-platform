@@ -82,6 +82,16 @@ const MAP = {
   camera: "camera",
   activity: "activity",
   sliders: "sliders-horizontal",
+  // The chart rail (Task 14): five tool marks and the three group signs a
+  // 28px square can carry without a label beside it.
+  magnet: "magnet",
+  "mouse-pointer-2": "mouse-pointer-2",
+  "redo-2": "redo-2",
+  ruler: "ruler",
+  shapes: "shapes",
+  square: "square",
+  "trending-up": "trending-up",
+  "undo-2": "undo-2",
 };
 
 const missing = [];

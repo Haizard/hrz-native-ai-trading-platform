@@ -569,6 +569,16 @@
       close();
       if (window.HRZPalette) window.HRZPalette.shortcuts();
     });
+    // Deliberately no `close()`: you flip the colour scheme, look at the chart
+    // behind the panel, and flip it back if it is worse.
+    byId("moreCvd").addEventListener("click", () => {
+      const on = byId("moreCvd").getAttribute("aria-pressed") !== "true";
+      if (app().setChartSetting) app().setChartSetting("cvd", on);
+    });
+    byId("moreChartSettings").addEventListener("click", () => {
+      close();
+      if (app().openChartSettings) app().openChartSettings();
+    });
 
     const input = byId("symbolPopInput");
     input.addEventListener("input", () => {

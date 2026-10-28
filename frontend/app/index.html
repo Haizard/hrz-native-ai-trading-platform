@@ -334,8 +334,14 @@
         </button>
       </div>
     </div>
-    <div id="globalTools" class="globalTools" role="toolbar" aria-label="Drawing tools for the active chart" hidden></div>
-    <div id="charts">
+    <!-- The rail and the wall are one row: the rail is a column of icons down
+         the left, the wall takes everything that is left. They share a wrapper
+         because the dock below spans *both* -- a dock inside a row would be a
+         third column. -->
+    <div id="chartStage">
+      <div id="globalTools" class="globalTools" role="toolbar" aria-orientation="vertical"
+           aria-label="Drawing tools for the active chart"></div>
+      <div id="charts">
     <section class="chartPane">
       <!--
         The pane's own chrome is deliberately tiny: what this chart is (filled
@@ -350,10 +356,6 @@
       -->
       <div class="paneHead">
         <span class="paneTitle" title="This chart's symbol, timeframe and type">…</span>
-        <!-- The gesture hint lives in the title bar, right-aligned: it used to
-             float over the plot bottom, on top of the footprint stats band and
-             time axis -- two containers painted over each other. -->
-        <span class="chartHint">wheel zooms · shift+wheel price · drag pans · right-click menu</span>
         <!--
           The generated-indicator chip. Present only while a generated
           indicator is attached to this chart; the × removes it. A live
@@ -562,6 +564,24 @@
       <div class="chartNote"></div>
     </section>
   </div>
+
+      <!--
+        The gesture coach. It sits over the wall rather than inside a pane
+        because the wall's own overflow rules would clip it, and it names the
+        gestures no menu can teach: a wheel that zooms has to be tried.
+      -->
+      <div id="chartCoach" class="chartCoach" role="note" aria-label="Chart gestures" hidden>
+        <p class="coachTitle">This chart answers to the mouse</p>
+        <p class="coachBody">
+          Scroll to zoom the time axis, <span class="coachKey">shift</span> + scroll
+          to stretch price, drag to pan, right-click for this chart's own menu.
+        </p>
+        <div class="coachFoot">
+          <button id="coachKeys" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">See all gestures</button>
+          <button id="coachAgree" class="hrz-btn hrz-btn--secondary hrz-btn--sm" type="button">Got it</button>
+        </div>
+      </div>
+    </div>
 
     <div id="dock" class="dock" hidden>
       <div class="dockResize" id="dockResize" role="separator" aria-orientation="horizontal"
@@ -1479,8 +1499,49 @@
         <div><dt>Cancel the drawing tool</dt><dd><kbd>Esc</kbd></dd></div>
       </dl>
     </section>
+    <section class="shortcutGroup" aria-labelledby="shortcutGestures">
+      <h3 id="shortcutGestures">Gestures</h3>
+      <dl>
+        <div><dt>Zoom the time axis</dt><dd>Scroll</dd></div>
+        <div><dt>Stretch the price axis</dt><dd><kbd>⇧</kbd> + scroll</dd></div>
+        <div><dt>Pan</dt><dd>Drag</dd></div>
+        <div><dt>This chart's menu</dt><dd>Right-click</dd></div>
+        <div><dt>Place or move a drawing</dt><dd>Click, then drag an anchor</dd></div>
+      </dl>
+    </section>
   </div>
   <p class="shortcutsFoot">Shortcuts are ignored while you are typing in a field.</p>
+</dialog>
+
+<!--
+  Chart appearance. A modal dialog rather than a panel: it changes the chart
+  the user is looking at, and the answer is visible behind it -- there is
+  nothing to navigate to and nothing to lose. Two settings, because they are
+  the two that change what the plot *is* rather than what it holds.
+-->
+<dialog id="chartSettings" class="chartSettings" aria-labelledby="chartSettingsTitle">
+  <form method="dialog" class="csForm">
+    <header class="csHead">
+      <h2 id="chartSettingsTitle">Chart settings</h2>
+      <button class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon"
+              value="close" aria-label="Close chart settings">×</button>
+    </header>
+    <div class="csRow">
+      <span id="csCvdLabel">Candle colours</span>
+      <span class="hrz-seg hrz-seg--sm" role="group" aria-labelledby="csCvdLabel">
+        <button type="button" class="hrz-seg__item" data-cvd="false" aria-pressed="true">Green / red</button>
+        <button type="button" class="hrz-seg__item" data-cvd="true" aria-pressed="false">Blue / orange</button>
+      </span>
+    </div>
+    <label class="csRow">
+      <span>Grid lines</span>
+      <input type="checkbox" id="csGrid" />
+    </label>
+    <footer class="csFoot">
+      <button type="button" id="csReset" class="hrz-btn hrz-btn--ghost hrz-btn--sm">Reset to defaults</button>
+      <button class="hrz-btn hrz-btn--primary hrz-btn--sm" value="done">Done</button>
+    </footer>
+  </form>
 </dialog>
 
 <div class="barPop barPop--symbol" id="symbolPop" role="dialog" aria-label="Find an instrument" hidden>
@@ -1543,6 +1604,14 @@
     <div class="barPopStack" id="moreGroups"></div>
   </div>
   <div class="barPopList">
+    <button id="moreCvd" class="barPopItem" type="button" aria-pressed="false">
+      <span class="barPopIcon" data-icon="eye"></span>
+      <span class="barPopMain">Colour-blind candles</span>
+    </button>
+    <button id="moreChartSettings" class="barPopItem" type="button">
+      <span class="barPopIcon" data-icon="sliders"></span>
+      <span class="barPopMain">Chart settings</span>
+    </button>
     <button id="moreShot" class="barPopItem" type="button">
       <span class="barPopIcon" data-icon="camera"></span>
       <span class="barPopMain">Save chart image</span>

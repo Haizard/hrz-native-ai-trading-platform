@@ -1401,8 +1401,8 @@ await waitFor(
 check(
   "the instrument bar sits at the top of the chart column",
   barNode() && barNode().parentElement.id === "chartColumn" &&
-    barNode().nextElementSibling && barNode().nextElementSibling.id === "globalTools",
-  barNode() ? barNode().parentElement.id : "missing"
+    barNode().nextElementSibling && barNode().nextElementSibling.id === "chartStage",
+  barNode() ? `${barNode().parentElement.id} / ${barNode().nextElementSibling?.id}` : "missing"
 );
 check(
   "it names the active chart's symbol",
@@ -1862,6 +1862,141 @@ await settle();
 check(
   "returning restores the tab bar, still shut",
   dockNode().hidden === false && dockNode().dataset.open === "false"
+);
+
+// --- the chart's own chrome --------------------------------------------------
+//
+// The rail, the theme bridge and the two settings surfaces. The palette checks
+// read `HRZApp.chartPalette()` -- the same function the panes are painted from
+// -- rather than a canvas pixel, because the harness's 2D context records calls
+// and not colours.
+
+console.log("\nthe chart rail, theme and settings");
+
+const paletteNow = () =>
+  window.HRZApp && window.HRZApp.chartPalette ? window.HRZApp.chartPalette() : {};
+const railNode = () => document.getElementById("globalTools");
+
+check(
+  "the rail and the wall share a row inside the chart column",
+  railNode().parentElement.id === "chartStage" &&
+    document.getElementById("charts").parentElement.id === "chartStage" &&
+    document.getElementById("chartStage").parentElement.id === "chartColumn",
+  `${railNode().parentElement.id} / ${document.getElementById("chartStage").parentElement.id}`
+);
+check(
+  "the rail is one button per tool group, each named but none lettered",
+  document.querySelectorAll("#globalTools .toolGroupTrigger").length === 4 &&
+    [...document.querySelectorAll("#globalTools .toolGroupTrigger")].every(
+      (b) => b.getAttribute("aria-label") && b.textContent.trim() === ""
+    ) &&
+    document.querySelector("#globalTools button[data-tool='cursor']").textContent.trim() === "" &&
+    document.querySelector("#globalTools button[data-tool='cursor']").getAttribute("aria-label") === "Cursor",
+  [...document.querySelectorAll("#globalTools .toolGroupTrigger")].map((b) => b.getAttribute("aria-label")).join(",")
+);
+check(
+  "and the rail names the chart it will draw on",
+  document.getElementById("globalToolsWhich").textContent.includes("BTCUSDT") &&
+    railNode().title === document.getElementById("globalToolsWhich").textContent &&
+    railNode().getAttribute("aria-label").includes("BTCUSDT"),
+  railNode().title
+);
+check(
+  "a group mark still opens its flyout, beside the rail rather than below it",
+  (() => {
+    const trigger = document.querySelector("#globalTools .toolGroupTrigger");
+    const flyout = trigger.parentElement.querySelector(".toolFlyout");
+    trigger.click();
+    const opened = flyout.hidden === false;
+    trigger.click();
+    return opened && flyout.hidden === true;
+  })()
+);
+
+const darkUp = paletteNow().up;
+window.Theme.set("light");
+await settle();
+check(
+  "the chart palette follows the theme instead of staying dark on a white page",
+  document.documentElement.dataset.theme === "light" &&
+    paletteNow().up === "#067a4d" &&
+    paletteNow().text === "#5f6b7a" &&
+    paletteNow().grid === "#e7ecf2",
+  `${document.documentElement.dataset.theme} · ${paletteNow().up} · ${paletteNow().grid}`
+);
+check("and the dark palette is the one the chart shipped with", darkUp === "#2ebd85", darkUp);
+
+document.getElementById("moreChartSettings").click();
+await settle();
+check(
+  "Chart settings opens as a dialog from the More panel",
+  document.getElementById("chartSettings").open === true,
+  `open=${document.getElementById("chartSettings").open}`
+);
+
+document.querySelector('#chartSettings [data-cvd="true"]').click();
+await settle();
+check(
+  "Blue / orange swaps the direction colours, and both surfaces know",
+  paletteNow().up === "#2962ff" &&
+    paletteNow().down === "#ff6d00" &&
+    paletteNow().entry === "#2563eb" &&
+    JSON.parse(window.localStorage.getItem("hrz.chart")).cvd === true &&
+    document.querySelector('#chartSettings [data-cvd="true"]').getAttribute("aria-pressed") === "true" &&
+    document.getElementById("moreCvd").getAttribute("aria-pressed") === "true",
+  `${paletteNow().up} / ${paletteNow().down} · entry ${paletteNow().entry}`
+);
+
+const gridToggle = document.getElementById("csGrid");
+gridToggle.checked = false;
+gridToggle.dispatchEvent(new window.Event("change"));
+await settle();
+check(
+  "unchecking Grid lines takes the grid out of the palette",
+  paletteNow().grid === "rgba(0, 0, 0, 0)" &&
+    JSON.parse(window.localStorage.getItem("hrz.chart")).grid === false,
+  paletteNow().grid
+);
+
+document.getElementById("csReset").click();
+await settle();
+check(
+  "Reset forgets both choices and both come back",
+  paletteNow().grid !== "rgba(0, 0, 0, 0)" &&
+    paletteNow().up === "#067a4d" &&
+    window.localStorage.getItem("hrz.chart") === null &&
+    document.getElementById("csGrid").checked === true
+);
+document.getElementById("chartSettings").open = false;
+window.Theme.set("dark");
+await settle();
+check("going back to dark restores the dark palette", paletteNow().up === "#2ebd85", paletteNow().up);
+
+check(
+  "the gesture coach is on screen until it is dismissed",
+  document.getElementById("chartCoach").hidden === false
+);
+document.getElementById("coachAgree").click();
+await settle();
+check(
+  "Got it hides the coach and remembers the choice",
+  document.getElementById("chartCoach").hidden === true &&
+    window.localStorage.getItem("hrz.coach.charts") === "1"
+);
+if (window.Shell) window.Shell.go("dashboard");
+await settle();
+if (window.Shell) window.Shell.go("charts");
+await settle();
+check(
+  "and it does not come back on the next visit",
+  document.getElementById("chartCoach").hidden === true
+);
+
+check(
+  "the shortcut sheet documents the gestures the coach names",
+  document.querySelectorAll("#shortcuts .shortcutGroup").length === 3 &&
+    document.getElementById("shortcutGestures") !== null,
+  `${document.querySelectorAll("#shortcuts .shortcutGroup").length} groups`
 );
 
 // --- the layout at a narrow width --------------------------------------------
