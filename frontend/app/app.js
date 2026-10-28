@@ -7884,28 +7884,12 @@ const globalTools = {
   },
 };
 
-/// A page-level toast, for messages from outside any pane: the workspace chat's
-/// attach confirmations, picker errors. One element, one timer -- the same
-/// discipline as a pane's own toast, at page scope because the workspace panel
-/// is not part of any chart.
-let pageToastTimer = 0;
+/// Page-level messages go through the shared toast stack, so a message from
+/// the workspace chat and one from a chart pane cannot occupy two different
+/// corners of the screen.
 function pageToast(message) {
   if (!message) return;
-  let box = document.getElementById("pageToast");
-  if (!box) {
-    box = document.createElement("div");
-    box.id = "pageToast";
-    box.className = "pageToast";
-    box.setAttribute("role", "status");
-    document.body.appendChild(box);
-  }
-  box.textContent = message;
-  box.classList.add("show");
-  if (pageToastTimer) clearTimeout(pageToastTimer);
-  pageToastTimer = setTimeout(() => {
-    box.classList.remove("show");
-    pageToastTimer = 0;
-  }, 4000);
+  HRZUI.toast(message);
 }
 
 /// Sync every pane's generated-indicator chip to what that pane holds.
