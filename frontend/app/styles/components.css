@@ -227,3 +227,366 @@ td, th { border-color: var(--border-subtle); }
 
 .skl-line.w45 { width: 45%; }
 
+
+/* =========================================================================
+   HRZUI — the component layer. Class-first: markup carries the class and the
+   state attribute; `components.js` only does what CSS cannot (focus, timers,
+   positioning). Every colour is a token.
+
+   The rules above are the shell as it grew; the rules below are the layer the
+   destinations are built from. They coexist until M3–M6 migrate the last
+   consumer of each legacy class.
+   ========================================================================= */
+
+/* ---- Button -------------------------------------------------------------- */
+.hrz-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: var(--space-1); height: 28px; padding: 0 10px;
+  border: 1px solid transparent; border-radius: var(--radius-1);
+  background: transparent; color: var(--text-1);
+  font: 500 var(--text-xs)/1 var(--font-ui); white-space: nowrap;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.hrz-btn:hover { background: var(--bg-raised); }
+.hrz-btn:active { background: var(--bg-panel); }
+.hrz-btn[disabled], .hrz-btn[aria-disabled="true"] { color: var(--text-3); cursor: not-allowed; }
+.hrz-btn[disabled]:hover { background: transparent; }
+.hrz-btn--primary { background: var(--accent); color: var(--accent-ink); }
+.hrz-btn--primary:hover { background: var(--accent); filter: brightness(1.08); }
+.hrz-btn--secondary { background: var(--bg-raised); border-color: var(--control-line); }
+.hrz-btn--secondary:hover { border-color: var(--text-3); }
+.hrz-btn--ghost { color: var(--text-2); }
+.hrz-btn--ghost:hover { color: var(--text-1); }
+.hrz-btn--danger { color: var(--down); border-color: var(--down); }
+.hrz-btn--danger:hover { background: var(--down-soft); }
+.hrz-btn--ai { color: var(--ai); border-color: var(--ai); }
+.hrz-btn--ai:hover { background: var(--ai-soft); }
+.hrz-btn--sm { height: 24px; padding: 0 8px; }
+.hrz-btn--lg { height: 32px; padding: 0 12px; font-size: var(--text-sm); }
+.hrz-btn--icon { width: 28px; padding: 0; }
+.hrz-btn--sm.hrz-btn--icon { width: 24px; }
+.hrz-btn--lg.hrz-btn--icon { width: 32px; }
+.hrz-btn[aria-busy="true"] { color: transparent; position: relative; }
+.hrz-btn[aria-busy="true"] > * { visibility: hidden; }
+.hrz-btn[aria-busy="true"]::after {
+  content: ""; position: absolute; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid var(--bg-raised); border-top-color: var(--accent);
+  animation: hrz-spin 0.7s linear infinite;
+}
+.hrz-spinner {
+  display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid var(--line-strong); border-top-color: var(--accent);
+  animation: hrz-spin 0.7s linear infinite;
+}
+@keyframes hrz-spin { to { transform: rotate(360deg); } }
+
+/* ---- Field, select ------------------------------------------------------- */
+.hrz-field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.hrz-field > label, .hrz-label {
+  font: 500 var(--text-2xs)/16px var(--font-ui); color: var(--text-2); letter-spacing: 0.01em;
+}
+.hrz-input, .hrz-select, .hrz-field input:not([type="checkbox"]):not([type="radio"]),
+.hrz-field select, .hrz-field textarea {
+  width: 100%; height: 28px; padding: 0 var(--space-2);
+  background: var(--bg-panel); color: var(--text-1);
+  border: 1px solid var(--control-line); border-radius: var(--radius-1);
+  font: var(--text-xs)/1 var(--font-ui);
+}
+.hrz-field textarea { height: auto; min-height: 72px; padding: var(--space-2); line-height: 20px; resize: vertical; }
+.hrz-input:hover, .hrz-select:hover { border-color: var(--text-3); }
+.hrz-input:focus-visible, .hrz-select:focus-visible { border-color: var(--accent); outline-offset: 0; }
+.hrz-input::placeholder { color: var(--text-3); }
+.hrz-input[aria-invalid="true"] { border-color: var(--down); }
+.hrz-select {
+  appearance: none; padding-right: 28px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 12px center, right 8px center;
+  background-size: 4px 4px, 4px 4px; background-repeat: no-repeat;
+}
+.hrz-field__hint { font-size: var(--text-2xs); color: var(--text-3); }
+.hrz-field__error { font-size: var(--text-2xs); color: var(--down); }
+
+/* ---- Segmented control --------------------------------------------------- */
+.hrz-seg {
+  display: inline-flex; align-items: center; padding: 2px; gap: 2px;
+  height: 28px; border: 1px solid var(--line-strong); border-radius: var(--radius-1);
+  background: var(--bg-panel);
+}
+.hrz-seg__item {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 22px; padding: 0 var(--space-2); border: 0; border-radius: 3px;
+  background: transparent; color: var(--text-2);
+  font: 500 var(--text-2xs)/1 var(--font-ui); white-space: nowrap;
+}
+.hrz-seg__item:hover { color: var(--text-1); }
+.hrz-seg__item[aria-pressed="true"] {
+  background: var(--bg-raised); color: var(--text-1); box-shadow: var(--shadow-1);
+}
+.hrz-seg--sm { height: 24px; }
+.hrz-seg--sm .hrz-seg__item { height: 18px; }
+
+/* ---- Switch -------------------------------------------------------------- */
+.hrz-switch {
+  position: relative; width: 32px; height: 18px; flex: 0 0 auto;
+  padding: 0; border: 1px solid var(--control-line); border-radius: 999px;
+  background: var(--bg-panel);
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.hrz-switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+  border-radius: 50%; background: var(--text-2);
+  transition: transform var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.hrz-switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+.hrz-switch[aria-checked="true"]::after { transform: translateX(14px); background: var(--accent-ink); }
+
+/* ---- Slider -------------------------------------------------------------- */
+.hrz-slider { width: 100%; height: 20px; padding: 0; background: transparent; appearance: none; }
+.hrz-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: var(--line-strong); }
+.hrz-slider::-moz-range-track { height: 4px; border-radius: 999px; background: var(--line-strong); }
+.hrz-slider::-webkit-slider-thumb {
+  appearance: none; width: 12px; height: 12px; margin-top: -4px; border: 0;
+  border-radius: 50%; background: var(--accent);
+}
+.hrz-slider::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: var(--accent); }
+
+/* ---- Tabs ---------------------------------------------------------------- */
+.hrz-tabs { display: flex; align-items: stretch; gap: 2px; height: 32px; border-bottom: 1px solid var(--line); }
+.hrz-tab {
+  position: relative; display: inline-flex; align-items: center; gap: var(--space-1);
+  height: 32px; padding: 0 10px; border: 0; background: transparent;
+  color: var(--text-2); font: 500 var(--text-xs)/1 var(--font-ui); white-space: nowrap;
+}
+.hrz-tab:hover { color: var(--text-1); }
+.hrz-tab[aria-selected="true"] { color: var(--text-1); }
+.hrz-tab[aria-selected="true"]::after {
+  content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px;
+  height: 2px; background: var(--accent); border-radius: 2px 2px 0 0;
+}
+.hrz-tabpanel[hidden] { display: none; }
+
+/* ---- Panel --------------------------------------------------------------- */
+.hrz-panel { display: flex; flex-direction: column; min-width: 0; background: var(--bg-panel); border-radius: var(--radius-2); }
+.hrz-panel__head {
+  display: flex; align-items: center; gap: var(--space-2); height: 32px;
+  padding: 0 var(--space-3); border-bottom: 1px solid var(--line);
+}
+.hrz-panel__title { font: 600 var(--text-xs)/1 var(--font-ui); color: var(--text-1); }
+.hrz-panel__actions { display: flex; align-items: center; gap: var(--space-1); margin-left: auto; }
+.hrz-panel__body { padding: var(--space-3); min-width: 0; }
+.hrz-panel--flush .hrz-panel__body { padding: 0; }
+
+/* ---- Table --------------------------------------------------------------- */
+.hrz-table { width: 100%; border-collapse: collapse; font: var(--text-xs)/1 var(--font-ui); }
+.hrz-table th {
+  position: sticky; top: 0; z-index: 1; height: 28px; padding: 0 var(--space-3);
+  text-align: left; font: 500 var(--text-2xs)/1 var(--font-ui); color: var(--text-3);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  background: var(--bg-panel); border-bottom: 1px solid var(--line);
+}
+.hrz-table td {
+  height: 30px; padding: 0 var(--space-3); border-bottom: 1px solid var(--line);
+  color: var(--text-1); white-space: nowrap;
+}
+.hrz-table tbody tr { transition: background var(--dur-1) var(--ease); }
+.hrz-table tbody tr:hover { background: var(--bg-raised); }
+.hrz-table tbody tr:last-child td { border-bottom: 0; }
+.hrz-table__row--selected { background: var(--accent-soft); }
+.hrz-table__row--selected td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.hrz-table__num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.hrz-table--compact td { height: 28px; }
+.hrz-table--roomy td { height: 36px; }
+.hrz-table__sort {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0;
+  border: 0; background: transparent; color: inherit; font: inherit;
+  text-transform: inherit; letter-spacing: inherit;
+}
+.hrz-table__sort:hover { color: var(--text-1); }
+.hrz-table th[aria-sort="ascending"] .hrz-table__sort::after,
+.hrz-table th[aria-sort="descending"] .hrz-table__sort::after {
+  content: ""; width: 0; height: 0; margin-left: 2px;
+  border-left: 3px solid transparent; border-right: 3px solid transparent;
+}
+.hrz-table th[aria-sort="ascending"] .hrz-table__sort::after { border-bottom: 4px solid currentColor; }
+.hrz-table th[aria-sort="descending"] .hrz-table__sort::after { border-top: 4px solid currentColor; }
+
+/* ---- Price, badge -------------------------------------------------------- */
+.hrz-price {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  color: var(--text-1); border-radius: var(--radius-1);
+}
+.hrz-price--up { color: var(--up); }
+.hrz-price--down { color: var(--down); }
+.hrz-price--flat { color: var(--text-2); }
+@keyframes hrz-flash { from { background: var(--flash, var(--bg-raised)); } to { background: transparent; } }
+.hrz-price--flash { animation: hrz-flash var(--dur-3) var(--ease); }
+
+.hrz-badge {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 6px;
+  border-radius: var(--radius-1); font: 600 var(--text-2xs)/1 var(--font-ui);
+  text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap;
+}
+.hrz-badge--neutral { background: var(--bg-raised); color: var(--text-2); }
+.hrz-badge--accent { background: var(--accent-soft); color: var(--accent); }
+.hrz-badge--up { background: var(--up-soft); color: var(--up); }
+.hrz-badge--down { background: var(--down-soft); color: var(--down); }
+.hrz-badge--warn { background: var(--warn-soft); color: var(--warn); }
+.hrz-badge--ai { background: var(--ai-soft); color: var(--ai); }
+
+/* ---- Sparkline, meter ---------------------------------------------------- */
+.hrz-spark { display: block; width: 64px; height: 20px; }
+.hrz-meter { display: grid; grid-template-columns: 1fr auto; gap: var(--space-1) var(--space-2); align-items: center; }
+.hrz-meter__label { font-size: var(--text-2xs); color: var(--text-2); }
+.hrz-meter__value { font: var(--text-2xs)/1 var(--font-mono); color: var(--text-1); text-align: right; }
+.hrz-meter__bar { grid-column: 1 / -1; height: 4px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.hrz-meter__fill {
+  height: 100%; width: calc(var(--value, 0) * 100%);
+  background: var(--accent); border-radius: inherit;
+  transition: width var(--dur-2) var(--ease);
+}
+.hrz-meter--up .hrz-meter__fill { background: var(--up); }
+.hrz-meter--down .hrz-meter__fill { background: var(--down); }
+.hrz-meter--warn .hrz-meter__fill { background: var(--warn); }
+
+/* ---- Menu, popover ------------------------------------------------------- */
+.hrz-menu, .hrz-popover {
+  position: fixed; left: var(--x, 0px); top: var(--y, 0px); z-index: 60;
+  background: var(--bg-overlay); border: 1px solid var(--line-strong);
+  border-radius: var(--radius-2); box-shadow: var(--shadow-2);
+  animation: hrz-overlay-in var(--dur-2) var(--ease);
+}
+.hrz-menu { min-width: 240px; max-width: 320px; padding: var(--space-1); }
+.hrz-menu__item {
+  display: flex; align-items: center; gap: var(--space-2); width: 100%;
+  height: 28px; padding: 0 var(--space-2); border: 0; border-radius: var(--radius-1);
+  background: transparent; color: var(--text-1); font: var(--text-xs)/1 var(--font-ui);
+  text-align: left;
+}
+.hrz-menu__item:hover, .hrz-menu__item:focus-visible { background: var(--bg-raised); outline: none; }
+.hrz-menu__item[disabled] { color: var(--text-3); cursor: default; }
+.hrz-menu__item[disabled]:hover { background: transparent; }
+.hrz-menu__item--danger { color: var(--down); }
+.hrz-menu__item--danger:hover { background: var(--down-soft); }
+.hrz-menu__hint { margin-left: auto; font: var(--text-2xs)/1 var(--font-mono); color: var(--text-3); }
+.hrz-menu__sep { height: 1px; margin: var(--space-1) 0; background: var(--line); }
+.hrz-popover { width: 320px; padding: var(--space-3); }
+.hrz-popover__head {
+  display: flex; align-items: center; gap: var(--space-2); margin: calc(-1 * var(--space-3));
+  margin-bottom: var(--space-3); padding: 0 var(--space-3); height: 32px;
+  border-bottom: 1px solid var(--line); font: 600 var(--text-xs)/1 var(--font-ui);
+}
+@keyframes hrz-overlay-in {
+  from { opacity: 0; transform: translateY(-2px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---- Dialog, drawer ------------------------------------------------------ */
+.hrz-dialog {
+  width: min(480px, calc(100vw - var(--space-7))); padding: 0; border: 0;
+  border-radius: var(--radius-3); background: var(--bg-overlay); color: var(--text-1);
+  box-shadow: var(--shadow-2);
+}
+.hrz-dialog::backdrop { background: var(--scrim); }
+.hrz-dialog__title { margin: 0; padding: var(--space-4) var(--space-4) 0; font: 600 var(--text-md)/24px var(--font-ui); }
+.hrz-dialog__body { padding: var(--space-3) var(--space-4); font-size: var(--text-sm); color: var(--text-2); line-height: 20px; }
+.hrz-dialog__foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2);
+  padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line);
+}
+
+.hrz-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 55;
+  width: min(400px, 90vw); display: flex; flex-direction: column;
+  background: var(--bg-panel); border-left: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-2); animation: hrz-drawer-in var(--dur-2) var(--ease);
+}
+.hrz-drawer--bottom {
+  top: auto; left: 0; right: 0; width: auto; height: min(90vh, 640px);
+  border-left: 0; border-top: 1px solid var(--line-strong);
+  border-radius: var(--radius-3) var(--radius-3) 0 0;
+  animation-name: hrz-sheet-in;
+}
+.hrz-drawer__handle {
+  display: none; width: 36px; height: 4px; margin: var(--space-2) auto var(--space-1);
+  border: 0; padding: 0; border-radius: 999px; background: var(--line-strong);
+}
+.hrz-drawer--bottom .hrz-drawer__handle { display: block; }
+@keyframes hrz-drawer-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes hrz-sheet-in { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ---- Toasts -------------------------------------------------------------- */
+.hrz-toasts {
+  position: fixed; right: var(--space-4); bottom: calc(var(--status-h) + var(--space-4));
+  z-index: 80; display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-2);
+  pointer-events: none;
+}
+.hrz-toast {
+  display: flex; align-items: center; gap: var(--space-3); max-width: 360px;
+  padding: 10px var(--space-3); border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent); border-radius: var(--radius-2);
+  background: var(--bg-overlay); color: var(--text-1);
+  font-size: var(--text-xs); box-shadow: var(--shadow-2);
+  pointer-events: auto; animation: hrz-overlay-in var(--dur-2) var(--ease);
+}
+.hrz-toast--error { border-left-color: var(--down); }
+.hrz-toast--warn { border-left-color: var(--warn); }
+.hrz-toast--up { border-left-color: var(--up); }
+.hrz-toast__action {
+  border: 0; padding: 0; background: transparent; color: var(--accent);
+  font: 600 var(--text-2xs)/1 var(--font-ui); white-space: nowrap;
+}
+.hrz-toast__action:hover { text-decoration: underline; }
+
+/* ---- Skeleton, empty, error --------------------------------------------- */
+.hrz-skeleton { display: flex; flex-direction: column; gap: var(--space-2); }
+.hrz-skeleton > * {
+  border-radius: var(--radius-1);
+  background: linear-gradient(90deg, var(--bg-raised) 25%, var(--bg-overlay) 50%, var(--bg-raised) 75%);
+  background-size: 400% 100%;
+  animation: hrz-shimmer 1.4s var(--ease) infinite;
+}
+.hrz-skeleton--text > * { height: 12px; }
+.hrz-skeleton--row > * { height: 30px; }
+.hrz-skeleton--card > * { height: 96px; border-radius: var(--radius-3); }
+@keyframes hrz-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+.hrz-empty, .hrz-error {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--space-2); padding: var(--space-7) var(--space-4); text-align: center;
+}
+.hrz-empty__title, .hrz-error__title { font: 600 var(--text-sm)/20px var(--font-ui); color: var(--text-1); }
+.hrz-empty__body, .hrz-error__msg { max-width: 48ch; font-size: var(--text-xs); color: var(--text-2); }
+.hrz-error__title { color: var(--warn); }
+.hrz-empty__action, .hrz-error__retry { margin-top: var(--space-1); }
+
+/* ---- Connection banner --------------------------------------------------- */
+.hrz-banner {
+  display: flex; align-items: center; gap: var(--space-2);
+  height: 28px; padding: 0 var(--space-3);
+  background: var(--warn-soft); color: var(--warn);
+  font: 500 var(--text-2xs)/1 var(--font-ui);
+  border-bottom: 1px solid var(--line);
+}
+.hrz-banner[hidden] { display: none; }
+
+/* ---- Tooltip ------------------------------------------------------------- */
+.hrz-tooltip {
+  position: fixed; left: var(--x, 0px); top: var(--y, 0px); z-index: 90;
+  max-width: 260px; padding: 4px var(--space-2);
+  border-radius: var(--radius-1); background: var(--bg-overlay);
+  border: 1px solid var(--line-strong); box-shadow: var(--shadow-1);
+  color: var(--text-1); font: var(--text-2xs)/16px var(--font-ui);
+  pointer-events: none;
+}
+
+/* ---- Layout helpers ------------------------------------------------------ */
+.u-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.u-col { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.u-between { justify-content: space-between; }
+.u-center { justify-content: center; }
+.u-grow { flex: 1 1 auto; min-width: 0; }
+.u-gap-1 { gap: var(--space-1); }
+.u-gap-2 { gap: var(--space-2); }
+.u-gap-3 { gap: var(--space-3); }
+.u-gap-4 { gap: var(--space-4); }
