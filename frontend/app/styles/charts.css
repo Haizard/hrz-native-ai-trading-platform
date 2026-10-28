@@ -31,9 +31,8 @@
 /*
   Resizable widths. The rail and the aside keep their defaults, but a drag on
   their splitter rewrites the custom property below, so one rule and one JS
-  writer own each width instead of the media queries fighting a handler.
+  writer owns each width instead of the media queries fighting a handler.
 */
-#sideWatch { width: var(--watch-w, 300px); flex: 0 0 var(--watch-w, 300px); }
 
 /*
   The chart panes. A row, each pane an equal share, and a floor of zero so a
@@ -379,16 +378,6 @@
 
 #chartMenu .feedStatus { font-size: 10px; color: var(--muted); }
 
-/*
-  Watchlist rail hide/show. The hide button rides the rail's top-right corner;
-  the restore sliver hugs the screen's left edge and exists only while the
-  rail is hidden, so a removed list is never more than one click away.
-*/
-#sideWatch { position: relative; }
-
-/* Room for the hide button beside the search box it floats over. */
-#sideWatch .pane > .row:first-child { padding-right: 28px; }
-
 .econChip { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 8px;
   background: var(--ai-soft); color: var(--ai); border: 1px solid color-mix(in srgb, var(--ai) 30%, transparent); }
 
@@ -555,60 +544,6 @@
   color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 0 20px;
 }
 
-/*
-  The left rail: the watchlist, where a market list belongs -- left of the
-  thing you point it at. It is the watchlist pane wholesale (search, count,
-  rows), moved out of the aside so it is on screen with every tab, not only
-  while its own tab is selected. The ids inside are the pane's old ones, so
-  the shell's rendering code does not know the pane moved.
-*/
-#sideWatch {
-  border-right: 1px solid var(--line); background: var(--panel);
-  display: flex; flex-direction: column; min-height: 0; min-width: 0;
-}
-
-#sideWatch .wlHead { padding: 0 10px; }
-
-#sideWatch .row { padding: 0 10px; }
-
-#sideWatch .panePad { padding: 8px 10px 4px; }
-
-/*
-  The watchlist. Rows are the platform's answer to "which market" — a search
-  over everything the venue lists, favorites the user stars, and live prices
-  that tick without the chart's own feed. A row is a chart command: clicking
-  it shows that symbol on the active chart. Prices inherit the up/down
-  colors the rest of the page already uses, so green and red mean the same
-  thing everywhere on this screen.
-*/
-.wlTags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
-
-.wlTag {
-  padding: 2px 8px; font-size: 11px; color: var(--muted);
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px;
-}
-
-.wlHead { justify-content: space-between; font-size: 11px; margin-bottom: 4px; }
-
-#wlRows { flex: 1; overflow: auto; min-height: 0; }
-
-.watchRow {
-  display: flex; align-items: center; gap: 8px; padding: 5px 6px;
-  border-bottom: 1px solid var(--line); cursor: pointer;
-}
-
-.watchRow:hover { background: var(--panel-2); }
-
-.watchRow .star { flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); padding: 0 2px; }
-
-.watchRow .star[aria-pressed="true"] { color: var(--warn); }
-
-.wlSym { flex: 1 1 auto; font-family: var(--mono); font-size: 12px; color: var(--text); }
-
-.wlPrice, .wlChange { flex: 0 0 auto; font-family: var(--mono); font-size: 12px; text-align: right; }
-
-.wlChange { width: 64px; }
-
 /* The zones overlay, off by default. Same "pressed means active" treatment as
    the strategy editor's mode tabs, so one visual language covers both. */
 .forecast[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
@@ -650,95 +585,118 @@
 
 .feedStatus[data-state="offline"] { color: var(--down); border-color: var(--down); }
 
-/* ---- Density: market rows read like a tape ---- */
-#wlRows { font-variant-numeric: tabular-nums; }
-
-#wlRows .watchRow {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border-subtle);
-  transition: background 100ms ease;
-}
-
-#wlRows .watchRow:hover { background: var(--bg-overlay); }
-
-/* ================= THE LIBRARY CARD ================= */
-#sideWatch { display: flex; flex-direction: column; min-height: 0; }
-
-#sideWatch .pane { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-
-#sideWatch .pane > #wlRows, #sideWatch .pane > #libRows { flex: 1; min-height: 0; overflow-y: auto; }
-
-/* ================= SIDEBAR: institutional rail design ================= */
-/* The rail is its own surface: elevated against the chart ground. */
+/* ---- The watchlist rail --------------------------------------------------- */
+/*
+  The rail is the watchlist wholesale -- search, count, rows -- left of the
+  thing you point it at, and the Library at its foot. The ids inside are the
+  pane's old ones, so the shell's rendering code does not know it moved.
+*/
 #sideWatch {
-  background: var(--bg-elev);
-  border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0;
+  width: var(--watch-w, 300px); flex: 0 0 var(--watch-w, 300px);
+  position: relative;
+  background: var(--bg-panel); border-right: 1px solid var(--line);
 }
-
-/* Card headers: small caps, the count a quiet right-aligned echo. */
-#sideWatch .wlHead {
-  display: flex; justify-content: space-between; align-items: baseline;
-  padding: 10px 12px 6px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.09em;
-  text-transform: uppercase; color: var(--muted);
-  border-bottom: 1px solid var(--border-subtle);
-  margin-bottom: 2px;
+#sideWatch .pane {
+  flex: 1 1 0; min-height: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+  padding: 0;
 }
+#wlRows { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 
-#sideWatch .wlHead .muted {
-  font-weight: 500; letter-spacing: 0.02em; text-transform: none;
-  font-size: 10px; color: var(--faint);
+.wlSearch {
+  flex: 0 0 auto; position: relative;
+  display: flex; align-items: center; gap: var(--space-1);
+  padding: var(--space-2);
+  /* Clear of the rail's own hide control, which floats at the top-right. */
+  padding-right: calc(var(--space-2) + 20px);
+  border-bottom: 1px solid var(--line);
 }
-
-/* The watchlist search: an inset well, flush with the header rhythm. */
-#sideWatch .pane > .row:first-child { padding: 8px 10px 4px; }
-
-#wlSearch {
-  width: 100%; font-size: 12px;
-  background: var(--bg); border-color: var(--border-subtle);
-  border-radius: 6px; padding: 6px 9px;
+.wlSearch__icon {
+  position: absolute; left: calc(var(--space-2) + 6px);
+  display: inline-flex; color: var(--text-3); pointer-events: none;
 }
+.wlSearch__icon svg { width: 13px; height: 13px; }
+.wlSearch .hrz-input {
+  flex: 1 1 auto; min-width: 0;
+  height: 26px; padding-left: 24px;
+  font-size: var(--text-xs);
+}
+.wlSearch .hrz-btn { flex: 0 0 auto; }
 
-#wlSearch::placeholder { color: var(--faint); }
-
-/* Watchlist rows: a desk tape — symbol, right-aligned figures. */
-#wlRows .watchRow {
-  display: grid; grid-template-columns: auto 1fr auto auto; align-items: center;
-  gap: 8px; padding: 5px 12px 5px 10px;
-  border-bottom: 1px solid var(--border-subtle);
-  border-left: 2px solid transparent;
+.wlTags { display: flex; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1) var(--space-2); }
+.wlTag {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  background: transparent; color: var(--text-2);
+  font: var(--text-2xs)/1.4 var(--font-ui);
   cursor: pointer;
 }
+.wlTag:hover { color: var(--text-1); border-color: var(--accent-line); }
 
-#wlRows .watchRow:hover { background: var(--bg-overlay); }
-
-#wlRows .watchRow.active {
-  border-left-color: var(--accent);
-  background: var(--accent-dim);
+.wlHead {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-3); font-size: var(--text-2xs);
 }
 
-.wlSym { font-size: 12px; font-weight: 600; color: var(--text); letter-spacing: 0.01em; }
-
-.wlPrice {
-  font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums;
-  color: var(--text-dim); text-align: right;
+/* A row is a chart command, and its left edge is the market's direction: the
+   list reads as a column of arrows before a single number is looked at. */
+.watchRow { display: flex; align-items: stretch; border-left: 3px solid transparent; }
+.watchRow[data-dir="up"] { border-left-color: var(--up); }
+.watchRow[data-dir="down"] { border-left-color: var(--down); }
+.watchRow:hover { background: var(--bg-raised); }
+.watchRow.active { background: var(--accent-soft); }
+.watchRowMain {
+  flex: 1 1 auto; min-width: 0; height: 28px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto 60px;
+  align-items: center; gap: var(--space-2);
+  padding: 0 var(--space-2) 0 var(--space-1);
+  border: 0; background: transparent; color: var(--text-1);
+  font: var(--text-xs)/1 var(--font-mono); text-align: left;
+  cursor: pointer;
 }
-
-.wlChange {
-  font-family: var(--mono); font-size: 10px; font-variant-numeric: tabular-nums;
-  padding: 1px 5px; border-radius: 3px; text-align: right; min-width: 52px;
+.watchRowMain:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.watchRow .star {
+  flex: 0 0 auto; width: 20px;
+  border: 0; background: transparent; color: var(--text-3);
+  font-size: var(--text-sm); cursor: pointer;
 }
+.watchRow .star[aria-pressed="true"] { color: var(--warn); }
+.wlSym { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.wlPrice { color: var(--text-2); text-align: right; }
+.wlChange { text-align: right; }
+.wlChange.up { color: var(--up); }
+.wlChange.down { color: var(--down); }
 
-.wlChange.up { color: var(--up); background: var(--up-dim); }
-
-.wlChange.down { color: var(--down); background: var(--down-dim); }
-
-#wlRows .watchRow .star {
-  background: none; border: 0; padding: 0; font-size: 11px;
-  color: var(--faint); line-height: 1;
+/* ---- The Library at the rail's foot --------------------------------------- */
+#sideWatch .libCard { flex: 0 0 auto; border-top: 1px solid var(--line); }
+.libToggle {
+  width: 100%; height: 30px;
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: 0 var(--space-2);
+  border: 0; background: transparent; color: var(--text-1);
+  font: 600 var(--text-xs)/1 var(--font-ui); text-align: left;
+  cursor: pointer;
 }
-
-#wlRows .watchRow .star:hover { color: var(--warn); }
+.libToggle:hover { background: var(--bg-raised); }
+.libToggle__title { flex: 1 1 auto; }
+.libToggle [data-icon] { display: inline-flex; color: var(--text-3); transition: transform 120ms ease; }
+.libToggle.is-collapsed [data-icon] { transform: rotate(-90deg); }
+/* Without the cap, a long library eats the market list it sits under. */
+#libBody { display: flex; flex-direction: column; min-height: 0; max-height: 240px; overflow: auto; }
+.libFilters { display: flex; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1) var(--space-2); }
+.libFilters button {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  background: transparent; color: var(--text-2);
+  font: var(--text-2xs)/1.4 var(--font-ui);
+  cursor: pointer;
+}
+.libFilters button:hover { color: var(--text-1); border-color: var(--accent-line); }
+.libFilters button.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
 
 
 /* ---- The instrument bar --------------------------------------------------- */

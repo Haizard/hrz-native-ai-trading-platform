@@ -178,9 +178,12 @@
   <section id="sideWatch" aria-label="Watchlist">
     <button type="button" class="railHide" id="railHide" title="Hide the watchlist rail"><span data-icon="close"></span></button>
     <div class="pane" id="pane-watchlist" hidden>
-      <div class="row">
-        <input id="wlSearch" placeholder="search every Binance symbol (e.g. sol, pepe)" />
-        <button id="wlClear" hidden title="Back to the full list">×</button>
+      <div class="row wlSearch">
+        <span class="wlSearch__icon" data-icon="search" aria-hidden="true"></span>
+        <input id="wlSearch" class="hrz-input" aria-label="Search every venue symbol"
+               placeholder="Search every symbol (e.g. SOL, PEPE)" />
+        <button id="wlClear" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon"
+                type="button" hidden title="Back to the full list" aria-label="Clear the search">×</button>
       </div>
       <div id="wlTags" class="wlTags" hidden></div>
       <div class="row wlHead">
@@ -190,20 +193,29 @@
       <div id="wlRows"></div>
       <p class="empty" id="wlEmpty" hidden></p>
     </div>
-    <!-- The Library: everything the chat agents built, one click to use. -->
+    <!--
+      The Library: everything the chat agents built, one click to use. Its
+      header is a button, so it collapses without the list disappearing from
+      the rail -- the count stays visible, which is the one thing worth
+      knowing without expanding it.
+    -->
     <div class="pane libCard" id="libCard">
-      <div class="row wlHead">
-        <span>Library</span>
+      <button type="button" class="libToggle" id="libToggle"
+              aria-expanded="true" aria-controls="libBody">
+        <span class="libToggle__title">Library</span>
         <span id="libCount" class="muted"></span>
+        <span data-icon="chevron-down" aria-hidden="true"></span>
+      </button>
+      <div id="libBody">
+        <div class="libFilters" id="libFilters">
+          <button type="button" data-filter="all" class="on">All</button>
+          <button type="button" data-filter="indicator">Indicators</button>
+          <button type="button" data-filter="skill">Skills</button>
+          <button type="button" data-filter="strategy">Strategies</button>
+        </div>
+        <div id="libRows"></div>
+        <p class="empty" id="libEmpty" hidden>Nothing built yet — ask the chat to create an indicator, a skill, or a strategy.</p>
       </div>
-      <div class="libFilters" id="libFilters">
-        <button type="button" data-filter="all" class="on">All</button>
-        <button type="button" data-filter="indicator">Indicators</button>
-        <button type="button" data-filter="skill">Skills</button>
-        <button type="button" data-filter="strategy">Strategies</button>
-      </div>
-      <div id="libRows"></div>
-      <p class="empty" id="libEmpty" hidden>Nothing built yet — ask the chat to create an indicator, a skill, or a strategy.</p>
     </div>
   </section>
   <!-- Width splitter for the watchlist rail, on the rail's INNER edge -- the
@@ -590,8 +602,25 @@
     <div class="inspectorBody" id="inspectorPaneHost">
       <div class="inspectorPanel" id="inspectorIndicator" hidden>
         <h2 class="inspectorPanel__title">Indicator</h2>
-        <p class="empty" id="indicatorProjectionEmpty">No indicator is attached to the active chart.</p>
-        <div id="indicatorProjection" hidden></div>
+        <p class="empty" id="indicatorProjectionEmpty">
+          No indicator is on this chart. Attach one from the instrument bar's
+          Attach menu, or build one in Studio.
+        </p>
+        <div id="indicatorProjection" hidden>
+          <p class="indicatorName" id="indicatorName">—</p>
+          <dl class="inspectorFacts">
+            <div><dt>Mode</dt><dd id="indicatorMode">—</dd></div>
+            <div><dt>Concepts</dt><dd id="indicatorConcepts">—</dd></div>
+            <div><dt>Zones</dt><dd id="indicatorZones">—</dd></div>
+            <div><dt>Markers</dt><dd id="indicatorMarkers">—</dd></div>
+          </dl>
+          <p class="inspectorNote" id="indicatorNote"></p>
+          <div class="inspectorActions">
+            <button type="button" id="indicatorDetach" class="hrz-btn hrz-btn--secondary hrz-btn--sm">Detach</button>
+            <button type="button" id="indicatorStudio" class="hrz-btn hrz-btn--ghost hrz-btn--sm">Open in Studio</button>
+            <button type="button" id="indicatorAlerts" class="hrz-btn hrz-btn--ghost hrz-btn--sm">Alerts</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -710,6 +739,19 @@
         <span id="attachNote" class="muted"></span>
       </div>
       <div id="thesis"><p class="empty">Pin a skill and Analyze chart — the agent applies it here and draws the patterns it finds.</p></div>
+      <!-- What the chart is reading and who is reading it. The pairs the
+           instrument bar and the account already show, gathered where a user
+           looks when they ask "is this chart live, and whose session is it?". -->
+      <section class="detailsFacts" id="detailsFacts" aria-labelledby="detailsFactsTitle">
+        <h2 class="inspectorPanel__title" id="detailsFactsTitle">Session</h2>
+        <dl class="detailsFacts__list">
+          <div><dt>Chart</dt><dd id="dfChart">—</dd></div>
+          <div><dt>Bars</dt><dd id="dfBars">—</dd></div>
+          <div><dt>Feed</dt><dd id="dfFeed">—</dd></div>
+          <div><dt>Account</dt><dd id="dfAccount">—</dd></div>
+          <div><dt>Plan</dt><dd id="dfPlan">—</dd></div>
+        </dl>
+      </section>
     </div>
 
     <!--

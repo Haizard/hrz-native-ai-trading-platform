@@ -59,6 +59,25 @@
   const DOCK_DEFAULT_HEIGHT = 240;
   const DOCK_MIN_HEIGHT = 160;
 
+  /// How each feed state reads in words and as a dot tone. One table, so the
+  /// same state cannot be called two things on one screen.
+  ///
+  /// The keys are exactly what the pane's own badge writes to
+  /// `feedStatus.dataset.state` -- `live`, `stale` and `behind` included. They
+  /// are not decorations: the badge is a measurement, and a status strip that
+  /// maps a healthy feed to "Offline" (or an unknown one to "Live") is the
+  /// claim the badge was built to avoid.
+  const FEED_CLAIMS = {
+    live: ["Live", "live"],
+    stale: ["Quiet", "wait"],
+    behind: ["Delayed", "wait"],
+    paused: ["Paused", "wait"],
+    connecting: ["Connecting", "wait"],
+    idle: ["Connecting", "wait"],
+    nofeed: ["No feed", "wait"],
+    offline: ["Offline", "down"],
+  };
+
   const state = {
     destination: null,
     inspectorTab: "ai",
@@ -81,6 +100,10 @@
   let openedWorkspaceId = "";
 
   const el = (id) => document.getElementById(id);
+  const paint = (id, text) => {
+    const node = el(id);
+    if (node) node.textContent = text;
+  };
   const app = () => window.HRZApp || {};
   const isSignedIn = () => Boolean(app().signedIn && app().signedIn());
   const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
@@ -236,7 +259,7 @@
     syncDock();
     mountIndicator();
     showPanes();
-    refreshStatus();
+    refreshPane();
     if (state.destination === "charts" && app().resizePanes) app().resizePanes();
   }
 
@@ -250,23 +273,63 @@
     if (timeframe) timeframe.textContent = info && info.timeframe ? info.timeframe : "";
     // The badge's states are the app's own readings -- "live", "stale" and
     // "behind" included -- so the map mirrors them rather than inventing a
-    // vocabulary of its own.
-    const claim = {
-      live: ["Live", "live"],
-      stale: ["Quiet", "wait"],
-      behind: ["Delayed", "wait"],
-      paused: ["Paused", "wait"],
-      nofeed: ["No feed", "wait"],
-      idle: ["Connecting", "wait"],
-      connecting: ["Connecting", "wait"],
-      offline: ["Offline", "down"],
-    }[(info && info.feed) || "offline"] || ["Offline", "down"];
+    // vocabulary of the strip's own.
+    const claim = FEED_CLAIMS[(info && info.feed) || "offline"] || ["Offline", "down"];
     const label = el("sbConnLabel");
     if (label) label.textContent = claim[0];
     const dot = el("sbConnection");
     if (dot) dot.dataset.state = claim[1];
     const top = el("connDotTop");
     if (top) top.dataset.state = claim[1];
+  }
+
+  /// Repaint the Indicator tab from the active chart.
+  ///
+  /// A projection, like the instrument bar: the pane owns the indicator and
+  /// this tab only reads it, on every `hrz:pane`. Nothing is stored here, so
+  /// detaching from the pane's chip, the bar's chip and this tab cannot drift.
+  function paintIndicatorTab() {
+    const projection = el("indicatorProjection");
+    const empty = el("indicatorProjectionEmpty");
+    if (!projection || !empty) return;
+    const info = app().activePaneInfo ? app().activePaneInfo() : null;
+    const indicator = info && info.indicator;
+    projection.hidden = !indicator;
+    empty.hidden = Boolean(indicator);
+    if (!indicator) return;
+    paint("indicatorName", indicator.name);
+    paint("indicatorMode", indicator.live ? "Live — re-detects every candle" : "Static preview");
+    paint("indicatorConcepts", String(indicator.concepts));
+    paint("indicatorZones", String(indicator.zones));
+    paint("indicatorMarkers", String(indicator.markers));
+    paint(
+      "indicatorNote",
+      indicator.live
+        ? `Following ${info.symbol} ${info.timeframe}: it re-detects on whatever series the chart loads.`
+        : "Drawn for one window; it does not re-detect on a new series."
+    );
+  }
+
+  /// Repaint the Details tab's session and data facts.
+  function paintDetails() {
+    const info = app().activePaneInfo ? app().activePaneInfo() : null;
+    const claim = info && info.feed ? FEED_CLAIMS[info.feed] : null;
+    paint("dfChart", info && info.symbol ? `${info.symbol} · ${info.timeframe}` : "—");
+    paint("dfBars", info && info.bars ? `${info.bars} bars` : "—");
+    paint("dfFeed", claim ? claim[0] : "—");
+    paint("dfAccount", (app().email && app().email()) || "—");
+    paint("dfPlan", (app().planName && app().planName()) || "—");
+  }
+
+  /// Everything that reads the active chart, repainted together.
+  ///
+  /// The status bar, the Indicator tab and the Details facts are three
+  /// projections of one question, so one event repaints all three and none is
+  /// ever an event behind the others.
+  function refreshPane() {
+    refreshStatus();
+    paintIndicatorTab();
+    paintDetails();
   }
 
   function paintProfile() {
@@ -421,7 +484,11 @@
   function runDestinationLoaders() {
     const load = app().runPaneLoaders;
     if (!load) return;
-    if (state.destination === "studio") load(state.studioPane);
+    // The rail prices itself only while it is on screen: the ticker has no
+    // reason to keep running behind Studio, and the way back to Charts is
+    // supposed to find it fresh rather than waiting for the next tick.
+    if (state.destination === "charts") load("watchlist");
+    else if (state.destination === "studio") load(state.studioPane);
     else if (state.destination === "community") load("community");
     else if (state.destination === "bots") load("bots");
     else if (state.destination === "account") {
@@ -770,6 +837,21 @@
         grip.addEventListener("pointercancel", stop);
       });
     }
+    const detach = el("indicatorDetach");
+    if (detach) {
+      detach.addEventListener("click", () => {
+        if (app().detachActiveIndicator) app().detachActiveIndicator();
+      });
+    }
+    const toStudio = el("indicatorStudio");
+    if (toStudio) {
+      toStudio.addEventListener("click", () => go("studio", { studioPane: "indicator" }));
+    }
+    // Alerts is the dock's tab: the same watch events that fire for every
+    // chart, not a list owned by this layer. Task 13 fills the tab; until
+    // then it opens the dock's placeholder.
+    const alerts = el("indicatorAlerts");
+    if (alerts) alerts.addEventListener("click", () => openDock("alerts"));
     const theme = el("profileTheme");
     if (theme) {
       theme.addEventListener("change", () => {
@@ -784,7 +866,7 @@
       });
     }
 
-    document.addEventListener("hrz:pane", refreshStatus);
+    document.addEventListener("hrz:pane", refreshPane);
     document.addEventListener("hrz:auth", (event) =>
       onAuth(Boolean(event.detail && event.detail.signedIn))
     );

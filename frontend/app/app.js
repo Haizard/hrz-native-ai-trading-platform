@@ -686,6 +686,11 @@ function createChartPane(root, hooks = {}) {
   let liveKey = ""; // the `SYMBOL/timeframe` this pane is subscribed to
   let liveSubscribed = false;
   let visible = true;
+  // Whether this pane has been taken off the page. A load still in flight when
+  // it was closed resolves into a pane that no longer exists, and its tail
+  // subscribes anyway -- a channel whose only listener is gone is one nobody
+  // will ever close, because the hub's refcount never sees the leave.
+  let destroyed = false;
   // The instruments this pane may show, as the page last read them. Held here
   // because the pane owns its selects and has to rebuild them when the symbol
   // changes -- but the page reads the list once, since four panes asking four
@@ -5405,6 +5410,11 @@ function createChartPane(root, hooks = {}) {
   /// hundred charts, and a hundred sockets for a handful of series would be a
   /// hundred copies of one stream.
   function connectLive() {
+    // Ask for the series only while the pane is on the page. `refresh()` ends
+    // here, and a refresh started before a close arrives after it: the
+    // subscription would be the channel's last listener, so closing the pane
+    // -- which already happened -- would not have closed the socket.
+    if (destroyed) return;
     const symbol = el("symbol").value;
     const timeframe = el("timeframe").value;
     // A select with no options has nothing to aim at. Wiring fires
@@ -7184,6 +7194,7 @@ function createChartPane(root, hooks = {}) {
     /// channel itself is only closed when the last pane on the series leaves --
     /// that refcount is the hub's, not this pane's.
     destroy() {
+      destroyed = true;
       // A pane that is gone must not be left hosting the shared menu: the next
       // `closeMenu` from any pane would file this one's controls into a pane
       // that no longer exists.
@@ -12374,10 +12385,15 @@ function renderWatchlist() {
 
   for (const row of rows) {
     const ticker = watchlistTickers.get(row.symbol);
+    const up = ticker ? ticker.price_change_percent >= 0 : null;
     const line = document.createElement("div");
     line.className = "watchRow";
+    // The 3px edge tint is the direction, so the list reads as a column of
+    // arrows before a single number is read.
+    if (up !== null) line.dataset.dir = up ? "up" : "down";
 
     const star = document.createElement("button");
+    star.type = "button";
     star.className = "star";
     star.setAttribute("aria-pressed", String(favoriteSet.has(row.symbol)));
     star.textContent = favoriteSet.has(row.symbol) ? "★" : "☆";
@@ -12390,6 +12406,14 @@ function renderWatchlist() {
       renderWatchlist();
     };
 
+    // The row's body is a button of its own rather than the row being one:
+    // the star is a second control beside it, and a button inside a button is
+    // not reachable by a keyboard or announced by a screen reader.
+    const main = document.createElement("button");
+    main.type = "button";
+    main.className = "watchRowMain";
+    main.title = "Chart this symbol. Alt-click opens it in a new pane.";
+
     const sym = document.createElement("span");
     sym.className = "wlSym";
     sym.textContent = row.symbol;
@@ -12401,16 +12425,40 @@ function renderWatchlist() {
 
     const change = document.createElement("span");
     if (ticker) {
-      const up = ticker.price_change_percent >= 0;
       change.className = `wlChange ${up ? "up" : "down"}`;
       change.textContent = `${up ? "+" : ""}${ticker.price_change_percent.toFixed(2)}%`;
     } else {
       change.className = "wlChange";
     }
 
-    if (row.symbol === activeSymbol()) line.classList.add("active");
-    line.onclick = () => chartFromWatchlist(row.symbol);
-    line.append(star, sym, price, change);
+    main.append(sym, price, change);
+    const spoken = ticker
+      ? `${row.symbol}, ${fmtPrice(ticker.last_price)}, ${up ? "up" : "down"} ${Math.abs(ticker.price_change_percent).toFixed(2)} percent`
+      : row.symbol;
+    main.setAttribute("aria-label", `${spoken}. Chart in the active pane; Alt-click opens a new pane.`);
+    main.onclick = (event) => {
+      // Alt-click is "beside", not "instead": the chart the user is reading
+      // stays where it is and the row's symbol arrives next to it. At the pane
+      // cap `addPane` answers null, and charting in place is still the command
+      // the row means.
+      if (event.altKey) {
+        const pane = addPane();
+        if (pane) {
+          const added = ensureCoverage(row.symbol);
+          pane.fillSeries(coverage, row.symbol, added ? "15m" : undefined);
+          setActive(pane);
+          pane.refresh().then(() => pane.connectLive());
+          return;
+        }
+      }
+      chartFromWatchlist(row.symbol);
+    };
+
+    if (row.symbol === activeSymbol()) {
+      line.classList.add("active");
+      main.setAttribute("aria-current", "true");
+    }
+    line.append(star, main);
     rowsEl.appendChild(line);
   }
 }
@@ -12495,6 +12543,19 @@ function wireWatchlist() {
     runWatchlistSearch("");
     input.focus();
   });
+  // The Library starts open: a library nobody has opened is a library nobody
+  // knows is there. Collapsed, the header stays -- its count is the one thing
+  // worth seeing without expanding it.
+  const libToggle = el("libToggle");
+  if (libToggle) {
+    libToggle.addEventListener("click", () => {
+      const body = el("libBody");
+      const opening = body.hidden;
+      body.hidden = !opening;
+      libToggle.setAttribute("aria-expanded", String(opening));
+      libToggle.classList.toggle("is-collapsed", !opening);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -15280,6 +15341,11 @@ window.HRZApp = {
         ? {
             name: attached.name || "generated indicator",
             live: Array.isArray(attached.concepts) && attached.concepts.length > 0,
+            // Counts, not the arrays: the tab prints three numbers and the
+            // facade is not the place to hand out a live preview object.
+            concepts: Array.isArray(attached.concepts) ? attached.concepts.length : 0,
+            zones: Array.isArray(attached.zones) ? attached.zones.length : 0,
+            markers: Array.isArray(attached.markers) ? attached.markers.length : 0,
           }
         : null,
       layers: activePane.attachedScripts().map((layer, index) => ({

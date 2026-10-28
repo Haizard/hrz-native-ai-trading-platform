@@ -731,3 +731,42 @@ table.scan td:nth-child(1) { color: var(--muted); width: 1.5em; }
 #attachChart[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
 
 #attachNote { font-size: 10px; flex: 1 1 auto; }
+
+/* ---- The Indicator projection -------------------------------------------- */
+/*
+  An ID selector beats the browser's `[hidden]` rule, so a projection that sets
+  `display` has to say `:not([hidden])` or the empty state and the filled one
+  are on screen at once.
+*/
+#indicatorProjection:not([hidden]) { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.indicatorName { margin: 0; color: var(--text-1); font: 600 var(--text-sm)/1.3 var(--font-ui); }
+
+.inspectorFacts { display: grid; gap: var(--space-1); margin: 0; }
+
+.inspectorFacts > div {
+  display: grid; grid-template-columns: 84px 1fr; gap: var(--space-2); align-items: baseline;
+}
+
+.inspectorFacts dt { color: var(--text-3); font-size: var(--text-xs); }
+
+.inspectorFacts dd { margin: 0; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-2); }
+
+.inspectorNote { margin: 0; color: var(--text-3); font-size: var(--text-xs); line-height: 1.5; }
+
+.inspectorActions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+/* ---- The Details tab's session facts -------------------------------------- */
+.detailsFacts { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--line); }
+
+.detailsFacts__list { display: grid; gap: var(--space-1); margin: var(--space-2) 0 0; }
+
+.detailsFacts__list > div {
+  display: grid; grid-template-columns: 84px 1fr; gap: var(--space-2); align-items: baseline;
+}
+
+.detailsFacts__list dt { color: var(--text-3); font-size: var(--text-xs); }
+
+.detailsFacts__list dd {
+  margin: 0; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-2);
+}

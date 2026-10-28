@@ -664,6 +664,85 @@ window.fetch = async (path, options = {}) => {
     return json(200, { symbol, timeframe, candles: candlesFor(200, symbol, timeframe) });
   }
 
+  // One rising and one falling, so the rail's edge tint is exercised in both
+  // directions by a single render.
+  if (url.startsWith("/tickers")) {
+    const asked = (queryOf(url).get("symbols") ?? "BTCUSDT,ETHUSDT").split(",").filter(Boolean);
+    return json(200, {
+      tickers: asked.map((symbol, index) => ({
+        symbol,
+        last_price: basePriceFor(symbol) + 10,
+        price_change_percent: index % 2 === 0 ? 1.5 : -2.25,
+      })),
+    });
+  }
+
+  // The indicator workspace the Inspector tab projects. The revision is the
+  // longer prefix, so it is matched first -- `startsWith` does not know about
+  // path segments, and `/indicator-workspaces/ws-1` is a prefix of it.
+  //
+  // The preview is shaped like the real thing rather than like the three numbers
+  // the checks read: a live layer's `concepts` go into the scene request, and the
+  // engine deserializes them with `deny_unknown_fields`. A `{name}`-only concept
+  // was the first version of this fixture and the attach failed with "missing
+  // field `side`" -- the fixture, not the page, was the thing that was wrong.
+  if (url === "/indicator-workspaces/ws-1/revisions/rev-1") {
+    return json(200, {
+      preview: {
+        name: "Liquidity Sweep",
+        concepts: [
+          {
+            name: "bullish_gap",
+            label: "bullish gap",
+            side: "buy",
+            window: 3,
+            lower: { high: 0 },
+            upper: { low: 2 },
+            require: [{ left: { high: 0 }, op: "below", right: { low: 2 } }],
+          },
+        ],
+        zones: [
+          {
+            id: "z1",
+            start_time: 1_789_679_400_000 * 1e6,
+            end_time: 1_789_679_700_000 * 1e6,
+            price_low: 100.5,
+            price_high: 103,
+            label: "bullish gap",
+            state: "active",
+          },
+          {
+            id: "z2",
+            start_time: 1_789_680_000_000 * 1e6,
+            end_time: 1_789_680_300_000 * 1e6,
+            price_low: 104,
+            price_high: 106.5,
+            label: "bullish gap",
+            state: "tapped",
+          },
+        ],
+        markers: [
+          {
+            id: "m1",
+            evidence_id: "e1",
+            time: 1_789_679_400_000 * 1e6,
+            price: 101,
+            label: "sweep",
+            kind: "bullish",
+          },
+        ],
+      },
+    });
+  }
+  if (url === "/indicator-workspaces/ws-1") {
+    return json(200, {
+      id: "ws-1",
+      name: "Liquidity Sweep",
+      symbol: "BTCUSDT",
+      active_revision_id: "rev-1",
+    });
+  }
+
   if (url.startsWith("/footprint/coverage")) {
     // Milliseconds, because that is the unit the shell's `BAR_MS` is in and it
     // does `to - columns * bar` on this number. A window in nanoseconds would put
@@ -952,7 +1031,12 @@ if (!tokenKey) {
   );
   process.exit(1);
 }
-window.localStorage.setItem(tokenKey, "a-token-for-the-harness");
+// JWT-shaped, not opaque: `HRZApp.email()` reads the payload's `sub`, and an
+// opaque token makes every email read empty -- which is how the Details tab's
+// account row would sit at "—" and nobody would notice. Nothing checks the
+// signature, in the page or in the mocks.
+const payload = Buffer.from(JSON.stringify({ sub: "harness@example.test" })).toString("base64");
+window.localStorage.setItem(tokenKey, `header.${payload}.signature`);
 
 // --- the real engine, with a recorder around it ------------------------------
 //
@@ -1450,6 +1534,119 @@ check(
   "and the bar leaves the chart on the symbol the rest of the file assumes",
   selectIn(PANE, "symbol") === "BTCUSDT",
   selectIn(PANE, "symbol")
+);
+
+// --- the watchlist and the inspector -----------------------------------------
+//
+// Both are projections of the active chart. The checks drive the real controls
+// and read the pane back, for the same reason the bar checks do.
+
+console.log("\nthe watchlist rail");
+
+const watchRows = () => [...document.querySelectorAll("#wlRows .watchRow")];
+check(
+  "the rail lists the venue, priced",
+  watchRows().length === 2 &&
+    document.getElementById("wlCount").textContent.includes("whole venue"),
+  `${watchRows().length} rows · ${document.getElementById("wlCount").textContent}`
+);
+check(
+  "a rising row is tinted up and a falling row down",
+  watchRows()[0].dataset.dir === "up" && watchRows()[1].dataset.dir === "down",
+  watchRows().map((row) => row.dataset.dir).join(",")
+);
+check(
+  "and the source line says how old the prices are",
+  /^prices \d+s ago$/.test(document.getElementById("wlSource").textContent),
+  document.getElementById("wlSource").textContent
+);
+
+check(
+  "the Library starts open",
+  document.getElementById("libToggle").getAttribute("aria-expanded") === "true" &&
+    document.getElementById("libBody").hidden === false,
+  `expanded=${document.getElementById("libToggle").getAttribute("aria-expanded")}`
+);
+document.getElementById("libToggle").click();
+check(
+  "collapsing it keeps the header and the count",
+  document.getElementById("libBody").hidden === true &&
+    document.getElementById("libToggle").getAttribute("aria-expanded") === "false" &&
+    document.getElementById("libToggle").textContent.includes("Library"),
+  `hidden=${document.getElementById("libBody").hidden}`
+);
+document.getElementById("libToggle").click();
+
+// Alt-click is "beside, not instead": the chart being read stays put.
+const panesBefore = paneNodes().length;
+const ethRow = watchRows().find(
+  (row) => row.querySelector(".wlSym").textContent === "ETHUSDT"
+);
+ethRow.querySelector(".watchRowMain").dispatchEvent(
+  new window.MouseEvent("click", { bubbles: true, altKey: true })
+);
+await waitFor(() => paneNodes().length === panesBefore + 1, "the pane Alt-click opens");
+check(
+  "Alt-click on a row opens that symbol in a new pane",
+  selectIn(paneNodes().length - 1, "symbol") === "ETHUSDT",
+  selectIn(paneNodes().length - 1, "symbol")
+);
+check(
+  "and the new pane is the active one",
+  paneNodes()[paneNodes().length - 1].classList.contains("active")
+);
+paneNodes()[paneNodes().length - 1].querySelector(".close").click();
+await settle();
+check(
+  "closing it returns to the first chart",
+  paneNodes().length === panesBefore && paneNodes()[0].classList.contains("active"),
+  `${paneNodes().length} panes`
+);
+
+console.log("\nthe inspector projections");
+
+document.querySelector('#inspectorTabs [data-inspector="indicator"]').click();
+await settle();
+check(
+  "the Indicator tab opens and says nothing is attached",
+  document.getElementById("inspectorIndicator").hidden === false &&
+    document.getElementById("indicatorProjectionEmpty").hidden === false &&
+    document.getElementById("indicatorProjection").hidden === true,
+  `panel=${document.getElementById("inspectorIndicator").hidden} empty=${document.getElementById("indicatorProjectionEmpty").hidden}`
+);
+
+const attached = await window.HRZApp.attachWorkspace("ws-1");
+await settle();
+check(
+  "attaching projects the indicator into the tab",
+  document.getElementById("indicatorProjection").hidden === false &&
+    document.getElementById("indicatorName").textContent === "Liquidity Sweep" &&
+    document.getElementById("indicatorConcepts").textContent === "1" &&
+    document.getElementById("indicatorZones").textContent === "2" &&
+    document.getElementById("indicatorMarkers").textContent === "1" &&
+    document.getElementById("barIndicator").hidden === false,
+  `${attached} · ${document.getElementById("indicatorName").textContent} / ${document.getElementById("indicatorZones").textContent} zones`
+);
+
+document.getElementById("indicatorDetach").click();
+await settle();
+check(
+  "Detach removes it from the pane, the bar and the tab together",
+  document.getElementById("indicatorProjection").hidden === true &&
+    document.getElementById("indicatorProjectionEmpty").hidden === false &&
+    document.getElementById("barIndicator").hidden === true &&
+    paneNode().querySelector(".indicatorChip").hidden === true,
+  `bar hidden=${document.getElementById("barIndicator").hidden} projection hidden=${document.getElementById("indicatorProjection").hidden}`
+);
+
+document.querySelector('#inspectorTabs [data-inspector="details"]').click();
+await settle();
+check(
+  "the Details tab states the chart, its bars and its account",
+  document.getElementById("dfChart").textContent === "BTCUSDT · 5m" &&
+    document.getElementById("dfBars").textContent === "500 bars" &&
+    document.getElementById("dfAccount").textContent === "harness@example.test",
+  `${document.getElementById("dfChart").textContent} · ${document.getElementById("dfBars").textContent} · ${document.getElementById("dfAccount").textContent}`
 );
 
 // --- the layout at a narrow width --------------------------------------------
