@@ -103,9 +103,9 @@ function applyAuthGate() {
   if (frame) {
     const wasHidden = frame.hidden;
     frame.hidden = !signedIn;
-    // The router owns which destination is on screen from M3.T9; until then
-    // the frame's view is opened with the frame so Charts is what a signed-in
-    // visit lands on, exactly as it did before the frame existed.
+    // The frame carries the view; the router picks the destination inside it.
+    // The view is opened with the frame so a signed-in visit has something in
+    // front of it before the shell's first route runs.
     const mainView = document.getElementById("mainView");
     if (mainView) mainView.hidden = !signedIn;
     // Charts measure their canvas while the frame is hidden read zero, and a
@@ -119,6 +119,7 @@ function applyAuthGate() {
   // model that will answer. Both are account-level, so both repaint here.
   paintAiHero();
   paintModelChip();
+  document.dispatchEvent(new CustomEvent("hrz:auth", { detail: { signedIn } }));
 }
 
 /// The greeting at the top of the AI pane, and the two prompt chips under it.
@@ -7317,11 +7318,13 @@ let pendingIndicatorWorkspaceId = null;
 /// The snapshot the server stores. `version` is the schema the shell wrote;
 /// the route refuses anything else, so an old tab cannot corrupt a new page.
 function workspaceSnapshot() {
+  const shell = window.Shell ? Shell.snapshot() : {};
   return {
     version: 1,
+    ...shell,
     layout: { mode: layoutMode, columns: gridColumns },
     activePane: Math.max(0, panes.indexOf(activePane)),
-    activeTab: activeTabName,
+    activeTab: window.Shell ? Shell.legacyTab() : activeTabName,
     indicatorWorkspaceId: wsActiveId,
     panes: panes.map((pane) => pane.snapshot()),
   };
@@ -7332,6 +7335,7 @@ function workspaceSnapshot() {
 function scheduleWorkspaceSave() {
   if (!workspaceReady || !token()) return;
   if (workspaceSaveTimer) return;
+  if (window.Shell) Shell.setSaveState("saving", "Unsaved");
   workspaceSaveTimer = setTimeout(() => {
     workspaceSaveTimer = 0;
     saveWorkspaceState();
@@ -7348,6 +7352,7 @@ async function saveWorkspaceState() {
   const snapshot = workspaceSnapshot();
   const encoded = JSON.stringify(snapshot);
   if (encoded === workspaceSavedJSON) return;
+  if (window.Shell) Shell.setSaveState("saving", "Saving…");
   try {
     await api("/workspace", {
       method: "PUT",
@@ -7355,8 +7360,10 @@ async function saveWorkspaceState() {
       body: JSON.stringify({ state: snapshot }),
     });
     workspaceSavedJSON = encoded;
+    if (window.Shell) Shell.setSaveState("saved", "Saved");
   } catch {
     // A lost save is not worth a toast mid-drag; the next change retries.
+    if (window.Shell) Shell.setSaveState("failed", "Save failed");
   }
 }
 
@@ -7727,6 +7734,7 @@ function setActive(pane) {
   // change what the toolbar's buttons would act on.
   refreshGlobalTools();
   syncIndicatorChip();
+  document.dispatchEvent(new CustomEvent("hrz:pane", { detail: { pane } }));
   scheduleWorkspaceSave();
 }
 
@@ -8287,6 +8295,7 @@ async function restoreWorkspace(saved, entries) {
   if (!saved || !Array.isArray(saved.panes) || !saved.panes.length) {
     return false;
   }
+  if (window.Shell) Shell.restore(saved);
   applyWorkspaceLayout(saved);
 
   // Trim or grow to the saved count. `closePane` refuses the last pane, and
@@ -8313,6 +8322,7 @@ async function restoreWorkspace(saved, entries) {
   if (typeof saved.activeTab === "string") selectPane(saved.activeTab);
   if (saved.indicatorWorkspaceId) pendingIndicatorWorkspaceId = saved.indicatorWorkspaceId;
 
+  document.dispatchEvent(new CustomEvent("hrz:pane", { detail: { pane: activePane } }));
   workspaceReady = true;
   workspaceSavedJSON = JSON.stringify(workspaceSnapshot());
   return true;
@@ -8337,24 +8347,6 @@ async function restoreWorkspace(saved, entries) {
 function wireSplitters() {
   const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
 
-  // The saved widths restore the layout the user dragged to last time. A
-  // missing or corrupt entry just means the CSS defaults stand.
-  try {
-    const saved = JSON.parse(localStorage.getItem("splitterWidths") || "{}");
-    if (Number.isFinite(saved.watch)) document.documentElement.style.setProperty("--watch-w", `${saved.watch}px`);
-    if (Number.isFinite(saved.aside)) document.documentElement.style.setProperty("--aside-w", `${saved.aside}px`);
-  } catch { /* a broken blob is not worth a broken page */ }
-
-  const persist = () => {
-    try {
-      const styles = getComputedStyle(document.documentElement);
-      localStorage.setItem("splitterWidths", JSON.stringify({
-        watch: parseFloat(styles.getPropertyValue("--watch-w")) || undefined,
-        aside: parseFloat(styles.getPropertyValue("--aside-w")) || undefined,
-      }));
-    } catch { /* private mode, quota, whatever -- the drag still worked */ }
-  };
-
   const repaint = () => { for (const pane of panes) pane.redraw(); };
 
   // One pointer session per handle: capture the pointer so a drag that strays
@@ -8377,7 +8369,7 @@ function wireSplitters() {
         handle.removeEventListener("pointermove", move);
         handle.removeEventListener("pointerup", stop);
         handle.removeEventListener("pointercancel", stop);
-        persist();
+        noteWorkspaceChange();
         repaint();
       };
       handle.addEventListener("pointermove", move);
@@ -8397,8 +8389,10 @@ function wireSplitters() {
       ? fromVar
       : panel.getBoundingClientRect().width || fallback;
   };
-  wireWidth(el("splitWatch"), "--watch-w", 200, 560, +1, () => currentWidth(el("sideWatch"), "--watch-w", 300));
-  wireWidth(el("splitAside"), "--aside-w", 280, 860, -1, () => currentWidth(document.querySelector("#dest-charts aside"), "--aside-w", 460));
+  wireWidth(el("splitWatch"), "--watch-w", 200, 360, +1,
+    () => currentWidth(el("sideWatch"), "--watch-w", 260));
+  wireWidth(el("splitAside"), "--inspector-w", 300, 480, -1,
+    () => currentWidth(document.querySelector("#dest-charts aside"), "--inspector-w", 360));
 
   // Row splitters are created with their row (`addPane`), so they are delegated:
   // one listener on the container covers every row that ever exists.
@@ -13242,6 +13236,10 @@ function refreshBillingPane() {
   paintBillingModeNote();
   paintBillingCurrent();
   paintBillingPlans();
+  const plan = billingState && billingState.plan ? String(billingState.plan) : "";
+  if (window.Shell) {
+    Shell.setPlan(plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : "");
+  }
 }
 
 async function loadBilling() {
@@ -13345,39 +13343,18 @@ function refreshWorkspaceGates() {
 // Wiring
 // ---------------------------------------------------------------------------
 
-function selectPane(name) {
-  activeTabName = name;
-  scheduleWorkspaceSave();
-  for (const button of document.querySelectorAll(".tabs button")) {
-    button.setAttribute("aria-selected", String(button.dataset.pane === name));
-  }
-  // Every pane lives in its own container; the watchlist pane lives in the
-  // left rail and is the one pane that never hides, because the rail shows it
-  // beside every tab. Hiding it would blank the rail; showing another pane
-  // never touches it.
-  for (const pane of document.querySelectorAll(".pane")) {
-    pane.hidden = pane.id !== `pane-${name}` && pane.id !== "pane-watchlist";
-  }
-  // The live-trading panel is read when it is opened rather than at startup:
-  // opt-in state is changed from elsewhere (the API, another tab) and a value
-  // cached at page load would show a venue as revoked after it was re-enabled.
+/// Read a pane's data when it is opened. Panels that can be changed from
+/// elsewhere (the API, another tab) read on open rather than cache at boot, so
+/// a value edited somewhere else is never shown stale.
+function runPaneLoaders(name) {
   if (name === "bots") refreshVenues();
-  // Indicator workspaces are loaded when the tab is opened, because they
-  // can be created or modified from other tabs.
   if (name === "indicator") loadWorkspaces();
-  // Settings panels read on open for the same reason: a config changed in
-  // another tab (or by the API) must not be shown stale by a cached copy.
   if (name === "brokers") { refreshBrokers(); loadBrokerCatalog(); }
   if (name === "aimodel") refreshAiModel();
-  // The plan is read on open, because a period can roll over -- or another tab
-  // can subscribe -- while this one sits on a chart.
   if (name === "billing") loadBilling();
-  // The community library is read on open for the same reason: someone else's
-  // publish, unlisting or update must not be shown stale.
   if (name === "community") loadCommunity();
-  // The watchlist ticks only while it is on screen: a hidden pane's prices
-  // nobody can see are five-second requests for nothing, and reopening the
-  // pane re-prices it immediately anyway.
+  if (name === "skills") loadSkills();
+  if (name === "strategy") loadLibrary();
   if (name === "watchlist") {
     renderWatchlist();
     loadWatchlistUniverse();
@@ -13385,6 +13362,14 @@ function selectPane(name) {
   } else {
     stopWatchlistTicker();
   }
+}
+
+/// The old name every caller still uses. It names a panel, not a destination;
+/// the shell owns the translation (`Shell.selectLegacyPane`).
+function selectPane(name) {
+  activeTabName = name;
+  scheduleWorkspaceSave();
+  if (window.Shell) Shell.selectLegacyPane(name);
 }
 
 /// Replace every `[data-icon]` placeholder with the icon it names, and give the
@@ -13412,15 +13397,12 @@ function paintIcons(scope = document) {
 }
 
 async function main() {
+  if (window.Shell) Shell.init();
   paintSession();
   paintIcons(document);
   // The toggle's glyph names the theme a click would switch *to*, so repainting
   // belongs to the theme changing rather than to the click that changed it.
   Theme.onChange(() => paintIcons(document));
-
-  document.querySelectorAll(".tabs button").forEach((button) =>
-    button.addEventListener("click", () => selectPane(button.dataset.pane))
-  );
 
   wireWatchlist();
   // The watchlist has no aside tab any more (it lives in its own rail), so
@@ -13462,11 +13444,6 @@ el("authorChips").addEventListener("click", (event) => {
   else if (what.startsWith("img-")) authorImages.splice(Number(what.slice(4)), 1);
   renderAuthorChips();
 });
-  document.querySelectorAll("[data-pane]").forEach((tab) => {
-    if (tab.dataset.pane === "skills") {
-      tab.addEventListener("click", () => loadSkills());
-    }
-  });
   // Sweep buttons are rendered inside message bubbles, so the click is caught
   // on the stream and dispatched -- one listener instead of one per bubble.
   const chatStream = document.getElementById("wsChat");
@@ -13736,65 +13713,9 @@ el("authorChips").addEventListener("click", (event) => {
     }
   });
 
-  // The watchlist rail: hide it, and bring it back. The sliver lives at the
-  // screen's left edge only while the rail is gone, so a removed list is one
-  // click from returning and nothing extra is on screen while it is not.
-  const rail = document.getElementById("sideWatch");
-  const railSplit = document.getElementById("splitWatch");
-  const railShow = document.getElementById("railShow");
-  try {
-    if (localStorage.getItem("watchlist.hidden") === "1") {
-      rail.classList.add("hideRail");
-      railSplit.classList.add("hideRail");
-      railShow.hidden = false;
-    }
-  } catch { /* private mode: the rail just starts visible */ }
-  // The side panel: hide it, and bring it back -- the watchlist rail's mirror.
-  // Full-width charting is one click away, and the sliver keeps the panel one
-  // click from returning.
-  const aside = document.querySelector("aside");
-  const asideSplit = el("splitAside");
-  const asideShow = el("asideShow");
-  try {
-    if (localStorage.getItem("aside.hidden") === "1") {
-      aside.classList.add("hideAside");
-      asideSplit.classList.add("hideAside");
-      asideShow.hidden = false;
-    }
-  } catch { /* private mode: the panel just starts visible */ }
-  el("asideHide").addEventListener("click", () => {
-    aside.classList.add("hideAside");
-    asideSplit.classList.add("hideAside");
-    asideShow.hidden = false;
-    try { localStorage.setItem("aside.hidden", "1"); } catch { /* the drag still worked */ }
-    for (const pane of panes) pane.redraw();
-  });
-  asideShow.addEventListener("click", () => {
-    aside.classList.remove("hideAside");
-    asideSplit.classList.remove("hideAside");
-    asideShow.hidden = true;
-    try { localStorage.removeItem("aside.hidden"); } catch { /* as above */ }
-    for (const pane of panes) pane.redraw();
-  });
-
-  document.getElementById("railHide").addEventListener("click", () => {
-    rail.classList.add("hideRail");
-    railSplit.classList.add("hideRail");
-    railShow.hidden = false;
-    try { localStorage.setItem("watchlist.hidden", "1"); } catch { /* the drag still worked */ }
-    for (const pane of panes) pane.redraw();
-  });
-  railShow.addEventListener("click", () => {
-    rail.classList.remove("hideRail");
-    railSplit.classList.remove("hideRail");
-    railShow.hidden = true;
-    try { localStorage.removeItem("watchlist.hidden"); } catch { /* as above */ }
-    for (const pane of panes) pane.redraw();
-  });
   el("ask").addEventListener("click", ask);
   el("analyzePinned").addEventListener("click", analyzePinnedSkills);
   el("watchToggle").addEventListener("click", toggleWatch);
-  selectPane("chat");
   renderChatMirror();
   el("chatSend").addEventListener("click", chatSend);
   el("chatNew").addEventListener("click", newChat);
@@ -13954,6 +13875,7 @@ el("authorChips").addEventListener("click", (event) => {
     // The engine is the chart, so without it every pane says so and nothing is
     // fetched. The panels that do not need a chart are wired above and still work.
     for (const pane of panes) pane.setMessage(e.message);
+    if (window.Shell) Shell.start();
     return;
   }
   for (const pane of panes) pane.setMessage("");
@@ -14007,6 +13929,7 @@ el("authorChips").addEventListener("click", (event) => {
   // different reconnection stories, and the book has to be able to say "no
   // depth feed" without the chart looking broken.
   connectBook();
+  if (window.Shell) Shell.start();
 }
 
 // ---------------------------------------------------------------------------
@@ -15246,7 +15169,39 @@ function showSkillMessage(msg) {
 
 // Wire up workspace event listeners in main().
 
-// Refresh workspace list when the indicator tab is opened.
-const origSelectPane = typeof selectPane === 'function' ? selectPane : null;
+/// The shell's window into the app. Six answers, no state handing: everything
+/// else the shell needs is in the DOM, and everything here is a question about
+/// the instruments the app owns.
+window.HRZApp = {
+  signedIn: () => Boolean(token()),
+  email() {
+    const value = token();
+    if (!value) return "";
+    try {
+      const payload = JSON.parse(atob(value.split(".")[1] || ""));
+      return payload.sub || payload.email || "";
+    } catch {
+      return "";
+    }
+  },
+  planName() {
+    const raw = billingState && billingState.plan ? String(billingState.plan) : "";
+    return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : "";
+  },
+  runPaneLoaders,
+  resizePanes: () => { for (const pane of panes) pane.redraw(); },
+  activePaneInfo() {
+    if (!activePane) return null;
+    // The feed badge is one page-level node inside the chart toolbar (the
+    // active pane writes it), not a child of a pane root -- so it is read by id.
+    const badge = el("feedStatus");
+    return {
+      symbol: activePane.symbol ? activePane.symbol() : "",
+      timeframe: activePane.timeframe ? activePane.timeframe() : "",
+      feed: badge ? badge.dataset.state || "" : "",
+    };
+  },
+  noteChange: () => noteWorkspaceChange(),
+};
 
 main();

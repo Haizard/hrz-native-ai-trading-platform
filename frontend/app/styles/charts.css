@@ -10,7 +10,6 @@
 #inspectorHost { display: flex; flex: 0 0 var(--inspector-w); width: var(--inspector-w); min-height: 0; }
 #inspectorHost[hidden] { display: none; }
 #inspectorHost > aside { width: 100%; flex: 1 1 auto; }
-#inspectorHost:has(> aside.hideAside) { display: none; }
 .chartToolbar { flex: 0 0 36px; }
 #dock {
   display: flex; flex-direction: column; flex: 0 0 auto;
@@ -21,7 +20,14 @@
 .dockTabs { display: flex; align-items: center; height: 28px; flex: 0 0 28px; padding-right: var(--space-1); }
 .dockTabs .hrz-tabs { flex: 1 1 auto; height: 28px; border-bottom: 0; }
 .dockTabs .hrz-tab { height: 28px; }
-.dockBody { flex: 1 1 auto; min-height: 0; overflow: auto; }
+#dockBody { display: flex; flex-direction: column; overflow: hidden; }
+#dockBody > .pane { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.dockResize {
+  flex: 0 0 5px; cursor: ns-resize;
+  background: transparent;
+}
+.dockResize:hover, .dockResize:focus-visible { background: var(--accent-line); }
+.dockPlaceholder { padding: var(--space-3); color: var(--text-3); font-size: var(--text-xs); }
 
 /*
   Resizable widths. The rail and the aside keep their defaults, but a drag on

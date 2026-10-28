@@ -510,6 +510,8 @@
   </div>
 
     <div id="dock" class="dock" hidden>
+      <div class="dockResize" id="dockResize" role="separator" aria-orientation="horizontal"
+           aria-label="Resize the dock" tabindex="0"></div>
       <div class="dockTabs">
         <div class="hrz-tabs" role="tablist" aria-label="Workbench">
           <button role="tab" type="button" class="hrz-tab" data-dock="studio" aria-selected="true">Studio</button>
@@ -529,27 +531,26 @@
   <!-- Width splitter for the aside (AI chat / thesis / scan); drag logic in `wireSplitters`. -->
   <button type="button" class="splitter" id="splitAside" aria-label="Drag to resize the side panel"></button>
   <div id="inspectorHost">
-  <aside>
-    <div class="tabs" role="tablist">
-<button role="tab" data-pane="chat" aria-selected="true">Chat</button>
-      <!-- The watchlist has no tab here: it lives in its own rail on the left
-           of the charts, which can be hidden (its `×`) and brought back with
-           the sliver tab stuck to the rail's edge. A tab in both places would
-           make the same list look like two destinations. -->
-      
-      
-      
-      
-      
-      
-      <button role="tab" data-pane="book" aria-selected="false">Book</button>
-      <button role="tab" data-pane="brokers" aria-selected="false">Brokers</button>
-      <button role="tab" data-pane="indicator" aria-selected="false">Studio</button>
-      <button role="tab" data-pane="community" aria-selected="false">Community</button>
-      <button role="tab" data-pane="billing" aria-selected="false">Plan</button>
-      
-      <button role="tab" data-pane="trade" aria-selected="false">Trade</button>
-      <button type="button" id="asideHide" title="Hide the side panel" aria-label="Hide the side panel"><span data-icon="chevron-right"></span></button>
+  <aside id="inspector">
+    <div class="inspectorHead">
+      <div class="hrz-tabs" id="inspectorTabs" role="tablist" aria-label="Inspector">
+        <button role="tab" type="button" class="hrz-tab" data-inspector="ai" aria-selected="true">AI</button>
+        <button role="tab" type="button" class="hrz-tab" data-inspector="indicator" aria-selected="false">Indicator</button>
+        <button role="tab" type="button" class="hrz-tab" data-inspector="book" aria-selected="false">Book</button>
+        <button role="tab" type="button" class="hrz-tab" data-inspector="trade" aria-selected="false">Trade</button>
+        <button role="tab" type="button" class="hrz-tab" data-inspector="details" aria-selected="false">Details</button>
+      </div>
+      <button type="button" id="asideHide" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon"
+              aria-label="Hide the inspector" title="Hide inspector">
+        <span data-icon="chevron-right"></span>
+      </button>
+    </div>
+    <div class="inspectorBody" id="inspectorPaneHost">
+      <div class="inspectorPanel" id="inspectorIndicator" hidden>
+        <h2 class="inspectorPanel__title">Indicator</h2>
+        <p class="empty" id="indicatorProjectionEmpty">No indicator is attached to the active chart.</p>
+        <div id="indicatorProjection" hidden></div>
+      </div>
     </div>
 
     <!--
@@ -1199,6 +1200,12 @@
 
     <section class="destination" id="dest-studio" aria-labelledby="dest-studio-title" hidden>
       <h1 class="destHeading" id="dest-studio-title" tabindex="-1">Studio</h1>
+      <div class="hrz-tabs destTabs" id="studioTabs" role="tablist" aria-label="Studio tools">
+        <button role="tab" type="button" class="hrz-tab" data-studio="indicator" aria-selected="true">Builder</button>
+        <button role="tab" type="button" class="hrz-tab" data-studio="scan" aria-selected="false">Scanner</button>
+        <button role="tab" type="button" class="hrz-tab" data-studio="strategy" aria-selected="false">Strategies</button>
+        <button role="tab" type="button" class="hrz-tab" data-studio="skills" aria-selected="false">Skills</button>
+      </div>
       <div class="destHost" id="studioHost"></div>
     </section>
 
@@ -1222,7 +1229,25 @@
       </div>
       <div class="destHost" id="accountHost">
         <div id="accountProfile" data-account-panel="profile" hidden>
-          <p class="muted">Session, plan and appearance settings land in Spec 2.</p>
+          <div class="profileCard">
+            <h2 class="profileCard__title">Profile</h2>
+            <dl class="profileCard__list">
+              <div><dt>Email</dt><dd id="profileEmail">—</dd></div>
+              <div><dt>Plan</dt><dd id="profilePlan">—</dd></div>
+            </dl>
+            <label class="profileCard__row" for="profileTheme">
+              <span class="muted">Appearance</span>
+              <select id="profileTheme" class="hrz-select">
+                <option value="system">System</option>
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+            </label>
+            <button id="profileSignout" class="hrz-btn hrz-btn--secondary hrz-btn--sm" type="button">
+              Sign out
+            </button>
+            <p class="muted">More account settings arrive in Spec 2.</p>
+          </div>
         </div>
       </div>
     </section>
@@ -1263,6 +1288,7 @@
 
 <script src="/assets/ui/icons.js"></script>
 <script src="/assets/ui/components.js"></script>
+<script src="/assets/views/shell.js"></script>
 <script src="builder.js"></script>
 <script src="app.js"></script>
 </body>

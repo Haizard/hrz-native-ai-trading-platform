@@ -74,15 +74,9 @@ try {
 
 const html = await readFile(join(root, "frontend/app/index.html"), "utf8");
 const shell = await readFile(join(root, "frontend/app/app.js"), "utf8");
-// The head scripts `index.html` loads. jsdom does not fetch external scripts
-// (there is no server), so the three the page depends on before `app.js` runs
-// are read here and injected in the same order the browser would run them.
-// Without this, `Theme` and `HRZUI` are undefined and the shell throws on load
-// -- the kind of failure that would otherwise look like the harness being
-// broken.
-const themeJs = await readFile(join(root, "frontend/app/ui/theme.js"), "utf8");
-const iconsJs = await readFile(join(root, "frontend/app/ui/icons.js"), "utf8");
-const componentsJs = await readFile(join(root, "frontend/app/ui/components.js"), "utf8");
+// jsdom does not fetch external scripts (there is no server), so the files the
+// page loads before `app.js` are read here and injected below in the same order
+// the browser would run them.
 const wasmBytes = await readFile(wasmPath);
 
 // The page's own console, forwarded. Without this a shell that throws on load
@@ -1080,29 +1074,47 @@ window.__intersect = (target, isIntersecting) => {
   return heard;
 };
 
-// `Theme` reads the OS preference on load, and this jsdom build has no
-// `matchMedia` at all -- the browser API is supplied the way the 2D context and
-// the intersection observer above are. It reports "no preference", which is the
-// dark default the shell ships.
-window.matchMedia = (query) => ({
-  matches: false,
-  media: query,
-  onchange: null,
-  addEventListener() {},
-  removeEventListener() {},
-  addListener() {},
-  removeListener() {},
-  dispatchEvent() { return false; },
-});
+// jsdom reports every media query as false. The shell's defaults (watchlist
+// and inspector open) hang off min-width queries, so pin a 1440px viewport.
+// This must be in place before `theme.js` loads -- it reads the OS preference
+// as it defines `Theme`.
+window.matchMedia = (query) => {
+  const min = /min-width:\s*(\d+)px/.exec(query);
+  return {
+    matches: min ? 1440 >= Number(min[1]) : false,
+    media: query,
+    onchange: null,
+    addEventListener() {}, removeEventListener() {},
+    addListener() {}, removeListener() {},
+    dispatchEvent() { return false; },
+  };
+};
 
-// The head scripts first, in the page's order, then the shell. `app.js` paints
-// the icon slots and reads `Theme` on load, so a run that skipped these would
-// fail before the first check -- and it would fail on the harness, not the page.
-for (const source of [themeJs, iconsJs, componentsJs]) {
+// The head scripts first, in the page's order, then the shell's view file and
+// `app.js`. `app.js` paints the icon slots and reads `Theme` on load, so a run
+// that skipped these would fail before the first check -- and it would fail on
+// the harness, not the page.
+//
+// `views/shell.js` calls `HRZUI.drawer` and `app.js` calls `Shell.init`, so a
+// missing file is a boot failure rather than a skipped feature.
+for (const file of [
+  "frontend/app/ui/theme.js",
+  "frontend/app/ui/icons.js",
+  "frontend/app/ui/components.js",
+]) {
   const head = document.createElement("script");
-  head.textContent = source;
+  head.textContent = await readFile(join(root, file), "utf8");
   document.head.appendChild(head);
 }
+
+const shellView = document.createElement("script");
+shellView.textContent = await readFile(join(root, "frontend/app/views/shell.js"), "utf8");
+document.head.appendChild(shellView);
+
+// These checks are about the chart wall and the panels beside it. A fresh
+// account has no snapshot, so without a route the shell opens on Dashboard
+// and every chart pane is behind a hidden section.
+window.history.replaceState(null, "", "#/charts");
 
 const script = document.createElement("script");
 script.textContent = shell;

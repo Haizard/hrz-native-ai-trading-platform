@@ -67,6 +67,25 @@
 #dest-charts { flex-direction: row; overflow: hidden; }
 #panePark { display: none; }
 
+.destTabs { margin: 0 var(--space-6) var(--space-3); flex: 0 0 auto; }
+.destHost { display: flex; flex-direction: column; }
+.destHost > .pane { flex: 1 1 auto; min-height: 0; overflow: auto; }
+#accountProfile { max-width: 640px; }
+.profileCard {
+  display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--bg-panel); border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+}
+.profileCard__title { margin: 0; font: 600 var(--text-sm)/1 var(--font-ui); }
+.profileCard__list { display: grid; gap: var(--space-2); margin: 0; }
+.profileCard__list > div { display: grid; grid-template-columns: 96px 1fr; gap: var(--space-2); }
+.profileCard__list dt { color: var(--text-3); font-size: var(--text-xs); }
+.profileCard__list dd { margin: 0; font-family: var(--font-mono); font-size: var(--text-xs); }
+.profileCard__row { display: flex; align-items: center; gap: var(--space-2); }
+.aiDrawerBody { height: 100%; display: flex; flex-direction: column; }
+.aiDrawerBody > .pane { flex: 1 1 auto; min-height: 0; overflow: auto; }
+
 #statusbar {
   display: flex; align-items: center; gap: var(--space-2);
   height: var(--status-h); flex: 0 0 var(--status-h);
@@ -145,8 +164,6 @@
 }
 
 #asideHide:hover { color: var(--text); background: var(--bg-overlay); }
-
-aside.hideAside, #splitAside.hideAside { display: none; }
 
 #asideShow {
   position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 40;
