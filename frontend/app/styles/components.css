@@ -1,0 +1,229 @@
+select, input, button, textarea {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid transparent; border-radius: 6px;
+  padding: 5px 8px; font: inherit;
+}
+
+select:hover, input:hover, button:hover, textarea:hover { border-color: var(--line); }
+
+select:focus-visible, input:focus-visible, button:focus-visible, textarea:focus-visible {
+  outline: none; border-color: var(--accent);
+}
+
+input, textarea { font-family: var(--mono); font-size: 12px; }
+
+button { cursor: pointer; font-size: 12px; }
+
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+
+button.primary:hover { filter: brightness(1.1); border-color: var(--accent); }
+
+/*
+  The kill switch and a venue revoke. Both move money-relevant state and both
+  are irreversible from this panel, so they read as destructive rather than as
+  one more button in the row -- a control that closes a position should not
+  look like "Refresh".
+*/
+button.danger { border-color: var(--down); color: var(--down); background: transparent; }
+
+button.danger:hover { background: var(--down); border-color: var(--down); color: #fff; }
+
+button:disabled { opacity: .5; cursor: default; }
+
+#skillCaps label { display: block; font-size: 11px; padding: 2px 0; color: var(--text); }
+
+#skillCaps input[type=checkbox] { margin-right: 6px; }
+
+/* Page-level toast for workspace-panel messages (attach, picker errors). */
+.pageToast {
+  position: fixed; top: 52px; left: 50%; transform: translate(-50%, -6px);
+  z-index: 60; padding: 7px 14px; border-radius: 8px;
+  background: var(--panel, #161a22); border: 1px solid var(--warn, #fbbf24);
+  color: var(--text); font-size: 12px; max-width: min(560px, 90vw);
+  opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease;
+}
+
+.pageToast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* Eight tabs will not fit a narrowed aside in one line -- without `wrap`
+   the last two simply overflow the panel and a drag-narrowed pane loses
+   destinations. Wrapping keeps every tab reachable at any width. */
+.tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--line); background: var(--panel); }
+
+.tabs button { flex: 1 1 auto; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 9px 8px; font-size: 12px; white-space: nowrap; }
+
+.tabs button:hover { color: var(--text); }
+
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom: 2px solid var(--accent); background: var(--panel-2); }
+
+.up { color: var(--up); }
+
+.down { color: var(--down); }
+
+.pane { flex: 1; overflow: auto; padding: 10px 12px; }
+
+.pane[hidden] { display: none; }
+
+.row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+
+.row > input { flex: 1; }
+
+/* The generation pending bubble (docs/29): dashed border + a slow pulse so
+   the transcript reads "working" without inventing per-stage progress. */
+@keyframes wsGenPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+.pass { color: var(--up); } .fail { color: var(--down); } .unknown { color: var(--warn); }
+
+.ok { color: var(--up); }
+
+pre { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow: auto; font-size: 11px; max-height: 220px; }
+
+textarea { width: 100%; min-height: 150px; resize: vertical; }
+
+.muted { color: var(--muted); }
+
+.empty { color: var(--muted); font-style: italic; }
+
+/* ---- Controls: inset wells with a quiet edge ---- */
+select, input, button, textarea {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  padding: 6px 9px;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, color 120ms ease;
+}
+
+select:hover, input:hover, button:hover, textarea:hover { border-color: var(--border-strong); }
+
+select:focus-visible, input:focus-visible, button:focus-visible, textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+input, textarea { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+input::placeholder, textarea::placeholder { color: var(--faint); }
+
+/* ---- Buttons: flat, weighted, pressed feel ---- */
+button {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.015em;
+  color: var(--text-dim);
+}
+
+button:hover { color: var(--text); background: var(--bg-overlay); }
+
+button:active { transform: translateY(0.5px); }
+
+button.primary {
+  background: var(--accent); border-color: transparent; color: #ffffff;
+  box-shadow: 0 1px 3px rgba(74, 158, 255, 0.35);
+}
+
+button.primary:hover { background: #5ea9ff; color: #ffffff; box-shadow: 0 2px 8px rgba(74, 158, 255, 0.45); }
+
+button.danger { background: var(--down); border-color: transparent; color: #ffffff; }
+
+button.danger:hover { background: #ff5a6e; }
+
+button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+button[aria-pressed="true"] {
+  background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
+}
+
+/* ---- Panels: 1px borders do the separating ---- */
+aside, .chartPane, #signin, .ws-extra, .card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-1);
+}
+
+/* ---- Tabs: underline, not pills ---- */
+.tab, [role="tab"] {
+  font-weight: 600; letter-spacing: 0.02em; color: var(--muted);
+  border-bottom: 2px solid transparent; border-radius: 0;
+  padding: 6px 10px;
+}
+
+.tab:hover, [role="tab"]:hover { color: var(--text); background: transparent; }
+
+.tab.active, .tab[aria-selected="true"], [role="tab"][aria-selected="true"] {
+  color: var(--text); border-bottom-color: var(--accent); background: transparent;
+}
+
+/* ---- Toast: raised overlay ---- */
+.pageToast {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow-3);
+  color: var(--text);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  padding: 10px 16px;
+}
+
+/* ---- Data: numbers line up ---- */
+table, .grid, .kv, .stat { font-variant-numeric: tabular-nums; }
+
+td, th { border-color: var(--border-subtle); }
+
+.muted { color: var(--muted); }
+
+.ok { color: var(--up); }
+
+.err, .bad { color: var(--down); }
+
+.warn { color: var(--warn); }
+
+/* ---- Motion: panes arrive, they do not pop ---- */
+@keyframes paneIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+
+.pane:not([hidden]) { animation: paneIn 160ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pane:not([hidden]) { animation: none; }
+  * { transition-duration: 0.01ms !important; }
+}
+
+/* ---- Tabs: the active edge glides ---- */
+.tabs button, .tab, [role="tab"] {
+  transition: color 120ms ease, border-color 160ms ease, background 120ms ease;
+}
+
+.tabs button[aria-selected="true"] {
+  color: var(--text); border-bottom: 2px solid var(--accent);
+}
+
+/* ---- Skeleton: loading that respects the eye ---- */
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.skeleton {
+  border-radius: var(--radius-s);
+  background: linear-gradient(90deg, var(--bg-elev) 25%, var(--bg-overlay) 50%, var(--bg-elev) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  min-height: 12px;
+}
+
+/* ================= SKELETON ROWS ================= */
+.skl-row { display: flex; gap: 8px; padding: 5px 8px; align-items: center; }
+
+.skl-row .skeleton:nth-child(1) { width: 34%; height: 11px; }
+
+.skl-row .skeleton:nth-child(2) { width: 26%; height: 11px; margin-left: auto; }
+
+.skl-line { height: 11px; margin: 6px 0; }
+
+.skl-line.w70 { width: 70%; }
+
+.skl-line.w45 { width: 45%; }
+

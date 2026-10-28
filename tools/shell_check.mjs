@@ -790,6 +790,114 @@ window.fetch = async (path, options = {}) => {
     return json(200, { user_id: "harness", email: "harness@example.test" });
   }
 
+  // The plan matrix and the harness user's entitlement. Both are read on load,
+  // and the shell dereferences their fields rather than tolerating `{}`: an
+  // empty body here crashed the page before any check ran, so the fixture has
+  // to have the route's real shape.
+  //
+  // The harness user is on Desk, and Desk's `max_panes` is served as unlimited
+  // (`-1`) rather than its catalogue value. The wall checks drive the page to
+  // a hundred cells, and a finite cap would stop the add control at the plan's
+  // number instead -- turning "the wall stops at a hundred" into a test of
+  // billing. The caps themselves are covered by `billing_flow.rs`; this file
+  // is about the shell.
+  if (url.startsWith("/billing/plans")) {
+    const limits = {
+      max_panes: -1,
+      max_layouts: 500,
+      max_alerts: 500,
+      max_watchers: 50,
+      max_ai_credits: 20_000,
+      max_backtests: 2_000,
+      history_days: -1,
+      max_paper_bots: 20,
+      max_live_bots: 10,
+      max_concurrent: 100,
+    };
+    const features = {
+      orderflow: true,
+      orderflow_advanced: true,
+      byo_model_key: true,
+      priority_support: true,
+      dedicated_onboarding: true,
+      community_indicators: "priority",
+    };
+    return json(200, {
+      plans: [
+        {
+          id: "free",
+          name: "Free",
+          tagline: "Chart, paper trade, and try the agent.",
+          pricing: { monthly_cents: 0, annual_cents: 0, annual_effective_monthly_cents: 0 },
+          limits: { ...limits, max_panes: 4, max_layouts: 3, max_alerts: 5, max_watchers: 1 },
+          features: { ...features, orderflow: false, orderflow_advanced: false },
+        },
+        {
+          id: "desk",
+          name: "Desk",
+          tagline: "Multiple live books and the highest allowances.",
+          pricing: {
+            monthly_cents: 9_900,
+            annual_cents: 99_000,
+            annual_effective_monthly_cents: 8_250,
+          },
+          limits,
+          features,
+        },
+      ],
+      trial_days: 14,
+      mode: "internal",
+      billing_available: true,
+      community_indicators_available: true,
+      credit_costs: {},
+    });
+  }
+
+  if (url.startsWith("/billing/subscription")) {
+    const period_start = new Date(FIXTURE_NOW_MS - 10 * 86_400_000).toISOString();
+    const period_end = new Date(FIXTURE_NOW_MS + 20 * 86_400_000).toISOString();
+    return json(200, {
+      plan: "desk",
+      plan_name: "Desk",
+      limits: {
+        max_panes: -1,
+        max_layouts: 500,
+        max_alerts: 500,
+        max_watchers: 50,
+        max_ai_credits: 20_000,
+        max_backtests: 2_000,
+        history_days: -1,
+        max_paper_bots: 20,
+        max_live_bots: 10,
+        max_concurrent: 100,
+      },
+      features: {
+        orderflow: true,
+        orderflow_advanced: true,
+        byo_model_key: true,
+        priority_support: true,
+        dedicated_onboarding: true,
+        community_indicators: "priority",
+      },
+      subscription: {
+        status: "active",
+        cycle: "monthly",
+        period_start,
+        period_end,
+        cancel_at_period_end: false,
+        trial_used: true,
+        provider: "internal",
+      },
+      usage: {
+        period_start,
+        resets_at: period_end,
+        ai_credits: { used: 120, limit: 20_000, remaining: 19_880 },
+        backtests: { used: 3, limit: 2_000, remaining: 1_997 },
+      },
+      community_indicators_available: true,
+    });
+  }
+
   // Anything else the shell asks for: an empty object is what an endpoint with
   // nothing to say returns, and the shell already tolerates it.
   return json(200, {});
@@ -1072,7 +1180,17 @@ check(
 
 console.log("\nthe layout at a narrow width");
 
-const styleText = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
+const styleFiles = [
+  "tokens", "base", "components", "shell", "charts", "dashboard",
+  "inspector", "studio", "community", "account", "public", "responsive",
+];
+const styleText = (
+  await Promise.all(
+    styleFiles.map((name) =>
+      readFile(join(root, `frontend/app/styles/${name}.css`), "utf8")
+    )
+  )
+).join("\n");
 const mediaBlockAt = (width) => {
   const at = styleText.indexOf(`@media (max-width: ${width}px)`);
   if (at < 0) return "";

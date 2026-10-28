@@ -1,0 +1,189 @@
+/* Auto-backtest card under a generated revision's chat message. */
+.ws-stats {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+  margin-top: 6px; padding: 6px 10px; border-radius: 8px;
+  background: color-mix(in srgb, #2dd4bf 7%, transparent);
+  border: 1px solid color-mix(in srgb, #2dd4bf 25%, transparent);
+  font-size: 11.5px; color: var(--muted);
+}
+
+.ws-stats strong { color: var(--text); font-weight: 600; }
+
+/* Parameter sweep table: a mini heatmap of net R per grid point. */
+.ws-sweep { margin: 8px 0; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: rgba(13, 17, 26, 0.6); }
+
+.ws-sweep table { border-collapse: collapse; margin: 6px 0; font-size: 11px; }
+
+.ws-sweep th { color: var(--muted); font-weight: 500; padding: 2px 8px; text-align: center; }
+
+.ws-sweep td { padding: 4px 10px; text-align: center; border-radius: 4px; color: var(--text); }
+
+.ws-sweep-btn { margin-top: 6px; font-size: 11px; padding: 2px 10px; }
+
+/* Screenshot self-review: the prose the model returned about the rendered
+   chart, shown in the same result panel as the sweep heatmap. */
+.ws-review { margin: 8px 0; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid rgba(167, 139, 250, 0.4); background: rgba(13, 17, 26, 0.6); }
+
+.ws-review-btn { margin-top: 6px; font-size: 11px; padding: 2px 10px; }
+
+.modes { display: flex; gap: 4px; margin-bottom: 8px; }
+
+.modes button { flex: 0 1 auto; padding: 4px 10px; font-size: 11px; color: var(--muted); }
+
+.modes button[aria-selected="true"] { color: var(--text); border-color: var(--accent); }
+
+#nlPane[hidden], #builderPane[hidden], #dslPane[hidden] { display: none; }
+
+#nlDescription { min-height: 64px; }
+
+/* The visual builder: a stack of cards, one per block of the document. */
+.bcard { border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 8px; background: var(--panel-2); }
+
+.bcard > h3 {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 6px; font-weight: 600;
+}
+
+.brow { display: flex; gap: 4px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
+
+.brow > select, .brow > input { flex: 1 1 60px; min-width: 0; }
+
+.brow > input[type="checkbox"] { flex: 0 0 auto; }
+
+.brow > label { flex: 0 0 auto; display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: 11px; }
+
+.bcond { border-left: 2px solid var(--line); padding: 4px 0 4px 6px; margin: 4px 0; }
+
+.bcond.raw { border-left-color: var(--warn); }
+
+.bempty { color: var(--muted); font-style: italic; font-size: 11px; margin: 0 0 4px; }
+
+.bcard select, .bcard input { font-size: 11px; padding: 3px 5px; }
+
+.bcard .brow:last-child { margin-bottom: 0; }
+
+.btiny { padding: 2px 6px; font-size: 10px; }
+
+/*
+  The chat pane is the one pane that must not simply grow: its stream has to
+  scroll inside a fixed frame, so the pane itself becomes a column and the
+  composer stays visible. The other panes keep the growing behaviour.
+*/
+#pane-indicator { display: flex; flex-direction: column; overflow: hidden; }
+
+#pane-indicator[hidden] { display: none; }
+
+#wsListView, #wsActive { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+
+/* The author's `display: flex` outranks the hidden attribute's UA rule, so
+   each view has to opt out of flex explicitly or both render at once. */
+#wsListView[hidden], #wsActive[hidden] { display: none; }
+
+#wsListView { overflow-y: auto; }
+
+/* The equity curve. The points arrive already fitted to a 0..100 box (see
+   `plot.rs`), so the viewBox *is* the box and the shell only writes them
+   out. `preserveAspectRatio="none"` lets the panel be any width, and
+   `non-scaling-stroke` keeps the line the same weight once it stretches. */
+.curve { display: block; width: 100%; height: 110px; margin-top: 8px; }
+
+.curve polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+
+.curve line { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+
+.curve-axis { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+.run-head { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+/* The live bot log. Newest first, so the thing that just happened is the
+   thing you see without scrolling. */
+.botlog { list-style: none; margin: 8px 0 0; padding: 0; font-family: var(--mono); font-size: 11px; }
+
+.botlog li { padding: 2px 0; border-bottom: 1px solid var(--line); }
+
+.wsGenPending .bubble {
+  border-style: dashed;
+  animation: wsGenPulse 2.2s ease-in-out infinite;
+}
+
+.wsGenPending .wsGenElapsed { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* The AI pane's greeting hero and its two prompt chips. */
+.aiHero { margin: 4px 0 14px; }
+
+.aiHero h2 { font-size: 20px; letter-spacing: -0.2px; text-transform: none; margin: 0 0 10px; }
+
+.aiChips { display: flex; flex-direction: column; gap: 6px; }
+
+.aiChip {
+  text-align: left; padding: 9px 12px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--text); font-size: 12.5px;
+}
+
+.aiChip:hover { border-color: var(--accent); background: var(--panel-2); }
+
+.modelChip {
+  flex: 0 0 auto; padding: 4px 9px; font-size: 11px; border-radius: 8px;
+  color: var(--muted); white-space: nowrap;
+}
+
+.modelChip:hover { color: var(--text); }
+
+/* The conversation header: back, name, delete — one quiet row. */
+.ws-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+
+.ws-head button { padding: 2px 10px; }
+
+.ws-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The new-chat form sits as one soft card on the list view. */
+.ws-new {
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px; margin: 8px 0 4px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+
+.ws-new input { font-family: inherit; font-size: 13px; }
+
+/* A conversation in the list: a row you click, not a database row. */
+.ws-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px;
+  margin-bottom: 6px; cursor: pointer; background: var(--panel-2);
+}
+
+.ws-item:hover { border-color: var(--accent); }
+
+.ws-item strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ws-item .up { color: var(--up); }
+
+.ws-item.skill-row { cursor: default; flex-wrap: wrap; }
+
+.ws-item .skill-run { flex: 0 0 auto; padding: 4px 10px; font-size: 11px; cursor: pointer; }
+
+/* Collapsible history bars above the stream, so the composer keeps the
+   bottom of the pane to itself. */
+.ws-extra { border-bottom: 1px solid var(--line); padding: 4px 0; }
+
+.ws-extra > summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
+
+.ws-extra > summary:hover { color: var(--text); }
+
+.ws-extra[open] { padding-bottom: 8px; }
+
+.ws-revision { padding: 8px 0; border-bottom: 1px solid var(--line); }
+
+/* ---- Chips ---- */
+.aiChip, .modelChip {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.aiChip:hover, .modelChip:hover { border-color: var(--border-strong); background: var(--bg-overlay); }
+

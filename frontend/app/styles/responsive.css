@@ -1,0 +1,84 @@
+/*
+  Responsive layout.
+
+  The page is a fixed-height column -- a header, a chart that takes what is
+  left, and a panel beside it -- and that fails on a narrow screen in one
+  specific way: the panel defaults to 460px, so at 800px the chart is already
+  under half the width and at 500px it is nothing at all. The chart is the
+  surface the page exists for, so the panel is what gives way, in two steps.
+
+  `1100px` narrows the panel. Still side by side: the chart is the thing being
+  read and the panel is a reference beside it, and 300px still holds a table
+  and a paragraph.
+
+  `900px` gives up on side by side and puts the panel below the chart. That is
+  why the body stops being `height: 100%` here -- a column that shares one
+  height between a chart and a panel gives the chart whatever the panel's
+  content leaves, which is the same failure with the axis swapped. The chart
+  gets a height of its own instead, in viewport units so it still scales, with
+  a floor so it stays usable on a short one.
+
+  That height is also what the engine is told the plot is: `draw()` measures
+  `wrap.clientHeight`, so this rule and the candle count on screen are not
+  independent.
+*/
+@media (max-width: 1100px) {
+  /* The media queries set the *defaults* for narrow screens through the same
+     custom properties the splitters write -- a hard `width` here would
+     outrank `var(--aside-w)` and silently break the drag below 1100px. A
+     drag writes the property inline on :root, which beats this rule, so a
+     resized layout survives a window that crosses 1100px either way. */
+  :root { --aside-w: 300px; --watch-w: 210px; }
+}
+
+@media (max-width: 900px) {
+  html, body { height: auto; }
+  main { flex-direction: column; }
+  /*
+    The rail stacks too, and being first in the row it would land above the
+    charts. Below the point where side-by-side gives up, the default list
+    lives back inside the aside's tab: the rail's pane is hidden there and
+    the pane's original tab shows the same ids in the same code path.
+  */
+  #sideWatch, #splitWatch { display: none; }
+  /*
+    The panes stack too. Side by side at 900px is 450px each, which is under
+    the width a candlestick chart stops being readable at -- and the panel
+    below needs a full width as well. Each pane gets its own height instead,
+    for the same reason the single chart did.
+  */
+  /* One pane per row on a narrow screen: 450px per column is under the
+     width a candlestick chart stops being readable at. */
+  .chartRow { grid-template-columns: 1fr; }
+  /* One column on a phone, whatever the columns select says: a 220px cell
+     is already the floor a chart stops being readable at, and ten of them
+     do not fit. The rows keep their own height and scroll instead. */
+  #charts.gridLayout { grid-template-columns: 1fr; grid-auto-rows: minmax(260px, auto); }
+  .chartPane { border-left: 0; border-top: 1px solid var(--line); }
+  .chartPane:first-child { border-top: 0; }
+  .chartWrap { flex: 0 0 auto; height: 60vh; min-height: 260px; }
+  aside {
+    width: auto; flex: 0 0 auto;
+    border-left: 0; border-top: 1px solid var(--line);
+  }
+  /*
+    Six controls in a row do not fit a phone, and the toolbar is an overlay --
+    so anything past the right edge is not merely clipped, it is unreachable.
+    It wraps instead.
+  */
+  .tools { flex-wrap: wrap; max-width: calc(100% - 24px); }
+  /*
+    The hint is one line of monospace prose, and at this width it would run off
+    the right edge rather than under the toolbar. Given a right edge it wraps
+    and stays readable; it is kept rather than hidden because the chart's
+    gestures are still not discoverable without it.
+  */
+  .chartHint { display: none; }
+  /* Two fields and a button in one unwrapped row overflow a phone. */
+  #signin { flex-wrap: wrap; }
+  #signin input { flex: 1 1 140px; min-width: 0; }
+  .homeInner { padding: 24px 16px; }
+  .marketGrid { grid-template-columns: 1fr; }
+  .homeHero h1 { font-size: 26px; }
+}
+

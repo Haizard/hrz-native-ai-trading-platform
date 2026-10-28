@@ -124,45 +124,102 @@ fn the_paths_the_gateway_defaults_to_actually_exist() {
     );
 }
 
-/// The shell is four files the gateway serves by name, and a `<script>` tag
-/// pointing at one that is not there is a blank panel with no error anyone
-/// reads. `builder.js` is the newest and the easiest to forget, because it is
-/// loaded from `index.html` rather than from a route a test already knows.
+/// Every file the shell loads is served, present, and in the order the
+/// cascade depends on.
 #[test]
 fn every_file_the_shell_loads_is_served_by_a_route_and_present() {
     let root = repo_root();
     let index = std::fs::read_to_string(root.join("frontend/app/index.html"))
         .expect("frontend/app/index.html must exist");
-
-    // What the page asks for.
-    let mut referenced: Vec<String> = Vec::new();
-    for line in index.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("<script src=\"") else {
-            continue;
-        };
-        let Some(src) = rest.split('"').next() else {
-            continue;
-        };
-        referenced.push(src.to_string());
-    }
     assert!(
-        referenced.iter().any(|s| s == "builder.js"),
-        "index.html does not load builder.js: {referenced:?}"
+        !index.contains("<style>"),
+        "index.html still carries a <style> block; the styles live in frontend/app/styles"
     );
 
-    // What the router serves.
+    let mut scripts: Vec<String> = Vec::new();
+    let mut styles: Vec<String> = Vec::new();
+    let mut fonts: Vec<String> = Vec::new();
+    let mut icons: Vec<String> = Vec::new();
+    for line in index.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("<script src=\"") {
+            if let Some(src) = rest.split('"').next() { scripts.push(src.to_string()); }
+        } else if let Some(rest) = line.strip_prefix("<link rel=\"stylesheet\" href=\"") {
+            if let Some(href) = rest.split('"').next() { styles.push(href.to_string()); }
+        } else if let Some(rest) = line.strip_prefix("<link rel=\"preload\" as=\"font\" type=\"font/woff2\" href=\"") {
+            if let Some(href) = rest.split('"').next() { fonts.push(href.to_string()); }
+        } else if let Some(rest) = line.strip_prefix("<link rel=\"icon\" type=\"image/svg+xml\" href=\"") {
+            if let Some(href) = rest.split('"').next() { icons.push(href.to_string()); }
+        }
+    }
+
     let router = std::fs::read_to_string(root.join("crates/api-gateway/src/lib.rs"))
         .expect("the gateway's lib.rs must exist");
-    for src in &referenced {
-        assert!(
-            router.contains(&format!("\"/{src}\"")),
-            "index.html loads `/{src}` but no route serves it"
-        );
-        assert!(
-            root.join("frontend/app").join(src).is_file(),
-            "index.html loads `/{src}` but frontend/app/{src} does not exist, so it would 404"
-        );
+    assert!(
+        router.contains("\"/assets/{*path}\""),
+        "the router does not expose /assets/{{*path}}"
+    );
+
+    for reference in scripts.iter().chain(styles.iter()).chain(fonts.iter()).chain(icons.iter()) {
+        let relative = reference
+            .strip_prefix("/assets/")
+            .unwrap_or(reference.as_str());
+        if reference.starts_with("/assets/") {
+            assert!(
+                root.join("frontend/app").join(relative).is_file(),
+                "index.html loads `{reference}` but frontend/app/{relative} does not exist"
+            );
+        } else {
+            assert!(
+                router.contains(&format!("\"/{reference}\"")),
+                "index.html loads `/{reference}` but no route serves it"
+            );
+            assert!(
+                root.join("frontend/app").join(reference).is_file(),
+                "index.html loads `/{reference}` but frontend/app/{reference} does not exist"
+            );
+        }
+    }
+
+    assert!(
+        scripts.iter().any(|s| s == "builder.js"),
+        "index.html does not load builder.js: {scripts:?}"
+    );
+    let expected = [
+        "/assets/styles/tokens.css",
+        "/assets/styles/base.css",
+        "/assets/styles/components.css",
+        "/assets/styles/shell.css",
+        "/assets/styles/charts.css",
+        "/assets/styles/dashboard.css",
+        "/assets/styles/inspector.css",
+        "/assets/styles/studio.css",
+        "/assets/styles/community.css",
+        "/assets/styles/account.css",
+        "/assets/styles/public.css",
+        "/assets/styles/responsive.css",
+    ];
+    assert_eq!(styles, expected, "the stylesheet order changed");
+
+    for directory in ["styles", "ui", "views", "fonts"] {
+        for path in walk(&root.join("frontend/app").join(directory)) {
+            let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !matches!(extension, "css" | "js" | "woff2") {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root.join("frontend/app"))
+                .expect("a file under frontend/app")
+                .to_string_lossy()
+                .to_string();
+            let reference = format!("/assets/{relative}");
+            assert!(
+                scripts.contains(&format!("/assets/{relative}"))
+                    || styles.contains(&reference)
+                    || fonts.contains(&reference),
+                "frontend/app/{relative} is never loaded by index.html, so it is dead weight"
+            );
+        }
     }
 }
 

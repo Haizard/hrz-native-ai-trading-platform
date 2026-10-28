@@ -56,3 +56,79 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
     scroll-behavior: auto !important;
   }
 }
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg); color: var(--text);
+  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex; flex-direction: column;
+}
+
+h1 { font-size: 13px; font-weight: 700; margin: 0 8px 0 0; letter-spacing: .02em; display: flex; align-items: center; gap: 7px; }
+
+/* The little brand mark: a filled diamond, the way the reference product
+   pairs a glyph with its name. Pure CSS, so nothing extra to load. */
+h1::before {
+  content: ""; width: 14px; height: 14px; flex: 0 0 auto;
+  background: linear-gradient(135deg, var(--accent), #6d8cff);
+  border-radius: 4px;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+h1 span { color: var(--muted); font-weight: 400; }
+
+h3.section { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+
+.spacer { flex: 1; }
+
+/* Slim dark scrollbars everywhere -- chunky light-grey system bars are the
+   loudest thing on an otherwise quiet dark screen. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+
+::-webkit-scrollbar-thumb { background: #2a2e39; border-radius: 4px; }
+
+::-webkit-scrollbar-thumb:hover { background: #363b47; }
+
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+
+h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+
+h2:first-child { margin-top: 0; }
+
+/* ================= DESIGN LAYER: institutional dark =================
+   Token-driven restyle. Appended last so equal-specificity rules here win.
+   References: Coinbase Prime / Voltrex — near-black ground, 1px borders,
+   emerald/rose accents, compact type, depth through shadow not glow. */
+::selection { background: var(--accent-dim); color: var(--text); }
+
+body {
+  font: 13px/1.5 var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  letter-spacing: 0.005em;
+}
+
+h1 {
+  font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text);
+}
+
+h1 span { color: var(--muted); font-weight: 500; text-transform: none; letter-spacing: 0.02em; }
+
+/* ---- Scrollbars: thin and quiet ---- */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; border: 2px solid var(--bg); }
+
+::-webkit-scrollbar-thumb:hover { background: var(--faint); }
+
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---- Links & status ---- */
+a { color: var(--accent); text-decoration: none; }
+
+a:hover { color: #5ea9ff; }
+

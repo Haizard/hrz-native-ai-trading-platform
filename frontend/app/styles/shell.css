@@ -1,0 +1,103 @@
+header {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 7px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+
+/* The layout pair sits beside the add button. The columns select exists
+   only in grid mode, so the two never offer a control that would do
+   nothing in the current layout. */
+#layoutCtl { display: flex; align-items: center; gap: 6px; }
+
+#layoutCtl select { padding: 4px 6px; font-size: 12px; }
+
+#layoutCtl select[hidden] { display: none; }
+
+#session { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+
+/*
+  Splitters. A 6px hit area (3px visible line, 3px invisible breathing room
+  each side -- a 1px handle is a fine motor test), `col-resize`/`row-resize`
+  saying which way a drag goes, and `flex: none` so the layout cannot stretch
+  them. Their drag logic is in `app.js` (`wireSplitters`).
+*/
+.splitter {
+  flex: none; position: relative; z-index: 5;
+  background: transparent; border: 0; padding: 0; margin: 0;
+  width: 6px; cursor: col-resize; touch-action: none;
+}
+
+.splitter::after {
+  content: ""; position: absolute; inset: 0 2px;
+  background: var(--line);
+}
+
+.splitter:hover::after, .splitter.dragging::after { background: var(--accent); }
+
+/* The bottom status bar: one quiet line, hairline on top, mono clock. */
+#statusbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 12px; background: var(--panel); border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--muted); flex: none;
+}
+
+#statusbar[hidden] { display: none; }
+
+#sbCharts { color: var(--text); font-family: var(--mono); }
+
+.sbSep { opacity: 0.6; }
+
+#utcClock { font-family: var(--mono); font-size: 11px; color: var(--text); }
+
+.railHide {
+  position: absolute; top: 4px; right: 4px; z-index: 5;
+  padding: 0 6px; font-size: 12px; color: var(--muted);
+  background: transparent; border-color: transparent;
+}
+
+.railHide:hover { color: var(--text); border-color: var(--line); }
+
+#sideWatch.hideRail, #splitWatch.hideRail { display: none; }
+
+#railShow {
+  flex: none; align-self: center; height: 64px; width: 14px; padding: 0;
+  font-size: 10px; color: var(--muted); background: var(--panel);
+  border: 1px solid var(--line); border-left: 0; border-radius: 0 6px 6px 0;
+  cursor: pointer;
+}
+
+#railShow:hover { color: var(--text); border-color: var(--accent); }
+
+/* ---- Header: the command strip ---- */
+header {
+  padding: 8px 14px;
+  background: linear-gradient(180deg, var(--bg-elev), var(--bg));
+  border-bottom: 1px solid var(--line);
+  box-shadow: var(--shadow-1);
+}
+
+.splitter { background: var(--border-subtle); }
+
+.splitter:hover, .splitter.dragging { background: var(--accent-dim); }
+
+.splitter::after { background: var(--border-strong); }
+
+/* ---- Aside collapse (the watchlist rail's mirror) ---- */
+#asideHide {
+  flex: none; padding: 6px 8px; font-size: 12px; color: var(--muted);
+  background: transparent; border-color: transparent; border-radius: 0;
+}
+
+#asideHide:hover { color: var(--text); background: var(--bg-overlay); }
+
+aside.hideAside, #splitAside.hideAside { display: none; }
+
+#asideShow {
+  position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 40;
+  height: 64px; width: 14px; padding: 0;
+  font-size: 10px; color: var(--muted); background: var(--bg-elev);
+  border: 1px solid var(--line); border-right: 0; border-radius: 6px 0 0 6px;
+  cursor: pointer;
+}
+
+#asideShow:hover { color: var(--text); border-color: var(--accent); }
+

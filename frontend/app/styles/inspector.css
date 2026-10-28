@@ -1,0 +1,707 @@
+aside { width: var(--aside-w, 460px); flex: 0 0 var(--aside-w, 460px); }
+
+/* The Deriv trade ticket (chart menu, Deriv symbols only). */
+.tradeTicket { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; }
+
+.tradeTicket .row { display: flex; gap: 6px; align-items: center; }
+
+.tradeTicket input.stake { width: 84px; }
+
+.tradeTicket select.leverage { flex: 1; }
+
+.tradeTicket button.up { border-color: var(--up); color: var(--up); font-weight: 600; flex: 1; }
+
+.tradeTicket button.up:hover { background: var(--up); color: #fff; }
+
+.tradeTicket button.down { border-color: var(--down); color: var(--down); font-weight: 600; flex: 1; }
+
+.tradeTicket button.down:hover { background: var(--down); color: #fff; }
+
+.tradeTicket .positions { border-top: 1px dashed var(--line); padding-top: 4px; display: flex; flex-direction: column; gap: 4px; }
+
+.tradeTicket .pos { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+
+.tradeTicket .pos .pnl.pos { color: var(--up); }
+
+.tradeTicket .pos .pnl.neg { color: var(--down); }
+
+.tradeTicket .pos button { margin-left: auto; padding: 1px 6px; font-size: 10px; }
+
+.tradeTicket .msg { font-size: 11px; min-height: 14px; color: var(--muted); }
+
+.tradeTicket .msg.err { color: var(--down); }
+
+aside { border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+
+/* The DOM. The bar is drawn behind the numbers rather than beside them, so
+   a row stays readable no matter how deep the other side is. */
+.ladder { font-family: var(--mono); font-size: 11px; }
+
+.ladder-head { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; margin: 8px 0 2px; }
+
+.ladder-row { position: relative; display: flex; justify-content: space-between; gap: 8px; padding: 1px 4px; }
+
+.ladder-row > span { position: relative; }
+
+.ladder-bar { position: absolute; inset: 0 auto 0 0; opacity: .16; }
+
+.ladder-row.bid .ladder-bar { background: var(--up); }
+
+.ladder-row.ask .ladder-bar { background: var(--down); }
+
+/* The agent transcript. One block per question, newest at the bottom, so the
+   panel reads like a conversation rather than a single answer that the next
+   question overwrites. */
+.turn { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 10px; }
+
+.turn:first-child { border-top: 0; margin-top: 0; }
+
+.turn > .q {
+  font-family: var(--mono); font-size: 12px; color: var(--text);
+  margin: 0 0 6px; padding-left: 8px; border-left: 2px solid var(--accent);
+}
+
+.steps { list-style: none; margin: 0 0 6px; padding: 0; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+.steps li { padding: 1px 0 1px 10px; }
+
+.steps li::before { content: "·"; margin-left: -10px; margin-right: 6px; }
+
+.steps-wrap { margin-bottom: 6px; }
+
+.steps-wrap > summary {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  cursor: pointer; list-style: none;
+}
+
+.steps-wrap > summary::-webkit-details-marker { display: none; }
+
+.steps-wrap > summary::before { content: "▸ "; }
+
+.steps-wrap[open] > summary::before { content: "▾ "; }
+
+/*
+  The AI chat. The conversation is the product of the indicator tab, so it
+  reads like a messaging app rather than a log: one bubble per message, the
+  user's right and tinted, the AI's left and panel-coloured, timestamps
+  quiet. The stream scrolls between a pinned header and a pinned composer;
+  nothing else in the pane competes with it.
+*/
+.chat-stream {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 4px;
+  scroll-behavior: smooth;
+}
+
+.chat-stream:empty::after {
+  content: "Describe what you want to detect — for example “mark SMT divergence between price and my rsi, in blue when bullish”.";
+  color: var(--muted); font-style: italic; font-size: 12px;
+  padding: 24px 8px; text-align: center;
+}
+
+.msg { display: flex; gap: 8px; max-width: 100%; }
+
+.msg.user { flex-direction: row-reverse; }
+
+.msg .avatar {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; user-select: none; margin-top: 2px;
+}
+
+.msg.ai .avatar { background: linear-gradient(135deg, #58a6ff, #bc8cff); color: #06121f; }
+
+.msg.user .avatar { background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+
+.msg .bubble {
+  max-width: min(85%, 46ch); padding: 8px 12px;
+  border-radius: 14px; line-height: 1.55; font-size: 13px;
+  overflow-wrap: anywhere; white-space: pre-wrap;
+}
+
+.msg.user .bubble { background: var(--accent); color: #06121f; border-bottom-right-radius: 4px; font-family: inherit; }
+
+.msg.ai .bubble { background: var(--panel-2); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+
+.msg .meta { font-size: 10px; color: var(--muted); margin-top: 3px; }
+
+.msg.user .meta { text-align: right; }
+
+/* The generated source folds away inside the AI bubble, like the rest of
+   the transcript's reference material. */
+.msg .bubble details { margin-top: 6px; }
+
+.msg .bubble summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+
+.msg .bubble pre.ws-source {
+  margin: 6px 0 0; padding: 8px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; overflow: auto;
+  max-height: 240px; font-size: 11px; white-space: pre; user-select: text;
+}
+
+/*
+  A thesis inside a chat bubble is a report, not a line of chat. The plain
+  bubble rules are written for sentences (narrow, pre-wrap), and they crush
+  the answer's structure: the kv rail right-aligns into nothing, section
+  headings inherit page margins, and the narrative's <pre> becomes a
+  panel-in-panel. Everything below is scoped to `.msg .bubble` so the
+  Thesis tab keeps its own, roomier layout.
+*/
+.msg.ai .bubble:has(.kv) {
+  max-width: min(94%, 62ch);
+  padding: 10px 14px 12px;
+  white-space: normal;
+}
+
+/* The kv block reads as a spec sheet: two label/value pairs per row, the
+   values beside their labels instead of railed to the far edge. */
+.msg .bubble .kv {
+  grid-template-columns: repeat(2, auto 1fr);
+  gap: 3px 8px; font-size: 11.5px;
+  padding: 7px 9px; background: var(--bg);
+  border: 1px solid var(--border-subtle); border-radius: 8px;
+}
+
+.msg .bubble .kv dd { text-align: left; }
+
+/* Section headings get quiet rules between them, not page margins. */
+.msg .bubble h2 {
+  font-size: 10px; margin: 10px 0 5px; padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.msg .bubble .kv + h2, .msg .bubble h2:first-child {
+  margin-top: 0; padding-top: 0; border-top: 0;
+}
+
+/* Checks as compact rows; the status pill stays colored text. */
+.msg .bubble .checks { margin: 4px 0; font-size: 12px; }
+
+.msg .bubble .checks li { border-bottom: 0; padding: 2px 0; gap: 6px; align-items: baseline; }
+
+.msg .bubble .checks .status { min-width: 44px; }
+
+/* The narrative is prose, not a code dump: the shell's font, wrapped, on a
+   ground that separates it from the bubble rather than duplicating it. */
+.msg .bubble pre {
+  margin: 0; background: var(--bg); border: 1px solid var(--border-subtle);
+  border-radius: 8px; font-family: inherit; font-size: 12.5px;
+  line-height: 1.55; white-space: pre-wrap; max-height: 260px;
+}
+
+/* A refusal reads as a card of its own, not a red sentence. */
+.msg .bubble p.fail {
+  margin: 0; padding: 7px 10px;
+  background: color-mix(in srgb, var(--down) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--down) 35%, transparent);
+  border-radius: 8px;
+}
+
+/* The steps trail under an answer: quieter than the body it fed. */
+.msg .bubble .steps { margin: 6px 0 0; font-size: 11px; color: var(--muted); }
+
+.msg .bubble .steps-wrap summary { font-size: 10.5px; }
+
+/* The code panel's vet errors: one red line per refusal, TradingView
+   editor style -- fix, resubmit, no model needed. */
+ul.ws-vet-errors {
+  margin: 4px 0 0; padding-left: 18px; color: var(--danger, #f87171);
+  font-size: 11px; line-height: 1.5; text-align: left;
+  font-family: ui-monospace, monospace;
+}
+
+/* The composer: one growing input with the send button inside its frame,
+   pinned under the stream so the conversation never pushes it off screen.
+   The model chip sits inside the frame as the quiet first element -- what
+   answers this chat is one click from the input, the way the reference
+   product puts its model picker under the prompt box. */
+.chat-composer {
+  display: flex; align-items: flex-end; gap: 6px;
+  padding: 8px; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 12px;
+  margin-top: 8px; flex-wrap: wrap;
+}
+
+.chat-composer:focus-within { border-color: var(--accent); }
+
+.chat-composer textarea {
+  flex: 1 1 140px; min-height: 22px; max-height: 120px; resize: none;
+  background: transparent; border: 0; padding: 4px 2px;
+  font-family: inherit; font-size: 13px; color: var(--text);
+}
+
+.chat-composer textarea:focus { outline: none; border-color: transparent; }
+
+.chat-composer textarea:hover { border-color: transparent; }
+
+.chat-send { flex: 0 0 auto; border-radius: 9px; padding: 6px 12px; }
+
+/* Skill dropdown - styled like a model chip for consistency */
+#skillSelect {
+  flex: 0 0 auto; padding: 4px 9px; font-size: 11px; border-radius: 8px;
+  color: var(--muted); white-space: nowrap; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line);
+  max-width: 200px;
+}
+
+#skillSelect option { background: var(--bg); }
+
+#skillSelect:hover { color: var(--text); }
+
+#skillPinRow { flex-wrap: wrap; }
+
+#skillPinRow #question { flex: 1; min-width: 140px; }
+
+#analyzePinned { flex: 0 0 auto; }
+
+/* MCP status indicators */
+.mcp-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 10px; margin-right: 6px;
+}
+
+.mcp-available { background: #dcfce7; color: #166534; }
+
+.mcp-degraded { background: #fef3c7; color: #92400e; }
+
+.mcp-unavailable { background: #fee2e2; color: #991b1b; }
+
+/* Wraps rather than clipping when the pane is narrow: the keyboard hint is
+   the one line a beginner needs, so it must never be cut in half. */
+.chat-hint { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px; font-size: 10px; margin: 4px 2px 8px; }
+
+.chat-hint #wsChatMsg:empty { display: none; }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-family: var(--mono); font-size: 12px; }
+
+.kv dt { color: var(--muted); }
+
+.kv dd { margin: 0; text-align: right; }
+
+/* The scanner's ranking. Left-aligned numbers, unlike `.kv`: a column of
+   right-aligned values reads as a sum, and these are measurements of different
+   instruments rather than parts of one total. */
+table.scan { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; margin: 6px 0; }
+
+table.scan th { color: var(--muted); font-weight: normal; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); padding: 3px 4px; }
+
+table.scan td { padding: 3px 4px; border-bottom: 1px solid var(--line); }
+
+table.scan td:nth-child(1) { color: var(--muted); width: 1.5em; }
+
+.checks { list-style: none; padding: 0; margin: 6px 0; font-size: 12px; }
+
+.checks li { padding: 3px 0; border-bottom: 1px solid var(--line); display: flex; gap: 8px; }
+
+.checks .status { font-family: var(--mono); font-size: 10px; text-transform: uppercase; min-width: 52px; }
+
+/* ---- Chat: messaging, not log ---- */
+.msg, .bubble, .turn {
+  border-radius: var(--radius-m);
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-1);
+}
+
+/* ================= CHAT AS MESSAGING (token pass) ================= */
+.chat-stream { gap: 12px; padding: 14px 8px; }
+
+.msg .avatar {
+  width: 24px; height: 24px; font-size: 12px;
+  border-radius: 50%;
+}
+
+.msg.ai .avatar {
+  background: var(--accent-dim); border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.msg.user .avatar {
+  background: var(--bg-overlay); border: 1px solid var(--line); color: var(--muted);
+}
+
+.msg .bubble {
+  border-radius: var(--radius-l); padding: 9px 13px;
+  line-height: 1.55; font-size: 12.5px;
+  box-shadow: var(--shadow-1);
+}
+
+.msg.user .bubble {
+  background: var(--accent-dim); border: 1px solid var(--accent);
+  color: var(--text); border-bottom-right-radius: var(--radius-s);
+}
+
+.msg.ai .bubble {
+  background: var(--bg-elev); border: 1px solid var(--line);
+  color: var(--text); border-bottom-left-radius: var(--radius-s);
+}
+
+.msg .meta { font-size: 10px; color: var(--faint); margin-top: 4px; letter-spacing: 0.02em; }
+
+.msg .bubble pre.ws-source {
+  background: var(--bg); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-m); font-size: 11px;
+}
+
+.msg .bubble summary { color: var(--faint); }
+
+.msg .bubble summary:hover { color: var(--accent); }
+
+/* ================= THE BOOK, AS A DESK LADDER ================= */
+.ladder { font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+.ladder-head {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
+  color: var(--faint); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 6px 6px 3px; border-bottom: 1px solid var(--border-subtle);
+}
+
+.ladder-head span:not(:first-child) { text-align: right; }
+
+.ladder-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
+  padding: 2px 6px; position: relative; cursor: default;
+  border-bottom: 1px solid transparent;
+  transition: background 90ms ease;
+}
+
+.ladder-row:hover { background: var(--bg-overlay); }
+
+.ladder-row > span { position: relative; z-index: 1; }
+
+.ladder-row > span:not(:first-child) { text-align: right; color: var(--text-dim); }
+
+.ladder-row.ask > span:first-child { color: var(--down); }
+
+.ladder-row.bid > span:first-child { color: var(--up); }
+
+.ladder-bar { position: absolute; top: 1px; bottom: 1px; left: 0; z-index: 0; border-radius: 2px; }
+
+.ladder-row.bid .ladder-bar { background: var(--up-dim); }
+
+.ladder-row.ask .ladder-bar { background: var(--down-dim); }
+
+/* ================= THE TRADE TICKET (paper) ================= */
+.tt-banner {
+  font-size: 11px; color: var(--warn); background: rgba(237, 181, 65, 0.08);
+  border: 1px solid rgba(237, 181, 65, 0.3); border-radius: var(--radius-s);
+  padding: 6px 9px; margin-bottom: 10px; line-height: 1.4;
+}
+
+.tt-symbol { font-family: var(--mono); font-size: 15px; font-weight: 700; margin-bottom: 2px; }
+
+.tt-mark { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+
+.tt-side { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+
+.tt-side button {
+  padding: 9px 0; font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
+  border-radius: var(--radius-s);
+}
+
+.tt-side button.buy.on { background: var(--up); border-color: var(--up); color: #06130d; }
+
+.tt-side button.sell.on { background: var(--down); border-color: var(--down); color: #fff; }
+
+.tt-types { display: flex; gap: 0; margin-bottom: 10px; border: 1px solid var(--line); border-radius: var(--radius-s); overflow: hidden; }
+
+.tt-types button { flex: 1; border: 0; border-radius: 0; padding: 6px 0; font-size: 11.5px; }
+
+.tt-types button.on { background: var(--accent-dim); color: var(--accent); }
+
+.tt-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+
+.tt-row label { flex: 0 0 64px; font-size: 11px; color: var(--muted); }
+
+.tt-row input { flex: 1; min-width: 0; text-align: right; }
+
+.tt-lev { margin: 4px 0 10px; }
+
+.tt-lev .tt-lev-head { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+
+.tt-lev input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+.tt-facts { font-family: var(--mono); font-size: 11px; color: var(--text-dim); margin: 8px 0; display: grid; gap: 3px; }
+
+.tt-facts .row { display: flex; justify-content: space-between; }
+
+.tt-submit { width: 100%; padding: 10px 0; font-size: 13px; font-weight: 700; letter-spacing: 0.05em; border-radius: var(--radius-s); }
+
+.tt-submit.buy { background: var(--up); border-color: var(--up); color: #06130d; }
+
+.tt-submit.sell { background: var(--down); border-color: var(--down); color: #fff; }
+
+.tt-positions { margin-top: 14px; }
+
+.tt-positions h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin: 0 0 6px; }
+
+.tt-pos-grid { font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.tt-pos-head, .tt-pos-row {
+  display: grid; grid-template-columns: 1.1fr 0.7fr 1fr 1fr 0.9fr auto; gap: 8px;
+  padding: 4px 6px; align-items: center;
+}
+
+.tt-pos-head { color: var(--faint); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.07em; border-bottom: 1px solid var(--border-subtle); }
+
+.tt-pos-row { border-bottom: 1px solid var(--border-subtle); }
+
+.tt-pos-row > span:not(:first-child) { text-align: right; }
+
+.tt-pos-row .long { color: var(--up); }
+
+.tt-pos-row .short { color: var(--down); }
+
+.tt-pos-row .pnl.up { color: var(--up); }
+
+.tt-pos-row .pnl.down { color: var(--down); }
+
+.tt-close { padding: 2px 8px; font-size: 10px; }
+
+/* ================= THE CHAT COMPOSER: docked, button inside ================= */
+#pane-chat { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+
+#pane-chat[hidden] { display: none; }
+
+#pane-chat .chat-stream { flex: 1; min-height: 0; padding: 12px 12px 4px; }
+
+.chat-compose {
+  position: relative; flex: 0 0 auto;
+  margin: 4px 12px 12px; padding: 8px 46px 8px 12px;
+  background: var(--bg-overlay); border: 1px solid var(--line); border-radius: 12px;
+  transition: border-color 120ms ease;
+}
+
+.chat-compose:focus-within { border-color: var(--accent); }
+
+.chat-compose textarea {
+  width: 100%; min-height: 22px; max-height: 140px; resize: none;
+  background: transparent; border: 0; padding: 4px 2px;
+  font-family: inherit; font-size: 13px; line-height: 1.45; color: var(--text);
+}
+
+.chat-compose textarea:focus { outline: none; box-shadow: none; border-color: transparent; }
+
+.chat-compose textarea:hover { border-color: transparent; }
+
+/* The send button lives INSIDE the input frame, bottom-right. */
+#chatSend {
+  position: absolute; right: 8px; bottom: 8px;
+  width: 30px; height: 30px; padding: 0; border-radius: 8px;
+  display: grid; place-items: center; font-size: 13px; line-height: 1;
+}
+
+/* Attachments: the clip lives inside the frame too, bottom-left. */
+.chat-compose { padding-left: 46px; }
+
+#chatAttach {
+  position: absolute; left: 8px; bottom: 8px;
+  width: 30px; height: 30px; padding: 0; border-radius: 8px;
+  display: grid; place-items: center; font-size: 14px; line-height: 1;
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+}
+
+#chatAttach:hover { background: var(--bg); border-color: var(--line); color: var(--text); }
+
+.chat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+
+.chat-chips .chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--text-dim);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  padding: 3px 6px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.chat-chips .chip img { width: 22px; height: 22px; object-fit: cover; border-radius: 4px; }
+
+.chat-chips .chip button { padding: 0 4px; font-size: 10px; background: none; border: 0; color: var(--faint); }
+
+.chat-chips .chip button:hover { color: var(--down); }
+
+/* The + attach button and its two-option menu. */
+#chatAttach { font-size: 17px; font-weight: 600; color: var(--text-dim); }
+
+#chatAttach:hover { color: var(--text); }
+
+#chatAttach.open { background: var(--bg); border-color: var(--line); color: var(--accent); }
+
+.chat-attach-menu {
+  position: absolute; left: 8px; bottom: 46px; z-index: 30;
+  background: var(--bg-overlay); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow-2); padding: 4px; min-width: 260px;
+}
+
+.chat-attach-menu button {
+  display: flex; gap: 10px; align-items: center; width: 100%; text-align: left;
+  padding: 8px 10px; background: none; border: 0; border-radius: 7px;
+}
+
+.chat-attach-menu button:hover { background: var(--bg); }
+
+.chat-attach-menu .ico { font-size: 16px; }
+
+.chat-attach-menu b { display: block; font-size: 12px; font-weight: 600; color: var(--text); }
+
+.chat-attach-menu small { display: block; font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+
+/* ================= COMPOSER TOOLBAR: textarea on top, buttons in a row ================= */
+.chat-compose { display: flex; flex-direction: column; padding: 8px 10px 6px; }
+
+.chat-toolbar { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+
+.chat-toolbar-spacer { flex: 1; }
+
+#chatAttach, #chatAgent, #chatModel, #chatSend {
+  position: static; width: 30px; height: 30px; padding: 0; border-radius: 8px;
+  display: grid; place-items: center; line-height: 1; flex: 0 0 auto;
+}
+
+#chatAgent, #chatModel { background: transparent; border-color: transparent; color: var(--muted); font-size: 14px; }
+
+#chatAgent:hover, #chatModel:hover { background: var(--bg); border-color: var(--line); color: var(--text); }
+
+#chatAgent.on, #chatModel.open, #chatAttach.open { background: var(--bg); border-color: var(--line); color: var(--accent); }
+
+.chat-agent-label { font-size: 10.5px; color: var(--faint); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.chat-agent-label.pinned { color: var(--accent); }
+
+/* Menus anchor above the toolbar now */
+.chat-attach-menu { bottom: 44px; }
+
+#chatAgentMenu { max-height: 300px; overflow-y: auto; min-width: 280px; }
+
+#chatAgentMenu button .check { margin-left: auto; color: var(--accent); font-size: 12px; }
+
+/* The model card */
+.chat-model-card {
+  position: absolute; right: 10px; bottom: 44px; z-index: 30;
+  width: 280px; background: var(--bg-overlay); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow-2); padding: 10px;
+}
+
+.chat-model-card h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+
+.chat-model-card .cm-mode {
+  display: block; width: 100%; text-align: left; padding: 8px 10px;
+  background: none; border: 1px solid transparent; border-radius: 8px; margin-bottom: 4px;
+}
+
+.chat-model-card .cm-mode:hover { background: var(--bg); border-color: var(--line); }
+
+.chat-model-card .cm-mode.on { border-color: var(--accent); background: var(--accent-dim); }
+
+.chat-model-card .cm-mode b { display: block; font-size: 12px; color: var(--text); }
+
+.chat-model-card .cm-mode small { display: block; font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+
+#cmOwnFields { display: grid; gap: 6px; margin-top: 6px; }
+
+#cmOwnFields[hidden] { display: none; }
+
+#cmMsg { font-size: 11px; margin-top: 6px; min-height: 14px; }
+
+/* The model card's current-config line, mirroring the retired pane's. */
+.cm-current {
+  font-size: 11px; color: var(--text-dim); line-height: 1.5;
+  border: 1px solid var(--border-subtle); border-radius: 7px;
+  padding: 6px 9px; margin-bottom: 8px;
+}
+
+.cm-current:empty { display: none; }
+
+.cm-current b { color: var(--text); }
+
+.cm-current .muted { display: block; font-size: 10.5px; }
+
+/* ================= THE CHAT HEAD: new chat + history ================= */
+/*
+  A slim bar at the pane's top, same height language as the pane title bars.
+  The history card anchors to it (position: relative) and drops over the
+  stream, the way the model card rises over the composer.
+*/
+.chat-head {
+  position: relative; flex: 0 0 auto;
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 10px; border-bottom: 1px solid var(--border-subtle);
+}
+
+.chat-head button {
+  padding: 4px 9px; font-size: 11px; font-weight: 550;
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  color: var(--muted);
+}
+
+.chat-head button:hover { background: var(--bg); border-color: var(--line); color: var(--text); }
+
+.chat-head #chatHistory.open { background: var(--bg); border-color: var(--line); color: var(--accent); }
+
+.chat-history-card {
+  position: absolute; top: calc(100% + 4px); right: 8px; z-index: 35;
+  width: 300px; max-height: 380px; display: flex; flex-direction: column;
+  background: var(--bg-overlay); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow-2); padding: 8px;
+}
+
+.chat-history-card h4 {
+  margin: 2px 4px 8px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--muted);
+}
+
+/* `display: flex` above outranks the UA's `[hidden]` rule -- without this
+   the card ignores the attribute and reads as stuck open. */
+.chat-history-card[hidden] { display: none; }
+
+.chat-history-card .muted { padding: 6px 8px; font-size: 11.5px; }
+
+.chat-history-rows { overflow-y: auto; min-height: 0; }
+
+/* Rows read like the library's: name left, quiet meta under, × on hover. */
+.chat-hist-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; cursor: pointer; border-radius: 8px;
+  border-left: 2px solid transparent;
+}
+
+.chat-hist-row:hover { background: var(--bg); }
+
+.chat-hist-row.on { border-left-color: var(--accent); background: var(--accent-dim); }
+
+.chat-hist-row .chBody { flex: 1; min-width: 0; }
+
+.chat-hist-row .chTitle {
+  font-size: 12px; font-weight: 550; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.chat-hist-row .chMeta {
+  font-family: var(--mono); font-size: 10px; color: var(--faint); margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.chat-hist-del {
+  flex: 0 0 auto; width: 18px; height: 18px; padding: 0;
+  background: transparent; border: 1px solid transparent; border-radius: 4px;
+  color: var(--faint); font-size: 13px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity 100ms ease;
+}
+
+.chat-hist-row:hover .chat-hist-del, .chat-hist-del:focus-visible { opacity: 1; }
+
+.chat-hist-del:hover { color: var(--down); border-color: var(--down); }
+
+
+/* Attaching the chart to a question. `aria-pressed` again, for the same reason
+   as the zone and forecast toggles: one variable, so the button cannot disagree
+   with the state it describes. The note beside it says what is being sent,
+   because "attach chart" is not specific enough to justify sending a picture
+   of the screen. It lives here rather than with the chart because its markup
+   is in the aside's thesis pane -- the chart is what gets attached, not what
+   the button belongs to. */
+.chartAttach { align-items: center; gap: 8px; margin-top: 6px; }
+
+#attachChart { flex: 0 1 auto; padding: 2px 8px; font-size: 11px; color: var(--muted); }
+
+#attachChart[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+
+#attachNote { font-size: 10px; flex: 1 1 auto; }
