@@ -6833,6 +6833,10 @@ function createChartPane(root, hooks = {}) {
     timeframe: () => el("timeframe").value,
     mode: () => el("mode").value,
     bars: () => Number(el("limit").value),
+    /// The newest price the pane has seen, or null before the first tick. A
+    /// function for the same reason `symbol` is: the accessible name is built
+    /// when the summary is painted, not when the pane was.
+    livePrice,
     zones: () => zonesOn(),
     maximized: () => root.classList.contains("exp"),
     /// The ladder this pane actually has, for the instrument bar. Read from
@@ -6944,7 +6948,7 @@ function createChartPane(root, hooks = {}) {
       renderNow();
       syncIndicatorChip();
       noteWorkspaceChange();
-      notifyPane();
+      notifyPane(this);
     },
 
     /// Show or hide one script layer (docs/25). Hiding withholds the layer
@@ -7123,7 +7127,7 @@ function createChartPane(root, hooks = {}) {
       else el("timeframe").value = deepestFrame(symbol);
       paintTitle();
       noteWorkspaceChange();
-      notifyPane();
+      notifyPane(this);
     },
 
     /// Put a freshly cloned pane back to its starting state.
@@ -7906,6 +7910,30 @@ function scheduleMarketRetry(channel) {
   }, 2000 + Math.floor(Math.random() * 3000));
 }
 
+/// The canvas's accessible name.
+///
+/// `role="img"` needs a name, and the name must survive being read aloud: the
+/// newest price is included because it is the number a reader came for, and it
+/// is rewritten only when the series, the mode or the attachment changes --
+/// the events that already repaint the bar. A pan is view-only and does not
+/// rewrite it. The engine keeps its viewport to itself, so this names the
+/// loaded window and its bar count rather than a range JavaScript would have
+/// to invent.
+function paintChartSummary(pane) {
+  if (!pane || !pane.canvas) return;
+  const parts = [pane.symbol() || "No symbol"];
+  const timeframe = pane.timeframe();
+  if (timeframe) parts.push(`${timeframe} candles`);
+  const mode = pane.mode ? pane.mode() : "";
+  if (mode && mode !== "candles") parts.push(mode);
+  const bars = pane.bars ? pane.bars() : 0;
+  if (bars) parts.push(`${bars} bars loaded`);
+  const price = pane.livePrice ? pane.livePrice() : null;
+  if (price != null) parts.push(`last ${HRZUI.format.price(price)}`);
+  pane.canvas.setAttribute("role", "img");
+  pane.canvas.setAttribute("aria-label", parts.join(", "));
+}
+
 /// Announce that the active chart's own state moved -- its series, its
 /// overlay, its attachment.
 ///
@@ -7913,7 +7941,12 @@ function scheduleMarketRetry(channel) {
 /// instrument bar, the status bar) never keep a list of call sites in step.
 /// The detail carries the pane for a listener that wants it; everything else
 /// re-reads through the facade, which is the only source of truth.
-function notifyPane() {
+///
+/// `pane` names the chart that changed where the caller knows it. With no
+/// argument it is the one the user is on -- but a pane the user is *not* on
+/// still has to be labelled with its own series.
+function notifyPane(pane) {
+  paintChartSummary(pane || activePane);
   document.dispatchEvent(new CustomEvent("hrz:pane", { detail: { pane: activePane } }));
 }
 
@@ -8200,7 +8233,7 @@ function syncIndicatorChip() {
   // the chart changes under it. One event from every path that can change a
   // series or an overlay -- the pane's own controls, the bar's commands, a
   // restored snapshot -- so no listener keeps a list of call sites in step.
-  notifyPane();
+  notifyPane(activePane);
 }
 
 /// Remove the active pane's attached CONCEPT-layer indicator. Script layers
@@ -12658,6 +12691,9 @@ let watchlistSearch = null;
 /// symbol list; the server caches the venue answer, so this is cheap to run
 /// on its own clock.
 async function fetchWatchlistTickers() {
+  // A backgrounded tab is not reading a watchlist. The interval keeps its
+  // place; the first visible tick repaints from cache and then from the venue.
+  if (document.hidden) return;
   const rows = watchlistRows().map((row) => row.symbol);
   if (rows.length > 500) {
     // More rows than one venue call can filter for: ask for the venue's most
@@ -14103,6 +14139,9 @@ function setDestinationVisible(destination) {
 /// name in the same tick. That is a second *request*, not a second timer: it
 /// rides the same five seconds and stops with them.
 function dashTick() {
+  // A backgrounded tab is not reading a dashboard. The interval keeps its
+  // place; the first visible tick repaints from cache and then from the venue.
+  if (document.hidden) return;
   dashTicks += 1;
   paintDashDate();
   api("/tickers?limit=1000")
@@ -14684,6 +14723,9 @@ function wireDashboard() {
 
   const tabs = el("marketTabs");
   if (tabs) {
+    // `HRZUI.tabs` cannot own this strip: its panels are the table's rows, and
+    // its selection is a sort key. The keyboard half is still shared.
+    const keyboard = HRZUI.tabKeyboard(tabs);
     tabs.addEventListener("click", (event) => {
       const tab = event.target.closest("[data-market]");
       if (!tab) return;
@@ -14692,6 +14734,7 @@ function wireDashboard() {
       for (const button of tabs.querySelectorAll("[data-market]")) {
         button.setAttribute("aria-selected", String(button === tab));
       }
+      keyboard.refresh();
       paintDashMarkets();
     });
   }

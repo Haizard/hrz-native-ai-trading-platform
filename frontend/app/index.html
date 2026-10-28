@@ -35,6 +35,9 @@
 </head>
 <body>
 
+<a class="skipLink" href="#mainView">Skip to content</a>
+<p id="chartAnnounce" class="sr-only" role="status" aria-live="polite"></p>
+
 <header id="topbar">
   <a class="brand" href="#/dashboard" aria-label="HRZ dashboard">
     <span class="brandMark" aria-hidden="true"></span>
@@ -157,7 +160,7 @@
     </button>
   </nav>
 
-  <main id="mainView" hidden>
+  <main id="mainView" hidden tabindex="-1">
     <section class="destination" id="dest-dashboard" aria-labelledby="dest-dashboard-title" hidden>
       <div class="dashInner">
         <header class="dashHead">
@@ -718,7 +721,7 @@
       <div class="dockResize" id="dockResize" role="separator" aria-orientation="horizontal"
            aria-label="Resize the dock" tabindex="0"></div>
       <div class="dockTabs">
-        <div class="hrz-tabs" role="tablist" aria-label="Workbench">
+        <div class="hrz-tabs" id="dockTablist" role="tablist" aria-label="Workbench">
           <button role="tab" type="button" class="hrz-tab" data-dock="studio" aria-selected="true">Studio</button>
           <button role="tab" type="button" class="hrz-tab" data-dock="alerts" aria-selected="false">Alerts</button>
           <button role="tab" type="button" class="hrz-tab" data-dock="orders" aria-selected="false">Orders</button>
@@ -789,7 +792,7 @@
   <!-- Width splitter for the aside (AI chat / thesis / scan); drag logic in `wireSplitters`. -->
   <button type="button" class="splitter" id="splitAside" aria-label="Drag to resize the side panel"></button>
   <div id="inspectorHost">
-  <aside id="inspector">
+  <aside id="inspector" aria-label="Inspector">
     <div class="inspectorHead">
       <div class="hrz-tabs" id="inspectorTabs" role="tablist" aria-label="Inspector">
         <button role="tab" type="button" class="hrz-tab" data-inspector="ai" aria-selected="true">AI</button>
@@ -1587,7 +1590,7 @@
 <footer id="statusbar" hidden>
   <span class="sbGroup">
     <span id="sbConnection" class="sbDot" aria-hidden="true"></span>
-    <span id="sbConnLabel">Offline</span>
+    <span id="sbConnLabel" role="status">Offline</span>
   </span>
   <span class="sbSep">·</span>
   <span id="sbVenue">Binance</span>
@@ -1596,7 +1599,7 @@
   <span id="sbTimeframe" class="mono"></span>
   <span id="sbCharts">1 chart</span>
   <span class="spacer"></span>
-  <span id="sbSave" class="sbSave" title="Workspace save state">Saved</span>
+  <span id="sbSave" class="sbSave" role="status" title="Workspace save state">Saved</span>
   <span class="sbSep">·</span>
   <span id="econCountdown" class="econChip" hidden></span>
   <span id="sbLatency" hidden></span>

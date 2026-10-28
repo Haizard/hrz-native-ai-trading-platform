@@ -116,7 +116,7 @@ const { document } = window;
 // to answer that property, and the branch was removed rather than left here: a
 // stub that supports something nothing calls is a claim about the shell that
 // nothing checks.
-const painted = { ops: [], text: [] };
+const painted = { ops: [], text: [], styles: [] };
 const context = new Proxy(
   {},
   {
@@ -130,7 +130,10 @@ const context = new Proxy(
         return undefined;
       };
     },
-    set() {
+    // Assignments matter too: a canvas paints `var(--up)` as nothing, so
+    // "nothing hands the context a token" is a claim about these.
+    set(_target, prop, value) {
+      painted.styles.push(`${String(prop)}=${String(value)}`);
       return true;
     },
   }
@@ -2353,6 +2356,202 @@ check(
   clocksNamed("dashTick") === 0 && clocksNamed("fetchWatchlistTickers") === 1,
   `dash=${clocksNamed("dashTick")} rail=${clocksNamed("fetchWatchlistTickers")}`
 );
+
+// --- the accessibility contract ----------------------------------------------
+//
+// The parts of Spec 10 that are a property of the DOM: the skip link, named
+// landmarks, one heading per destination, one Tab stop per strip, a region that
+// speaks the series and not the tick, and a canvas that names itself. Contrast,
+// 200% zoom, reduced motion and a real screen reader are the manual pass in
+// Step 6 -- a renderer is what they need, and jsdom is not one.
+
+console.log("\nthe accessibility contract");
+
+check(
+  "a skip link is the first thing Tab reaches, and its target can take focus",
+  document.body.firstElementChild.classList.contains("skipLink") &&
+    document.body.firstElementChild.getAttribute("href") === "#mainView" &&
+    document.getElementById("mainView").tabIndex === -1,
+  document.body.firstElementChild.className
+);
+// The skip link is a fragment, and a fragment is not a route. Taken as one it
+// would throw the keyboard user off the chart they asked to skip into.
+window.location.hash = "#mainView";
+await settle();
+check(
+  "and taking it does not move the user off the destination they were on",
+  window.location.hash === "#/charts" && document.getElementById("dest-charts").hidden === false,
+  `${window.location.hash} hidden=${document.getElementById("dest-charts").hidden}`
+);
+check(
+  "the landmarks are named: main, destinations, inspector, status",
+  document.getElementById("mainView").tagName === "MAIN" &&
+    document.getElementById("rail").getAttribute("aria-label") === "Destinations" &&
+    document.getElementById("inspector").getAttribute("aria-label") === "Inspector" &&
+    document.getElementById("statusbar").tagName === "FOOTER"
+);
+// Two reads in a row say the same thing, so nothing may be written: a
+// `role="status"` node announces every text change, and the rail re-reads the
+// status every few seconds -- a write per read would read the connection aloud
+// forever. The observer is the only way to see a write that changes nothing.
+// The first read runs unobserved, so a stale label left by an earlier tick is
+// written here and is not mistaken for a re-write below.
+window.Shell.refreshStatus();
+const a11yWrites = [];
+const a11yWatch = new window.MutationObserver((records) => a11yWrites.push(...records));
+for (const id of ["sbConnLabel", "sbSave"]) {
+  a11yWatch.observe(document.getElementById(id), { childList: true, characterData: true, subtree: true });
+}
+window.Shell.refreshStatus();
+window.Shell.refreshStatus();
+await settle();
+a11yWatch.disconnect();
+check(
+  "connection and save state announce, and are written only when they change",
+  a11yWrites.length === 0 &&
+    document.getElementById("sbConnLabel").getAttribute("role") === "status" &&
+    document.getElementById("sbSave").getAttribute("role") === "status",
+  `${a11yWrites.length} write(s)`
+);
+const a11yDestinations = [...document.querySelectorAll("#mainView .destination")];
+check(
+  "every destination has exactly one h1",
+  a11yDestinations.length === 6 &&
+    a11yDestinations.every((section) => section.querySelectorAll("h1").length === 1),
+  a11yDestinations
+    .map((section) => `${section.id}:${section.querySelectorAll("h1").length}`)
+    .join(" ")
+);
+const a11yPositive = [...document.querySelectorAll("[tabindex]")].filter(
+  (node) => Number(node.getAttribute("tabindex")) > 0
+);
+check(
+  "nothing asks for a positive tabindex",
+  a11yPositive.length === 0,
+  a11yPositive.map((node) => node.id || node.className).join(" ")
+);
+
+const a11yStrip = document.getElementById("inspectorTabs");
+const a11yStops = () => [...a11yStrip.querySelectorAll('[role="tab"]')].filter((tab) => tab.tabIndex === 0);
+const a11yChosen = a11yStrip.querySelector('[aria-selected="true"]');
+check(
+  "a strip is one Tab stop, and it is the selected tab",
+  a11yStops().length === 1 && a11yStops()[0] === a11yChosen,
+  `${a11yStops().length} stop(s)`
+);
+const a11yTabsBefore = [...a11yStrip.querySelectorAll('[role="tab"]')];
+const a11yAt = a11yTabsBefore.indexOf(a11yChosen);
+a11yChosen.focus();
+a11yChosen.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+await settle();
+const a11yTabsAfter = [...a11yStrip.querySelectorAll('[role="tab"]')];
+const a11yNext = a11yTabsAfter[(a11yAt + 1) % a11yTabsAfter.length];
+check(
+  "the right arrow moves selection, focus and the Tab stop together",
+  a11yNext.getAttribute("aria-selected") === "true" &&
+    document.activeElement === a11yNext &&
+    a11yNext.tabIndex === 0 &&
+    a11yChosen.tabIndex === -1,
+  `${a11yNext.dataset.inspector} selected=${a11yNext.getAttribute("aria-selected")} focus=${document.activeElement === a11yNext}`
+);
+a11yChosen.click();
+await settle();
+check(
+  "and clicking the first tab puts the selection back",
+  a11yChosen.getAttribute("aria-selected") === "true" && a11yChosen.tabIndex === 0
+);
+check(
+  "the dashboard's strip is one Tab stop too",
+  [...document.querySelectorAll("#marketTabs [role='tab']")].filter((tab) => tab.tabIndex === 0).length === 1,
+  `${[...document.querySelectorAll("#marketTabs [role='tab']")].filter((tab) => tab.tabIndex === 0).length} stop(s)`
+);
+
+// The canvas check comes first: it reads the series the page opened with, not
+// the one the next check asks for.
+const a11yCanvas = canvasOf(0);
+check(
+  "the chart canvas names its own series for a reader",
+  a11yCanvas.getAttribute("role") === "img" &&
+    (a11yCanvas.getAttribute("aria-label") || "").startsWith(selectIn(0, "symbol")),
+  a11yCanvas.getAttribute("aria-label")
+);
+
+const a11yAnnounce = document.getElementById("chartAnnounce");
+check(
+  "the chart's live region is polite",
+  a11yAnnounce.getAttribute("role") === "status" &&
+    a11yAnnounce.getAttribute("aria-live") === "polite",
+  `${a11yAnnounce.getAttribute("role")} ${a11yAnnounce.getAttribute("aria-live")}`
+);
+// Change the series through the pane's own control, the way a person does.
+// The options come from that pane's select, so this works whatever series the
+// heat tile left open, and `/candles` synthesises a window for any symbol. By
+// this point in the file the page has been alive long enough that the region
+// already holds a series, so the check is "a change speaks, a tick does not",
+// not "it starts empty".
+const a11ySymbol = paneNode(0).querySelector(".symbol");
+const a11ySymbolWas = a11ySymbol.value;
+a11ySymbol.value = [...a11ySymbol.options]
+  .map((option) => option.value)
+  .find((value) => value !== a11ySymbolWas);
+a11ySymbol.dispatchEvent(new window.Event("change", { bubbles: true }));
+await waitFor(
+  () => a11yAnnounce.textContent.includes(a11ySymbol.value),
+  "the live region to name the series the user asked for"
+);
+check(
+  "and it names the series that was chosen, with no price",
+  a11yAnnounce.textContent.startsWith("Chart on ") &&
+    !/\d+\.\d{2}/.test(a11yAnnounce.textContent),
+  a11yAnnounce.textContent
+);
+const a11ySpoken = a11yAnnounce.textContent;
+await window.fetchWatchlistTickers();
+await settle();
+check(
+  "a price tick never reaches the live region",
+  a11yAnnounce.textContent === a11ySpoken,
+  a11yAnnounce.textContent
+);
+// Put the pane back on the series it started on: every section after this one
+// assumes the page is as Task 16 left it.
+a11ySymbol.value = a11ySymbolWas;
+a11ySymbol.dispatchEvent(new window.Event("change", { bubbles: true }));
+await settle();
+
+const a11ySpark = document.createElement("canvas");
+document.body.appendChild(a11ySpark);
+const a11yStylesBefore = painted.styles.length;
+window.HRZUI.sparkline(a11ySpark, [1, 2, 1.5, 3], { trend: "down", label: "XRP" });
+const a11yStyles = painted.styles.slice(a11yStylesBefore);
+check(
+  "a sparkline hands the canvas a colour, not a custom property",
+  a11yStyles.some((entry) => entry.startsWith("strokeStyle=")) &&
+    !a11yStyles.some((entry) => entry.includes("var(")),
+  a11yStyles.filter((entry) => entry.includes("Style=")).join(" ")
+);
+a11ySpark.remove();
+
+// --- idle cost ---------------------------------------------------------------
+//
+// jsdom's `document.hidden` is a getter on the prototype; an own property
+// shadows it for the length of this check, which is the only way to ask "what
+// does this tab do when nobody is looking" without a real browser.
+
+Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+const a11yCalls = backend.calls.length;
+await window.fetchWatchlistTickers();
+window.dashTick();
+await settle();
+check(
+  "a tab nobody is looking at does not poll the venue",
+  backend.calls.length === a11yCalls,
+  `${backend.calls.length - a11yCalls} call(s)`
+);
+// Deleting the own property hands `document.hidden` back to jsdom's prototype.
+delete document.hidden;
+window.Shell.go("charts");
+await settle();
 
 // --- put the chart back ------------------------------------------------------
 //

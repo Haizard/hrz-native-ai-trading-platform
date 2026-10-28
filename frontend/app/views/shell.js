@@ -187,6 +187,19 @@
     if (toggle) toggle.setAttribute("aria-pressed", String(state.watchlistCollapsed));
   }
 
+  /// Set a strip's selection and make it one Tab stop with four arrow keys.
+  ///
+  /// Four strips, one rule: the state names the selection, `HRZUI.tabKeyboard`
+  /// makes the strip navigable, and no strip grows its own copy of the same
+  /// four `if`s.
+  function syncTabStrip(root, attribute, selected) {
+    if (!root) return;
+    for (const button of root.querySelectorAll('[role="tab"]')) {
+      button.setAttribute("aria-selected", String(button.dataset[attribute] === selected));
+    }
+    HRZUI.tabKeyboard(root);
+  }
+
   function syncInspector() {
     const open = state.destination === "charts" && state.inspectorOpen;
     const host = el("inspectorHost");
@@ -195,9 +208,7 @@
     if (host) host.hidden = !open;
     if (splitter) splitter.hidden = !open;
     if (reveal) reveal.hidden = open || state.destination !== "charts";
-    for (const button of document.querySelectorAll("#inspectorTabs [data-inspector]")) {
-      button.setAttribute("aria-selected", String(button.dataset.inspector === state.inspectorTab));
-    }
+    syncTabStrip(el("inspectorTabs"), "inspector", state.inspectorTab);
     const ai = el("aiBtn");
     if (ai) ai.setAttribute("aria-pressed", String(open && state.inspectorTab === "ai"));
     const toggle = el("inspectorToggle");
@@ -205,15 +216,11 @@
   }
 
   function syncStudio() {
-    for (const button of document.querySelectorAll("#studioTabs [data-studio]")) {
-      button.setAttribute("aria-selected", String(button.dataset.studio === state.studioPane));
-    }
+    syncTabStrip(el("studioTabs"), "studio", state.studioPane);
   }
 
   function syncAccount() {
-    for (const button of document.querySelectorAll("#accountTabs [data-account]")) {
-      button.setAttribute("aria-selected", String(button.dataset.account === state.accountSection));
-    }
+    syncTabStrip(el("accountTabs"), "account", state.accountSection);
   }
 
   /// Unread lines since the Console was last looked at. Reset by `loadDock`,
@@ -334,6 +341,24 @@
 
   /* ---- Status and chrome -------------------------------------------------- */
 
+  /// What the chart's live region last said, compared by series and never by
+  /// price: the status bar repaints on every tick, and a region that re-read
+  /// on every tick would read the market aloud all day.
+  let announcedSeries = "";
+
+  function announceSeries(info) {
+    const node = el("chartAnnounce");
+    if (!node) return;
+    const series = info && info.symbol ? `${info.symbol} ${info.timeframe || ""}`.trim() : "";
+    if (series === announcedSeries) return;
+    const first = !announcedSeries;
+    announcedSeries = series;
+    // The first series a page names is the one it loaded with; boot is not a
+    // change the user made, and saying it would greet every reload.
+    if (first) return;
+    node.textContent = series ? `Chart on ${series}` : "No chart";
+  }
+
   function refreshStatus() {
     const info = app().activePaneInfo ? app().activePaneInfo() : null;
     const symbol = el("sbSymbol");
@@ -345,11 +370,14 @@
     // vocabulary of the strip's own.
     const claim = FEED_CLAIMS[(info && info.feed) || "offline"] || ["Offline", "down"];
     const label = el("sbConnLabel");
-    if (label) label.textContent = claim[0];
+    // `role="status"`: write only on a change, so a retry every five seconds is
+    // not read out every five seconds.
+    if (label && label.textContent !== claim[0]) label.textContent = claim[0];
     const dot = el("sbConnection");
     if (dot) dot.dataset.state = claim[1];
     const top = el("connDotTop");
     if (top) top.dataset.state = claim[1];
+    announceSeries(info);
   }
 
   /// Repaint the Indicator tab from the active chart.
@@ -437,7 +465,10 @@
     const node = el("sbSave");
     if (!node) return;
     node.dataset.state = name || "";
-    node.textContent = text || "Saved";
+    const label = text || "Saved";
+    // Also a `role="status"` region, and the workspace saves on every debounced
+    // change: the same word twice is not news.
+    if (node.textContent !== label) node.textContent = label;
   }
 
   function setPlan(name) {
@@ -545,6 +576,15 @@
     if (!started || !isSignedIn()) return;
     const route = parse(location.hash);
     if (!route) {
+      // A fragment that names something already on the page -- the skip link's
+      // `#mainView` -- is not a route. Sending it here would drop a keyboard
+      // user on Dashboard from the chart they were reading, so the address is
+      // put back and the destination the user is on stays.
+      const fragment = String(location.hash || "").slice(1);
+      if (state.destination && fragment && document.getElementById(fragment)) {
+        history.replaceState(null, "", hashFor(state.destination));
+        return;
+      }
       history.replaceState(null, "", "#/dashboard");
       setDestination("dashboard");
       return;

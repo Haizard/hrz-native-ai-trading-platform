@@ -489,6 +489,52 @@
     return { select };
   };
 
+  /* ---- Tabs, keyboard ----------------------------------------------------- */
+  /// One Tab stop and four arrow keys for a strip whose owner already knows
+  /// what selection means.
+  ///
+  /// `UI.tabs` above owns its panels and can therefore move the selection
+  /// itself. The shell's strips cannot: `#inspectorTabs` swaps an inspector
+  /// pane, the dock's swaps a workbench tab, and the dashboard's re-sorts a
+  /// table. So this helper stays out of the meaning entirely -- it moves focus
+  /// and dispatches a click, and the host's own click handler remains the one
+  /// thing that decides what a selection does.
+  ///
+  /// The Tab stop follows `aria-selected`, so a strip is still one stop for a
+  /// keyboard, which is what `role="tablist"` promises. Idempotent: the shell
+  /// calls it after every sync, and a second call only re-reads the selection.
+  const tabKeyboards = new WeakMap();
+  UI.tabKeyboard = function tabKeyboard(root) {
+    let keyboard = tabKeyboards.get(root);
+    if (!keyboard) {
+      const tabs = () => [...root.querySelectorAll('[role="tab"]')];
+      keyboard = {
+        refresh() {
+          const list = tabs();
+          const on = list.find((tab) => tab.getAttribute("aria-selected") === "true") || list[0];
+          for (const tab of list) tab.tabIndex = tab === on ? 0 : -1;
+        },
+      };
+      root.addEventListener("keydown", (event) => {
+        const list = tabs();
+        const at = list.indexOf(document.activeElement);
+        if (at < 0) return;
+        let next = null;
+        if (event.key === "ArrowRight") next = list[(at + 1) % list.length];
+        else if (event.key === "ArrowLeft") next = list[(at - 1 + list.length) % list.length];
+        else if (event.key === "Home") next = list[0];
+        else if (event.key === "End") next = list[list.length - 1];
+        if (!next) return;
+        event.preventDefault();
+        next.focus();
+        next.click();
+      });
+      tabKeyboards.set(root, keyboard);
+    }
+    keyboard.refresh();
+    return keyboard;
+  };
+
   /* ---- Table ------------------------------------------------------------- */
   UI.table = function table(root) {
     const sort = (key) => {
@@ -562,12 +608,12 @@
     const span = max - min || 1;
     const x = (i) => (i / (values.length - 1)) * width;
     const y = (v) => height - 2 - ((v - min) / span) * (height - 4);
-    // Canvas does not resolve `var()` -- read the token's computed value, the
-    // way a stylesheet would, so a theme switch repaints in the new palette.
-    const token = getComputedStyle(canvas)
-      .getPropertyValue(trend === "down" ? "--down" : "--up")
-      .trim();
-    const stroke = token || "currentColor";
+    const token = trend === "down" ? "--down" : "--up";
+    // A canvas paints an unresolved `var(--up)` as nothing at all. Resolve the
+    // token against this canvas's own tree, so a light theme gets its green and
+    // a canvas that is not in the document still gets the literal.
+    const resolved = window.getComputedStyle(canvas).getPropertyValue(token).trim();
+    const stroke = resolved || (trend === "down" ? "#ea3943" : "#16c784");
 
     ctx.beginPath();
     values.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
