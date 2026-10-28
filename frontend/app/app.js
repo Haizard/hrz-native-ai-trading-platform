@@ -247,6 +247,9 @@ async function api(path, options = {}) {
     // One refusal wording for every caller. The prompt filters to the codes it
     // knows, so a plain 400 passes through untouched.
     billingUpgradePrompt(thrown);
+    if (window.HRZLog) {
+      HRZLog.error(`${options.method || "GET"} ${path} — ${message}`);
+    }
     throw thrown;
   }
   return body;
@@ -7418,6 +7421,7 @@ async function saveWorkspaceState() {
     if (window.Shell) Shell.setSaveState("saved", "Saved");
   } catch {
     // A lost save is not worth a toast mid-drag; the next change retries.
+    if (window.HRZLog) HRZLog.warn("workspace save failed — the next change retries");
     if (window.Shell) Shell.setSaveState("failed", "Save failed");
   }
 }
@@ -7673,6 +7677,14 @@ function reconnectMarket(key) {
 }
 
 function notifyMarket(channel, event) {
+  if (window.HRZLog) {
+    // `data` is excluded on purpose: one line per candle frame would fill the
+    // ring before the first reconnect. The events worth keeping are the edges.
+    if (event.type === "open") HRZLog.info(`market ${channel.key} connected`);
+    else if (event.type === "offline") HRZLog.warn(`market ${channel.key} closed`);
+    else if (event.type === "notice") HRZLog.warn(`market ${channel.key}: ${event.message}`);
+    else if (event.type === "lagged") HRZLog.warn(`market ${channel.key} lagged; resyncing`);
+  }
   for (const listener of [...channel.listeners]) {
     try {
       listener(event);
@@ -7968,6 +7980,11 @@ const globalTools = {
 /// corners of the screen.
 function pageToast(message) {
   if (!message) return;
+  // One message, logged once: `api` has just written the same refusal with its
+  // method and path, and repeating the toast's wording an instant later would
+  // make every error look like two.
+  const last = window.HRZLog ? HRZLog.entries().slice(-1)[0] : null;
+  if (window.HRZLog && !(last && last.message.endsWith(message))) HRZLog.info(message);
   HRZUI.toast(message);
 }
 
@@ -9393,6 +9410,57 @@ function watchMonitorForScope() {
   return watchMonitors.find((m) => m.symbol === symbol && m.timeframe === tf) || null;
 }
 
+/// The last events feed read, kept for the dock. The thesis watcher renders
+/// the same list; keeping the array means the dock paints from what the
+/// poller already fetched rather than asking the server a second time.
+let watchEventsLatest = [];
+
+/// The dock's Alerts tab: the server's monitors and their recent touches.
+///
+/// Rebuilt whole on every paint. The list is small and the server is the only
+/// source, so a diff would be more state than it saves -- and a row that kept
+/// its own DOM could show "Watching" after a pause landed.
+function paintDockAlerts() {
+  const rows = el("dockMonitorRows");
+  if (!rows) return;
+  rows.innerHTML = watchMonitors.map((m) => `<div class="dockRow dockRow--alert">
+      <span class="mono">${escapeHtml(m.symbol)} <span class="muted">${escapeHtml(m.timeframe)}</span></span>
+      <span class="${m.enabled ? "up" : "muted"}">${m.enabled ? "Watching" : "Paused"}</span>
+      <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm"
+              data-monitor-toggle="${escapeHtml(m.id)}" data-enabled="${m.enabled ? "true" : "false"}">
+        ${m.enabled ? "Pause" : "Resume"}
+      </button>
+      <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm"
+              data-monitor-delete="${escapeHtml(m.id)}">Delete</button>
+    </div>`).join("");
+  const empty = el("dockMonitorEmpty");
+  if (empty) empty.hidden = watchMonitors.length > 0;
+  const count = el("dockMonitorCount");
+  if (count) count.textContent = watchMonitors.length ? String(watchMonitors.length) : "";
+
+  const events = el("dockEventRows");
+  if (!events) return;
+  events.innerHTML = watchEventsLatest.map((ev) => {
+    const when = new Date(ev.created_at).toLocaleString([], {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    });
+    return `<div class="dockRow dockRow--event">
+      <span class="muted">${escapeHtml(when)}</span>
+      <span class="mono">${escapeHtml(ev.symbol)} ${escapeHtml(ev.timeframe)} — ${escapeHtml(ev.reason)}</span>
+      <span class="${ev.status === "done" ? "up" : "warn"}">${ev.status === "done" ? "done" : "running"}</span>
+    </div>`;
+  }).join("");
+  const eventsEmpty = el("dockEventEmpty");
+  if (eventsEmpty) eventsEmpty.hidden = watchEventsLatest.length > 0;
+}
+
+/// The loader the dock calls for its Alerts tab: paint what is known, then ask.
+function loadDockAlerts() {
+  paintDockAlerts();
+  loadWatchMonitors();
+  loadWatchEvents(false);
+}
+
 function paintWatchToggle() {
   const btn = el("watchToggle");
   if (!btn) return;
@@ -9424,6 +9492,7 @@ async function loadWatchMonitors() {
     watchMonitors = [];
   }
   paintWatchToggle();
+  paintDockAlerts();
 }
 
 async function toggleWatch() {
@@ -9468,10 +9537,15 @@ async function toggleWatch() {
 }
 
 function renderWatchEvents(events) {
+  watchEventsLatest = events;
   const out = el("watchEvents");
-  if (!out) return;
+  if (!out) {
+    paintDockAlerts();
+    return;
+  }
   if (!events.length) {
     out.innerHTML = '<p class="empty">No zone touches yet.</p>';
+    paintDockAlerts();
     return;
   }
   out.innerHTML = events.map((ev) => {
@@ -9483,6 +9557,7 @@ function renderWatchEvents(events) {
       (summary ? '<div class="muted" style="margin-left:18px;">' + escapeHtml(summary) + "</div>" : "") +
       "</div>";
   }).join("");
+  paintDockAlerts();
 }
 
 async function loadWatchEvents(announce) {
@@ -10220,6 +10295,90 @@ function ttOpenPosition(symbol, side, size, entry, leverage) {
   ttSave(TT_POS_KEY, positions);
 }
 
+/// Close one position. The ticket's Close button and the dock's act on the
+/// same row through this, so the two views cannot price a close differently.
+function ttClosePosition(id) {
+  const positions = ttLoad(TT_POS_KEY);
+  const at = positions.findIndex((p) => p.id === id);
+  if (at < 0) return;
+  const [p] = positions.splice(at, 1);
+  ttSave(TT_POS_KEY, positions);
+  const mark = ttState.marks[p.symbol];
+  const pnl = Number.isFinite(mark) ? (mark - p.entry) * p.size * (p.side === "buy" ? 1 : -1) : 0;
+  pageToast(`closed ${p.symbol}: ${(pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toLocaleString("en-US", { maximumFractionDigits: 2 })}`);
+  ttPaint();
+}
+
+/// Cancel a resting order. Keyed by `at`, which the ticket already stamps:
+/// the ledger's entries predate any id, and a timestamp is unique among orders
+/// placed by one person.
+function ttCancelOrder(at) {
+  const orders = ttLoad(TT_ORD_KEY);
+  const index = orders.findIndex((o) => o.at === Number(at));
+  if (index < 0) return;
+  const [o] = orders.splice(index, 1);
+  ttSave(TT_ORD_KEY, orders);
+  pageToast(`cancelled ${o.side} ${o.size} ${o.symbol} @ ${fmtPrice(o.limit)}`);
+  ttPaint();
+}
+
+/// The dock's Orders tab: the local practice ledger, read back.
+///
+/// A projection, not a second ledger. The marks are whatever the ticket last
+/// read; the dock asks for a refresh when it opens, and the ticket's own loop
+/// keeps them current while either surface is on screen.
+function paintDockOrders() {
+  const posRows = el("dockPosRows");
+  if (!posRows) return;
+  const positions = ttLoad(TT_POS_KEY);
+  const orders = ttLoad(TT_ORD_KEY);
+  let open = 0;
+  posRows.innerHTML = positions.map((p) => {
+    const mark = ttState.marks[p.symbol];
+    const pnl = Number.isFinite(mark) ? (mark - p.entry) * p.size * (p.side === "buy" ? 1 : -1) : null;
+    open += pnl || 0;
+    return `<div class="dockRow dockRow--order">
+      <span class="mono">${escapeHtml(p.symbol)}</span>
+      <span class="${p.side === "buy" ? "up" : "down"}">${p.side === "buy" ? "LONG" : "SHORT"} ${p.leverage}×</span>
+      <span>${p.size}</span>
+      <span>${fmtPrice(p.entry)}</span>
+      <span class="${pnl === null ? "muted" : pnl >= 0 ? "up" : "down"}">${pnl === null ? "—" : (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toFixed(2)}</span>
+      <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm" data-close-pos="${escapeHtml(p.id)}">Close</button>
+    </div>`;
+  }).join("");
+  const posEmpty = el("dockPosEmpty");
+  if (posEmpty) posEmpty.hidden = positions.length > 0;
+  const posCount = el("dockPosCount");
+  if (posCount) {
+    posCount.textContent = positions.length
+      ? `${positions.length} · ${open >= 0 ? "+" : "-"}$${Math.abs(open).toFixed(2)}`
+      : "";
+  }
+
+  const ordRows = el("dockOrdRows");
+  if (!ordRows) return;
+  ordRows.innerHTML = orders.map((o) => `<div class="dockRow dockRow--order">
+      <span class="mono">${escapeHtml(o.symbol)}</span>
+      <span class="${o.side === "buy" ? "up" : "down"}">${o.side === "buy" ? "BUY" : "SELL"} ${o.leverage}×</span>
+      <span>${o.size}</span>
+      <span>${fmtPrice(o.limit)}</span>
+      <span class="muted">${fmtPrice(ttState.marks[o.symbol])}</span>
+      <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm" data-cancel-order="${o.at}">Cancel</button>
+    </div>`).join("");
+  const ordEmpty = el("dockOrdEmpty");
+  if (ordEmpty) ordEmpty.hidden = orders.length > 0;
+  const ordCount = el("dockOrdCount");
+  if (ordCount) ordCount.textContent = orders.length ? String(orders.length) : "";
+}
+
+/// The loader the dock calls for its Orders tab. Marks first: a table of P&L
+/// that is three seconds stale is fine, but one that is empty until the next
+/// tick is not.
+function loadDockOrders() {
+  paintDockOrders();
+  ttRefreshMarks();
+}
+
 function ttPaint() {
   const sym = ttActiveSymbol();
   const mark = ttState.marks[sym];
@@ -10250,6 +10409,7 @@ function ttPaint() {
       <span><button type="button" class="tt-close" data-pos="${p.id}">close</button></span>
     </div>`;
   }).join("") || '<div class="tt-pos-row"><span class="muted">no open positions</span></div>';
+  paintDockOrders();
 }
 
 function ttSubmit() {
@@ -10283,22 +10443,17 @@ function ttWire() {
   el("ttSubmit").addEventListener("click", ttSubmit);
   el("ttPosRows").addEventListener("click", (e) => {
     const btn = e.target.closest(".tt-close");
-    if (!btn) return;
-    const positions = ttLoad(TT_POS_KEY);
-    const i = positions.findIndex(p => p.id === btn.dataset.pos);
-    if (i < 0) return;
-    const p = positions[i];
-    const m = ttState.marks[p.symbol];
-    const pnl = Number.isFinite(m) ? (m - p.entry) * p.size * (p.side === "buy" ? 1 : -1) : 0;
-    positions.splice(i, 1);
-    ttSave(TT_POS_KEY, positions);
-    pageToast(`closed ${p.symbol}: ${(pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toLocaleString("en-US", { maximumFractionDigits: 2 })}`);
-    ttPaint();
+    if (btn) ttClosePosition(btn.dataset.pos);
   });
   ttPaintSide(); ttPaintType();
   // The mark loop ticks only while the ticket is on screen.
   ttRefreshMarks();
-  if (!ttTimer) ttTimer = setInterval(() => { if (!el("pane-trade").hidden) ttRefreshMarks(); }, 3000);
+  if (!ttTimer) {
+    ttTimer = setInterval(() => {
+      const dockOrders = el("dockOrders");
+      if (!el("pane-trade").hidden || (dockOrders && !dockOrders.hidden)) ttRefreshMarks();
+    }, 3000);
+  }
 }
 function ttPaintSide() {
   el("ttBuy").classList.toggle("on", ttState.side === "buy");
@@ -12558,6 +12713,54 @@ function wireWatchlist() {
   }
 }
 
+// One delegated listener per dock table: the rows are rebuilt on every poll,
+// and a listener per row would be re-attached as often as the data changes.
+function wireDock() {
+  const monitors = el("dockMonitorRows");
+  if (monitors) {
+    monitors.addEventListener("click", (event) => {
+      const toggle = event.target.closest("[data-monitor-toggle]");
+      if (toggle) {
+        const enabled = toggle.dataset.enabled !== "true";
+        api("/watch-monitors/" + encodeURIComponent(toggle.dataset.monitorToggle), {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        }).then(loadWatchMonitors).catch((error) => pageToast(error.message));
+        return;
+      }
+      const remove = event.target.closest("[data-monitor-delete]");
+      if (remove) {
+        api("/watch-monitors/" + encodeURIComponent(remove.dataset.monitorDelete), {
+          method: "DELETE",
+        }).then(loadWatchMonitors).catch((error) => pageToast(error.message));
+      }
+    });
+  }
+  const positions = el("dockPosRows");
+  if (positions) {
+    positions.addEventListener("click", (event) => {
+      const close = event.target.closest("[data-close-pos]");
+      if (close) ttClosePosition(close.dataset.closePos);
+    });
+  }
+  const orders = el("dockOrdRows");
+  if (orders) {
+    orders.addEventListener("click", (event) => {
+      const cancel = event.target.closest("[data-cancel-order]");
+      if (cancel) ttCancelOrder(cancel.dataset.cancelOrder);
+    });
+  }
+  // The dock is a summary; placing an order stays in the ticket. The button
+  // goes there rather than duplicating the form in a 240px drawer.
+  const ticket = el("dockOpenTicket");
+  if (ticket) {
+    ticket.addEventListener("click", () => {
+      if (window.Shell) Shell.go("charts", { inspectorTab: "trade" });
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Broker connections (`/brokers`) -- the user's own exchange accounts.
 //
@@ -13484,6 +13687,17 @@ function runPaneLoaders(name) {
   if (name === "community") loadCommunity();
   if (name === "skills") loadSkills();
   if (name === "strategy") loadLibrary();
+  // The dock's two tabs return before the watchlist branch: they are panels on
+  // the Charts destination, and the trailing `else` would stop the rail's
+  // ticker for a user who never left the page.
+  if (name === "alerts") {
+    loadDockAlerts();
+    return;
+  }
+  if (name === "orders") {
+    loadDockOrders();
+    return;
+  }
   if (name === "watchlist") {
     renderWatchlist();
     loadWatchlistUniverse();
@@ -13535,6 +13749,7 @@ async function main() {
   Theme.onChange(() => paintIcons(document));
 
   wireWatchlist();
+  wireDock();
   // The watchlist has no aside tab any more (it lives in its own rail), so
   // nothing else would ever call its pane path -- the rail prices itself here,
   // once, and the rail's own interactions keep it current after that. The pane

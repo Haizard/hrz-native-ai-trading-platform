@@ -419,6 +419,21 @@ const backend = {
   // nobody chose.
   agentCapability: "ready",
   meStatus: 200,
+  // The dock's three sources. Two monitors -- one enabled, one paused -- so a
+  // check can tell "Pause" from "Resume" without first pressing Pause; one
+  // event, so the touches list has a row and the dock's two sections are both
+  // non-empty at once.
+  monitors: [
+    { id: "mon-1", symbol: "BTCUSDT", timeframe: "5m", enabled: true, created_at: "2026-10-27T09:00:00Z" },
+    { id: "mon-2", symbol: "ETHUSDT", timeframe: "1h", enabled: false, created_at: "2026-10-26T09:00:00Z" },
+  ],
+  watchEvents: [
+    {
+      id: "ev-1", symbol: "BTCUSDT", timeframe: "5m",
+      reason: "price touched the lower demand zone", status: "done",
+      summary: "the agent re-read the chart and held", created_at: "2026-10-27T09:30:00Z",
+    },
+  ],
   // The answer `GET /scan` gives. Two ranked rows, one failure and a note, which
   // is the shape that makes the panel's three regions all visible at once --
   // ranked first, the unmeasured in their own fold, and the caveat below. A
@@ -856,6 +871,32 @@ window.fetch = async (path, options = {}) => {
     return json(200, []);
   }
 
+  // The dock's Alerts tab. `PATCH` and `DELETE` store the change rather than
+  // answering a fixed list: a stub that ignored either would let "Pause" pass
+  // while the row still said Watching, which is the one thing this tab is for.
+  if (url.startsWith("/watch-monitors")) {
+    const id = url.split("/")[2];
+    if (method === "PATCH") {
+      const body = JSON.parse(options.body || "{}");
+      const monitor = backend.monitors.find((m) => m.id === id);
+      if (monitor) monitor.enabled = Boolean(body.enabled);
+      return json(200, monitor || {});
+    }
+    if (method === "DELETE") {
+      backend.monitors = backend.monitors.filter((m) => m.id !== id);
+      return json(204, null);
+    }
+    return json(200, { monitors: backend.monitors });
+  }
+  if (url.startsWith("/watch-events")) {
+    return json(200, { events: backend.watchEvents });
+  }
+  // The dock's Orders tab reads the local ledger; this route is the ticket's
+  // server-side contract list, which the tab only links to.
+  if (url.startsWith("/trade/portfolio")) {
+    return json(200, []);
+  }
+
   if (url.startsWith("/capabilities")) {
     const agent = backend.agentCapability;
     return json(200, {
@@ -1211,6 +1252,7 @@ for (const file of [
   "frontend/app/ui/theme.js",
   "frontend/app/ui/icons.js",
   "frontend/app/ui/components.js",
+  "frontend/app/ui/log.js",
 ]) {
   const head = document.createElement("script");
   head.textContent = await readFile(join(root, file), "utf8");
@@ -1647,6 +1689,179 @@ check(
     document.getElementById("dfBars").textContent === "500 bars" &&
     document.getElementById("dfAccount").textContent === "harness@example.test",
   `${document.getElementById("dfChart").textContent} · ${document.getElementById("dfBars").textContent} · ${document.getElementById("dfAccount").textContent}`
+);
+
+// --- the dock ----------------------------------------------------------------
+//
+// The tab bar is the dock when it is shut, which is what makes the Console's
+// unread dot worth having. Every check below drives a real control and reads
+// the panel back; none of them calls the paint functions directly.
+
+console.log("\nthe dock");
+
+const dockNode = () => document.getElementById("dock");
+const dockTab = (name) => document.querySelector(`#dock [data-dock="${name}"]`);
+// The dot is a count, not a flag, and the session already logged lines before
+// this section -- so the check reads the number the tab carries rather than
+// assuming this warning is the first thing ever logged.
+const consoleBadge = () => {
+  const match = /(\d+) new/.exec(dockTab("console").getAttribute("aria-label") || "");
+  return match ? Number(match[1]) : 0;
+};
+
+check(
+  "the dock's tab bar is on screen on Charts, with its body shut",
+  dockNode().hidden === false && dockNode().dataset.open === "false" &&
+    document.getElementById("dockBody").hidden === true,
+  `hidden=${dockNode().hidden} open=${dockNode().dataset.open} body=${document.getElementById("dockBody").hidden}`
+);
+
+const badgeBefore = consoleBadge();
+window.HRZLog.warn("a warning from the harness");
+check(
+  "a line logged while the console is shut marks its tab",
+  dockTab("console").dataset.unread === "true" && consoleBadge() === badgeBefore + 1,
+  `${dockTab("console").getAttribute("aria-label")} (was ${badgeBefore})`
+);
+
+dockTab("alerts").click();
+await waitFor(
+  () => document.querySelectorAll("#dockMonitorRows .dockRow").length === 2,
+  "the monitors load into the dock"
+);
+check(
+  "the Alerts tab opens the dock and lists the server's monitors",
+  dockNode().dataset.open === "true" &&
+    document.getElementById("dockAlerts").hidden === false &&
+    document.getElementById("dockMonitorCount").textContent === "2" &&
+    document.querySelectorAll("#dockEventRows .dockRow").length === 1,
+  `${document.querySelectorAll("#dockMonitorRows .dockRow").length} monitors · ${document.querySelectorAll("#dockEventRows .dockRow").length} events`
+);
+
+document.querySelector('#dockMonitorRows [data-monitor-toggle="mon-1"]').click();
+await waitFor(
+  () => document.querySelector('#dockMonitorRows [data-monitor-toggle="mon-1"]').textContent.trim() === "Resume",
+  "the pause reaches the row"
+);
+check(
+  "Pause sends the PATCH and the row follows the server's answer",
+  backend.calls.some((call) => call.method === "PATCH" && call.url === "/watch-monitors/mon-1") &&
+    document.querySelector('#dockMonitorRows [data-monitor-toggle="mon-1"]').dataset.enabled === "false"
+);
+
+document.querySelector('#dockMonitorRows [data-monitor-delete="mon-2"]').click();
+await waitFor(
+  () => document.querySelectorAll("#dockMonitorRows .dockRow").length === 1,
+  "the deleted monitor leaves the list"
+);
+check(
+  "Delete sends the DELETE and the deleted scope leaves the list",
+  backend.calls.some((call) => call.method === "DELETE" && call.url === "/watch-monitors/mon-2")
+);
+
+// The ledger is localStorage, so seeding it is the same act as opening a
+// position -- except that no toast fires and no mark is needed for the row.
+window.localStorage.setItem("paper.positions.v1", JSON.stringify([
+  { id: "p1", symbol: "BTCUSDT", side: "buy", size: 1, entry: 100, leverage: 5, liq: 82, at: 1 },
+]));
+window.localStorage.setItem("paper.orders.v1", JSON.stringify([
+  { symbol: "ETHUSDT", side: "sell", size: 2, limit: 1000000, leverage: 10, at: 2 },
+]));
+dockTab("orders").click();
+await settle();
+check(
+  "the Orders tab reads the practice ledger back",
+  document.getElementById("dockOrders").hidden === false &&
+    document.querySelectorAll("#dockPosRows .dockRow").length === 1 &&
+    document.querySelectorAll("#dockOrdRows .dockRow").length === 1 &&
+    document.getElementById("dockPosCount").textContent.includes("1"),
+  `${document.querySelectorAll("#dockPosRows .dockRow").length} positions · ${document.querySelectorAll("#dockOrdRows .dockRow").length} orders`
+);
+
+document.querySelector("#dockPosRows [data-close-pos]").click();
+await settle();
+check(
+  "Close on a dock row closes the same position the ticket owns",
+  document.querySelectorAll("#dockPosRows .dockRow").length === 0 &&
+    document.getElementById("dockPosEmpty").hidden === false &&
+    JSON.parse(window.localStorage.getItem("paper.positions.v1") || "[]").length === 0
+);
+
+document.querySelector("#dockOrdRows [data-cancel-order]").click();
+await settle();
+check(
+  "Cancel removes the resting order",
+  document.querySelectorAll("#dockOrdRows .dockRow").length === 0 &&
+    JSON.parse(window.localStorage.getItem("paper.orders.v1") || "[]").length === 0
+);
+
+dockTab("console").click();
+await waitFor(
+  () => document.querySelectorAll("#consoleRows .consoleRow").length >= 2,
+  "the console prints what was logged"
+);
+// The lines in between come from the dock's own actions -- closing a position
+// toasts, and a toast is a log line. So the check reads the ring the page
+// actually holds: the console prints all of it, in order, and the harness's
+// warning is still somewhere in the middle of it.
+const logged = window.HRZLog.entries();
+check(
+  "the Console prints the session's log, newest last, and clears the unread mark",
+  dockTab("console").dataset.unread === "false" &&
+    document.getElementById("dockConsole").hidden === false &&
+    document.querySelectorAll("#consoleRows .consoleRow").length === logged.length &&
+    document.getElementById("consoleRows").lastElementChild.textContent.includes(
+      logged[logged.length - 1].message
+    ) &&
+    [...document.querySelectorAll("#consoleRows .consoleMsg")].some(
+      (node) => node.textContent === "a warning from the harness"
+    ),
+  `${document.querySelectorAll("#consoleRows .consoleRow").length} lines / ${logged.length} logged`
+);
+
+document.getElementById("consoleClear").click();
+await settle();
+check(
+  "Clear empties the console and the empty state takes over",
+  window.HRZLog.entries().length === 0 &&
+    document.querySelectorAll("#consoleRows .consoleRow").length === 0 &&
+    document.getElementById("consoleEmpty").hidden === false
+);
+
+for (let line = 0; line < 205; line += 1) window.HRZLog.info(`line ${line}`);
+check(
+  "the ring keeps the newest 200 lines and drops the oldest",
+  window.HRZLog.entries().length === 200 &&
+    window.HRZLog.entries()[199].message === "line 204"
+);
+
+document.getElementById("dockCollapse").click();
+await settle();
+check(
+  "the chevron shuts the body and leaves the tab bar",
+  dockNode().dataset.open === "false" &&
+    document.getElementById("dockBody").hidden === true &&
+    dockNode().hidden === false
+);
+
+window.HRZLog.warn("logged while the dock is shut");
+check(
+  "a line logged after the dock shuts marks the Console tab",
+  dockTab("console").dataset.unread === "true"
+);
+
+if (window.Shell) window.Shell.go("dashboard");
+await settle();
+check(
+  "leaving Charts takes the dock off screen",
+  dockNode().hidden === true
+);
+
+if (window.Shell) window.Shell.go("charts");
+await settle();
+check(
+  "returning restores the tab bar, still shut",
+  dockNode().hidden === false && dockNode().dataset.open === "false"
 );
 
 // --- the layout at a narrow width --------------------------------------------

@@ -578,7 +578,60 @@
           <span data-icon="chevron-down"></span>
         </button>
       </div>
-      <div class="dockBody" id="dockBody"></div>
+      <div class="dockBody" id="dockBody">
+        <!--
+          Alerts and Orders are projections, not stores. The monitors live on the
+          server and the practice ledger lives in localStorage; both are painted
+          here from that state, so a pause pressed in the dock and a pause pressed
+          in the chart's thesis cannot disagree about what is watched.
+        -->
+        <div class="dockPanel" id="dockAlerts" hidden>
+          <section class="dockSection">
+            <div class="dockSectionHead">
+              <h2>Watched scopes</h2>
+              <span id="dockMonitorCount" class="muted"></span>
+            </div>
+            <div class="dockRows" id="dockMonitorRows"></div>
+            <p class="empty" id="dockMonitorEmpty" hidden>
+              Nothing watched yet — open a chart and press Watch in its thesis.
+            </p>
+          </section>
+          <section class="dockSection">
+            <div class="dockSectionHead"><h2>Recent touches</h2></div>
+            <div class="dockRows" id="dockEventRows"></div>
+            <p class="empty" id="dockEventEmpty" hidden>No zone touches yet.</p>
+          </section>
+        </div>
+        <div class="dockPanel" id="dockOrders" hidden>
+          <section class="dockSection">
+            <div class="dockSectionHead">
+              <h2>Paper positions</h2>
+              <span id="dockPosCount" class="muted"></span>
+              <span class="spacer"></span>
+              <button id="dockOpenTicket" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">Open ticket</button>
+            </div>
+            <div class="dockRows" id="dockPosRows"></div>
+            <p class="empty" id="dockPosEmpty" hidden>No open positions.</p>
+          </section>
+          <section class="dockSection">
+            <div class="dockSectionHead">
+              <h2>Resting orders</h2>
+              <span id="dockOrdCount" class="muted"></span>
+            </div>
+            <div class="dockRows" id="dockOrdRows"></div>
+            <p class="empty" id="dockOrdEmpty" hidden>No resting orders.</p>
+          </section>
+        </div>
+        <div class="dockPanel dockConsole" id="dockConsole" hidden>
+          <div class="dockSectionHead">
+            <h2>Console</h2>
+            <span class="spacer"></span>
+            <button id="consoleClear" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">Clear</button>
+          </div>
+          <ol class="consoleRows" id="consoleRows"></ol>
+          <p class="empty" id="consoleEmpty">Nothing logged yet.</p>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1503,6 +1556,7 @@
 
 <script src="/assets/ui/icons.js"></script>
 <script src="/assets/ui/components.js"></script>
+<script src="/assets/ui/log.js"></script>
 <script src="/assets/views/shell.js"></script>
 <script src="/assets/views/palette.js"></script>
 <script src="/assets/views/instrument_bar.js"></script>

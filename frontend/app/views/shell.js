@@ -51,11 +51,9 @@
     billing: "accountHost", brokers: "accountHost", aimodel: "accountHost",
   };
   const DOCK_TABS = ["studio", "alerts", "orders", "console"];
-  const DOCK_PLACEHOLDER = {
-    alerts: "Watch monitors and recent watch events arrive in M4.",
-    orders: "Today's practice fills and open positions arrive in M4.",
-    console: "The client event log arrives in M4.",
-  };
+  /// The dock tabs whose body is a panel in `#dockBody`. Studio has no entry:
+  /// its body is `pane-indicator`, moved in by `mountIndicator`.
+  const DOCK_PANELS = { alerts: "dockAlerts", orders: "dockOrders", console: "dockConsole" };
   const DOCK_DEFAULT_HEIGHT = 240;
   const DOCK_MIN_HEIGHT = 160;
 
@@ -132,14 +130,6 @@
       const pane = el(`pane-${name}`);
       const host = el(hostId);
       if (pane && host && pane.parentElement !== host) host.appendChild(pane);
-    }
-    const dockBody = el("dockBody");
-    if (dockBody && !el("dockPanel")) {
-      const panel = document.createElement("div");
-      panel.id = "dockPanel";
-      panel.className = "dockPlaceholder";
-      panel.hidden = true;
-      dockBody.appendChild(panel);
     }
     for (const pane of managed()) pane.hidden = true;
   }
@@ -221,18 +211,88 @@
     }
   }
 
+  /// Unread lines since the Console was last looked at. Reset by `loadDock`,
+  /// not by the paint: a log line arriving while the tab is open must not
+  /// raise a badge for output the user can see.
+  let consoleUnread = 0;
+
+  function paintConsole() {
+    const list = el("consoleRows");
+    if (!list) return;
+    const entries = window.HRZLog ? HRZLog.entries() : [];
+    list.replaceChildren(...entries.map((entry) => {
+      const row = document.createElement("li");
+      row.className = `consoleRow consoleRow--${entry.level}`;
+      const time = document.createElement("span");
+      time.className = "consoleTime";
+      time.textContent = new Date(entry.at).toLocaleTimeString([], { hour12: false });
+      const message = document.createElement("span");
+      message.className = "consoleMsg";
+      message.textContent = entry.message;
+      row.append(time, message);
+      return row;
+    }));
+    const empty = el("consoleEmpty");
+    if (empty) empty.hidden = entries.length > 0;
+    // Newest at the bottom, and the view follows the bottom: the line that
+    // explains the last line is the one above it.
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function paintConsoleBadge() {
+    const tab = document.querySelector('#dock [data-dock="console"]');
+    if (!tab) return;
+    const unread = consoleUnread > 0;
+    tab.dataset.unread = unread ? "true" : "false";
+    tab.setAttribute(
+      "aria-label",
+      unread
+        ? `Console, ${consoleUnread} new ${consoleUnread === 1 ? "message" : "messages"}`
+        : "Console"
+    );
+  }
+
+  function noteLog(entry) {
+    const looking =
+      state.destination === "charts" && state.dockOpen && state.dockTab === "console";
+    if (looking) {
+      paintConsole();
+      return;
+    }
+    // A clear is not news. The event carries a null entry for it, and the
+    // badge is about lines that arrived, not about lines that left.
+    if (!entry) return;
+    consoleUnread += 1;
+    paintConsoleBadge();
+  }
+
   function syncDock() {
-    const open = state.destination === "charts" && state.dockOpen;
+    const onCharts = state.destination === "charts";
+    const open = onCharts && state.dockOpen;
     const dock = el("dock");
-    if (dock) dock.hidden = !open;
+    if (dock) {
+      dock.hidden = !onCharts;
+      dock.dataset.open = open ? "true" : "false";
+    }
+    // The body is hidden by attribute, not only by height: the panels inside it
+    // are focusable, and a 0-height scroller is still in the tab order.
+    const body = el("dockBody");
+    if (body) body.hidden = !open;
     applyDockHeight();
     for (const button of document.querySelectorAll("#dock [data-dock]")) {
       button.setAttribute("aria-selected", String(button.dataset.dock === state.dockTab));
     }
-    const panel = el("dockPanel");
-    if (panel) {
-      panel.hidden = state.dockTab === "studio";
-      if (!panel.hidden) panel.textContent = DOCK_PLACEHOLDER[state.dockTab] || "";
+    // One panel per tab, none rebuilt on switch: the console keeps its scroll
+    // position and the alerts keep the rows their last poll produced.
+    for (const [tab, id] of Object.entries(DOCK_PANELS)) {
+      const panel = el(id);
+      if (panel) panel.hidden = state.dockTab !== tab;
+    }
+    const collapse = el("dockCollapse");
+    if (collapse) {
+      collapse.setAttribute("aria-expanded", String(open));
+      collapse.setAttribute("aria-label", open ? "Collapse the dock" : "Expand the dock");
+      collapse.title = open ? "Collapse" : "Expand";
     }
     const toggle = el("dockToggle");
     if (toggle) toggle.setAttribute("aria-pressed", String(open));
@@ -487,7 +547,13 @@
     // The rail prices itself only while it is on screen: the ticker has no
     // reason to keep running behind Studio, and the way back to Charts is
     // supposed to find it fresh rather than waiting for the next tick.
-    if (state.destination === "charts") load("watchlist");
+    if (state.destination === "charts") {
+      load("watchlist");
+      // A restored workspace can open on Alerts, Orders or Console, and no tab
+      // click happens in that case -- the panel would sit empty until the user
+      // switched away and back.
+      if (state.dockOpen) loadDock(state.dockTab);
+    }
     else if (state.destination === "studio") load(state.studioPane);
     else if (state.destination === "community") load("community");
     else if (state.destination === "bots") load("bots");
@@ -537,7 +603,17 @@
   }
 
   function loadDock(tab) {
-    if (tab === "studio" && app().runPaneLoaders) app().runPaneLoaders("indicator");
+    if (tab === "console") {
+      // Opening the console is reading it: the dot that said "there is
+      // something new" is answered by the paint below.
+      consoleUnread = 0;
+      paintConsoleBadge();
+      paintConsole();
+      return;
+    }
+    if (app().runPaneLoaders) {
+      app().runPaneLoaders(tab === "studio" ? "indicator" : tab);
+    }
   }
 
   function selectDockTab(tab) {
@@ -804,7 +880,23 @@
       button.addEventListener("click", () => selectDockTab(button.dataset.dock));
     }
     const collapse = el("dockCollapse");
-    if (collapse) collapse.addEventListener("click", closeDock);
+    if (collapse) {
+      // The chevron collapses the body, not the bar: the bar is where the
+      // Console's dot lives when the dock is shut.
+      collapse.addEventListener("click", () => {
+        if (state.dockOpen) closeDock();
+        else openDock(state.dockTab);
+      });
+    }
+    const consoleClear = el("consoleClear");
+    if (consoleClear) {
+      consoleClear.addEventListener("click", () => {
+        if (window.HRZLog) HRZLog.clear();
+      });
+    }
+    document.addEventListener("hrz:log", (event) => {
+      noteLog(event.detail && event.detail.entry);
+    });
     const dockTabs = document.querySelector("#dock .dockTabs");
     if (dockTabs) {
       dockTabs.addEventListener("dblclick", () => {
@@ -848,8 +940,8 @@
       toStudio.addEventListener("click", () => go("studio", { studioPane: "indicator" }));
     }
     // Alerts is the dock's tab: the same watch events that fire for every
-    // chart, not a list owned by this layer. Task 13 fills the tab; until
-    // then it opens the dock's placeholder.
+    // chart, not a list owned by this layer. The dock paints them from the
+    // server's monitors, so this button opens a tab that already has content.
     const alerts = el("indicatorAlerts");
     if (alerts) alerts.addEventListener("click", () => openDock("alerts"));
     const theme = el("profileTheme");
