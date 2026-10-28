@@ -106,6 +106,34 @@ const dom = new JSDOM(html, {
 const { window } = dom;
 const { document } = window;
 
+// --- the modal the browser gives you, which jsdom does not ------------------
+
+// jsdom 30 parses `<dialog>` and its `open` attribute but ships neither
+// `showModal` nor `close`, so every panel, drawer and popover in this harness
+// would throw the first time the page asked to be a modal. What the platform
+// actually provides -- the top layer, the scrim, the focus trap, inert
+// background -- is not implementable here and is checked by hand in a browser.
+// This stands in for the two methods and the two events, which is enough to
+// drive the shell's own decisions: which host is showing, what the address says,
+// and where focus goes when the box closes.
+{
+  const proto = window.HTMLDialogElement && window.HTMLDialogElement.prototype;
+  if (proto && !proto.showModal) {
+    proto.showModal = function showModal() {
+      this.open = true;
+    };
+    proto.show = function show() {
+      this.open = true;
+    };
+    proto.close = function close(returnValue) {
+      if (!this.open) return;
+      this.open = false;
+      if (returnValue !== undefined) this.returnValue = String(returnValue);
+      this.dispatchEvent(new window.Event("close"));
+    };
+  }
+}
+
 // --- what the shell is allowed to believe about its surroundings -------------
 
 // A 2D context that records. `getContext` is called once per frame per pane by
@@ -1099,6 +1127,22 @@ window.fetch = async (path, options = {}) => {
   if (url.startsWith("/indicator-workspaces")) {
     return json(200, [
       { id: "ws-liquidity", name: "Liquidity sweep", symbol: "BTCUSDT", timeframe: "15m" },
+    ]);
+  }
+
+  // The account panel's Brokers tab, in both halves: the venues a deployment
+  // offers and the accounts this user has connected. Both are lists, because
+  // both are iterated -- an empty object from here is what the panel's own check
+  // in the harness used to trip over.
+  if (url.startsWith("/brokers/available")) {
+    return json(200, [
+      { venue: "binance", name: "Binance" },
+      { venue: "bybit", name: "Bybit" },
+    ]);
+  }
+  if (url.startsWith("/brokers")) {
+    return json(200, [
+      { venue: "binance", label: "main", status: "connected", last_error: "" },
     ]);
   }
 
@@ -2384,9 +2428,10 @@ check(
   `${window.location.hash} hidden=${document.getElementById("dest-charts").hidden}`
 );
 check(
-  "the landmarks are named: main, destinations, inspector, status",
+  "the landmarks are named: main, views, panels, inspector, status",
   document.getElementById("mainView").tagName === "MAIN" &&
-    document.getElementById("rail").getAttribute("aria-label") === "Destinations" &&
+    document.getElementById("topNav").getAttribute("aria-label") === "Views" &&
+    document.getElementById("panelNav").getAttribute("aria-label") === "Panels" &&
     document.getElementById("inspector").getAttribute("aria-label") === "Inspector" &&
     document.getElementById("statusbar").tagName === "FOOTER"
 );
@@ -2415,12 +2460,20 @@ check(
 );
 const a11yDestinations = [...document.querySelectorAll("#mainView .destination")];
 check(
-  "every destination has exactly one h1",
-  a11yDestinations.length === 6 &&
+  "every view has exactly one h1",
+  a11yDestinations.length === 3 &&
     a11yDestinations.every((section) => section.querySelectorAll("h1").length === 1),
   a11yDestinations
     .map((section) => `${section.id}:${section.querySelectorAll("h1").length}`)
     .join(" ")
+);
+// A panel floats over a page that already owns the heading, so it cannot claim a
+// second h1 -- it is a section of the screen the user is on, titled by its own h2.
+check(
+  "the panel is titled by an h2 and carries no h1",
+  document.querySelectorAll("#workPanel h1").length === 0 &&
+    document.querySelectorAll("#workPanel .hrz-dialog__head h2").length === 1,
+  `${document.querySelectorAll("#workPanel h1").length} h1 · ${document.querySelectorAll("#workPanel .hrz-dialog__head h2").length} h2`
 );
 const a11yPositive = [...document.querySelectorAll("[tabindex]")].filter(
   (node) => Number(node.getAttribute("tabindex")) > 0
@@ -2643,12 +2696,26 @@ check(
   ruleIn(responsiveBlock(1023), "#sideWatch").trim().slice(0, 60) || "(no drawer)"
 );
 check(
-  "at 767 the rail and status bar give way to the bottom nav",
-  /display:\s*none/.test(ruleIn(responsiveBlock(767), "#rail")) &&
+  "at 767 the views and the status bar give way to the bottom nav",
+  /display:\s*none/.test(ruleIn(responsiveBlock(767), "#topNav")) &&
     /display:\s*none/.test(ruleIn(responsiveBlock(767), "#statusbar")) &&
     /display:\s*flex/.test(ruleIn(responsiveBlock(767), ".phoneNav")) &&
     /--topbar-h:\s*48px/.test(ruleIn(responsiveBlock(767), ":root")),
   ruleIn(responsiveBlock(767), ":root").trim() || "(no :root rule)"
+);
+// The panel is the one surface that is wider on a phone than on a desktop: it
+// has the whole screen and needs it. Three widths, one sheet -- the size the
+// route asked for cannot make a phone show a 520px column with 40px of chart.
+const panelSheet = [...responsiveBlock(767).matchAll(/([^{}]+)\{([^}]*)\}/g)]
+  .map(([, selector, body]) => ({ selector, body }))
+  .find((rule) => rule.selector.includes(".hrz-dialog--panel")) || { selector: "", body: "" };
+check(
+  "and the panel is a sheet at every width it can be asked for",
+  /width:\s*100%/.test(panelSheet.body) &&
+    /max-width:\s*100%/.test(panelSheet.body) &&
+    ["", '[data-width="narrow"]', '[data-width="medium"]', '[data-width="wide"]']
+      .every((suffix) => panelSheet.selector.includes(`.hrz-dialog--panel${suffix}`)),
+  panelSheet.selector.replace(/\s+/g, " ").trim() || "(no panel rule)"
 );
 check(
   "and the wall stacks one chart per screen",
@@ -2666,10 +2733,11 @@ check(
 );
 
 check(
-  "the bottom nav is the rail on a phone",
-  document.querySelectorAll("#phoneNav [data-dest]").length === 6 &&
-    document.getElementById("phoneNav").hidden === false,
-  `${document.querySelectorAll("#phoneNav [data-dest]").length} destinations · hidden=${document.getElementById("phoneNav").hidden}`
+  "the bottom nav is the view list on a phone",
+  document.querySelectorAll("#phoneNav [data-dest]").length === 3 &&
+    document.getElementById("phoneNav").hidden === false &&
+    document.querySelectorAll("#phoneNav [data-open-panel]").length === 0,
+  `${document.querySelectorAll("#phoneNav [data-dest]").length} views · hidden=${document.getElementById("phoneNav").hidden}`
 );
 document.querySelector("#phoneNav [data-dest='dashboard']").click();
 await settle();
@@ -2677,11 +2745,174 @@ check(
   "and its buttons are the router, not a second one",
   document.getElementById("dest-dashboard").hidden === false &&
     document.querySelector("#phoneNav [data-dest='dashboard']").getAttribute("aria-current") === "page" &&
-    document.querySelector("#rail [data-dest='dashboard']").getAttribute("aria-current") === "page",
-  `phone=${document.querySelector("#phoneNav [data-dest='dashboard']").getAttribute("aria-current")} rail=${document.querySelector("#rail [data-dest='dashboard']").getAttribute("aria-current")}`
+    document.querySelector("#topNav [data-dest='dashboard']").getAttribute("aria-current") === "page",
+  `phone=${document.querySelector("#phoneNav [data-dest='dashboard']").getAttribute("aria-current")} top=${document.querySelector("#topNav [data-dest='dashboard']").getAttribute("aria-current")}`
 );
 document.querySelector("#phoneNav [data-dest='charts']").click();
 await settle();
+
+// --- the panels that float over the frame ------------------------------------
+//
+// Community, Bots and Account are not destinations any more: they are one modal
+// that the address bar is allowed to name. Everything the shell promises about
+// that modal is decided here -- which host is on screen, what the address says,
+// and whether the two can ever disagree.
+//
+// What this file cannot check is the modal's own furniture: the top layer, the
+// scrim, the focus trap. jsdom has no `showModal`, and the shim above stands in
+// for the two methods and the two events the shell calls. The primitive's own
+// behaviour is asserted in `ui_check`; what follows is the shell's use of it.
+
+console.log("\nthe panels that float over the frame");
+
+const panelEl = () => document.getElementById("workPanel");
+const panelShown = (name) => {
+  const body = document.getElementById(`panelBody-${name}`);
+  return Boolean(body) && body.hidden === false;
+};
+const panelTrigger = (name) => document.querySelector(`[data-open-panel="${name}"]`);
+const panelCalls = (prefix) => backend.calls.filter((call) => call.url.startsWith(prefix)).length;
+
+const communityCalls = panelCalls("/community");
+check(
+  "a panel nobody opened asked for nothing",
+  communityCalls === 0,
+  `${communityCalls} /community call(s)`
+);
+
+panelTrigger("community").focus();
+panelTrigger("community").click();
+await settle();
+check(
+  "the trigger floats a modal over the page it is on",
+  panelEl().open === true && panelShown("community") && !panelShown("bots") &&
+    document.getElementById("dest-charts").hidden === false,
+  `open=${panelEl().open} community=${panelShown("community")}`
+);
+check(
+  "and the address names both the page and the panel",
+  window.location.hash === "#/charts/community",
+  window.location.hash
+);
+check(
+  "the icon that opened it says the door is open",
+  panelTrigger("community").getAttribute("aria-expanded") === "true" &&
+    panelTrigger("account").getAttribute("aria-expanded") === "false",
+  `community=${panelTrigger("community").getAttribute("aria-expanded")} account=${panelTrigger("account").getAttribute("aria-expanded")}`
+);
+check(
+  "the head carries the panel's name, width and selection",
+  document.getElementById("workPanelTitle").textContent === "Community" &&
+    panelEl().dataset.width === "wide" &&
+    document.getElementById("panelTab-community").getAttribute("aria-selected") === "true",
+  `${document.getElementById("workPanelTitle").textContent} ${panelEl().dataset.width}`
+);
+check(
+  "and opening it is the first time the library is fetched",
+  panelCalls("/community") > communityCalls,
+  `${panelCalls("/community") - communityCalls} call(s)`
+);
+
+document.getElementById("panelTab-bots").click();
+await settle();
+check(
+  "a head tab is a route change, not a second modal",
+  panelEl().open === true && panelShown("bots") && !panelShown("community") &&
+    window.location.hash === "#/charts/bots",
+  `${panelEl().open} ${window.location.hash}`
+);
+
+const closeBox = document.getElementById("workPanelClose");
+closeBox.click();
+await settle();
+check(
+  "the close button asks the route, which puts the panel away",
+  panelEl().open === false && window.location.hash === "#/charts" &&
+    document.getElementById("dest-charts").hidden === false,
+  `open=${panelEl().open} ${window.location.hash}`
+);
+check(
+  "and focus goes back to the icon of the face that was showing",
+  document.activeElement === panelTrigger("bots"),
+  document.activeElement.getAttribute("data-open-panel") ||
+    document.activeElement.id || document.activeElement.tagName
+);
+
+panelTrigger("bots").click();
+await settle();
+const escapeAsk = new window.Event("cancel", { cancelable: true });
+panelEl().dispatchEvent(escapeAsk);
+await settle();
+check(
+  "Escape is answered rather than taken, so the address never keeps a panel",
+  escapeAsk.defaultPrevented === true && panelEl().open === false &&
+    window.location.hash === "#/charts",
+  `prevented=${escapeAsk.defaultPrevented} ${window.location.hash}`
+);
+
+panelTrigger("community").click();
+await settle();
+window.location.hash = "#/charts";
+await settle();
+check(
+  "a Back press leaves the screen it came from, panel and all",
+  panelEl().open === false && window.location.hash === "#/charts" &&
+    document.getElementById("dest-charts").hidden === false,
+  `open=${panelEl().open} ${window.location.hash}`
+);
+
+// The address the bar had when these three were destinations is still a link to
+// the same content, and is rewritten to the shape the shell writes on reload.
+window.location.hash = "#/community";
+await settle();
+check(
+  "the old shape of the address still opens the panel",
+  panelShown("community") && window.location.hash === "#/charts/community",
+  `${panelShown("community")} ${window.location.hash}`
+);
+
+// Nothing pointed at that panel -- an address bar did. The icon is still the
+// door it came through, so it is the door closing hands focus back to.
+document.getElementById("workPanelClose").click();
+await settle();
+check(
+  "a panel the address opened hands focus to its icon",
+  panelEl().open === false && document.activeElement === panelTrigger("community"),
+  `${panelEl().open} ${document.activeElement.getAttribute("data-open-panel")}`
+);
+
+panelTrigger("account").click();
+await settle();
+check(
+  "the avatar opens the account panel on its first section",
+  panelShown("account") && window.location.hash === "#/charts/account/plan",
+  window.location.hash
+);
+document.querySelector('#accountTabs [data-account="brokers"]').click();
+await settle();
+check(
+  "and a section is a deeper address, not a second panel",
+  panelShown("account") && !panelShown("bots") &&
+    window.location.hash === "#/charts/account/brokers" &&
+    document.querySelector('#accountTabs [data-account="brokers"]').getAttribute("aria-selected") === "true",
+  window.location.hash
+);
+
+const tickerBefore = clocksNamed("fetchWatchlistTickers");
+check(
+  "the rail under the modal keeps its clock",
+  tickerBefore === 1,
+  `${tickerBefore} watchlist ticker(s)`
+);
+
+document.querySelector("#topNav [data-dest='dashboard']").click();
+await settle();
+check(
+  "switching view puts the panel away and leaves the address a page",
+  panelEl().open === false && window.location.hash === "#/dashboard" &&
+    document.getElementById("dest-dashboard").hidden === false,
+  `${panelEl().open} ${window.location.hash}`
+);
 
 // --- placing a drawing -------------------------------------------------------
 //
@@ -5225,6 +5456,41 @@ document.dispatchEvent(new window.KeyboardEvent("keydown", {
   cancelable: true,
 }));
 check("and Alt+2 comes back to Charts", window.location.hash === "#/charts", window.location.hash);
+
+document.dispatchEvent(new window.KeyboardEvent("keydown", {
+  key: "4",
+  code: "Digit4",
+  altKey: true,
+  bubbles: true,
+  cancelable: true,
+}));
+await settle();
+check(
+  "and Alt+4 is the fourth thing on the bar: a panel, over the view it lands on",
+  panelEl().open === true && panelShown("community") &&
+    window.location.hash === "#/charts/community",
+  `open=${panelEl().open} ${window.location.hash}`
+);
+
+// Last, so it covers the panels above as well: a session that ends must not
+// leave a modal hanging over the home page a signed-out visitor is handed.
+// The token goes rather than only the event, because `signedIn()` reads the
+// token -- so the chrome answers to the session and not to the message.
+const liveToken = window.localStorage.getItem(tokenKey);
+window.localStorage.removeItem(tokenKey);
+document.dispatchEvent(new window.CustomEvent("hrz:auth", { detail: { signedIn: false } }));
+await settle();
+check(
+  "signing out closes the panel and every door to it",
+  panelEl().open === false &&
+    [...document.querySelectorAll("[data-open-panel]")].every((button) => button.disabled),
+  `open=${panelEl().open} ${[...document.querySelectorAll("[data-open-panel]")]
+    .map((button) => `${button.dataset.openPanel}=${button.disabled}`)
+    .join(" ")}`
+);
+window.localStorage.setItem(tokenKey, liveToken);
+document.dispatchEvent(new window.CustomEvent("hrz:auth", { detail: { signedIn: true } }));
+await settle();
 
 // --- nothing threw -----------------------------------------------------------
 //

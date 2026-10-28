@@ -340,6 +340,10 @@ to the Charts instrument bar.
 
 ### 4.3 Left rail (48px)
 
+> **Superseded 2026-10-28 by §22.** The rail is gone; its six buttons became
+> three top-bar view icons, two panel icons and an avatar. §4.1, §4.5, §4.6,
+> §5, §9 and §20 also describe the rail and read as history from here.
+
 Six destinations, in order: **Dashboard, Charts, Studio, Community, Bots,
 Account**. Each is a 48×44 icon button with a 20px icon, an accessible label
 and a delayed tooltip. Active state: raised ground, accent icon, 2px accent
@@ -1130,3 +1134,108 @@ two-column builder, Community as a catalog and detail page, Bots as a fleet
 view with a bot detail, Account as a real settings area. Spec 2 consumes
 `HRZUI`, the tokens, the pane host and the router defined here and does not
 change them.
+
+## 22. Amendment — the panels that float over the frame (2026-10-28)
+
+Spec 1 shipped a left rail of six destinations. It was removed the day the
+phone-first review compared it with TradingView and LuxAlgo: their subpanels
+open *over* the chart, so the chart stays on screen, and none of them spends a
+permanent column on three surfaces a user visits occasionally. The rail cost
+48px of chart width at every width, on every screen.
+
+### 22.1 Two kinds of route
+
+The six ids did not become six of the same thing. They split:
+
+| Kind | Ids | Owns |
+| --- | --- | --- |
+| **view** | `dashboard`, `charts`, `studio` | a `#dest-*` section, the frame, the bottom nav |
+| **panel** | `community`, `bots`, `account` | one shared modal, `#workPanel`, and nothing else |
+
+`views/shell.js` reads both out of one `NAV` table, so an id cannot be a view in
+the router and a panel in the palette.
+
+### 22.2 Grammar
+
+Canonical: `#/<view>[/<panel>[/<section>]]`. Aliased: `#/<panel>[/<section>]`,
+which is what the bar said before, still opens that panel — over Charts, the
+view it used to sit beside — and is rewritten to the canonical form with
+`replaceState`, so Back leaves the screen rather than one spelling of it.
+
+Two consequences a reader should expect:
+
+- A workspace named exactly `community`, `bots` or `account` is unreachable by
+  URL; `#/studio/<id>` reads its second segment as a panel first. The builder's
+  own list still opens it.
+- **The hash is the only truth about a panel.** `syncPanel()` is the one place
+  the modal is told what to be, so a click, a Back press, a pasted link and a
+  reload all arrive through the same door.
+
+### 22.3 The modal
+
+`HRZUI.panel(root, { onRequestClose, onSelect })` wraps a native `<dialog>`,
+which is what carries the top layer, the scrim, the focus trap, Escape and the
+frozen background — the clocks behind it keep ticking, because a modal is not a
+pause. It is deliberately dumb: it knows a name, a title, a width
+(`narrow` 520 / `medium` 760 / `wide` 1080) and which host is on screen. It does
+not know that closing should change the address; that is the owner's answer to
+`onRequestClose`.
+
+**Content does not move.** `#communityHost`, `#botsHost` and `#accountHost` are
+the same nodes `mount()` fills, relocated under `<dialog id="workPanel">` in the
+markup. `HOSTS`, the pane host and every builder in `app.js` are untouched.
+
+### 22.4 Chrome
+
+- Top bar, left: three view icons (`#topNav`). Beside them, behind a hairline:
+  Community and Bots (`#panelNav`). Right end: the avatar (`#accountBtn`), which
+  opens the Account panel directly — its sections are tabs inside it, and sign
+  out is in Profile.
+- The shortcut sheet's opener is `#shortcutsBtn`; `#railHelp` no longer exists.
+- Phone: `#phoneNav` lists three views, not six. Panels open from the same
+  top-bar icons, and the modal becomes a full-width sheet at every `[data-width]`.
+- `--rail-w` is gone from `tokens.css`; `#sideWatch` and `#dock` are fixed to
+  `left: 0` at 1023 instead of starting after a rail.
+
+### 22.5 Verification
+
+`tools/ui_check.mjs` asserts the primitive (17 checks: one host on screen, the
+close button and Escape ask rather than close, focus returns to the opener).
+`tools/shell_check.mjs` asserts the shell's use of it — a new section, "the
+panels that float over the frame", plus the palette's `Alt+4` and a sign-out
+that closes the modal and disables every trigger. jsdom has no `showModal`, so
+that file shims `showModal`/`close` on `HTMLDialogElement.prototype`; the top
+layer, scrim and focus trap are verified by hand in a browser.
+
+### 22.6 What only a browser could tell us
+
+Three of these were found by running the page, and none of them is visible to a
+harness — jsdom has no cascade, no top layer and no focus restoration.
+
+- **`display` belongs to `[open]`, and so does its own hiding.** The user-agent
+  sheet hides a closed `<dialog>` and a `[hidden]` element with `display: none`,
+  and any author `display` outranks it. `.hrz-dialog--panel { display: flex }`
+  painted a shut panel on the signed-out home page, where no route had opened it
+  and nothing could close it; `.panelBody { display: flex }` painted the Account
+  sections under whichever panel was open. Both now write `display` only on
+  `[open]` and `[hidden]`.
+- **The panel's title is not on screen.** It is the dialog's accessible name and
+  the place focus lands, and it duplicates the tab that is already selected — so
+  the head shows the strip and the close button, and the title is clipped to a
+  pixel. `aria-labelledby` still points at real text.
+- **Closing hands focus to the door of the face that was showing.** One modal
+  wears three faces, so the owner names the trigger on every `show()`: moving
+  from Community to Bots while the panel stays open moves the return address
+  with it, and a panel the *address* opened — with nothing focused — still has
+  an icon to go back to.
+- **Who owns the keyboard.** `⌘K` works over a panel: the palette is a dialog
+  too, so it stacks above and closes back down onto it. The chart's window key
+  handler does the opposite and goes silent while any dialog is open, because a
+  `<dialog>` holds the pointer but lets the keydown bubble to the window — with
+  no guard, an Escape pressed inside the panel cancelled a drawing on the chart
+  behind it.
+- **A phone's bar has 390px, not 430.** It drops `#signinToggle`, because sign
+  out lives in the Account panel's Profile pane and the landing page has its own
+  card; that is the room the two panel icons and the avatar needed. And a `.row`
+  inside a panel wraps instead of pushing its last control past the edge, where
+  a scroll would hide it rather than show it.

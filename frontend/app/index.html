@@ -43,6 +43,43 @@
     <span class="brandMark" aria-hidden="true"></span>
     <span class="brandWord">HRZ</span>
   </a>
+
+  <!--
+    Where the rail used to be. A chart wants the width, and the reference
+    products spend their whole top edge on exactly this: the three views that
+    own the page on the left, the three panels that float over them beside it.
+    `#topNav [data-dest]` and `#phoneNav [data-dest]` are one navigation read
+    as a set by the shell, so `aria-current` cannot disagree between the two.
+  -->
+  <nav class="topNav" id="topNav" aria-label="Views">
+    <button type="button" class="topNav__btn" data-dest="dashboard" aria-label="Dashboard" title="Dashboard" disabled>
+      <span data-icon="dashboard" data-icon-size="18"></span>
+    </button>
+    <button type="button" class="topNav__btn" data-dest="charts" aria-label="Charts" title="Charts" disabled>
+      <span data-icon="chart" data-icon-size="18"></span>
+    </button>
+    <button type="button" class="topNav__btn" data-dest="studio" aria-label="Studio" title="Studio" disabled>
+      <span data-icon="studio" data-icon-size="18"></span>
+    </button>
+  </nav>
+
+  <!--
+    These open a panel over the page underneath; they are not a second set of
+    destinations, and the shell keeps them honest with the address bar rather
+    than with a page change. `aria-expanded` is the panel's state, so the icon
+    says whether the door is open.
+  -->
+  <nav class="topNav" id="panelNav" aria-label="Panels">
+    <button type="button" class="topNav__btn" data-open-panel="community" aria-label="Community"
+            title="Community" aria-expanded="false" disabled>
+      <span data-icon="community" data-icon-size="18"></span>
+    </button>
+    <button type="button" class="topNav__btn" data-open-panel="bots" aria-label="Bots"
+            title="Bots" aria-expanded="false" disabled>
+      <span data-icon="bots" data-icon-size="18"></span>
+    </button>
+  </nav>
+
   <span id="destTitle" class="destTitle" hidden>Charts</span>
   <button id="paletteBtn" class="paletteBtn" type="button" aria-haspopup="dialog" disabled>
     <span data-icon="search" data-icon-size="14"></span>
@@ -54,6 +91,14 @@
   <button id="aiBtn" class="hrz-btn hrz-btn--ai hrz-btn--icon" type="button"
           aria-label="Open AI analyst" title="AI analyst" disabled>
     <span data-icon="sparkles"></span>
+  </button>
+  <button id="shortcutsBtn" class="hrz-btn hrz-btn--ghost hrz-btn--icon" type="button"
+          aria-label="Keyboard shortcuts" title="Keyboard shortcuts" disabled>
+    <span data-icon="command"></span>
+  </button>
+  <button id="accountBtn" class="hrz-btn hrz-btn--icon" type="button" data-open-panel="account"
+          aria-label="Account" title="Account" aria-expanded="false" disabled>
+    <span data-icon="account"></span>
   </button>
   <span id="session">not signed in</span>
   <button id="themeToggle" class="hrz-btn hrz-btn--icon" type="button" aria-label="Switch theme">◐</button>
@@ -135,31 +180,6 @@
 </section>
 
 <div id="frame" hidden>
-  <nav id="rail" aria-label="Destinations">
-    <button type="button" class="railItem" data-dest="dashboard" aria-label="Dashboard" title="Dashboard" disabled>
-      <span data-icon="activity" data-icon-size="20"></span>
-    </button>
-    <button type="button" class="railItem" data-dest="charts" aria-label="Charts" title="Charts" disabled>
-      <span data-icon="chart" data-icon-size="20"></span>
-    </button>
-    <button type="button" class="railItem" data-dest="studio" aria-label="Studio" title="Studio" disabled>
-      <span data-icon="sparkles" data-icon-size="20"></span>
-    </button>
-    <button type="button" class="railItem" data-dest="community" aria-label="Community" title="Community" disabled>
-      <span data-icon="globe" data-icon-size="20"></span>
-    </button>
-    <button type="button" class="railItem" data-dest="bots" aria-label="Bots" title="Bots" disabled>
-      <span data-icon="zap" data-icon-size="20"></span>
-    </button>
-    <button type="button" class="railItem" data-dest="account" aria-label="Account" title="Account" disabled>
-      <span data-icon="user" data-icon-size="20"></span>
-    </button>
-    <span class="spacer"></span>
-    <button type="button" class="railItem" id="railHelp" aria-label="Keyboard shortcuts" title="Keyboard shortcuts" disabled>
-      <span data-icon="command" data-icon-size="20"></span>
-    </button>
-  </nav>
-
   <main id="mainView" hidden tabindex="-1">
     <section class="destination" id="dest-dashboard" aria-labelledby="dest-dashboard-title" hidden>
       <div class="dashInner">
@@ -1499,19 +1519,50 @@
       </div>
       <div class="destHost" id="studioHost"></div>
     </section>
+  </main>
+</div>
 
-    <section class="destination" id="dest-community" aria-labelledby="dest-community-title" hidden>
-      <h1 class="destHeading" id="dest-community-title" tabindex="-1">Community</h1>
+<!--
+  ============================================================================
+  The panel: Community, Bots and Account, floated over whichever page is open.
+  ============================================================================
+
+  These three used to be destinations, which meant leaving the chart to read a
+  list and leaving it again to get back. They are not views of their own: they
+  are work you do beside a chart. So one modal carries all three, the chart
+  keeps running behind the scrim, and the address bar stays the only truth about
+  which of them is open -- `Shell` writes the hash, `onHash` shows the host.
+
+  The hosts are the ones `app.js` already fills. Nothing here is a copy: the
+  builders find `#communityHost`, `#botsHost` and `#accountHost` by id wherever
+  they sit, so moving them under a dialog moves the frame around the content and
+  not the content itself.
+  -->
+<dialog id="workPanel" class="hrz-dialog hrz-dialog--panel" aria-labelledby="workPanelTitle">
+  <header class="hrz-dialog__head">
+    <h2 class="hrz-dialog__title" id="workPanelTitle" tabindex="-1">Community</h2>
+    <div class="hrz-tabs" id="workPanelTabs" role="tablist" aria-label="Panels">
+      <button type="button" class="hrz-tab" role="tab" id="panelTab-community" data-tab="community"
+              aria-controls="panelBody-community" aria-selected="true">Community</button>
+      <button type="button" class="hrz-tab" role="tab" id="panelTab-bots" data-tab="bots"
+              aria-controls="panelBody-bots" aria-selected="false">Bots</button>
+      <button type="button" class="hrz-tab" role="tab" id="panelTab-account" data-tab="account"
+              aria-controls="panelBody-account" aria-selected="false">Account</button>
+    </div>
+    <button type="button" id="workPanelClose" class="hrz-btn hrz-btn--ghost hrz-btn--icon hrz-dialog__close"
+            aria-label="Close the panel" title="Close (Esc)"><span data-icon="close"></span></button>
+  </header>
+  <div class="hrz-dialog__body">
+    <div class="panelBody" data-body="community" id="panelBody-community"
+         role="tabpanel" aria-labelledby="panelTab-community">
       <div class="destHost" id="communityHost"></div>
-    </section>
-
-    <section class="destination" id="dest-bots" aria-labelledby="dest-bots-title" hidden>
-      <h1 class="destHeading" id="dest-bots-title" tabindex="-1">Bots</h1>
+    </div>
+    <div class="panelBody" data-body="bots" id="panelBody-bots"
+         role="tabpanel" aria-labelledby="panelTab-bots" hidden>
       <div class="destHost" id="botsHost"></div>
-    </section>
-
-    <section class="destination" id="dest-account" aria-labelledby="dest-account-title" hidden>
-      <h1 class="destHeading" id="dest-account-title" tabindex="-1">Account</h1>
+    </div>
+    <div class="panelBody" data-body="account" id="panelBody-account"
+         role="tabpanel" aria-labelledby="panelTab-account" hidden>
       <div class="hrz-tabs" id="accountTabs" role="tablist" aria-label="Account sections">
         <button role="tab" type="button" class="hrz-tab" data-account="plan" aria-selected="true">Plan</button>
         <button role="tab" type="button" class="hrz-tab" data-account="brokers" aria-selected="false">Brokers</button>
@@ -1541,22 +1592,24 @@
           </div>
         </div>
       </div>
-    </section>
-  </main>
-</div>
+    </div>
+  </div>
+</dialog>
 
 <!--
-  The second destination list, for a width with no room for the rail. It is a
-  copy of the rail's six buttons rather than a copy of their behaviour: the Shell
-  reads `#rail [data-dest], #phoneNav [data-dest]` as one set, so `aria-current`
-  and `disabled` are written on both and cannot disagree.
+  The second view list, for a width with no room for the top bar's icons. It is a
+  copy of `#topNav`'s three buttons rather than a copy of their behaviour: the
+  Shell reads `#topNav [data-dest], #phoneNav [data-dest]` as one set, so
+  `aria-current` and `disabled` are written on both and cannot disagree.
 
-  It ships `hidden` and `disabled` like the rail: a signed-out phone must not be
-  handed a door into a frame that is not there. `Shell.syncChrome` owns both.
+  Only the views are here. A panel is a modal, and a modal on a phone already
+  takes the whole screen -- so the phone opens one from the icon in the top bar,
+  the same door the desktop uses, and never needs a fourth tab in a bar that is
+  meant for the three pages it can hold.
 -->
-<nav id="phoneNav" class="phoneNav" aria-label="Destinations" hidden>
+<nav id="phoneNav" class="phoneNav" aria-label="Views" hidden>
   <button type="button" class="phoneNav__btn" data-dest="dashboard" aria-label="Dashboard" disabled>
-    <span data-icon="activity" data-icon-size="20"></span>
+    <span data-icon="dashboard" data-icon-size="20"></span>
     <span class="phoneNav__label">Dashboard</span>
   </button>
   <button type="button" class="phoneNav__btn" data-dest="charts" aria-label="Charts" disabled>
@@ -1564,20 +1617,8 @@
     <span class="phoneNav__label">Charts</span>
   </button>
   <button type="button" class="phoneNav__btn" data-dest="studio" aria-label="Studio" disabled>
-    <span data-icon="sparkles" data-icon-size="20"></span>
+    <span data-icon="studio" data-icon-size="20"></span>
     <span class="phoneNav__label">Studio</span>
-  </button>
-  <button type="button" class="phoneNav__btn" data-dest="community" aria-label="Community" disabled>
-    <span data-icon="globe" data-icon-size="20"></span>
-    <span class="phoneNav__label">Community</span>
-  </button>
-  <button type="button" class="phoneNav__btn" data-dest="bots" aria-label="Bots" disabled>
-    <span data-icon="zap" data-icon-size="20"></span>
-    <span class="phoneNav__label">Bots</span>
-  </button>
-  <button type="button" class="phoneNav__btn" data-dest="account" aria-label="Account" disabled>
-    <span data-icon="user" data-icon-size="20"></span>
-    <span class="phoneNav__label">Account</span>
   </button>
 </nav>
 
@@ -1653,8 +1694,8 @@
       <dl>
         <div><dt>Search or jump</dt><dd><kbd data-mod>⌘</kbd><kbd>K</kbd></dd></div>
         <div><dt>Shortcut sheet</dt><dd><kbd data-mod>⌘</kbd><kbd>/</kbd></dd></div>
-        <div><dt>Dashboard to Account</dt><dd><kbd>Alt</kbd><kbd>1</kbd>–<kbd>6</kbd></dd></div>
-        <div><dt>Previous / next destination</dt><dd><kbd>Alt</kbd><kbd>←</kbd><kbd>→</kbd></dd></div>
+        <div><dt>Views and panels</dt><dd><kbd>Alt</kbd><kbd>1</kbd>–<kbd>6</kbd></dd></div>
+        <div><dt>Previous / next view</dt><dd><kbd>Alt</kbd><kbd>←</kbd><kbd>→</kbd></dd></div>
         <div><dt>Close the top overlay</dt><dd><kbd>Esc</kbd></dd></div>
       </dl>
     </section>

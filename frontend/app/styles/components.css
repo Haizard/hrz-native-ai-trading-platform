@@ -500,13 +500,19 @@ td, th { border-color: var(--border-subtle); }
 /* The subpanel TradingView and LuxAlgo put on top of the chart: wide enough to
  * hold a table, short enough that the chart is still readable behind the scrim.
  * The dialog's own `max-block-size` is a viewport minus the UA's 48px, which no
- * author could name, so both axes are stated here instead of inherited. */
+ * author could name, so both axes are stated here instead of inherited.
+ *
+ * `display` belongs to `[open]` and nowhere else. The user-agent sheet hides a
+ * closed `<dialog>` with `display: none`, and any `display` written on the class
+ * wins over it -- which is how a shut panel ended up painted on the signed-out
+ * home page, where no route had opened it and nothing could close it. */
 .hrz-dialog--panel {
-  display: flex; flex-direction: column; width: min(760px, calc(100vw - var(--space-6)));
+  width: min(760px, calc(100vw - var(--space-6)));
   height: min(680px, calc(100vh - var(--space-6)));
   max-width: min(760px, calc(100vw - var(--space-6)));
   max-height: min(680px, calc(100vh - var(--space-6)));
 }
+.hrz-dialog--panel[open] { display: flex; flex-direction: column; }
 .hrz-dialog--panel[data-width="narrow"] {
   width: min(520px, calc(100vw - var(--space-6)));
   max-width: min(520px, calc(100vw - var(--space-6)));
@@ -521,11 +527,24 @@ td, th { border-color: var(--border-subtle); }
   border-bottom: 1px solid var(--line);
 }
 .hrz-dialog__head .hrz-dialog__title { padding: 0; margin-right: auto; }
+/* The title is `tabindex="-1"`: the place focus lands when the panel opens, not
+ * a control Tab can reach. A ring would paint a word as though it were a button. */
+.hrz-dialog__title:focus { outline: none; }
+/* A floating panel is named twice over -- by its title and by the tab already
+ * selected -- and the tabs are the part you can act on. So the title keeps its
+ * job as the dialog's accessible name and gives up the space on screen, and the
+ * close button takes over the push that kept the strip on the right. */
+.hrz-dialog--panel .hrz-dialog__title {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+.hrz-dialog--panel .hrz-dialog__head .hrz-tabs { margin-right: auto; }
+.hrz-dialog--panel .hrz-dialog__close { margin-left: auto; }
 .hrz-dialog__head .hrz-tabs { border-bottom: 0; }
 .hrz-dialog__close { flex: none; }
 .hrz-dialog--panel .hrz-dialog__body {
-  flex: 1 1 auto; min-height: 0; padding: 0; overflow: auto;
-  color: var(--text-1); background: var(--bg-panel);
+  display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden;
+  padding: 0; color: var(--text-1); background: var(--bg-panel);
 }
 .hrz-dialog--panel[open] { animation: hrz-panel-in var(--dur-2) var(--ease); }
 @keyframes hrz-panel-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }

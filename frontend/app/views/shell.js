@@ -15,11 +15,29 @@
 (function () {
   "use strict";
 
-  const DESTINATIONS = ["dashboard", "charts", "studio", "community", "bots", "account"];
-  const TITLES = {
-    dashboard: "Dashboard", charts: "Charts", studio: "Studio",
-    community: "Community", bots: "Bots", account: "Account",
-  };
+  /* The things the address bar can name, in the order Alt+1..6 counts them.
+   *
+   * Three are pages and three are panels that float over whichever page is
+   * open. The difference is not cosmetic: a page owns the frame under the chart,
+   * a panel owns a modal and nothing else. One table says which, and every list
+   * the shell needs -- the router's, the top bar's, the palette's -- is read out
+   * of it, so an id cannot be a destination in one place and a panel in another.
+   *
+   * `width` is the panel's promise to its own content: a library and a bot desk
+   * are read as tables, an account is a stack of cards.
+   */
+  const NAV = [
+    { id: "dashboard", kind: "page", label: "Dashboard" },
+    { id: "charts", kind: "page", label: "Charts" },
+    { id: "studio", kind: "page", label: "Studio" },
+    { id: "community", kind: "panel", label: "Community", width: "wide" },
+    { id: "bots", kind: "panel", label: "Bots", width: "wide" },
+    { id: "account", kind: "panel", label: "Account", width: "medium" },
+  ];
+  const NAV_BY_ID = new Map(NAV.map((entry) => [entry.id, entry]));
+  const PAGES = NAV.filter((entry) => entry.kind === "page").map((entry) => entry.id);
+  const PANELS = NAV.filter((entry) => entry.kind === "panel").map((entry) => entry.id);
+  const TITLES = Object.fromEntries(NAV.map((entry) => [entry.id, entry.label]));
   const INSPECTOR_TABS = ["ai", "indicator", "book", "trade", "details"];
   const INSPECTOR_VIEWS = {
     ai: "pane-chat", indicator: "inspectorIndicator",
@@ -35,6 +53,11 @@
   const ACCOUNT_PANE = { plan: "pane-billing", brokers: "pane-brokers", ai: "pane-aimodel" };
   const ACCOUNT_FROM_LEGACY = { billing: "plan", brokers: "brokers", aimodel: "ai" };
   const LEGACY_FROM_ACCOUNT = { plan: "billing", brokers: "brokers", ai: "aimodel", profile: "profile" };
+  /// The account sections with content to fetch, by the name the app's loader
+  /// answers to. Profile is static markup, and `runPaneLoaders` with a name it
+  /// does not know means "no pane is on screen" -- which would stop the
+  /// watchlist's clock while the panel floats over the chart.
+  const ACCOUNT_LOADERS = { plan: "billing", brokers: "brokers", ai: "aimodel" };
   const DEST_FROM_LEGACY = {
     chat: "charts", thesis: "charts", book: "charts", trade: "charts",
     watchlist: "charts",
@@ -78,6 +101,7 @@
 
   const state = {
     destination: null,
+    panel: null,
     inspectorTab: "ai",
     inspectorOpen: true,
     watchlistCollapsed: false,
@@ -90,6 +114,9 @@
 
   let ready = false;
   let started = false;
+  // The modal itself. Built once in `wire`, from markup that already holds the
+  // three hosts; `syncPanel` is the only thing that asks it to show one.
+  let workPanel = null;
   let applyingRestore = false;
   let drawer = null;
   // The chat the current route already asked the app to open. `go` applies the
@@ -98,11 +125,19 @@
   let openedWorkspaceId = "";
 
   const el = (id) => document.getElementById(id);
-  /// The rail and the phone's bottom nav are the same navigation. Every
-  /// selector that used to name the rail names both, so a destination cannot
-  /// be current in one place and not the other.
+  /// The top bar and the phone's bottom nav are the same navigation. One
+  /// selector names both, so a view cannot be current in one place and not the
+  /// other -- the promise the two lists made to each other when the shell still
+  /// had a rail to keep.
   const destButtons = () =>
-    document.querySelectorAll("#rail [data-dest], #phoneNav [data-dest]");
+    document.querySelectorAll("#topNav [data-dest], #phoneNav [data-dest]");
+  /// The three icons that open a panel: two in the top bar's second nav, and the
+  /// account chip at its right end. They are one set because they are one
+  /// question -- is this the panel you are looking at?
+  const panelTriggers = () => document.querySelectorAll("[data-open-panel]");
+  /// The icon a panel is opened from, which is also where closing hands focus
+  /// back to -- including when the panel was opened by an address, not a click.
+  const panelTrigger = (name) => document.querySelector(`[data-open-panel="${name}"]`);
   const paint = (id, text) => {
     const node = el(id);
     if (node) node.textContent = text;
@@ -156,12 +191,13 @@
       if (state.dockOpen && state.dockTab === "studio") visible.add("pane-indicator");
     } else if (state.destination === "studio") {
       visible.add(STUDIO_PANES[state.studioPane]);
-    } else if (state.destination === "account") {
+    }
+    // Three of the six ids the address names are not pages: their content shows
+    // because the panel is open, whatever is running underneath it.
+    if (state.panel === "community") visible.add("pane-community");
+    else if (state.panel === "bots") visible.add("pane-bots");
+    else if (state.panel === "account") {
       visible.add(ACCOUNT_PANE[state.accountSection] || "accountProfile");
-    } else if (state.destination === "community") {
-      visible.add("pane-community");
-    } else if (state.destination === "bots") {
-      visible.add("pane-bots");
     }
     for (const pane of managed()) {
       // A pane moved into the AI drawer is on screen wherever its host says.
@@ -221,6 +257,34 @@
 
   function syncAccount() {
     syncTabStrip(el("accountTabs"), "account", state.accountSection);
+  }
+
+  /// The one place the modal is told what to be.
+  ///
+  /// The route already decided it: this reads `state.panel` and asks the dialog
+  /// to show that host, or to close. Nothing else calls `show` or `hide`, which
+  /// is why the address and the panel cannot drift apart -- and why clicking the
+  /// second icon while the first is open is a route change, not a second modal.
+  function syncPanel() {
+    const entry = state.panel ? NAV_BY_ID.get(state.panel) : null;
+    if (workPanel) {
+      if (entry) {
+        workPanel.show(entry.id, {
+          title: entry.label,
+          width: entry.width,
+          opener: panelTrigger(entry.id),
+        });
+      } else workPanel.hide();
+    }
+    for (const button of panelTriggers()) {
+      const on = state.panel === button.dataset.openPanel;
+      button.setAttribute("aria-expanded", String(on));
+    }
+    // The head tabs are a fourth tab strip, and `show` only marks the selected
+    // one; arrow-key navigation lives in `syncTabStrip`, which is also where the
+    // strip is re-taught after a host swap.
+    syncTabStrip(el("workPanelTabs"), "tab", state.panel);
+    syncAccount();
   }
 
   /// Unread lines since the Console was last looked at. Reset by `loadDock`,
@@ -291,9 +355,7 @@
     const body = el("dockBody");
     if (body) body.hidden = !open;
     applyDockHeight();
-    for (const button of document.querySelectorAll("#dock [data-dock]")) {
-      button.setAttribute("aria-selected", String(button.dataset.dock === state.dockTab));
-    }
+    syncTabStrip(el("dockTablist"), "dock", state.dockTab);
     // One panel per tab, none rebuilt on switch: the console keeps its scroll
     // position and the alerts keep the rows their last poll produced.
     for (const [tab, id] of Object.entries(DOCK_PANELS)) {
@@ -311,9 +373,9 @@
   }
 
   function showDestination() {
-    for (const destination of DESTINATIONS) {
-      const section = el(`dest-${destination}`);
-      if (section) section.hidden = destination !== state.destination;
+    for (const page of PAGES) {
+      const section = el(`dest-${page}`);
+      if (section) section.hidden = page !== state.destination;
     }
     const title = el("destTitle");
     if (title) {
@@ -327,7 +389,7 @@
     syncWatchlist();
     syncInspector();
     syncStudio();
-    syncAccount();
+    syncPanel();
     syncDock();
     mountIndicator();
     showPanes();
@@ -441,6 +503,9 @@
   function syncChrome() {
     const signedIn = isSignedIn();
     for (const button of destButtons()) button.disabled = !signedIn;
+    // The panel triggers are chrome too: a signed-out visitor must not be handed
+    // a door into a modal with nothing to load.
+    for (const button of panelTriggers()) button.disabled = !signedIn;
     // The bottom nav is outside #frame, so the frame's own hide does not reach
     // it: a signed-out phone must not list destinations into a frame that is
     // not there. CSS shows it only below 768; this attribute is the other half.
@@ -452,7 +517,7 @@
       "watchlistToggle",
       "inspectorToggle",
       "dockToggle",
-      "railHelp",
+      "shortcutsBtn",
     ]) {
       const button = el(id);
       if (button) button.disabled = !signedIn;
@@ -483,43 +548,80 @@
 
   /* ---- Routing ------------------------------------------------------------ */
 
+  /// The address bar, read as a page and the panel floating over it.
+  ///
+  /// Two shapes are accepted. `#/<page>` and `#/<page>/<panel>[/<section>]` are
+  /// what the shell writes; `#/<panel>` is the shape the bar had when Community,
+  /// Bots and Account were destinations, and it still means the same screen --
+  /// that panel over Charts, the page it used to sit beside. Every shape is
+  /// written back in the first form, so a reload, a pasted link and a Back press
+  /// cannot name one screen three ways.
   function parse(hash) {
     const raw = String(hash || "").replace(/^#\/?/, "");
     const parts = raw.split("/").filter(Boolean);
-    if (!parts.length || !DESTINATIONS.includes(parts[0])) return null;
-    const route = { destination: parts[0] };
-    if (parts[0] === "account") {
-      route.section = ACCOUNT_SECTIONS.includes(parts[1]) ? parts[1] : "plan";
+    if (!parts.length) return null;
+    if (PANELS.includes(parts[0])) {
+      const route = { page: "charts", panel: parts[0] };
+      if (parts[0] === "account") {
+        route.section = ACCOUNT_SECTIONS.includes(parts[1]) ? parts[1] : "plan";
+      }
+      return route;
     }
-    if (parts[0] === "studio" && parts[1]) {
+    if (!PAGES.includes(parts[0])) return null;
+    const route = { page: parts[0], panel: null };
+    const second = parts[1];
+    if (second && PANELS.includes(second)) {
+      route.panel = second;
+      if (second === "account") {
+        route.section = ACCOUNT_SECTIONS.includes(parts[2]) ? parts[2] : "plan";
+      }
+    } else if (route.page === "studio" && second) {
       // An id is user data from the address bar. A malformed escape is a bad
       // link, not a router crash: fall back to the raw segment and let the
-      // workspace lookup reject it.
+      // workspace lookup reject it. A workspace named exactly like a panel is
+      // the one link this grammar cannot make; the builder's list still reaches it.
       try {
-        route.workspaceId = decodeURIComponent(parts[1]);
+        route.workspaceId = decodeURIComponent(second);
       } catch {
-        route.workspaceId = parts[1];
+        route.workspaceId = second;
       }
     }
     return route;
   }
 
-  function hashFor(destination, opts = {}) {
-    if (destination === "account") {
-      return `#/account/${opts.section || state.accountSection || "plan"}`;
-    }
-    if (destination === "studio" && opts.workspaceId) {
+  /// The address for a page, with the panel it carries if none is given.
+  function hashFor(page, opts = {}) {
+    const panel = opts.panel === undefined ? state.panel : opts.panel;
+    if (page === "studio" && opts.workspaceId && !panel) {
       return `#/studio/${encodeURIComponent(opts.workspaceId)}`;
     }
-    return `#/${destination}`;
+    if (!panel) return `#/${page}`;
+    if (panel === "account") {
+      return `#/${page}/account/${opts.section || state.accountSection || "plan"}`;
+    }
+    return `#/${page}/${panel}`;
+  }
+
+  /// The address follows the choice, and a push is what gives Back something to
+  /// do: closing a panel from inside it is the same step as pressing Back.
+  function writeHash(hash, replace) {
+    if (replace) history.replaceState(null, "", hash);
+    else if (location.hash !== hash) location.hash = hash;
   }
 
   function setDestination(destination, opts = {}) {
-    if (!DESTINATIONS.includes(destination)) destination = "dashboard";
+    if (!PAGES.includes(destination)) destination = "dashboard";
     const previous = state.destination;
     const changed = previous !== destination;
     state.destination = destination;
+    // A page carries no panel unless the route names one: the modal belongs to
+    // the page it floats over, and taking it along to another would leave the
+    // address naming a combination nobody asked for.
+    const panel = opts.panel === undefined ? null : opts.panel;
+    const panelChanged = state.panel !== panel;
+    state.panel = panel;
     let load = changed;
+    let panelLoad = panelChanged;
     if (opts.inspectorTab && INSPECTOR_TABS.includes(opts.inspectorTab) &&
         opts.inspectorTab !== state.inspectorTab) {
       state.inspectorTab = opts.inspectorTab;
@@ -536,13 +638,13 @@
       state.studioPane = "indicator";
       load = true;
     }
-    if (destination === "account") {
+    if (state.panel === "account") {
       const section = opts.section && ACCOUNT_SECTIONS.includes(opts.section)
         ? opts.section
-        : changed ? "plan" : state.accountSection;
+        : changed || panelChanged ? "plan" : state.accountSection;
       if (section !== state.accountSection) {
         state.accountSection = section;
-        load = true;
+        panelLoad = true;
       }
     }
     showDestination();
@@ -558,47 +660,88 @@
         openedWorkspaceId = id;
         app().openWorkspace(id);
       }
-    } else if (load) {
-      runDestinationLoaders();
+    } else {
+      if (load) runPageLoaders();
+      if (panelLoad) runPanelLoaders();
     }
     note();
   }
 
-  function go(destination, opts = {}) {
-    if (!DESTINATIONS.includes(destination)) destination = "dashboard";
-    setDestination(destination, opts);
-    const hash = hashFor(destination, opts);
-    if (opts.replace) history.replaceState(null, "", hash);
-    else if (location.hash !== hash) location.hash = hash;
-  }
-
-  function onHash() {
-    if (!started || !isSignedIn()) return;
-    const route = parse(location.hash);
-    if (!route) {
-      // A fragment that names something already on the page -- the skip link's
-      // `#mainView` -- is not a route. Sending it here would drop a keyboard
-      // user on Dashboard from the chart they were reading, so the address is
-      // put back and the destination the user is on stays.
-      const fragment = String(location.hash || "").slice(1);
-      if (state.destination && fragment && document.getElementById(fragment)) {
-        history.replaceState(null, "", hashFor(state.destination));
-        return;
-      }
-      history.replaceState(null, "", "#/dashboard");
-      setDestination("dashboard");
+  /// The one door every click, palette verb and Alt digit walks through.
+  ///
+  /// A page id switches the page and puts the panel away; a panel id leaves the
+  /// page exactly where it is and floats the modal over it. Both write the
+  /// address, because both are things a reload has to be able to repeat.
+  function go(id, opts = {}) {
+    const entry = NAV_BY_ID.get(id) || NAV_BY_ID.get("dashboard");
+    if (entry.kind === "panel") {
+      openPanel(entry.id, opts);
       return;
     }
-    setDestination(route.destination, {
+    setDestination(entry.id, opts);
+    writeHash(hashFor(entry.id, { panel: null, workspaceId: opts.workspaceId }), opts.replace);
+  }
+
+  function openPanel(name, opts = {}) {
+    if (!PANELS.includes(name)) return;
+    const page = opts.page || state.destination || "charts";
+    setDestination(page, { ...opts, panel: name });
+    writeHash(hashFor(page, { panel: name, section: state.accountSection }), opts.replace);
+  }
+
+  function closePanel() {
+    if (!state.panel) return;
+    const page = state.destination || "dashboard";
+    setDestination(page, { panel: null });
+    writeHash(hashFor(page, { panel: null }));
+  }
+
+  /// Apply the address, then say it back in the form the shell writes.
+  ///
+  /// Returns whether the hash named anything at all. The rewrite is a replace,
+  /// never a push: the old shape is a second name for the same screen, and a
+  /// Back press should leave the screen, not one spelling of it.
+  function fromHash() {
+    const route = parse(location.hash);
+    if (!route) return false;
+    setDestination(route.page, {
+      panel: route.panel,
       section: route.section,
       workspaceId: route.workspaceId,
     });
+    const canonical = hashFor(route.page, route);
+    if (location.hash !== canonical) history.replaceState(null, "", canonical);
+    return true;
   }
 
-  function runDestinationLoaders() {
+  /// Where a user lands when the address names nothing they can be sent to.
+  ///
+  /// `go` applies the route itself and the hashchange applies it again a moment
+  /// later, so both paths have to end in the same place: `fromHash` is the only
+  /// reading of the bar either of them does.
+  function onHash() {
+    if (!started || !isSignedIn()) return;
+    if (fromHash()) return;
+    // A fragment that names something already on the page -- the skip link's
+    // `#mainView` -- is not a route. Sending it here would drop a keyboard
+    // user on Dashboard from the chart they were reading, so the address is
+    // put back and the destination the user is on stays.
+    const fragment = String(location.hash || "").slice(1);
+    if (state.destination && fragment && document.getElementById(fragment)) {
+      history.replaceState(null, "", hashFor(state.destination));
+      return;
+    }
+    history.replaceState(null, "", "#/dashboard");
+    setDestination("dashboard", { panel: null });
+  }
+
+  /* ---- What a route makes the app fetch ----------------------------------- */
+
+  /// The page's own content. A page switch asks for this; nothing else does.
+  function runPageLoaders() {
     const load = app().runPaneLoaders;
     if (!load) return;
-    // The rail prices itself only while it is on screen: the ticker has no
+    // The watchlist prices itself only while it is on screen: the ticker has no
     // reason to keep running behind Studio, and the way back to Charts is
     // supposed to find it fresh rather than waiting for the next tick.
     if (state.destination === "charts") {
@@ -607,19 +750,34 @@
       // click happens in that case -- the panel would sit empty until the user
       // switched away and back.
       if (state.dockOpen) loadDock(state.dockTab);
-    }
-    else if (state.destination === "studio") load(state.studioPane);
-    else if (state.destination === "community") load("community");
-    else if (state.destination === "bots") load("bots");
-    else if (state.destination === "account") {
-      const legacy = LEGACY_FROM_ACCOUNT[state.accountSection];
-      if (legacy) load(legacy);
-    } else if (state.destination === "dashboard") {
+    } else if (state.destination === "studio") load(state.studioPane);
+    else if (state.destination === "dashboard") {
       // No pane is on screen -- and the loader's own `else` is what stops the
       // watchlist ticker, so the dashboard's page clock is the only one left
       // running. `runPaneLoaders()` with no name means exactly that.
       load();
     }
+  }
+
+  /// The panel's content, asked for when the panel opens and never before.
+  ///
+  /// This is what a modal buys over the page it replaced: the library is not
+  /// fetched, sorted or scrolled until somebody opens it, and closing it costs
+  /// nothing because the host keeps what it loaded for the next open.
+  function runPanelLoaders() {
+    const load = app().runPaneLoaders;
+    if (!load || !state.panel) return;
+    if (state.panel === "community") load("community");
+    else if (state.panel === "bots") load("bots");
+    else if (state.panel === "account") {
+      const legacy = ACCOUNT_LOADERS[state.accountSection];
+      if (legacy) load(legacy);
+    }
+  }
+
+  function runDestinationLoaders() {
+    runPageLoaders();
+    runPanelLoaders();
   }
 
   /* ---- Panels ------------------------------------------------------------- */
@@ -655,8 +813,13 @@
   function selectAccount(section) {
     if (!ACCOUNT_SECTIONS.includes(section)) return;
     state.accountSection = section;
-    showDestination();
-    const legacy = LEGACY_FROM_ACCOUNT[section];
+    // A section is part of the address while the panel is open -- the third
+    // segment a reload, a pasted link and a Back press all read. With the panel
+    // shut the shell only remembers the tab, because the hash that opens it
+    // names the panel and its default section.
+    if (state.panel === "account") openPanel("account", { section });
+    else showDestination();
+    const legacy = ACCOUNT_LOADERS[section];
     if (legacy && app().runPaneLoaders) app().runPaneLoaders(legacy);
     note();
   }
@@ -752,11 +915,14 @@
   }
 
   function legacyTab() {
+    // The panel is what the user is looking at, so it is answered before the
+    // page underneath it. The workspace snapshot remembers the tab, and a
+    // reload of the builder must not find the Community list written as Charts.
+    if (state.panel === "community") return "community";
+    if (state.panel === "bots") return "bots";
+    if (state.panel === "account") return LEGACY_FROM_ACCOUNT[state.accountSection] || "billing";
     if (state.destination === "charts") return LEGACY_FROM_TAB[state.inspectorTab] || "chat";
     if (state.destination === "studio") return state.studioPane;
-    if (state.destination === "account") return LEGACY_FROM_ACCOUNT[state.accountSection] || "billing";
-    if (state.destination === "community") return "community";
-    if (state.destination === "bots") return "bots";
     return "chat";
   }
 
@@ -783,23 +949,30 @@
 
   function restore(saved) {
     if (!saved || typeof saved !== "object") return;
-    let destination = DESTINATIONS.includes(saved.destination) ? saved.destination : null;
+    // A snapshot from before the panels went modal names a panel where a page
+    // belongs, and `DEST_FROM_LEGACY` hands back the same three ids for the
+    // same reason. Either way the screen underneath is Charts: a snapshot is
+    // allowed to say which page to land on, but opening a modal is the hash's
+    // work, and nothing here reads or writes `state.panel`.
+    const named = saved.destination || DEST_FROM_LEGACY[saved.activeTab];
+    let destination = PAGES.includes(saved.destination) ? saved.destination : null;
+    if (!destination && PANELS.includes(named)) destination = "charts";
     if (!destination) {
-      if (saved.activeTab && DEST_FROM_LEGACY[saved.activeTab]) {
-        destination = DEST_FROM_LEGACY[saved.activeTab];
-      } else if (Array.isArray(saved.panes) && saved.panes.length) {
-        destination = "charts";
-      } else {
-        destination = "dashboard";
-      }
+      if (PAGES.includes(named)) destination = named;
+      else if (Array.isArray(saved.panes) && saved.panes.length) destination = "charts";
+      else destination = "dashboard";
     }
     state.destination = destination;
     const legacy = saved.activeTab;
     if (legacy && destination === "studio" && STUDIO_PANES[legacy]) {
       state.studioPane = legacy;
     }
-    if (legacy && destination === "account" && ACCOUNT_FROM_LEGACY[legacy]) {
-      state.accountSection = ACCOUNT_FROM_LEGACY[legacy];
+    // The account section is a page of its own even when the panel that holds it
+    // is shut, so a snapshot naming `billing` still decides which tab the avatar
+    // opens on.
+    if (ACCOUNT_FROM_LEGACY[legacy]) state.accountSection = ACCOUNT_FROM_LEGACY[legacy];
+    else if (ACCOUNT_SECTIONS.includes(saved.accountSection)) {
+      state.accountSection = saved.accountSection;
     }
     if (INSPECTOR_TABS.includes(saved.inspectorTab)) state.inspectorTab = saved.inspectorTab;
     else if (legacy && TAB_FROM_LEGACY[legacy]) state.inspectorTab = TAB_FROM_LEGACY[legacy];
@@ -843,16 +1016,7 @@
       syncChrome();
       return;
     }
-    const route = parse(location.hash);
-    if (route) {
-      setDestination(route.destination, {
-        section: route.section,
-        workspaceId: route.workspaceId,
-      });
-      const hash = hashFor(route.destination, route);
-      if (location.hash !== hash) history.replaceState(null, "", hash);
-      return;
-    }
+    if (fromHash()) return;
     if (!state.destination) {
       setDestination("dashboard");
       history.replaceState(null, "", "#/dashboard");
@@ -865,18 +1029,21 @@
   }
 
   function onAuth(signedIn) {
-    // A drawer belongs to the signed-in frame. Left open, it would hang over
-    // the home page owned by a session that is gone.
-    if (!signedIn && drawer) drawer.close();
+    // A drawer and a panel belong to the signed-in frame. Left open, either
+    // would hang over the home page owned by a session that is gone.
+    if (!signedIn) {
+      if (drawer) drawer.close();
+      if (state.panel) {
+        state.panel = null;
+        if (workPanel) workPanel.hide();
+      }
+    }
     syncChrome();
     if (!signedIn || !started) return;
+    if (fromHash()) return;
     if (!state.destination) {
-      const route = parse(location.hash);
-      setDestination(route ? route.destination : "dashboard", {
-        section: route && route.section,
-        workspaceId: route && route.workspaceId,
-      });
-      history.replaceState(null, "", hashFor(state.destination));
+      setDestination("dashboard");
+      history.replaceState(null, "", "#/dashboard");
       return;
     }
     showDestination();
@@ -887,6 +1054,19 @@
   function wire() {
     for (const button of destButtons()) {
       button.addEventListener("click", () => go(button.dataset.dest));
+    }
+    for (const button of panelTriggers()) {
+      button.addEventListener("click", () => go(button.dataset.openPanel));
+    }
+    // The primitive owns the scrim, the close button, Escape and focus return.
+    // All three of its decisions are handed back to the router, because a panel
+    // closing is a route change: the hash loses the segment, and Back finds the
+    // page underneath rather than a second screen.
+    if (window.HRZUI && window.HRZUI.panel) {
+      workPanel = window.HRZUI.panel(el("workPanel"), {
+        onRequestClose: closePanel,
+        onSelect: (name) => openPanel(name),
+      });
     }
     const ai = el("aiBtn");
     if (ai) ai.addEventListener("click", openAi);
@@ -1046,7 +1226,14 @@
     openDock,
     closeDock,
     selectDockTab,
-    destinations: () => DESTINATIONS.map((id) => ({ id, label: TITLES[id] })),
+    destinations: () => NAV.map((entry) => ({
+      id: entry.id,
+      label: entry.label,
+      kind: entry.kind,
+    })),
+    pages: () => PAGES.slice(),
+    openPanel,
+    closePanel,
     state: () => ({ ...state }),
   };
 })();

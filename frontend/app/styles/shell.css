@@ -37,24 +37,24 @@
 
 #frame { flex: 1 1 auto; display: flex; min-height: 0; }
 #frame[hidden] { display: none; }
-#rail {
-  width: var(--rail-w); flex: 0 0 var(--rail-w);
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  padding: var(--space-2) 0;
-  background: var(--bg-panel); border-right: 1px solid var(--line);
+
+/* ---- The top bar's two navs ------------------------------------------------
+   The views and the panels read as one strip because on a wide screen they are
+   one decision: what am I looking at, and what is floating over it. The divider
+   between them is the only thing that says a panel is not a fourth page. */
+.topNav { display: flex; align-items: center; gap: 2px; flex: none; }
+#panelNav { margin-left: var(--space-1); padding-left: var(--space-2); border-left: 1px solid var(--line); }
+.topNav__btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 28px; padding: 0;
+  border: 0; border-radius: var(--radius-1); background: transparent; color: var(--text-2);
 }
-.railItem {
-  position: relative; display: flex; align-items: center; justify-content: center;
-  width: var(--rail-w); height: 44px; padding: 0;
-  border: 0; border-radius: 0; background: transparent; color: var(--text-2);
-}
-.railItem:hover { background: var(--bg-raised); color: var(--text-1); }
-.railItem[disabled] { opacity: 0.45; cursor: default; }
-.railItem[aria-current="page"] { background: var(--bg-raised); color: var(--accent); }
-.railItem[aria-current="page"]::before {
-  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px;
-  border-radius: 0 2px 2px 0; background: var(--accent);
-}
+.topNav__btn:hover { background: var(--bg-raised); color: var(--text-1); }
+.topNav__btn[disabled] { opacity: 0.45; cursor: default; }
+.topNav__btn[aria-current="page"] { background: var(--bg-raised); color: var(--accent); }
+/* An open panel is a state of its own button, so the icon says the door is open
+   even with the panel centred over something else on the page. */
+.topNav__btn[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
 
 #mainView { flex: 1 1 auto; display: flex; min-width: 0; min-height: 0; }
 #mainView[hidden] { display: none; }
@@ -62,9 +62,25 @@
 .destination[hidden] { display: none; }
 .destHeading { margin: 0; padding: var(--page-pad) var(--page-pad) 0; font-size: var(--text-lg); }
 .destHost { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 0 var(--page-pad) var(--page-pad); }
-#dest-dashboard, #dest-studio, #dest-community, #dest-bots, #dest-account { overflow: auto; }
+#dest-dashboard, #dest-studio { overflow: auto; }
 #dest-charts { flex-direction: row; overflow: hidden; }
 #panePark { display: none; }
+
+/* The panel's own host: a page's gutters are the dialog's, not the content's. */
+.panelBody { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+/* The same trap the dialog fell into: `hidden` is a UA `display: none`, and any
+ * author `display` outranks it. The shell hides the two bodies that are not
+ * showing, so without this the Account tabs painted themselves under whatever
+ * panel was open. */
+.panelBody[hidden] { display: none; }
+.panelBody .destHost { padding: var(--space-3); }
+.panelBody > .hrz-tabs { flex: none; margin: var(--space-3) var(--space-3) 0; }
+/* The panel's content came from a page that had a desktop's width, and the
+ * shared `.row` never expected to run out of it. Inside a sheet -- 390px on a
+ * phone, 760 on a desk -- a row that cannot wrap pushes its last control past
+ * the edge, where nothing can reach it. */
+.panelBody .row { flex-wrap: wrap; }
+.panelBody .row > input { flex: 1 1 160px; min-width: 0; }
 
 .destTabs { margin: 0 var(--space-6) var(--space-3); flex: 0 0 auto; }
 .destHost { display: flex; flex-direction: column; }

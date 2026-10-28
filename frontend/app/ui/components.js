@@ -400,10 +400,21 @@
       const bodies = [...root.querySelectorAll("[data-body]")];
       const tabs = [...root.querySelectorAll(".hrz-dialog__head [data-tab]")];
 
-      const show = (name, { title, width = "medium" } = {}) => {
-        // Only a panel that was closed can be opened by somebody: reopening the
-        // one already on screen must not move the button focus returns to.
-        if (!root.open) opener = document.activeElement;
+      const show = (name, { title, width = "medium", opener: trigger } = {}) => {
+        // Where closing hands focus back to. An owner that names a control wins
+        // on every call, because the panel is one modal wearing several faces:
+        // switching from Community to Account while it stays open has to move the
+        // return address too, or Escape would hand focus to a door that is no
+        // longer the one showing. With no name given, only a panel that was shut
+        // may capture the focused element -- reopening the one already on screen
+        // must not move it.
+        if (trigger) opener = trigger;
+        else if (!root.open) {
+          const candidate = document.activeElement;
+          opener = candidate && candidate !== document.body && candidate !== document.documentElement
+            ? candidate
+            : null;
+        }
         current = name;
         root.dataset.width = width;
         if (title !== undefined && titleNode) titleNode.textContent = title;

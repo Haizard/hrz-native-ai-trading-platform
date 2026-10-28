@@ -99,8 +99,9 @@
     ];
     // The panel toggles exist in the top bar and only change something the user
     // can see on Charts. Offering them elsewhere would be a command whose
-    // result is off screen.
-    if (state.destination === "charts") {
+    // result is off screen -- and a subpanel floating over the chart hides the
+    // very columns they move, so they wait until the modal is closed.
+    if (state.destination === "charts" && !state.panel) {
       actions.unshift({
         id: "action:watchlist",
         label: state.watchlistCollapsed ? "Show the watchlist" : "Hide the watchlist",
@@ -439,7 +440,10 @@
   }
 
   function cycle(step) {
-    const ids = destinations().map((destination) => destination.id);
+    // Views only. A panel is a modal, and a modal is not a stop on a tour of the
+    // page behind it: stepping right from Charts would leave the user staring at
+    // a Community list they did not ask to walk past.
+    const ids = (shell() && shell().pages && shell().pages()) || [];
     if (!ids.length || !shell()) return;
     const current = (shell().state() || {}).destination || "dashboard";
     const index = Math.max(0, ids.indexOf(current));
@@ -448,9 +452,11 @@
 
   function onKeydown(event) {
     if (event.defaultPrevented || event.isComposing) return;
-    // Any open dialog owns the keyboard. The palette's own handlers stop
-    // propagation at the dialog; this guard covers the gap before they do.
-    if (document.querySelector("dialog[open]")) return;
+    // Any open dialog owns the keyboard, except the work panel. That one is the
+    // modal the platform keeps *over* the page, and the palette is the door out
+    // of anywhere -- a panel the user cannot ⌘K away from is a room, not a door.
+    // The palette's own dialog stacks above it, and closes back onto it.
+    if (document.querySelector("dialog[open]:not(#workPanel)")) return;
 
     const target = event.target;
     const tag = target && target.tagName;
@@ -550,7 +556,7 @@
 
     const openButton = document.getElementById("paletteBtn");
     if (openButton) openButton.addEventListener("click", () => openPalette(openButton));
-    const help = document.getElementById("railHelp");
+    const help = document.getElementById("shortcutsBtn");
     if (help) help.addEventListener("click", () => openShortcuts(help));
 
     for (const node of document.querySelectorAll("[data-mod]")) node.textContent = MOD;

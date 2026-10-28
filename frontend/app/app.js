@@ -13994,6 +13994,13 @@ function refreshWorkspaceGates() {
 // Wiring
 // ---------------------------------------------------------------------------
 
+/// The panes that live in a subpanel rather than a page.
+///
+/// A panel floats over Charts, so its content arriving is not the user leaving
+/// the page: the rail underneath keeps its clock. Every other named pane is a
+/// pane in a page that replaced the chart column, and stops it.
+const PANEL_PANES = new Set(["community", "bots", "billing", "brokers", "aimodel"]);
+
 /// Read a pane's data when it is opened. Panels that can be changed from
 /// elsewhere (the API, another tab) read on open rather than cache at boot, so
 /// a value edited somewhere else is never shown stale.
@@ -14021,7 +14028,7 @@ function runPaneLoaders(name) {
     renderWatchlist();
     loadWatchlistUniverse();
     startWatchlistTicker();
-  } else {
+  } else if (!PANEL_PANES.has(name)) {
     stopWatchlistTicker();
   }
 }
@@ -15162,6 +15169,11 @@ el("authorChips").addEventListener("click", (event) => {
     // on the same page, and a Backspace in a textarea has to delete a character.
     const tag = document.activeElement && document.activeElement.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA") return;
+    // And not while a modal is on screen: a dialog stops the pointer reaching the
+    // page behind it but lets the keydown bubble to the window all the same, so
+    // without this an Escape pressed in the panel cancels a drawing the user
+    // cannot even see.
+    if (document.querySelector("dialog[open]")) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
       event.preventDefault();
       if (activePane) activePane.history(event.shiftKey ? "redo" : "undo");

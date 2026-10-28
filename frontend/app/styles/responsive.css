@@ -10,8 +10,8 @@
      1279  the inspector and the watchlist stop both fitting beside a chart
      1023  those panels become overlays over the chart, and every control a
            finger lands on grows to 44px
-      767  the rail and status bar give way to the bottom nav, the top bar
-           grows to 48, and the wall stacks one chart per screen
+      767  the top bar's view icons and the status bar give way to the bottom
+           nav, the bar grows to 48, and the wall stacks one chart per screen
 
    Nothing here hides a control that has no other route: the watchlist,
    inspector and dock all keep the instrument bar's toggles. The pane chip bar
@@ -58,7 +58,7 @@
      handler are unchanged -- only where the browser puts the box. */
   #sideWatch {
     position: fixed; z-index: 45;
-    top: var(--topbar-h); bottom: var(--status-h); left: var(--rail-w);
+    top: var(--topbar-h); bottom: var(--status-h); left: 0;
     width: min(320px, 80vw);
     border-right: 1px solid var(--line-strong);
     background: var(--bg-panel); box-shadow: var(--shadow-2);
@@ -80,7 +80,7 @@
      leaves the candles nothing. */
   #dock {
     position: fixed; z-index: 44;
-    left: var(--rail-w); right: 0; bottom: var(--status-h);
+    left: 0; right: 0; bottom: var(--status-h);
     height: min(50vh, 360px);
     border-left: 1px solid var(--line-strong);
     box-shadow: var(--shadow-2);
@@ -96,13 +96,21 @@
     --phone-nav-h: 56px;
   }
 
-  /* No rail, no status: the bottom nav is the destination list and the
-     instrument bar states the chart. */
-  #rail { display: none; }
+  /* No left column and no status strip: the bottom nav is the view list and the
+     instrument bar states the chart. The top bar keeps only what the bottom nav
+     does not carry -- the two panels and the account. */
+  #topNav { display: none; }
   #statusbar { display: none; }
 
   #topbar { gap: var(--space-1); padding: 0 var(--space-2); }
-  .brandWord, #session, #connDotTop { display: none; }
+  .topNav__btn { width: 44px; height: 44px; }
+  /* The shortcut sheet lists keys a phone has no keyboard for, so its only
+     trigger gives the bar back the 44px it needs for the two panels. */
+  .brandWord, #session, #connDotTop, #destTitle, #shortcutsBtn { display: none; }
+  /* Signing out is a thing you do from the account, and on a phone the account
+     is the panel its icon opens -- so its Profile pane holds that door and the
+     bar spends its 390px on the ones it cannot lose. */
+  #signinToggle { display: none; }
   #paletteBtn {
     width: 44px; height: 44px; min-width: 44px; padding: 0; margin: 0;
     justify-content: center;
@@ -127,6 +135,8 @@
   .phoneNav__btn[disabled] { opacity: 0.45; }
   .phoneNav__btn[aria-current="page"] { color: var(--accent); }
   .phoneNav__label {
+    /* Three names at 11px fit three columns even at 320, the narrowest width the
+       acceptance matrix names -- the promise the six-button bar could not keep. */
     max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
@@ -192,6 +202,16 @@
     margin: 0;
     border-radius: var(--radius-3) var(--radius-3) 0 0;
   }
+  /* The panel is the widest thing the page opens, and its `[data-width]` is a
+     desktop promise: on a phone the sheet is the screen, so the three widths
+     collapse to one and the tall body scrolls inside it. */
+  .hrz-dialog--panel,
+  .hrz-dialog--panel[data-width="narrow"],
+  .hrz-dialog--panel[data-width="medium"],
+  .hrz-dialog--panel[data-width="wide"] {
+    width: 100%; max-width: 100%;
+    height: min(88vh, 720px); max-height: 88vh;
+  }
 
   /* Home is rebuilt in Spec 4; until then it keeps the phone shape it had. */
   #signin { flex-wrap: wrap; }
@@ -199,11 +219,4 @@
   .homeInner { padding: var(--space-4) var(--space-3); }
   .marketGrid { grid-template-columns: 1fr; }
   .homeHero h1 { font-size: 26px; }
-}
-
-/* 320px is the narrowest width the acceptance matrix names. Six labels at
-   11px do not fit under four icons, so the icons carry the nav with their
-   accessible names; the labels come back at 360. */
-@media (max-width: 359px) {
-  .phoneNav__label { display: none; }
 }
