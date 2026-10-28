@@ -188,6 +188,7 @@ td, th { border-color: var(--border-subtle); }
 
 @media (prefers-reduced-motion: reduce) {
   .pane:not([hidden]) { animation: none; }
+  .hrz-dialog--panel[open] { animation: none; }
   * { transition-duration: 0.01ms !important; }
 }
 
@@ -494,6 +495,40 @@ td, th { border-color: var(--border-subtle); }
   display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2);
   padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line);
 }
+
+/* ---- Panel: one host of several, floated over the chart ----------------- */
+/* The subpanel TradingView and LuxAlgo put on top of the chart: wide enough to
+ * hold a table, short enough that the chart is still readable behind the scrim.
+ * The dialog's own `max-block-size` is a viewport minus the UA's 48px, which no
+ * author could name, so both axes are stated here instead of inherited. */
+.hrz-dialog--panel {
+  display: flex; flex-direction: column; width: min(760px, calc(100vw - var(--space-6)));
+  height: min(680px, calc(100vh - var(--space-6)));
+  max-width: min(760px, calc(100vw - var(--space-6)));
+  max-height: min(680px, calc(100vh - var(--space-6)));
+}
+.hrz-dialog--panel[data-width="narrow"] {
+  width: min(520px, calc(100vw - var(--space-6)));
+  max-width: min(520px, calc(100vw - var(--space-6)));
+}
+.hrz-dialog--panel[data-width="wide"] {
+  width: min(1080px, calc(100vw - var(--space-6)));
+  max-width: min(1080px, calc(100vw - var(--space-6)));
+}
+.hrz-dialog__head {
+  display: flex; flex: none; align-items: center; gap: var(--space-3);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+.hrz-dialog__head .hrz-dialog__title { padding: 0; margin-right: auto; }
+.hrz-dialog__head .hrz-tabs { border-bottom: 0; }
+.hrz-dialog__close { flex: none; }
+.hrz-dialog--panel .hrz-dialog__body {
+  flex: 1 1 auto; min-height: 0; padding: 0; overflow: auto;
+  color: var(--text-1); background: var(--bg-panel);
+}
+.hrz-dialog--panel[open] { animation: hrz-panel-in var(--dur-2) var(--ease); }
+@keyframes hrz-panel-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 .hrz-drawer {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 55;

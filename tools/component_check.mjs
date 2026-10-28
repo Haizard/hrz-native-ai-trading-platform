@@ -30,6 +30,7 @@ const REQUIRED = [
   "hrz-menu", "hrz-menu__item", "hrz-menu__item--danger", "hrz-menu__hint",
   "hrz-menu__sep", "hrz-popover", "hrz-popover__head",
   "hrz-dialog", "hrz-dialog__title", "hrz-dialog__body", "hrz-dialog__foot",
+  "hrz-dialog--panel", "hrz-dialog__head", "hrz-dialog__close",
   "hrz-drawer", "hrz-drawer--bottom", "hrz-drawer__handle",
   "hrz-toasts", "hrz-toast", "hrz-toast--error", "hrz-toast--warn",
   "hrz-toast--up", "hrz-toast__action",

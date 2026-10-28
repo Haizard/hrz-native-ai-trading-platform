@@ -373,6 +373,107 @@
     }).then(Boolean);
   };
 
+  /* ---- Panel ------------------------------------------------------------- */
+  /// The subpanel the chart platforms float over the chart: a modal whose body
+  /// is one of several hosts that already exist on the page.
+  ///
+  /// Deliberately dumb. It knows a name, a title, a width and which host is on
+  /// screen; it does not know that `community` is a destination or that closing
+  /// should change the address. That belongs to whoever owns the panel, and
+  /// keeping it out here is what lets the hosts stay exactly where their
+  /// builders put them -- this only says which of them is showing.
+  ///
+  /// Native `<dialog>` carries the modal contract that cannot be written by
+  /// hand: the top layer above the chart, the scrim, the focus trap, and input
+  /// frozen while the clocks keep running. So Escape and the close button do not
+  /// close anything themselves -- they ask the owner, which is the only way the
+  /// address and the panel can never disagree about what is open.
+  const panelApis = new WeakMap();
+
+  UI.panel = function panel(root, options = {}) {
+    let api = panelApis.get(root);
+    if (!api) {
+      let opener = null;
+      let current = null;
+
+      const titleNode = root.querySelector(".hrz-dialog__title");
+      const bodies = [...root.querySelectorAll("[data-body]")];
+      const tabs = [...root.querySelectorAll(".hrz-dialog__head [data-tab]")];
+
+      const show = (name, { title, width = "medium" } = {}) => {
+        // Only a panel that was closed can be opened by somebody: reopening the
+        // one already on screen must not move the button focus returns to.
+        if (!root.open) opener = document.activeElement;
+        current = name;
+        root.dataset.width = width;
+        if (title !== undefined && titleNode) titleNode.textContent = title;
+        for (const body of bodies) body.hidden = body.dataset.body !== name;
+        for (const tab of tabs) {
+          tab.setAttribute("aria-selected", String(tab.dataset.tab === name));
+        }
+        if (!root.open) root.showModal();
+      };
+
+      const hide = () => {
+        if (root.open) root.close();
+      };
+
+      const ask = () => {
+        if (api.onRequestClose) api.onRequestClose(current);
+        else hide();
+      };
+
+      root.querySelector(".hrz-dialog__close")?.addEventListener("click", ask);
+      root.addEventListener("cancel", (event) => {
+        // Escape would close without asking, which can leave the address
+        // claiming a panel nobody can see.
+        event.preventDefault();
+        ask();
+      });
+      root.addEventListener("click", (event) => {
+        if (event.target !== root) return;
+        // A backdrop click is delivered to the dialog itself; the box is the
+        // only way to tell it from a click on the panel's own padding.
+        const box = root.getBoundingClientRect();
+        const inBox =
+          event.clientX >= box.left && event.clientX <= box.right &&
+          event.clientY >= box.top && event.clientY <= box.bottom;
+        if (!inBox) ask();
+      });
+      for (const tab of tabs) {
+        // Selecting a host is the owner's decision, not this file's: the shell
+        // writes the address, and the round trip through `show` is the only way
+        // a host becomes visible. So a click here never changes the panel.
+        tab.addEventListener("click", () => api.onSelect?.(tab.dataset.tab));
+      }
+      root.addEventListener("close", () => {
+        current = null;
+        // Where focus came from is where it goes, the promise `UI.menu` and
+        // `UI.popover` already make. The dialog's own `close` event is the one
+        // place it happens, so the button, Escape and the owner all hand focus
+        // back to the same control.
+        opener?.focus?.();
+        opener = null;
+      });
+
+      api = {
+        show,
+        hide,
+        isOpen: () => root.open,
+        name: () => current,
+        onRequestClose: null,
+        onSelect: null,
+      };
+      panelApis.set(root, api);
+    }
+    // What closing and selecting *mean* belongs to the owner, and the owner may
+    // be rebuilt while the panel keeps its identity -- so the handlers are set
+    // on every call rather than captured once.
+    if (options.onRequestClose) api.onRequestClose = options.onRequestClose;
+    if (options.onSelect) api.onSelect = options.onSelect;
+    return api;
+  };
+
   /* ---- Drawer ------------------------------------------------------------ */
   UI.drawer = function drawer({ side = "right", title, content, onClose }) {
     const bottom = side === "bottom";
