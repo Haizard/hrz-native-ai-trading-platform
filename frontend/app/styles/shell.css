@@ -174,3 +174,148 @@
 }
 
 #asideShow:hover { color: var(--text); border-color: var(--accent); }
+
+/* ---- Command palette ------------------------------------------------------ */
+.palette,
+.shortcuts {
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-l);
+  background: var(--bg-overlay);
+  color: var(--text-1);
+  box-shadow: var(--shadow-2);
+}
+.palette { width: min(560px, calc(100vw - 32px)); margin: 12vh auto auto; }
+.shortcuts { width: min(720px, calc(100vw - 32px)); margin: 12vh auto auto; }
+.palette::backdrop,
+.shortcuts::backdrop { background: var(--scrim); }
+
+.paletteField {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 52px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.paletteField__icon { display: inline-flex; color: var(--text-3); }
+.paletteInput {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  font: 400 var(--text-base)/1 var(--font-ui);
+  outline: none;
+}
+.paletteInput::placeholder { color: var(--text-3); }
+
+.paletteList {
+  max-height: min(56vh, 420px);
+  overflow-y: auto;
+  padding: var(--space-1);
+}
+.paletteGroup + .paletteGroup {
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--line);
+}
+.paletteGroup__title {
+  padding: 6px 10px 4px;
+  font: 600 var(--text-2xs)/1 var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.paletteOpt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: var(--radius-1);
+  cursor: default;
+}
+.paletteOpt[aria-selected="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 var(--accent);
+}
+.paletteOpt__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+.paletteOpt__hint {
+  color: var(--text-3);
+  font: var(--text-2xs)/1 var(--font-mono);
+  white-space: nowrap;
+}
+.paletteEmpty {
+  margin: 0;
+  padding: var(--space-4) var(--space-3);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+.paletteFoot {
+  display: flex;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+  font-size: var(--text-2xs);
+}
+.palette kbd,
+.shortcuts kbd {
+  display: inline-block;
+  min-width: 16px;
+  padding: 1px 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--bg-raised);
+  color: var(--text-2);
+  font: var(--text-2xs)/14px var(--font-mono);
+  text-align: center;
+}
+
+/* ---- Shortcut sheet ------------------------------------------------------- */
+.shortcutsHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+.shortcutsHead h2 { margin: 0; font: 600 var(--text-md)/24px var(--font-ui); }
+.shortcutsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+.shortcutGroup h3 {
+  margin: 0 0 var(--space-2);
+  font: 600 var(--text-2xs)/1 var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.shortcutGroup dl { display: grid; gap: var(--space-2); margin: 0; }
+.shortcutGroup dl > div { display: flex; align-items: center; gap: var(--space-3); }
+.shortcutGroup dt { flex: 1; font-size: var(--text-sm); color: var(--text-2); }
+.shortcutGroup dd { display: flex; align-items: center; gap: 4px; margin: 0; }
+.shortcutsFoot {
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-3);
+  color: var(--text-3);
+  font-size: var(--text-2xs);
+}
+
+@media (max-width: 720px) {
+  .palette, .shortcuts { margin-top: 8vh; }
+  .shortcutsGrid { grid-template-columns: 1fr; }
+}

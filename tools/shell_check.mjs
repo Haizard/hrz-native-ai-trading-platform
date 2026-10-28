@@ -901,6 +901,12 @@ window.fetch = async (path, options = {}) => {
     });
   }
 
+  if (url.startsWith("/indicator-workspaces")) {
+    return json(200, [
+      { id: "ws-liquidity", name: "Liquidity sweep", symbol: "BTCUSDT", timeframe: "15m" },
+    ]);
+  }
+
   // Anything else the shell asks for: an empty object is what an endpoint with
   // nothing to say returns, and the shell already tolerates it.
   return json(200, {});
@@ -1110,6 +1116,12 @@ for (const file of [
 const shellView = document.createElement("script");
 shellView.textContent = await readFile(join(root, "frontend/app/views/shell.js"), "utf8");
 document.head.appendChild(shellView);
+
+// The palette binds its listeners as it loads and reaches `HRZApp` only inside
+// them, so it can load before the app defines the facade.
+const paletteView = document.createElement("script");
+paletteView.textContent = await readFile(join(root, "frontend/app/views/palette.js"), "utf8");
+document.head.appendChild(paletteView);
 
 // These checks are about the chart wall and the panels beside it. A fresh
 // account has no snapshot, so without a route the shell opens on Dashboard
@@ -3740,6 +3752,116 @@ check(
     chartsWall.querySelectorAll(".chartRow").length === 0,
   `${chartsWall.querySelectorAll(".chartRow").length} rows`
 );
+
+// --- the command palette -----------------------------------------------------
+//
+// The palette is the shell's keyboard door: the only way to reach a symbol or
+// a saved chat without walking the frame. It is driven here the way a keyboard
+// drives it (a document-level event, a typed query, Enter), because a click
+// would pass even if the key handler were never bound.
+
+console.log("\nthe command palette");
+
+document.dispatchEvent(new window.KeyboardEvent("keydown", {
+  key: "k",
+  metaKey: true,
+  bubbles: true,
+  cancelable: true,
+}));
+
+const palette = document.getElementById("palette");
+check(
+  "the palette opens on its shortcut",
+  Boolean(palette && palette.hasAttribute("open")),
+  palette ? `open=${palette.hasAttribute("open")}` : "no #palette"
+);
+
+const paletteTitles = () =>
+  [...document.querySelectorAll("#paletteList .paletteGroup__title")].map((node) => node.textContent);
+const openingTitles = paletteTitles();
+check(
+  "and opens as a launcher, not a search",
+  openingTitles.join(",") === "Navigate,Actions",
+  openingTitles.join(", ") || "(none)"
+);
+check(
+  "with the first destination selected",
+  (document.querySelector('#paletteList [role="option"][aria-selected="true"]')?.textContent || "")
+    .includes("Dashboard"),
+  document.querySelector('#paletteList [role="option"][aria-selected="true"]')?.textContent || "(none)"
+);
+check(
+  "the count is announced",
+  (document.getElementById("paletteStatus").textContent || "").endsWith("commands"),
+  document.getElementById("paletteStatus").textContent
+);
+
+const paletteInput = document.getElementById("paletteInput");
+paletteInput.value = "liquidity";
+paletteInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+await settle();
+
+const filteredTitles = paletteTitles();
+check(
+  "typing filters and offers the user's saved chats",
+  filteredTitles.includes("Chats"),
+  filteredTitles.join(", ") || "(none)"
+);
+
+const chatOption = [...document.querySelectorAll('#paletteList [role="option"]')]
+  .find((node) => node.textContent.includes("Liquidity sweep"));
+check(
+  "with the workspace the API listed",
+  Boolean(chatOption),
+  chatOption ? chatOption.textContent : "(none)"
+);
+if (chatOption) {
+  chatOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await settle();
+  check(
+    "and selecting one deep-links into Studio",
+    window.location.hash === "#/studio/ws-liquidity",
+    window.location.hash
+  );
+}
+
+document.dispatchEvent(new window.KeyboardEvent("keydown", {
+  key: "/",
+  metaKey: true,
+  bubbles: true,
+  cancelable: true,
+}));
+const sheet = document.getElementById("shortcuts");
+check(
+  "the shortcut sheet opens on its shortcut",
+  Boolean(sheet && sheet.hasAttribute("open")),
+  sheet ? `open=${sheet.hasAttribute("open")}` : "no #shortcuts"
+);
+const sheetClose = sheet && sheet.querySelector("[data-close]");
+if (sheetClose) sheetClose.click();
+check(
+  "and closes from its own button",
+  Boolean(sheet) && !sheet.hasAttribute("open"),
+  sheet ? `open=${sheet.hasAttribute("open")}` : "no #shortcuts"
+);
+
+document.dispatchEvent(new window.KeyboardEvent("keydown", {
+  key: "1",
+  code: "Digit1",
+  altKey: true,
+  bubbles: true,
+  cancelable: true,
+}));
+check("Alt+1 goes to Dashboard", window.location.hash === "#/dashboard", window.location.hash);
+
+document.dispatchEvent(new window.KeyboardEvent("keydown", {
+  key: "2",
+  code: "Digit2",
+  altKey: true,
+  bubbles: true,
+  cancelable: true,
+}));
+check("and Alt+2 comes back to Charts", window.location.hash === "#/charts", window.location.hash);
 
 // --- nothing threw -----------------------------------------------------------
 //

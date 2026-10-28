@@ -1286,9 +1286,70 @@
 <div id="panePark" hidden></div>
 <div id="overlays"></div>
 
+<!--
+  The command palette. A `dialog` element, not a div, because the platform
+  already knows how to make one modal: focus is trapped, the rest of the page
+  is inert to the pointer, and Escape is a real event rather than a key handler
+  competing with the chart's own Escape. The listbox is the results column; the
+  field is the combobox that owns it.
+-->
+<dialog id="palette" class="palette" aria-labelledby="paletteTitle">
+  <h2 id="paletteTitle" class="sr-only">Search or jump to</h2>
+  <div class="paletteField">
+    <span class="paletteField__icon" data-icon="search" aria-hidden="true"></span>
+    <input id="paletteInput" class="paletteInput" type="text" role="combobox"
+           aria-expanded="true" aria-controls="paletteList" aria-autocomplete="list"
+           aria-describedby="paletteFoot" autocomplete="off" spellcheck="false"
+           placeholder="Search symbols, chats and actions…" />
+    <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon"
+            data-close aria-label="Close search">×</button>
+  </div>
+  <div id="paletteList" class="paletteList" role="listbox" aria-label="Results"></div>
+  <p id="paletteEmpty" class="paletteEmpty" hidden></p>
+  <p id="paletteStatus" class="sr-only" role="status" aria-live="polite"></p>
+  <p id="paletteFoot" class="paletteFoot">
+    <span><kbd>↑</kbd><kbd>↓</kbd> to move</span>
+    <span><kbd>↵</kbd> to open</span>
+    <span><kbd>esc</kbd> to close</span>
+  </p>
+</dialog>
+
+<dialog id="shortcuts" class="shortcuts" aria-labelledby="shortcutsTitle">
+  <div class="shortcutsHead">
+    <h2 id="shortcutsTitle">Keyboard shortcuts</h2>
+    <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon"
+            data-close aria-label="Close shortcuts">×</button>
+  </div>
+  <div class="shortcutsGrid">
+    <section class="shortcutGroup" aria-labelledby="shortcutNav">
+      <h3 id="shortcutNav">Navigation</h3>
+      <dl>
+        <div><dt>Search or jump</dt><dd><kbd data-mod>⌘</kbd><kbd>K</kbd></dd></div>
+        <div><dt>Shortcut sheet</dt><dd><kbd data-mod>⌘</kbd><kbd>/</kbd></dd></div>
+        <div><dt>Dashboard to Account</dt><dd><kbd>Alt</kbd><kbd>1</kbd>–<kbd>6</kbd></dd></div>
+        <div><dt>Previous / next destination</dt><dd><kbd>Alt</kbd><kbd>←</kbd><kbd>→</kbd></dd></div>
+        <div><dt>Close the top overlay</dt><dd><kbd>Esc</kbd></dd></div>
+      </dl>
+    </section>
+    <section class="shortcutGroup" aria-labelledby="shortcutChart">
+      <h3 id="shortcutChart">Chart</h3>
+      <dl>
+        <div><dt>Pan one bar</dt><dd><kbd>←</kbd><kbd>→</kbd></dd></div>
+        <div><dt>Zoom</dt><dd><kbd>+</kbd><kbd>−</kbd></dd></div>
+        <div><dt>Fit the series</dt><dd><kbd>Alt</kbd><kbd>R</kbd></dd></div>
+        <div><dt>Delete the selected drawing</dt><dd><kbd>Delete</kbd></dd></div>
+        <div><dt>Undo / redo</dt><dd><kbd data-mod>⌘</kbd><kbd>Z</kbd> <span class="muted">/</span> <kbd data-mod>⌘</kbd><kbd>⇧</kbd><kbd>Z</kbd></dd></div>
+        <div><dt>Cancel the drawing tool</dt><dd><kbd>Esc</kbd></dd></div>
+      </dl>
+    </section>
+  </div>
+  <p class="shortcutsFoot">Shortcuts are ignored while you are typing in a field.</p>
+</dialog>
+
 <script src="/assets/ui/icons.js"></script>
 <script src="/assets/ui/components.js"></script>
 <script src="/assets/views/shell.js"></script>
+<script src="/assets/views/palette.js"></script>
 <script src="builder.js"></script>
 <script src="app.js"></script>
 </body>

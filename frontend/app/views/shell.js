@@ -75,6 +75,10 @@
   let started = false;
   let applyingRestore = false;
   let drawer = null;
+  // The chat the current route already asked the app to open. `go` applies the
+  // destination directly and the hashchange applies it again a moment later;
+  // without this, one link is two loads of the same conversation.
+  let openedWorkspaceId = "";
 
   const el = (id) => document.getElementById(id);
   const app = () => window.HRZApp || {};
@@ -273,7 +277,14 @@
   function syncChrome() {
     const signedIn = isSignedIn();
     for (const button of document.querySelectorAll("#rail [data-dest]")) button.disabled = !signedIn;
-    for (const id of ["aiBtn", "watchlistToggle", "inspectorToggle", "dockToggle"]) {
+    for (const id of [
+      "aiBtn",
+      "paletteBtn",
+      "watchlistToggle",
+      "inspectorToggle",
+      "dockToggle",
+      "railHelp",
+    ]) {
       const button = el(id);
       if (button) button.disabled = !signedIn;
     }
@@ -308,12 +319,25 @@
     if (parts[0] === "account") {
       route.section = ACCOUNT_SECTIONS.includes(parts[1]) ? parts[1] : "plan";
     }
+    if (parts[0] === "studio" && parts[1]) {
+      // An id is user data from the address bar. A malformed escape is a bad
+      // link, not a router crash: fall back to the raw segment and let the
+      // workspace lookup reject it.
+      try {
+        route.workspaceId = decodeURIComponent(parts[1]);
+      } catch {
+        route.workspaceId = parts[1];
+      }
+    }
     return route;
   }
 
   function hashFor(destination, opts = {}) {
     if (destination === "account") {
       return `#/account/${opts.section || state.accountSection || "plan"}`;
+    }
+    if (destination === "studio" && opts.workspaceId) {
+      return `#/studio/${encodeURIComponent(opts.workspaceId)}`;
     }
     return `#/${destination}`;
   }
@@ -335,6 +359,11 @@
       state.studioPane = opts.studioPane;
       load = true;
     }
+    if (destination === "studio" && opts.workspaceId) {
+      // A chat lives in the builder. A link to one is a link to that tab.
+      state.studioPane = "indicator";
+      load = true;
+    }
     if (destination === "account") {
       const section = opts.section && ACCOUNT_SECTIONS.includes(opts.section)
         ? opts.section
@@ -345,7 +374,21 @@
       }
     }
     showDestination();
-    if (load) runDestinationLoaders();
+    // Opening a chat is the indicator loader's own work: it fetches the same
+    // list and then selects. Running both would race two lists, and the loser
+    // could repaint the list over the conversation the other just opened.
+    const openingChat = destination === "studio" && Boolean(opts.workspaceId) &&
+      Boolean(app().openWorkspace);
+    if (!openingChat) openedWorkspaceId = "";
+    if (openingChat) {
+      const id = String(opts.workspaceId);
+      if (id !== openedWorkspaceId) {
+        openedWorkspaceId = id;
+        app().openWorkspace(id);
+      }
+    } else if (load) {
+      runDestinationLoaders();
+    }
     note();
   }
 
@@ -365,7 +408,10 @@
       setDestination("dashboard");
       return;
     }
-    setDestination(route.destination, { section: route.section });
+    setDestination(route.destination, {
+      section: route.section,
+      workspaceId: route.workspaceId,
+    });
   }
 
   function runDestinationLoaders() {
@@ -593,7 +639,10 @@
     }
     const route = parse(location.hash);
     if (route) {
-      setDestination(route.destination, { section: route.section });
+      setDestination(route.destination, {
+        section: route.section,
+        workspaceId: route.workspaceId,
+      });
       const hash = hashFor(route.destination, route);
       if (location.hash !== hash) history.replaceState(null, "", hash);
       return;
@@ -610,11 +659,17 @@
   }
 
   function onAuth(signedIn) {
+    // A drawer belongs to the signed-in frame. Left open, it would hang over
+    // the home page owned by a session that is gone.
+    if (!signedIn && drawer) drawer.close();
     syncChrome();
     if (!signedIn || !started) return;
     if (!state.destination) {
       const route = parse(location.hash);
-      setDestination(route ? route.destination : "dashboard", { section: route && route.section });
+      setDestination(route ? route.destination : "dashboard", {
+        section: route && route.section,
+        workspaceId: route && route.workspaceId,
+      });
       history.replaceState(null, "", hashFor(state.destination));
       return;
     }
@@ -754,6 +809,7 @@
     openDock,
     closeDock,
     selectDockTab,
+    destinations: () => DESTINATIONS.map((id) => ({ id, label: TITLES[id] })),
     state: () => ({ ...state }),
   };
 })();

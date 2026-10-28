@@ -15169,7 +15169,7 @@ function showSkillMessage(msg) {
 
 // Wire up workspace event listeners in main().
 
-/// The shell's window into the app. Six answers, no state handing: everything
+/// The shell's window into the app. Questions only, no state handing: everything
 /// else the shell needs is in the DOM, and everything here is a question about
 /// the instruments the app owns.
 window.HRZApp = {
@@ -15202,6 +15202,50 @@ window.HRZApp = {
     };
   },
   noteChange: () => noteWorkspaceChange(),
+
+  // --- the palette's questions (Task 10) -----------------------------------
+
+  newPane: () => addPane(),
+
+  /// The builder creates a chat from its own name field, so this puts the
+  /// caret where the user has to type rather than inventing a name for them.
+  newWorkspace() {
+    const name = el("wsName");
+    if (name) name.focus();
+  },
+
+  signOut: () => setToken(""),
+
+  workspaces: () => api("/indicator-workspaces"),
+
+  /// Deep links land here. Setting the pending id and reloading is how a
+  /// restored snapshot already reopens a chat, so a route reuses that path
+  /// instead of growing a second way to select a workspace.
+  openWorkspace(id) {
+    // A route can re-apply (the hash follows the destination), and a reload of
+    // the chat already on screen would throw away a half-typed message.
+    if (wsActiveId === id) return undefined;
+    pendingIndicatorWorkspaceId = id;
+    return loadWorkspaces();
+  },
+
+  searchSymbols(query) {
+    return api(`/symbols/search?q=${encodeURIComponent(query)}&limit=25`).then(
+      (response) => (response && response.results) || []
+    );
+  },
+
+  /// Chart a symbol, reusing the pane that already shows it. On a wall of a
+  /// hundred the user means "show me this", not "add another copy".
+  chartSymbol(symbol) {
+    if (!symbol) return;
+    const existing = panes.find((pane) => pane.symbol && pane.symbol() === symbol);
+    if (existing) {
+      setActive(existing);
+      return;
+    }
+    chartFromWatchlist(symbol);
+  },
 };
 
 main();
