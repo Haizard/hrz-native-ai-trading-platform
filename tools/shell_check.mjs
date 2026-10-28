@@ -1255,8 +1255,11 @@ check(
 );
 check(
   "and one that puts the panel below the chart",
-  /flex-direction:\s*column/.test(ruleIn(narrowBlock, "main")),
-  ruleIn(narrowBlock, "main").trim() || "(no main rule)"
+  // The Charts destination is the row that stacks (the frame's `#mainView`
+  // does not lay panels out), and its inspector host takes the aside's share.
+  /flex-direction:\s*column/.test(ruleIn(narrowBlock, "#dest-charts")) &&
+    /width:\s*auto/.test(ruleIn(narrowBlock, "#inspectorHost")),
+  ruleIn(narrowBlock, "#dest-charts").trim() || "(no #dest-charts rule)"
 );
 check(
   "where the chart is given a height of its own, not a share of the column",
@@ -1382,7 +1385,12 @@ pickTool("cursor");
 const segmentOf = (scene) =>
   scene.drawings[0].parts.find((part) => part.shape === "segment");
 const before = segmentOf(lastScene());
-const putBefore = backend.calls.filter((c) => c.method === "PUT").length;
+// The workspace keeps its own autosave PUT (`/workspace`), which can land at any
+// point inside a gesture window. These checks are about the drawing store, so
+// they count that one route and nothing else.
+const drawingPuts = () =>
+  backend.calls.filter((c) => c.method === "PUT" && c.url.startsWith("/drawings/"));
+const putBefore = drawingPuts().length;
 
 // The middle of the line, which is what a body grab means.
 const midX = (before.x1 + before.x2) / 2;
@@ -1395,7 +1403,7 @@ pointer("pointerup", midX + 60, midY + 30);
 await settle();
 await settle();
 
-const puts = backend.calls.filter((c) => c.method === "PUT");
+const puts = drawingPuts();
 check(
   "a body drag stores the move",
   puts.length === putBefore + 1,
@@ -1438,7 +1446,7 @@ if (puts.length > putBefore) {
 
 console.log("\ngrabbing an anchor");
 
-const putsNow = () => backend.calls.filter((c) => c.method === "PUT");
+const putsNow = drawingPuts;
 const lastBody = () => {
   const puts = putsNow();
   return puts.length ? JSON.parse(puts[puts.length - 1].body) : null;

@@ -89,21 +89,26 @@ function paintSession() {
 }
 
 /// The home page is the door; the workstation is the room. A token opens it:
-/// home hides, `main` un-hides. Everything else on the page lives inside
-/// `main`, so this one toggle is the whole gate.
+/// home hides, the frame un-hides. Everything else on the page lives inside
+/// the frame, so this one toggle is the whole gate.
 function applyAuthGate() {
   const signedIn = Boolean(token());
   const home = document.getElementById("home");
-  const workspace = document.querySelector("main");
+  const frame = document.getElementById("frame");
   const statusbar = document.getElementById("statusbar");
   if (home) home.hidden = signedIn;
   // The status bar belongs to the workstation -- it counts charts and ticks
   // the market's clock, both of which are dashboard furniture.
   if (statusbar) statusbar.hidden = !signedIn;
-  if (workspace) {
-    const wasHidden = workspace.hidden;
-    workspace.hidden = !signedIn;
-    // Charts measure their canvas while `main` is hidden read zero, and a
+  if (frame) {
+    const wasHidden = frame.hidden;
+    frame.hidden = !signedIn;
+    // The router owns which destination is on screen from M3.T9; until then
+    // the frame's view is opened with the frame so Charts is what a signed-in
+    // visit lands on, exactly as it did before the frame existed.
+    const mainView = document.getElementById("mainView");
+    if (mainView) mainView.hidden = !signedIn;
+    // Charts measure their canvas while the frame is hidden read zero, and a
     // zero-sized canvas paints nothing when the room is finally shown. Any
     // pane that already exists re-measures and redraws now that it has size.
     if (wasHidden && signedIn) {
@@ -8393,7 +8398,7 @@ function wireSplitters() {
       : panel.getBoundingClientRect().width || fallback;
   };
   wireWidth(el("splitWatch"), "--watch-w", 200, 560, +1, () => currentWidth(el("sideWatch"), "--watch-w", 300));
-  wireWidth(el("splitAside"), "--aside-w", 280, 860, -1, () => currentWidth(document.querySelector("main > aside"), "--aside-w", 460));
+  wireWidth(el("splitAside"), "--aside-w", 280, 860, -1, () => currentWidth(document.querySelector("#dest-charts aside"), "--aside-w", 460));
 
   // Row splitters are created with their row (`addPane`), so they are delegated:
   // one listener on the container covers every row that ever exists.
@@ -13960,6 +13965,9 @@ el("authorChips").addEventListener("click", (event) => {
   // The global toolbar is built from the same registry, once, at the same
   // moment: before the engine there is nothing to build it from.
   globalTools.build();
+  // The frame's icons are painted at startup; the toolbar's are new nodes, so
+  // the slots added since then are filled here as well.
+  paintIcons(document);
 
   // The editor is never empty: a saved strategy if there is one, otherwise the
   // reference document. An empty box makes Validate and Save look broken when

@@ -35,45 +35,25 @@
 </head>
 <body>
 
-<header>
-  <h1>Quant Workstation</h1>
-  <!--
-    Add a chart. The one chart control the header keeps, and it is here because it
-    is about the *page*: it makes another pane rather than changing the one that is
-    already there. Everything that describes a series -- symbol, timeframe, bar
-    count, chart type, zones, Fit -- belongs to a pane and lives in its bar.
-  -->
-  <button id="split" title="Add another chart beside this one"><span data-icon="plus"></span> Panels</button>
-  <!--
-    How the charts are arranged. Split is the four-pane row layout the page
-    grew up with, splitter handles included. Grid is the wall: up to a
-    hundred panes in one scrolling grid whose width the columns select sets.
-    The split option is disabled while the wall holds more than four charts --
-    the row layout has no honest way to show them -- and comes back as the
-    wall shrinks.
-  -->
-  <div id="layoutCtl">
-    <select id="layoutMode" aria-label="Chart layout" title="Split: up to four charts in rows. Grid: a scrolling wall of up to 100.">
-      <option value="split">Split</option>
-      <option value="grid">Grid</option>
-    </select>
-    <select id="chartCols" aria-label="Grid columns" title="How many chart columns the grid shows" hidden>
-      <option value="1">1 col</option>
-      <option value="2" selected>2 cols</option>
-      <option value="3">3 cols</option>
-      <option value="4">4 cols</option>
-      <option value="5">5 cols</option>
-      <option value="6">6 cols</option>
-      <option value="7">7 cols</option>
-      <option value="8">8 cols</option>
-      <option value="9">9 cols</option>
-      <option value="10">10 cols</option>
-    </select>
-  </div>
+<header id="topbar">
+  <a class="brand" href="#/dashboard" aria-label="HRZ dashboard">
+    <span class="brandMark" aria-hidden="true"></span>
+    <span class="brandWord">HRZ</span>
+  </a>
+  <span id="destTitle" class="destTitle" hidden>Charts</span>
+  <button id="paletteBtn" class="paletteBtn" type="button" aria-haspopup="dialog" disabled>
+    <span class="u-grow">Search or jump to…</span>
+    <kbd class="paletteKey">⌘K</kbd>
+  </button>
   <span class="spacer"></span>
-  <button id="themeToggle" type="button" title="Switch between dark and light" aria-label="Switch theme"></button>
+  <span id="connDotTop" class="connDot" hidden title="Connection"></span>
+  <button id="aiBtn" class="hrz-btn hrz-btn--ai hrz-btn--icon" type="button"
+          aria-label="Open AI analyst" title="AI analyst" disabled>
+    <span data-icon="sparkles"></span>
+  </button>
   <span id="session">not signed in</span>
-  <button id="signinToggle" class="primary">Sign in</button>
+  <button id="themeToggle" class="hrz-btn hrz-btn--icon" type="button" aria-label="Switch theme">◐</button>
+  <button id="signinToggle" class="hrz-btn hrz-btn--secondary hrz-btn--sm" type="button">Sign in</button>
 </header>
 
 <!--
@@ -150,7 +130,40 @@
   </div>
 </section>
 
-<main hidden>
+<div id="frame" hidden>
+  <nav id="rail" aria-label="Destinations">
+    <button type="button" class="railItem" data-dest="dashboard" aria-label="Dashboard" title="Dashboard" disabled>
+      <span data-icon="activity" data-icon-size="20"></span>
+    </button>
+    <button type="button" class="railItem" data-dest="charts" aria-label="Charts" title="Charts" disabled>
+      <span data-icon="chart" data-icon-size="20"></span>
+    </button>
+    <button type="button" class="railItem" data-dest="studio" aria-label="Studio" title="Studio" disabled>
+      <span data-icon="sparkles" data-icon-size="20"></span>
+    </button>
+    <button type="button" class="railItem" data-dest="community" aria-label="Community" title="Community" disabled>
+      <span data-icon="globe" data-icon-size="20"></span>
+    </button>
+    <button type="button" class="railItem" data-dest="bots" aria-label="Bots" title="Bots" disabled>
+      <span data-icon="zap" data-icon-size="20"></span>
+    </button>
+    <button type="button" class="railItem" data-dest="account" aria-label="Account" title="Account" disabled>
+      <span data-icon="user" data-icon-size="20"></span>
+    </button>
+    <span class="spacer"></span>
+    <button type="button" class="railItem" id="railHelp" aria-label="Keyboard shortcuts" title="Keyboard shortcuts" disabled>
+      <span data-icon="command" data-icon-size="20"></span>
+    </button>
+  </nav>
+
+  <main id="mainView" hidden>
+    <section class="destination" id="dest-dashboard" aria-labelledby="dest-dashboard-title" hidden>
+      <h1 id="dest-dashboard-title" tabindex="-1">Dashboard</h1>
+      <p class="destPlaceholder">Markets, watchlist and pulse land in M5.</p>
+    </section>
+
+    <section class="destination" id="dest-charts" aria-labelledby="dest-charts-title">
+      <h1 class="sr-only" id="dest-charts-title" tabindex="-1">Charts</h1>
   <!--
     The watchlist, as its own rail to the **left** of the charts: the market
     list sits beside the thing it points at, on screen with every tab rather
@@ -228,6 +241,45 @@
        says "above the chart grid"; the wrapper is what makes that true in the
        DOM and not only in prose. -->
   <div id="chartColumn">
+    <div id="chartToolbar" class="chartToolbar">
+      <button id="split" class="hrz-btn hrz-btn--secondary hrz-btn--sm" type="button"
+              title="Add another chart beside this one">
+        <span data-icon="plus"></span> Panel
+      </button>
+      <div id="layoutCtl">
+        <select id="layoutMode" class="hrz-select" aria-label="Chart layout"
+                title="Split: up to four charts in rows. Grid: a scrolling wall of up to 100.">
+          <option value="split">Split</option>
+          <option value="grid">Grid</option>
+        </select>
+        <select id="chartCols" class="hrz-select" aria-label="Grid columns"
+                title="How many chart columns the grid shows" hidden>
+          <option value="1">1 col</option>
+          <option value="2" selected>2 cols</option>
+          <option value="3">3 cols</option>
+          <option value="4">4 cols</option>
+          <option value="5">5 cols</option>
+          <option value="6">6 cols</option>
+          <option value="7">7 cols</option>
+          <option value="8">8 cols</option>
+          <option value="9">9 cols</option>
+          <option value="10">10 cols</option>
+        </select>
+      </div>
+      <span class="spacer"></span>
+      <button id="watchlistToggle" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+              aria-label="Toggle watchlist" title="Toggle watchlist" disabled>
+        <span data-icon="panel-left"></span>
+      </button>
+      <button id="inspectorToggle" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+              aria-label="Toggle inspector" title="Toggle inspector" disabled>
+        <span data-icon="panel-right"></span>
+      </button>
+      <button id="dockToggle" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon" type="button"
+              aria-label="Toggle bottom dock" title="Bottom dock" disabled>
+        <span data-icon="panel-bottom"></span>
+      </button>
+    </div>
     <div id="globalTools" class="globalTools" role="toolbar" aria-label="Drawing tools for the active chart" hidden></div>
     <div id="charts">
     <section class="chartPane">
@@ -456,10 +508,27 @@
       <div class="chartNote"></div>
     </section>
   </div>
+
+    <div id="dock" class="dock" hidden>
+      <div class="dockTabs">
+        <div class="hrz-tabs" role="tablist" aria-label="Workbench">
+          <button role="tab" type="button" class="hrz-tab" data-dock="studio" aria-selected="true">Studio</button>
+          <button role="tab" type="button" class="hrz-tab" data-dock="alerts" aria-selected="false">Alerts</button>
+          <button role="tab" type="button" class="hrz-tab" data-dock="orders" aria-selected="false">Orders</button>
+          <button role="tab" type="button" class="hrz-tab" data-dock="console" aria-selected="false">Console</button>
+        </div>
+        <button type="button" id="dockCollapse" class="hrz-btn hrz-btn--ghost hrz-btn--sm hrz-btn--icon"
+                aria-label="Collapse the dock" title="Collapse">
+          <span data-icon="chevron-down"></span>
+        </button>
+      </div>
+      <div class="dockBody" id="dockBody"></div>
+    </div>
   </div>
 
   <!-- Width splitter for the aside (AI chat / thesis / scan); drag logic in `wireSplitters`. -->
   <button type="button" class="splitter" id="splitAside" aria-label="Drag to resize the side panel"></button>
+  <div id="inspectorHost">
   <aside>
     <div class="tabs" role="tablist">
 <button role="tab" data-pane="chat" aria-selected="true">Chat</button>
@@ -1121,11 +1190,44 @@
       <p class="muted" id="billingMsg"></p>
     </div>
   </aside>
+  </div>
 
   <!-- The side panel's restore sliver: the mirror of the watchlist rail's,
        hugging the screen's right edge only while the aside is hidden. -->
   <button type="button" id="asideShow" hidden title="Show the side panel" aria-label="Show the side panel"><span data-icon="chevron-left"></span></button>
-</main>
+    </section>
+
+    <section class="destination" id="dest-studio" aria-labelledby="dest-studio-title" hidden>
+      <h1 class="destHeading" id="dest-studio-title" tabindex="-1">Studio</h1>
+      <div class="destHost" id="studioHost"></div>
+    </section>
+
+    <section class="destination" id="dest-community" aria-labelledby="dest-community-title" hidden>
+      <h1 class="destHeading" id="dest-community-title" tabindex="-1">Community</h1>
+      <div class="destHost" id="communityHost"></div>
+    </section>
+
+    <section class="destination" id="dest-bots" aria-labelledby="dest-bots-title" hidden>
+      <h1 class="destHeading" id="dest-bots-title" tabindex="-1">Bots</h1>
+      <div class="destHost" id="botsHost"></div>
+    </section>
+
+    <section class="destination" id="dest-account" aria-labelledby="dest-account-title" hidden>
+      <h1 class="destHeading" id="dest-account-title" tabindex="-1">Account</h1>
+      <div class="hrz-tabs" id="accountTabs" role="tablist" aria-label="Account sections">
+        <button role="tab" type="button" class="hrz-tab" data-account="plan" aria-selected="true">Plan</button>
+        <button role="tab" type="button" class="hrz-tab" data-account="brokers" aria-selected="false">Brokers</button>
+        <button role="tab" type="button" class="hrz-tab" data-account="ai" aria-selected="false">AI model</button>
+        <button role="tab" type="button" class="hrz-tab" data-account="profile" aria-selected="false">Profile</button>
+      </div>
+      <div class="destHost" id="accountHost">
+        <div id="accountProfile" data-account-panel="profile" hidden>
+          <p class="muted">Session, plan and appearance settings land in Spec 2.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
 
 <!--
   The status bar: the thin bottom strip the reference product keeps -- what
@@ -1134,16 +1236,30 @@
   viewer's local time with no name.
 -->
 <footer id="statusbar" hidden>
-  <span id="sbCharts">1 chart</span>
+  <span class="sbGroup">
+    <span id="sbConnection" class="sbDot" aria-hidden="true"></span>
+    <span id="sbConnLabel">Offline</span>
+  </span>
   <span class="sbSep">·</span>
-  <span>My workspace</span>
+  <span id="sbVenue">Binance</span>
+  <span class="sbSep">·</span>
+  <span id="sbSymbol" class="mono">—</span>
+  <span id="sbTimeframe" class="mono"></span>
+  <span id="sbCharts">1 chart</span>
   <span class="spacer"></span>
+  <span id="sbSave" class="sbSave" title="Workspace save state">Saved</span>
+  <span class="sbSep">·</span>
   <span id="econCountdown" class="econChip" hidden></span>
+  <span id="sbLatency" hidden></span>
+  <span id="sbPlan" class="sbPlan"></span>
   <span id="utcClock">--:--:-- UTC</span>
 </footer>
 
 <div id="econAlert" hidden></div>
 <div id="chartMenu" aria-label="Chart settings"></div>
+
+<div id="panePark" hidden></div>
+<div id="overlays"></div>
 
 <script src="/assets/ui/icons.js"></script>
 <script src="/assets/ui/components.js"></script>

@@ -1,18 +1,104 @@
-header {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 7px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+/* ---- Frame --------------------------------------------------------------- */
+#topbar {
+  display: flex; align-items: center; gap: var(--space-2);
+  height: var(--topbar-h); flex: 0 0 var(--topbar-h);
+  padding: 0 var(--space-3);
+  background: var(--bg-panel); border-bottom: 1px solid var(--line);
 }
+.brand {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  color: var(--text-1); text-decoration: none;
+  font: 700 var(--text-sm)/1 var(--font-ui); letter-spacing: 0.04em;
+}
+.brand:hover { text-decoration: none; }
+.brandMark {
+  width: 18px; height: 18px; flex: 0 0 auto; border-radius: 5px;
+  background: linear-gradient(135deg, var(--accent), var(--ai));
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.destTitle { font: 500 var(--text-xs)/1 var(--font-ui); color: var(--text-2); }
+.paletteBtn {
+  display: flex; align-items: center; gap: var(--space-2);
+  width: min(420px, 34vw); height: 28px; padding: 0 var(--space-2);
+  margin: 0 auto; border: 1px solid var(--line-strong); border-radius: var(--radius-1);
+  background: var(--bg-canvas); color: var(--text-3);
+  font: var(--text-xs)/1 var(--font-ui); text-align: left;
+}
+.paletteBtn:hover { border-color: var(--control-line); color: var(--text-2); }
+.paletteBtn[disabled] { opacity: 0.6; cursor: default; }
+.paletteKey {
+  padding: 1px 5px; border: 1px solid var(--line-strong); border-radius: 3px;
+  font: var(--text-2xs)/1 var(--font-mono); color: var(--text-3);
+}
+#session { font: var(--text-2xs)/1 var(--font-mono); color: var(--text-3); }
+.connDot { width: 8px; height: 8px; border-radius: 50%; background: var(--up); }
+.connDot[data-state="down"] { background: var(--down); }
+.connDot[data-state="wait"] { background: var(--warn); }
+
+#frame { flex: 1 1 auto; display: flex; min-height: 0; }
+#frame[hidden] { display: none; }
+#rail {
+  width: var(--rail-w); flex: 0 0 var(--rail-w);
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: var(--space-2) 0;
+  background: var(--bg-panel); border-right: 1px solid var(--line);
+}
+.railItem {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  width: var(--rail-w); height: 44px; padding: 0;
+  border: 0; border-radius: 0; background: transparent; color: var(--text-2);
+}
+.railItem:hover { background: var(--bg-raised); color: var(--text-1); }
+.railItem[disabled] { opacity: 0.45; cursor: default; }
+.railItem[aria-current="page"] { background: var(--bg-raised); color: var(--accent); }
+.railItem[aria-current="page"]::before {
+  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px;
+  border-radius: 0 2px 2px 0; background: var(--accent);
+}
+
+#mainView { flex: 1 1 auto; display: flex; min-width: 0; min-height: 0; }
+#mainView[hidden] { display: none; }
+.destination { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.destination[hidden] { display: none; }
+.destHeading { margin: 0; padding: var(--space-6) var(--space-6) 0; font-size: var(--text-lg); }
+.destHost { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 0 var(--space-6) var(--space-6); }
+.destPlaceholder { padding: var(--space-4) 0; color: var(--text-3); font-size: var(--text-xs); }
+#dest-dashboard, #dest-studio, #dest-community, #dest-bots, #dest-account { overflow: auto; }
+#dest-charts { flex-direction: row; overflow: hidden; }
+#panePark { display: none; }
+
+#statusbar {
+  display: flex; align-items: center; gap: var(--space-2);
+  height: var(--status-h); flex: 0 0 var(--status-h);
+  padding: 0 var(--space-3);
+  background: var(--bg-panel); border-top: 1px solid var(--line);
+  font: var(--text-2xs)/1 var(--font-mono); color: var(--text-3);
+}
+#statusbar[hidden] { display: none; }
+.sbGroup { display: inline-flex; align-items: center; gap: var(--space-1); }
+.sbDot { width: 6px; height: 6px; border-radius: 50%; background: var(--up); }
+.sbDot[data-state="down"] { background: var(--down); }
+.sbDot[data-state="wait"] { background: var(--warn); }
+.sbSep { color: var(--line-strong); }
+.sbSave[data-state="saving"] { color: var(--warn); }
+.sbSave[data-state="failed"] { color: var(--down); }
+.sbPlan { color: var(--text-2); }
+.chartToolbar {
+  display: flex; align-items: center; gap: var(--space-2);
+  height: 36px; flex: 0 0 36px; padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--line); background: var(--bg-panel);
+}
+.chartToolbar .spacer { flex: 1 1 auto; }
+.chartToolbar select { width: auto; }
+#utcClock { color: var(--text-1); }
+.mono { font-family: var(--font-mono); }
 
 /* The layout pair sits beside the add button. The columns select exists
    only in grid mode, so the two never offer a control that would do
    nothing in the current layout. */
 #layoutCtl { display: flex; align-items: center; gap: 6px; }
 
-#layoutCtl select { padding: 4px 6px; font-size: 12px; }
-
 #layoutCtl select[hidden] { display: none; }
-
-#session { color: var(--muted); font-family: var(--mono); font-size: 11px; }
 
 /*
   Splitters. A 6px hit area (3px visible line, 3px invisible breathing room
@@ -33,21 +119,6 @@ header {
 
 .splitter:hover::after, .splitter.dragging::after { background: var(--accent); }
 
-/* The bottom status bar: one quiet line, hairline on top, mono clock. */
-#statusbar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 4px 12px; background: var(--panel); border-top: 1px solid var(--line);
-  font-size: 11px; color: var(--muted); flex: none;
-}
-
-#statusbar[hidden] { display: none; }
-
-#sbCharts { color: var(--text); font-family: var(--mono); }
-
-.sbSep { opacity: 0.6; }
-
-#utcClock { font-family: var(--mono); font-size: 11px; color: var(--text); }
-
 .railHide {
   position: absolute; top: 4px; right: 4px; z-index: 5;
   padding: 0 6px; font-size: 12px; color: var(--muted);
@@ -66,20 +137,6 @@ header {
 }
 
 #railShow:hover { color: var(--text); border-color: var(--accent); }
-
-/* ---- Header: the command strip ---- */
-header {
-  padding: 8px 14px;
-  background: linear-gradient(180deg, var(--bg-elev), var(--bg));
-  border-bottom: 1px solid var(--line);
-  box-shadow: var(--shadow-1);
-}
-
-.splitter { background: var(--border-subtle); }
-
-.splitter:hover, .splitter.dragging { background: var(--accent-dim); }
-
-.splitter::after { background: var(--border-strong); }
 
 /* ---- Aside collapse (the watchlist rail's mirror) ---- */
 #asideHide {
@@ -100,4 +157,3 @@ aside.hideAside, #splitAside.hideAside { display: none; }
 }
 
 #asideShow:hover { color: var(--text); border-color: var(--accent); }
-

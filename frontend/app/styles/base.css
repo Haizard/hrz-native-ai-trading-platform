@@ -72,19 +72,6 @@ body {
   display: flex; flex-direction: column;
 }
 
-h1 { font-size: 13px; font-weight: 700; margin: 0 8px 0 0; letter-spacing: .02em; display: flex; align-items: center; gap: 7px; }
-
-/* The little brand mark: a filled diamond, the way the reference product
-   pairs a glyph with its name. Pure CSS, so nothing extra to load. */
-h1::before {
-  content: ""; width: 14px; height: 14px; flex: 0 0 auto;
-  background: linear-gradient(135deg, var(--accent), var(--ai));
-  border-radius: 4px;
-  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
-}
-
-h1 span { color: var(--muted); font-weight: 400; }
-
 h3.section { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
 
 .spacer { flex: 1; }
@@ -115,13 +102,6 @@ body {
   text-rendering: optimizeLegibility;
   letter-spacing: 0.005em;
 }
-
-h1 {
-  font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em;
-  text-transform: uppercase; color: var(--text);
-}
-
-h1 span { color: var(--muted); font-weight: 500; text-transform: none; letter-spacing: 0.02em; }
 
 /* ---- Scrollbars: thin and quiet ---- */
 ::-webkit-scrollbar { width: 8px; height: 8px; }

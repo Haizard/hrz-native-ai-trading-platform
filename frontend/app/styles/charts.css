@@ -1,9 +1,27 @@
-/* `display: flex` would outrank the UA's `[hidden]` rule and leave the
-   workstation rendering under the home page -- the same specificity trap
-   the pane bars hit. Explicit wins. */
-main { flex: 1; display: flex; min-height: 0; }
-
-main[hidden] { display: none; }
+/*
+  The Charts destination. It is the frame's only row: the watchlist rail, the
+  chart column, and the inspector wrapper side by side, with the dock stacking
+  under the column. Widths stay the splitters' business -- each panel reads the
+  custom property its drag writes.
+*/
+#dest-charts { min-height: 0; }
+#dest-charts > #sideWatch { flex: 0 0 var(--watch-w); }
+#dest-charts #chartColumn { flex: 1 1 auto; }
+#inspectorHost { display: flex; flex: 0 0 var(--inspector-w); width: var(--inspector-w); min-height: 0; }
+#inspectorHost[hidden] { display: none; }
+#inspectorHost > aside { width: 100%; flex: 1 1 auto; }
+#inspectorHost:has(> aside.hideAside) { display: none; }
+.chartToolbar { flex: 0 0 36px; }
+#dock {
+  display: flex; flex-direction: column; flex: 0 0 auto;
+  height: var(--dock-h); min-height: 0;
+  border-top: 1px solid var(--line); background: var(--bg-panel);
+}
+#dock[hidden] { display: none; }
+.dockTabs { display: flex; align-items: center; height: 28px; flex: 0 0 28px; padding-right: var(--space-1); }
+.dockTabs .hrz-tabs { flex: 1 1 auto; height: 28px; border-bottom: 0; }
+.dockTabs .hrz-tab { height: 28px; }
+.dockBody { flex: 1 1 auto; min-height: 0; overflow: auto; }
 
 /*
   Resizable widths. The rail and the aside keep their defaults, but a drag on

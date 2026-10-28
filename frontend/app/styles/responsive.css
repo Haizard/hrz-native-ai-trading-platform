@@ -33,7 +33,10 @@
 
 @media (max-width: 900px) {
   html, body { height: auto; }
-  main { flex-direction: column; }
+  #dest-charts { flex-direction: column; }
+  /* The inspector host takes the aside's old share of the stacked row: the
+     wrapper is what the flex layout sees now. */
+  #inspectorHost { width: auto; flex: 0 0 auto; }
   /*
     The rail stacks too, and being first in the row it would land above the
     charts. Below the point where side-by-side gives up, the default list
