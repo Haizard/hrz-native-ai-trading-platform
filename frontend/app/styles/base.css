@@ -34,6 +34,11 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb { background: var(--line-strong); border: 3px solid transparent; background-clip: content-box; border-radius: 999px; }
 
+/* Where an icon goes. The markup names the glyph (`data-icon`), and the script
+   draws it into this slot -- so the slot is what the layout sees, and an inline
+   SVG would otherwise sit on the text baseline a pixel low. */
+[data-icon] { display: inline-flex; align-items: center; justify-content: center; }
+
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;

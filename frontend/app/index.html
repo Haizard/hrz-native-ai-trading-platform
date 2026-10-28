@@ -43,7 +43,7 @@
     already there. Everything that describes a series -- symbol, timeframe, bar
     count, chart type, zones, Fit -- belongs to a pane and lives in its bar.
   -->
-  <button id="split" title="Add another chart beside this one">＋ Panels</button>
+  <button id="split" title="Add another chart beside this one"><span data-icon="plus"></span> Panels</button>
   <!--
     How the charts are arranged. Split is the four-pane row layout the page
     grew up with, splitter handles included. Grid is the wall: up to a
@@ -71,7 +71,7 @@
     </select>
   </div>
   <span class="spacer"></span>
-  <button id="themeToggle" type="button" title="Switch between dark and light" aria-label="Switch theme">◐</button>
+  <button id="themeToggle" type="button" title="Switch between dark and light" aria-label="Switch theme"></button>
   <span id="session">not signed in</span>
   <button id="signinToggle" class="primary">Sign in</button>
 </header>
@@ -163,7 +163,7 @@
        The sliver sits at the screen's left edge (off-screen when the rail is
        out), so a removed list is one click from returning. -->
   <section id="sideWatch" aria-label="Watchlist">
-    <button type="button" class="railHide" id="railHide" title="Hide the watchlist rail">×</button>
+    <button type="button" class="railHide" id="railHide" title="Hide the watchlist rail"><span data-icon="close"></span></button>
     <div class="pane" id="pane-watchlist" hidden>
       <div class="row">
         <input id="wlSearch" placeholder="search every Binance symbol (e.g. sol, pepe)" />
@@ -197,7 +197,7 @@
        strip between the rail and the charts, where a resize handle is looked
        for. The drag logic is `wireSplitters`; dragging right widens (+1). -->
   <button type="button" class="splitter" id="splitWatch" aria-label="Drag to resize the watchlist rail"></button>
-  <button type="button" id="railShow" title="Show the watchlist rail" hidden>◀</button>
+  <button type="button" id="railShow" title="Show the watchlist rail" hidden><span data-icon="chevron-left"></span></button>
 
   <!--
     The chart panes. One ships in the markup and the rest are cloned from it, so
@@ -480,7 +480,7 @@
       <button role="tab" data-pane="billing" aria-selected="false">Plan</button>
       
       <button role="tab" data-pane="trade" aria-selected="false">Trade</button>
-      <button type="button" id="asideHide" title="Hide the side panel" aria-label="Hide the side panel">»</button>
+      <button type="button" id="asideHide" title="Hide the side panel" aria-label="Hide the side panel"><span data-icon="chevron-right"></span></button>
     </div>
 
     <!--
@@ -1124,7 +1124,7 @@
 
   <!-- The side panel's restore sliver: the mirror of the watchlist rail's,
        hugging the screen's right edge only while the aside is hidden. -->
-  <button type="button" id="asideShow" hidden title="Show the side panel" aria-label="Show the side panel">«</button>
+  <button type="button" id="asideShow" hidden title="Show the side panel" aria-label="Show the side panel"><span data-icon="chevron-left"></span></button>
 </main>
 
 <!--
@@ -1145,6 +1145,7 @@
 <div id="econAlert" hidden></div>
 <div id="chartMenu" aria-label="Chart settings"></div>
 
+<script src="/assets/ui/icons.js"></script>
 <script src="builder.js"></script>
 <script src="app.js"></script>
 </body>

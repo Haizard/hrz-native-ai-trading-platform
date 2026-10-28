@@ -954,7 +954,7 @@ const MAP = {
   filter: "filter",
   sort: "arrow-up-down",
   "more-horizontal": "ellipsis",
-  "more-vertical": "more-vertical",
+  "more-vertical": "ellipsis-vertical",
   "panel-left": "panel-left",
   "panel-right": "panel-right",
   "panel-bottom": "panel-bottom",

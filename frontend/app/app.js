@@ -13398,8 +13398,36 @@ function selectPane(name) {
   }
 }
 
+/// Replace every `[data-icon]` placeholder with the icon it names, and give the
+/// theme toggle the glyph of the theme it would switch to.
+///
+/// The markup ships `data-icon` rather than an `<svg>`, so the icon file stays
+/// the one place a glyph is defined and a button's markup stays readable. It is
+/// safe to run twice: a host that already has its icon is left alone, which is
+/// what lets a theme change repaint the whole document without duplicating
+/// anything.
+function paintIcons(scope = document) {
+  for (const host of scope.querySelectorAll("[data-icon]")) {
+    const name = host.dataset.icon;
+    if (!name || host.firstElementChild) continue;
+    host.appendChild(HRZUI.icon(name, { size: Number(host.dataset.iconSize) || 16 }));
+  }
+  const toggle = document.getElementById("themeToggle");
+  if (toggle) {
+    toggle.replaceChildren(HRZUI.icon(Theme.current() === "dark" ? "sun" : "moon"));
+    toggle.setAttribute(
+      "aria-label",
+      Theme.current() === "dark" ? "Switch to light theme" : "Switch to dark theme"
+    );
+  }
+}
+
 async function main() {
   paintSession();
+  paintIcons(document);
+  // The toggle's glyph names the theme a click would switch *to*, so repainting
+  // belongs to the theme changing rather than to the click that changed it.
+  Theme.onChange(() => paintIcons(document));
 
   document.querySelectorAll(".tabs button").forEach((button) =>
     button.addEventListener("click", () => selectPane(button.dataset.pane))

@@ -74,6 +74,13 @@ try {
 
 const html = await readFile(join(root, "frontend/app/index.html"), "utf8");
 const shell = await readFile(join(root, "frontend/app/app.js"), "utf8");
+// The head scripts `index.html` loads. jsdom does not fetch external scripts
+// (there is no server), so the two the page depends on before `app.js` runs are
+// read here and injected in the same order the browser would run them. Without
+// this, `Theme` and `HRZUI` are undefined and the shell throws on load -- the
+// kind of failure that would otherwise look like the harness being broken.
+const themeJs = await readFile(join(root, "frontend/app/ui/theme.js"), "utf8");
+const iconsJs = await readFile(join(root, "frontend/app/ui/icons.js"), "utf8");
 const wasmBytes = await readFile(wasmPath);
 
 // The page's own console, forwarded. Without this a shell that throws on load
@@ -1070,6 +1077,30 @@ window.__intersect = (target, isIntersecting) => {
   }
   return heard;
 };
+
+// `Theme` reads the OS preference on load, and this jsdom build has no
+// `matchMedia` at all -- the browser API is supplied the way the 2D context and
+// the intersection observer above are. It reports "no preference", which is the
+// dark default the shell ships.
+window.matchMedia = (query) => ({
+  matches: false,
+  media: query,
+  onchange: null,
+  addEventListener() {},
+  removeEventListener() {},
+  addListener() {},
+  removeListener() {},
+  dispatchEvent() { return false; },
+});
+
+// The head scripts first, in the page's order, then the shell. `app.js` paints
+// the icon slots and reads `Theme` on load, so a run that skipped these would
+// fail before the first check -- and it would fail on the harness, not the page.
+for (const source of [themeJs, iconsJs]) {
+  const head = document.createElement("script");
+  head.textContent = source;
+  document.head.appendChild(head);
+}
 
 const script = document.createElement("script");
 script.textContent = shell;
