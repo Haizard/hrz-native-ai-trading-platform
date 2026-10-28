@@ -1,0 +1,121 @@
+/* The one file with colour literals. Everything else uses these names. */
+:root {
+  --bg-canvas: #0a0d12;
+  --bg-panel: #0f141b;
+  --bg-raised: #141b24;
+  --bg-overlay: #1a222d;
+  --line: #1b2430;
+  --line-strong: #2a3644;
+  --control-line: #5c6b7c;
+  --text-1: #e9edf3;
+  --text-2: #aeb8c6;
+  --text-3: #7c8898;
+  --accent: #22d3ee;
+  --accent-ink: #04222b;
+  --accent-soft: rgba(34, 211, 238, 0.12);
+  --accent-line: rgba(34, 211, 238, 0.35);
+  --focus: #22d3ee;
+  --ai: #a78bfa;
+  --ai-ink: #1b1030;
+  --ai-soft: rgba(167, 139, 250, 0.12);
+  --up: #16c784;
+  --down: #ea3943;
+  --warn: #f5a524;
+  --up-fill: #16c784;
+  --down-fill: #ea3943;
+  --up-soft: rgba(22, 199, 132, 0.12);
+  --down-soft: rgba(234, 57, 67, 0.12);
+  --warn-soft: rgba(245, 165, 36, 0.12);
+  --shadow-1: 0 2px 8px rgba(4, 8, 12, 0.28);
+  --shadow-2: 0 8px 24px rgba(4, 8, 12, 0.35);
+
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 28px;
+  --text-2xl: 40px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  --radius-1: 4px;
+  --radius-2: 6px;
+  --radius-3: 10px;
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --dur-3: 240ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --topbar-h: 44px;
+  --rail-w: 48px;
+  --status-h: 24px;
+  --watch-w: 260px;
+  --aside-w: 360px;
+  --inspector-w: var(--aside-w);
+  --dock-h: 240px;
+
+  /* Compatibility layer: the existing stylesheet inherits the new palette
+     before it is migrated. Remove an alias only after its last consumer. */
+  --bg: var(--bg-canvas);
+  --bg-elev: var(--bg-panel);
+  --panel: var(--bg-panel);
+  --panel-2: var(--bg-raised);
+  --border-subtle: var(--line);
+  --border-strong: var(--line-strong);
+  --text: var(--text-1);
+  --text-dim: var(--text-2);
+  --muted: var(--text-2);
+  --faint: var(--text-3);
+  --up-dim: var(--up-soft);
+  --down-dim: var(--down-soft);
+  --buy: var(--up);
+  --sell: var(--down);
+  --accent-dim: var(--accent-soft);
+  --radius-s: var(--radius-1);
+  --radius-m: var(--radius-2);
+  --radius-l: var(--radius-3);
+  --shadow-3: var(--shadow-2);
+  --mono: var(--font-mono);
+}
+
+[data-theme="light"] {
+  --bg-canvas: #f6f8fa;
+  --bg-panel: #ffffff;
+  --bg-raised: #f2f5f8;
+  --bg-overlay: #ffffff;
+  --line: #dfe5ec;
+  --line-strong: #c6d0db;
+  --control-line: #7a8794;
+  --text-1: #0d1520;
+  --text-2: #465364;
+  --text-3: #5f6b7a;
+  --accent: #0e7490;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(14, 116, 144, 0.10);
+  --accent-line: rgba(14, 116, 144, 0.30);
+  --focus: #0e7490;
+  --ai: #7c3aed;
+  --ai-ink: #ffffff;
+  --ai-soft: rgba(124, 58, 237, 0.10);
+  --up: #067a4d;
+  --down: #d92d3f;
+  --warn: #b45309;
+  --up-fill: #0a8f5b;
+  --down-fill: #d92d3f;
+  --up-soft: rgba(6, 122, 77, 0.10);
+  --down-soft: rgba(217, 45, 63, 0.10);
+  --warn-soft: rgba(180, 83, 9, 0.10);
+  --shadow-1: 0 2px 8px rgba(16, 24, 40, 0.08);
+  --shadow-2: 0 8px 24px rgba(16, 24, 40, 0.12);
+}

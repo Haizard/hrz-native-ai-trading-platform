@@ -621,6 +621,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(app_index))
         .route("/app.js", get(app_js))
         .route("/builder.js", get(builder_js))
+        .route("/assets/{*path}", get(asset))
         .route("/chart_engine.wasm", get(chart_wasm))
         .route("/mvp", get(index))
         .layer(axum::middleware::from_fn_with_state(
@@ -633,6 +634,58 @@ pub fn router(state: AppState) -> Router {
 /// Where the workstation's files live.
 fn frontend_dir() -> String {
     std::env::var(FRONTEND_DIR_ENV).unwrap_or_else(|_| "frontend/app".into())
+}
+
+/// Content type for one of the four asset kinds the shell loads.
+///
+/// An allowlist rather than a guess: `read_frontend` will read any name it is
+/// given, and this is the one route that takes a path from the URL.
+fn asset_content_type(path: &str) -> Option<&'static str> {
+    match path.rsplit('.').next()?.to_ascii_lowercase().as_str() {
+        "css" => Some("text/css; charset=utf-8"),
+        "js" => Some("text/javascript; charset=utf-8"),
+        "woff2" => Some("font/woff2"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
+/// Whether a decoded asset path is a plain relative path.
+///
+/// Rejects empty segments, `.`/`..`, dotfiles and backslashes. The `Path`
+/// extractor has already percent-decoded, so `%2e%2e` arrives here as `..`
+/// and is refused by the same rule as a literal one.
+fn valid_asset_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 200
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != ".." && !segment.starts_with('.'))
+}
+
+/// The split shell's styles, scripts, fonts and icon at `/assets/{*path}`.
+///
+/// # Errors
+/// 404 for a disallowed extension, an invalid path, or a missing file.
+pub async fn asset(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> Result<axum::response::Response, StatusCode> {
+    let path = path.trim_start_matches('/');
+    let Some(content_type) = asset_content_type(path).filter(|_| valid_asset_path(path)) else {
+        warn!(path = %path, "asset path refused (404)");
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let bytes = read_frontend(path)?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 /// Read one frontend file, or explain why it is missing.
