@@ -118,7 +118,7 @@ boundaries and focus rings meet 3:1.
 | AI ink | `#1b1030` | `#ffffff` |
 | AI soft | `rgba(167,139,250,.12)` | `rgba(124,58,237,.10)` |
 | Up | `#16c784` | `#067a4d` † |
-| Down | `#ea3943` | `#d92d3f` |
+| Down | `#ea3943` | `#d42a3c` § |
 | Warn | `#f5a524` | `#b45309` |
 | Focus | `#22d3ee` | `#0e7490` |
 
@@ -131,11 +131,17 @@ candles where text contrast does not apply.
 chart glows. Interactive text, borders, fills and focus use `#0e7490` so
 white ink and cyan-on-white text clear AA.
 
-**Measured (sRGB, WCAG formula):** dark text-3 5.1:1; dark text-2 9.2:1; dark
-accent 10.8:1; dark ink-on-accent 9.2:1; dark up 8.4:1; dark down 4.6:1;
-light text-3 5.1:1; light accent 5.0:1; white-on-light-accent 5.4:1; light up
-5.1:1; light down 4.8:1; light warn 5.0:1; dark control line 3.2:1; light
-control line 3.7:1. M1 re-verifies every pair with a contrast checker.
+§ Adjusted from the approved light value `#d92d3f`, which measures 4.5:1 on
+the light ground -- under AA for text. `#d42a3c` measures 4.7:1. `#d92d3f`
+survives only as `--down-fill` and `--down-soft`, for chart candles and tints
+where text contrast does not apply.
+
+**Measured (sRGB, WCAG formula):** dark text-3 5.4:1; dark text-2 9.7:1; dark
+accent 10.8:1; dark ink-on-accent 9.2:1; dark up 8.8:1; dark down 4.8:1;
+light text-3 5.1:1; light text-2 7.4:1; light accent 5.0:1; white-on-light-accent
+5.4:1; light up 5.1:1; light down 4.7:1; light warn 4.7:1; dark control line
+3.6:1; light control line 3.5:1. M1 re-verifies every pair with a contrast
+checker.
 
 Colour is never the only carrier: deltas show `+`/`−` and an arrow, up/down
 candles can switch to a blue/orange colour-blind palette, and heatmap tiles
@@ -790,7 +796,6 @@ frontend/app/
     components.js         HRZUI
   views/
     shell.js              frame, router, pane host, palette
-    dashboard.js          dashboard modules
   fonts/
     inter-var.woff2
     jetbrains-mono-var.woff2
@@ -816,7 +821,6 @@ Load order in `index.html`:
 <script src="/assets/ui/icons.js"></script>
 <script src="/assets/ui/components.js"></script>
 <script src="builder.js"></script>                   (existing route and path)
-<script src="/assets/views/dashboard.js"></script>
 <script src="/assets/views/shell.js"></script>
 <script src="app.js"></script>                       (existing route and path)
 ```
@@ -829,15 +833,25 @@ live under `/assets/`.
 
 - `HRZUI` — components, formatting, escaping.
 - `Theme` — `boot()`, `current()`, `set(pref)`, `onChange(cb)`.
-- `Shell` — `init()`, `route(destination, params)`, `mountPane()`,
-  `registerDestination()`, `openInspector(tab)`, `openDock(tab)`.
-- `Dashboard` — `init()`, `enter()`, `leave()`.
+- `Shell` — `init()`, `start()`, `go(destination)`, `restore()`, `snapshot()`,
+  `refreshStatus()`, `openInspector(tab)`, `setInspectorOpen(open)`,
+  `setWatchlistCollapsed(collapsed)`, `openDock(tab)`, `closeDock()`,
+  `state()`; the hash is the route.
 - `HRZLog` — `write(level, message)`, `entries()`, `onEntry(cb)`.
+- There is no `Dashboard` global: the dashboard's modules live in `app.js`,
+  because every input they read — the ticker batch, the favourites, the bot
+  list, the subscription — is state `app.js` already owns. The shell reaches
+  them through one hook, `HRZApp.setDestinationVisible(destination)`, which
+  starts and stops the page's clock.
 - `app.js` keeps ownership of market data, panes, chat, workspaces, billing,
   community and bots. The new views call into it through a small documented
-  `HRZApp` facade (`openSymbol`, `takeScreenshot`, `listChats`, `setPaneMode`)
-  rather than reaching into its internals. The facade is added in `app.js` as
-  part of M3; it is a list of existing functions, not a second implementation.
+  `HRZApp` facade — session (`signedIn`, `email`, `planName`), panes
+  (`chartSymbol`, `newPane`, `activePaneInfo`, `runPaneLoaders`, `resizePanes`),
+  panels (`openWorkspace`, `searchSymbols`, `detachActiveIndicator`), chart
+  settings (`chartPalette`, `chartSettings`, `setChartSetting`,
+  `openChartSettings`) and the dashboard's `setDestinationVisible` — rather
+  than reaching into its internals. The facade is a list of existing functions,
+  not a second implementation.
 
 No module bundler, no ES modules, no framework. Files are classic scripts
 executed in order. A feature that needs a new file gets a `<script>` tag and

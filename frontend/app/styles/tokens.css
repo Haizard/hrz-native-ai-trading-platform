@@ -1,3 +1,19 @@
+@font-face {
+  font-family: "Inter";
+  src: url("/assets/fonts/inter-var.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/assets/fonts/jetbrains-mono-var.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* The one file with colour literals. Everything else uses these names. */
 :root {
   --bg-canvas: #0a0d12;
@@ -109,7 +125,7 @@
   --ai-ink: #ffffff;
   --ai-soft: rgba(124, 58, 237, 0.10);
   --up: #067a4d;
-  --down: #d92d3f;
+  --down: #d42a3c;
   --warn: #b45309;
   --up-fill: #0a8f5b;
   --down-fill: #d92d3f;

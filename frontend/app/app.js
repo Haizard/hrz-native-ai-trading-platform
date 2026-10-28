@@ -13502,6 +13502,9 @@ el("authorChips").addEventListener("click", (event) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendWorkspaceMessage(); }
   };
 
+  el("themeToggle").addEventListener("click", () => {
+    Theme.set(Theme.current() === "dark" ? "light" : "dark");
+  });
   el("signinToggle").addEventListener("click", () => {
     if (token()) {
       setToken("");

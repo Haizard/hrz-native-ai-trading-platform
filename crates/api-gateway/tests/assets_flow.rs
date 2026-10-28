@@ -51,6 +51,7 @@ async fn assets_are_served_with_the_type_the_browser_needs() {
     for (uri, content_type) in [
         ("/assets/styles/tokens.css", "text/css; charset=utf-8"),
         ("/assets/ui/theme.js", "text/javascript; charset=utf-8"),
+        ("/assets/fonts/inter-var.woff2", "font/woff2"),
         ("/assets/favicon.svg", "image/svg+xml"),
     ] {
         let (status, headers, body) = get(&harness.app, uri).await;
