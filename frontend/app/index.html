@@ -158,8 +158,138 @@
 
   <main id="mainView" hidden>
     <section class="destination" id="dest-dashboard" aria-labelledby="dest-dashboard-title" hidden>
-      <h1 id="dest-dashboard-title" tabindex="-1">Dashboard</h1>
-      <p class="destPlaceholder">Markets, watchlist and pulse land in M5.</p>
+      <div class="dashInner">
+        <header class="dashHead">
+          <div class="dashHead__text">
+            <h1 class="dashTitle" id="dest-dashboard-title" tabindex="-1">Dashboard</h1>
+            <p class="dashSub">
+              <span id="dashDate"></span>
+              <span class="dashSub__sep" aria-hidden="true">&middot;</span>
+              <span id="dashMarket">&mdash;</span>
+            </p>
+          </div>
+          <div class="dashHead__actions">
+            <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--icon" id="dashRefresh"
+                    aria-label="Refresh the dashboard" title="Refresh">
+              <span data-icon="refresh" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="hrz-btn hrz-btn--primary hrz-btn--sm" id="dashNewChart">
+              <span data-icon="plus" aria-hidden="true"></span> New chart
+            </button>
+          </div>
+        </header>
+
+        <!--
+          Four questions, four cards, four sources. Each body is painted whole
+          from one fetch, so a card that fails can say so in place without the
+          row losing its shape -- which is why the error lives inside the card
+          and not in a toast at the corner of the screen.
+        -->
+        <div class="pulseRow" id="pulseRow">
+          <article class="pulseCard" data-pulse="market" aria-labelledby="pulseMarketTitle">
+            <h2 class="pulseCard__title" id="pulseMarketTitle">Market</h2>
+            <div class="pulseCard__body" id="pulseMarket"><p class="pulseNote">Loading&hellip;</p></div>
+          </article>
+          <article class="pulseCard" data-pulse="watchlist" aria-labelledby="pulseWatchTitle">
+            <h2 class="pulseCard__title" id="pulseWatchTitle">Watchlist</h2>
+            <div class="pulseCard__body" id="pulseWatch"><p class="pulseNote">Loading&hellip;</p></div>
+          </article>
+          <article class="pulseCard" data-pulse="automation" aria-labelledby="pulseAutoTitle">
+            <h2 class="pulseCard__title" id="pulseAutoTitle">Automation</h2>
+            <div class="pulseCard__body" id="pulseAuto"><p class="pulseNote">Loading&hellip;</p></div>
+          </article>
+          <article class="pulseCard" data-pulse="plan" aria-labelledby="pulsePlanTitle">
+            <h2 class="pulseCard__title" id="pulsePlanTitle">Plan</h2>
+            <div class="pulseCard__body" id="pulsePlan"><p class="pulseNote">Loading&hellip;</p></div>
+          </article>
+        </div>
+
+        <div class="dashGrid">
+          <section class="hrz-panel marketsCard" aria-labelledby="marketsTitle">
+            <header class="hrz-panel__head">
+              <h2 class="hrz-panel__title" id="marketsTitle">Markets</h2>
+              <div class="hrz-panel__actions">
+                <input id="marketFilter" class="hrz-input marketFilter" type="search"
+                       placeholder="Filter" aria-label="Filter markets by symbol" />
+              </div>
+            </header>
+            <div class="hrz-tabs marketTabs" id="marketTabs" role="tablist" aria-label="Market lists">
+              <button role="tab" type="button" class="hrz-tab" data-market="all" aria-selected="true">All</button>
+              <button role="tab" type="button" class="hrz-tab" data-market="majors" aria-selected="false">Majors</button>
+              <button role="tab" type="button" class="hrz-tab" data-market="alts" aria-selected="false">Alts</button>
+              <button role="tab" type="button" class="hrz-tab" data-market="watchlist" aria-selected="false">Watchlist</button>
+            </div>
+            <div class="hrz-panel__body marketsBody" id="marketBody">
+              <table class="hrz-table hrz-table--compact marketTable">
+                <caption class="sr-only">Markets, sortable and filtered by the list above</caption>
+                <thead>
+                  <tr>
+                    <th data-sort="symbol" aria-sort="none" scope="col"><button type="button" class="hrz-table__sort">Symbol</button></th>
+                    <th data-sort="last" aria-sort="none" scope="col" class="hrz-table__num"><button type="button" class="hrz-table__sort">Last</button></th>
+                    <th data-sort="change" aria-sort="none" scope="col" class="hrz-table__num"><button type="button" class="hrz-table__sort">24h %</button></th>
+                    <th data-sort="volume" aria-sort="descending" scope="col" class="hrz-table__num"><button type="button" class="hrz-table__sort">24h Volume</button></th>
+                  </tr>
+                </thead>
+                <tbody id="marketRows"></tbody>
+              </table>
+              <p class="empty" id="marketEmpty" hidden></p>
+              <div class="marketFoot">
+                <span id="marketCount" class="muted"></span>
+                <button type="button" class="hrz-btn hrz-btn--secondary hrz-btn--sm" id="marketMore" hidden>Show 50 more</button>
+              </div>
+            </div>
+          </section>
+
+          <aside class="hrz-panel dashWatch" id="dashWatch" aria-labelledby="dashWatchTitle">
+            <header class="hrz-panel__head">
+              <h2 class="hrz-panel__title" id="dashWatchTitle">Watchlist</h2>
+              <div class="hrz-panel__actions">
+                <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm" id="dashWatchAdd"
+                        aria-expanded="false" aria-controls="dashWatchSearch">+ Add</button>
+              </div>
+            </header>
+            <div class="dashWatch__search" id="dashWatchSearch" hidden>
+              <input id="dashWatchInput" class="hrz-input" type="search"
+                     placeholder="Add a symbol" aria-label="Search the venue for a symbol to add" />
+              <div class="dashWatch__results" id="dashWatchResults"></div>
+            </div>
+            <div id="dashWatchRows"></div>
+            <p class="empty" id="dashWatchEmpty" hidden>
+              Star a symbol to pin it here.
+            </p>
+            <div class="dashWatch__foot">
+              <span id="dashWatchAge" class="muted"></span>
+              <a class="dashLink" href="#/charts">Open Charts</a>
+            </div>
+          </aside>
+
+          <section class="hrz-panel heatCard" aria-labelledby="heatTitle">
+            <header class="hrz-panel__head">
+              <h2 class="hrz-panel__title" id="heatTitle">Heatmap</h2>
+              <div class="hrz-panel__actions">
+                <span class="muted heatHint" id="heatHint">Top 60 by 24h volume</span>
+                <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm" id="heatTableToggle"
+                        aria-pressed="false">Show as table</button>
+              </div>
+            </header>
+            <div class="heatGrid" id="heatGrid" role="group" aria-label="Market heatmap"></div>
+            <div class="hrz-panel__body" id="heatTableWrap" hidden>
+              <table class="hrz-table hrz-table--compact">
+                <caption class="sr-only">The heatmap's data as a table</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Symbol</th>
+                    <th scope="col" class="hrz-table__num">24h %</th>
+                    <th scope="col" class="hrz-table__num">24h Volume</th>
+                  </tr>
+                </thead>
+                <tbody id="heatRows"></tbody>
+              </table>
+            </div>
+            <p class="empty" id="heatEmpty" hidden>No market data yet.</p>
+          </section>
+        </div>
+      </div>
     </section>
 
     <section class="destination" id="dest-charts" aria-labelledby="dest-charts-title">

@@ -62,7 +62,6 @@
 .destination[hidden] { display: none; }
 .destHeading { margin: 0; padding: var(--space-6) var(--space-6) 0; font-size: var(--text-lg); }
 .destHost { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 0 var(--space-6) var(--space-6); }
-.destPlaceholder { padding: var(--space-4) 0; color: var(--text-3); font-size: var(--text-xs); }
 #dest-dashboard, #dest-studio, #dest-community, #dest-bots, #dest-account { overflow: auto; }
 #dest-charts { flex-direction: row; overflow: hidden; }
 #panePark { display: none; }

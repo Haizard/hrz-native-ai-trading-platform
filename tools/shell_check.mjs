@@ -1999,6 +1999,51 @@ check(
   `${document.querySelectorAll("#shortcuts .shortcutGroup").length} groups`
 );
 
+// --- the dashboard's structure ------------------------------------------------
+//
+// Task 16 fills these panels with data. These checks are the ones that survive
+// both halves of the task: the structure a reader navigates, and the fact that
+// the placeholder it replaced is gone.
+
+console.log("\nthe dashboard");
+
+if (window.Shell) window.Shell.go("dashboard");
+await settle();
+
+check(
+  "Dashboard is a page of its own, not a placeholder",
+  document.querySelector("#dest-dashboard .dashInner") !== null &&
+    document.getElementById("dest-dashboard").hidden === false &&
+    document.getElementById("dest-dashboard").textContent.includes("Markets") &&
+    !document.getElementById("dest-dashboard").textContent.includes("land in M5"),
+  document.getElementById("dest-dashboard").textContent.slice(0, 60).trim()
+);
+check(
+  "four pulse cards, each named for the question it answers",
+  [...document.querySelectorAll("#pulseRow .pulseCard")].map((card) => card.querySelector("h2").textContent).join(",") ===
+    "Market,Watchlist,Automation,Plan",
+  [...document.querySelectorAll("#pulseRow .pulseCard h2")].map((head) => head.textContent).join(",")
+);
+check(
+  "the markets table offers four lists and four sortable columns",
+  document.querySelectorAll("#marketTabs [role='tab']").length === 4 &&
+    document.querySelectorAll(".marketTable thead th[data-sort]").length === 4 &&
+    document.querySelector(".marketTable th[data-sort='volume']").getAttribute("aria-sort") === "descending" &&
+    document.getElementById("marketRows") !== null &&
+    document.getElementById("marketMore").hidden === true,
+  `${document.querySelectorAll("#marketTabs [role='tab']").length} tabs · ${document.querySelectorAll(".marketTable thead th[data-sort]").length} columns`
+);
+check(
+  "the watchlist adds if asked and the heatmap has both views",
+  document.getElementById("dashWatchAdd").getAttribute("aria-expanded") === "false" &&
+    document.getElementById("dashWatchSearch").hidden === true &&
+    document.querySelector("#dest-dashboard a[href='#/charts']") !== null &&
+    document.getElementById("heatTableToggle").getAttribute("aria-pressed") === "false" &&
+    document.getElementById("heatTableWrap").hidden === true &&
+    document.getElementById("heatGrid").hidden === false,
+  `add=${document.getElementById("dashWatchAdd").getAttribute("aria-expanded")} table=${document.getElementById("heatTableWrap").hidden}`
+);
+
 // --- the layout at a narrow width --------------------------------------------
 //
 // jsdom lays nothing out, so these read the stylesheet rather than measure the
