@@ -321,6 +321,10 @@
     showPanes();
     refreshPane();
     if (state.destination === "charts" && app().resizePanes) app().resizePanes();
+    // The dashboard keeps a clock, and it is told when it is on screen rather
+    // than asking the DOM. Called last, so the destination is fully mounted
+    // before the first paint lands on it.
+    if (app().setDestinationVisible) app().setDestinationVisible(state.destination);
   }
 
   /* ---- Status and chrome -------------------------------------------------- */
@@ -560,6 +564,11 @@
     else if (state.destination === "account") {
       const legacy = LEGACY_FROM_ACCOUNT[state.accountSection];
       if (legacy) load(legacy);
+    } else if (state.destination === "dashboard") {
+      // No pane is on screen -- and the loader's own `else` is what stops the
+      // watchlist ticker, so the dashboard's page clock is the only one left
+      // running. `runPaneLoaders()` with no name means exactly that.
+      load();
     }
   }
 

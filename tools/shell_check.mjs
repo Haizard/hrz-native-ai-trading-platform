@@ -411,6 +411,44 @@ const backend = {
   requests: [],
   failCreate: null, // a status code, to exercise the failure path
   calls: [],
+  // The dashboard's one batch, `GET /tickers?limit=1000`: ten majors and sixty
+  // alts, volumes descending (which is the order the route really returns),
+  // changes chosen to land in every heat bucket. BTC and ETH keep the
+  // directions Task 12's rail checks expect (BTC up, ETH down) so whichever
+  // of the two batches last answered, the rail's tint is the same.
+  markets: (() => {
+    const majors = [
+      ["BTCUSDT", 67412.5, 2.5],
+      ["ETHUSDT", 2481.1, -2.25],
+      ["SOLUSDT", 148.2, 8.1],
+      ["BNBUSDT", 592.4, 0.4],
+      ["XRPUSDT", 0.6123, -0.9],
+      ["ADAUSDT", 0.4412, -2.6],
+      ["DOGEUSDT", 0.1284, -4.4],
+      ["AVAXUSDT", 34.2, 0],
+      ["LINKUSDT", 17.8, 1.2],
+      ["DOTUSDT", 7.05, -1.4],
+    ];
+    const rows = majors.map(([symbol, last, change], index) => ({
+      symbol,
+      last_price: last,
+      price_change_percent: change,
+      high_price: last * 1.05,
+      low_price: last * 0.95,
+      quote_volume: 2_000_000_000 - index * 100_000_000,
+    }));
+    for (let i = 0; i < 60; i += 1) {
+      rows.push({
+        symbol: `ALT${String(i).padStart(2, "0")}USDT`,
+        last_price: 500 + i * 10,
+        price_change_percent: i % 2 === 0 ? 1.4 : -1.6,
+        high_price: 600 + i * 10,
+        low_price: 400 + i * 10,
+        quote_volume: 900_000_000 - i * 10_000_000,
+      });
+    }
+    return rows;
+  })(),
   // What `/capabilities` reports for the agent, and what `/auth/me` answers.
   //
   // Mutable so a check can drive the two refusal causes the shell must tell
@@ -682,7 +720,11 @@ window.fetch = async (path, options = {}) => {
   // One rising and one falling, so the rail's edge tint is exercised in both
   // directions by a single render.
   if (url.startsWith("/tickers")) {
-    const asked = (queryOf(url).get("symbols") ?? "BTCUSDT,ETHUSDT").split(",").filter(Boolean);
+    const query = queryOf(url);
+    // The venue's most active list: what the markets table, the heatmap and
+    // the watchlist panel read on the dashboard.
+    if (query.get("limit")) return json(200, { tickers: backend.markets });
+    const asked = (query.get("symbols") ?? "BTCUSDT,ETHUSDT").split(",").filter(Boolean);
     return json(200, {
       tickers: asked.map((symbol, index) => ({
         symbol,
@@ -891,6 +933,16 @@ window.fetch = async (path, options = {}) => {
   if (url.startsWith("/watch-events")) {
     return json(200, { events: backend.watchEvents });
   }
+  // The dashboard's Automation pulse. Two running, one paused, one killed --
+  // one of each status the counts distinguish.
+  if (url === "/bots") {
+    return json(200, [
+      { id: "bot-1", status: "running", mode: "paper", venue: "binance" },
+      { id: "bot-2", status: "running", mode: "paper", venue: "binance" },
+      { id: "bot-3", status: "paused", mode: "paper", venue: "binance" },
+      { id: "bot-4", status: "killed", mode: "paper", venue: "binance" },
+    ]);
+  }
   // The dock's Orders tab reads the local ledger; this route is the ticket's
   // server-side contract list, which the tab only links to.
   if (url.startsWith("/trade/portfolio")) {
@@ -1078,6 +1130,28 @@ if (!tokenKey) {
 // signature, in the page or in the mocks.
 const payload = Buffer.from(JSON.stringify({ sub: "harness@example.test" })).toString("base64");
 window.localStorage.setItem(tokenKey, `header.${payload}.signature`);
+
+// --- the page's clocks -------------------------------------------------------
+//
+// The dashboard's tick is a five-second interval, and jsdom will not run one
+// inside a test. Recording what the page registered -- by the callback's name,
+// which is a function declaration's name -- is how "the dashboard's clock runs
+// there and nowhere else" is checked without waiting five seconds.
+const intervals = new Map();
+const realSetInterval = window.setInterval;
+const realClearInterval = window.clearInterval;
+window.setInterval = (callback, ms, ...rest) => {
+  const id = realSetInterval(callback, ms, ...rest);
+  intervals.set(id, { ms, name: callback && callback.name });
+  return id;
+};
+window.clearInterval = (id) => {
+  intervals.delete(id);
+  realClearInterval(id);
+};
+/// How many live clocks were registered by a function with this name.
+const clocksNamed = (name) =>
+  [...intervals.values()].filter((clock) => clock.name === name).length;
 
 // --- the real engine, with a recorder around it ------------------------------
 //
@@ -2030,7 +2104,7 @@ check(
     document.querySelectorAll(".marketTable thead th[data-sort]").length === 4 &&
     document.querySelector(".marketTable th[data-sort='volume']").getAttribute("aria-sort") === "descending" &&
     document.getElementById("marketRows") !== null &&
-    document.getElementById("marketMore").hidden === true,
+    document.getElementById("marketMore") !== null,
   `${document.querySelectorAll("#marketTabs [role='tab']").length} tabs · ${document.querySelectorAll(".marketTable thead th[data-sort]").length} columns`
 );
 check(
@@ -2043,6 +2117,259 @@ check(
     document.getElementById("heatGrid").hidden === false,
   `add=${document.getElementById("dashWatchAdd").getAttribute("aria-expanded")} table=${document.getElementById("heatTableWrap").hidden}`
 );
+
+// --- the dashboard's data ----------------------------------------------------
+//
+// One clock, four surfaces. Every check drives a control or reads a pane back;
+// none of them calls a paint function directly.
+
+// The empty-state checks below need a known starting list, and the rail's
+// section above leaves whatever it starred behind. The block adds and removes a
+// favorite of its own, so it ends where it began.
+window.localStorage.setItem("watchlist.favorites", "[]");
+
+if (window.Shell) window.Shell.go("dashboard");
+await waitFor(
+  () => document.querySelectorAll("#marketRows tr[data-symbol]").length > 0,
+  "the markets table to fill"
+);
+
+const marketRows = () => [...document.querySelectorAll("#marketRows tr[data-symbol]")];
+const marketSymbols = () => marketRows().map((row) => row.dataset.symbol);
+
+check(
+  "the page leads with its date and a market line",
+  document.getElementById("dashDate").textContent.length > 0 &&
+    document.getElementById("dashMarket").textContent.includes("BTCUSDT") &&
+    document.getElementById("dashMarket").textContent.includes("67,412.5"),
+  document.getElementById("dashMarket").textContent
+);
+check(
+  "the market pulse reads BTC and draws the 24-hour line",
+  document.getElementById("pulseMarket").textContent.includes("67,412.5") &&
+    document.querySelectorAll("#pulseMarket .hrz-price--up").length === 1 &&
+    document.querySelector("#pulseMarket svg.pulseSpark polyline") !== null,
+  document.getElementById("pulseMarket").textContent.trim()
+);
+check(
+  "with no favorites the watchlist pulse and panel both say so",
+  document.getElementById("pulseWatch").textContent.includes("No favorites") &&
+    document.getElementById("dashWatchEmpty").hidden === false &&
+    document.querySelectorAll("#dashWatchRows .dashWatchRow").length === 0
+);
+check(
+  "the automation pulse counts every status and ages the last signal",
+  document.getElementById("pulseAuto").textContent.includes("2 running · 1 paused · 1 stopped") &&
+    /last signal .+ ago/.test(document.getElementById("pulseAuto").textContent),
+  document.getElementById("pulseAuto").textContent.trim()
+);
+// The harness user is on Desk and Desk meters both quotas, so the card names
+// the plan and shows the credits the fixture reports -- 120 of 20,000.
+await waitFor(
+  () => document.querySelector("#pulsePlan [role='progressbar']") !== null,
+  "the plan card to meter"
+);
+check(
+  "the plan pulse names the plan and meters the credits",
+  document.getElementById("pulsePlan").textContent.includes("Desk") &&
+    document.getElementById("pulsePlan").querySelector('[role="progressbar"]').getAttribute("aria-valuenow") === "120" &&
+    document.getElementById("pulsePlan").textContent.includes("Backtests"),
+  document.getElementById("pulsePlan").textContent.trim()
+);
+
+check(
+  "the table shows the first fifty of seventy, sorted by volume",
+  marketRows().length === 50 &&
+    document.getElementById("marketCount").textContent === "50 of 70" &&
+    document.getElementById("marketMore").hidden === false &&
+    marketSymbols()[0] === "BTCUSDT",
+  `${marketRows().length} rows · ${document.getElementById("marketCount").textContent}`
+);
+document.getElementById("marketMore").click();
+await settle();
+check(
+  "Show 50 more appends the rest and goes away",
+  marketRows().length === 70 && document.getElementById("marketMore").hidden === true,
+  `${marketRows().length} rows`
+);
+
+document.querySelector("#marketTabs [data-market='majors']").click();
+await settle();
+check(
+  "Majors is the ten liquid pairs",
+  marketRows().length === 10 && marketSymbols().includes("DOGEUSDT") && !marketSymbols().includes("ALT00USDT"),
+  `${marketRows().length} rows`
+);
+document.querySelector("#marketTabs [data-market='alts']").click();
+await settle();
+check(
+  "Alts is everything else, paged at fifty",
+  marketRows().length === 50 &&
+    document.getElementById("marketCount").textContent === "50 of 60" &&
+    !marketSymbols().includes("BTCUSDT"),
+  `${marketRows().length} rows · ${document.getElementById("marketCount").textContent}`
+);
+document.querySelector("#marketTabs [data-market='all']").click();
+await settle();
+
+const lastHead = document.querySelector(".marketTable th[data-sort='last']");
+lastHead.querySelector(".hrz-table__sort").click();
+await settle();
+check(
+  "sorting by last starts biggest-first and says so",
+  lastHead.getAttribute("aria-sort") === "descending" && marketSymbols()[0] === "BTCUSDT",
+  `${lastHead.getAttribute("aria-sort")} · ${marketSymbols()[0]}`
+);
+lastHead.querySelector(".hrz-table__sort").click();
+await settle();
+check(
+  "a second press flips the column",
+  lastHead.getAttribute("aria-sort") === "ascending" && marketSymbols()[0] === "DOGEUSDT",
+  `${lastHead.getAttribute("aria-sort")} · ${marketSymbols()[0]}`
+);
+document.querySelector(".marketTable th[data-sort='volume'] .hrz-table__sort").click();
+await settle();
+
+const filter = document.getElementById("marketFilter");
+filter.value = "btc";
+filter.dispatchEvent(new window.Event("input"));
+await settle();
+check(
+  "the filter narrows before the page does",
+  marketRows().length === 1 && marketSymbols()[0] === "BTCUSDT" &&
+    document.getElementById("marketCount").textContent === "1 instrument",
+  `${marketRows().length} rows · ${document.getElementById("marketCount").textContent}`
+);
+filter.value = "";
+filter.dispatchEvent(new window.Event("input"));
+await settle();
+
+// --- the watchlist panel -----------------------------------------------------
+//
+// The panel writes the same key the Charts rail reads, so the check that
+// matters is the one that leaves through the panel and reads the rail.
+
+document.getElementById("dashWatchAdd").click();
+check(
+  "the add control opens a search and says so",
+  document.getElementById("dashWatchSearch").hidden === false &&
+    document.getElementById("dashWatchAdd").getAttribute("aria-expanded") === "true"
+);
+const addInput = document.getElementById("dashWatchInput");
+addInput.value = "ETH";
+addInput.dispatchEvent(new window.Event("input"));
+await waitFor(
+  () => document.querySelectorAll("#dashWatchResults [data-symbol]").length > 0,
+  "the symbol search to answer"
+);
+document.querySelector("#dashWatchResults [data-symbol='ETHUSDT']").click();
+await settle();
+check(
+  "adding a symbol pins it, prices it and marks it in the results",
+  document.querySelectorAll("#dashWatchRows .dashWatchRow").length === 1 &&
+    document.getElementById("dashWatchRows").textContent.includes("ETH") &&
+    document.getElementById("dashWatchEmpty").hidden === true &&
+    JSON.parse(window.localStorage.getItem("watchlist.favorites")).includes("ETHUSDT") &&
+    document.querySelector("#dashWatchResults [data-symbol='ETHUSDT'] .muted").textContent === "★",
+  document.getElementById("dashWatchRows").textContent.trim()
+);
+document.getElementById("dashWatchAdd").click();
+check(
+  "and Done puts the search away",
+  document.getElementById("dashWatchSearch").hidden === true &&
+    document.getElementById("dashWatchAdd").getAttribute("aria-expanded") === "false"
+);
+document.querySelector("#dashWatchRows [data-star]").click();
+await settle();
+check(
+  "the row's star removes it from both lists",
+  document.querySelectorAll("#dashWatchRows .dashWatchRow").length === 0 &&
+    document.getElementById("dashWatchEmpty").hidden === false &&
+    JSON.parse(window.localStorage.getItem("watchlist.favorites")).length === 0 &&
+    !document.querySelector("#wlRows .watchRow[data-symbol='ETHUSDT']"),
+  document.getElementById("dashWatchRows").textContent.trim()
+);
+
+// --- the heatmap -------------------------------------------------------------
+
+const tiles = () => [...document.querySelectorAll("#heatGrid .heatTile")];
+check(
+  "the map is the top sixty, sized by volume and coloured by change",
+  tiles().length === 60 &&
+    tiles()[0].dataset.size === "4" &&
+    tiles()[59].dataset.size === "1" &&
+    document.querySelector("#heatGrid .heatTile[data-bucket='3']") !== null &&
+    document.querySelector("#heatGrid .heatTile[data-bucket='-3']") !== null &&
+    document.querySelector("#heatGrid .heatTile[data-bucket='0']") !== null,
+  `${tiles().length} tiles · ${tiles()[0].dataset.size}/${tiles()[59].dataset.size}`
+);
+check(
+  "a tile names itself for a screen reader",
+  tiles()[0].getAttribute("aria-label") === "BTC, up 2.5 percent",
+  tiles()[0].getAttribute("aria-label")
+);
+document.getElementById("heatTableToggle").click();
+await settle();
+check(
+  "Show as table swaps in the same sixty rows and remembers the choice",
+  document.getElementById("heatGrid").hidden === true &&
+    document.getElementById("heatTableWrap").hidden === false &&
+    document.querySelectorAll("#heatRows tr").length === 60 &&
+    window.localStorage.getItem("hrz.heat.table") === "true",
+  `${document.querySelectorAll("#heatRows tr").length} rows`
+);
+document.getElementById("heatTableToggle").click();
+await settle();
+check(
+  "and back to the map",
+  document.getElementById("heatGrid").hidden === false &&
+    document.getElementById("heatTableWrap").hidden === true &&
+    window.localStorage.getItem("hrz.heat.table") === "false"
+);
+
+// --- the clock ---------------------------------------------------------------
+//
+// The dashboard's tick is live here, and the Charts rail's is not: one clock,
+// not two. Leaving hands the wall its own clock back.
+
+check(
+  "the dashboard's clock is the only one running",
+  clocksNamed("dashTick") === 1 && clocksNamed("fetchWatchlistTickers") === 0,
+  `dash=${clocksNamed("dashTick")} rail=${clocksNamed("fetchWatchlistTickers")}`
+);
+document.querySelector("#heatGrid .heatTile[data-symbol='SOLUSDT']").click();
+await waitFor(
+  () => document.getElementById("dest-charts").hidden === false,
+  "the heatmap tile to open Charts"
+);
+await settle();
+check(
+  "a heat tile opens that symbol in Charts",
+  selectIn(0, "symbol") === "SOLUSDT",
+  selectIn(0, "symbol")
+);
+check(
+  "and leaving stops the dashboard's clock and starts the rail's",
+  clocksNamed("dashTick") === 0 && clocksNamed("fetchWatchlistTickers") === 1,
+  `dash=${clocksNamed("dashTick")} rail=${clocksNamed("fetchWatchlistTickers")}`
+);
+
+// --- put the chart back ------------------------------------------------------
+//
+// The last check above charted SOLUSDT 15m on the first pane, and the drawing,
+// badge and layer sections below read BTCUSDT 5m off that same pane. This is the
+// dashboard's visit ending, not a dashboard behaviour, so it restores rather
+// than asserting.
+
+const backSymbol = paneNode(0).querySelector(".symbol");
+backSymbol.value = "BTCUSDT";
+change(backSymbol);
+await waitFor(() => selectIn(0, "symbol") === "BTCUSDT", "the pane to return to BTCUSDT");
+const backFrame = paneNode(0).querySelector(".timeframe");
+backFrame.value = "5m";
+change(backFrame);
+await waitFor(() => selectIn(0, "timeframe") === "5m", "the pane to return to 5m");
+await settle();
 
 // --- the layout at a narrow width --------------------------------------------
 //

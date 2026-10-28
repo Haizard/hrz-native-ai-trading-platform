@@ -13851,6 +13851,10 @@ function refreshBillingPane() {
   if (window.Shell) {
     Shell.setPlan(plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : "");
   }
+  // The dashboard's Plan card is a second view of the same state, and this is
+  // the one function every subscription write already calls -- so the card
+  // cannot disagree with the Account page.
+  paintDashPlan();
 }
 
 async function loadBilling() {
@@ -14018,6 +14022,822 @@ function paintIcons(scope = document) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The dashboard
+//
+// Four questions, four sources, and one clock. The markets batch is the clock:
+// every five seconds it re-prices the table, the heatmap, the watchlist panel
+// and the market pulse, because all four are views of one venue list. That is
+// also why the panel never starts a ticker of its own (Spec 6.4) -- on this
+// destination the markets tick *is* the watchlist ticker, and the Charts rail's
+// clock is stopped while the dashboard is up.
+// ---------------------------------------------------------------------------
+
+/// Five seconds, because the venue caches `/tickers` for five: asking faster
+/// buys the same answer, asking slower makes the table read as stale.
+const DASH_TICK_MS = 5000;
+/// The table's page size, and the step "Show 50 more" adds.
+const DASH_PAGE = 50;
+/// The heatmap's tile count.
+const HEAT_LIMIT = 60;
+const HEAT_KEY = "hrz.heat.table";
+/// The ten liquid pairs the Majors tab means. A constant and not a rule: the
+/// venue has no "major" flag, and a computed one ("today's top ten by volume")
+/// would move the tab's contents between polls.
+const MAJORS = [
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+  "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
+];
+
+let dashTimer = 0;
+let dashTicks = 0;
+let dashUniverse = [];        // `/tickers?limit=1000`
+let dashUniverseAt = 0;
+let dashUniverseFailure = "";
+let dashSpark = null;         // the last 24 hourly closes of BTC
+let dashBots = null;          // `{ bots, events, at }`, or null before the first answer
+let dashBotsFailure = "";
+let dashTab = "all";
+let dashSort = { key: "volume", dir: "desc" };
+let dashFilter = "";
+let dashShown = DASH_PAGE;
+
+/// A node with a class and text, so a paint function reads as the shape it
+/// draws rather than a wall of `createElement` calls.
+const dashEl = (tag, className, text) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+
+const baseOf = (symbol) => symbol.replace(/USDT$/, "");
+const quoteOf = (symbol) => (symbol.endsWith("USDT") ? "USDT" : "");
+
+/// The shell's one hook into this destination.
+///
+/// Idempotent on purpose: the shell calls it on every `showDestination`,
+/// including the ones a panel toggle causes, and a clock that restarted on
+/// every call would poll each time a tab moved. Coming back repaints from the
+/// cache first, so a returning reader sees their table before the batch lands.
+function setDestinationVisible(destination) {
+  if (destination === "dashboard") {
+    if (!dashTimer) {
+      dashTimer = setInterval(dashTick, DASH_TICK_MS);
+      dashTicks = 0;
+      applyHeatView();
+      dashTick();
+    }
+    if (!billingState) loadBilling();
+    return;
+  }
+  if (dashTimer) {
+    clearInterval(dashTimer);
+    dashTimer = 0;
+  }
+}
+
+/// One batch, four surfaces.
+///
+/// The favorites outside the venue's most active thousand are asked for by
+/// name in the same tick. That is a second *request*, not a second timer: it
+/// rides the same five seconds and stops with them.
+function dashTick() {
+  dashTicks += 1;
+  paintDashDate();
+  api("/tickers?limit=1000")
+    .then((response) => {
+      dashUniverse = Array.isArray(response.tickers) ? response.tickers : [];
+      dashUniverseAt = Date.now();
+      dashUniverseFailure = "";
+      for (const ticker of dashUniverse) watchlistTickers.set(ticker.symbol, ticker);
+      const priced = new Set(dashUniverse.map((ticker) => ticker.symbol));
+      const missing = watchlistFavorites().filter((symbol) => !priced.has(symbol));
+      if (!missing.length) return undefined;
+      return api(`/tickers?symbols=${encodeURIComponent(missing.join(","))}`)
+        .then((answer) => {
+          for (const ticker of answer.tickers || []) watchlistTickers.set(ticker.symbol, ticker);
+        })
+        .catch(() => undefined);
+    })
+    .catch((error) => {
+      dashUniverseFailure = error.message;
+    })
+    .then(() => {
+      paintDashMarkets();
+      paintDashWatch();
+      paintDashMarketPulse();
+      paintDashWatchPulse();
+      paintDashHeat();
+    });
+  // The slower half of the same clock: a bot count and a one-hour close are
+  // not five-second questions, and `/bots` walks the database.
+  if (dashTicks === 1 || dashTicks % 2 === 0) {
+    loadDashBots();
+    loadDashSpark();
+  }
+}
+
+function paintDashDate() {
+  const node = el("dashDate");
+  if (!node) return;
+  node.textContent = new Date().toLocaleDateString("en-GB", {
+    weekday: "long", day: "numeric", month: "long",
+  });
+}
+
+/// A card's own error, with its own retry. The row keeps its shape: a failed
+/// card says so in place rather than blanking a quarter of the page.
+function dashInlineError(kind, message) {
+  const line = dashEl("p", "pulseNote pulseNote--error");
+  line.appendChild(document.createTextNode(`${message} `));
+  const retry = dashEl("button", "hrz-btn hrz-btn--ghost hrz-btn--sm", "Retry");
+  retry.type = "button";
+  retry.dataset.retry = kind;
+  line.appendChild(retry);
+  return line;
+}
+
+function percentNode(value) {
+  const number = Number(value);
+  const dir = number > 0 ? "up" : number < 0 ? "down" : "flat";
+  return dashEl("span", `hrz-price hrz-price--${dir}`, HRZUI.format.percent(number));
+}
+
+function ageText(value) {
+  const at = Date.parse(value || "");
+  if (!Number.isFinite(at)) return "—";
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
+  return `${Math.round(seconds / 86400)}d ago`;
+}
+
+/// Show a symbol on the chart wall, from any of the dashboard's four lists.
+///
+/// `chartSymbol` already means "reuse the pane showing it, otherwise the active
+/// pane", so the dashboard does not add a second opinion about where a chart
+/// goes -- it only makes sure the destination is the one that has panes.
+function openInCharts(symbol) {
+  if (!symbol) return;
+  if (window.Shell) Shell.go("charts");
+  if (window.HRZApp && HRZApp.chartSymbol) HRZApp.chartSymbol(symbol);
+}
+
+/* ---- The page header ------------------------------------------------------ */
+
+function paintDashMarketLine() {
+  const host = el("dashMarket");
+  if (!host) return;
+  host.replaceChildren();
+  const ticker = dashUniverse.find((row) => row.symbol === "BTCUSDT") || dashUniverse[0];
+  if (!ticker) {
+    host.textContent = "—";
+    return;
+  }
+  host.appendChild(dashEl("span", "", ticker.symbol));
+  host.appendChild(document.createTextNode(" "));
+  host.appendChild(dashEl("span", "num", fmtPrice(Number(ticker.last_price))));
+  host.appendChild(document.createTextNode(" "));
+  host.appendChild(percentNode(ticker.price_change_percent));
+}
+
+/* ---- Market --------------------------------------------------------------- */
+
+function paintDashMarketPulse() {
+  const host = el("pulseMarket");
+  if (!host) return;
+  host.replaceChildren();
+  if (dashUniverseFailure && !dashUniverse.length) {
+    host.appendChild(dashInlineError("market", dashUniverseFailure));
+    return;
+  }
+  const ticker = dashUniverse.find((row) => row.symbol === "BTCUSDT") || dashUniverse[0];
+  if (!ticker) {
+    host.appendChild(dashEl("p", "pulseNote", "No market data yet."));
+    return;
+  }
+  const row = dashEl("div", "pulseValueRow");
+  row.appendChild(dashEl("span", "pulseValue", fmtPrice(Number(ticker.last_price))));
+  row.appendChild(percentNode(ticker.price_change_percent));
+  host.appendChild(row);
+  host.appendChild(dashEl("p", "pulseNote",
+    `${ticker.symbol} · 24h volume ${HRZUI.format.volume(ticker.quote_volume)}`));
+  if (dashSpark && dashSpark.length > 1) {
+    host.appendChild(sparkLine(dashSpark, Number(ticker.price_change_percent) < 0 ? "down" : "up"));
+  }
+}
+
+/// The pulse line is SVG, not `HRZUI.sparkline`: a canvas cannot read
+/// `var(--up)`, and this card has to follow the theme like the chrome around it.
+function sparkLine(values, trend) {
+  const width = 100;
+  const height = 26;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const points = values
+    .map((value, index) => {
+      const x = (index / (values.length - 1)) * width;
+      const y = height - 2 - ((value - min) / span) * (height - 4);
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "pulseSpark");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label",
+    `Last ${values.length} hours: low ${fmtPrice(min)}, high ${fmtPrice(max)}, now ${fmtPrice(values[values.length - 1])}`);
+  svg.dataset.trend = trend;
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  line.setAttribute("points", points);
+  svg.appendChild(line);
+  return svg;
+}
+
+async function loadDashSpark() {
+  try {
+    const answer = await api("/candles?symbol=BTCUSDT&timeframe=1h&limit=24");
+    const closes = (answer.candles || [])
+      .map((candle) => Number(candle.close))
+      .filter((value) => Number.isFinite(value))
+      .slice(-24);
+    if (closes.length > 1) {
+      dashSpark = closes;
+      paintDashMarketPulse();
+    }
+  } catch {
+    // The card keeps its price and drops the line: a sparkline nobody can load
+    // is not worth an error message in the space a price goes.
+  }
+}
+
+/* ---- Watchlist ------------------------------------------------------------ */
+
+function paintDashWatchPulse() {
+  const host = el("pulseWatch");
+  if (!host) return;
+  host.replaceChildren();
+  const favorites = watchlistFavorites();
+  if (!favorites.length) {
+    host.appendChild(dashEl("p", "pulseNote", "No favorites yet. Star a symbol, or use + Add beside the list."));
+    return;
+  }
+  const priced = favorites.map((symbol) => watchlistTickers.get(symbol)).filter(Boolean);
+  const up = priced.filter((ticker) => Number(ticker.price_change_percent) >= 0).length;
+  const row = dashEl("div", "pulseValueRow");
+  row.appendChild(dashEl("span", "pulseValue", String(favorites.length)));
+  row.appendChild(dashEl("span", "pulseNote", favorites.length === 1 ? "symbol" : "symbols"));
+  host.appendChild(row);
+  const split = dashEl("div", "pulseSplit");
+  split.appendChild(dashEl("span", "pulseSplit__up", `${up} up`));
+  split.appendChild(dashEl("span", "muted", "·"));
+  split.appendChild(dashEl("span", "pulseSplit__down", `${priced.length - up} down`));
+  host.appendChild(split);
+  const best = priced
+    .slice()
+    .sort((a, b) => Number(b.price_change_percent) - Number(a.price_change_percent))[0];
+  if (best) {
+    const line = dashEl("p", "pulseNote");
+    line.appendChild(document.createTextNode("top "));
+    line.appendChild(dashEl("span", "num", best.symbol));
+    line.appendChild(document.createTextNode(" "));
+    line.appendChild(percentNode(best.price_change_percent));
+    host.appendChild(line);
+  }
+}
+
+/* ---- Automation ----------------------------------------------------------- */
+
+async function loadDashBots() {
+  try {
+    const [bots, events] = await Promise.all([
+      api("/bots"),
+      api("/watch-events?limit=5").catch(() => ({ events: [] })),
+    ]);
+    dashBots = {
+      bots: Array.isArray(bots) ? bots : [],
+      events: (events && events.events) || [],
+      at: Date.now(),
+    };
+    dashBotsFailure = "";
+  } catch (error) {
+    dashBotsFailure = error.message;
+  }
+  paintDashAutomationPulse();
+}
+
+function paintDashAutomationPulse() {
+  const host = el("pulseAuto");
+  if (!host) return;
+  host.replaceChildren();
+  if (!dashBots) {
+    host.appendChild(
+      dashBotsFailure
+        ? dashInlineError("automation", dashBotsFailure)
+        : dashEl("p", "pulseNote", "Loading…")
+    );
+    return;
+  }
+  // "killed" is the risk engine's word; "stopped" is the reader's.
+  const counts = { running: 0, paused: 0, killed: 0 };
+  for (const bot of dashBots.bots) {
+    if (bot.status in counts) counts[bot.status] += 1;
+  }
+  const row = dashEl("div", "pulseValueRow");
+  row.appendChild(dashEl("span", "pulseValue pulseValue--sm",
+    `${counts.running} running · ${counts.paused} paused · ${counts.killed} stopped`));
+  host.appendChild(row);
+  const latest = dashBots.events[0];
+  host.appendChild(dashEl("p", "pulseNote",
+    latest ? `last signal ${ageText(latest.created_at)}` : "no signals yet"));
+}
+
+/* ---- Plan ----------------------------------------------------------------- */
+
+function planMeter(label, used, limit) {
+  const meter = dashEl("div", "pulseMeter");
+  const max = Number(limit);
+  if (max < 0) {
+    meter.appendChild(dashEl("span", "pulseNote", `${label}: unlimited`));
+    return meter;
+  }
+  const value = Number(used) || 0;
+  HRZUI.meter(meter, {
+    value,
+    max: max || 1,
+    label,
+    tone: max > 0 && value / max >= 0.8 ? "warn" : "",
+  });
+  return meter;
+}
+
+/// Painted from `billingState` and repainted from `refreshBillingPane`, which
+/// every billing write already calls -- so a subscription started on Account is
+/// the card's new answer without a second fetch or a second listener.
+function paintDashPlan() {
+  const host = el("pulsePlan");
+  if (!host) return;
+  host.replaceChildren();
+  if (!billingState) {
+    host.appendChild(
+      billingLoad
+        ? dashEl("p", "pulseNote", "Loading…")
+        : dashInlineError("plan", "Plan unavailable")
+    );
+    return;
+  }
+  const usage = billingState.usage || {};
+  host.appendChild(dashEl("p", "pulseValue pulseValue--sm",
+    billingState.plan_name || billingState.plan || "No plan"));
+  const credits = usage.ai_credits || { used: 0, limit: 0 };
+  host.appendChild(planMeter("AI credits", credits.used, credits.limit));
+  const backtests = usage.backtests || { used: 0, limit: 0 };
+  host.appendChild(planMeter("Backtests", backtests.used, backtests.limit));
+  const resets = usage.resets_at ? new Date(usage.resets_at) : null;
+  if (resets && !Number.isNaN(resets.getTime())) {
+    host.appendChild(dashEl("p", "pulseNote",
+      `resets ${resets.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`));
+  }
+}
+
+/* ---- Markets -------------------------------------------------------------- */
+
+/// What the active tab shows, filtered and sorted. Kept separate from the paint
+/// so the sort, the tab and the filter all agree about what "total" means --
+/// the count in the footer is the number of rows *after* filtering, which is
+/// the only number a reader who typed in the box cares about.
+function dashMarketRows() {
+  let rows;
+  if (dashTab === "watchlist") {
+    rows = watchlistFavorites().map((symbol) => watchlistTickers.get(symbol) || { symbol });
+  } else {
+    rows = dashUniverse.slice();
+    if (dashTab === "majors") rows = rows.filter((ticker) => MAJORS.includes(ticker.symbol));
+    if (dashTab === "alts") rows = rows.filter((ticker) => !MAJORS.includes(ticker.symbol));
+  }
+  if (dashFilter) rows = rows.filter((ticker) => ticker.symbol.includes(dashFilter));
+  const key = dashSort.key;
+  const read = (ticker) =>
+    key === "symbol" ? ticker.symbol
+      : key === "last" ? Number(ticker.last_price)
+        : key === "change" ? Number(ticker.price_change_percent)
+          : Number(ticker.quote_volume);
+  return rows.sort((a, b) => {
+    const left = read(a);
+    const right = read(b);
+    if (typeof left === "string" || typeof right === "string") {
+      return dashSort.dir === "asc"
+        ? String(left).localeCompare(String(right))
+        : String(right).localeCompare(String(left));
+    }
+    // A row with no quote sinks whichever way the column sorts: it is not the
+    // "highest", it is unknown.
+    const leftOk = Number.isFinite(left);
+    const rightOk = Number.isFinite(right);
+    if (!leftOk || !rightOk) return leftOk === rightOk ? 0 : leftOk ? -1 : 1;
+    return dashSort.dir === "asc" ? left - right : right - left;
+  });
+}
+
+function marketRow(ticker, activeSymbol) {
+  const row = document.createElement("tr");
+  row.dataset.symbol = ticker.symbol;
+  if (ticker.symbol === activeSymbol) row.className = "hrz-table__row--selected";
+
+  const first = document.createElement("td");
+  const open = dashEl("button", "marketSym");
+  open.type = "button";
+  open.dataset.open = ticker.symbol;
+  const mark = dashEl("span", "marketMark");
+  const change = Number(ticker.price_change_percent);
+  if (Number.isFinite(change) && change !== 0) mark.dataset.dir = change > 0 ? "up" : "down";
+  open.appendChild(mark);
+  open.appendChild(dashEl("span", "", baseOf(ticker.symbol)));
+  const quote = quoteOf(ticker.symbol);
+  if (quote) open.appendChild(dashEl("span", "marketQuote", quote));
+  first.appendChild(open);
+  row.appendChild(first);
+
+  row.appendChild(dashEl("td", "hrz-table__num", fmtPrice(Number(ticker.last_price))));
+
+  const delta = dashEl("td", "hrz-table__num");
+  delta.appendChild(percentNode(change));
+  row.appendChild(delta);
+
+  row.appendChild(dashEl("td", "hrz-table__num", HRZUI.format.volume(ticker.quote_volume)));
+  return row;
+}
+
+function paintDashMarkets() {
+  paintDashMarketLine();
+  const body = el("marketRows");
+  if (!body) return;
+  const rows = dashMarketRows();
+  const active = activePane ? activePane.symbol() : "";
+  body.replaceChildren();
+  for (const ticker of rows.slice(0, dashShown)) body.appendChild(marketRow(ticker, active));
+
+  const total = rows.length;
+  el("marketEmpty").hidden = total > 0;
+  if (!total) {
+    el("marketEmpty").textContent = dashFilter
+      ? `Nothing matches "${dashFilter}".`
+      : dashTab === "watchlist"
+        ? "No favorites yet. Star a symbol in Charts, or use + Add on the watchlist panel."
+        : "The venue returned no instruments.";
+  }
+  el("marketCount").textContent = total > dashShown
+    ? `${dashShown} of ${total}`
+    : `${total} instrument${total === 1 ? "" : "s"}`;
+  el("marketMore").hidden = total <= dashShown;
+  // The header states the sort, because a table that reorders itself without
+  // saying so is a table the reader has to re-read to trust.
+  for (const head of document.querySelectorAll(".marketTable thead th[data-sort]")) {
+    head.setAttribute(
+      "aria-sort",
+      head.dataset.sort === dashSort.key
+        ? (dashSort.dir === "desc" ? "descending" : "ascending")
+        : "none"
+    );
+  }
+}
+
+/* ---- The watchlist panel -------------------------------------------------- */
+
+function paintDashWatch() {
+  const host = el("dashWatchRows");
+  if (!host) return;
+  const favorites = watchlistFavorites();
+  host.replaceChildren();
+  el("dashWatchEmpty").hidden = favorites.length > 0;
+  for (const symbol of favorites) {
+    const ticker = watchlistTickers.get(symbol) || {};
+    const change = Number(ticker.price_change_percent);
+    const row = dashEl("div", "dashWatchRow");
+
+    const open = dashEl("button", "dashWatchRow__sym", baseOf(symbol));
+    open.type = "button";
+    open.dataset.open = symbol;
+    open.setAttribute("aria-label", `Open ${symbol} in Charts`);
+    row.appendChild(open);
+
+    row.appendChild(dashEl("span", "dashWatchRow__last",
+      ticker.last_price === undefined ? "—" : fmtPrice(Number(ticker.last_price))));
+
+    const pct = dashEl("span", "dashWatchRow__pct");
+    pct.appendChild(percentNode(change));
+    row.appendChild(pct);
+
+    const star = dashEl("button", "dashWatchRow__star", "★");
+    star.type = "button";
+    star.dataset.star = symbol;
+    star.setAttribute("aria-pressed", "true");
+    star.setAttribute("aria-label", `Remove ${symbol} from the watchlist`);
+    row.appendChild(star);
+
+    host.appendChild(row);
+  }
+  el("dashWatchAge").textContent = dashUniverseAt
+    ? `prices ${Math.max(0, Math.round((Date.now() - dashUniverseAt) / 1000))}s ago`
+    : "";
+}
+
+/// The panel's own search, because the palette's symbol items *chart* a symbol
+/// and this one *pins* it. Reusing the palette would mean a symbol search with
+/// two different meanings behind one control.
+async function dashWatchSearch(query) {
+  const host = el("dashWatchResults");
+  if (!host) return;
+  host.replaceChildren();
+  if (!query) return;
+  try {
+    const results = await HRZApp.searchSymbols(query);
+    if (el("dashWatchInput").value.trim() !== query) return;
+    const starred = new Set(watchlistFavorites());
+    for (const result of results.slice(0, 12)) {
+      const button = dashEl("button", "dashWatch__result");
+      button.type = "button";
+      button.dataset.symbol = result.symbol;
+      button.appendChild(dashEl("span", "", result.base || baseOf(result.symbol)));
+      button.appendChild(dashEl("span", "muted", starred.has(result.symbol) ? "★" : "☆"));
+      host.appendChild(button);
+    }
+    if (!host.children.length) host.appendChild(dashEl("p", "pulseNote", "Nothing matches."));
+  } catch (error) {
+    host.appendChild(dashEl("p", "pulseNote pulseNote--error", error.message));
+  }
+}
+
+/* ---- The heatmap ---------------------------------------------------------- */
+
+function dashHeatRows() {
+  return dashUniverse
+    .filter((ticker) => Number.isFinite(Number(ticker.quote_volume)))
+    .slice()
+    .sort((a, b) => Number(b.quote_volume) - Number(a.quote_volume))
+    .slice(0, HEAT_LIMIT);
+}
+
+/// Seven bands: down hard, down, down a little, flat, up a little, up, up hard.
+/// Four percent is the outer edge because it is roughly where a daily move
+/// stops being noise on the venues this page lists.
+function heatBucket(change) {
+  const value = Number(change);
+  if (!Number.isFinite(value) || Math.abs(value) < 0.05) return "0";
+  if (value >= 4) return "3";
+  if (value >= 2) return "2";
+  if (value > 0) return "1";
+  if (value <= -4) return "-3";
+  if (value <= -2) return "-2";
+  return "-1";
+}
+
+/// Quartiles of the sliced list: the top quarter spans four rows, the bottom
+/// quarter one. Ranked, not measured, so the mosaic always uses its whole range
+/// even when every pair traded the same amount.
+function heatSize(index, total) {
+  if (!total) return 1;
+  return 4 - Math.floor((index / total) * 4);
+}
+
+function paintDashHeat() {
+  const grid = el("heatGrid");
+  if (!grid) return;
+  const rows = dashHeatRows();
+  const table = el("heatRows");
+  grid.replaceChildren();
+  if (table) table.replaceChildren();
+  el("heatEmpty").hidden = rows.length > 0;
+  el("heatHint").textContent = rows.length
+    ? `Top ${rows.length} by 24h volume`
+    : "Top 60 by 24h volume";
+  rows.forEach((ticker, index) => {
+    const base = baseOf(ticker.symbol);
+    const change = Number(ticker.price_change_percent);
+    const tile = dashEl("button", "heatTile");
+    tile.type = "button";
+    tile.dataset.symbol = ticker.symbol;
+    tile.dataset.bucket = heatBucket(change);
+    tile.dataset.size = String(heatSize(index, rows.length));
+    const direction = change > 0 ? "up" : change < 0 ? "down" : "flat";
+    // The label is the tile's whole content to a screen reader, so it carries
+    // the direction as a word: "SOL, up 8.1 percent".
+    tile.setAttribute("aria-label",
+      `${base}, ${direction} ${Math.abs(Number.isFinite(change) ? change : 0).toFixed(1)} percent`);
+    tile.appendChild(dashEl("span", "heatTile__sym", base));
+    tile.appendChild(dashEl("span", "heatTile__pct", HRZUI.format.percent(change)));
+    grid.appendChild(tile);
+
+    if (table) {
+      const row = document.createElement("tr");
+      row.appendChild(dashEl("td", "", ticker.symbol));
+      const pct = dashEl("td", "hrz-table__num");
+      pct.appendChild(percentNode(change));
+      row.appendChild(pct);
+      row.appendChild(dashEl("td", "hrz-table__num", HRZUI.format.volume(ticker.quote_volume)));
+      table.appendChild(row);
+    }
+  });
+}
+
+/// The view is a device preference, so it is remembered locally: a user who
+/// asked for a table once should not have to ask again every morning. Written
+/// and read through one function so the toggle and the restored state cannot
+/// disagree about which is on.
+function setHeatView(asTable) {
+  el("heatGrid").hidden = asTable;
+  el("heatTableWrap").hidden = !asTable;
+  const toggle = el("heatTableToggle");
+  toggle.setAttribute("aria-pressed", String(asTable));
+  toggle.textContent = asTable ? "Show as map" : "Show as table";
+  try {
+    localStorage.setItem(HEAT_KEY, String(asTable));
+  } catch {
+    // The view still swaps; only the memory of it is lost.
+  }
+}
+
+function applyHeatView() {
+  let asTable = false;
+  try {
+    asTable = localStorage.getItem(HEAT_KEY) === "true";
+  } catch {
+    asTable = false;
+  }
+  setHeatView(asTable);
+}
+
+/* ---- Wiring --------------------------------------------------------------- */
+
+function wireDashboard() {
+  const body = el("marketRows");
+  if (body) {
+    body.addEventListener("click", (event) => {
+      const target = event.target.closest("[data-open]") || event.target.closest("tr[data-symbol]");
+      if (target) openInCharts(target.dataset.open || target.dataset.symbol);
+    });
+  }
+
+  const tabs = el("marketTabs");
+  if (tabs) {
+    tabs.addEventListener("click", (event) => {
+      const tab = event.target.closest("[data-market]");
+      if (!tab) return;
+      dashTab = tab.dataset.market;
+      dashShown = DASH_PAGE;
+      for (const button of tabs.querySelectorAll("[data-market]")) {
+        button.setAttribute("aria-selected", String(button === tab));
+      }
+      paintDashMarkets();
+    });
+  }
+
+  for (const head of document.querySelectorAll(".marketTable thead th[data-sort]")) {
+    const button = head.querySelector(".hrz-table__sort");
+    if (!button) continue;
+    button.addEventListener("click", () => {
+      // A column that is already sorting flips; a new column starts on its
+      // useful direction (A-Z for names, biggest first for numbers).
+      if (dashSort.key === head.dataset.sort) {
+        dashSort = { key: dashSort.key, dir: dashSort.dir === "desc" ? "asc" : "desc" };
+      } else {
+        dashSort = { key: head.dataset.sort, dir: head.dataset.sort === "symbol" ? "asc" : "desc" };
+      }
+      dashShown = DASH_PAGE;
+      paintDashMarkets();
+    });
+  }
+
+  const filter = el("marketFilter");
+  if (filter) {
+    filter.addEventListener("input", () => {
+      dashFilter = filter.value.trim().toUpperCase();
+      dashShown = DASH_PAGE;
+      paintDashMarkets();
+    });
+  }
+
+  const more = el("marketMore");
+  if (more) {
+    more.addEventListener("click", () => {
+      dashShown += DASH_PAGE;
+      paintDashMarkets();
+    });
+  }
+
+  const refresh = el("dashRefresh");
+  if (refresh) {
+    refresh.addEventListener("click", () => {
+      dashTick();
+      pageToast("Dashboard refreshed");
+    });
+  }
+
+  const newChart = el("dashNewChart");
+  if (newChart) {
+    newChart.addEventListener("click", () => {
+      if (window.Shell) Shell.go("charts");
+      if (window.HRZApp && HRZApp.newPane) HRZApp.newPane();
+    });
+  }
+
+  // One listener for four retries: the card names the thing to retry, so the
+  // row does not grow a handler per card.
+  const pulses = el("pulseRow");
+  if (pulses) {
+    pulses.addEventListener("click", (event) => {
+      const retry = event.target.closest("[data-retry]");
+      if (!retry) return;
+      if (retry.dataset.retry === "plan") {
+        loadBilling();
+      } else if (retry.dataset.retry === "automation") {
+        dashBotsFailure = "";
+        loadDashBots();
+      } else {
+        dashTick();
+      }
+    });
+  }
+
+  const watchRows = el("dashWatchRows");
+  if (watchRows) {
+    watchRows.addEventListener("click", (event) => {
+      const star = event.target.closest("[data-star]");
+      if (star) {
+        toggleFavorite(star.dataset.star);
+        paintDashWatch();
+        paintDashWatchPulse();
+        paintDashMarkets();
+        // The rail is the same list: removing here must remove it there.
+        renderWatchlist();
+        return;
+      }
+      const open = event.target.closest("[data-open]");
+      if (open) openInCharts(open.dataset.open);
+    });
+  }
+
+  const add = el("dashWatchAdd");
+  if (add) {
+    const box = el("dashWatchSearch");
+    const input = el("dashWatchInput");
+    add.addEventListener("click", () => {
+      const opening = box.hidden;
+      box.hidden = !opening;
+      add.setAttribute("aria-expanded", String(opening));
+      add.textContent = opening ? "Done" : "+ Add";
+      if (opening) {
+        input.value = "";
+        el("dashWatchResults").replaceChildren();
+        input.focus();
+      } else {
+        // The caret comes back with the field it was in going away: a keyboard
+        // user left on a hidden input is stranded, and the page's own keys are
+        // gated on where the caret is.
+        add.focus();
+      }
+    });
+    input.addEventListener("input", () => dashWatchSearch(input.value.trim()));
+    el("dashWatchResults").addEventListener("click", (event) => {
+      const result = event.target.closest("[data-symbol]");
+      if (!result) return;
+      toggleFavorite(result.dataset.symbol);
+      paintDashWatch();
+      paintDashWatchPulse();
+      paintDashMarkets();
+      renderWatchlist();
+      // Reflect the star in the list still on screen: the query has not
+      // changed, so re-asking the server would be a request for an answer
+      // this page already has.
+      const starred = new Set(watchlistFavorites());
+      for (const row of el("dashWatchResults").children) {
+        const mark = row.querySelector(".muted");
+        if (mark && row.dataset.symbol) {
+          mark.textContent = starred.has(row.dataset.symbol) ? "★" : "☆";
+        }
+      }
+    });
+  }
+
+  const heat = el("heatGrid");
+  if (heat) {
+    heat.addEventListener("click", (event) => {
+      const tile = event.target.closest("[data-symbol]");
+      if (tile) openInCharts(tile.dataset.symbol);
+    });
+  }
+  const table = el("heatTableToggle");
+  if (table) {
+    table.addEventListener("click", () => {
+      setHeatView(table.getAttribute("aria-pressed") !== "true");
+    });
+  }
+}
+
 async function main() {
   if (window.Shell) Shell.init();
   if (window.InstrumentBar) InstrumentBar.init();
@@ -14029,6 +14849,7 @@ async function main() {
 
   wireWatchlist();
   wireDock();
+  wireDashboard();
   // The watchlist has no aside tab any more (it lives in its own rail), so
   // nothing else would ever call its pane path -- the rail prices itself here,
   // once, and the rail's own interactions keep it current after that. The pane
@@ -15965,6 +16786,7 @@ window.HRZApp = {
   chartSettings: () => chartSettings(),
   setChartSetting,
   openChartSettings,
+  setDestinationVisible,
 };
 
 main();
