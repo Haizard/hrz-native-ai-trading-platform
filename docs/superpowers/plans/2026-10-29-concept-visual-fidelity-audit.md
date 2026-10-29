@@ -503,6 +503,52 @@ level; against our six anonymous segments. Reference: TradingView's Fibonacci
 retracement tool defaults (which ratios are drawn and labelled by default), and the
 OTE/golden-pocket convention as documented by whoever named it.
 
+*(Done — [`05-fib.md`](../specs/concept-visual-audit/05-fib.md), 6 rows judged,
+`check --family fib` green and the sweep down from 121 to 115 problem rows — the lightest
+pass in the audit, because it is the one family whose arithmetic is already right. Both
+retracement generations on the window fit the candles to the cent: the bearish leg
+81,380.01 (bar 473) → 79,710.00 (bar 484), R = 1,670.01, puts all five levels at exactly
+`end + r × (origin − end)`, the bullish leg 79,710.02 → 80,527.02 does the same at R = 817,
+and the extension's `to + (to − from) × (e − 1)` holds for both of its ratios — the same
+forms TradingView's 24-level tool and LuxAlgo's pages state, and the same five ratios. What
+the pass measures instead is that none of it is legible, and the reason is one layer up: the
+`state` is shipped as `one-shot events`. Every fib concept is a function of *the newest swing
+pair*, a state that persists for tens of bars, and the detector re-announces it on every bar
+— so the scan's 50-event cap, not the chart, decides how much history each concept shows. The
+retracement's 50 events are 5 a bar over 10 bars from 2 anchors; the pocket and the OTE emit
+once a bar and reach back 50 bars across 9 swings, a 5× difference in visible history between
+concepts whose tool never changed; the confluence emits up to 5 bands a bar over 11 bars; and
+the time zones collapse 3-5 counts onto one bar (`if at <= bar_time`,
+[fibonacci.rs:137](../../../crates/analytics-core/src/fibonacci.rs#L137), has no equality
+test). On the scene that produces: 50 dashed 1px `Segment`s at 10 heights, every one inside
+the right 5.4% of the plot (x 1024-1082 of 1074, widths 28-49px), no ratio on any line, no
+price beside it, the word `retracement` printed 50 times; zone boxes at `fill_alpha 0.08`
+compounding over 50 draws to **0.985**, so the pocket that should be a shade covers 13.8% of
+the width and the confluence **13.3% of the whole plot** in 52px bands, its tolerance a
+hard-coded 0.4% (324 points on an 80,000 price) that *is* the band; and 10 extension lines at
+y 569.55 below a plot that ends at 494 — a fifth of the ink drawing nothing. `fib.time_zones`
+is the one row with no vocabulary to answer to: Fib Time Tools draws *vertical* lines at
+1, 2, 3, 5, 8, 13, 21, 34 (ours starts at 3 and runs to 55) while the router gives it no zone
+id and the segment branch draws the emitting bar's close — a *when* answered in prices, the
+same failure pass 4 recorded for the session clock, in a second family. Tally: 5
+`differs_major`, 1 `impossible_in_vocabulary` (`time_zones`), 0 `matches`, 0
+`differs_minor`, 6 `different_rule` — the formula verdicts are about cadence and dormancy, not
+arithmetic — and 6 card previews that `differs`, because the card draws the same anonymous
+segments without the numbers. The vocabulary settles `ladder` as **`wiring`** (a rung is
+`ScriptDraw::Line` + a `Label`, both already painted, so the gap is a `ConceptShape` variant
+and the ratio on the wire — the same class as pass 3's `bar_marker`) and gains `time_line`,
+also `wiring`, because `Line` with `x1 == x2` is already a full-height vertical rule. No
+parameter is honoured for the fifth consecutive family, and this one has the most to lose: the
+references expose the grid, ours hard-codes five constants
+([fibonacci.rs:13-21](../../../crates/analytics-core/src/fibonacci.rs#L13)). Banked as defects:
+the 50× re-emission, the `at <= bar_time` predicate, the snake_case labels reaching the chart
+unspaced, and a transport one — an unqualified `scan?timeframe=1m` returns `events: []` while
+`limit=50`, `limit=200` and `limit=1000` all return events and `15m` returns them at
+`limit=500`, so the frontend, which omits `limit`, paints a blank chart on 1m; the pass switched
+to 15m to photograph it and recorded the defect rather than a row. The audit has now judged 67
+rows across five families (smc 32, sd 4, pa 11, session 14, fib 6) and still has **no
+`matches`**.)*
+
 ### Task 11 — Pass 6: Chart Patterns (15)
 `render chart`. The hardest geometry: an outline traced through the pivots, a dashed
 neckline, a projected target. Reference: Edwards & Magee and Bulkowski for the shape
