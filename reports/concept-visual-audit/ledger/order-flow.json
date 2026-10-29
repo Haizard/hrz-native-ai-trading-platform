@@ -1,0 +1,54 @@
+{
+  "family": "order-flow",
+  "rows": [
+    {
+      "concept_id": "order_flow.delta_shift",
+      "family": "order-flow",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "trades_aggressor"
+        ],
+        "parameters": [
+          "spike_multiple"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/order-flow/order_flow.delta_shift.html",
+      "preview_agrees": ""
+    }
+  ]
+}

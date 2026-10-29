@@ -1,0 +1,724 @@
+{
+  "family": "chart",
+  "rows": [
+    {
+      "concept_id": "chart.double_top_bottom",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.double_top_bottom.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.head_shoulders",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.head_shoulders.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.triangle",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.triangle.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.flag",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.flag.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.wedge",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.wedge.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.triple_top_bottom",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.triple_top_bottom.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.rectangle",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.rectangle.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.cup_and_handle",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.cup_and_handle.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.pennant",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.pennant.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.trend_channel",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.trend_channel.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.diamond",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.diamond.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.inverse_cup_handle",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.inverse_cup_handle.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.rounding_bottom_top",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.rounding_bottom_top.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.broadening",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.broadening.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "chart.trendline",
+      "family": "chart",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/chart/chart.trendline.html",
+      "preview_agrees": ""
+    }
+  ]
+}

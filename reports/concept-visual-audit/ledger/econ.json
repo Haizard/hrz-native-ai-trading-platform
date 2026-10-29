@@ -1,0 +1,275 @@
+{
+  "family": "econ",
+  "rows": [
+    {
+      "concept_id": "econ.nfp",
+      "family": "econ",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/econ/econ.nfp.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "econ.cpi",
+      "family": "econ",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/econ/econ.cpi.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "econ.fomc",
+      "family": "econ",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/econ/econ.fomc.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "econ.claims",
+      "family": "econ",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/econ/econ.claims.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "econ.pce",
+      "family": "econ",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/econ/econ.pce.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "econ.gdp",
+      "family": "econ",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/econ/econ.gdp.html",
+      "preview_agrees": ""
+    }
+  ]
+}

@@ -1,0 +1,475 @@
+{
+  "family": "statistical",
+  "rows": [
+    {
+      "concept_id": "indicators.hv",
+      "family": "statistical",
+      "version": "1.0.0",
+      "registry": {
+        "pane": true,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/statistical/indicators.hv.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "indicators.zscore",
+      "family": "statistical",
+      "version": "1.0.0",
+      "registry": {
+        "pane": true,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/statistical/indicators.zscore.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "indicators.kalman",
+      "family": "statistical",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": true,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/statistical/indicators.kalman.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "indicators.changepoint",
+      "family": "statistical",
+      "version": "1.0.0",
+      "registry": {
+        "pane": true,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/statistical/indicators.changepoint.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "indicators.entropy",
+      "family": "statistical",
+      "version": "1.0.0",
+      "registry": {
+        "pane": true,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/statistical/indicators.entropy.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "indicators.bayesian_drift",
+      "family": "statistical",
+      "version": "1.0.0",
+      "registry": {
+        "pane": true,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/statistical/indicators.bayesian_drift.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "indicators.ar_forecast",
+      "family": "statistical",
+      "version": "1.0.0",
+      "registry": {
+        "pane": true,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/statistical/indicators.ar_forecast.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "indicators.garch",
+      "family": "statistical",
+      "version": "1.0.0",
+      "registry": {
+        "pane": true,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/statistical/indicators.garch.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "indicators.hmm",
+      "family": "statistical",
+      "version": "1.0.0",
+      "registry": {
+        "pane": true,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/statistical/indicators.hmm.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "indicators.pairs",
+      "family": "statistical",
+      "version": "1.0.0",
+      "registry": {
+        "pane": true,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/statistical/indicators.pairs.html",
+      "preview_agrees": ""
+    }
+  ]
+}

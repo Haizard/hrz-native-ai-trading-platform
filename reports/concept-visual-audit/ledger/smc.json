@@ -1,0 +1,1541 @@
+{
+  "family": "smc",
+  "rows": [
+    {
+      "concept_id": "smc.bos",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.bos.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.choch",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.choch.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.liquidity_sweep",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.liquidity_sweep.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.fvg",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.fvg.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.ifvg",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.ifvg.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.bpr",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.bpr.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.order_block",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.order_block.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.breaker_block",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.breaker_block.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.premium_discount",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.premium_discount.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.equal_levels",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.equal_levels.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.rejection_block",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.rejection_block.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.mitigation_block",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.mitigation_block.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.liquidity_grab",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.liquidity_grab.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.inducement",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.inducement.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.turtle_soup",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.turtle_soup.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.displacement",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.displacement.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.internal_range_liquidity",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.internal_range_liquidity.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.external_range_liquidity",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.external_range_liquidity.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.judas_swing",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.judas_swing.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.power_of_three",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.power_of_three.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.silver_bullet",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.silver_bullet.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.unicorn",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.unicorn.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.model2022",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.model2022.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.market_maker_model",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.market_maker_model.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.mss",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.mss.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.equilibrium",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.equilibrium.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.consequent_encroachment",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.consequent_encroachment.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.liquidity_void_fill",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.liquidity_void_fill.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.trendline_sweep",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.trendline_sweep.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.mtf_alignment",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.mtf_alignment.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.mtf_zone_alignment",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.mtf_zone_alignment.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "smc.smt_divergence",
+      "family": "smc",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": [
+          "swing_lookback"
+        ]
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/smc/smc.smt_divergence.html",
+      "preview_agrees": ""
+    }
+  ]
+}

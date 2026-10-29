@@ -1,0 +1,287 @@
+{
+  "family": "fib",
+  "rows": [
+    {
+      "concept_id": "fib.retracement",
+      "family": "fib",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/fib/fib.retracement.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "fib.golden_pocket",
+      "family": "fib",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/fib/fib.golden_pocket.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "fib.extension",
+      "family": "fib",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/fib/fib.extension.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "fib.confluence",
+      "family": "fib",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/fib/fib.confluence.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "fib.time_zones",
+      "family": "fib",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/fib/fib.time_zones.html",
+      "preview_agrees": ""
+    },
+    {
+      "concept_id": "fib.ote",
+      "family": "fib",
+      "version": "1.0.0",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "candles"
+        ],
+        "parameters": []
+      },
+      "kind": "",
+      "reference": {
+        "source": "",
+        "url": "",
+        "quote": "",
+        "checked": ""
+      },
+      "draw": {
+        "today": "",
+        "canonical": "",
+        "verdict": ""
+      },
+      "fires": {
+        "our_rule": "",
+        "their_rule": "",
+        "verdict": ""
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "",
+        "inputs": []
+      },
+      "warmup": {
+        "bars": 0,
+        "before": ""
+      },
+      "target_shape": {
+        "name": "",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "",
+      "render": "reports/concept-visual-audit/fib/fib.ote.html",
+      "preview_agrees": ""
+    }
+  ]
+}
