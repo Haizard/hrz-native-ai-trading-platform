@@ -1597,39 +1597,36 @@ window.matchMedia = (query) => {
   };
 };
 
-// The head scripts first, in the page's order, then the shell's view file and
-// `app.js`. `app.js` paints the icon slots and reads `Theme` on load, so a run
-// that skipped these would fail before the first check -- and it would fail on
-// the harness, not the page.
+// The page's scripts, in the page's order, then `app.js`. `app.js` paints the
+// icon slots and reads `Theme` on load, so a run that skipped these would fail
+// before the first check -- and it would fail on the harness, not the page.
+//
+// jsdom fetches nothing, so the order has to come from somewhere, and the only
+// honest source is `index.html` itself. A script the page loads and the harness
+// forgot is not a skipped feature: `app.js` evaluates with a global missing, and
+// the run dies much later as "timed out waiting for the engine to load" -- a
+// failure that looks like the page's fault and is entirely the harness's.
 //
 // `views/shell.js` calls `HRZUI.drawer` and `app.js` calls `Shell.init`, so a
-// missing file is a boot failure rather than a skipped feature.
-for (const file of [
-  "frontend/app/ui/theme.js",
-  "frontend/app/ui/icons.js",
-  "frontend/app/ui/components.js",
-  "frontend/app/ui/log.js",
-]) {
-  const head = document.createElement("script");
-  head.textContent = await readFile(join(root, file), "utf8");
-  document.head.appendChild(head);
+// missing file is a boot failure rather than a silent gap. The palette and the
+// instrument bar bind listeners as they load and reach `HRZApp` only inside them,
+// so they may sit before the app defines the facade.
+const pageScripts = [...html.matchAll(/<script src="([^"]+)"[^>]*>/g)].map(
+  (match) => `frontend/app/${match[1].replace(/^\/assets\//, "")}`
+);
+// The builder is a concept editor with a harness of its own, `check_builder.mjs`;
+// the shell reaches it only from inside a handler, so it needs no slot here.
+const harnessGap = new Set(["frontend/app/builder.js", "frontend/app/app.js"]);
+
+const inject = async (file) => {
+  const node = document.createElement("script");
+  node.textContent = await readFile(join(root, file), "utf8");
+  document.head.appendChild(node);
+};
+
+for (const file of pageScripts) {
+  if (!harnessGap.has(file)) await inject(file);
 }
-
-const shellView = document.createElement("script");
-shellView.textContent = await readFile(join(root, "frontend/app/views/shell.js"), "utf8");
-document.head.appendChild(shellView);
-
-// The palette binds its listeners as it loads and reaches `HRZApp` only inside
-// them, so it can load before the app defines the facade.
-const paletteView = document.createElement("script");
-paletteView.textContent = await readFile(join(root, "frontend/app/views/palette.js"), "utf8");
-document.head.appendChild(paletteView);
-
-// The instrument bar, likewise: it only defines `window.InstrumentBar` and
-// binds document listeners, reaching `HRZApp` inside them.
-const instrumentBarView = document.createElement("script");
-instrumentBarView.textContent = await readFile(join(root, "frontend/app/views/instrument_bar.js"), "utf8");
-document.head.appendChild(instrumentBarView);
 
 // These checks are about the chart wall and the panels beside it. A fresh
 // account has no snapshot, so without a route the shell opens on Dashboard
