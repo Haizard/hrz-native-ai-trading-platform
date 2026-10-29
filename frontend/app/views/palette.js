@@ -494,11 +494,22 @@
       openShortcuts(document.activeElement);
       return;
     }
+    // TradingView binds `/` to its indicator dialog and the concept library is
+    // the same kind of door, so the same key opens it. It goes through the shell
+    // rather than the dialog, because a panel is a route: from Dashboard or Studio
+    // this means Charts first, and the address gains the segment a reload repeats.
+    if (!mod && !event.altKey && (event.key === "/" || event.code === "Slash")) {
+      if (!shell()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      shell().openPanel("concepts");
+      return;
+    }
     if (!event.altKey || event.metaKey || event.ctrlKey) return;
 
     // `event.code`, not `event.key`: Option+1 on macOS produces "¡", and the
     // physical key is what the shortcut names.
-    const digit = /^Digit([1-6])$/.exec(event.code || "");
+    const digit = /^Digit([1-7])$/.exec(event.code || "");
     if (digit) {
       event.preventDefault();
       event.stopPropagation();

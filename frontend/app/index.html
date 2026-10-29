@@ -78,6 +78,15 @@
             title="Bots" aria-expanded="false" disabled>
       <span data-icon="bots" data-icon-size="18"></span>
     </button>
+    <!--
+      The fourth face is the only one whose content belongs to a chart, so the
+      shell routes to Charts before it floats. The icon is a live series' line,
+      which is what the library is a catalogue of.
+    -->
+    <button type="button" class="topNav__btn" data-open-panel="concepts" aria-label="Indicators"
+            title="Indicators" aria-expanded="false" disabled>
+      <span data-icon="activity" data-icon-size="18"></span>
+    </button>
   </nav>
 
   <span id="destTitle" class="destTitle" hidden>Charts</span>
@@ -530,6 +539,12 @@
           from the teal concept-layer chip beside them.
         -->
         <span class="layerChips" hidden></span>
+        <!--
+          The concept chips: one per concept the library has switched on for this
+          chart, so what is drawing is visible and removable without opening the
+          panel that put it there. Built from `enabledConcepts` on every sync.
+        -->
+        <span class="conceptChips" hidden></span>
         <!--
           The layer-settings popover (docs/25): opened from a layer chip's ⚙,
           one form of the layer's declared inputs. Rebuilt from the pane's
@@ -1548,6 +1563,8 @@
               aria-controls="panelBody-bots" aria-selected="false">Bots</button>
       <button type="button" class="hrz-tab" role="tab" id="panelTab-account" data-tab="account"
               aria-controls="panelBody-account" aria-selected="false">Account</button>
+      <button type="button" class="hrz-tab" role="tab" id="panelTab-concepts" data-tab="concepts"
+              aria-controls="panelBody-concepts" aria-selected="false">Indicators</button>
     </div>
     <button type="button" id="workPanelClose" class="hrz-btn hrz-btn--ghost hrz-btn--icon hrz-dialog__close"
             aria-label="Close the panel" title="Close (Esc)"><span data-icon="close"></span></button>
@@ -1593,6 +1610,44 @@
         </div>
       </div>
     </div>
+    <!--
+      The fourth body is not a host. Community, Bots and Account are panes that
+      live elsewhere and are moved in; this one is a projection of state the chart
+      module already owns (`enabledConcepts`, the `/concepts` catalog), so the
+      frame is static markup here and `app.js` renders lists into it. Nothing is
+      moved in or out, which is why turning a concept on and off cannot strand a
+      listener or leave a second copy of the tree in the DOM.
+    -->
+    <div class="panelBody conceptsBody" data-body="concepts" id="panelBody-concepts"
+         role="tabpanel" aria-labelledby="panelTab-concepts" hidden>
+      <aside class="conceptsRail" aria-label="Concept library">
+        <label class="conceptsSearch" for="conceptSearch">
+          <span data-icon="search" data-icon-size="14"></span>
+          <input id="conceptSearch" class="hrz-input" type="search" autocomplete="off"
+                 placeholder="Search indicators…" aria-label="Search the concept library">
+        </label>
+        <p class="conceptsCoverage" id="conceptCoverage">Loading the library…</p>
+        <div class="conceptsGroups" id="conceptGroups"></div>
+        <button type="button" class="conceptsGroup conceptsGroup--active" id="conceptActiveRow"
+                data-concept-group="active">
+          <span class="conceptsGroup__name">On this chart</span>
+          <span class="conceptsGroup__count" id="conceptActiveCount">0</span>
+        </button>
+      </aside>
+      <div class="conceptsMain">
+        <header class="conceptsHead">
+          <div class="conceptsHead__text">
+            <h3 class="conceptsHead__title" id="conceptHeadTitle">The whole library</h3>
+            <p class="conceptsHead__note" id="conceptHeadNote"></p>
+          </div>
+          <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm" id="conceptClearGroup" hidden>
+            Clear this group
+          </button>
+        </header>
+        <div class="conceptsGrid" id="conceptGrid" role="group" aria-label="Concepts"></div>
+        <p class="conceptsEmpty" id="conceptEmpty" hidden>Nothing in the library matches that.</p>
+      </div>
+    </div>
   </div>
 </dialog>
 
@@ -1606,6 +1661,10 @@
   takes the whole screen -- so the phone opens one from the icon in the top bar,
   the same door the desktop uses, and never needs a fourth tab in a bar that is
   meant for the three pages it can hold.
+
+  The panel icons stay in the top bar at this width for the same reason: they are
+  doors into a modal, not destinations, and `#panelNav`'s four buttons are a
+  smaller change to a narrow bar than four more labels would be.
 -->
 <nav id="phoneNav" class="phoneNav" aria-label="Views" hidden>
   <button type="button" class="phoneNav__btn" data-dest="dashboard" aria-label="Dashboard" disabled>
@@ -1694,8 +1753,9 @@
       <dl>
         <div><dt>Search or jump</dt><dd><kbd data-mod>⌘</kbd><kbd>K</kbd></dd></div>
         <div><dt>Shortcut sheet</dt><dd><kbd data-mod>⌘</kbd><kbd>/</kbd></dd></div>
-        <div><dt>Views and panels</dt><dd><kbd>Alt</kbd><kbd>1</kbd>–<kbd>6</kbd></dd></div>
+        <div><dt>Views and panels</dt><dd><kbd>Alt</kbd><kbd>1</kbd>–<kbd>7</kbd></dd></div>
         <div><dt>Previous / next view</dt><dd><kbd>Alt</kbd><kbd>←</kbd><kbd>→</kbd></dd></div>
+        <div><dt>Indicators panel</dt><dd><kbd>/</kbd></dd></div>
         <div><dt>Close the top overlay</dt><dd><kbd>Esc</kbd></dd></div>
       </dl>
     </section>

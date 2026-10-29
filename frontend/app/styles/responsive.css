@@ -213,6 +213,37 @@
     height: min(88vh, 720px); max-height: 88vh;
   }
 
+  /* The library's rail is a column of families on a desktop and a row of chips
+     here: 390px cannot spend 216 of them on names beside a card that needs the
+     rest. The cards go two-up over a shorter preview -- a sparkline of the
+     concept, which is what a card at this width can honestly be. */
+  .conceptsBody {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .conceptsRail {
+    flex-direction: column; gap: var(--space-2);
+    padding: var(--space-3) var(--space-3) var(--space-2);
+    border-right: 0; border-bottom: 1px solid var(--line);
+    overflow: visible;
+  }
+  .conceptsCoverage { padding: 0; }
+  .conceptsGroups { flex-direction: row; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .conceptsGroups::-webkit-scrollbar { display: none; }
+  .conceptsGroup { flex: 0 0 auto; width: auto; padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; }
+  .conceptsGroup[aria-current="true"] { box-shadow: none; border-color: var(--accent); }
+  .conceptsGroup--active { margin-top: 0; border-top: 1px solid var(--line); border-radius: 999px; }
+  .conceptsHead { padding: var(--space-3) var(--space-3) var(--space-2); }
+  .conceptsGrid {
+    grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+    gap: var(--space-2); padding: 0 var(--space-3) var(--space-4);
+  }
+  .conceptCard__preview { height: 44px; }
+  .conceptCard__main { padding: var(--space-2); gap: var(--space-1); }
+  .conceptCard__desc { -webkit-line-clamp: 1; }
+  .conceptCard__mark { top: var(--space-2); right: var(--space-2); width: 16px; height: 16px; }
+  .conceptCard__pair { padding: 0 var(--space-2) var(--space-2); }
+
   /* Home is rebuilt in Spec 4; until then it keeps the phone shape it had. */
   #signin { flex-wrap: wrap; }
   #signin input { flex: 1 1 140px; min-width: 0; }

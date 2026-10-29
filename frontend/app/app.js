@@ -3197,8 +3197,16 @@ function createChartPane(root, hooks = {}) {
       // full window replaces everything by covering it, and a symbol or
       // timeframe change starts empty by way of resetSeries, so this only
       // ever protects against partial fetches.
+      const wasEmpty = candles.length === 0;
       candles = mergeSeries(candles, incoming);
       render();
+      // The card previews crop this window, so a face opened before the first
+      // batch arrived had nothing to crop and drew a hairline. This is the moment
+      // there is a chart to crop; without it the previews wait for the next thing
+      // the trader happens to do.
+      if (wasEmpty && candles.length) {
+        document.dispatchEvent(new CustomEvent("hrz:pane-bars", { detail: { pane: paneId } }));
+      }
       if (!message.textContent) message.textContent = candles.length ? "" : "no candles in this window";
     } catch (e) {
       // The window the fetch asked for is gone, so what is on screen must go
@@ -5833,18 +5841,28 @@ function createChartPane(root, hooks = {}) {
     delete menu.dataset.owner;
   }
 
-  /// ---- The Concept Explorer (Trading Intelligence Libraries) --------------
+  /// ---- The concept state (Trading Intelligence Libraries) -----------------
   ///
   /// Per-pane concept toggles: the trader picks detectors from the registry
   /// (GET /concepts), the pane fetches their events (GET /concept-events)
   /// alongside its candles, and the events draw as levels and bands through
   /// the same overlay lane the thesis uses -- so the chart's coordinates are
   /// the engine's, not a second scale.
+  ///
+  /// The state stays here because a concept is attached to a chart, and two
+  /// charts share nothing else. What used to live here too -- the tree the
+  /// right-click menu hosted -- is now the Indicators panel's own render pass at
+  /// page scope, which reads this state through `paneApi.concepts()` and writes
+  /// it through `setConcept`. One surface, one copy of the DOM.
 
   // The pane's enabled concept ids and the catalog + events cache.
   let enabledConcepts = new Set();
   let conceptCatalog = null;     // /concepts entries for the pane's symbol
-  let conceptEvents = [];        // /concept-events for the pane's symbol
+  let conceptEvents = [];        // the enabled concepts' events
+  // The whole scan, enabled or not. The route answers for the instrument, and the
+  // panel's preview needs the concepts the trader has *not* switched on -- so the
+  // raw list is kept beside the filtered one instead of fetched twice.
+  let conceptScan = null;        // { key, events }
 
   /// Fetch the catalog for the pane's symbol (once per symbol).
   async function refreshConceptCatalog() {
@@ -5855,6 +5873,37 @@ function createChartPane(root, hooks = {}) {
     } catch {
       conceptCatalog = null;
     }
+  }
+
+  /// Every event the instrument has produced, once per symbol and timeframe.
+  /// Cached on the pair, so a grid of sixty preview cards is one request.
+  ///
+  /// The in-flight read is handed out too: a group of event cards asks *together*,
+  /// before the first answer lands, and a cache that only fills on arrival would
+  /// make each of them its own identical scan.
+  let conceptScanFlight = null;   // { key, promise }
+
+  async function ensureConceptScan() {
+    const symbol = el("symbol") && el("symbol").value;
+    const timeframe = el("timeframe") && el("timeframe").value;
+    if (!symbol || !timeframe) return [];
+    const key = `${symbol}|${timeframe}`;
+    if (conceptScan && conceptScan.key === key) return conceptScan.events;
+    if (conceptScanFlight && conceptScanFlight.key === key) return conceptScanFlight.promise;
+    const promise = (async () => {
+      try {
+        const body = await api(`/concept-events/scan?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`);
+        return (body && body.events) || [];
+      } catch {
+        return [];
+      }
+    })().then((events) => {
+      conceptScan = { key, events };
+      if (conceptScanFlight && conceptScanFlight.promise === promise) conceptScanFlight = null;
+      return events;
+    });
+    conceptScanFlight = { key, promise };
+    return promise;
   }
 
   /// Fetch the enabled concepts' events. The BACKSCAN route, not the live
@@ -5880,6 +5929,17 @@ function createChartPane(root, hooks = {}) {
   /// engine positions them as sub-panes below the chart.
   let indicatorSeries = new Map();
 
+  /// The series route for one concept on this pane's window. The enabled set and
+  /// the panel's previews ask the same question of the same instrument, so they
+  /// build the same string here rather than keeping two of them in step.
+  function indicatorSeriesUrl(id) {
+    const symbol = el("symbol") && el("symbol").value;
+    const timeframe = el("timeframe") && el("timeframe").value;
+    if (!symbol || !timeframe) return null;
+    const pairParam = id === "indicators.pairs" ? `&symbol2=${encodeURIComponent(pairSymbol)}` : "";
+    return `/indicator-series?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&concept=${encodeURIComponent(id)}${pairParam}`;
+  }
+
   /// Fetch the enabled pane concepts' series. A pane concept is a
   /// measurement, not an event -- it renders as its own sub-pane, and this
   /// is the data that pane draws.
@@ -5892,8 +5952,7 @@ function createChartPane(root, hooks = {}) {
     const next = new Map();
     await Promise.all(wanted.map(async (c) => {
       try {
-        const pairParam = c.id === "indicators.pairs" ? `&symbol2=${encodeURIComponent(pairSymbol)}` : "";
-        const body = await api(`/indicator-series?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&concept=${encodeURIComponent(c.id)}${pairParam}`);
+        const body = await api(indicatorSeriesUrl(c.id));
         if (body && body.spec && Array.isArray(body.times)) next.set(c.id, body);
       } catch {
         // A pane that cannot compute over this window is simply absent --
@@ -5901,6 +5960,20 @@ function createChartPane(root, hooks = {}) {
       }
     }));
     indicatorSeries = next;
+  }
+
+  /// One concept's series, asked for a card preview instead of for the chart. A
+  /// concept that cannot compute over this window is null -- the card draws no
+  /// line, which is the honest reading of "this instrument has no data for it".
+  async function conceptSeriesPreview(id) {
+    const url = indicatorSeriesUrl(id);
+    if (!url) return null;
+    try {
+      const body = await api(url);
+      return body && body.spec && Array.isArray(body.times) ? body : null;
+    } catch {
+      return null;
+    }
   }
 
   /// Remap a fetched series onto this pane's own candles by open_time: the
@@ -6031,150 +6104,23 @@ function createChartPane(root, hooks = {}) {
     return out.slice(-200);
   }
 
-  /// The concept tree, TradingView-style: a search box, then collapsible
-  /// groups BY TYPE -- the libraries, with Indicators split the way
-  /// TradingView splits them (Trend / Momentum / Volatility / Volume) --
-  /// each row a checkbox, the concept's name, and chips for what it draws
-  /// (a pane, an overlay, or chart events). Collapse state persists in
-  /// localStorage; the filter searches names and descriptions and opens the
-  /// groups that match.
-  const CONCEPT_GROUPS = [
-    { key: "ind.trend", name: "Trend", match: (id) => /^indicators\.(ema|sma|ema_family|supertrend|psar|adx|macd|macd_family|keltner|donchian)$/.test(id) },
-    { key: "ind.mom", name: "Momentum", match: (id) => /^indicators\.(rsi|rsi_divergence|rsi_family|rsi_pca|stochastic|cci|williams_r|roc)$/.test(id) },
-    { key: "ind.vol", name: "Volatility", match: (id) => /^indicators\.(bollinger|bollinger_percent|atr|atr_family)$/.test(id) },
-    { key: "ind.vol2", name: "Volume", match: (id) => id === "indicators.obv" },
-    { key: "smc", name: "Smart Money Concepts", match: (id) => id.startsWith("smc.") },
-    { key: "pa", name: "Price Action", match: (id) => id.startsWith("pa.") },
-    { key: "candles", name: "Candlestick Patterns", match: (id) => id.startsWith("candles.") },
-    { key: "chart", name: "Chart Patterns", match: (id) => id.startsWith("chart.") },
-    { key: "harmonics", name: "Harmonics", match: (id) => id.startsWith("harmonics.") },
-    { key: "fib", name: "Fibonacci", match: (id) => id.startsWith("fib.") },
-    { key: "session", name: "Sessions", match: (id) => id.startsWith("session.") },
-    { key: "volume", name: "Volume Profile", match: (id) => id.startsWith("volume.") },
-    { key: "sd", name: "Supply & Demand", match: (id) => id.startsWith("sd.") },
-    { key: "of", name: "Order Flow", match: (id) => id.startsWith("order_flow.") },
-  ];
-  let conceptTreeState = (() => {
-    try { return JSON.parse(localStorage.getItem("atp.conceptTree") || "{}"); } catch { return {}; }
-  })();
-  let conceptFilter = "";
-
   /// The pairs concept's second instrument, persisted. The default pairs
   /// the chart's venue major: BTC against ETH.
   let pairSymbol = (() => {
     try { return localStorage.getItem("atp.pairSymbol") || "ETHUSDT"; } catch { return "ETHUSDT"; }
   })();
 
-  function conceptChips(c) {
-    const chips = [];
-    if (c.pane) chips.push("pane");
-    if (c.overlay) chips.push("ovl");
-    return chips;
-  }
-
-  function conceptRow(c) {
-    const row = Object.assign(document.createElement("label"), {
-      className: "conceptRow",
-      title: c.description,
-    });
-    const box = Object.assign(document.createElement("input"), { type: "checkbox" });
-    box.checked = enabledConcepts.has(c.id);
-    if (c.available === false) {
-      box.disabled = true;
-      row.classList.add("unavailable");
-      row.title = `${c.description} -- needs ${c.required_channels.join(", ")}, which this instrument does not serve`;
-    }
-    box.addEventListener("change", () => {
-      if (box.checked) enabledConcepts.add(c.id);
-      else enabledConcepts.delete(c.id);
-      refreshConceptEvents().then(() => refresh && refresh());
-      refreshIndicatorSeries().then(() => refresh && refresh());
-    });
-    row.append(box);
-    const name = Object.assign(document.createElement("span"), { className: "conceptName", textContent: c.name });
-    row.append(name);
-    if (c.id === "indicators.pairs") {
-      const input = Object.assign(document.createElement("input"), {
-        className: "pairInput",
-        type: "text",
-        value: pairSymbol,
-        title: "The second instrument of the pair",
-        size: 8,
-      });
-      input.addEventListener("click", (e) => e.stopPropagation());
-      input.addEventListener("change", () => {
-        pairSymbol = input.value.trim().toUpperCase() || "ETHUSDT";
-        try { localStorage.setItem("atp.pairSymbol", pairSymbol); } catch {}
-        refreshIndicatorSeries().then(() => refresh && refresh());
-      });
-      row.append(input);
-    }
-    for (const chip of conceptChips(c)) {
-      row.append(Object.assign(document.createElement("span"), { className: `conceptChip ${chip}`, textContent: chip }));
-    }
-    return row;
-  }
-
-  function conceptMenuNodes() {
-    const rows = [];
-    if (!conceptCatalog || !conceptCatalog.length) return rows;
-
-    // The search box, TradingView's dialog head.
-    const search = Object.assign(document.createElement("input"), {
-      className: "conceptSearch",
-      type: "search",
-      placeholder: "Search concepts…",
-      value: conceptFilter,
-    });
-    search.addEventListener("input", () => {
-      conceptFilter = search.value;
-      // Rebuild the menu body in place: the open menu re-renders its nodes.
-      const menu = document.getElementById("chartMenu");
-      if (menu && menu.classList.contains("open")) {
-        const evt = new Event("concept-tree-refresh");
-        document.dispatchEvent(evt);
-      }
-    });
-    rows.push(search);
-
-    const query = conceptFilter.trim().toLowerCase();
-    const matches = (c) =>
-      !query || c.name.toLowerCase().includes(query) || c.description.toLowerCase().includes(query) || c.id.includes(query);
-
-    for (const group of CONCEPT_GROUPS) {
-      const members = conceptCatalog.filter((c) => group.match(c.id));
-      if (!members.length) continue;
-      const shown = members.filter(matches);
-      if (!shown.length) continue;
-      const collapsed = query ? false : conceptTreeState[group.key] === true;
-      const head = Object.assign(document.createElement("button"), {
-        className: "conceptGroupHead" + (collapsed ? " collapsed" : ""),
-        type: "button",
-      });
-      const chev = Object.assign(document.createElement("span"), { className: "chev", textContent: "▸" });
-      head.append(chev, document.createTextNode(group.name));
-      const count = Object.assign(document.createElement("span"), {
-        className: "conceptGroupCount",
-        textContent: String(members.filter((c) => enabledConcepts.has(c.id)).length || members.length),
-      });
-      head.append(count);
-      rows.push(head);
-      const body = Object.assign(document.createElement("div"), { className: "conceptGroupBody" });
-      if (collapsed) body.hidden = true;
-      for (const c of shown) body.append(conceptRow(c));
-      rows.push(body);
-      head.addEventListener("click", () => {
-        const nowCollapsed = !body.hidden;
-        body.hidden = nowCollapsed;
-        head.classList.toggle("collapsed", nowCollapsed);
-        conceptTreeState[group.key] = nowCollapsed;
-        try { localStorage.setItem("atp.conceptTree", JSON.stringify(conceptTreeState)); } catch {}
-      });
-    }
-    if (rows.length === 1) {
-      rows.push(Object.assign(document.createElement("p"), { className: "menuLabel conceptEmpty", textContent: "Nothing matches the search." }));
-    }
-    return rows;
+  /// Switch one concept on or off for this pane.
+  ///
+  /// Both doors write through here -- the panel's card and the chip on the pane's
+  /// own title bar -- and the event says the state moved, so the page repaints the
+  /// chips and the panel from one place instead of two callers remembering to.
+  function setConceptEnabled(id, on) {
+    if (on) enabledConcepts.add(id);
+    else enabledConcepts.delete(id);
+    document.dispatchEvent(new CustomEvent("hrz:concepts", { detail: { pane: paneId } }));
+    refreshConceptEvents().then(() => refresh && refresh());
+    refreshIndicatorSeries().then(() => refresh && refresh());
   }
 
   /// The release countdown: the clock chips every scheduled kind shows its
@@ -6362,13 +6308,27 @@ function createChartPane(root, hooks = {}) {
     // move into the menu they are outside the pane subtree and `el()` cannot
     // find them again.
     const tools = root.querySelector(".tools");
+    // The door to the library. The menu used to *hold* the concept tree; the
+    // Indicators panel owns it now, so the menu only has to say where to go --
+    // and going there puts this menu away first, because a context menu under a
+    // modal is a second opinion about where the user is standing.
+    const openConcepts = Object.assign(document.createElement("button"), {
+      type: "button",
+      className: "menuIndicators",
+      textContent: "Indicators…",
+      title: "Open the concept library over this chart",
+    });
+    openConcepts.addEventListener("click", () => {
+      closeMenu();
+      if (window.Shell) Shell.openPanel("concepts");
+    });
     menu.replaceChildren(
       Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Series" }),
       el("symbol"), el("timeframe"), el("limit"),
       Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Chart" }),
       el("mode"), el("zones"), el("fit"), el("load"),
       el("feedStatus"),
-      ...conceptMenuNodes(),
+      openConcepts,
       ...tradeMenuNodes(),
       document.createElement("hr"),
       Object.assign(document.createElement("p"), { className: "menuLabel", textContent: "Drawing tools" }),
@@ -6377,32 +6337,6 @@ function createChartPane(root, hooks = {}) {
     // Hosted, the tool row is a plain menu section; it keeps its own tool
     // wiring either way.
     tools.hidden = false;
-    refreshConceptCatalog().then(() => {
-      // The menu is already open: rebuild the section now that the catalog
-      // is here (a first open is usually faster than the fetch).
-      if (menuHosted) {
-        rebuildConceptSection();
-      }
-    });
-
-    // The tree rebuild, shared by the catalog fetch and the search box: drop
-    // every node of the concept section (search, group heads, bodies) and
-    // re-insert a fresh tree before the trade ticket or the divider.
-    function rebuildConceptSection() {
-      for (const node of menu.querySelectorAll(".conceptSearch, .conceptGroupHead, .conceptGroupBody, .menuLabel.conceptEmpty")) node.remove();
-      const anchor = menu.querySelector(".tradeTicket") || menu.querySelector("hr");
-      if (anchor) for (const node of conceptMenuNodes()) menu.insertBefore(node, anchor);
-      // The search keeps the user's text and focus across the rebuild.
-      const fresh = menu.querySelector(".conceptSearch");
-      if (fresh && conceptFilter) {
-        fresh.value = conceptFilter;
-        fresh.focus();
-        fresh.setSelectionRange(fresh.value.length, fresh.value.length);
-      }
-    }
-    document.addEventListener("concept-tree-refresh", () => {
-      if (menuHosted && menu.classList.contains("open")) rebuildConceptSection();
-    });
     menu.classList.add("open");
     const box = menu.getBoundingClientRect();
     menu.style.left = `${Math.min(x, window.innerWidth - box.width - 8)}px`;
@@ -6545,6 +6479,19 @@ function createChartPane(root, hooks = {}) {
           // the next generation should remember.
           recordLayerPreference(`The user removed the "${name}" layer`);
         }
+      });
+    }
+    // The concept chips: one delegated listener, because the page rebuilds the
+    // row on every change. The × switches that concept off on this pane -- the
+    // same write the panel's card makes, reached from the other end.
+    const conceptChips = root.querySelector(".conceptChips");
+    if (conceptChips) {
+      conceptChips.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const button = event.target.closest("button[data-concept]");
+        if (!button) return;
+        setConceptEnabled(button.dataset.concept, false);
+        toast(`Removed ${button.dataset.name || "concept"} from this chart`);
       });
     }
     el("zoomIn").addEventListener("click", () => zoomStep(true));
@@ -7319,6 +7266,47 @@ function createChartPane(root, hooks = {}) {
     /// Repaint the title line from the live controls. Cheap; called after any
     /// change that can move a select.
     paintTitle,
+
+    /// The concept library, as the Indicators panel sees it.
+    ///
+    /// The state stays with the pane -- a concept is attached to a chart, and two
+    /// charts share nothing else -- but the tree does not. One render pass at page
+    /// scope projects the *active* pane's state into the panel, so switching panes
+    /// cannot leave a second copy of the library in the DOM and the panel can never
+    /// disagree about which chart it is switching concepts on.
+    concepts: () => ({
+      symbol: (el("symbol") && el("symbol").value) || "",
+      timeframe: (el("timeframe") && el("timeframe").value) || "",
+      catalog: conceptCatalog,
+      enabled: enabledConcepts,
+      pair: pairSymbol,
+      // The pane's own window: the bars the panel's card previews draw on. The
+      // preview is a crop of this chart, so it is aligned by the same timestamps
+      // the chart and the series route both name a bar with.
+      times: candles.map((c) => c.open_time ?? c.time),
+      opens: candles.map((c) => c.open),
+      highs: candles.map((c) => c.high),
+      lows: candles.map((c) => c.low),
+      closes: candles.map((c) => c.close),
+      pane: paneApi,
+    }),
+    /// The catalog for this pane's instrument, fetched once. The panel asks for
+    /// it on open; a pane that has one is not asked to fetch again.
+    loadConcepts: refreshConceptCatalog,
+    setConcept: setConceptEnabled,
+    setConceptPair(value) {
+      const next = String(value || "").trim().toUpperCase();
+      if (!next) return pairSymbol;
+      pairSymbol = next;
+      try { localStorage.setItem("atp.pairSymbol", pairSymbol); } catch {}
+      document.dispatchEvent(new CustomEvent("hrz:concepts", { detail: { pane: paneId } }));
+      refreshIndicatorSeries().then(() => refresh && refresh());
+      return pairSymbol;
+    },
+    /// The two reads a card preview is drawn from: every event this instrument has
+    /// produced (one request, shared by all the cards) and one concept's series.
+    conceptEventPreview: ensureConceptScan,
+    conceptSeriesPreview,
 
     /// Take this pane off the page. Its own listeners go with its elements; the
     /// things that outlive them are its subscription to the shared channel, a
@@ -8227,6 +8215,36 @@ function syncIndicatorChip() {
           );
         })
         .join("");
+    }
+    // The concept chips: one per concept this chart has switched on through the
+    // Indicators panel. The panel dismisses when a concept is added, so the chart
+    // itself has to say what is drawing on it and let the trader take it back off
+    // without opening anything -- the same row's job in the reference products.
+    const conceptsEl = pane.root.querySelector(".conceptChips");
+    if (conceptsEl) {
+      const view = pane.concepts ? pane.concepts() : null;
+      const ids = view ? [...view.enabled] : [];
+      conceptsEl.hidden = ids.length === 0;
+      conceptsEl.replaceChildren(...ids.map((id) => {
+        const entry = view.catalog.find((c) => c.id === id);
+        const name = (entry && entry.name) || id.split(".").pop().replace(/_/g, " ");
+        const chip = document.createElement("span");
+        chip.className = "conceptChip";
+        chip.title = (entry && entry.description) || "A concept drawing on this chart";
+        const label = document.createElement("span");
+        label.className = "indicatorChipName";
+        label.textContent = name;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "indicatorChipRemove conceptChipRemove";
+        remove.dataset.concept = id;
+        remove.dataset.name = name;
+        remove.title = `Remove ${name} from this chart`;
+        remove.setAttribute("aria-label", `Remove ${name} from this chart`);
+        remove.textContent = "×";
+        chip.append(label, remove);
+        return chip;
+      }));
     }
   }
   // The instrument bar is a projection: it re-reads the active chart whenever
@@ -13991,6 +14009,1120 @@ function refreshWorkspaceGates() {
 }
 
 // ---------------------------------------------------------------------------
+// The Indicators panel
+//
+// The library the right-click menu used to hold, rendered at page scope into
+// the panel face the shell owns. It is a projection, not a second owner: the
+// concepts belong to a chart (`enabledConcepts` lives with the pane, because two
+// charts share nothing else) and this file only ever reads the active pane
+// through `paneApi.concepts()` and writes through `setConcept`. So switching
+// panes cannot leave a stale tree on screen, and the panel cannot disagree about
+// which chart it is switching concepts on.
+// ---------------------------------------------------------------------------
+
+/// The taxonomy, by the id's namespace.
+///
+/// The old menu table grouped the classical indicators by hand and stopped there,
+/// so anything the engine grew afterwards -- the statistical family, the economic
+/// releases, Ichimoku -- fell out of the tree entirely and could only be found by
+/// searching. Here every id lands somewhere: a match table for the named groups,
+/// and a catch-all that keeps an unpinned concept reachable rather than invisible.
+const CONCEPT_GROUPS = [
+  { id: "smc", name: "Smart Money Concepts", note: "Structure, liquidity and the blocks price is drawn back to.", match: (id) => id.startsWith("smc.") },
+  { id: "pa", name: "Price Action", note: "Breaks, retests and the ranges a level is built from.", match: (id) => id.startsWith("pa.") },
+  { id: "candles", name: "Candlestick Patterns", note: "One bar or three: what a single close says about who won it.", match: (id) => id.startsWith("candles.") },
+  { id: "chart", name: "Chart Patterns", note: "Shapes drawn across many bars -- heads, wedges, flags and channels.", match: (id) => id.startsWith("chart.") },
+  { id: "harmonics", name: "Harmonics", note: "Pruned Fibonacci geometries: Gartley, Bat, Crab, Butterfly and their kin.", match: (id) => id.startsWith("harmonics.") },
+  { id: "fib", name: "Fibonacci", note: "Retracements, extensions and the pockets where several agree.", match: (id) => id.startsWith("fib.") },
+  { id: "session", name: "Sessions", note: "Killzones, day and week opens, and the levels yesterday left behind.", match: (id) => id.startsWith("session.") },
+  { id: "volume-profile", name: "Volume Profile", note: "Where interest actually traded: point of control, value area, single prints.", match: (id) => id.startsWith("volume.") },
+  { id: "sd", name: "Supply & Demand", note: "The untested zones above and below price that a move started from.", match: (id) => id.startsWith("sd.") },
+  { id: "order-flow", name: "Order Flow", note: "Aggression read from the tape: delta, and the bars where it turns.", match: (id) => id.startsWith("order_flow.") },
+  { id: "trend", name: "Trend", note: "Direction and its strength -- averages, channels, stops-and-reversals.", match: (id) => /^indicators\.(ema|sma|ema_family|supertrend|psar|adx|macd|macd_family|keltner|donchian|ichimoku|chandelier)$/.test(id) },
+  { id: "momentum", name: "Momentum", note: "The pace of the move and the divergences that warn it is running out.", match: (id) => /^indicators\.(rsi|rsi_divergence|rsi_family|rsi_pca|stochastic|cci|williams_r|roc|tsi|awesome)$/.test(id) },
+  { id: "volatility", name: "Volatility", note: "How wide price is swinging, as bands or as an absolute range.", match: (id) => /^indicators\.(bollinger|bollinger_percent|atr|atr_family)$/.test(id) },
+  { id: "volume", name: "Volume", note: "Participation behind the move, summed, weighted or anchored.", match: (id) => /^indicators\.(obv|ad_line|cmf|mfi|anchored_vwap)$/.test(id) },
+  { id: "statistical", name: "Statistical", note: "Modelled regimes: filters, forecasts, change points and pair spreads.", match: (id) => /^indicators\.(hv|zscore|kalman|changepoint|entropy|bayesian_drift|ar_forecast|garch|hmm|pairs)$/.test(id) },
+  { id: "econ", name: "Economic Releases", note: "Scheduled numbers, marked on the chart the moment they land.", match: (id) => id.startsWith("econ.") },
+  { id: "more", name: "Everything Else", note: "Anything the taxonomy above has not been taught to name.", match: () => true },
+];
+const CONCEPT_GROUP_BY_ID = new Map(CONCEPT_GROUPS.map((g) => [g.id, g]));
+
+/// The search, page-scope. Not persisted: a query is a question asked of the
+/// instrument on screen, and a new chart is a different question.
+let conceptQuery = "";
+
+function conceptGroupOf(id) {
+  for (const group of CONCEPT_GROUPS) if (group.match(id)) return group;
+  return CONCEPT_GROUP_BY_ID.get("more");
+}
+
+/// The active pane's concept state, or null when there is no chart to project.
+///
+/// Every entry point in this section starts by asking this, because a panel that
+/// is open over a page with no chart has nothing to say -- and pretending
+/// otherwise is how a tree of checkboxes gets drawn against `undefined`.
+function conceptViewState() {
+  return activePane && activePane.concepts ? activePane.concepts() : null;
+}
+
+function conceptMatchesQuery(concept, query) {
+  if (!query) return true;
+  return (
+    concept.name.toLowerCase().includes(query) ||
+    String(concept.description || "").toLowerCase().includes(query) ||
+    concept.id.toLowerCase().includes(query)
+  );
+}
+
+/// The rail's rows: the whole library, then every group this instrument actually
+/// has members in.
+///
+/// Each row carries both numbers -- `on/total` -- because a group is the one place
+/// a trader can see how much of the library they have not turned on yet. A row
+/// that would show `0/0` is not drawn: an empty group is noise, not a zero.
+///
+/// Counted by the group a concept *resolves* to, not by the groups that match it:
+/// the catch-all matches every id, so a table of matches would report the whole
+/// library in "Everything Else" while the grid under it showed none of it.
+function conceptGroupRows(catalog, enabled) {
+  const rows = [{
+    id: "all",
+    name: "The Whole Library",
+    total: catalog.length,
+    on: catalog.reduce((n, c) => n + (enabled.has(c.id) ? 1 : 0), 0),
+  }];
+  const counts = new Map();
+  for (const concept of catalog) {
+    const group = conceptGroupOf(concept.id);
+    const row = counts.get(group.id) || { name: group.name, total: 0, on: 0 };
+    row.total += 1;
+    if (enabled.has(concept.id)) row.on += 1;
+    counts.set(group.id, row);
+  }
+  for (const group of CONCEPT_GROUPS) {
+    const row = counts.get(group.id);
+    if (row) rows.push({ id: group.id, name: row.name, total: row.total, on: row.on });
+  }
+  return rows;
+}
+
+/// The cards for the selected group, after the search.
+function conceptVisible(view) {
+  const { catalog, enabled } = view;
+  const group = conceptSelectedGroup();
+  const query = conceptQuery.trim().toLowerCase();
+  if (group === "active") {
+    return catalog.filter((c) => enabled.has(c.id) && conceptMatchesQuery(c, query));
+  }
+  if (group === "all") {
+    return catalog.filter((c) => conceptMatchesQuery(c, query));
+  }
+  return catalog.filter((c) => conceptGroupOf(c.id).id === group && conceptMatchesQuery(c, query));
+}
+
+function conceptSelectedGroup() {
+  const shell = window.Shell;
+  if (!shell) return "all";
+  return shell.state().conceptGroup || "all";
+}
+
+/// One concept as a card: its name, what it draws, and the preview the canvas
+/// engine fills in once it has data.
+///
+/// A `div` wrapping a button rather than a button, because `indicators.pairs`
+/// carries a text field for its second instrument and a `button` may not contain
+/// an `input` -- the form control would be eaten by the button's own activation.
+function conceptLibraryCard(concept, view) {
+  const on = view.enabled.has(concept.id);
+  const card = document.createElement("div");
+  card.className = "conceptCard" + (on ? " conceptCard--on" : "") +
+    (concept.available === false ? " conceptCard--unavailable" : "");
+  card.dataset.concept = concept.id;
+
+  const main = document.createElement("button");
+  main.type = "button";
+  main.className = "conceptCard__main";
+  main.setAttribute("role", "switch");
+  main.setAttribute("aria-checked", String(on));
+  main.tabIndex = -1;
+  if (concept.available === false) main.disabled = true;
+
+  const preview = document.createElement("span");
+  preview.className = "conceptCard__preview";
+  preview.setAttribute("aria-hidden", "true");
+  const canvas = document.createElement("canvas");
+  canvas.className = "conceptCard__canvas";
+  // How many times this concept has spoken on this chart, in the corner of its
+  // own miniature. A card with twelve marks and a card with none are different
+  // choices, and the number is read against the picture it belongs to.
+  const tally = document.createElement("span");
+  tally.className = "conceptCard__tally";
+  tally.hidden = true;
+  preview.append(canvas, tally);
+
+  const body = document.createElement("span");
+  body.className = "conceptCard__body";
+  const name = document.createElement("span");
+  name.className = "conceptCard__name";
+  name.textContent = concept.name;
+  const description = document.createElement("span");
+  description.className = "conceptCard__desc";
+  description.textContent = concept.description || "";
+  const kind = document.createElement("span");
+  kind.className = "conceptCard__kind";
+  for (const chip of conceptKindChips(concept)) {
+    const tag = document.createElement("span");
+    tag.className = "conceptCard__chip";
+    tag.textContent = chip;
+    kind.append(tag);
+  }
+  body.append(name, description, kind);
+
+  if (concept.available === false) {
+    const needs = document.createElement("span");
+    needs.className = "conceptCard__needs";
+    needs.textContent = `needs ${(concept.required_channels || []).join(", ") || "more data"}`;
+    body.append(needs);
+  }
+
+  const mark = document.createElement("span");
+  mark.className = "conceptCard__mark";
+  mark.setAttribute("aria-hidden", "true");
+
+  main.append(preview, body, mark);
+  card.append(main);
+
+  if (concept.id === "indicators.pairs") {
+    const row = document.createElement("label");
+    row.className = "conceptCard__pair";
+    const label = document.createElement("span");
+    label.textContent = "Paired with";
+    const input = document.createElement("input");
+    input.className = "hrz-input conceptCard__pairInput";
+    input.type = "text";
+    input.value = view.pair || "";
+    input.setAttribute("aria-label", "Second instrument for the pairs spread");
+    input.addEventListener("change", () => {
+      const next = activePane.setConceptPair(input.value);
+      input.value = next;
+      renderConceptPanel();
+    });
+    row.append(label, input);
+    card.append(row);
+  }
+  return card;
+}
+
+/// What a concept draws, in the two words a card has room for.
+function conceptKindChips(concept) {
+  const chips = [];
+  if (concept.overlay) chips.push("on chart");
+  if (concept.pane) chips.push("sub-pane");
+  if (!chips.length) chips.push("events");
+  return chips;
+}
+
+/// The rail, the head and the grid -- all three rebuilt from one read of state.
+///
+/// Rebuilt rather than patched: the counts, the pressed state of every card and
+/// the coverage line are all functions of the same snapshot, and a patch that
+/// forgets one of them is the drift this panel's predecessor had (a checkbox
+/// still ticked after the chart under it changed).
+function renderConceptPanel() {
+  const body = el("panelBody-concepts");
+  if (!body) return;
+  const view = conceptViewState();
+  const grid = el("conceptGrid");
+  const rail = el("conceptGroups");
+  const coverage = el("conceptCoverage");
+  const empty = el("conceptEmpty");
+  if (!grid || !rail || !coverage || !empty) return;
+
+  if (!view) {
+    rail.replaceChildren();
+    grid.replaceChildren();
+    coverage.textContent = "Open a chart to choose its indicators.";
+    el("conceptHeadTitle").textContent = "Indicators";
+    el("conceptHeadNote").textContent = "";
+    el("conceptActiveCount").textContent = "0";
+    el("conceptClearGroup").hidden = true;
+    empty.hidden = false;
+    empty.textContent = "There is no chart on this page yet.";
+    return;
+  }
+  const catalog = view.catalog;
+  if (!catalog) {
+    rail.replaceChildren();
+    grid.replaceChildren();
+    coverage.textContent = "Reading the library…";
+    empty.hidden = true;
+    return;
+  }
+
+  const enabled = view.enabled;
+  const group = conceptSelectedGroup();
+  const total = catalog.length;
+  const ready = catalog.filter((c) => c.available !== false).length;
+  coverage.textContent = `${ready} of ${total} work on ${view.symbol || "this instrument"} · ${view.timeframe || ""}`.trim();
+
+  const rows = conceptGroupRows(catalog, enabled);
+  const activeRow = el("conceptActiveRow");
+  el("conceptActiveCount").textContent = String(enabled.size);
+  rail.replaceChildren(...rows.map((row) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "conceptsGroup";
+    button.dataset.conceptGroup = row.id;
+    const name = document.createElement("span");
+    name.className = "conceptsGroup__name";
+    name.textContent = row.name;
+    const count = document.createElement("span");
+    count.className = "conceptsGroup__count";
+    count.textContent = row.id === "all" ? String(enabled.size) : `${row.on}/${row.total}`;
+    button.append(name, count);
+    button.setAttribute("aria-current", group === row.id ? "true" : "false");
+    if (row.on) button.classList.add("conceptsGroup--touched");
+    return button;
+  }));
+  if (activeRow) {
+    activeRow.setAttribute("aria-current", group === "active" ? "true" : "false");
+    activeRow.classList.toggle("conceptsGroup--touched", enabled.size > 0);
+  }
+
+  const entry = CONCEPT_GROUP_BY_ID.get(group);
+  el("conceptHeadTitle").textContent =
+    group === "all" ? "The whole library" : group === "active" ? "On this chart" : (entry && entry.name) || "Indicators";
+  const shown = conceptVisible(view);
+  const noteText = conceptQuery.trim()
+    ? `${shown.length} match${shown.length === 1 ? "" : "es"} for “${conceptQuery.trim()}”`
+    : group === "all" || group === "active"
+      ? ""
+      : (entry && entry.note) || "";
+  el("conceptHeadNote").textContent = noteText;
+
+  grid.replaceChildren(...shown.map((c) => conceptLibraryCard(c, view)));
+  focusConceptCard(grid);
+  empty.hidden = shown.length > 0;
+  empty.textContent = group === "active" && !conceptQuery.trim()
+    ? "Nothing on this chart yet — pick one from the library."
+    : "Nothing in the library matches that.";
+  el("conceptClearGroup").hidden =
+    shown.filter((c) => enabled.has(c.id)).length === 0;
+  queueConceptPreviews(shown, view);
+}
+
+/* ---- The card previews ---------------------------------------------------- */
+
+/// Every preview the face shows is drawn from the two reads the pane already
+/// makes: the instrument's whole event scan (one request, shared by every card
+/// because the route answers for the series, not for the concept) and one
+/// concept's own series.
+///
+/// A queue rather than a fan-out, and a queue fed by what is on screen rather
+/// than by the whole library.
+///
+/// The real catalog is 182 concepts, and the first screen shows twelve. Serving
+/// every card in render order therefore asked for 170 pictures the trader would
+/// never scroll to, at 200 candles each, and the face it was supposed to help
+/// answer in arrived seconds late. A card joins the queue when it enters the
+/// viewport and leaves it again when it scrolls out before its read started; a
+/// read already in flight is left to finish, since its answer is the next card's
+/// cache. Answers are cached against the instrument and the concept -- turning a
+/// card off and on again must not be a second request -- and the cache is dropped
+/// when the instrument changes, since a preview of BTCUSDT is not a preview of
+/// ETHUSDT.
+const CONCEPT_PREVIEW_LIMIT = 4;
+const conceptPreviewCache = new Map();   // `${symbol}|${tf}|${id}` -> payload
+const conceptPreviewFlight = new Map();  // `${symbol}|${tf}|${id}` -> promise
+let conceptPreviewKey = "";
+let conceptPreviewPending = [];          // [{ id, canvas, token, started }]
+let conceptPreviewRunning = 0;
+const conceptPreviewJobs = new Map();    // canvas -> job
+let conceptPreviewWatcher = null;
+
+/// Whether the face the previews belong to is on screen.
+///
+/// The chart keeps its clock while a panel floats over it, so a preview pump that
+/// followed `hrz:concepts` alone would keep fetching cards nobody is looking at --
+/// in a panel that has been closed for twenty minutes.
+function conceptFaceShown() {
+  return Boolean(window.Shell && Shell.state().panel === "concepts");
+}
+
+/// The watcher that decides which card is worth a request.
+///
+/// `root: null` is deliberate. The panel clips its own grid, so a card scrolled
+/// out of the panel is clipped out of the viewport too, and a viewport-relative
+/// test needs no knowledge of which element happens to be the scroller -- the
+/// grid is a scroller at 1440 and the page is one on a phone.
+function conceptPreviewObserver() {
+  if (conceptPreviewWatcher) return conceptPreviewWatcher;
+  if (typeof window.IntersectionObserver !== "function") return null;
+  conceptPreviewWatcher = new window.IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const job = conceptPreviewJobs.get(entry.target);
+      if (!job) continue;
+      const at = conceptPreviewPending.indexOf(job);
+      if (entry.isIntersecting) {
+        if (at < 0 && !job.started) conceptPreviewPending.push(job);
+      } else if (at >= 0 && !job.started) {
+        conceptPreviewPending.splice(at, 1);
+      }
+    }
+    pumpConceptPreviews();
+  }, { rootMargin: "160px 0px" });
+  return conceptPreviewWatcher;
+}
+
+/// Whether a card is worth a request right now -- inside the screen, or close
+/// enough to it that its picture is ready as the scroll brings it in.
+///
+/// The observer cannot answer this. Its first record arrives a task after
+/// `observe`, and this face repaints on the chart's clock: a render that happened
+/// to land inside that task disconnected the observations it had just made, so
+/// the answer never came for any card and the library opened with 182 empty
+/// canvases and no request at all. Reading the box is a layout the panel has
+/// already paid for, and it is the only way to know what is on screen *now*.
+const CONCEPT_PREVIEW_MARGIN = 160;
+
+/// The box a card is seen through. The panel scrolls inside its own body, so the
+/// screen is not that box: a card under the panel's fold has a rect on screen and
+/// is still clipped away, and its picture would be a request for nothing.
+function conceptPreviewViewport(grid) {
+  let node = grid;
+  while (node && node !== document.body) {
+    if (
+      node.scrollHeight > node.clientHeight + 1 &&
+      /auto|scroll|hidden/.test(window.getComputedStyle(node).overflowY)
+    ) {
+      const box = node.getBoundingClientRect();
+      if (box.height) return { top: box.top, bottom: box.bottom };
+    }
+    node = node.parentElement;
+  }
+  return { top: 0, bottom: window.innerHeight || 0 };
+}
+
+function conceptCanvasOnScreen(canvas, clip) {
+  const box = canvas.getBoundingClientRect();
+  if (!box.height) return false;
+  return box.bottom > clip.top - CONCEPT_PREVIEW_MARGIN &&
+    box.top < clip.bottom + CONCEPT_PREVIEW_MARGIN;
+}
+
+function queueConceptPreviews(shown, view) {
+  // A card off screen is a request nobody is waiting for. The face is rendered
+  // when the shell opens it, so the queue simply does not run while the panel is
+  // closed -- and the first thing the trader sees on open is the queue starting.
+  if (!conceptFaceShown()) return;
+  const key = `${view.symbol}|${view.timeframe}`;
+  if (key !== conceptPreviewKey) {
+    conceptPreviewKey = key;
+    conceptPreviewCache.clear();
+    conceptPreviewFlight.clear();
+  }
+  // Whatever is in flight belongs to the render that is now gone. The token makes
+  // a late answer harmless: a draw checks it before touching a canvas.
+  for (const card of conceptPreviewPending) card.token.used = false;
+  conceptPreviewPending = [];
+  const watcher = conceptPreviewObserver();
+  if (watcher) {
+    watcher.disconnect();
+    conceptPreviewJobs.clear();
+  }
+  const clip = conceptPreviewViewport(el("conceptGrid"));
+  for (const concept of shown) {
+    if (concept.available === false) continue;
+    const card = document.querySelector(
+      `#conceptGrid [data-concept="${cssEscape(concept.id)}"]`
+    );
+    const canvas = card && card.querySelector(".conceptCard__canvas");
+    if (!canvas) continue;
+    const cacheKey = `${key}|${concept.id}`;
+    if (conceptPreviewCache.has(cacheKey)) {
+      drawConceptPreview(canvas, conceptPreviewCache.get(cacheKey), concept, view);
+      continue;
+    }
+    canvas.classList.add("conceptCard__canvas--wait");
+    const token = { used: true };
+    const job = {
+      id: concept.id, canvas, token, started: false,
+      run: () => drawConceptPreviewLoaded(concept, view, canvas, token),
+    };
+    // No observer (jsdom, or a browser old enough to lack one) means no signal for
+    // "the scroll brought it", so every card is treated as reachable -- the slower
+    // behaviour, but the correct one rather than a face of empty boxes.
+    if (!watcher) { conceptPreviewPending.push(job); continue; }
+    conceptPreviewJobs.set(canvas, job);
+    // What is on screen now joins now; the observer is for what comes after.
+    if (conceptCanvasOnScreen(canvas, clip)) conceptPreviewPending.push(job);
+    watcher.observe(canvas);
+  }
+  pumpConceptPreviews();
+}
+
+function cssEscape(value) {
+  return String(value).replace(/["\\]/g, "\\$&");
+}
+
+function pumpConceptPreviews() {
+  while (conceptPreviewRunning < CONCEPT_PREVIEW_LIMIT && conceptPreviewPending.length) {
+    const card = conceptPreviewPending.shift();
+    // Started, not pending: a card that scrolls away while its read is in flight
+    // must not rejoin the queue when the observer reports it again.
+    card.started = true;
+    conceptPreviewRunning += 1;
+    Promise.resolve(card.run())
+      .catch(() => null)
+      .finally(() => {
+        conceptPreviewRunning -= 1;
+        pumpConceptPreviews();
+      });
+  }
+}
+
+/// Fetch one card's payload, then draw it if the card is still the one on screen.
+///
+/// The read is handed out from one promise per card, not one per queue entry:
+/// this face repaints on the chart's clock, and a render that lands while a
+/// card's read is still open would otherwise put a second request on the wire
+/// for the same picture.
+async function drawConceptPreviewLoaded(concept, view, canvas, token) {
+  const key = `${view.symbol}|${view.timeframe}|${concept.id}`;
+  if (conceptPreviewCache.has(key)) {
+    if (token.used) drawConceptPreview(canvas, conceptPreviewCache.get(key), concept, view);
+    return;
+  }
+  let flight = conceptPreviewFlight.get(key);
+  if (!flight) {
+    flight = conceptPreviewPayload(concept, view).then((payload) => {
+      conceptPreviewCache.set(key, payload);
+      conceptPreviewFlight.delete(key);
+      return payload;
+    }, (error) => {
+      conceptPreviewFlight.delete(key);
+      throw error;
+    });
+    conceptPreviewFlight.set(key, flight);
+  }
+  const payload = await flight;
+  if (!token.used) return;
+  drawConceptPreview(canvas, payload, concept, view);
+}
+
+/// The one read a card needs: a series for what draws as a line or a pane, the
+/// shared event scan for what only marks bars.
+async function conceptPreviewPayload(concept, view) {
+  if (concept.pane === true || concept.overlay === true) {
+    return view.pane.conceptSeriesPreview(concept.id);
+  }
+  const events = await view.pane.conceptEventPreview();
+  return (events || []).filter((e) => e.concept_id === concept.id);
+}
+
+function drawConceptPreview(canvas, payload, concept, view) {
+  canvas.classList.remove("conceptCard__canvas--wait");
+  const tally = canvas.parentElement && canvas.parentElement.querySelector(".conceptCard__tally");
+  if (tally && Array.isArray(payload)) {
+    tally.hidden = false;
+    tally.textContent = String(payload.length);
+    tally.classList.toggle("conceptCard__tally--quiet", payload.length === 0);
+  }
+  conceptPreviewPaint(canvas, payload, concept, view);
+}
+
+/// Repaint every card from the cache. A theme change and a window resize both
+/// change the pixels and neither changes the data -- a wider face has a wider
+/// crop to draw into, and a light theme has different lines to draw with.
+function repaintConceptPreviews() {
+  const view = conceptViewState();
+  if (!view || !view.catalog) return;
+  for (const card of document.querySelectorAll("#conceptGrid [data-concept]")) {
+    const canvas = card.querySelector(".conceptCard__canvas");
+    const concept = view.catalog.find((c) => c.id === card.dataset.concept);
+    if (!canvas || !concept) continue;
+    const key = `${view.symbol}|${view.timeframe}|${concept.id}`;
+    if (conceptPreviewCache.has(key)) {
+      conceptPreviewPaint(canvas, conceptPreviewCache.get(key), concept, view);
+    }
+  }
+}
+
+/* ---- The preview engine --------------------------------------------------- */
+
+/// A preview is a crop of the chart, not a second chart: it draws over the pane's
+/// own newest bars, so the line a card shows sits on the same stretch of time the
+/// trader is looking at underneath the panel.
+const PREVIEW_BARS = 96;
+const PREVIEW_WIDTH = 240;
+const PREVIEW_HEIGHT = 72;
+
+/// Colors come from the theme's own custom properties, read per paint. The panel
+/// is exactly where a trader is looking when they switch the theme, and a card
+/// with a palette baked in would draw a dark chart's lines on a light panel.
+function conceptPreviewColors() {
+  const style = getComputedStyle(document.documentElement);
+  const read = (name, fallback) => (style.getPropertyValue(name) || "").trim() || fallback;
+  return {
+    line: read("--line", "rgba(128,128,128,.28)"),
+    ghost: read("--text-3", "#8b95a7"),
+    up: read("--up", "#26a69a"),
+    down: read("--down", "#ef5350"),
+    accent: read("--accent", "#4c8dff"),
+  };
+}
+
+/// The gateway's colors are `0xRRGGBB` numbers and the shell's own tones are CSS
+/// strings; a canvas only understands the second kind.
+function conceptColor(value, fallback) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `#${(value & 0xffffff).toString(16).padStart(6, "0")}`;
+  }
+  if (typeof value === "string" && value) return value;
+  return fallback;
+}
+
+/// The crop: the pane's last bars, with the bar lookup every payload is aligned
+/// through. A timestamp the crop does not hold has no x -- the value is dropped
+/// rather than stretched to the edge, which is how a preview stays honest about
+/// history it is not showing.
+function conceptPreviewAxis(view) {
+  const all = view.times || [];
+  const from = Math.max(0, all.length - PREVIEW_BARS);
+  const times = all.slice(from);
+  const slice = (values) => (values || []).slice(from);
+  const indexByTime = new Map(times.map((time, index) => [time, index]));
+  return {
+    bars: times.length, times, indexByTime,
+    opens: slice(view.opens), highs: slice(view.highs), lows: slice(view.lows),
+    closes: slice(view.closes),
+  };
+}
+
+/// Whether the crop has a real bar per point. A close alone draws a line; four
+/// prices draw candles, and a miniature of the chart is what makes the card worth
+/// looking at before the concept goes on the screen.
+function previewHasBars(axis) {
+  return axis.bars > 1 && axis.highs.length === axis.bars && axis.lows.length === axis.bars;
+}
+
+/// The values the price scale must cover: the body of the move, not just its
+/// closes, so a wick is never clipped by the crop it is drawn in.
+function previewPriceValues(axis) {
+  if (!previewHasBars(axis)) return axis.closes;
+  return axis.closes.concat(axis.highs, axis.lows);
+}
+
+/// The crop's own range, widened by the concept's marks only as far past the
+/// window as the window is tall. A level left over from an older move can sit
+/// three crops away, and a scale that follows it flattens every bar in the
+/// miniature into a hairline -- which is the opposite of what a preview is for.
+const PREVIEW_CROP_PAD = 0.35;
+
+function previewPriceSpan(axis, marks) {
+  const base = previewPriceValues(axis).filter(Number.isFinite);
+  if (!base.length) return (marks || []).filter(Number.isFinite);
+  const min = Math.min(...base);
+  const max = Math.max(...base);
+  const pad = Math.max((max - min) * PREVIEW_CROP_PAD, Number.EPSILON);
+  const out = base.slice();
+  for (const value of marks || []) {
+    if (!Number.isFinite(value)) continue;
+    out.push(Math.min(max + pad, Math.max(min - pad, value)));
+  }
+  return out;
+}
+
+/// A value-to-pixel mapper over the values that actually arrived, or null when
+/// there were none. A fixed scale (`--rsi` is always 0..100) wins over the data's
+/// own range so the card reads at the same height as the pane below the chart.
+function previewMapper(lo, hi, values, fixed) {
+  let min = fixed ? fixed.min : Infinity;
+  let max = fixed ? fixed.max : -Infinity;
+  if (!fixed) {
+    for (const v of values) {
+      if (v == null || !Number.isFinite(v)) continue;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
+  return (v) => hi - ((v - min) / (max - min)) * (hi - lo);
+}
+
+function previewFixedRange(scale) {
+  return scale && scale.mode === "fixed" &&
+    Number.isFinite(scale.min) && Number.isFinite(scale.max) && scale.max > scale.min
+    ? { min: scale.min, max: scale.max }
+    : null;
+}
+
+/// Draw one card. The three shapes a concept can take decide the composition:
+/// a measurement in its own sub-pane gets the whole band and no price line (an
+/// RSI trace crossed with a price trace is two lies in one picture), a price-space
+/// overlay or an event mark is drawn *on* the ghost of the closes, because what
+/// makes it interesting is where it sat in the move.
+function conceptPreviewPaint(canvas, payload, concept, view) {
+  const ctx = canvas.getContext && canvas.getContext("2d");
+  if (!ctx) return;
+  const ratio = window.devicePixelRatio || 1;
+  const width = Math.max(24, canvas.clientWidth || PREVIEW_WIDTH);
+  const height = Math.max(16, canvas.clientHeight || PREVIEW_HEIGHT);
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  const colors = conceptPreviewColors();
+  const axis = conceptPreviewAxis(view);
+  if (!axis.bars) {
+    previewBaseline(ctx, width, height, colors);
+    return;
+  }
+  const frame = { ctx, width, height, colors, axis, x: (i) => ((i + 0.5) * width) / axis.bars };
+
+  const events = Array.isArray(payload) ? payload : null;
+  const spec = payload && !Array.isArray(payload) ? payload.spec : null;
+  const priceSpace = events !== null || (spec && spec.target === "overlay");
+  if (priceSpace) {
+    const values = previewPriceSpan(axis, events ? eventPrices(events) : overlayPrices(payload));
+    const scale = previewMapper(8, height - 8, values, null);
+    if (!scale) { previewBaseline(ctx, width, height, colors); return; }
+    previewGhost(frame, scale);
+    if (events) previewEvents(frame, events, scale);
+    else previewSeries(frame, payload, scale);
+    return;
+  }
+  if (spec) {
+    const values = panePrices(payload);
+    const scale = previewMapper(6, height - 6, values, previewFixedRange(spec.scale));
+    if (!scale) { previewBaseline(ctx, width, height, colors); return; }
+    previewSeries(frame, payload, scale);
+    return;
+  }
+  previewBaseline(ctx, width, height, colors);
+}
+
+/// Nothing to draw is a state of its own: one hairline, not an empty box, so a
+/// concept with no data on this instrument does not look like one still loading.
+function previewBaseline(ctx, width, height, colors) {
+  ctx.strokeStyle = colors.line;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, Math.round(height / 2) + 0.5);
+  ctx.lineTo(width, Math.round(height / 2) + 0.5);
+  ctx.stroke();
+}
+
+function previewGhost(frame, scale) {
+  const { ctx, x, axis, colors } = frame;
+  if (axis.closes.length < 2) return;
+  if (previewHasBars(axis)) {
+    previewCandles(frame, scale);
+    return;
+  }
+  ctx.strokeStyle = colors.ghost;
+  ctx.globalAlpha = 0.4;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  axis.closes.forEach((value, i) => {
+    const y = scale(value);
+    if (i === 0) ctx.moveTo(x(i), y); else ctx.lineTo(x(i), y);
+  });
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+/// The crop as the chart shows it: a body between the open and the close, a wick
+/// between the extremes. The concept's own marks go on top of this, and what a
+/// card has to say is where they sat in the move -- so the ground has to read as
+/// a market at a glance, not as a line.
+function previewCandles(frame, scale) {
+  const { ctx, x, axis, colors, width } = frame;
+  const step = width / axis.bars;
+  const body = Math.max(1, Math.min(9, step * 0.62));
+  ctx.lineWidth = 1;
+  axis.closes.forEach((close, i) => {
+    const open = axis.opens[i];
+    const up = (open == null ? axis.closes[i - 1] ?? close : open) <= close;
+    const high = axis.highs[i];
+    const low = axis.lows[i];
+    if (!Number.isFinite(high) || !Number.isFinite(low)) return;
+    const at = Math.round(x(i)) + 0.5;
+    ctx.strokeStyle = up ? colors.up : colors.down;
+    ctx.globalAlpha = 0.34;
+    ctx.beginPath();
+    ctx.moveTo(at, scale(high));
+    ctx.lineTo(at, scale(low));
+    ctx.stroke();
+    const from = scale(open == null ? close : open);
+    const to = scale(close);
+    const top = Math.min(from, to);
+    const height = Math.max(1, Math.abs(to - from));
+    ctx.globalAlpha = 0.6;
+    ctx.fillStyle = up ? colors.up : colors.down;
+    ctx.fillRect(Math.round(x(i) - body / 2), top, Math.round(body), height);
+  });
+  ctx.globalAlpha = 1;
+}
+
+/// The values a mapper should cover: the closes plus everything the concept puts
+/// on the price axis, so a zone drawn at the top of a rally is not clipped.
+function eventPrices(events) {
+  const out = [];
+  for (const e of events) {
+    if (e.zone_low != null) out.push(e.zone_low);
+    if (e.zone_high != null) out.push(e.zone_high);
+    if (e.price_level != null) out.push(e.price_level);
+  }
+  return out;
+}
+
+function overlayPrices(body) {
+  const spec = body.spec || {};
+  const out = [];
+  for (const line of spec.lines || []) out.push(...nonNull(line.values));
+  for (const fill of spec.fills || []) out.push(...nonNull(fill.upper), ...nonNull(fill.lower));
+  return out;
+}
+
+function panePrices(payload) {
+  const spec = payload.spec || {};
+  const out = [];
+  for (const line of spec.lines || []) out.push(...nonNull(line.values));
+  if (spec.bars) out.push(...nonNull(spec.bars.values));
+  for (const seg of spec.segments || []) out.push(seg.from_value, seg.to_value);
+  for (const marker of spec.markers || []) out.push(marker.value);
+  for (const level of spec.levels || []) out.push(level);
+  return out;
+}
+
+function nonNull(values) {
+  return (values || []).filter((v) => v != null && Number.isFinite(v));
+}
+
+/// One concept's series, aligned onto the crop by bar time. The series route's
+/// `times` index its own values, and a bar that closed between the two fetches
+/// must not shift a line off its candle -- the same rule the chart's own panes
+/// remap by, run here against the card's axis.
+function previewAligned(body, frame) {
+  const times = body.times || [];
+  const map = frame.axis.indexByTime;
+  const slot = times.map((time) => map.get(time));
+  return (values) => {
+    const out = new Array(frame.axis.bars).fill(null);
+    values.forEach((value, i) => {
+      const at = slot[i];
+      if (at != null) out[at] = value;
+    });
+    return out;
+  };
+}
+
+function previewSeries(frame, body, scale) {
+  const { ctx, colors } = frame;
+  const spec = body.spec || {};
+  const align = previewAligned(body, frame);
+  const overlay = spec.target === "overlay";
+  const lineColor = (color) => conceptColor(color, overlay ? colors.accent : colors.up);
+
+  for (const fill of spec.fills || []) {
+    const upper = align(fill.upper);
+    const lower = align(fill.lower);
+    ctx.fillStyle = lineColor(fill.color);
+    ctx.globalAlpha = 0.2;
+    ctx.beginPath();
+    let pen = false;
+    upper.forEach((value, i) => {
+      if (value == null) { pen = false; return; }
+      if (!pen) { ctx.moveTo(frame.x(i), scale(value)); pen = true; }
+      else ctx.lineTo(frame.x(i), scale(value));
+    });
+    for (let i = lower.length - 1; i >= 0; i -= 1) {
+      if (lower[i] == null) continue;
+      ctx.lineTo(frame.x(i), scale(lower[i]));
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  const bars = spec.bars;
+  if (bars) {
+    const values = align(bars.values);
+    const zero = scale(0);
+    values.forEach((value, i) => {
+      if (value == null) return;
+      const up = value >= 0;
+      ctx.fillStyle = conceptColor(up ? bars.color_up : bars.color_down, up ? colors.up : colors.down);
+      const y = scale(value);
+      const x = frame.x(i);
+      const w = Math.max(1, frame.width / frame.axis.bars - 1);
+      ctx.fillRect(x - w / 2, Math.min(y, zero), w, Math.max(1, Math.abs(zero - y)));
+    });
+  }
+
+  for (const level of spec.levels || []) {
+    ctx.strokeStyle = colors.line;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(0, scale(level));
+    ctx.lineTo(frame.width, scale(level));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  for (const line of spec.lines || []) {
+    const values = align(line.values);
+    ctx.strokeStyle = lineColor(line.color);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    let pen = false;
+    values.forEach((value, i) => {
+      if (value == null) { pen = false; return; }
+      if (!pen) { ctx.moveTo(frame.x(i), scale(value)); pen = true; }
+      else ctx.lineTo(frame.x(i), scale(value));
+    });
+    ctx.stroke();
+  }
+
+  for (const seg of spec.segments || []) {
+    const from = frame.axis.indexByTime.get(body.times[seg.from]);
+    const to = frame.axis.indexByTime.get(body.times[seg.to]);
+    if (from == null || to == null) continue;
+    ctx.strokeStyle = seg.kind === "bearish" ? colors.down : colors.up;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(frame.x(from), scale(seg.from_value));
+    ctx.lineTo(frame.x(to), scale(seg.to_value));
+    ctx.stroke();
+  }
+
+  for (const marker of spec.markers || []) {
+    const at = frame.axis.indexByTime.get(body.times[marker.at]);
+    if (at == null) continue;
+    ctx.fillStyle = marker.kind === "bearish" ? colors.down : colors.up;
+    ctx.beginPath();
+    ctx.arc(frame.x(at), scale(marker.value), 1.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/// The marks an event concept leaves: zones as bands, levels as short dashes from
+/// the bar that found them, and a dot on the bar for anything that names a
+/// candle rather than measures a price.
+function previewEvents(frame, events, scale) {
+  const { ctx, x, axis, colors } = frame;
+  const step = frame.width / axis.bars;
+  const tone = (event) => event.direction === "bullish"
+    ? colors.up : event.direction === "bearish" ? colors.down : colors.ghost;
+  for (const event of events) {
+    const at = axis.indexByTime.get(event.event_time_ns);
+    if (at == null) continue;
+    const from = axis.indexByTime.get(event.bars && event.bars[0]);
+    const color = tone(event);
+    if (event.zone_low != null && event.zone_high != null) {
+      const left = Math.min(from == null ? at : from, at);
+      const right = event.status === "forming" || event.status === "confirmed"
+        ? axis.bars - 1 : at;
+      const top = scale(event.zone_high);
+      const bottom = scale(event.zone_low);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.18;
+      ctx.fillRect(x(left) - step / 2, top, Math.max(2, x(right) - x(left) + step), Math.max(2, bottom - top));
+      ctx.globalAlpha = 0.75;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x(left) - step / 2, top, Math.max(2, x(right) - x(left) + step), Math.max(2, bottom - top));
+      ctx.globalAlpha = 1;
+    } else if (event.price_level != null) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 2]);
+      ctx.beginPath();
+      ctx.moveTo(x(from == null ? at : from), scale(event.price_level));
+      ctx.lineTo(x(at), scale(event.price_level));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x(at), frame.height - 5, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+/* ---- Panel interactions --------------------------------------------------- */
+
+/// The column count, for arrow-key movement.
+///
+/// Read from the resolved grid rather than guessed: the face is two columns on a
+/// laptop and one on a phone, and a keyboard model that assumes the desktop's
+/// count moves focus to the wrong card the moment the window is narrowed.
+function conceptGridColumns() {
+  const grid = el("conceptGrid");
+  if (!grid || !window.getComputedStyle) return 1;
+  try {
+    const tracks = window.getComputedStyle(grid).gridTemplateColumns;
+    if (!tracks || tracks === "none") return 1;
+    const n = tracks.split(" ").filter(Boolean).length;
+    return n > 0 ? n : 1;
+  } catch {
+    return 1;
+  }
+}
+
+/// Give the grid one Tab stop, at the card the arrow keys were last on.
+///
+/// A grid of sixty cards is sixty tab stops if nothing says otherwise; the strip
+/// rule the shell already uses for its tabs applies here -- one stop, four arrows.
+/// The pointer does not need the stop, so `focusin` moves it whenever a click
+/// lands on another card.
+function focusConceptCard(grid) {
+  const buttons = [...grid.querySelectorAll(".conceptCard__main")];
+  if (!buttons.length) { conceptCardPointing = 0; return; }
+  conceptCardPointing = clampInt(conceptCardPointing, 0, buttons.length - 1);
+  buttons.forEach((button, index) => { button.tabIndex = index === conceptCardPointing ? 0 : -1; });
+}
+
+let conceptCardPointing = 0;
+
+const clampInt = (value, lo, hi) => Math.min(hi, Math.max(lo, Number(value) || 0));
+
+function moveConceptCard(delta) {
+  const grid = el("conceptGrid");
+  if (!grid) return;
+  const buttons = [...grid.querySelectorAll(".conceptCard__main")];
+  if (!buttons.length) return;
+  conceptCardPointing = clampInt(conceptCardPointing + delta, 0, buttons.length - 1);
+  buttons.forEach((button, index) => { button.tabIndex = index === conceptCardPointing ? 0 : -1; });
+  buttons[conceptCardPointing].focus();
+}
+
+/// Switch one concept on the chart the panel is projecting.
+///
+/// One rule, from the choice the panel is built around: adding dismisses so the
+/// trader sees what they added, removing stays open because a trader who is
+/// pruning is still choosing. The chip row on the pane's head is the other door
+/// to removal, so keeping the modal open on a switch-off costs nothing.
+function conceptToggle(id, turnOn) {
+  if (!activePane || !activePane.setConcept) return;
+  const view = conceptViewState();
+  if (!turnOn && view && !view.enabled.has(id)) return;
+  if (turnOn && view && view.enabled.has(id)) return;
+  activePane.setConcept(id, turnOn);
+  if (turnOn && window.Shell) Shell.closePanel();
+}
+
+function wireConceptPanel() {
+  const body = el("panelBody-concepts");
+  if (!body) return;
+  const search = el("conceptSearch");
+  if (search) {
+    search.addEventListener("input", () => {
+      conceptQuery = search.value;
+      conceptCardPointing = 0;
+      renderConceptPanel();
+    });
+  }
+  // `/` inside the face means "let me type", not "open the face": the panel's own
+  // listener runs first and stops the event, so palette.js never re-routes the
+  // keystroke the user has already landed inside.
+  body.addEventListener("keydown", (event) => {
+    if (event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (search) search.focus();
+      return;
+    }
+    const grid = el("conceptGrid");
+    if (!grid || !grid.contains(document.activeElement)) return;
+    const columns = conceptGridColumns();
+    const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: columns, ArrowUp: -columns }[event.key];
+    if (step === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    moveConceptCard(step);
+  });
+  const rail = el("conceptGroups");
+  if (rail) {
+    rail.addEventListener("click", (event) => {
+      const row = event.target.closest("[data-concept-group]");
+      if (row && window.Shell) {
+        conceptCardPointing = 0;
+        Shell.selectConceptGroup(row.dataset.conceptGroup);
+      }
+    });
+  }
+  const activeRow = el("conceptActiveRow");
+  if (activeRow) {
+    activeRow.addEventListener("click", () => {
+      conceptCardPointing = 0;
+      if (window.Shell) Shell.selectConceptGroup("active");
+    });
+  }
+  const grid = el("conceptGrid");
+  if (grid) {
+    grid.addEventListener("click", (event) => {
+      const main = event.target.closest(".conceptCard__main");
+      if (!main) return;
+      const card = main.closest("[data-concept]");
+      if (!card) return;
+      // `aria-checked` is the string "true", and a string is how a switch-off
+      // reads as a switch-on: `!"false"` is `false`, so the press did nothing at
+      // all. The attribute is the state, so it is parsed as one.
+      const on = main.getAttribute("aria-checked") === "true";
+      conceptToggle(card.dataset.concept, !on);
+    });
+    grid.addEventListener("focusin", (event) => {
+      const main = event.target.closest(".conceptCard__main");
+      if (!main) return;
+      const buttons = [...grid.querySelectorAll(".conceptCard__main")];
+      const index = buttons.indexOf(main);
+      if (index >= 0) {
+        conceptCardPointing = index;
+        buttons.forEach((button, i) => { button.tabIndex = i === index ? 0 : -1; });
+      }
+    });
+  }
+  const clear = el("conceptClearGroup");
+  if (clear) {
+    clear.addEventListener("click", () => {
+      const view = conceptViewState();
+      if (!view || !activePane.setConcept) return;
+      for (const concept of conceptVisible(view)) {
+        if (view.enabled.has(concept.id)) activePane.setConcept(concept.id, false);
+      }
+    });
+  }
+  // A canvas keeps the pixel buffer it was drawn into, so a face that grew wider
+  // has a crop stretched across fewer pixels than it now has. Repaint from the
+  // cache -- the data is the same, the width is not -- on the frame the layout
+  // settles in rather than on every resize event.
+  let resizeFrame = 0;
+  window.addEventListener("resize", () => {
+    if (!conceptFaceShown()) return;
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(repaintConceptPreviews);
+  });
+}
+
+/// Ask the active pane for its catalog, then paint.
+///
+/// Called whenever the face is shown and whenever the route lands on a new group:
+/// the catalog is one request per instrument and the pane caches it, so this is
+/// cheap on a second open and correct on the first.
+async function loadConceptPanel() {
+  if (!activePane) { renderConceptPanel(); return; }
+  const view = conceptViewState();
+  if (!view || !view.catalog) {
+    try { await activePane.loadConcepts(); } catch { /* the pane says null; the read says so too */ }
+  }
+  renderConceptPanel();
+}
+
+// ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
 
@@ -13999,7 +15131,7 @@ function refreshWorkspaceGates() {
 /// A panel floats over Charts, so its content arriving is not the user leaving
 /// the page: the rail underneath keeps its clock. Every other named pane is a
 /// pane in a page that replaced the chart column, and stops it.
-const PANEL_PANES = new Set(["community", "bots", "billing", "brokers", "aimodel"]);
+const PANEL_PANES = new Set(["community", "bots", "concepts", "billing", "brokers", "aimodel"]);
 
 /// Read a pane's data when it is opened. Panels that can be changed from
 /// elsewhere (the API, another tab) read on open rather than cache at boot, so
@@ -14011,6 +15143,7 @@ function runPaneLoaders(name) {
   if (name === "aimodel") refreshAiModel();
   if (name === "billing") loadBilling();
   if (name === "community") loadCommunity();
+  if (name === "concepts") loadConceptPanel();
   if (name === "skills") loadSkills();
   if (name === "strategy") loadLibrary();
   // The dock's two tabs return before the watchlist branch: they are panels on
@@ -14900,6 +16033,29 @@ async function main() {
   wireWatchlist();
   wireDock();
   wireDashboard();
+  // The Indicators panel is a projection of the active chart, so it is repainted
+  // by the three events that say the chart moved: `hrz:pane` (a different chart is
+  // the one on screen), `hrz:concepts` (this chart's set turned) and
+  // `hrz:pane-bars` (this chart now has a window to crop). All are guarded by the
+  // face being open, so a chart ticking under a closed panel costs the page
+  // nothing.
+  wireConceptPanel();
+  const repaintConceptPanel = () => {
+    if (window.Shell && Shell.state().panel === "concepts") renderConceptPanel();
+  };
+  // The chip row on the pane's head is the other half of the same read, and this
+  // event is the only place that says a concept turned: without it the row
+  // refreshed on the next pane activation and not on the press that changed it.
+  document.addEventListener("hrz:concepts", syncIndicatorChip);
+  document.addEventListener("hrz:pane", repaintConceptPanel);
+  document.addEventListener("hrz:concepts", repaintConceptPanel);
+  // And by the third thing that changes a preview without changing a concept: the
+  // bars arriving. The face can open on a chart still fetching its window.
+  document.addEventListener("hrz:pane-bars", repaintConceptPanel);
+  // A theme change is a palette change, and a preview is a canvas: the cached
+  // payload is still right, the pixels drawn from it are not. `window`, because
+  // that is where `ui/theme.js` announces it.
+  window.addEventListener("hrz:theme", repaintConceptPreviews);
   // The watchlist has no aside tab any more (it lives in its own rail), so
   // nothing else would ever call its pane path -- the rail prices itself here,
   // once, and the rail's own interactions keep it current after that. The pane

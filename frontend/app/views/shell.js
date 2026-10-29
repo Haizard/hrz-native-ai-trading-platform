@@ -15,16 +15,21 @@
 (function () {
   "use strict";
 
-  /* The things the address bar can name, in the order Alt+1..6 counts them.
+  /* The things the address bar can name, in the order Alt+1..7 counts them.
    *
-   * Three are pages and three are panels that float over whichever page is
-   * open. The difference is not cosmetic: a page owns the frame under the chart,
-   * a panel owns a modal and nothing else. One table says which, and every list
-   * the shell needs -- the router's, the top bar's, the palette's -- is read out
-   * of it, so an id cannot be a destination in one place and a panel in another.
+   * Three are pages and four are panels that float over whichever page is open.
+   * The difference is not cosmetic: a page owns the frame under the chart, a panel
+   * owns a modal and nothing else. One table says which, and every list the shell
+   * needs -- the router's, the top bar's, the palette's -- is read out of it, so an
+   * id cannot be a destination in one place and a panel in another.
    *
-   * `width` is the panel's promise to its own content: a library and a bot desk
-   * are read as tables, an account is a stack of cards.
+   * `width` is the panel's promise to its own content: a library, a bot desk and a
+   * grid of concept cards are read as tables, an account is a stack of cards.
+   *
+   * `view` says that a panel's content belongs to one page. Indicators switch
+   * layers on a chart, so opening that face from the Dashboard routes to Charts
+   * first -- an icon whose panel would show nothing where the user is standing is
+   * an icon that lies.
    */
   const NAV = [
     { id: "dashboard", kind: "page", label: "Dashboard" },
@@ -32,6 +37,7 @@
     { id: "studio", kind: "page", label: "Studio" },
     { id: "community", kind: "panel", label: "Community", width: "wide" },
     { id: "bots", kind: "panel", label: "Bots", width: "wide" },
+    { id: "concepts", kind: "panel", label: "Indicators", width: "wide", view: "charts" },
     { id: "account", kind: "panel", label: "Account", width: "medium" },
   ];
   const NAV_BY_ID = new Map(NAV.map((entry) => [entry.id, entry]));
@@ -58,6 +64,19 @@
   /// does not know means "no pane is on screen" -- which would stop the
   /// watchlist's clock while the panel floats over the chart.
   const ACCOUNT_LOADERS = { plan: "billing", brokers: "brokers", ai: "aimodel" };
+  /// The concept panel's section: which group of the library the grid is
+  /// showing. `all` is the whole library and is the one value the address does
+  /// not need to say, so `#/charts/concepts` and `#/charts/concepts/smc` are the
+  /// two shapes it writes.
+  ///
+  /// The shell names the shape of the token, not the list of groups -- the table
+  /// of groups is the app's library, and a copy of it here would drift the first
+  /// time a group is added. An unknown-but-well-formed token is passed on and the
+  /// app decides what it means.
+  const CONCEPT_GROUP_DEFAULT = "all";
+  const CONCEPT_GROUP_TOKEN = /^[a-z0-9][a-z0-9._-]{0,31}$/;
+  const conceptGroup = (value) =>
+    CONCEPT_GROUP_TOKEN.test(String(value || "")) ? String(value) : CONCEPT_GROUP_DEFAULT;
   const DEST_FROM_LEGACY = {
     chat: "charts", thesis: "charts", book: "charts", trade: "charts",
     watchlist: "charts",
@@ -110,6 +129,7 @@
     dockHeight: DOCK_DEFAULT_HEIGHT,
     studioPane: "indicator",
     accountSection: "plan",
+    conceptGroup: CONCEPT_GROUP_DEFAULT,
   };
 
   let ready = false;
@@ -131,7 +151,7 @@
   /// had a rail to keep.
   const destButtons = () =>
     document.querySelectorAll("#topNav [data-dest], #phoneNav [data-dest]");
-  /// The three icons that open a panel: two in the top bar's second nav, and the
+  /// The icons that open a panel: three in the top bar's second nav, and the
   /// account chip at its right end. They are one set because they are one
   /// question -- is this the panel you are looking at?
   const panelTriggers = () => document.querySelectorAll("[data-open-panel]");
@@ -192,8 +212,9 @@
     } else if (state.destination === "studio") {
       visible.add(STUDIO_PANES[state.studioPane]);
     }
-    // Three of the six ids the address names are not pages: their content shows
-    // because the panel is open, whatever is running underneath it.
+    // Four of the seven ids the address names are not pages: their content shows
+    // because the panel is open, whatever is running underneath it. Indicators has
+    // no pane to show -- its body renders from the chart's own state in place.
     if (state.panel === "community") visible.add("pane-community");
     else if (state.panel === "bots") visible.add("pane-bots");
     else if (state.panel === "account") {
@@ -548,6 +569,15 @@
 
   /* ---- Routing ------------------------------------------------------------ */
 
+  /// Which section a panel's address names, or its default when the segment is
+  /// missing. Returns undefined for a panel that has no sections at all, so the
+  /// router never carries a segment that means nothing.
+  function panelSection(panel, raw) {
+    if (panel === "account") return ACCOUNT_SECTIONS.includes(raw) ? raw : "plan";
+    if (panel === "concepts") return conceptGroup(raw);
+    return undefined;
+  }
+
   /// The address bar, read as a page and the panel floating over it.
   ///
   /// Two shapes are accepted. `#/<page>` and `#/<page>/<panel>[/<section>]` are
@@ -562,9 +592,8 @@
     if (!parts.length) return null;
     if (PANELS.includes(parts[0])) {
       const route = { page: "charts", panel: parts[0] };
-      if (parts[0] === "account") {
-        route.section = ACCOUNT_SECTIONS.includes(parts[1]) ? parts[1] : "plan";
-      }
+      const section = panelSection(parts[0], parts[1]);
+      if (section !== undefined) route.section = section;
       return route;
     }
     if (!PAGES.includes(parts[0])) return null;
@@ -572,9 +601,8 @@
     const second = parts[1];
     if (second && PANELS.includes(second)) {
       route.panel = second;
-      if (second === "account") {
-        route.section = ACCOUNT_SECTIONS.includes(parts[2]) ? parts[2] : "plan";
-      }
+      const section = panelSection(second, parts[2]);
+      if (section !== undefined) route.section = section;
     } else if (route.page === "studio" && second) {
       // An id is user data from the address bar. A malformed escape is a bad
       // link, not a router crash: fall back to the raw segment and let the
@@ -598,6 +626,14 @@
     if (!panel) return `#/${page}`;
     if (panel === "account") {
       return `#/${page}/account/${opts.section || state.accountSection || "plan"}`;
+    }
+    if (panel === "concepts") {
+      // The whole library is what the icon means, so it is the one section the
+      // address leaves out; a group the user picked is worth a reload.
+      const group = conceptGroup(opts.section || state.conceptGroup);
+      return group === CONCEPT_GROUP_DEFAULT
+        ? `#/${page}/concepts`
+        : `#/${page}/concepts/${group}`;
     }
     return `#/${page}/${panel}`;
   }
@@ -647,6 +683,18 @@
         panelLoad = true;
       }
     }
+    if (state.panel === "concepts") {
+      // The same rule as the account sections: an address that names one is
+      // honored, a route that does not -- and is not arriving or leaving the
+      // panel -- keeps the group the user is already reading.
+      const section = opts.section
+        ? conceptGroup(opts.section)
+        : changed || panelChanged ? CONCEPT_GROUP_DEFAULT : state.conceptGroup;
+      if (section !== state.conceptGroup) {
+        state.conceptGroup = section;
+        panelLoad = true;
+      }
+    }
     showDestination();
     // Opening a chat is the indicator loader's own work: it fetches the same
     // list and then selects. Running both would race two lists, and the loser
@@ -684,9 +732,16 @@
 
   function openPanel(name, opts = {}) {
     if (!PANELS.includes(name)) return;
-    const page = opts.page || state.destination || "charts";
+    const entry = NAV_BY_ID.get(name);
+    // A panel whose content belongs to one page is opened on that page. The icon
+    // is a promise about what the modal will show, not only about which modal to
+    // raise, so Indicators from the Dashboard routes to Charts first.
+    const page = (entry && entry.view) || opts.page || state.destination || "charts";
     setDestination(page, { ...opts, panel: name });
-    writeHash(hashFor(page, { panel: name, section: state.accountSection }), opts.replace);
+    // Read after the route is applied: `setDestination` is what decides whether a
+    // fresh open lands on the panel's default section.
+    const section = name === "concepts" ? state.conceptGroup : state.accountSection;
+    writeHash(hashFor(page, { panel: name, section }), opts.replace);
   }
 
   function closePanel() {
@@ -769,6 +824,7 @@
     if (!load || !state.panel) return;
     if (state.panel === "community") load("community");
     else if (state.panel === "bots") load("bots");
+    else if (state.panel === "concepts") load("concepts");
     else if (state.panel === "account") {
       const legacy = ACCOUNT_LOADERS[state.accountSection];
       if (legacy) load(legacy);
@@ -821,6 +877,20 @@
     else showDestination();
     const legacy = ACCOUNT_LOADERS[section];
     if (legacy && app().runPaneLoaders) app().runPaneLoaders(legacy);
+    note();
+  }
+
+  /// Show one group of the concept library.
+  ///
+  /// The group is the third segment of the address while the panel is open, for
+  /// the same reason the account sections are: a reload, a pasted link and a Back
+  /// press all read it, and none of them reopens the panel on the wrong shelf.
+  function selectConceptGroup(group) {
+    const section = conceptGroup(group);
+    state.conceptGroup = section;
+    if (state.panel === "concepts") openPanel("concepts", { section });
+    else showDestination();
+    if (app().runPaneLoaders) app().runPaneLoaders("concepts");
     note();
   }
 
@@ -1234,6 +1304,7 @@
     pages: () => PAGES.slice(),
     openPanel,
     closePanel,
+    selectConceptGroup,
     state: () => ({ ...state }),
   };
 })();

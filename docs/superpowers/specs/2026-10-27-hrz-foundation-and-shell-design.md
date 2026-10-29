@@ -1239,3 +1239,96 @@ harness — jsdom has no cascade, no top layer and no focus restoration.
   card; that is the room the two panel icons and the avatar needed. And a `.row`
   inside a panel wraps instead of pushing its last control past the edge, where
   a scroll would hide it rather than show it.
+
+## 23. Amendment — the Indicators face, and the pictures on its cards (2026-10-29)
+
+The concept library was the last surface the frame still gave a page to. It is
+now the fourth face of `#workPanel`, and it is the reason the panel system was
+worth building: 182 concepts across 17 families is a list worth opening over a
+chart, and it is not worth a permanent column beside one.
+
+### 23.1 A face, not a destination
+
+`NAV` gained `{ id: "concepts", kind: "panel", label: "Indicators", width:
+"wide", view: "charts" }` — so `#/charts/concepts[/<family>]`, Alt+6 counting
+the table, a permanent icon in `#panelNav`, and a `/` that means the same thing
+TradingView's `/` means.
+
+`view: "charts"` is the part that is not cosmetic. The face draws a chart's
+indicators, so opening it from the Dashboard routes to Charts first: an icon
+whose panel would show nothing where the trader is standing is an icon that
+lies. The same field makes the face a *projection* rather than a place — its
+content is the active pane's instrument, timeframe and enabled set, and it
+repaints when any of the three changes.
+
+### 23.2 What the cards show
+
+TradingView's indicator dialog and LuxAlgo's concept picker both list names and
+let the trader add one to find out what it draws. Every card here answers before
+being clicked:
+
+- **A miniature of the pane's own last 96 bars**, drawn as candles with the
+  concept's marks on them — the same timestamps the chart and `/indicator-series`
+  both name a bar with, so the picture is a crop of the chart and not a sketch
+  of one.
+- **A tally in the corner of that picture**: how many times the concept has
+  spoken on this chart. Twelve marks and no marks are different choices, and the
+  number is read against the picture it counts. Zero is styled quiet, because
+  nothing to say is an answer, not a failure.
+- **A rail that counts each family `on/total`** and a coverage line that says
+  `182 of 182 work on BTCUSDT · 1m`, so the size of the library and the state of
+  this chart read at one glance.
+
+Adding is TradingView-shaped: the card adds, the chip on the pane head names
+what is live, and either end can dismiss it.
+
+### 23.3 The economics of 182 previews
+
+A card that draws needs data, and 182 cards asking at once is a request storm
+over a chart that is trying to stream. So:
+
+- The face reads `/concepts` once and `/concept-events/scan` once — that scan is
+  shared by every event card, which is why the whole grid can be honest about
+  this chart for the price of one call.
+- `/indicator-series` is asked per concept, and only for a card that is actually
+  on screen: an `IntersectionObserver` with a 160px lead, plus a synchronous
+  check at render for the cards already visible before it fires.
+- Four in flight (`CONCEPT_PREVIEW_LIMIT`), keyed `symbol|tf|id` in a cache, with
+  a second map of in-flight promises so two cards for the same concept await one
+  request. A job token drops a late answer whose card has moved on.
+
+Measured over a full top-to-bottom sweep of the real catalog: **1 scan + 23
+unique series requests for 137 revealed cards, zero duplicates**, and nothing
+fetched for a card clipped out of the panel.
+
+### 23.4 Verification
+
+`tools/shell_check.mjs` covers the face's lazy economy in jsdom — the observer
+is stubbed so a card can be declared on or off screen, and the checks assert that
+nothing is requested while it is off. The gates are unchanged: shell, ui,
+component and builder all pass.
+
+### 23.5 What only a browser could tell us
+
+Four defects, none visible to a harness, all found by running the page.
+
+- **A card under the panel's fold is not on screen.** The first clip test used
+  the window, and the panel scrolls inside its own body: every card in a
+  19,000px grid had a rect inside `innerHeight`, so the observer's work was
+  undone by a check that let everything through. `conceptPreviewViewport` now
+  walks up to the scrolling ancestor and clips against *its* box.
+- **The face can open before the chart has bars.** Every event preview drew the
+  same bare baseline because the pane's window was empty and nothing said so.
+  The view now carries OHLC, and `refresh()` dispatches `hrz:pane-bars` when the
+  first batch lands — the previews wait for the chart, not for the next thing
+  the trader happens to do.
+- **One stale zone can squash a whole picture.** A BOS card drew its candles in
+  a thin band at the bottom: a mark from before the crop's window stretched the
+  price scale. Marks are now clamped to the crop's own range plus 35% padding.
+- **A bare `aside` rule was holding the rail open.** `aside { width: var(--aside-w) }`
+  — written for the inspector, where `#inspectorHost > aside` already outranks it
+  — pinned the concepts rail to 360px inside a 216px grid track, painting the
+  family counts over the first column of cards at every desktop width, and
+  pinning the dashboard's watch card to 360px inside a 453px grid cell. Deleting
+  it fixed all three. The tell was text that appeared to belong to no card.
+

@@ -24,8 +24,6 @@
   letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3);
 }
 
-aside { width: var(--aside-w, 460px); flex: 0 0 var(--aside-w, 460px); }
-
 /* The Deriv trade ticket (chart menu, Deriv symbols only). */
 .tradeTicket { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; }
 

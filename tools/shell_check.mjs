@@ -74,6 +74,26 @@ try {
 
 const html = await readFile(join(root, "frontend/app/index.html"), "utf8");
 const shell = await readFile(join(root, "frontend/app/app.js"), "utf8");
+
+// One script scope, no modules: a second top-level `function name()` in `app.js`
+// is not a redeclaration error, it is a *replacement* -- hoisting lets the last
+// one win, and the first one's callers silently get the second one's body. That
+// is invisible everywhere else: the builder's concept editor and the indicator
+// library card were both named `conceptCard`, and the page threw nothing while
+// Studio rendered library cards into a form it used to build by hand.
+{
+  const counts = new Map();
+  for (const [, name] of shell.matchAll(/^function\s+([A-Za-z_$][\w$]*)\s*\(/gm)) {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const shadowed = [...counts].filter(([, n]) => n > 1).map(([name]) => name);
+  check(
+    "no name in the app is declared twice, because the second one would erase the first",
+    shadowed.length === 0,
+    shadowed.join(", ")
+  );
+}
+
 // jsdom does not fetch external scripts (there is no server), so the files the
 // page loads before `app.js` are read here and injected below in the same order
 // the browser would run them.
@@ -309,8 +329,26 @@ Object.defineProperty(window.HTMLCanvasElement.prototype, "getContext", {
   value: () => context,
   configurable: true,
 });
+// One box for every canvas is what the chart engine needs, but it is not what a
+// trader sees: a library of 182 cards has twelve on screen and 170 below the
+// fold, and the difference is the whole question of what a card costs. So an
+// indicator card reports its real position only once this file says the
+// platform has put it there -- `__cardOnScreen`, by concept id, because a render
+// builds new canvas nodes and a check that marked the old one would be marking
+// nothing.
+const BELOW_FOLD = {
+  x: 0, y: 100000, top: 100000, left: 0, bottom: 100064, right: 240, width: 240, height: 64,
+};
+const cardOnScreen = new Set();
+window.__cardOnScreen = (id, value) => {
+  if (value) cardOnScreen.add(id);
+  else cardOnScreen.delete(id);
+};
 Object.defineProperty(window.HTMLCanvasElement.prototype, "getBoundingClientRect", {
-  value: () => RECT,
+  value() {
+    const card = this.closest && this.closest(".conceptCard[data-concept]");
+    return card && !cardOnScreen.has(card.dataset.concept) ? BELOW_FOLD : RECT;
+  },
   configurable: true,
 });
 
@@ -503,6 +541,65 @@ const backend = {
       summary: "the agent re-read the chart and held", created_at: "2026-10-27T09:30:00Z",
     },
   ],
+  // The Indicators panel's catalog: eight real ids from eight different rail
+  // groups, chosen so every shape a concept can take is on screen at once -- one
+  // that marks bars, one that measures in its own sub-pane with a fixed scale,
+  // one that draws over the price, one that needs a second instrument, and one
+  // this instrument cannot feed at all.
+  //
+  // Nine momentum oscillators would have let the rail, the kind chips, the pair
+  // field, the greyed card and the "needs" line all pass while none of them was
+  // exercised, which is the failure mode this fixture exists to avoid.
+  concepts: [
+    {
+      id: "smc.liquidity_sweep", version: "1.0.0", library: "smc",
+      name: "Liquidity Sweep", parameters: [], required_channels: ["candles"],
+      description: "price ran beyond a liquidity level and closed back inside it -- the pool was taken without acceptance",
+      available: true, pane: false, overlay: false,
+    },
+    {
+      id: "candles.doji", version: "1.0.0", library: "candles",
+      name: "Doji", parameters: [], required_channels: ["candles"],
+      description: "open and close nearly equal -- the bar could not decide",
+      available: true, pane: false, overlay: false,
+    },
+    {
+      id: "econ.fomc", version: "1.0.0", library: "econ",
+      name: "FOMC Decision", parameters: [], required_channels: ["candles"],
+      description: "the funds target's own change -- the decision IS the surprise",
+      available: true, pane: false, overlay: false,
+    },
+    {
+      id: "indicators.rsi", version: "1.0.0", library: "indicators",
+      name: "RSI", parameters: [], required_channels: ["candles"],
+      description: "Wilder's relative strength index over 14 bars -- in its own pane with the 30/70 bands",
+      available: true, pane: true, overlay: false,
+    },
+    {
+      id: "indicators.macd", version: "1.0.0", library: "indicators",
+      name: "MACD", parameters: [], required_channels: ["candles"],
+      description: "the 12/26 EMA difference, its 9-bar signal, and the histogram between them",
+      available: true, pane: true, overlay: false,
+    },
+    {
+      id: "indicators.bollinger", version: "1.0.0", library: "indicators",
+      name: "Bollinger Bands", parameters: [], required_channels: ["candles"],
+      description: "the 20-bar average with its two-sigma bands on the price plot",
+      available: true, pane: false, overlay: true,
+    },
+    {
+      id: "indicators.pairs", version: "1.0.0", library: "indicators",
+      name: "Pairs (Cointegration)", parameters: [], required_channels: ["candles"],
+      description: "the Engle-Granger spread's z-score with the mean-reversion gate in the label",
+      available: true, pane: true, overlay: false,
+    },
+    {
+      id: "order_flow.delta_shift", version: "1.0.0", library: "order_flow",
+      name: "Delta Shift", parameters: [], required_channels: ["trades_aggressor"],
+      description: "bar delta at a multiple of its recent average absolute value -- aggressors leaned one way",
+      available: false, pane: false, overlay: false,
+    },
+  ],
   // The answer `GET /scan` gives. Two ranked rows, one failure and a note, which
   // is the shape that makes the panel's three regions all visible at once --
   // ranked first, the unmeasured in their own fold, and the caveat below. A
@@ -686,6 +783,109 @@ function footprintColumns(count, bar = BAR_MS["5m"]) {
 
 /// The query string of a request, as an object.
 const queryOf = (url) => new URLSearchParams(url.split("?")[1] ?? "");
+
+/// The Indicators panel's two preview reads, as the routes answer them.
+///
+/// Both are built from `candlesFor`, so the timestamps line up with the bars the
+/// pane is holding -- and deliberately not *exactly*: the series starts at bar
+/// 100 while the card's crop is the last 96 bars of the window, so four of its
+/// points fall outside what the card shows. That is the case the alignment is for.
+/// Likewise one event sits at bar 40, off the end of the crop, because "a concept
+/// whose history is outside the window draws nothing" has to be distinguishable
+/// from a preview that is simply broken.
+
+/// The answer `GET /concept-events/scan` gives: every concept's events at once,
+/// which is why the whole grid of cards costs one request.
+function conceptScanEvents(symbol, timeframe) {
+  const bars = candlesFor(200, symbol, timeframe);
+  const sweep = bars[150];
+  const fomc = bars[180];
+  const stale = bars[40];
+  return [
+    {
+      concept_id: "smc.liquidity_sweep", concept_version: "1.0.0", symbol, timeframe,
+      direction: "bearish", status: "confirmed", event_time_ns: sweep.open_time,
+      price_level: sweep.high, zone_low: sweep.high - 0.8, zone_high: sweep.high + 0.5,
+      evidence: "swept the equal highs and closed back inside",
+      bars: [bars[148].open_time, sweep.open_time],
+    },
+    {
+      concept_id: "econ.fomc", concept_version: "1.0.0", symbol, timeframe,
+      direction: "neutral", status: "confirmed", event_time_ns: fomc.open_time,
+      price_level: fomc.close, evidence: "25bp cut",
+      bars: [bars[176].open_time, fomc.open_time],
+    },
+    {
+      concept_id: "smc.liquidity_sweep", concept_version: "1.0.0", symbol, timeframe,
+      direction: "bullish", status: "expired", event_time_ns: stale.open_time,
+      price_level: stale.low, zone_low: stale.low - 0.5, zone_high: stale.low + 0.3,
+      evidence: "took the equal lows", bars: [bars[38].open_time, stale.open_time],
+    },
+  ];
+}
+
+/// The answer `GET /indicator-series` gives for one concept.
+///
+/// The four shapes the engine emits -- a fixed-scale line, bars and lines on an
+/// auto scale, an overlay with a fill -- are all here, keyed by the concept the
+/// shell asked for, so a card that asked for RSI and drew MACD's data would fail.
+function conceptSeriesFixture(concept, symbol, timeframe) {
+  const bars = candlesFor(200, symbol, timeframe).slice(100);
+  const times = bars.map((b) => b.open_time);
+  const closes = bars.map((b) => b.close);
+  const wave = (offset) => bars.map((_, i) => Math.sin((i + offset) / 7));
+  if (concept === "indicators.rsi") {
+    return {
+      symbol, times,
+      spec: {
+        label: "RSI(14)", scale: { mode: "fixed", min: 0, max: 100 }, levels: [30, 70],
+        lines: [{ name: "RSI", color: 0x8b5cf6, values: closes.map((_, i) => 50 + 22 * Math.sin(i / 6)) }],
+        segments: [], markers: [], bars: null, fills: [], target: "pane",
+      },
+    };
+  }
+  if (concept === "indicators.macd") {
+    const line = wave(0).map((v) => v * 1.5);
+    return {
+      symbol, times,
+      spec: {
+        label: "MACD(12,26,9)", scale: { mode: "auto" }, levels: [0],
+        lines: [
+          { name: "MACD", color: 0x4c8dff, values: line },
+          { name: "signal", color: 0xf59e0b, values: wave(3).map((v) => v * 1.1) },
+        ],
+        segments: [], markers: [],
+        bars: { name: "histogram", color_up: 0x26a69a, color_down: 0xef5350, values: line.map((v, i) => v - wave(3)[i] * 1.1) },
+        fills: [], target: "pane",
+      },
+    };
+  }
+  if (concept === "indicators.bollinger") {
+    const mid = closes.map((_, i) => 100 + (i + 100) * 0.5);
+    return {
+      symbol, times,
+      spec: {
+        label: "BB(20,2)", scale: { mode: "auto" }, levels: [],
+        lines: [
+          { name: "upper", color: 0x60a5fa, values: mid.map((v) => v + 2) },
+          { name: "mid", color: 0x9ca3af, values: mid },
+          { name: "lower", color: 0x60a5fa, values: mid.map((v) => v - 2) },
+        ],
+        segments: [], markers: [], bars: null,
+        fills: [{ name: "band", color: 0x60a5fa, upper: mid.map((v) => v + 2), lower: mid.map((v) => v - 2) }],
+        target: "overlay",
+      },
+    };
+  }
+  return {
+    symbol, times,
+    spec: {
+      label: concept || "series", scale: { mode: "auto" }, levels: [],
+      lines: [{ name: "spread", color: 0x4c8dff, values: wave(1) }],
+      segments: [], markers: [], bars: null, fills: [], target: "pane",
+    },
+  };
+}
 
 window.fetch = async (path, options = {}) => {
   const url = String(path);
@@ -937,11 +1137,29 @@ window.fetch = async (path, options = {}) => {
   }
 
   if (url.startsWith("/concepts")) {
-    // The series-concept catalog a pane consults once an indicator is attached.
-    // None are enabled in this fixture, but the route's contract is an *array*;
-    // the generic `{}` fallback made the first attach crash the shell, which
-    // stopped every section after the drawing checks from running at all.
-    return json(200, []);
+    // The catalog the Indicators panel renders, and that a pane consults once a
+    // concept is attached. The route's contract is an *array* -- the generic `{}`
+    // fallback made the first attach crash the shell, which stopped every section
+    // after the drawing checks from running at all.
+    return json(200, backend.concepts);
+  }
+
+  // The Indicators panel's previews. One scan answers for every event card on the
+  // page, which is the whole reason a grid of them costs one request; the series
+  // route is per concept and per instrument.
+  if (url.startsWith("/concept-events/scan")) {
+    const asked = queryOf(url);
+    return json(200, {
+      events: conceptScanEvents(asked.get("symbol") ?? "BTCUSDT", asked.get("timeframe") ?? "5m"),
+    });
+  }
+  if (url.startsWith("/indicator-series")) {
+    const asked = queryOf(url);
+    return json(200, conceptSeriesFixture(
+      asked.get("concept"),
+      asked.get("symbol") ?? "BTCUSDT",
+      asked.get("timeframe") ?? "5m"
+    ));
   }
 
   // The dock's Alerts tab. `PATCH` and `DELETE` store the change rather than
@@ -1319,11 +1537,20 @@ window.Date.now = () => realPageNow() + pageClock.offset;
 // pause/resume path -- the reason a hundred charts do not mean a hundred
 // sockets -- completely unexercised.
 //
-// So this stub is the API's shape and nothing more. `observe` records the node;
-// `__intersect` plays the platform's part and delivers a change to every
-// observer watching it. It reports how many heard, so a check can tell "the
-// shell never observed this pane" apart from "the shell ignored the change".
+// So this stub is the API's shape and nothing more. `observe` records the node
+// and, on a later task, answers that it is on screen -- which is what a real
+// observer does for every element it is handed, and what a page that assumes it
+// cannot otherwise learn here. `__intersect` plays the platform's part and
+// delivers a *change* to every observer watching the node. It reports how many
+// heard, so a check can tell "the shell never observed this pane" apart from
+// "the shell ignored the change".
 const observers = [];
+// Whether `observe` plays the platform's initial delivery. The indicator library
+// asks which cards are on screen before it asks for their pictures, so this flag
+// is how a check can say "the platform has not told it yet" and see that the
+// page therefore asks for nothing.
+let silentObserve = false;
+window.__observeSilently = (value) => { silentObserve = value; };
 window.IntersectionObserver = class IntersectionObserver {
   constructor(callback, options) {
     this.callback = callback;
@@ -1331,7 +1558,15 @@ window.IntersectionObserver = class IntersectionObserver {
     this.targets = new Set();
     observers.push(this);
   }
-  observe(target) { this.targets.add(target); }
+  observe(target) {
+    this.targets.add(target);
+    if (silentObserve) return;
+    // A real observer answers on a later task, not inside `observe` -- a page
+    // that was written to a synchronous answer would work here and not in Chrome.
+    queueMicrotask(() => {
+      if (this.targets.has(target)) this.callback([{ target, isIntersecting: true }], this);
+    });
+  }
   unobserve(target) { this.targets.delete(target); }
   disconnect() { this.targets.clear(); }
   takeRecords() { return []; }
@@ -2913,6 +3148,485 @@ check(
     document.getElementById("dest-dashboard").hidden === false,
   `${panelEl().open} ${window.location.hash}`
 );
+
+// --- the fourth face: the indicator library ----------------------------------
+//
+// The library the chart used to carry as a block of checkboxes inside the
+// right-click menu. It is a panel face now, so the shell's promises apply to it:
+// one address, one host, one render pass -- plus two that belong to a panel of
+// cards rather than a pane of rows, that every card asks for its own picture and
+// that the whole grid costs one event read.
+
+console.log("\nthe indicators face");
+
+const conceptCards = () => [...document.querySelectorAll("#conceptGrid [data-concept]")];
+const conceptCard = (id) => document.querySelector(`#conceptGrid [data-concept="${id}"]`);
+const conceptRail = () => [...document.querySelectorAll("#conceptGroups [data-concept-group]")];
+const routeCalls = (prefix) => backend.calls.filter((c) => c.url.startsWith(prefix));
+/// Let every queued preview fetch and draw land. The queue is four deep and each
+/// card is a promise chain, so a single 30ms settle is not the whole flush.
+const drain = async () => { for (let i = 0; i < 8; i += 1) await settle(); };
+
+check(
+  "the fourth door on the bar is the library, and it is always there",
+  panelTrigger("concepts") !== null &&
+    panelTrigger("concepts").disabled === false &&
+    panelTrigger("concepts").getAttribute("aria-label") === "Indicators" &&
+    document.getElementById("panelTab-concepts") !== null,
+  panelTrigger("concepts") ? panelTrigger("concepts").getAttribute("aria-label") : "no trigger"
+);
+
+const scanBefore = routeCalls("/concept-events/scan").length;
+const seriesBefore = routeCalls("/indicator-series").length;
+check(
+  "a library nobody opened asked for nothing",
+  scanBefore === 0 && seriesBefore === 0,
+  `${scanBefore} scan(s) ${seriesBefore} series(s)`
+);
+
+// The library this page ships against is 182 concepts wide and the first screen
+// shows twelve, so what a card costs is not "is it in the library" but "has the
+// platform put it on screen". Opening the face here happens with the observer
+// kept silent -- a grid the platform has said nothing about yet -- and the only
+// right answer to that is no request at all.
+window.__observeSilently(true);
+panelTrigger("concepts").click();
+await settle();
+check(
+  "from the dashboard it lands on a chart first, because an indicator needs one",
+  panelShown("concepts") && window.location.hash === "#/charts/concepts" &&
+    document.getElementById("dest-charts").hidden === false &&
+    document.getElementById("dest-dashboard").hidden === true,
+  `${panelEl().open} ${window.location.hash}`
+);
+check(
+  "the head names the face and the tab says it is the one showing",
+  document.getElementById("workPanelTitle").textContent === "Indicators" &&
+    document.getElementById("panelTab-concepts").getAttribute("aria-selected") === "true" &&
+    panelTrigger("concepts").getAttribute("aria-expanded") === "true",
+  `${document.getElementById("workPanelTitle").textContent}`
+);
+
+const coverage = document.getElementById("conceptCoverage").textContent;
+check(
+  "the rail counts what the instrument can actually run",
+  coverage.includes("7 of 8") && coverage.includes("BTCUSDT") && coverage.includes("5m"),
+  coverage
+);
+check(
+  "and one row per family this instrument has members in -- no empty zeros",
+  conceptRail().map((row) => row.dataset.conceptGroup).join(",") ===
+    "all,smc,candles,order-flow,trend,momentum,volatility,statistical,econ",
+  conceptRail().map((row) => row.dataset.conceptGroup).join(",")
+);
+check(
+  "each row carries its own touched-over-total, not just a size",
+  conceptRail().find((row) => row.dataset.conceptGroup === "trend")
+    .textContent.includes("0/1"),
+  conceptRail().find((row) => row.dataset.conceptGroup === "trend")?.textContent
+);
+check(
+  "the whole library is eight cards, each with a canvas of its own",
+  conceptCards().length === 8 &&
+    conceptCards().every((card) => card.querySelector(".conceptCard__canvas")),
+  `${conceptCards().length} card(s)`
+);
+
+const chipText = (id) => [...conceptCard(id).querySelectorAll(".conceptCard__chip")]
+  .map((node) => node.textContent).join("+");
+check(
+  "a card says what it draws: a band on the price, a line in a sub-pane, a mark on a bar",
+  chipText("indicators.bollinger") === "on chart" &&
+    chipText("indicators.rsi") === "sub-pane" &&
+    chipText("candles.doji") === "events",
+  `${chipText("indicators.bollinger")} ${chipText("indicators.rsi")} ${chipText("candles.doji")}`
+);
+const starved = conceptCard("order_flow.delta_shift");
+check(
+  "and one the instrument cannot feed is greyed, unpressable, and says what it needs",
+  starved.classList.contains("conceptCard--unavailable") &&
+    starved.querySelector(".conceptCard__main").disabled === true &&
+    starved.querySelector(".conceptCard__needs").textContent.includes("trades_aggressor"),
+  starved.querySelector(".conceptCard__needs")?.textContent || "no needs line"
+);
+
+// The library this page ships against is 182 concepts wide and the first screen
+// shows twelve, so what a card costs is not "is it in the library" but "has the
+// platform put it on screen". Nothing has been put on screen here -- and the only
+// right answer to that is no request at all.
+await drain();
+check(
+  "a card the platform has not placed on screen costs no request",
+  routeCalls("/indicator-series").length === seriesBefore &&
+    routeCalls("/concept-events/scan").length === scanBefore,
+  `${routeCalls("/indicator-series").length - seriesBefore} series and ` +
+    `${routeCalls("/concept-events/scan").length - scanBefore} scan call(s) with nothing on screen`
+);
+
+// One card comes up, and it is the only thing worth asking for. The face then
+// repaints on the chart's clock while that read is still open -- the same card
+// at the same instrument, so the same picture must not go on the wire twice.
+const previewCanvas = (id) => conceptCard(id).querySelector(".conceptCard__canvas");
+const repaintFace = () => {
+  document.dispatchEvent(new window.CustomEvent("hrz:concepts"));
+  document.dispatchEvent(new window.CustomEvent("hrz:pane"));
+};
+window.__cardOnScreen("indicators.rsi", true);
+repaintFace();
+repaintFace();
+await drain();
+check(
+  "the card that comes into view is asked for once, even across a repaint while its read is open",
+  routeCalls("/indicator-series").length - seriesBefore === 1 &&
+    routeCalls("/indicator-series").slice(seriesBefore)
+      .every((call) => call.url.includes("concept=indicators.rsi")),
+  routeCalls("/indicator-series").slice(seriesBefore).map((call) => call.url.split("concept=")[1]).join(" ") || "(none)"
+);
+
+// The rest of the first screen, plus one card the scroll brings -- which is the
+// other half of the signal, and arrives as an observer record rather than as a
+// box the page measured while it was building.
+for (const id of ["indicators.macd", "indicators.bollinger", "indicators.pairs", "candles.doji", "econ.fomc"]) {
+  window.__cardOnScreen(id, true);
+}
+repaintFace();
+window.__intersect(previewCanvas("smc.liquidity_sweep"), true);
+await drain();
+check(
+  "every event card's picture comes from one scan, not one request per card",
+  routeCalls("/concept-events/scan").length - scanBefore === 1,
+  `${routeCalls("/concept-events/scan").length - scanBefore} scan call(s) for 3 event cards`
+);
+check(
+  "and each series card asked for its own concept on this instrument",
+  routeCalls("/indicator-series").length - seriesBefore === 4 &&
+    ["indicators.rsi", "indicators.macd", "indicators.bollinger", "indicators.pairs"]
+      .every((id) => routeCalls("/indicator-series")
+        .some((call) => call.url === `/indicator-series?symbol=BTCUSDT&timeframe=5m&concept=${id}` ||
+          call.url === `/indicator-series?symbol=BTCUSDT&timeframe=5m&concept=${id}&symbol2=ETHUSDT`)),
+  routeCalls("/indicator-series").map((call) => call.url.split("concept=")[1]).join(" ")
+);
+check(
+  "the one concept with a second instrument sends the one the pane is on",
+  routeCalls("/indicator-series").some((call) =>
+    call.url.includes("concept=indicators.pairs") && call.url.includes("symbol2=")),
+  routeCalls("/indicator-series").map((call) => call.url).find((url) => url.includes("pairs")) || "(none)"
+);
+check(
+  "the greyed card was not fetched for, and the pairs card offers its second instrument",
+  !routeCalls("/indicator-series").some((call) => call.url.includes("delta_shift")) &&
+    conceptCard("indicators.pairs").querySelector(".conceptCard__pairInput") !== null,
+  ""
+);
+check(
+  "a previewed card is drawn into, not left shimmering",
+  (() => {
+    const canvas = conceptCard("indicators.rsi").querySelector(".conceptCard__canvas");
+    return canvas.width > 0 && !canvas.classList.contains("conceptCard__canvas--wait");
+  })(),
+  `width=${conceptCard("indicators.rsi").querySelector(".conceptCard__canvas").width}`
+);
+
+// The second render of the same cards is the same data: re-asking for a picture
+// the face already holds is how a panel of sixty cards becomes sixty requests
+// every time the trader presses an arrow key.
+const seriesAfterFirst = routeCalls("/indicator-series").length;
+const scanAfterFirst = routeCalls("/concept-events/scan").length;
+conceptRail().find((row) => row.dataset.conceptGroup === "smc").click();
+await settle();
+conceptRail().find((row) => row.dataset.conceptGroup === "all").click();
+await settle();
+await drain();
+check(
+  "and a group is a filter over cached answers, not a second fetch",
+  routeCalls("/indicator-series").length === seriesAfterFirst &&
+    routeCalls("/concept-events/scan").length === scanAfterFirst,
+  `+${routeCalls("/indicator-series").length - seriesAfterFirst} series, +${routeCalls("/concept-events/scan").length - scanAfterFirst} scan(s)`
+);
+
+check(
+  "a family row is an address, and the address is the only truth about it",
+  panelShown("concepts") && window.location.hash === "#/charts/concepts" &&
+    conceptCards().length === 8 &&
+    conceptRail().find((row) => row.dataset.conceptGroup === "all")
+      .getAttribute("aria-current") === "true",
+  `${window.location.hash} · ${conceptCards().length} card(s)`
+);
+
+document.getElementById("conceptActiveRow").click();
+await settle();
+check(
+  "the chart's own row is the third segment too, and says so when it is empty",
+  window.location.hash === "#/charts/concepts/active" &&
+    conceptCards().length === 0 &&
+    document.getElementById("conceptEmpty").hidden === false &&
+    document.getElementById("conceptEmpty").textContent.includes("Nothing on this chart yet"),
+  `${window.location.hash} · ${document.getElementById("conceptEmpty").textContent.slice(0, 40)}`
+);
+
+window.location.hash = "#/charts/concepts/smc";
+await settle();
+check(
+  "typing the family into the address bar opens it directly",
+  panelShown("concepts") && conceptCards().length === 1 &&
+    conceptCards()[0].dataset.concept === "smc.liquidity_sweep" &&
+    document.getElementById("conceptHeadTitle").textContent === "Smart Money Concepts",
+  `${window.location.hash} · ${conceptCards().map((c) => c.dataset.concept).join(",")}`
+);
+
+const search = document.getElementById("conceptSearch");
+window.location.hash = "#/charts/concepts";
+await settle();
+search.value = "bollinger";
+search.dispatchEvent(new window.Event("input", { bubbles: true }));
+await settle();
+check(
+  "the search filters across families and the head counts what it found",
+  conceptCards().length === 1 &&
+    document.getElementById("conceptHeadNote").textContent.includes("1 match") &&
+    document.getElementById("conceptHeadNote").textContent.includes("bollinger"),
+  `${conceptCards().length} card(s) · ${document.getElementById("conceptHeadNote").textContent}`
+);
+search.value = "liquidity";
+search.dispatchEvent(new window.Event("input", { bubbles: true }));
+await settle();
+check(
+  "a query crosses families rather than navigating to one: on the whole library it finds the SMC card",
+  window.location.hash === "#/charts/concepts" && conceptCards().length === 1 &&
+    conceptCards()[0].dataset.concept === "smc.liquidity_sweep",
+  `${window.location.hash} · ${conceptCards().map((c) => c.dataset.concept).join(",")}`
+);
+conceptRail().find((row) => row.dataset.conceptGroup === "smc").click();
+await settle();
+check(
+  "and a group change is a filter change, not a reset of what was typed",
+  window.location.hash === "#/charts/concepts/smc" && search.value === "liquidity" &&
+    conceptCards().length === 1,
+  `${window.location.hash} · ${search.value} · ${conceptCards().length}`
+);
+search.value = "qqqq";
+search.dispatchEvent(new window.Event("input", { bubbles: true }));
+await settle();
+check(
+  "and nothing matching is said, not shown as an empty box",
+  conceptCards().length === 0 && document.getElementById("conceptEmpty").hidden === false,
+  ""
+);
+search.value = "";
+search.dispatchEvent(new window.Event("input", { bubbles: true }));
+await settle();
+
+// --- picking one -------------------------------------------------------------
+
+window.location.hash = "#/charts/concepts";
+await settle();
+const rsiChipRow = paneNode().querySelector(".conceptChips");
+check(
+  "with nothing on the chart, the head has no concept chips to show",
+  conceptCards().length === 8 && rsiChipRow && rsiChipRow.hidden === true,
+  `${conceptCards().length} card(s) · chips hidden=${rsiChipRow?.hidden}`
+);
+
+conceptCard("indicators.rsi").querySelector(".conceptCard__main").click();
+await settle();
+check(
+  "adding one dismisses the panel, so the trader sees the thing they added",
+  panelEl().open === false && window.location.hash === "#/charts" &&
+    document.getElementById("dest-charts").hidden === false,
+  `open=${panelEl().open} ${window.location.hash}`
+);
+const chipRow = () => paneNode().querySelector(".conceptChips");
+const chipsOnPane = () => [...chipRow().querySelectorAll(".conceptChip")];
+const chipRemoves = () => [...chipRow().querySelectorAll("button[data-concept]")];
+check(
+  "and the chart names it: a chip on the pane's own head, removable where it sits",
+  chipsOnPane().length === 1 &&
+    chipRemoves()[0].dataset.concept === "indicators.rsi" &&
+    chipRow().hidden === false &&
+    chipsOnPane()[0].textContent.includes("RSI"),
+  chipsOnPane().map((chip) => chip.textContent).join(",") || "no chips"
+);
+
+panelTrigger("concepts").click();
+await settle();
+await drain();
+check(
+  "reopened, the card remembers: pressed, counted, and its family row counts it",
+  conceptCard("indicators.rsi").classList.contains("conceptCard--on") &&
+    conceptCard("indicators.rsi").querySelector(".conceptCard__main")
+      .getAttribute("aria-checked") === "true" &&
+    document.getElementById("conceptActiveCount").textContent === "1" &&
+    conceptRail().find((row) => row.dataset.conceptGroup === "momentum")
+      .textContent.includes("1/1"),
+  `${conceptCard("indicators.rsi")?.className} count=${document.getElementById("conceptActiveCount").textContent}`
+);
+
+conceptCard("indicators.macd").querySelector(".conceptCard__main").click();
+await settle();
+check(
+  "a second concept follows the same rule: added, dismissed, two chips on the chart",
+  panelEl().open === false && window.location.hash === "#/charts" &&
+    chipRemoves().map((button) => button.dataset.concept).join(",") === "indicators.rsi,indicators.macd",
+  chipRemoves().map((button) => button.dataset.concept).join(",") || "no chips"
+);
+
+// The other door: the chip on the chart's own head, reached without opening
+// anything. This is what makes staying open on a switch-off cost nothing.
+chipRemoves()[0].click();
+await settle();
+check(
+  "and a chip's own cross takes it off the chart with the panel shut",
+  chipsOnPane().length === 1 && chipRemoves()[0].dataset.concept === "indicators.macd",
+  chipRemoves().map((button) => button.dataset.concept).join(",") || "none"
+);
+
+panelTrigger("concepts").click();
+await settle();
+await drain();
+document.getElementById("conceptActiveRow").click();
+await settle();
+check(
+  "the chart's own row is the third segment too, and holds what is on the chart",
+  window.location.hash === "#/charts/concepts/active" && conceptCards().length === 1 &&
+    conceptCards()[0].dataset.concept === "indicators.macd" &&
+    document.getElementById("conceptActiveCount").textContent === "1",
+  `${window.location.hash} · ${conceptCards().length} card(s)`
+);
+
+conceptCards()[0].querySelector(".conceptCard__main").click();
+await settle();
+check(
+  "switching one off keeps the panel open -- a trader who is pruning is still choosing",
+  panelEl().open === true && window.location.hash === "#/charts/concepts/active" &&
+    conceptCards().length === 0 &&
+    document.getElementById("conceptActiveCount").textContent === "0",
+  `open=${panelEl().open} ${conceptCards().length} card(s)`
+);
+check(
+  "and the chip on the chart goes with it, the row shutting rather than sitting empty",
+  chipsOnPane().length === 0 && chipRow().hidden === true,
+  `${chipsOnPane().length} chip(s) hidden=${chipRow().hidden}`
+);
+
+// Clear one family, not the whole chart: the button is in a group's head, and a
+// trader who means the family must not lose the four other things they attached.
+const conceptClear = document.getElementById("conceptClearGroup");
+window.location.hash = "#/charts/concepts";
+await settle();
+conceptCard("indicators.rsi").querySelector(".conceptCard__main").click();
+await settle();
+panelTrigger("concepts").click();
+await settle();
+await drain();
+conceptCard("indicators.macd").querySelector(".conceptCard__main").click();
+await settle();
+panelTrigger("concepts").click();
+await settle();
+await drain();
+conceptRail().find((row) => row.dataset.conceptGroup === "trend").click();
+await settle();
+check(
+  "a family with something in it offers to clear that family",
+  window.location.hash === "#/charts/concepts/trend" &&
+    conceptCards().map((c) => c.dataset.concept).join(",") === "indicators.macd" &&
+    conceptClear.hidden === false,
+  `${window.location.hash} · ${conceptCards().map((c) => c.dataset.concept).join(",")} · hidden=${conceptClear.hidden}`
+);
+conceptClear.click();
+await settle();
+check(
+  "and it stops at the family: the trend card is off but still there, the momentum one untouched",
+  conceptCards().length === 1 &&
+    !conceptCard("indicators.macd").classList.contains("conceptCard--on") &&
+    conceptCard("indicators.macd").querySelector(".conceptCard__main")
+      .getAttribute("aria-checked") === "false" &&
+    chipsOnPane().length === 1 &&
+    chipRemoves()[0].dataset.concept === "indicators.rsi" &&
+    document.getElementById("conceptActiveCount").textContent === "1" &&
+    conceptClear.hidden === true,
+  `cards=${conceptCards().length} macdOn=${conceptCard("indicators.macd")?.classList.contains("conceptCard--on")} ` +
+    `chips=${chipsOnPane().length} count=${document.getElementById("conceptActiveCount").textContent}`
+);
+chipRemoves()[0].click();
+await settle();
+
+// --- the keyboard ------------------------------------------------------------
+
+document.getElementById("workPanelClose").click();
+await settle();
+document.dispatchEvent(new window.KeyboardEvent("keydown", {
+  key: "/", bubbles: true, cancelable: true,
+}));
+await settle();
+check(
+  "the slash opens the library from anywhere on the page, with no modifier held",
+  panelShown("concepts") && window.location.hash === "#/charts/concepts",
+  `${panelShown("concepts")} ${window.location.hash}`
+);
+document.getElementById("panelBody-concepts").dispatchEvent(new window.KeyboardEvent("keydown", {
+  key: "/", bubbles: true, cancelable: true,
+}));
+await settle();
+check(
+  "and inside the face the same key means let me type, not open the face again",
+  document.activeElement === document.getElementById("conceptSearch"),
+  document.activeElement.id || document.activeElement.tagName
+);
+
+const firstCard = conceptCards()[0].querySelector(".conceptCard__main");
+check(
+  "one Tab stop for the whole grid, at the card the arrows were last on",
+  conceptCards().filter((c) => c.querySelector(".conceptCard__main").tabIndex === 0).length === 1,
+  `${conceptCards().filter((c) => c.querySelector(".conceptCard__main").tabIndex === 0).length} stop(s)`
+);
+firstCard.focus();
+conceptCards()[0].querySelector(".conceptCard__main")
+  .dispatchEvent(new window.KeyboardEvent("keydown", {
+    key: "ArrowRight", bubbles: true, cancelable: true,
+  }));
+await settle();
+check(
+  "and the arrows walk it, moving the stop with the point",
+  document.activeElement === conceptCards()[1].querySelector(".conceptCard__main") &&
+    conceptCards()[1].querySelector(".conceptCard__main").tabIndex === 0 &&
+    firstCard.tabIndex === -1,
+  `${document.activeElement.textContent?.slice(0, 12)} tabIndex=${firstCard.tabIndex}`
+);
+
+document.getElementById("workPanelClose").click();
+await settle();
+check(
+  "closed, the face hands focus back to its own door",
+  panelEl().open === false && document.activeElement === panelTrigger("concepts"),
+  `${panelEl().open} ${document.activeElement.getAttribute("data-open-panel")}`
+);
+
+// The chart keeps its clock under a modal, so the queue that fetches card
+// pictures has to stop with the modal -- otherwise a panel closed twenty minutes
+// ago is still asking for sixty previews nobody will look at. Measured against the
+// moment of closing, because the pane's own event read is a different request for
+// a different reason and this is not about it.
+const scanOnClose = routeCalls("/concept-events/scan").length;
+const seriesOnClose = routeCalls("/indicator-series").length;
+document.dispatchEvent(new window.CustomEvent("hrz:concepts"));
+document.dispatchEvent(new window.CustomEvent("hrz:pane"));
+await settle();
+await drain();
+check(
+  "a closed face fetches nothing",
+  routeCalls("/indicator-series").length === seriesOnClose &&
+    routeCalls("/concept-events/scan").length === scanOnClose,
+  `+${routeCalls("/indicator-series").length - seriesOnClose} series, ` +
+    `+${routeCalls("/concept-events/scan").length - scanOnClose} scan(s) while closed`
+);
+
+// Back to the platform's own answer for every section after this one: what the
+// wall does with a pane it is told to look at is a different promise from what a
+// card costs, and it is asserted where the wall is asserted.
+window.__observeSilently(false);
+
+document.querySelector("#topNav [data-dest='dashboard']").click();
+await settle();
 
 // --- placing a drawing -------------------------------------------------------
 //
@@ -5470,6 +6184,21 @@ check(
   panelEl().open === true && panelShown("community") &&
     window.location.hash === "#/charts/community",
   `open=${panelEl().open} ${window.location.hash}`
+);
+
+document.dispatchEvent(new window.KeyboardEvent("keydown", {
+  key: "6",
+  code: "Digit6",
+  altKey: true,
+  bubbles: true,
+  cancelable: true,
+}));
+await settle();
+check(
+  "and Alt+6 is the indicator library, the sixth thing on the same bar",
+  panelEl().open === true && panelShown("concepts") && !panelShown("community") &&
+    window.location.hash === "#/charts/concepts",
+  `open=${panelEl().open} concepts=${panelShown("concepts")} ${window.location.hash}`
 );
 
 // Last, so it covers the panels above as well: a session that ends must not

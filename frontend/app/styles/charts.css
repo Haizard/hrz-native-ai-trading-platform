@@ -192,40 +192,223 @@
 
 .chartBar .close { margin-left: auto; padding: 3px 8px; color: var(--muted); }
 
-/* The Concept Explorer rows (chart menu). */
-.conceptRow { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 26px; font-size: 12px; cursor: pointer; border-radius: 4px; }
+/*
+  The Indicators panel: the concept library as a face of the work panel.
 
-.conceptRow:hover { color: var(--text); background: var(--bg-raised); }
+  The reference products all show this as a flat list of names in a dialog --
+  TradingView's indicator search, LuxAlgo's concept picker -- and the trader has
+  to add each one to find out what it draws. Here every card carries its own
+  miniature of the chart it would put on the screen, so the choice is made by
+  looking rather than by guessing, and the families down the left carry counts
+  so the size of the library and the state of this chart read at one glance.
+*/
+.conceptsBody {
+  display: grid; grid-template-columns: 216px minmax(0, 1fr);
+  overflow: hidden;
+}
 
-.conceptRow.unavailable { color: var(--muted); opacity: .55; cursor: default; }
+.conceptsRail {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  min-height: 0; padding: var(--space-3);
+  border-right: 1px solid var(--line); background: var(--bg-panel);
+  overflow: auto;
+}
 
-.conceptRow .conceptName { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conceptsSearch {
+  display: flex; align-items: center; gap: var(--space-2);
+  color: var(--text-3);
+}
 
-.conceptChip { font-size: 8px; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.05em;
-  padding: 1px 4px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); flex: none; }
+.conceptsSearch .hrz-input { flex: 1 1 auto; min-width: 0; }
 
-.conceptChip.pane { color: var(--accent); border-color: var(--accent-line); }
+.conceptsCoverage {
+  margin: 0; padding: 0 var(--space-1);
+  font-size: var(--text-2xs); color: var(--text-3);
+}
 
-.conceptChip.ovl { color: var(--accent); border-color: var(--accent-line); }
+.conceptsGroups { display: flex; flex-direction: column; gap: 1px; }
 
-.conceptSearch { width: 100%; box-sizing: border-box; margin: 2px 0 6px; padding: 6px 10px; font-size: 12px;
-  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 6px; color: var(--text); outline: none; }
+.conceptsGroup {
+  display: flex; align-items: center; gap: var(--space-2);
+  width: 100%; padding: 6px var(--space-2) 6px var(--space-3);
+  font: inherit; font-size: var(--text-xs); text-align: left;
+  color: var(--text-2); background: none; border: 0; border-radius: var(--radius-2);
+  cursor: pointer; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
 
-.conceptSearch:focus { border-color: var(--accent-line); }
+.conceptsGroup:hover { background: var(--bg-raised); color: var(--text-1); }
 
-.conceptGroupHead { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 6px; margin-top: 2px;
-  font-size: 11px; font-weight: 600; color: var(--text); background: none; border: none; cursor: pointer; text-align: left; border-radius: 4px; }
+.conceptsGroup[aria-current="true"] {
+  background: var(--accent-soft); color: var(--text-1);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 
-.conceptGroupHead:hover { background: var(--bg-raised); }
+.conceptsGroup--touched .conceptsGroup__name { color: var(--text-1); }
 
-.conceptGroupHead .chev { display: inline-block; font-size: 9px; color: var(--muted); transition: transform 0.12s ease; transform: rotate(90deg); }
+.conceptsGroup__name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.conceptGroupHead.collapsed .chev { transform: rotate(0deg); }
+.conceptsGroup__count {
+  flex: none; min-width: 24px; padding: 1px 6px;
+  font-family: var(--font-mono); font-size: var(--text-2xs); text-align: center;
+  color: var(--text-3); background: var(--bg-overlay); border-radius: 999px;
+}
 
-.conceptGroupCount { margin-left: auto; font-size: 9px; font-family: var(--mono); color: var(--muted);
-  padding: 1px 6px; border-radius: 8px; background: var(--bg-overlay); }
+.conceptsGroup[aria-current="true"] .conceptsGroup__count { color: var(--accent-ink); background: var(--accent); }
 
-.conceptGroupBody { display: flex; flex-direction: column; }
+.conceptsGroup--active { margin-top: var(--space-1); border-top: 1px solid var(--line); border-radius: var(--radius-2) var(--radius-2) 0 0; padding-top: var(--space-3); }
+
+.conceptsMain { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; }
+
+.conceptsHead {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-4) var(--space-5) var(--space-3);
+  background: linear-gradient(var(--bg-canvas) 70%, transparent);
+}
+
+.conceptsHead__text { min-width: 0; }
+
+.conceptsHead__title { margin: 0; font-size: var(--text-md); font-weight: 600; letter-spacing: -0.01em; }
+
+.conceptsHead__note { margin: 2px 0 0; font-size: var(--text-xs); color: var(--text-3); }
+
+.conceptsGrid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: var(--space-3); padding: 0 var(--space-5) var(--space-5);
+}
+
+.conceptsEmpty { padding: var(--space-5); margin: 0; color: var(--text-3); font-size: var(--text-sm); }
+
+.conceptCard {
+  position: relative; display: flex; flex-direction: column;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius-3);
+  transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+}
+
+.conceptCard:hover { border-color: var(--line-strong); box-shadow: var(--shadow-1); transform: translateY(-1px); }
+
+.conceptCard--on { border-color: var(--accent-line); box-shadow: inset 0 0 0 1px var(--accent-soft); }
+
+.conceptCard__main {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  width: 100%; padding: var(--space-3);
+  font: inherit; text-align: left; color: inherit;
+  background: none; border: 0; border-radius: var(--radius-3); cursor: pointer;
+}
+
+.conceptCard--unavailable { opacity: 0.5; }
+
+.conceptCard--unavailable .conceptCard__main { cursor: not-allowed; }
+
+/* The miniature: the concept drawn over the chart's own last bars. */
+.conceptCard__preview {
+  display: block; position: relative;
+  height: 78px; border-radius: var(--radius-2); overflow: hidden;
+  background: var(--bg-canvas); border: 1px solid var(--line);
+}
+
+.conceptCard__canvas { display: block; width: 100%; height: 100%; }
+
+/* The count of marks this concept has on this chart, sitting in the corner of
+   the miniature it counts. Zero is quiet: nothing to say is an answer, not a
+   failure, and a loud zero would read as a card that did not load. */
+.conceptCard__tally {
+  position: absolute; left: var(--space-2); bottom: var(--space-2);
+  display: inline-flex; align-items: center; height: var(--space-4);
+  padding: 0 var(--space-1); border-radius: 999px;
+  font-family: var(--font-mono); font-size: var(--text-2xs);
+  color: var(--accent); background: var(--bg-overlay); border: 1px solid var(--line);
+}
+
+.conceptCard__tally[hidden] { display: none; }
+
+.conceptCard__tally--quiet { color: var(--text-3); }
+
+.conceptCard__canvas--wait {
+  background: linear-gradient(90deg, var(--bg-panel) 0%, var(--bg-overlay) 50%, var(--bg-panel) 100%);
+  background-size: 200% 100%;
+  animation: conceptPreviewSweep 1.1s var(--ease) infinite;
+}
+
+@keyframes conceptPreviewSweep {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conceptCard { transition: none; }
+  .conceptCard:hover { transform: none; }
+  .conceptCard__canvas--wait { animation: none; }
+}
+
+.conceptCard__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.conceptCard__name { font-size: var(--text-sm); font-weight: 600; color: var(--text-1); }
+
+.conceptCard__desc {
+  font-size: var(--text-2xs); line-height: 1.45; color: var(--text-3);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+
+.conceptCard__kind { display: flex; gap: 4px; margin-top: 2px; }
+
+.conceptCard__chip {
+  font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 1px 5px; border-radius: 3px; border: 1px solid var(--line); color: var(--text-3);
+}
+
+.conceptCard--on .conceptCard__chip { border-color: var(--accent-line); color: var(--accent); }
+
+.conceptCard__needs { font-size: 10px; color: var(--warn); }
+
+/* The switch's mark, in the corner the preview leaves free: a ring while the
+   concept is off, filled when it is on -- a card reads as chosen without the
+   name moving or a checkbox stealing a column. */
+.conceptCard__mark {
+  position: absolute; top: var(--space-4); right: var(--space-4);
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 1px solid var(--control-line); background: var(--bg-panel);
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+
+.conceptCard--on .conceptCard__mark { border-color: var(--accent); background: var(--accent); }
+
+.conceptCard--on .conceptCard__mark::after {
+  content: ""; position: absolute; inset: 0;
+  background: no-repeat center / 11px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2304222b' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+}
+
+.conceptCard__pair {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: 0 var(--space-3) var(--space-3);
+  font-size: var(--text-2xs); color: var(--text-3);
+}
+
+.conceptCard__pairInput { flex: 1 1 auto; min-width: 0; max-width: 120px; text-transform: uppercase; }
+
+/* The chips on the pane's own head: what this chart is drawing, removable from
+   the chart. They match the script layers' row in shape and differ in tone --
+   accent, because these are the library's, not a script's. */
+.conceptChips { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; overflow: hidden; margin-left: 4px; }
+
+.conceptChips[hidden] { display: none; }
+
+.conceptChip {
+  display: inline-flex; align-items: center; gap: 2px; flex: 0 1 auto; min-width: 0;
+  padding: 1px 2px 1px 7px; border-radius: 999px;
+  font-size: var(--text-2xs); color: var(--text-1);
+  background: var(--accent-soft); border: 1px solid var(--accent-line);
+}
+
+.conceptChip .indicatorChipName { max-width: 120px; }
+
+.conceptChipRemove {
+  flex: none; width: 16px; height: 16px; padding: 0;
+  font-size: 12px; line-height: 1; color: var(--text-2);
+  background: none; border: 0; border-radius: 50%; cursor: pointer;
+}
+
+.conceptChipRemove:hover { color: var(--text); background: color-mix(in srgb, var(--down) 25%, transparent); }
 
 /*
   The pane's own chrome. One line: what the chart is, then four buttons that
