@@ -11,12 +11,13 @@ need zero explanation to read a pattern on our chart
 ## Purpose
 
 Our concepts are correct as definitions and wrong as pictures. A break of
-structure draws as a line that stops at the bar which broke it, when every
-platform a trader has used draws the broken level running to the right until
-price returns to it. A triangle draws as a flat band, when the shape a trader
+structure draws as a word floating where a line should be — the event never
+carries the swing's bar, so there is no segment to run rightward until price
+returns to it, which is what every platform a trader has used draws. A triangle
+draws as a flat band, when the shape a trader
 looks for is two converging lines. A session draws as a price band, when a
 session is a *when*, not a *where*. An open fair value gap draws as a one-bar
-sliver. And a concept whose whole value is a number — a deviation of +2.7σ and
+sliver, and a filled one as a band across a third of the chart. And a concept whose whole value is a number — a deviation of +2.7σ and
 its historical percentile — is routed to the same text mark as a doji.
 
 The reason is not styling. It is that all 182 concepts are forced through three
@@ -67,8 +68,8 @@ draw, and what we cannot express today:
 
 | Needed by | Concept count | What the reference draws | What we draw |
 | --- | --- | --- | --- |
-| Structure and liquidity levels | 36 (SMC, Supply & Demand) | The broken level running **rightward until mitigated**, dashed, labelled at the break | A segment that stops at the break bar |
-| Imbalance and block zones | included above | A box that **lives until filled**, with mitigation shading | A box ending on its own creation bar |
+| Structure and liquidity levels | 36 (SMC, Supply & Demand) | The broken level running **rightward until mitigated**, dashed, labelled at the break | A 1.3px stub and a floating word: `bars` holds the break bar twice, so there is no swing to start from |
+| Imbalance and block zones | included above | A box that **lives until filled**, with mitigation shading | A live box ending on its own creation bar; a filled one stretched over a median of 177 bars |
 | Classical patterns | 15 (Chart Patterns) | An **outline traced through the pivots** plus a dashed neckline and a projected target | A flat band between two prices |
 | Harmonics | 9 | The **XABCD polyline**, legs named, often filled | A band, or a mark |
 | Sessions | 14 | A **full-height vertical box** over a time range | A price band |
@@ -209,15 +210,24 @@ Three artifacts, produced together, reviewed as one.
 vocabulary chapter followed by twelve family passes (the order below). This is
 the human-readable contract.
 
-**2. The ledger** — `reports/concept-visual-audit/ledger.json`. One row per
-concept, machine-readable, appended as each pass lands. This is what makes
-completeness checkable rather than assertable.
+**2. The ledger** — `reports/concept-visual-audit/ledger/<family>.json`, one shard
+per family and one row per concept, *seeded* from `GET /concepts` rather than
+typed: every judgement field starts empty, and the gate fails a row that is
+still empty. That is what makes completeness checkable rather than assertable --
+a concept registered tomorrow appears as a row nobody has judged, so a pass
+cannot quietly end with a family unexamined. Committed.
 
-**3. The renders** — `reports/concept-visual-audit/<family>.html`. Our *actual
-current output* per family, produced by the real engine, so every section of the
-audit shows what a trader sees now next to what the reference says it should
-look like. A written description of a wrong picture is arguable; the picture is
-not.
+**3. The renders** — `reports/concept-visual-audit/<family>/<concept-id>.html`, one
+page per concept, from the real wasm and the app's own painter (the page inlines
+`concept_shapes.js` from disk rather than reimplementing it, so the tool cannot
+draw a concept better than the chart can). Our *actual current output*, so every
+section of the audit shows what a trader sees now next to what the reference says
+it should look like. A written description of a wrong picture is arguable; the
+picture is not. Each page embeds a real 500-bar scene and weighs ~250 KB, so the
+pages are working artifacts and are gitignored like `/test-shots/`: what a picture
+showed is carried into the committed record as the row's `ours.today` and the
+section's measurements, and `node tools/concept_visual_audit.mjs render <family>`
+rebuilds any of them on demand.
 
 ### Prerequisite: the preview tool cannot see the concept path
 
@@ -369,6 +379,27 @@ is fixed.
   it. Fixing it first would let the audit photograph its own correction instead
   of what a trader sees now, so it is fixed in pass 1's build, not before the
   audit.
+- **Measured on the first render, and worse than the bullet above reads.** On
+  `BTCUSDT 15m` over 501 bars, `smc.fvg` answers 50 events: the 7 still `forming`
+  do draw as the one-bar sliver this bullet predicts (median span 1 bar), but the
+  43 `expired` ones span a median of **177 bars** and stack into a wall of
+  full-width bands over the right third of the chart. The dead branch is therefore
+  not one defect but two directions of one mistake: a live zone that should reach
+  the newest bar stops at its own, and a closed zone that should stop at its
+  mitigation bar is drawn from its origin all the way to it. Neither is the box a
+  trader reads as an imbalance. The same shape appears in `smc.ifvg` (median 120
+  bars) and `smc.order_block` (29), so it is a lifecycle rule, not an FVG bug.
+- **A structure segment has no start, so it draws as a dot.** `smc.bos`, `smc.choch`
+  and `smc.mss` carry `bars: [t, t]` — every one of the 18, 19 and 14 events in the
+  window has `bars[0] == event_time_ns`. The router reads `bars[0]` as the swing and
+  `event_time_ns` as the break, so both are the break bar, and the engine's
+  zero-length floor (`bar_w * 0.6`) draws a 1.3px stub at 15m. The photograph of
+  `smc.bos` is the word "bos" printed in the air with no line under it. The earlier
+  claim in this spec — that a break "draws as a line that stops at the bar which
+  broke it" — was too generous: there is no line to stop anywhere, because the
+  detector never puts the swing's bar in the event. Fixing the picture needs the
+  swing timestamp on the event, which is a detector change, not a rendering one, and
+  is why `fires` is a separate verdict from `draw` in the ledger.
 - The registry already says which scale a series concept belongs to — `pane: true` is a
   sub-pane below the chart, `overlay: true` is a line on the price frame
   ([concepts.rs:115](../../../crates/market-data/src/concepts.rs)) — and the concept

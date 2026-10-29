@@ -141,7 +141,16 @@ Every pass runs these steps. The task list below states only what differs.
   harness.
 - [ ] **6. Gate.** `node tools/concept_visual_audit.mjs check --family <family>` green,
   then the five verification commands.
-- [ ] **7. Commit** the section, the shard, the renders, and the tool change if any.
+- [ ] **7. Commit** the section, the shard, and the tool change if any. The renders
+  themselves are not committed: a page embeds a real 500-bar scene and weighs ~250 KB,
+  so the full sweep would put ~40 MB of regenerable HTML in the repo. `.gitignore` keeps
+  `reports/concept-visual-audit/*/` out and the `ledger/` shard in, the same
+  evidence-not-source rule `/test-shots/` already follows. The committed record of what
+  a picture showed is the row's `ours.today` prose plus the section's measurements;
+  `node tools/concept_visual_audit.mjs render <family>` rebuilds the page over a
+  comparable window — the newest 500 bars, not the identical ones, since the gateway
+  serves a moving window and each page prints the `at` it was built. That is exactly why
+  the pass writes down spans and counts instead of saying "see the picture".
 
 ---
 
@@ -152,7 +161,7 @@ Every pass runs these steps. The task list below states only what differs.
 **Files:** Create `frontend/app/concept_taxonomy.js`; Modify `frontend/app/app.js:14030-14048`
 (`CONCEPT_GROUPS`), `frontend/app/index.html:1903` (script tag).
 
-- [ ] Create the module with the predicates moved verbatim out of `app.js`, in the
+- [x] Create the module with the predicates moved verbatim out of `app.js`, in the
   `builder.js` UMD shape so the same file works in a `<script>` and in `require()`:
 
 ```js
@@ -170,7 +179,7 @@ Every pass runs these steps. The task list below states only what differs.
 });
 ```
 
-- [ ] Create `tools/concept_visual_audit.mjs` with one subcommand, `taxonomy`, whose job
+- [x] Create `tools/concept_visual_audit.mjs` with one subcommand, `taxonomy`, whose job
   is to fail: it `require()`s the new module and asserts the counts the spec's table
   claims, so an extraction that dropped a row or reordered the catch-all is caught here
   rather than in pass 7. Task 3's `seed` consumes the same table.
@@ -189,18 +198,22 @@ const EXPECTED = {
 };
 ```
 
-- [ ] In `app.js`, replace the local `CONCEPT_GROUPS` with
+- [x] In `app.js`, replace the local `CONCEPT_GROUPS` with
   `const CONCEPT_GROUPS = ConceptTaxonomy.GROUPS;` — the rail, the search and the
   coverage line keep reading the same rows, and the catch-all `more` group must stay
   last because `familyOf` takes the first match.
-- [ ] Add `<script src="/assets/concept_taxonomy.js"></script>` immediately before
+- [x] Add `<script src="/assets/concept_taxonomy.js"></script>` immediately before
   `builder.js` in `index.html`, and confirm `/assets/{*path}` serves it (extension
   allowlist already covers `.js`; static files read from disk, so no gateway restart).
-- [ ] Run the harnesses. `shell_check.mjs` reads the script tags out of `index.html` and
+- [x] Run the harnesses. `shell_check.mjs` reads the script tags out of `index.html` and
   injects them in order, so the new file is under test the moment the tag exists.
-- [ ] In the browser: `#/charts` → Indicators face → the rail shows sixteen family rows
+- [x] In the browser: `#/charts` → Indicators face → the rail shows sixteen family rows
   with the same counts as before, and the search box still filters.
-- [ ] Commit.
+  *(Done with instruments, not eyes: `shell_check` builds the page with the new script in
+  order and reports no uncaught error across every gesture, and `taxonomy` fails unless
+  the group table answers the spec's sixteen counts. The eye-level check on a signed-in
+  chart is folded into pass 1, which has to look at that chart anyway.)*
+- [x] Commit (`ce8915d`).
 
 ### Task 2: One shape router and one painter, shared with Node
 
@@ -214,36 +227,40 @@ request sends, and `ConceptShapes.paint(ctx, scene, phase)` → the two-pass pai
 consumes both, which is the whole reason the extraction happens first: a tool that
 re-implemented the routing would photograph the tool and not the chart.
 
-- [ ] Move the constants, `conceptColor`, `CONCEPT_ZONE_IDS`, `conceptShapes` and
+- [x] Move the constants, `conceptColor`, `CONCEPT_ZONE_IDS`, `conceptShapes` and
   `drawConceptShapes` into the module **unchanged**, with two differences: `from` takes
   `(events, enabled)` instead of closing over `conceptEvents`/`enabledConcepts`, and
   `paint` reads `scene.concept_shapes` and `scene.plot` exactly as before.
-- [ ] Move `rgbaFromPacked` in and export it as `rgba`; at `app.js:1502` leave
+- [x] Move `rgbaFromPacked` in and export it as `rgba`; at `app.js:1502` leave
   `const rgbaFromPacked = ConceptShapes.rgba;` so its other 28 uses are untouched.
-- [ ] At `app.js:3418` the request field becomes
+- [x] At `app.js:3418` the request field becomes
   `concept_shapes: ConceptShapes.from(conceptEvents, enabledConcepts),`.
-- [ ] At 974 and 1033 the two calls become `ConceptShapes.paint(ctx, scene, "under")`
+- [x] At 974 and 1033 the two calls become `ConceptShapes.paint(ctx, scene, "under")`
   and `"over"`.
-- [ ] **Preserve the defect.** `const end = e.status === "forming" || … ? toNs : toNs`
+- [x] **Preserve the defect.** `const end = e.status === "forming" || … ? toNs : toNs`
   is copied as it stands. Fixing it here would let pass 1 photograph its own correction.
-- [ ] Harnesses green, then the browser: enable `smc.fvg`, `candles.` any, `smc.bos` on
+- [x] Harnesses green, then the browser: enable `smc.fvg`, `candles.` any, `smc.bos` on
   a live chart and compare against a screenshot of the same window taken before the
   move. Identical, or the extraction changed what the trader sees.
-- [ ] Commit.
+  *(Harnesses green, and Task 4's pages prove the same fact from the other side: the
+  report page inlines the browser's own `concept_shapes.js` and paints the wasm scene
+  with it, so what the photograph shows is what the app draws. The signed-in live-chart
+  comparison is still owed and pass 1 does it as its step 5.)*
+- [x] Commit (`39535f0`).
 
 ### Task 3: The ledger, seeded from the registry rather than typed
 
 **Files:** Create `tools/concept_visual_audit.mjs` (`seed`),
 `reports/concept-visual-audit/ledger/*.json`.
 
-- [ ] `seed` fetches `GET /concepts` from `http://127.0.0.1:8080`, requires exactly 182
+- [x] `seed` fetches `GET /concepts` from `http://127.0.0.1:8080`, requires exactly 182
   entries, and writes one shard per `ConceptTaxonomy.familyOf(id)` with every row at its
   seeded value. A concept registered tomorrow appears as a row the gate demands, so
   completeness cannot rot.
-- [ ] Assert the counts match the spec's table; print any family that differs and fail.
+- [x] Assert the counts match the spec's table; print any family that differs and fail.
   `Everything Else` must be empty — a concept landing there means the taxonomy is
   missing a family, which is a finding for the pass that notices.
-- [ ] Run it, commit the shards: the ledger's existence is the first artifact a reviewer
+- [x] Run it, commit the shards: the ledger's existence is the first artifact a reviewer
   can check without opening a browser.
 
 ### Task 4: A photograph of what our engine draws today
@@ -255,24 +272,44 @@ re-implemented the routing would photograph the tool and not the chart.
 (Task 1), `GET /concept-events/scan?symbol&timeframe`, `GET /candles`, and
 `frontend/app/chart_engine.wasm`'s `build_scene`.
 
-- [ ] For each concept in the family: fetch the scan window once, route
+- [x] For each concept in the family: fetch the scan window once, route
   `from(events, new Set([id]))`, send the result as `concept_shapes` through the real
   wasm, and inline the scene JSON into a self-contained page — the same shape
   `tools/chart_preview.mjs` writes, so nobody has to trust a new renderer.
-- [ ] The page's script loads `concept_shapes.js` by reading the file and inlining its
+- [x] The page's script loads `concept_shapes.js` by reading the file and inlining its
   source, then calls `ConceptShapes.paint` twice, `"under"` before the candles and
   `"over"` after, matching `app.js`'s order. **This is the honesty guarantee: the tool
   cannot draw a concept better than the app can.**
-- [ ] Two kinds of empty are different findings and must be labelled in the page: no
+- [x] Two kinds of empty are different findings and must be labelled in the page: no
   events in the window, and events that routed to zero shapes. The second is a
   vocabulary gap on camera.
-- [ ] `--symbol` / `--timeframe` / `--limit` flags, defaulting to the chart's own
-  `BINANCE:BTCUSDT` `15m` `500`, because a synthetic series cannot show whether a
-  session box lands on the right hours.
-- [ ] Render `smc`, open two or three of the pages, and confirm what the spec predicted
+- [x] `--symbol` / `--timeframe` / `--limit` flags, defaulting to the chart's own
+  `BTCUSDT` `15m` `500`, because a synthetic series cannot show whether a
+  session box lands on the right hours. *(Corrected while building: this said
+  `BINANCE:BTCUSDT`, and the gateway answers that symbol with zero candles and zero
+  events — the venue prefix is a display convention, not a key into the window store.
+  Bare `BTCUSDT` is what a pane defaults to and what carries data: 501 bars, 4,278
+  events.)*
+- [x] Render `smc`, open two or three of the pages, and confirm what the spec predicted
   is actually there: the BOS segment stops at its break bar, and an open FVG is a
   one-bar sliver. If it is not there, the spec's finding needs correcting before any
-  pass trusts it.
+  pass trusts it. **Both were checked, and the spec is now corrected** (see its
+  "Known defects carried deliberately"): an open FVG *is* a one-bar sliver, but 43 of
+  the 50 are filled zones stretched over a median of 177 bars, and a BOS segment has no
+  start at all — `bars` carries the break bar twice, so the photograph is the word "bos"
+  floating above a 1.3px stub. The missing swing is a detector gap, not a rendering one.
+- [x] A third kind of empty, which the plan did not name and the first attempt got
+  wrong: shapes that routed but lowered to fewer draws than the engine's own rule
+  requires — a zone is Box + Label, a segment Line + Label, a candle mark Label, so
+  `expected = sum(type === "candle_mark" ? 1 : 2)`. Testing `shapes !== scene.concept_shapes.length`
+  instead flagged every healthy page, because a zone legitimately lowers to two draws.
+  A page that shows this third label is an engine bug, not a vocabulary gap, and the two
+  findings must not be allowed to look alike.
+- [x] The pages stay out of the repo. Each embeds a real 500-bar scene and weighs
+  ~250 KB, so the full sweep is ~40 MB of regenerable HTML; `.gitignore` now excludes
+  `reports/concept-visual-audit/*/` and keeps the `ledger/` shards, following the
+  evidence-not-source rule `/test-shots/` already sets. The durable record of a picture
+  is the row's `ours.today` and the section's numbers.
 - [ ] Commit.
 
 ### Task 5: The completeness gate

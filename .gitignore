@@ -73,3 +73,11 @@ reports/*-soak.log
 _ctmp/
 .cargo-tmp/
 .scratch/
+
+# The audit's render pages are photographs, not source: each one embeds a real
+# 500-bar scene (~250 KB), so the full sweep would be ~40 MB of regenerable HTML.
+# The committed record is the ledger shard (the verdicts) plus the family chapter;
+# the page itself is reproducible with
+#   node tools/concept_visual_audit.mjs render <family>
+/reports/concept-visual-audit/*/
+!/reports/concept-visual-audit/ledger/
