@@ -4,7 +4,11 @@ Status: **levels, boxes and readouts are settled; the rest is open.** Pass 1 (Sm
 Concepts, 32 rows) fixed what `level_run` and `lifecycle_box` mean, because nine later
 passes draw against them. Pass 2 (Supply & Demand, 4 rows) tested that generalisation and
 it held — three of its four rows needed no new shape — and claimed `readout`, which until
-then was a candidate on pass 11's say-so. Plan Task 18 finalises the file.
+then was a candidate on pass 11's say-so. Pass 3 (Price Action, 11 rows) tested it a third
+time and it held again: ten of its eleven rows asked for `level_run`, `lifecycle_box` or
+`time_box` unchanged, and the eleventh claimed `bar_marker` as *wiring* rather than as a new
+shape, which is the first time a pass has asked for a form the app can already paint.
+Plan Task 18 finalises the file.
 Its purpose is to be the one place the vocabulary is declared, so that a pass which
 needs a fifth kind or a new shape has to say so here, in front of the gate, instead of
 typing a value into a ledger row and hoping the count still adds up.
@@ -76,7 +80,7 @@ and not two. A pass that renames or refuses one does it here, with the reason.
 | `pair_link` | event | open | A line joining a pivot on this instrument's pane to the matching pivot on a second series' pane | pass 1 | `smc.smt_divergence` emits nothing on the scan route at all: the gateway's `/concept-events/smt` lane has no caller and the card paints its "nothing to draw" hairline |
 | `legged_path` | event | open | An XABCD polyline with each leg labelled, optionally filled | pass 7 | Harmonics draw as a band or a mark |
 | `ladder` | event | open | A set of named ratios across one impulse, each with its own level and label | pass 5 | Fibonacci draws as six anonymous segments |
-| `bar_marker` | event | open | A glyph at a bar — arrow, dot — with the name optional | pass 8 | Candlestick patterns draw as a text label, which is the noise a trader scans past |
+| `bar_marker` | event | open — claimed as `wiring` by pass 3 | A glyph at a bar — arrow, dot — with the name optional | pass 3, pass 8 | Candlestick patterns draw as a text label, which is the noise a trader scans past. Pass 3 found the same gap one layer closer to the source: `pa.higher_highs` knows which swings stepped up but pushes *prices* into its swing vectors ([events.rs:3014](../../../../crates/analytics-core/src/events.rs#L3014)), so the pivot's bar never reaches the painter that already exists — the row is `wiring` because the missing piece is an index, not a shape |
 | `readout` | readout | **yes — pass 2** | A formed figure, the window it was computed over named in the row, and — because a score is about something — the drawing it hangs on named too: a bar for a per-bar figure, a zone or a band for a grade. Never a word that happens to contain a number. | pass 2 (`sd.zone_strength`), pass 11 | A z-score concept currently routes to a `CandleMark`; the arithmetic stays in Rust and the shell never derives it. Pass 2 found the number already on the wire (`evidence.magnitude` reaches the browser on 1,169 of 4,247 events) and read by neither renderer, and that `ConceptShape`'s only text member prints a *name* taken from `concept_id`, never a measured value — so the shape needs a painter, and `new_rendering` is the honest tag |
 
 ## A readout is attached to something

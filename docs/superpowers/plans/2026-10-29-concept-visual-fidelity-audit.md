@@ -437,6 +437,33 @@ Also banked as defects: `sd.zone_strength`'s event is built and dropped
 platforms' structure indicators. Expect a `fires` disagreement here even where the
 shape matches, because a retest's bars are defined by the swing rule, not the picture.
 
+*(Done — [`03-pa.md`](../specs/concept-visual-audit/03-pa.md), 11 rows judged,
+`check --family pa` green and the sweep down from 146 to 135 problem rows. The vocabulary
+held a third time: 10 rows reuse `level_run` / `lifecycle_box` / `time_box` and the
+eleventh (`pa.higher_highs`) claims pass 8's `bar_marker` as the audit's first `wiring`
+row, because the glyph painter exists and only the pivot's bar index is missing. The
+`fires` disagreement the brief predicted arrived, but the pass's real finding is a
+transport one: `detect_price_action`'s `push` closure has no `formed_at` slot at all, so
+285 of the family's 335 events answer `bars: [t, t]` and draw as 1.3px stubs — and one
+historical fact, a close through 80,451.18 at bar 50, is spent as 451 marks: the break
+once, the retest on bars 51-67, the failure on bars 68-500 (433 bars, capped to 50 by the
+scan), all at one price and none joined to bar 50. Banked as defects: `pa.level_flip` is
+unreachable by algebra (its clause is a strict subset of the rejection branch that
+`break`s first, events.rs:1888), `pa.compression_breakout`'s two clauses never hold on
+the same bar (3 and 60-64 bars, 0 together), `pa.volume_confirmed_breakout` is a strict
+subset of `pa.breakout` silent on 20 of 41 breaks and never ships its ratio,
+`pa.level_rejection` draws the zone *midpoint* on 50 of 50 events while shipping the band,
+`pa.regime` fires 29 shifts in 501 bars with no dwell time, and the card's zero-span
+dashes paint literally nothing for 208 events. Also recorded: the scan route's replay
+window starts 20-30 bars later than a same-limit `/candles` fetch, so bar indices must
+come from the events.)*
+
+### Task 8 — Pass 3: Price Action (11)
+`render pa`. Breaks and retests outside the SMC family. Reference: TradingView's
+`Structural Labels`/swing documentation plus what a retest is drawn as in the
+platforms' structure indicators. Expect a `fires` disagreement here even where the
+shape matches, because a retest's bars are defined by the swing rule, not the picture.
+
 ### Task 9 — Pass 4: Sessions (14)
 `render session`. The full-height vertical time box, which has no `ConceptShape`
 variant at all — the pass that proves the ceiling is a wire, not an engine limit, since

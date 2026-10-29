@@ -13,44 +13,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Trading Range (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/trading-range/",
+        "quote": "End the range when a bar closes above RH (upside breakout) or below RL (downside breakout).",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a horizontal dash floored at 0.6 bar widths -- about 1.3px at the default 15m zoom -- at the extreme that gave way, stamped on the bar that closed through it and labelled 'breakout' in the side's colour; all 41 events on this window answer bars: [t, t] and the 20-bar range whose edge broke is never drawn -- including the break at bar 50 whose consequences the other two rows in this cluster spend 450 bars describing",
+        "canonical": "the boundary first and the break on it: the range drawn as a zone between its high and its low across the bars that made it, running right until a close ends it, with the bar that closes beyond an edge marked at that edge",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest close beyond the high (or below the low) of the 20 bars *before* it -- a Donchian channel computed on the prior 20 bars, so a break never includes its own bar in the boundary it breaks; direction from which edge gave way",
+        "their_rule": "a boundary the market had been respecting, defined in advance, cleared by a decisive close rather than a wick; the same page's own calculation sets RH = max(H) and RL = min(L) over a window of 'commonly around 20' bars and ends the range when a bar closes beyond either",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "last.close > max(high[n-20..n-1]) || last.close < min(low[n-20..n-1]), RANGE_BARS = 20",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 21,
+        "before": "detect_price_action returns nothing at or below RANGE_BARS candles (events.rs:2917); detect_events' own floor is structure_lookback*2 = 6, so the 20-bar channel is the binding warmup"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_price_action (events.rs:2947)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.breakout.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "pa.failed_breakout",
@@ -64,44 +69,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, False Breakout (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/false-breakout/",
+        "quote": "Watch for the failure: price cannot hold beyond the level and closes back inside, often within a few bars.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "one dash at a single price, 80,451.18, re-stamped on the newest bar: the 50 events this window returns are 50 consecutive bars (451-500 of 501) at that one price with zero-width spans, and the break they refer to is bar 50 -- the level and both of its moments are drawn nowhere",
+        "canonical": "the level with its two moments on it -- the bar that closed beyond it and the bar that closed back inside -- drawn between them and labelled at the second, since the event is the re-entry that reclassifies the break, not the break",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "scan the window's channel breaks oldest first and take the first one with ANY later close back on the original side; the look-forward is unbounded (candles[i+1..] reaches the newest bar), so one break produces a Failed Breakout on every bar from the reclaim to the end -- bars 68 through 500 here, 433 of the 480 replayable -- and the loop then breaks, so no newer break is ever examined",
+        "their_rule": "a close beyond followed by a close back inside, 'often within a few bars' -- a two-bar sequence anchored on the re-entry bar, with the strictness an explicit choice the reference names (any poke that re-enters vs a close beyond then a close back)",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "first i in [20, n) with close[i] outside channel(i-20..i-1); emit if any close[j], j in (i, n], is back on the original side",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 21,
+        "before": "the RANGE_BARS floor at events.rs:2917, then a break needs one bar beyond the channel and a second bar back inside it before the concept can speak"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_price_action (events.rs:2975) -- the break bar it scans is never recorded, only the newest bar",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.failed_breakout.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "pa.retest",
@@ -115,44 +125,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Retest (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/retest/",
+        "quote": "A retest is a return to a level that price has already broken, approached now from the other side.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "the same dash at the same single price as pa.failed_breakout -- 80,451.18 -- on 17 consecutive bars (51-67), every one of them bars: [t, t]; the touch that makes it a retest is not marked, the level it returned to is not drawn, and the two concepts are the same historical break read two ways",
+        "canonical": "the broken level drawn from the break, the returning bar's touch marked on it and the hold read from the close back in the breakout direction -- graded against a tolerance band around the level scaled to recent volatility, not against an exact price",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the first break in the window not yet reclaimed whose level a later bar wicked back to, with the newest close still on the breakout side -- so it holds on every bar from that touch to the reclaim (bars 51-67 here) instead of firing at the touch, and formed_at is None so each event lands on the newest bar",
+        "their_rule": "three ingredients -- a level, a confirmed break, and a return -- judged at the returning bar: 'rejection wicks and a close back in the breakout direction argue the level held', and the touch is read against a volatility-scaled zone because 'defense happens across a band of prices'",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "first i in [20, n) with close[i] outside channel(i-20..i-1) and no close back inside through n; touched[j] for some j in (i, n] && last.close still beyond the level",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 21,
+        "before": "the RANGE_BARS floor at events.rs:2917; a retest additionally needs a break, a bar wicked back to its level, and no reclaim yet -- three bars minimum after the channel warms up"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_price_action (events.rs:2979) -- same loop as the failed breakout, rejection tested first so the two never coexist on a bar",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.retest.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "pa.higher_highs",
@@ -166,44 +181,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Market Structure",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/market-structures",
+        "quote": "Swing points are displayed retrospectively, and as such are not detected where they are located.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a dash at a swing high's (or swing low's) price stamped on today's bar and labelled 'higher_highs': 50 events across only 6 distinct levels, in runs of up to 13 consecutive bars, every one bars: [t, t]; the pivot is neither marked at its own bar nor joined to the previous swing, so the staircase the concept names is invisible",
+        "canonical": "the four-word swing vocabulary the reference itself prints -- HH, HL, LH, LL -- put at the pivot bar, retrospectively, so the word sits where the swing is and the trend reads from the positions of the words; a label floating at today's bar over a price from 100 bars ago is the opposite of that",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "collect every strict 3-bar swing high and swing low in the whole window, take the newest two of each, and fire when both pairs step the same way -- one event per bar while the pair holds, naming the newest swing's price; the loop pushes prices only, so the pivot's bar index is discarded inside the detector",
+        "their_rule": "a swing point is a label at a pivot, drawn retrospectively at the pivot's own bar, and its scale is a parameter the user sets (the toolkit exposes 5 for internal structure and 50-100 for swing structure, against our fixed 3)",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "|swings| >= 2 && (h2 > h1 && l2 > l1) -> Buy at h2 | (h2 < h1 && l2 < l1) -> Sell at l2, pivots strict over i-3..i+3",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 21,
+        "before": "the RANGE_BARS floor that gates the whole pass (events.rs:2917), plus 3 bars either side of each pivot and two swings of each kind"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_price_action (events.rs:3024) -- highs/lows are pushed as prices, losing the bar that made them",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.higher_highs.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "pa.range_contraction",
@@ -217,44 +237,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Trading Range (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/trading-range/",
+        "quote": "A horizontal zone bounded by a confirmed high and low that price rotates inside until a breakout ends it.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a grey dash at the newest close -- direction neutral on all 50 events, so the slate colour, and price_level equal to evidence.close on all 50 -- zero-width, re-stamped on every bar the comparison holds (50 events in 15 runs, the longest 7 bars); the ten bars it is tight about are never drawn",
+        "canonical": "the box the tightening describes: a horizontal zone between the window's high and low that price rotates inside until a close beyond an edge ends it, read as a contraction by its shrinking height against the boxes before it -- the contraction is a property of that box, not a mark at today's close",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest 10-bar high-low span is strictly less than the smallest of the ten preceding 10-bar spans, each offset one bar, recomputed against a sliding window; no direction, no zone, and the price it carries is the close, which is a bar, not a level",
+        "their_rule": "a range is at least two swing highs stopping in one zone and two swing lows in another, bounded RH = max(H) and RL = min(L) over ~20 bars, ended by a close beyond an edge; the sideways character is confirmed by 'heavily overlapping candles, alternating failures at both edges' rather than by a single span comparison",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "span(n) < min(span(n-2), span(n-3), ..., span(n-11)) where span(e) = max(high[e-10..e-1]) - min(low[e-10..e-1])",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 21,
+        "before": "the RANGE_BARS floor at events.rs:2917 plus the ten prior 10-bar spans the comparison reads (span(end) needs end >= CONTRACTION_BARS)"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_price_action (events.rs:3051)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.range_contraction.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "pa.round_numbers",
@@ -268,44 +293,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Round Numbers (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/round-numbers/",
+        "quote": "Draw the grid across the visible range and thin it when lines crowd the chart; levels with more trailing zeros stay, finer subdivisions go first.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a dash at the figure -- all 27 events on this window name the same one, 80,000 -- zero-width, stamped on the crossing bar; and a one-bar box in the card, because the event carries the crossing bar's own wick as zone_low/zone_high while the grid step it actually used (magnitude 5,000) is read by neither renderer",
+        "canonical": "the grid drawn across the visible range before price reaches it: one named horizontal line per figure, running the whole window, thinned when the lines crowd and weighted by trailing zeros, with the reaction graded on it -- a crossing is an event on a standing level, never the level's only drawing",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the previous close and the newest close straddle a line of the step 10^floor(log10(price)) / 2 -- 5,000 for BTC at 80,000, so the grid jumps an order of magnitude the moment price crosses 100,000 -- and direction comes from the close's own move; once per crossing, which still allows a run of 4 when price chatters across the line",
+        "their_rule": "nothing needs detecting: the trader chooses a grid density for the instrument and timeframe, keeps the figures with more trailing zeros, treats each as untested until price interacts with it, and then grades that reaction with the same rules as any other level",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "let step = 10^floor(log10(close)) / 2; ceil(min(close[t-1], close[t]) / step) * step > min && <= max",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_round_numbers returns below 2 candles (events.rs:2091) -- the grid itself needs no history, which is the reference's whole point about figures"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_round_numbers (events.rs:2089)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.round_numbers.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "pa.level_rejection",
@@ -319,44 +349,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Retest (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/retest/",
+        "quote": "That is also why grading uses a zone rather than a line: defense happens across a band of prices, so a tolerance around the level, scaled to recent volatility, separates a wick probing the zone from a genuine failure.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "the only price-action concept with a run at all -- a segment from the zone's first touch to the newest bar (43, 335 and 444 bars at min/median/max across 50 events) drawn at the zone's MIDPOINT, which is 50 of 50 events exactly, so the level sits in the middle of a band nobody draws and the rejecting wick is marked nowhere; the card branches on the same zone fields and paints a full-width box instead",
+        "canonical": "the band drawn between its own two edges, with the rejecting bar read at the edge it actually probed -- a wick into the zone and a close back out, visible together -- graded against a volatility-scaled tolerance, the zone running on until price is accepted through it",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "over the four most-touched clusters from sr_zones (swings clustered within 0.4%, at least 2 touches, at most 6 zones kept): the newest bar's range overlaps the zone and its close is outside it, price = (low+high)/2, side from which edge it left -- and the loop breaks at the first zone that qualifies",
+        "their_rule": "a reaction at a level the market already respects, graded as rejection, absorption or acceptance through: a wick into the band whose close leaves it is the rejection, judged across the band rather than at an exact price",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "over detect_sr_zones(tolerance_pct 0.004, min_touches 2, max_zones 6).rev().take(4): last.low <= hi && last.high >= lo && (last.close < lo || last.close > hi)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels returns early below 30 candles (events.rs:1681); the zone additionally needs two clustered swings and the tail bar must overlap it"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1877) over sr_zones::detect_sr_zones (sr_zones.rs:89)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.level_rejection.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "pa.level_flip",
@@ -370,44 +405,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Retest (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/retest/",
+        "quote": "After a breakout above resistance, price dips back to touch the broken line; if the old ceiling now behaves as a floor, the level has flipped, the textbook role reversal.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "nothing, on any window: in the same zone loop the rejection branch is tested first and breaks, and both flip clauses are strict subsets of the rejection clause (through_up asks last.close > hi and last.low <= hi, which already implies wick_in && close_out), so the push at events.rs:1891 and 1895 is unreachable and the card shows a bare candlestick under a count of 0",
+        "canonical": "one level with two roles: the line drawn from the break, then re-labelled and re-coloured where the return from the new side holds -- the flip is the crossing plus the hold, so the drawing has to show the level changing hands rather than adding a second object beside it",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the previous bar and the newest bar both close beyond the zone's top with the newest wicked back to it (or the mirror at the bottom), tested only when the rejection clause has already failed for that zone -- which cannot happen, because the same close that satisfies the flip satisfies the rejection",
+        "their_rule": "role reversal: the level price closed through and now holds from the other side, with the retest that holds as the observable proof -- the crossing is the event's first half, and this predicate never asks whether the level was ever on the other side",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "unreachable: c[n-1].close > hi && last.close > hi && last.low <= hi  =>  wick_in && close_out, tested earlier in the same iteration with `break`",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels' 30-candle floor (events.rs:1681) -- and after it, no warmup will ever reach the branch"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1891) -- unreachable: the rejection branch at events.rs:1877 breaks out of the zone loop first",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.level_flip.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "pa.compression_breakout",
@@ -421,44 +461,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Trading Range (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/trading-range/",
+        "quote": "Look for acceptance rather than a single excursion: closes beyond the boundary, a retest that holds outside, and expansion in volatility or volume.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "nothing on this window, and the card's bare candlestick preview under a count of 0; if it fired it would draw what pa.breakout draws -- a 1.3px dash at the broken extreme on the break bar, with the squeeze it is named for absent from the wire (formed_at: None at events.rs:1919)",
+        "canonical": "the squeeze drawn as the box it names, with the accepted break as its right edge and the expansion readable at that edge -- the reference treats the contraction and the break as two facts about one figure, never as a third mark on the chart",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "three clauses on one bar: the last <=20 bars' high-low span under 3x that window's mean bar range, AND the newest body at least 2x its mean body, AND a close outside the span; replayed over the window the squeeze holds on 3 bars, the 2x body on 68, and the two together on 0, so the conjunction is arithmetic-adjacent to impossible",
+        "their_rule": "acceptance, not a single excursion: closes beyond the boundary plus a retest that holds outside, with expansion in volatility or volume -- the squeeze is a property of the drawn box, not a ratio of the box to its own candles",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "(hi - lo) < 3 * mean(high - low) && |close - open| >= 2 * mean(|close - open|) && (close > hi || close < lo), all over candles[n-lookback..n-1]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels' 30-candle floor (events.rs:1681); the fused block additionally needs lookback >= 10 (events.rs:1904)"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1919)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.compression_breakout.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "pa.volume_confirmed_breakout",
@@ -472,44 +517,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Breakout (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/breakout/",
+        "quote": "Check participation: volume at breakout running meaningfully above recent norms supports the case that new business is being done beyond the level; a quiet break deserves more suspicion.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "the same zero-width dash as pa.breakout, at the broken extreme on the break bar, and a box in the card squeezed into a single bar -- the event carries the 20-bar range as zone_low/zone_high but no start time, so from == to -- while the volume fact the concept is named for never reaches the browser at all (magnitude: None at events.rs:1955)",
+        "canonical": "the breakout's level and its participation in one glance: the mark at the close through the boundary with the ratio it passed read beside it, since the reference grades volume as the confirmation step -- 'a strengthening factor rather than a requirement' -- so the drawing has to say how confirmed the break was, not silently delete the quiet ones",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the same 20-bar channel test as pa.breakout with a fresh-cross guard (the previous close still inside) and volume at least 1.5x that window's mean on top -- a strict subset, measured at 21 of the 41 breaks the scan route reports (verified: every one of its bar/price pairs is also a pa.breakout event), so the other 20 breaks -- 49% -- are breaks the market did have that this concept never mentions",
+        "their_rule": "a break is a break; participation is a grading step attached to it, one of three standard checks alongside a decisive close and a retest that holds, and the reference is explicit that some genuine breakouts start quietly",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "volume[last] >= 1.5 * mean(volume[n-20..n-1]) && (close[n] > hi && close[n-1] <= hi || close[n] < lo && close[n-1] >= lo)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 21,
+        "before": "the RANGE_BARS floor at events.rs:2917, and the fused block needs lookback >= 10 (events.rs:1948) before the mean is taken"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1955) -- the ratio it decides on is computed and discarded",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.volume_confirmed_breakout.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "pa.regime",
@@ -523,44 +573,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Trend Regime Label (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/trend-regime-label/",
+        "quote": "A trend regime label is a discrete classification stamped on each bar: uptrend, downtrend, or range, sometimes with strength grades.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-width dash at the newest close in the shift's colour -- 14 neutral, 9 bearish, 6 bullish across 29 events, every one bars: [t, t] and price_level equal to the bar's close -- labelled 'regime'; the state each shift announces has no drawing at all, so 29 shifts describe 30 stretches of the window and the chart receives 29 points, while the ADX reading that decided each one arrives as evidence.magnitude (41.41, 31.08, 25.18 in the sample) and is read by neither renderer",
+        "canonical": "the state as a full-height band across the bars that hold it, named with the regime's word and graded with the strength figure it was thresholded against -- a label stamped per bar is a band, not a scatter of points, and the shift is where the band changes colour, not an object of its own",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "classify the tail and the tail-minus-one and fire when they differ: ADX(14) above 25, the DI lines giving the side, and structure_lean (the same two-swing HH/LL test that pa.higher_highs reports) required to agree -- no dwell time and no hysteresis, which is why the window carries 29 shifts, one every ~17 bars",
+        "their_rule": "thresholded ADX with the DI lines for direction, then hysteresis or dwell time as a required step: 'require the new condition to hold for several bars, or use a stricter threshold to enter a state than to stay in it, so the label does not flip on every borderline bar'",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "classify(t) != classify(t-1), where classify = adx14 > 25 && (structure_lean == (plusDI >= minusDI ? Buy : Sell))",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 34,
+        "before": "detect_regime returns below 34 candles (regime.rs:73); classify itself needs 32 for the ADX(14) lines to be defined at the tail (regime.rs:52)"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "time_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::regime::detect_regime (regime.rs:71) via events.rs:3549",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/pa/pa.regime.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }
