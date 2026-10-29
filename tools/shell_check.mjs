@@ -3505,6 +3505,61 @@ check(
   `${chipsOnPane().length} chip(s) hidden=${chipRow().hidden}`
 );
 
+// The wire the visual fidelity audit photographs. Everything above is about the
+// panel: the card pressed, the chip appearing, the counter moving. Nothing asked
+// whether the chart then *drew* the concept the trader added -- and that is the
+// only claim an indicator exists to keep. An event concept goes on the request as
+// semantic shapes, comes back from the engine as positioned draws, and leaves
+// strokes on the canvas; take any of the three away and the panel still looks
+// perfect.
+window.location.hash = "#/charts/concepts";
+await settle();
+await drain();
+conceptCard("smc.liquidity_sweep").querySelector(".conceptCard__main").click();
+await settle();
+await drain();
+
+const sweepShapes = lastRequest().concept_shapes || [];
+check(
+  "an enabled event concept is on the wire: a segment from its swing to its break",
+  sweepShapes.length === 2 &&
+    sweepShapes.every((s) => s.type === "segment" && s.price > 0 && s.to_ns > s.from_ns),
+  `${sweepShapes.length} shape(s) ${sweepShapes.map((s) => s.type).join(",")}`
+);
+
+const sweepDraws = (lastScene().concept_shapes || []);
+const sweepDrawKinds = [...new Set(sweepDraws.map((d) => Object.keys(d)[0]))].sort().join(",");
+check(
+  "and the engine, not the page, places it: positioned draws come back",
+  sweepDraws.length > 0 && sweepDraws.every((d) => d.Line || d.Label || d.Box),
+  `${sweepDraws.length} lowered draw(s): ${sweepDrawKinds}`
+);
+
+const conceptOpsBefore = painted.ops.length;
+const conceptTextBefore = painted.text.length;
+window.HRZApp.resizePanes();
+await settle();
+const conceptLabels = painted.text.slice(conceptTextBefore);
+check(
+  "the painter strokes it under the candles and prints its name over them",
+  painted.ops.length > conceptOpsBefore &&
+    painted.ops.slice(conceptOpsBefore).includes("stroke") &&
+    conceptLabels.some((t) => t.includes("liquidity_sweep")),
+  `+${painted.ops.length - conceptOpsBefore} op(s) · ${conceptLabels.slice(0, 3).join("/") || "no labels"}`
+);
+
+panelTrigger("concepts").click();
+await settle();
+await drain();
+conceptCard("smc.liquidity_sweep").querySelector(".conceptCard__main").click();
+await settle();
+await drain();
+check(
+  "and switching it off takes it off the wire, not just off the card",
+  (lastRequest().concept_shapes || []).length === 0,
+  `${(lastRequest().concept_shapes || []).length} shape(s) after switching off`
+);
+
 // Clear one family, not the whole chart: the button is in a group's head, and a
 // trader who means the family must not lose the four other things they attached.
 const conceptClear = document.getElementById("conceptClearGroup");

@@ -971,7 +971,7 @@ function createChartPane(root, hooks = {}) {
     // Concept zones and segments: UNDER the candles (a fill over the price
     // is a curtain, not a measurement). Every frame, not the static layer --
     // detections change on their own pulse and a cached zone is a stale one.
-    drawConceptShapes(ctx, scene, "under");
+    ConceptShapes.paint(ctx, scene, "under");
 
     // The engine says what to draw, so this is a dispatch rather than a decision.
     // Adding a chart type means adding a case here and a variant in Rust -- not
@@ -1030,7 +1030,7 @@ function createChartPane(root, hooks = {}) {
     drawIndicatorEvidence(ctx, scene);
     // The concept labels: over the candles, under the user's own marks -- a
     // zone's name under a candle is a name nobody reads.
-    drawConceptShapes(ctx, scene, "over");
+    ConceptShapes.paint(ctx, scene, "over");
     // The user's own marks, above everything: a drawing that could cover the
     // answer's levels, or the price labels, would be an annotation they cannot
     // read.
@@ -1493,20 +1493,11 @@ function createChartPane(root, hooks = {}) {
     ctx.fillText(label, Math.min(anchorX + 4, plot.x + plot.w - ctx.measureText(label).width - 4), plot.y + 12);
   }
 
-  /// A packed-RGBA u32 (from a script's `color=`) to a CSS colour string.
-  /// Pure formatting: the packing is the engine's, the alpha byte is its top
-  /// one, and a missing alpha is opaque.
-  /// The VM packs colors as 0xAARRGGBB. A packed alpha below 1.0 is the
-  /// script's OWN transparency (color.new) and wins over the renderer's
-  /// derived alpha; full-alpha colors keep the derived look.
-  function rgbaFromPacked(color, alpha) {
-    const packedA = ((color >>> 24) & 0xFF) / 255;
-    const r = (color >>> 16) & 0xFF;
-    const g = (color >>> 8) & 0xFF;
-    const b = color & 0xFF;
-    const a = packedA < 0.999 ? packedA : (alpha == null ? 1.0 : alpha);
-    return `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
-  }
+  /// A packed-RGBA u32 (from a script's `color=`) to a CSS colour string. The
+  /// function is `ConceptShapes.rgba`: the concept painter and the twenty-four
+  /// other layers on this canvas must not be able to disagree about what
+  /// 0xAARRGGBB means, and one of them has to be the copy the audit photographs.
+  const rgbaFromPacked = ConceptShapes.rgba;
 
   /// Strategy trades (docs/24 S2): every closed round trip paints a pair of
   /// triangle fills at the engine-positioned prices (up = long entry, down =
@@ -1749,51 +1740,6 @@ function createChartPane(root, hooks = {}) {
     }
   }
 
-  /// Concept shapes in two passes: `"under"` paints the zones and segments
-  /// (they sit BEHIND the candles -- a fill over the price is a curtain,
-  /// not a measurement), `"over"` paints their labels (a name under a
-  /// candle is a name nobody reads). Zones paint oldest first so a newer
-  /// zone's border wins where they overlap; the 0.08 wash keeps stacked
-  /// fills a tint rather than mud.
-  function drawConceptShapes(ctx, scene, phase) {
-    const shapes = scene.concept_shapes || [];
-    if (!shapes.length) return;
-    for (const o of shapes) {
-      if (phase === "under" && o.Box) {
-        const b = o.Box;
-        const plot = scene.plot;
-        const x = Math.max(Math.min(b.x1, b.x2), plot.x);
-        const right = Math.min(Math.max(b.x1, b.x2), plot.x + plot.w);
-        const w = right - x;
-        const y = Math.min(b.y1, b.y2);
-        const h = Math.abs(b.y2 - b.y1);
-        if (w <= 0 || h <= 0) continue;
-        ctx.fillStyle = rgbaFromPacked(b.color, b.fill_alpha ?? 0.08);
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeStyle = rgbaFromPacked(b.border_color != null ? b.border_color : b.color, b.border_color != null ? 1.0 : 0.8);
-        ctx.lineWidth = b.border_width || 1;
-        ctx.setLineDash(b.border_style === "dashed" ? [6, 4] : b.border_style === "dotted" ? [2, 3] : []);
-        ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.max(1, Math.round(w) - 1), Math.max(1, Math.round(h) - 1));
-        ctx.setLineDash([]);
-      } else if (phase === "under" && o.Line) {
-        const l = o.Line;
-        ctx.strokeStyle = rgbaFromPacked(l.color, 0.85);
-        ctx.lineWidth = l.width || 1.25;
-        ctx.setLineDash(l.style === "dashed" ? [6, 4] : l.style === "dotted" ? [2, 3] : []);
-        ctx.beginPath();
-        ctx.moveTo(l.x1, l.y1);
-        ctx.lineTo(l.x2, l.y2);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      } else if (phase === "over" && o.Label) {
-        const lb = o.Label;
-        ctx.font = "600 9px ui-sans-serif, system-ui";
-        ctx.fillStyle = rgbaFromPacked(lb.color, 1.0);
-        ctx.fillText(lb.text, lb.x, lb.y);
-      }
-    }
-  }
-
   /// Overlay scripts (docs/23): polylines already mapped through the price
   /// pane's scale, painted under the user's drawings. Nothing computed here.
   function drawScriptOverlays(ctx, scene, freshMarkerBars = 0) {
@@ -1802,7 +1748,7 @@ function createChartPane(root, hooks = {}) {
     // A full overlay shape -- the loops below touch plots/markers/trendlines
     // too, and an undefined one throws the whole draw (which is exactly how
     // enabling a concept killed the pane).
-    // Concept detections paint in TWO passes now (see drawConceptShapes):
+    // Concept detections paint in TWO passes now (see `ConceptShapes.paint`):
     // zones and segments UNDER the candles, their labels over them. Only
     // the scripts' own overlays ride this path.
     const overlays = [...(scene.script_overlays || [])];
@@ -3415,7 +3361,7 @@ function createChartPane(root, hooks = {}) {
       // Concept detections as bounded shapes: zones from origin to end,
       // patterns as names on their candle, structure as segments. The engine
       // positions them; nothing here computes pixels.
-      concept_shapes: conceptShapes(),
+      concept_shapes: ConceptShapes.from(conceptEvents, enabledConcepts),
       // The profile's edge, in the engine's own spelling. Assigned only when
       // set: absent means Right, which keeps every existing request byte-identical.
       ...(profileLeft ? { profile_anchor: "left" } : {}),
@@ -6030,79 +5976,9 @@ function createChartPane(root, hooks = {}) {
     return out;
   }
 
-  /// The visual identity per concept family: zones are filled rectangles
-  /// (origin to end), structure is dashed segments (swing to break), candle
-  /// patterns are names on their own candle. Sides carry the color; the
-  /// shape carries the concept -- never one line for everything.
-  const CONCEPT_ZONE_IDS = new Set(["smc.fvg", "smc.ifvg", "smc.bpr", "smc.order_block", "smc.breaker_block", "sd.zone_tested", "smc.premium_discount", "smc.mitigation_block", "smc.rejection_block", "smc.equal_levels", "session.london_killzone", "session.new_york_killzone", "session.asian_range", "volume.value_area", "volume.hvn", "volume.lvn", "fib.golden_pocket", "fib.confluence", "session.previous_day_levels", "session.previous_week_levels", "session.previous_month_levels", "fib.ote", "smc.internal_range_liquidity", "smc.external_range_liquidity", "smc.judas_swing", "smc.power_of_three"]);
-  const BULL = 0xcc26a69a; // teal, 0xAARRGGBB
-  const BEAR = 0xccef5350; // red
-  const NEUT = 0xcc90a4ae; // slate (premium/discount, sweeps)
-
-  function conceptColor(e) {
-    if (e.direction === "bullish") return BULL;
-    if (e.direction === "bearish") return BEAR;
-    return NEUT;
-  }
-
-  /// Map the cached events to semantic concept shapes, filtered by the
-  /// enabled ids.
-  function conceptShapes() {
-    if (!enabledConcepts.size || !conceptEvents.length) return [];
-    const out = [];
-    for (const e of conceptEvents) {
-      if (!enabledConcepts.has(e.concept_id)) continue;
-      // The liquidity pools wear their ICT names: equal highs are buy-side
-      // liquidity (the stops resting above), equal lows sell-side.
-      const short = e.concept_id === "smc.equal_levels"
-        ? (e.direction === "bullish" ? "BSL" : "SSL")
-        : e.concept_id.split(".")[1] || e.concept_id;
-      const color = conceptColor(e);
-      const fromNs = e.bars && e.bars[0] ? e.bars[0] : e.event_time_ns;
-      const toNs = e.event_time_ns;
-      if (CONCEPT_ZONE_IDS.has(e.concept_id) && e.zone_low != null && e.zone_high != null) {
-        // A zone: origin to its end -- the mitigation bar when the lifecycle
-        // closed it, the newest bar while it is still open.
-        const end = e.status === "forming" || e.status === "confirmed" ? toNs : toNs;
-        out.push({
-          type: "zone",
-          from_ns: fromNs,
-          to_ns: end,
-          low: e.zone_low,
-          high: e.zone_high,
-          label: short,
-          color,
-        });
-      } else if (e.concept_id.startsWith("candles.") || e.concept_id.startsWith("indicators.")) {
-        // A pattern or an indicator signal: its name on its own candle,
-        // below for bullish, above for bearish.
-        const bullish = e.direction === "bullish";
-        out.push({
-          type: "candle_mark",
-          at_ns: e.event_time_ns,
-          price: bullish ? (e.zone_low ?? e.price_level ?? 0) : (e.zone_high ?? e.price_level ?? 0),
-          below: bullish,
-          label: short.replace(/_/g, " "),
-          color,
-        });
-      } else if (e.price_level != null) {
-        // A structure level: the segment from the swing's bar to the break's.
-        out.push({
-          type: "segment",
-          from_ns: fromNs,
-          to_ns: toNs,
-          price: e.price_level,
-          label: short,
-          color,
-        });
-      }
-    }
-    // The scan bounds the events to the newest 200; the shapes show ALL of
-    // them. A 40-shape cap hid exactly the history the backscan exists to
-    // reveal -- an attached indicator must mark every detection across the
-    // visible window, or there is no way to spot one that does not work.
-    return out.slice(-200);
-  }
+  /// The concept path -- events to shapes, shapes to pixels -- is in
+  /// `concept_shapes.js`, the same file the visual fidelity audit loads in Node.
+  /// Routing it here as well would mean the report photographs the report.
 
   /// The pairs concept's second instrument, persisted. The default pairs
   /// the chart's venue major: BTC against ETH.
