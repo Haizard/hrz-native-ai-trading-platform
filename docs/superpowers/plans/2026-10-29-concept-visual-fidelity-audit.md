@@ -378,7 +378,7 @@ const bad = [
   `docs/superpowers/specs/concept-visual-audit/00-vocabulary.md` declares the four kinds
   and eight candidate shapes, each tied to the measurement that asked for it, and `check`
   fails if the chapter stops naming a kind the gate accepts.)*
-- [ ] Commit.
+- [x] Commit (`898ec3e`).
 
 ---
 
@@ -396,6 +396,17 @@ Expect: the run-until-mitigated level and the living box, both
 `impossible_in_vocabulary` today; `smc.equal_levels`' BSL/SSL naming already correct.
 This pass also fixes the vocabulary chapter's shape list for levels and boxes, because
 nine later passes reuse it.
+
+*(Done — [`01-smc.md`](../specs/concept-visual-audit/01-smc.md), 32 rows judged,
+`check --family smc` green and the sweep down from 182 to 150 problem rows. 18
+`impossible_in_vocabulary` / 10 `differs_major` / 4 `differs_minor` / **0 `matches`**;
+27 rows need a shape the concept path cannot paint and 5 are wiring. Two findings the brief
+did not expect: the card in the Indicators face is a second renderer that disagrees with the
+chart for 10 concepts (`preview_agrees` exists for this reason, and 27 of 32 rows differ),
+and the spec's "a broken level runs rightward until mitigated" is **not** citable — the only
+documented right edge in the reference set is LuxAlgo's `Extend Imbalance`, default 10 bars,
+so `level_run` requires the run and leaves the length to a parameter. Seven rows were
+rewritten for over-claiming, two for breaking the vocabulary's own wiring rule.)*
 
 ### Task 7 — Pass 2: Supply & Demand (4)
 `render sd`. Same vocabulary as pass 1 and deliberately its test: if pass 1

@@ -1,14 +1,19 @@
 // The gate's own test: one row that must pass, and the rows that must not.
 //
-// `complete` is built by spreading the *seeded* skeleton of `smc.bos` over the fields
-// Task 3 leaves empty, so the fixture passes through the same shape `seed` writes. A
-// hand-written row that only looks like the real one would let the gate pass a fixture
-// and still fail the library.
+// `complete` is built by spreading the ledger's own `smc.bos` row over the fields a pass
+// owns, so the fixture passes through the shape the seed writes and the pass keeps. A
+// hand-written row that only looks like the real one would let the gate pass a fixture and
+// still fail the library.
+//
+// The *unjudged* row does not come from the shard: pass 1 judged `smc.bos`, and a fixture
+// that only works while a shard is empty breaks on the day it is useful. It comes from
+// `seedRow`, the same function `seed` writes the shards with, so it stays the real seeded
+// shape however many passes run.
 //
 // Run: node tools/concept_visual_audit_check.mjs
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { rowProblems, channelNames, ledgerDir } from "./concept_visual_audit.mjs";
+import { rowProblems, channelNames, ledgerDir, seedRow } from "./concept_visual_audit.mjs";
 
 let failures = 0;
 const ok = (what) => console.log(`ok   ${what}`);
@@ -33,15 +38,18 @@ const ctx = {
 const complete = {
   ...seeded,
   kind: "event",
+  // Fixture prose, not a finding: the fields have to be *shaped* like a citation for the
+  // gate to accept them, and the gate never reads whether they are true. Pass 1's real
+  // citations, including the one that disproves this sentence, are in the smc shard.
   reference: {
     source: "LuxAlgo Smart Money Concepts",
-    url: "https://www.luxalgo.com/library/smart-money-concepts/",
-    quote: "The break of structure line extends from the broken swing point to the right until price returns to it.",
+    url: "https://www.luxalgo.com/library/indicator/smart-money-concepts/",
+    quote: "A break of structure is drawn as a level at the swing it breaks.",
     checked: "2026-10-29",
   },
   draw: {
     today: "A 1.3px stub and the word 'bos' floating over the break bar.",
-    canonical: "A dashed level running right from the swing it broke, stopping where price returns.",
+    canonical: "A dashed level running right from the swing it broke.",
     verdict: "differs_major",
   },
   fires: {
@@ -111,8 +119,17 @@ mustReject(
   "a row that declares a parameter the registry does not",
 );
 
-// A row left exactly as the seed wrote it is the state the whole gate exists to catch.
-const seededProblems = rowProblems(seeded, ctx);
+// A row as the registry seeds it, before any pass has touched it, is the state the whole
+// gate exists to catch.
+const unjudged = seedRow({
+  id: "smc.bos",
+  version: seeded.version,
+  pane: seeded.registry.pane,
+  overlay: seeded.registry.overlay,
+  required_channels: seeded.registry.channels,
+  parameters: seeded.registry.parameters.map((name) => ({ name })),
+});
+const seededProblems = rowProblems(unjudged, ctx);
 if (!seededProblems.length) fail("a row nobody has judged passed the gate");
 else {
   const rules = new Set(seededProblems.map((p) => p.rule));

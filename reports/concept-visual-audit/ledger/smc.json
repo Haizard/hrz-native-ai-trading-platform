@@ -15,46 +15,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Market Structure",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/market-structures",
+        "quote": "a BOS being when price breaks a prior swing high during an uptrend (bullish BOS) thus forming a new higher high ... The toolkit highlights internal structure with dashed lines and labels with a smaller text size.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-length segment floored to 0.6 bar widths (1.3px at the default zoom) plus the word 'bos' printed at the close",
+        "canonical": "a line drawn AT the broken swing's price, dashed for internal and solid for swing structure, carrying the BOS label, drawn as a level that runs right across the chart rather than a tick at one bar",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the last bar CLOSES beyond the newest confirmed swing in the trend's direction; the broken level is then consumed so it cannot fire twice; Choch only when the break opposes the previous break's trend, so the window's first break is always a BOS",
+        "their_rule": "price closing through the prior swing (LuxAlgo splits the same break into internal, lookback 5-49, and swing, lookback 50-100, and only labels a BOS after a CHoCH has set the trend)",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "close > last_confirmed_swing_high when trend is up, or close < last_confirmed_swing_low when trend is down, with the swing confirmed `lookback` bars on both sides",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 6,
+        "before": "structure_lookback*2 bars of history are needed before any swing can be confirmed; the scan replays from bar 22"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_events -> market_structure::detect_market_structure (events.rs:3276)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.bos.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.choch",
@@ -70,46 +75,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Market Structure",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/market-structures",
+        "quote": "A change of character (CHoCH), sometimes also referred as 'market structure shift' is characterized by price breaking a prior swing low during an uptrend (bullish CHoCH) or a prior swing high during a downtrend (bearish CHoCH), and thus indicates a potential market reversal.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "the same 1.3px stub as BOS and a floating 'choch' word; nothing marks the swing that was broken",
+        "canonical": "a dashed (internal) or solid (swing) line at the broken swing price with the CHoCH label; LuxAlgo further splits it into CHoCH and CHoCH+ depending on whether a failed swing preceded the break",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a close through the newest confirmed swing AGAINST the trend set by the previous break",
+        "their_rule": "the same close-through-the-protected-swing, but only after a swing structure exists to reverse, and split into leading (CHoCH) and supported (CHoCH+) variants we do not distinguish",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "close < last_confirmed_swing_high when trend is up, or close > last_confirmed_swing_low when trend is down",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 6,
+        "before": "as BOS: two lookbacks before the first confirmed swing exists"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_events -> market_structure::detect_market_structure (events.rs:3276)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.choch.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.liquidity_sweep",
@@ -125,46 +135,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Liquidity Sweep",
+        "url": "https://www.luxalgo.com/library/indicator/liquidity-sweep/",
+        "quote": "A liquidity sweep is a run through a level where resting orders cluster: the stop-losses and breakout entries sitting just beyond an obvious high or low.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a dashed segment from the swept level's own origin bar to the sweep bar, labelled with the wire name 'liquidity_sweep'",
+        "canonical": "the liquidity level drawn as a line running right, with the sweep marked at the bar that took it; the label is BSL/SSL or a raid arrow, never the detector's id",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the last bar WICKS through a level built only from earlier bars and CLOSES back on the other side; a close beyond is deliberately not a sweep, that is structure's news",
+        "their_rule": "the same wick-through-and-close-back, read against a swing, an equal-high/low shelf or a session extreme",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "high > level && close < level (above-side) or low < level && close > level (below-side), with level built from candles[..n-1]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 6,
+        "before": "the level pool needs structure_lookback*2 bars"
       },
       "target_shape": {
-        "name": "",
+        "name": "segment",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_events (events.rs:3244)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.liquidity_sweep.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     },
     {
       "concept_id": "smc.fvg",
@@ -180,46 +195,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Imbalance Concepts",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/imbalances",
+        "quote": "Fair Value Gaps (FVG) are market imbalances formed from a sequence of three candles where the outer candle wicks fail to overlap the central candle body ... Once price breaks a highlighted imbalance area it is said to have been \"mitigated\" and will automatically disappear.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box from the middle candle to the third candle for a created gap (1-2 bars wide) and a box from origin to the fill bar for a filled one; every one of them carries the word 'fvg'",
+        "canonical": "a box across the gap's price span whose right edge runs forward while the gap is unmitigated (LuxAlgo extends it a set number of bars, 10 by default) and which is removed the bar price trades back through",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a strict three-bar gap on the last three bars (c.low > a.high or c.high < a.low) whose height is at least 12.5% of the middle candle's own range",
+        "their_rule": "the same three-candle gap; most tools filter by a minimum size or by confluence with structure, and LuxAlgo caps the toolkit at 200 imbalances",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "c.low > a.high && (c.low - a.high) >= 0.125 * b.range, mirrored for the bearish case",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 3,
+        "before": "three candles; detect_events' own floor of structure_lookback*2 applies first"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_events (events.rs:3312)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.fvg.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.ifvg",
@@ -235,46 +255,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Imbalance Concepts",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/imbalances",
+        "quote": "Inverse fair value gaps are essentially mitigated fair value gaps, these can be used to provide retests areas ... inverse FVG's are always based on the mitigation of the most recent detected FVG, disregarding any previous historical FVG that might get mitigated.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box from the failed gap's origin to the bar that failed it, labelled 'ifvg'; all 50 in the measured window had already been invalidated, so none of them is live",
+        "canonical": "the failed gap's box, redrawn in the opposite polarity and extending right from the bar that broke it, because the zone now works against its birth",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the last bar CLOSES beyond the far edge of an open gap (a wick through is not enough) and the previous bar had not, so the breach is stamped once",
+        "their_rule": "price breaking through the gap flips its polarity; LuxAlgo only ever inverts the most recent gap, we invert any open one",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "close < gap.low for a bullish gap (or close > gap.high for a bearish one) with the prior bar still inside",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 3,
+        "before": "three candles per gap; the gap itself must predate the breach"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_events (events.rs:3381)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.ifvg.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.bpr",
@@ -290,46 +315,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Balanced Price Range",
+        "url": "https://www.luxalgo.com/library/indicator/balanced-price-range/",
+        "quote": "The drawing is precise: only the intersection of the two gaps counts, not their union, so the BPR is often a thin slice inside two larger imbalances, marked by its two edges and its midpoint.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-width box (the overlap of the two newest opposite gaps, stamped at the current bar) labelled 'bpr'; every event in the measured window was still forming, so on the chart this is a stack of one-bar slivers",
+        "canonical": "a box over the overlap only, extending right while both gaps stay open, marked at its two edges and its midpoint",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest open bullish gap and the newest open bearish gap have overlapping price bands; it re-fires on every bar the overlap persists",
+        "their_rule": "the same overlap of two opposite gaps, but drawn once and then left to live, not re-stamped per bar",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "max(buy.low, sell.low) < min(buy.high, sell.high) over the two newest open gaps of opposite polarity",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 3,
+        "before": "two three-candle gaps must exist, so six bars minimum"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_events (events.rs:3409)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.bpr.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.order_block",
@@ -345,46 +375,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Volumetric Order Blocks",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/order-blocks",
+        "quote": "Volumetric Order Blocks highlight price areas where more informed market participants accumulate orders ... These are automatically highlighted by the toolkit and will disappear once mitigated.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box over the whole range of the opposing candle, ending at the bar that broke, labelled 'order_block'",
+        "canonical": "a box over the block's price span that extends rightward from the break until price trades back into it, then disappears; the reference toolkit keeps only the 5 most recent blocks and can hide overlaps",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a bar whose RANGE is at least 1.5x the 14-bar mean range and whose CLOSE is beyond the prior lookback+1 bars' extreme; the block is the last candle that closed against that move",
+        "their_rule": "the last opposing candle (or run of them) before a displacement-driven break, with volume used to rank the blocks; ours has no volume requirement",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "range(i) >= 1.5 * mean_range_14 && close(i) beyond max/min(i-lb-1..i-1); block = last candle with close against the break",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 17,
+        "before": "AVG_RANGE_BARS(14)+3 before the first block can be judged"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_order_blocks (events.rs:2838)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.order_block.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.breaker_block",
@@ -400,46 +435,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Volumetric Order Blocks",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/order-blocks",
+        "quote": "Breaker Blocks show previous Volumetric Order Blocks that got mitigated (broken by price) ... Breaker blocks are differentiated from Volumetric Order Blocks by their non-solid background color.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box over the failed block's span ending at the bar that failed it, labelled 'breaker_block'",
+        "canonical": "the failed block's box, redrawn with a non-solid fill to say 'this was an order block', extending right until price clears its far edge",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "an open block whose far edge is CLOSED through by the last bar, which the previous bar had not closed through; the emitted side is flipped",
+        "their_rule": "the same close-through, and the reference toolkit additionally keeps the block's own history visible through the fill style",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "close(n) < block.low for a bullish block (or > block.high for a bearish one) with close(n-1) still inside",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 17,
+        "before": "as the order block: the block must exist before it can fail"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_order_blocks (events.rs:2817)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.breaker_block.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.premium_discount",
@@ -455,46 +495,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Premium & Discount Zones",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/pdzones",
+        "quote": "Premium & Discount zones highlight three specific price areas, one upper area (premium), one central area (equilibrium), and one lower area (discount).",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "one box per bar, each spanning its OWN last 12 bars' high-low range -- 50 of them stacked over the same plot, which with six concepts enabled paints a solid curtain across ~40% of it and repeats the word 'premium_discount' a dozen times",
+        "canonical": "two shaded bands and a midpoint line across the DEALING RANGE (the leg between a meaningful swing low and swing high), labelled PREMIUM / EQUILIBRIUM / DISCOUNT, redrawn when the range changes",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a state, not an event: re-emitted on every bar over a rolling 4*structure_lookback window, with the side saying which half the close sits in",
+        "their_rule": "anchored to a swing leg that did something meaningful (a sweep or a break), not to a fixed bar count, and re-anchored only when the range changes",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "equilibrium = (max(high, w) + min(low, w)) / 2 over w = 4*lookback bars; premium when close >= equilibrium",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 17,
+        "before": "the order-block floor; the range itself wants 4*structure_lookback bars"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_order_blocks (events.rs:2886)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.premium_discount.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.equal_levels",
@@ -510,46 +555,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Liquidity Concepts",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/liquidity",
+        "quote": "The toolkit returns historical equal high's & low's constructed from swing points ... Equal high's & low's requires the detected swing points to be confirmed, which takes an amount of bars equal to the value set in the numerical input. As such it is important to understand these are displayed retrospectively.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box between the two swing prices (a hair-thin band) from the older swing to the current bar, labelled BSL or SSL",
+        "canonical": "a dashed line drawn ACROSS both swing tops (or bottoms) at the pooled price, with the EQH/EQL label at its left end, running right for as long as the pool stands",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the two newest fractal swings on one side are within 0.15x the 14-bar mean range of each other",
+        "their_rule": "the same pair-of-confirmed-swings test, with the tolerance exposed as a setting and the swing lookback split short-term/long-term",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "|swing1 - swing2| <= 0.15 * mean_range_14 over the two newest same-side fractal swings",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 16,
+        "before": "detect_smc_extended's floor; the swings themselves need lookback bars each side"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_smc_extended (events.rs:2624)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.equal_levels.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.rejection_block",
@@ -565,46 +615,49 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "no_convention": true,
+        "reason": "The wick-as-zone rejection block is ICT teaching rather than a documented chart primitive: no reference toolkit in the set consulted draws it, so there is no canonical line style to match, only the shared idea that the rejected wick is the zone."
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box over the wick's span (low to body minimum for bullish) ending at the current bar, labelled 'rejection_block'",
+        "canonical": "a box over the wick only, extending right until price trades back through the body, since the rejection lives in the part that got refused",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest candle within 30 bars whose wick is at least 2x its body and 2x the opposite wick; the lifecycle (created / mitigated / invalidated) is decided by the bars after it",
+        "their_rule": "no external rule to compare against",
+        "verdict": "no_external_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "wick >= 2 * body && wick >= 2 * opposite_wick; zone = low..min(open, close) for the bullish case",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 16,
+        "before": "detect_smc_extended's floor"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_smc_extended (events.rs:2656)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.rejection_block.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.mitigation_block",
@@ -620,46 +673,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Mitigation Block",
+        "url": "https://www.luxalgo.com/library/indicator/mitigation-block/",
+        "quote": "A mitigation block is an order-block variant ... the last up-closing candle or group of candles before that failed swing becomes the bearish mitigation block. When price later returns to it, the zone is expected to act as resistance.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box over the block candle's full range ending at the current bar, labelled 'mitigation_block'",
+        "canonical": "a box over the block's span extending right until price mitigates it, drawn like an order block but tied to a swing that FAILED to take the prior extreme",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest bar within 21 that wicked through the prior 4*lookback bars' extreme and closed back inside, with no later close beyond (swept, not broken); the block is the last opposing candle before the sweep bar",
+        "their_rule": "a failed swing followed by a structural break against it; the reference definition wants the break, ours wants the sweep-without-break, which is the same story read from the opposite side",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "low(i) < min(low, i-4lb..i-1) && close(i) > that min, with no later close beyond; block = last opposing candle before i",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 16,
+        "before": "detect_smc_extended's floor, plus i >= 4*lookback for the first candidate"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_smc_extended (events.rs:2704)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.mitigation_block.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.liquidity_grab",
@@ -675,46 +733,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Liquidity Concepts",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/liquidity",
+        "quote": "Bullish liquidity grabs are highlighted in blue with borders ranging from the price low to candle body minimum and indicates a potential bullish reversal.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a dashed segment at the swept extreme running from the grab bar to the current bar, labelled 'liquidity_grab'",
+        "canonical": "a small bordered box ON the grabbing candle, from its extreme to its body's near edge - a mark on one bar, not a line across several",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "within the last 11 bars, a bar whose wick went beyond the rolling extreme of the prior lookback+1 bars AND closed back on the other side in its own reversal colour (close > open for the bullish case)",
+        "their_rule": "activity in a more liquid area, marked on the bar itself; the reference toolkit does not require the coloured-close filter we add",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "low < rolling_extreme && close > rolling_extreme && close > open",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 10,
+        "before": "structure_lookback*2+4 with the default lookback of 3"
       },
       "target_shape": {
-        "name": "",
+        "name": "candle_mark",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_liquidity_family (events.rs:2494)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.liquidity_grab.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     },
     {
       "concept_id": "smc.inducement",
@@ -730,46 +793,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Inducement",
+        "url": "https://www.luxalgo.com/library/indicator/inducement/",
+        "quote": "Inducement (marked IDM on many charts) is liquidity read as bait: in the common usage, the minor pullback high or low sitting in front of a level a larger move is expected to reach.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-length segment (a 1.3px stub) at the swing's price with the word 'inducement' beside it",
+        "canonical": "a short horizontal line at the minor pullback's price, labelled IDM, running right across the following bars",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "in an uptrend (the two newest swings on each side rising) the newest swing LOW is the inducement, and the mirror in a downtrend; nothing about the current bar is required, so it re-fires on every qualifying bar",
+        "their_rule": "the most recent internal pullback before a swing extreme, found by working backward from the level that matters - a relation between two levels, not a property of one",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "trend_up && level = newest_swing_low (mirrored for down); re-emitted while the trend holds",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 10,
+        "before": "structure_lookback*2+4"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_liquidity_family (events.rs:2526)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.inducement.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.turtle_soup",
@@ -785,46 +853,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Turtle Soup",
+        "url": "https://www.luxalgo.com/library/indicator/turtle-soup/",
+        "quote": "Turtle Soup is a failed-breakout reversal setup published by Laurence Connors and Linda Raschke in Street Smarts (1995), named at the expense of the Turtles, the trend-following group whose rules bought 20-day channel breakouts.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a dashed segment from the breakout bar to the current bar at the 20-bar extreme's price, labelled 'turtle_soup'",
+        "canonical": "a mark at the bar that failed the breakout, usually with the level it failed drawn across; the setup is a trade, not a zone, so nothing runs rightward",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "within the last 4 bars a bar CLOSED beyond the prior 20-bar extreme and the last bar's close is back inside that same level",
+        "their_rule": "Raschke's close-based entry into the failed 20-day channel break - the same 20-bar extreme and the same close-back-inside test",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "close(j) > max(high, j-20..j-1) for some j in the last 4 bars, and close(n) < that max",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 10,
+        "before": "structure_lookback*2+4 gates the function; the soup itself wants 20 bars"
       },
       "target_shape": {
-        "name": "",
+        "name": "segment",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_liquidity_family (events.rs:2548)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.turtle_soup.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     },
     {
       "concept_id": "smc.displacement",
@@ -838,44 +911,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Displacement",
+        "url": "https://www.luxalgo.com/library/indicator/displacement/",
+        "quote": "Displacement is a fast, one-sided move: a run of large-bodied candles closing in the same direction that covers ground quickly and typically leaves a fair value gap or two behind.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-length segment at the close with the word 'displacement'; the zone fields are populated on the event but the shape router does not know this id, so the candle's own range is never drawn",
+        "canonical": "the energetic candle (or run of them) highlighted in place - the move is the mark, so a box over the bar's range or the candle itself coloured is what traders read",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the last bar's body is at least 2x the prior 14 bars' mean body AND its CLOSE is beyond the prior 20 bars' extreme",
+        "their_rule": "a run of large-bodied closes in one direction, not a single bar; ours is the strictest one-bar version of the idea",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body >= 2 * mean_body_14 && (close > max(high, 20) || close < min(low, 20))",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 22,
+        "before": "the function refuses any window shorter than 22 bars"
       },
       "target_shape": {
-        "name": "",
+        "name": "candle_mark",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_displacement (events.rs:1544)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.displacement.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.internal_range_liquidity",
@@ -889,44 +967,47 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "no_convention": true,
+        "reason": "Internal range liquidity names the minor pools inside a dealing range; the reference toolkits draw the pools as the same liquidity lines as any other swing, so there is no shape of its own to match - only the range it must sit inside."
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box spanning the whole external range (low to high) from the older cluster swing to the current bar, labelled 'internal_range_liquidity'",
+        "canonical": "a line at the minor pool's own price, running right - the range is the context that decides which pools count, not the thing drawn",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the two newest minor (lookback 2) swings strictly inside the major range are within 0.15x mean range of each other; their midpoint is the pool",
+        "their_rule": "no separate primitive to compare against",
+        "verdict": "no_external_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "|m1 - m2| <= 0.15 * mean_range_14, with range_lo + tol < m < range_hi - tol on both",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "the function refuses any window shorter than 24 bars"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_range_liquidity (events.rs:1644)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.internal_range_liquidity.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.external_range_liquidity",
@@ -940,44 +1021,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Buy-side Liquidity",
+        "url": "https://www.luxalgo.com/library/indicator/buy-side-liquidity/",
+        "quote": "Buy-side liquidity, usually shortened to BSL, is the pool of resting buy orders above a visible high ... Old highs, equal highs, and prior session or weekly extremes are the classic locations.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "two boxes per bar, each spanning the full dealing range from the anchor swing to the current bar, both labelled 'external_range_liquidity'",
+        "canonical": "one line at the range HIGH (BSL) and one at the range LOW (SSL), each running right across the range; the span between them is the context, not the drawing",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest major (lookback 5) swing high and swing low define the range; both edges are re-emitted on every qualifying bar",
+        "their_rule": "the same extremes read as the pools price is drawn to, but retired only when taken rather than re-stamped per bar",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "level = max/min of the newest lookback-5 fractal swings; state re-emitted while the range holds",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "the function refuses any window shorter than 24 bars"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_range_liquidity (events.rs:1595)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.external_range_liquidity.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.judas_swing",
@@ -991,44 +1077,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Judas Swing",
+        "url": "https://www.luxalgo.com/library/indicator/judas-swing/",
+        "quote": "The Judas swing is his name for the middle act, and the label is now standard vocabulary in smart money trading circles.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box over the Asian range from its first bar to the bar that closed back inside, labelled 'judas_swing'",
+        "canonical": "the false move highlighted as a span of the session - the Asian range box plus the wick beyond it, marked where the trap ran",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a bar in hour 7 or 12 UTC wicked beyond the Asian range (today's bars before 07:00) and the last bar's close is back inside while the previous bar's was not",
+        "their_rule": "the same session-open false move; the reference teaching does not pin the return to a single bar the way our `back_inside && !prev_inside` does",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "any(hour in {7,12} && high > asia_hi) && close(n) inside range && close(n-1) outside",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "the function needs two bars, but a real Asian range needs a day's early hours"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "time_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2371)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.judas_swing.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.power_of_three",
@@ -1042,44 +1133,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Accumulation-manipulation-distribution",
+        "url": "https://www.luxalgo.com/library/indicator/power-of-three/",
+        "quote": "Accumulation-manipulation-distribution (AMD), or in ICT vocabulary the Power of Three (PO3), is a template for how a trading period unfolds around its open.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box over the Asian range from its first bar to the expansion bar, labelled 'power_of_three'; one event in the whole measured window",
+        "canonical": "the period split into three labelled phases across its span - accumulation, manipulation, distribution - framed on the period's open",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the day's Judas flag is set, the last bar's close crosses the FAR side of the Asian range with the prior close on the other side, and its body is at least 2x the 14-bar mean",
+        "their_rule": "the same three phases anchored to an opening price, described as a template rather than a mechanical trigger",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "judas_flag && cross(close, far_edge) && body >= 2 * mean_body_14",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "the function floor; a day of bars before the far side can be crossed"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "time_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2411)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.power_of_three.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.silver_bullet",
@@ -1093,44 +1189,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Silver Bullet",
+        "url": "https://www.luxalgo.com/library/indicator/silver-bullet/",
+        "quote": "The Silver Bullet is an ICT setup defined by the clock: a specific one-hour window in which the trader looks for a single trade.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box over the entry gap's span from the sweep bar to the current bar, labelled 'silver_bullet'",
+        "canonical": "the one-hour window shaded on the time axis, with the gap that gives the entry drawn as the gap itself; the clock is the first thing a trader looks for and we never draw it",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the last bar's UTC hour is 7, 14 or 18; a bar today wicked beyond the window's prior extreme and a later bar closed back through it; then a fresh three-bar gap with a middle body at least 1.5x the mean, after the sweep",
+        "their_rule": "the same sweep-then-displacement-gap inside the named hour; the windows themselves differ between teachings (10-11am / 2-3pm / 3-4am in the library's own summary, against our 07:00/14:00/18:00 UTC)",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "hour(utc) in {7,14,18} && swept(extreme of candles[..n-3]) && fresh_fvg(after sweep)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 40,
+        "before": "the function refuses any window shorter than 40 bars"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::ict_models::detect_ict_models (ict_models.rs:109)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.silver_bullet.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.unicorn",
@@ -1144,44 +1245,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Unicorn",
+        "url": "https://www.luxalgo.com/library/indicator/unicorn/",
+        "quote": "The slice of chart where the two zones coincide is the unicorn zone, and the model treats a return to that slice as a higher-interest entry than either element alone.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-length segment at the overlap's midpoint with the word 'unicorn'; the event carries both zone edges but the shape router does not know this id, so the overlap box is never drawn",
+        "canonical": "the overlap of the breaker and the gap drawn as one box at the prices where the two coincide, since the whole point is that two reasons to react occupy one price",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a lookback-2 swing high is closed through, the last bearish candle between the swing and the break is the breaker, a fresh bullish gap after it overlaps that breaker, and the last bar wicks into the overlap and closes inside it; the bullish case only",
+        "their_rule": "the same breaker-plus-gap overlap; ours has no bearish mirror, so a short unicorn never appears",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "overlap(breaker.zone, gap.zone) != empty && low(n) inside overlap && close(n) inside overlap",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 40,
+        "before": "the function refuses any window shorter than 40 bars"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::ict_models::detect_ict_models (ict_models.rs:168)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.unicorn.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.model2022",
@@ -1195,44 +1301,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Model 2022",
+        "url": "https://www.luxalgo.com/library/indicator/model-2022/",
+        "quote": "It is a fixed three-beat sequence: raid, shift, entry. First, price runs a visible pool of resting stops ... Second, price turns with displacement ... Third, the entry is the retracement into the fair value gap the displacement leg leaves behind.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-height box at yesterday's swept extreme from the sweep bar to the current bar, labelled 'model2022'; zone_low == zone_high so the fill is a hairline",
+        "canonical": "the sequence annotated across its span: the raided level, the displacement leg, and the gap that gives the entry - three drawings, not one",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "yesterday's UTC high or low is wicked through and closed back under today, then the last bar closes through a lookback-2 swing between today's start and the sweep; the model must complete on the exact breaking bar",
+        "their_rule": "raid, then a market structure shift with displacement, then the gap entry; ours never requires the gap, so it stops one beat early",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swept(yesterday_extreme) && close(n) breaks a swing between today_start and sweep_idx",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 40,
+        "before": "the function floor, plus a completed prior UTC day"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "time_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::ict_models::detect_ict_models (ict_models.rs:208)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.model2022.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.market_maker_model",
@@ -1246,44 +1357,47 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "no_convention": true,
+        "reason": "MMXM is drawn as a narrative curve over a session (consolidation, manipulation, distribution) in ICT material; no reference toolkit in the set consulted renders it as a chart primitive, so there is no agreed shape to copy."
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box over the full pool span from the current bar to itself, labelled 'market_maker_model'; one event in the measured window",
+        "canonical": "the session's three phases marked across their spans with the manipulation extreme and the reached opposite pool named - a time-anchored narrative, not a single box",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the day's Asian range was wicked beyond one side in hour 7 or 12 (no return required) and the last bar's wick tags the far pool, which the prior bar had not reached",
+        "their_rule": "no standard drawing to compare against",
+        "verdict": "no_external_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "manipulation_flag && touch(far_pool) && !touch(far_pool) at n-1",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 40,
+        "before": "the function floor, plus an Asian range to manipulate"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "time_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::ict_models::detect_ict_models (ict_models.rs:257)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.market_maker_model.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.mss",
@@ -1297,44 +1411,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Change of Character",
+        "url": "https://www.luxalgo.com/library/indicator/market-structure-shift/",
+        "quote": "Many traders use CHoCH and market structure shift (MSS) interchangeably; others reserve MSS for the stronger version, a counter-trend break delivered with displacement right after a liquidity sweep of the trend's extreme.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-length segment (a 1.3px stub) at the broken swing with the word 'mss'; the event carries zone_low == zone_high == the level, so a box would be a hairline too",
+        "canonical": "the same drawing as a CHoCH - a line at the broken swing running right, labelled MSS - because the difference is the strength of the break, not its shape",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a close through the newest lookback-3 swing AGAINST the trend set by the two newest lookback-3 swings, with the previous bar still holding that level",
+        "their_rule": "either a synonym for CHoCH or the displacement-backed version; ours never checks for displacement, so it is the plain synonym",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "trend_up && close(n) < newest_swing_low && close(n-1) >= newest_swing_low",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels refuses any window shorter than 30 bars"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1745)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.mss.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.equilibrium",
@@ -1348,44 +1467,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Premium & Discount",
+        "url": "https://www.luxalgo.com/library/indicator/premium-discount/",
+        "quote": "Take the dealing range (the leg between a meaningful swing low and swing high) and split it at 50%. The midpoint is equilibrium; everything above is premium, everything below is discount.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-length segment at the midpoint with the word 'equilibrium'; the event carries the range's own edges but the router sends this id to the segment branch",
+        "canonical": "a horizontal line at the 50% of the dealing range, labelled EQ, running right across the range it belongs to",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the midpoint of the highest and lowest lookback-5 swings anywhere in the window, re-emitted on every qualifying bar",
+        "their_rule": "the midpoint of the CURRENT dealing range - the leg that did something meaningful - re-anchored only when the range changes",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "level = (max(swing_high) + min(swing_low)) / 2 over the window's lookback-5 swings",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels' floor"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1770)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.equilibrium.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.consequent_encroachment",
@@ -1399,44 +1523,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Consequent Encroachment",
+        "url": "https://www.luxalgo.com/library/indicator/consequent-encroachment/",
+        "quote": "Consequent encroachment (usually just CE) is the midpoint of a fair value gap: the 50% line between the gap's boundaries.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a short dashed segment at the gap's midpoint from the gap's origin to the current bar, labelled 'consequent_encroachment'",
+        "canonical": "one horizontal line across the gap at its 50%, labelled CE, running right while the gap is open - the midpoint of a thing already drawn, not a second thing",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest three-bar gap scanned backward from the last bar, with no size threshold at all; it re-fires on every bar while that gap is the newest",
+        "their_rule": "the midpoint of the gap that matters, which is a property of the gap rather than an event of its own",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "level = (gap.low + gap.high) / 2 for the newest three-bar gap",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels' floor"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1780)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.consequent_encroachment.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.liquidity_void_fill",
@@ -1450,44 +1579,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo docs, Price Action Concepts: Imbalance Concepts",
+        "url": "https://docs.luxalgo.com/platform/algos/price-action-concepts/imbalances",
+        "quote": "Once price breaks a highlighted imbalance area it is said to have been \"mitigated\" and will automatically disappear.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-length segment at the gap's floor with the word 'liquidity_void_fill'; the gap it completed is not drawn by this concept",
+        "canonical": "the gap's box closing - its right edge ending at the fill bar and the fill marked there - so the void's lifecycle reads as one shape completing rather than a word appearing",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a bullish gap (c.low > a.high) is called filled when the last bar CLOSES back under a.high, which is a close under the gap's floor rather than a full traversal of it",
+        "their_rule": "price trading back through the area; the reference rule is a touch of the far edge, ours is a close under the near one",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "close(n) < a.high for a bullish gap a..c, mirrored for bearish",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels' floor"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1935)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.liquidity_void_fill.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.trendline_sweep",
@@ -1501,44 +1635,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Trendline",
+        "url": "https://www.luxalgo.com/library/indicator/trendline/",
+        "quote": "A trendline is a straight line drawn across successive swing points and projected forward ... Connect them and extend the line to the right.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a segment from the first touch to the sweep bar at the line's value AT the sweep bar, labelled 'trendline_sweep' - so the line's own slope is lost and the drawing is horizontal",
+        "canonical": "the trendline itself, projected forward through its touches, with the sweep marked where price wicked through and closed back",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the three newest lookback-3 swing lows ascending with the third within 0.15% of the line through the first two, then the last bar's wick 0.3% below the extrapolated line while the close stays above it",
+        "their_rule": "three validated touches and a break of the projected line; the reference projection is the drawing, ours throws it away after computing it",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "slope(h1,h2) fits h3 within 0.15% && low(n) < line(n) * 0.997 && close(n) > line(n)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels' floor, plus three confirmed swings"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "outline",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1985)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.trendline_sweep.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     },
     {
       "concept_id": "smc.mtf_alignment",
@@ -1552,44 +1691,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo library, Smart Money Concepts",
+        "url": "https://www.luxalgo.com/library/indicator/smart-money-concepts/",
+        "quote": "Top-down analysis: bias comes from the daily and 4-hour chart, while execution is refined on 15-minute to 1-minute charts once price reaches a higher-timeframe zone.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a zero-length segment at the close with the word 'mtf_alignment'; the event carries the bar's own range but the router sends it to the segment branch",
+        "canonical": "alignment is a bias read, not a shape - the higher timeframe's own structure is what gets drawn, and agreement is shown by the direction of the existing levels rather than by a mark of its own",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the chart's structure lean and the last three completed bars' slope one step up the timeframe ladder start to agree on this bar; disagreement is silent",
+        "their_rule": "no standard mark to compare against; the convention is to draw the higher timeframe's levels, not the agreement",
+        "verdict": "no_external_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "lean(candles) == lean(upper, at 2) && !(same at n-1)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 60,
+        "before": "60 bars of the chart timeframe and at least 12 resampled bars one step up"
       },
       "target_shape": {
-        "name": "",
+        "name": "candle_mark",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::regime::detect_mtf_alignment (regime.rs:145)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.mtf_alignment.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.mtf_zone_alignment",
@@ -1603,44 +1747,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView, Smart Money Concepts (SMC) [LuxAlgo]",
+        "url": "https://www.tradingview.com/script/CnB3fSph-Smart-Money-Concepts-SMC-LuxAlgo/",
+        "quote": "Highs & Lows MTF: Allows the user to display previous highs & lows from daily, weekly, & monthly timeframes as significant levels.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a dashed segment at the zone's centre from the zone's first bar to the current bar, re-emitted every bar -- the window's 50 events are 50 copies of one band (spans 420 to 469 bars), labelled 'mtf_zone_alignment'",
+        "canonical": "a band across the zone's own top and bottom, drawn once and extended right while it holds, because the level is the thing two timeframes agree on",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest support/resistance zone's centre is within 0.3% of a resampled (4x) zone's centre; re-emitted on every bar while both hold",
+        "their_rule": "higher-timeframe levels are drawn as their own set of lines, not as an agreement test against the chart timeframe's zones",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "|center(ltf_zone) - center(htf_zone)| <= 0.003 * center(htf_zone)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels' floor, plus more than 20 HTF bars to resample"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:2071)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.mtf_zone_alignment.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "smc.smt_divergence",
@@ -1656,46 +1805,53 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "no_convention": true,
+        "reason": "SMT divergence is drawn as two correlated instruments' swings with a line between the crack; nothing in the reference set draws it on a single price pane, and this platform has no second series on the chart to connect."
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "nothing: the scan route never emits this concept (it has no EventKind) and no lane in the shell calls /concept-events/smt, so the card shows its hairline and the chart shows no mark",
+        "canonical": "two panes (or an overlay of the pair) with the diverging swing highs/lows joined, so the crack in correlation is the drawing",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "A's newest lookback-3 swing low is lower while B's is higher (or the mirror on the highs); the two series' newest swings are not required to be contemporaneous",
+        "their_rule": "the same unconfirmed-lower-high reading between two correlated instruments",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "a.newest_swing_low < prior.newest_swing_low && b.newest_swing_low > prior.b.newest_swing_low",
+        "inputs": [
+          {
+            "name": "candles_a",
+            "channel": "candles"
+          },
+          {
+            "name": "candles_b",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 10,
+        "before": "lookback*2+4 per series at the gateway's lookback of 3"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
+        "name": "pair_link",
+        "status": "new_rendering",
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::smt::detect_smt (smt.rs:75), wrapped by api-gateway's /concept-events/smt",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/smc/smc.smt_divergence.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     }
   ]
 }
