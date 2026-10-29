@@ -135,8 +135,8 @@ abbreviations *are* the recognition the audit was asked to protect.
 
 **5. Six concepts on one chart is noise, not a picture.** `smc.premium_discount` emits one
 box per bar, each spanning its own last 12 bars' range, so 50 boxes stack over the same
-strip of plot; with six concepts switched on it alone covers roughly 40% of it in solid fill
-and repeats the word `premium_discount` a dozen times
+strip of plot; with six concepts switched on they fuse into one opaque band across the
+middle of the chart and print the word `premium_discount` over and over
 ([pass1-chart.png](evidence/pass1-chart.png)).
 `smc.mtf_zone_alignment` does the same thing to a single HTF band: its 50 events are 50
 copies of one zone, spans 420 to 469 bars, because the detector re-emits the state every bar

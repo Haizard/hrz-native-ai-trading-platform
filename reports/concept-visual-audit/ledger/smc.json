@@ -503,7 +503,7 @@
         "checked": "2026-10-29"
       },
       "draw": {
-        "today": "one box per bar, each spanning its OWN last 12 bars' high-low range -- 50 of them stacked over the same plot, which with six concepts enabled paints a solid curtain across ~40% of it and repeats the word 'premium_discount' a dozen times",
+        "today": "one box per bar, each spanning its OWN last 12 bars' high-low range -- 50 of them stacked, which with six concepts enabled fuses into one opaque band across the middle of the plot and prints the word 'premium_discount' over and over",
         "canonical": "two shaded bands and a midpoint line across the DEALING RANGE (the leg between a meaningful swing low and swing high), labelled PREMIUM / EQUILIBRIUM / DISCOUNT, redrawn when the range changes",
         "verdict": "impossible_in_vocabulary"
       },
