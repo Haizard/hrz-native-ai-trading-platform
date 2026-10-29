@@ -45,6 +45,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.hammer.html",
       "preview_agrees": ""
     },
@@ -92,6 +96,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.hanging_man.html",
       "preview_agrees": ""
     },
@@ -139,6 +147,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.shooting_star.html",
       "preview_agrees": ""
     },
@@ -186,6 +198,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.inverted_hammer.html",
       "preview_agrees": ""
     },
@@ -233,6 +249,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.doji.html",
       "preview_agrees": ""
     },
@@ -280,6 +300,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.marubozu.html",
       "preview_agrees": ""
     },
@@ -327,6 +351,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.engulfing.html",
       "preview_agrees": ""
     },
@@ -374,6 +402,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.harami.html",
       "preview_agrees": ""
     },
@@ -421,6 +453,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.morning_star.html",
       "preview_agrees": ""
     },
@@ -468,6 +504,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.evening_star.html",
       "preview_agrees": ""
     },
@@ -515,6 +555,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.piercing_line.html",
       "preview_agrees": ""
     },
@@ -562,6 +606,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.dark_cloud_cover.html",
       "preview_agrees": ""
     },
@@ -609,6 +657,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.three_white_soldiers.html",
       "preview_agrees": ""
     },
@@ -656,6 +708,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.three_black_crows.html",
       "preview_agrees": ""
     },
@@ -703,6 +759,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.dragonfly_doji.html",
       "preview_agrees": ""
     },
@@ -750,6 +810,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.gravestone_doji.html",
       "preview_agrees": ""
     },
@@ -797,6 +861,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.long_legged_doji.html",
       "preview_agrees": ""
     },
@@ -844,6 +912,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.spinning_top.html",
       "preview_agrees": ""
     },
@@ -891,6 +963,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.tweezer.html",
       "preview_agrees": ""
     },
@@ -938,6 +1014,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.kicker.html",
       "preview_agrees": ""
     },
@@ -985,6 +1065,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.matching_low.html",
       "preview_agrees": ""
     },
@@ -1032,6 +1116,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.on_neck.html",
       "preview_agrees": ""
     },
@@ -1079,6 +1167,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.three_inside.html",
       "preview_agrees": ""
     },
@@ -1126,6 +1218,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.three_outside.html",
       "preview_agrees": ""
     },
@@ -1173,6 +1269,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.three_methods.html",
       "preview_agrees": ""
     },
@@ -1220,6 +1320,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.abandoned_baby.html",
       "preview_agrees": ""
     },
@@ -1267,6 +1371,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.tri_star.html",
       "preview_agrees": ""
     },
@@ -1314,6 +1422,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.stick_sandwich.html",
       "preview_agrees": ""
     },
@@ -1361,6 +1473,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.mat_hold.html",
       "preview_agrees": ""
     },
@@ -1408,6 +1524,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.tasuki_gap.html",
       "preview_agrees": ""
     },
@@ -1455,6 +1575,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.upside_gap_two_crows.html",
       "preview_agrees": ""
     },
@@ -1502,6 +1626,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.ladder_bottom.html",
       "preview_agrees": ""
     },
@@ -1549,6 +1677,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.belt_hold.html",
       "preview_agrees": ""
     },
@@ -1596,6 +1728,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/candles/candles.hikkake.html",
       "preview_agrees": ""
     }

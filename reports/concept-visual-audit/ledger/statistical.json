@@ -45,6 +45,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/statistical/indicators.hv.html",
       "preview_agrees": ""
     },
@@ -92,6 +96,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/statistical/indicators.zscore.html",
       "preview_agrees": ""
     },
@@ -139,6 +147,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/statistical/indicators.kalman.html",
       "preview_agrees": ""
     },
@@ -186,6 +198,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/statistical/indicators.changepoint.html",
       "preview_agrees": ""
     },
@@ -233,6 +249,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/statistical/indicators.entropy.html",
       "preview_agrees": ""
     },
@@ -280,6 +300,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/statistical/indicators.bayesian_drift.html",
       "preview_agrees": ""
     },
@@ -327,6 +351,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/statistical/indicators.ar_forecast.html",
       "preview_agrees": ""
     },
@@ -374,6 +402,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/statistical/indicators.garch.html",
       "preview_agrees": ""
     },
@@ -421,6 +453,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/statistical/indicators.hmm.html",
       "preview_agrees": ""
     },
@@ -468,6 +504,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/statistical/indicators.pairs.html",
       "preview_agrees": ""
     }

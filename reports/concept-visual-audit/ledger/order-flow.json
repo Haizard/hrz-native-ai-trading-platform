@@ -47,6 +47,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "spike_multiple"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/order-flow/order_flow.delta_shift.html",
       "preview_agrees": ""
     }

@@ -45,6 +45,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.breakout.html",
       "preview_agrees": ""
     },
@@ -92,6 +96,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.failed_breakout.html",
       "preview_agrees": ""
     },
@@ -139,6 +147,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.retest.html",
       "preview_agrees": ""
     },
@@ -186,6 +198,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.higher_highs.html",
       "preview_agrees": ""
     },
@@ -233,6 +249,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.range_contraction.html",
       "preview_agrees": ""
     },
@@ -280,6 +300,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.round_numbers.html",
       "preview_agrees": ""
     },
@@ -327,6 +351,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.level_rejection.html",
       "preview_agrees": ""
     },
@@ -374,6 +402,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.level_flip.html",
       "preview_agrees": ""
     },
@@ -421,6 +453,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.compression_breakout.html",
       "preview_agrees": ""
     },
@@ -468,6 +504,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.volume_confirmed_breakout.html",
       "preview_agrees": ""
     },
@@ -515,6 +555,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/pa/pa.regime.html",
       "preview_agrees": ""
     }

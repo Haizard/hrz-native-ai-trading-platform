@@ -47,6 +47,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/sd/sd.zone_tested.html",
       "preview_agrees": ""
     },
@@ -94,6 +100,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/sd/sd.zone_compression.html",
       "preview_agrees": ""
     },
@@ -141,6 +151,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/sd/sd.proximal_distal.html",
       "preview_agrees": ""
     },
@@ -188,6 +202,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/sd/sd.zone_strength.html",
       "preview_agrees": ""
     }

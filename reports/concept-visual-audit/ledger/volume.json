@@ -45,6 +45,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume/indicators.obv.html",
       "preview_agrees": ""
     },
@@ -92,6 +96,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume/indicators.ad_line.html",
       "preview_agrees": ""
     },
@@ -139,6 +147,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume/indicators.cmf.html",
       "preview_agrees": ""
     },
@@ -186,6 +198,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume/indicators.mfi.html",
       "preview_agrees": ""
     },
@@ -233,6 +249,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume/indicators.anchored_vwap.html",
       "preview_agrees": ""
     }

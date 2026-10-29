@@ -22,6 +22,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
 const Taxonomy = require("../frontend/app/concept_taxonomy.js");
@@ -349,6 +350,271 @@ async function render(family) {
   }
 }
 
+/// The ledger's own vocabulary, copied from the spec's row table.
+///
+/// A pass is free to be wrong about a concept; it is not free to invent a category,
+/// because the next pass -- and the state architecture that reads these rows -- counts
+/// them. So an unknown verdict is a gate failure, not a style note.
+const KINDS = ["event", "series", "interval", "readout"];
+const DRAW_VERDICTS = ["matches", "differs_minor", "differs_major", "impossible_in_vocabulary"];
+const FIRES_VERDICTS = ["same_bars", "different_rule", "no_external_rule", "continuous"];
+const RULE_FORMS = ["predicate", "recursion"];
+const SHAPE_STATUSES = ["wiring", "new_rendering"];
+const SHAPE_SCALES = ["price", "own_pane", "time_only"];
+const PREVIEW_VERDICTS = ["agrees", "differs", "not_rendered"];
+
+// Fields with a rule of their own: the general emptiness scan stands down on them so a
+// row reports one problem per field, not two, and a pass can work the list.
+const OWNED_FIELDS = new Set([
+  "reference", "kind", "draw.verdict", "fires.verdict", "rule_as_data.form",
+  "rule_as_data.inputs", "target_shape.status", "target_shape.scale",
+  "preview_agrees", "parameters",
+]);
+
+/// The names `DataChannels` actually serves, read from the Rust rather than copied.
+///
+/// A hardcoded list here is a second source of truth that drifts the first time the
+/// broker gains a channel -- and rule 6's whole job is to keep a pass from naming a
+/// feed the venue does not deliver.
+async function channelNames() {
+  const source = await readFile(join(root, "crates/market-data/src/broker.rs"), "utf8");
+  const names = [...source.matchAll(/pub const ([A-Z0-9_]+): Self = Self\(\s*\d+ << \d+\s*\);/g)]
+    .map((match) => match[1].toLowerCase());
+  if (!names.length) {
+    console.error("FAIL no DataChannels constants parsed out of crates/market-data/src/broker.rs");
+    console.error("     the channel regex is stale -- fix it here rather than dropping rule 6");
+    process.exit(1);
+  }
+  return new Set(names);
+}
+
+const isText = (value) => typeof value === "string" && value.trim().length > 0;
+
+/// One row, every rule that fires on it.
+///
+/// Each problem names the concept's field and the rule, and says what would satisfy it:
+/// a gate nobody can read their way out of is a gate that gets edited rather than fixed.
+function rowProblems(row, ctx) {
+  const problems = [];
+  const add = (rule, field, why) =>
+    problems.push({ rule, field, why, message: `rule ${rule} (${field}): ${why}` });
+
+  // Rule 2 -- nothing left at its seeded value.
+  const scan = (value, path) => {
+    if (OWNED_FIELDS.has(path)) return;
+    if (value === null || value === undefined) add(2, path, "left unset by the seed; a pass has to answer it");
+    else if (typeof value === "string") { if (!isText(value)) add(2, path, "empty -- still the value the seed wrote"); }
+    else if (Array.isArray(value)) value.forEach((item, i) => scan(item, `${path}[${i}]`));
+    else if (typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) scan(item, path ? `${path}.${key}` : key);
+    }
+  };
+  scan(row, "");
+
+  const oneOf = (value, list, field, rule) => {
+    if (!isText(value)) add(rule, field, "empty -- still the value the seed wrote");
+    else if (!list.includes(value)) add(rule, field, `"${value}" is not in the ledger's vocabulary (${list.join(" | ")})`);
+  };
+  oneOf(row.kind, KINDS, "kind", 2);
+  oneOf(row.draw && row.draw.verdict, DRAW_VERDICTS, "draw.verdict", 2);
+  oneOf(row.fires && row.fires.verdict, FIRES_VERDICTS, "fires.verdict", 2);
+  oneOf(row.rule_as_data && row.rule_as_data.form, RULE_FORMS, "rule_as_data.form", 2);
+  oneOf(row.target_shape && row.target_shape.status, SHAPE_STATUSES, "target_shape.status", 2);
+  oneOf(row.target_shape && row.target_shape.scale, SHAPE_SCALES, "target_shape.scale", 2);
+
+  // Rule 3 -- a citation, or an explicit statement that there is no convention to cite.
+  const ref = row.reference;
+  if (!ref || typeof ref !== "object") {
+    add(3, "reference", "a row with no reference is this audit's opinion wearing a citation");
+  } else if (ref.no_convention === true) {
+    if (!isText(ref.reason)) {
+      add(3, "reference.reason", 'no external convention is a legal answer, but it has to say why -- and "none found" is not why');
+    }
+  } else {
+    for (const field of ["source", "url", "quote", "checked"]) {
+      if (!isText(ref[field])) {
+        add(3, `reference.${field}`, "a reference is source, url, one sentence quoted from it, and the date it was read");
+      }
+    }
+    if (isText(ref.checked) && !/^\d{4}-\d{2}-\d{2}$/.test(ref.checked)) {
+      add(3, "reference.checked", `"${ref.checked}" is not a date -- the row has to age, and "today" does not`);
+    }
+  }
+
+  // Rule 4 -- a series may fire continuously; an event that does is not an event.
+  if (row.fires && row.fires.verdict === "continuous" && row.kind === "event") {
+    add(4, "fires.verdict", 'an "event" that fires on every bar is a series wearing an event\'s row -- set kind to "series" or pick a real verdict');
+  }
+
+  // Rule 5 -- the registry already knows whether a series has a scale; do not disagree silently.
+  if (row.kind === "series") {
+    const reg = row.registry || {};
+    const scale = row.target_shape && row.target_shape.scale;
+    if (!reg.pane && !reg.overlay) {
+      add(5, "registry", "the registry gives this concept no pane and no overlay, so calling it a series is reporting a defect -- record it in the section, do not route around it here");
+    } else if (reg.pane && scale && scale !== "own_pane") {
+      add(5, "target_shape.scale", `pane is true, so the shape belongs on its own scale, not "${scale}"`);
+    } else if (!reg.pane && reg.overlay && scale === "own_pane") {
+      add(5, "target_shape.scale", "overlay is true and pane is false, so the shape sits on the price frame -- own_pane contradicts the registry");
+    }
+  }
+
+  // Rule 6 -- the rule names its inputs, and an input names a channel the venue serves.
+  const inputs = row.rule_as_data && row.rule_as_data.inputs;
+  const channelList = [...ctx.channels].sort().join(", ");
+  if (!Array.isArray(inputs) || !inputs.length) {
+    add(6, "rule_as_data.inputs", "a rule that does not name its inputs is prose, not data -- the combined-concept spec reads this field");
+  } else {
+    inputs.forEach((input, i) => {
+      const at = `rule_as_data.inputs[${i}]`;
+      if (!input || typeof input !== "object") { add(6, at, "each input is { name, channel }"); return; }
+      if (!isText(input.name)) add(6, `${at}.name`, "an input has to be named");
+      if (!isText(input.channel)) add(6, `${at}.channel`, `the channel is one DataChannels names (${channelList})`);
+      // Either spelling the spec asks for: the registry's lowercase `names()` output and
+      // the bit name it cites in prose ("TRADES_AGGRESSOR", not "the tape") are the same
+      // channel, and a row should not fail for quoting the source instead of the JSON.
+      else if (!ctx.channels.has(String(input.channel).toLowerCase())) {
+        add(6, `${at}.channel`, `"${input.channel}" is not a channel DataChannels names (${channelList})`);
+      }
+    });
+  }
+
+  // Rule 7 -- the judgement is anchored to a photograph that exists.
+  if (!isText(row.render)) {
+    add(7, "render", "the row has to point at the picture it was judged from");
+  } else if (!ctx.hasFile(row.render)) {
+    add(7, "render", `${row.render} does not exist -- \`node tools/concept_visual_audit.mjs render ${row.family || "<family>"}\` builds it`);
+  }
+
+  // Rule 8 -- the card in the Indicators face is a second renderer for the same shape.
+  oneOf(row.preview_agrees, PREVIEW_VERDICTS, "preview_agrees", 8);
+
+  // Rule 9 -- the parameter gap is counted, not asserted in prose.
+  const declared = (row.registry && row.registry.parameters) || [];
+  const params = row.parameters;
+  if (!params || !Array.isArray(params.honoured)) {
+    add(9, "parameters.honoured", params ? "unset -- an empty list is the honest answer when the detector reads no parameter; an absent one is a row nobody judged" : "the row has no parameters block; re-seed it");
+  } else {
+    if (!Array.isArray(params.declared) || params.declared.join("|") !== declared.join("|")) {
+      add(9, "parameters.declared", `the registry declares [${declared.join(", ")}]; the row must carry that list, not a shorter one`);
+    }
+    for (const name of params.honoured) {
+      if (!declared.includes(name)) add(9, "parameters.honoured", `"${name}" is not a parameter the registry declares`);
+    }
+  }
+
+  return problems;
+}
+
+async function readShard(family) {
+  const path = join(ledgerDir, `${family}.json`);
+  if (!existsSync(path)) return null;
+  const parsed = JSON.parse(await readFile(path, "utf8"));
+  return Array.isArray(parsed) ? parsed : parsed.rows;
+}
+
+/// The completeness gate: the ledger against the registry, and every row against the
+/// rules above. `--family` scopes one pass; no flag sweeps the union.
+async function check(family) {
+  if (family && !(family in EXPECTED)) {
+    console.error(`FAIL "${family}" is not a family the audit knows: ${Object.keys(EXPECTED).join(", ")}`);
+    process.exit(1);
+  }
+  let entries;
+  try {
+    entries = await concepts();
+  } catch (error) {
+    console.error(`FAIL the gate counts rows against the live registry, and it cannot reach it: ${error.message}`);
+    console.error(`     start the gateway on ${gateway}, or point the gate at it with HRZ_GATEWAY=`);
+    process.exit(1);
+  }
+  const channels = await channelNames();
+  const ctx = { channels, hasFile: (path) => existsSync(join(root, path)) };
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const families = family ? [family] : Object.keys(EXPECTED).filter((id) => EXPECTED[id] > 0);
+
+  // The kinds are declared once, in the vocabulary chapter, and the gate reads that
+  // chapter: a fifth kind has to appear there before a row may use it, so the decision
+  // is made in the open instead of typed into a field a reviewer skips.
+  const vocabRel = "docs/superpowers/specs/concept-visual-audit/00-vocabulary.md";
+  const vocabPath = join(root, vocabRel);
+  if (!existsSync(vocabPath)) {
+    console.error(`FAIL ${vocabRel} is missing -- the gate's kinds have no declaration to be checked against`);
+    process.exit(1);
+  }
+  const vocab = await readFile(vocabPath, "utf8");
+  for (const kind of KINDS) {
+    if (!vocab.includes(`\`${kind}\``)) {
+      console.error(`FAIL the vocabulary chapter no longer names the kind "${kind}" the gate accepts -- declare it there, or drop it from both in the same commit`);
+      process.exit(1);
+    }
+  }
+
+  const tally = new Map();
+  let rows = 0;
+  let incomplete = 0;
+  let missingShards = 0;
+
+  for (const id of families) {
+    const shardRows = await readShard(id);
+    if (!shardRows) {
+      console.log(`FAIL ${id}: no shard at reports/concept-visual-audit/ledger/${id}.json -- run \`node tools/concept_visual_audit.mjs seed\``);
+      missingShards += 1;
+      continue;
+    }
+    const want = entries.filter((entry) => Taxonomy.familyOf(entry.id) === id).map((entry) => entry.id);
+    const got = shardRows.map((row) => row.concept_id);
+    // Rule 1 -- exactly one row per registry concept, in the shard familyOf(id) puts it in.
+    for (const absent of want.filter((conceptId) => !got.includes(conceptId))) {
+      console.log(`  rule 1: ${absent} has no row in ${id}.json -- the registry answers it`);
+      tally.set(1, (tally.get(1) || 0) + 1);
+      incomplete += 1;
+    }
+    for (const stray of got.filter((conceptId) => !want.includes(conceptId))) {
+      const home = Taxonomy.familyOf(stray);
+      console.log(`  rule 1: ${stray} has a row in ${id}.json but the taxonomy puts it in ${home}${byId.has(stray) ? "" : ", which the registry no longer answers"}`);
+      tally.set(1, (tally.get(1) || 0) + 1);
+      incomplete += 1;
+    }
+
+    let bad = 0;
+    for (const row of shardRows) {
+      rows += 1;
+      const problems = rowProblems(row, ctx);
+      if (row.family !== id) problems.push({ rule: 1, field: "family", why: `the row says ${row.family}, the shard is ${id}`, message: "" });
+      const entry = byId.get(row.concept_id);
+      if (entry && row.version !== entry.version) {
+        problems.push({ rule: 1, field: "version", why: `the registry is at ${entry.version}, the row was judged at ${row.version} -- re-seed and re-judge`, message: "" });
+      }
+      if (!problems.length) continue;
+      bad += 1;
+      for (const problem of problems) tally.set(problem.rule, (tally.get(problem.rule) || 0) + 1);
+      const grouped = new Map();
+      for (const problem of problems) {
+        if (!grouped.has(problem.rule)) grouped.set(problem.rule, []);
+        grouped.get(problem.rule).push(problem);
+      }
+      console.log(`  ${row.concept_id}`);
+      for (const [rule, list] of [...grouped.entries()].sort((a, b) => a[0] - b[0])) {
+        const fields = list.slice(0, 5).map((problem) => problem.field).join(", ");
+        console.log(`     rule ${rule}: ${fields}${list.length > 5 ? ` +${list.length - 5} more` : ""}`);
+        console.log(`        ${list[0].why}`);
+      }
+    }
+    console.log(`${id}: ${shardRows.length} row(s), ${bad} incomplete`);
+    incomplete += bad;
+  }
+
+  const counts = [...tally.entries()].sort((a, b) => a[0] - b[0]).map(([rule, n]) => `${rule}:${n}`);
+  if (incomplete || missingShards) {
+    console.log(`\nFAIL ${incomplete} problem row(s) of ${rows} checked${missingShards ? `, ${missingShards} shard(s) missing` : ""}`);
+    console.log(`     problems per rule: ${counts.join("  ")}`);
+    console.log(`     the rules are the spec's ledger row table; a field that cannot be answered honestly is a finding to write in the section, not a field to delete`);
+    process.exit(1);
+  }
+  console.log(`\nok   ${rows} row(s) complete across ${families.length} famil${families.length === 1 ? "y" : "ies"}`);
+}
+
 /// The row as the registry seeds it: everything the platform already knows, filled
 /// from the live answer, and everything a pass must decide left at its empty value.
 ///
@@ -376,6 +642,10 @@ function seedRow(entry) {
     warmup: { bars: 0, before: "" },
     target_shape: { name: "", status: "wiring", scale: "price" },
     detector: "",
+    parameters: {
+      declared: (entry.parameters || []).map((p) => p.name),
+      honoured: null,
+    },
     render: `reports/concept-visual-audit/${family}/${entry.id}.html`,
     preview_agrees: "",
   };
@@ -459,6 +729,8 @@ if (invokedDirectly) {
     await seed();
   } else if (subcommand === "render") {
     await render(rest.find((arg) => !arg.startsWith("--")));
+  } else if (subcommand === "check") {
+    await check(rest.find((arg) => !arg.startsWith("--")));
   } else {
     console.error(`unknown subcommand "${subcommand ?? ""}" -- expected: taxonomy | seed | render | check`);
     process.exit(2);
@@ -468,4 +740,6 @@ if (invokedDirectly) {
 export {
   EXPECTED, Taxonomy, ConceptShapes, root, gateway, concepts,
   ledgerDir, seedRow, loadEngine, candlesFor, eventsFor, renderPage, escapeHtml,
+  rowProblems, channelNames, readShard,
+  KINDS, DRAW_VERDICTS, FIRES_VERDICTS, RULE_FORMS, SHAPE_STATUSES, SHAPE_SCALES, PREVIEW_VERDICTS,
 };

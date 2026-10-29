@@ -43,6 +43,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/econ/econ.nfp.html",
       "preview_agrees": ""
     },
@@ -88,6 +92,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/econ/econ.cpi.html",
       "preview_agrees": ""
     },
@@ -133,6 +141,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/econ/econ.fomc.html",
       "preview_agrees": ""
     },
@@ -178,6 +190,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/econ/econ.claims.html",
       "preview_agrees": ""
     },
@@ -223,6 +239,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/econ/econ.pce.html",
       "preview_agrees": ""
     },
@@ -268,6 +288,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/econ/econ.gdp.html",
       "preview_agrees": ""
     }

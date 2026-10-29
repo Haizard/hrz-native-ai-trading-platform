@@ -90,6 +90,7 @@ pass so no pass can quietly define its own schema.
   "warmup":  { "bars": 0, "before": "" },
   "target_shape": { "name": "", "status": "wiring", "scale": "price" }, // status: wiring | new_rendering · scale: price | own_pane | time_only
   "detector": "analytics_core::events::detect_structure",
+  "parameters": { "declared": ["swing_lookback"], "honoured": [] },  // honoured: [] is an answer; null is not
   "render": "reports/concept-visual-audit/smc/smc.bos.html",
   "preview_agrees": "agrees"   // agrees | differs | not_rendered
 }
@@ -97,23 +98,40 @@ pass so no pass can quietly define its own schema.
 
 The gate's rules, and the reason each exists:
 
-1. Every registry concept has exactly one row, in its `familyOf(id)` shard.
-2. No empty string, no `null`, no row left at its seeded value.
-3. `reference` is a citation **or** `{ "house_style": true, "reason": "" }`.
+1. Every registry concept has exactly one row, in its `familyOf(id)` shard — and the row's
+   `version` is the registry's current one, because a row judged against a definition that
+   has since moved is a finding about a concept that no longer exists.
+2. No empty string, no `null`, no row left at its seeded value — and no value outside the
+   ledger's vocabulary: `kind`, the two verdicts, `form`, `status`, `scale` are each one of
+   the strings above. A pass may be wrong about a concept; it may not invent a category.
+3. `reference` is a citation **or** `{ "no_convention": true, "reason": "" }` — the shape
+   the spec's own row table names, and `checked` has to be an actual date because the row
+   is expected to age. *(The first draft of this rule said `house_style`; the spec is the
+   contract, so the gate reads `no_convention`.)*
 4. `fires.verdict == "continuous"` requires `kind != "event"` — a series may not
    pretend it fires on a set of bars.
 5. `kind == "series"` requires `registry.pane || registry.overlay` — the registry
    already knows a series has a scale, so a row that disagrees is reporting a defect,
    and `scale` must be `own_pane` when `pane` is true.
 6. `rule_as_data.inputs` is non-empty and every channel name is one `DataChannels`
-   serves (`candles`, `trades`, `trades_aggressor`, `depth`, `funding`,
-   `open_interest`, `liquidations`, `tick_quotes`).
+   serves — the list parsed out of `crates/market-data/src/broker.rs` at gate time rather
+   than copied here, so a new channel cannot make this rule a lie. Both spellings the spec
+   uses are accepted: the registry's `names()` output (`trades_aggressor`) and the bit it
+   cites in prose (`TRADES_AGGRESSOR`).
 7. `render` points at a file that exists.
 8. `preview_agrees` is filled. The Indicators face's card is a **second renderer for the
    same shapes** — `previewCandles`, `overlayPrices` and `eventPrices` in `app.js` — so a
    pass that only photographs the chart can green-light a drawing the panel contradicts.
    `differs` is not a failure; it is the finding that the spec's coupling section asked
    for, and it names which of the two the trader should believe.
+9. `parameters.declared` is the registry's own list, and `parameters.honoured` is an array
+   drawn from it — so the parameter gap is counted per concept instead of asserted in
+   prose. `[]` is an honest answer ("the detector reads nothing"); `null` is an unjudged row.
+
+The gate also reads `docs/superpowers/specs/concept-visual-audit/00-vocabulary.md` and
+fails if that chapter stops naming a kind the gate accepts: the kinds are declared once,
+in the open, and a fifth one is a decision a pass has to make in the chapter before a row
+can use it.
 
 ## The pass procedure
 
@@ -310,14 +328,14 @@ re-implemented the routing would photograph the tool and not the chart.
   `reports/concept-visual-audit/*/` and keeps the `ledger/` shards, following the
   evidence-not-source rule `/test-shots/` already sets. The durable record of a picture
   is the row's `ours.today` and the section's numbers.
-- [ ] Commit.
+- [x] Commit (`90e9f94`).
 
 ### Task 5: The completeness gate
 
 **Files:** Modify `tools/concept_visual_audit.mjs` (`check`),
 `tools/concept_visual_audit_check.mjs` (fixtures), `docs/superpowers/specs/concept-visual-audit/00-vocabulary.md` (stub).
 
-- [ ] Write the failing fixture first: five rows that must all be rejected — a missing
+- [x] Write the failing fixture first: five rows that must all be rejected — a missing
   `reference`, `fires.verdict: "continuous"` on `kind: "event"`, a `series` row whose
   registry says neither `pane` nor `overlay`, an unknown channel name in
   `rule_as_data.inputs`, and a `render` path with no file.
@@ -334,12 +352,32 @@ const bad = [
   { ...complete, render: "reports/concept-visual-audit/nope/nope.html" },
 ];
 ```
-- [ ] Implement `check` against the seven rules in *The row*, `--family` to scope one
+- [x] Implement `check` against the rules in *The row*, `--family` to scope one
   pass and no flag to sweep the union. Message per failure names the concept, the field
   and the rule, because a gate nobody can satisfy from its own output is a gate that
   gets edited rather than fixed.
-- [ ] Fixture green; the full sweep fails 182 times with the *right* reasons; the
+  *(Built, and the rule list moved from seven to nine while it was being written: the
+  spec's row table asks for `parameters: { declared, honoured }` and the plan's rules
+  never counted it, so rule 9 exists and `seedRow` seeds it (`honoured: null`, which the
+  emptiness scan refuses until a pass chooses `[]` or a real list). `channelNames()`
+  parses the constants out of `crates/market-data/src/broker.rs` instead of trusting this
+  file's prose, which is how `macro` — declared, but absent from `DataChannels::names()` —
+  is still a legal channel for the econ pass, and how a typo like `order_book` is not.
+  Rule 3 reads `no_convention`, the shape the spec names, not the `house_style` drafted
+  here. A field owned by a specific rule is skipped by the general emptiness scan, so a
+  row reports one problem per field; output is grouped `rule → fields` per concept, with
+  the first reason printed under it.)*
+- [x] Fixture green; the full sweep fails 182 times with the *right* reasons; the
   vocabulary stub is created so later tasks have a file to grow.
+  *(18 of 18 fixtures behave — the five rejections above, plus rule 5's second half, rule
+  9, an unknown verdict, an unknown kind, and a `no_convention` reference with and without
+  its reason. The sweep reports `FAIL 182 problem row(s) of 182 checked`, problems per rule
+  `2:2002 3:728 6:182 7:134 8:182 9:182`; rule 7's 134 is 182 minus the 48 pages already
+  rendered for smc, statistical and econ, which is the arithmetic it should be. Rule 1
+  fires zero times: the shards and the registry agree. The stub at
+  `docs/superpowers/specs/concept-visual-audit/00-vocabulary.md` declares the four kinds
+  and eight candidate shapes, each tied to the measurement that asked for it, and `check`
+  fails if the chapter stops naming a kind the gate accepts.)*
 - [ ] Commit.
 
 ---

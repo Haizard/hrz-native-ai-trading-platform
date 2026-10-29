@@ -47,6 +47,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.bos.html",
       "preview_agrees": ""
     },
@@ -96,6 +102,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.choch.html",
       "preview_agrees": ""
     },
@@ -145,6 +157,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.liquidity_sweep.html",
       "preview_agrees": ""
     },
@@ -194,6 +212,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.fvg.html",
       "preview_agrees": ""
     },
@@ -243,6 +267,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.ifvg.html",
       "preview_agrees": ""
     },
@@ -292,6 +322,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.bpr.html",
       "preview_agrees": ""
     },
@@ -341,6 +377,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.order_block.html",
       "preview_agrees": ""
     },
@@ -390,6 +432,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.breaker_block.html",
       "preview_agrees": ""
     },
@@ -439,6 +487,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.premium_discount.html",
       "preview_agrees": ""
     },
@@ -488,6 +542,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.equal_levels.html",
       "preview_agrees": ""
     },
@@ -537,6 +597,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.rejection_block.html",
       "preview_agrees": ""
     },
@@ -586,6 +652,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.mitigation_block.html",
       "preview_agrees": ""
     },
@@ -635,6 +707,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.liquidity_grab.html",
       "preview_agrees": ""
     },
@@ -684,6 +762,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.inducement.html",
       "preview_agrees": ""
     },
@@ -733,6 +817,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.turtle_soup.html",
       "preview_agrees": ""
     },
@@ -780,6 +870,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.displacement.html",
       "preview_agrees": ""
     },
@@ -827,6 +921,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.internal_range_liquidity.html",
       "preview_agrees": ""
     },
@@ -874,6 +972,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.external_range_liquidity.html",
       "preview_agrees": ""
     },
@@ -921,6 +1023,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.judas_swing.html",
       "preview_agrees": ""
     },
@@ -968,6 +1074,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.power_of_three.html",
       "preview_agrees": ""
     },
@@ -1015,6 +1125,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.silver_bullet.html",
       "preview_agrees": ""
     },
@@ -1062,6 +1176,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.unicorn.html",
       "preview_agrees": ""
     },
@@ -1109,6 +1227,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.model2022.html",
       "preview_agrees": ""
     },
@@ -1156,6 +1278,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.market_maker_model.html",
       "preview_agrees": ""
     },
@@ -1203,6 +1329,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.mss.html",
       "preview_agrees": ""
     },
@@ -1250,6 +1380,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.equilibrium.html",
       "preview_agrees": ""
     },
@@ -1297,6 +1431,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.consequent_encroachment.html",
       "preview_agrees": ""
     },
@@ -1344,6 +1482,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.liquidity_void_fill.html",
       "preview_agrees": ""
     },
@@ -1391,6 +1533,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.trendline_sweep.html",
       "preview_agrees": ""
     },
@@ -1438,6 +1584,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.mtf_alignment.html",
       "preview_agrees": ""
     },
@@ -1485,6 +1635,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.mtf_zone_alignment.html",
       "preview_agrees": ""
     },
@@ -1534,6 +1688,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/smc/smc.smt_divergence.html",
       "preview_agrees": ""
     }

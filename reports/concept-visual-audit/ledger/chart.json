@@ -47,6 +47,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.double_top_bottom.html",
       "preview_agrees": ""
     },
@@ -96,6 +102,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.head_shoulders.html",
       "preview_agrees": ""
     },
@@ -145,6 +157,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.triangle.html",
       "preview_agrees": ""
     },
@@ -192,6 +210,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.flag.html",
       "preview_agrees": ""
     },
@@ -241,6 +263,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.wedge.html",
       "preview_agrees": ""
     },
@@ -290,6 +318,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.triple_top_bottom.html",
       "preview_agrees": ""
     },
@@ -339,6 +373,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.rectangle.html",
       "preview_agrees": ""
     },
@@ -388,6 +428,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "swing_lookback"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.cup_and_handle.html",
       "preview_agrees": ""
     },
@@ -435,6 +481,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.pennant.html",
       "preview_agrees": ""
     },
@@ -482,6 +532,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.trend_channel.html",
       "preview_agrees": ""
     },
@@ -529,6 +583,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.diamond.html",
       "preview_agrees": ""
     },
@@ -576,6 +634,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.inverse_cup_handle.html",
       "preview_agrees": ""
     },
@@ -623,6 +685,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.rounding_bottom_top.html",
       "preview_agrees": ""
     },
@@ -670,6 +736,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.broadening.html",
       "preview_agrees": ""
     },
@@ -717,6 +787,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/chart/chart.trendline.html",
       "preview_agrees": ""
     }

@@ -47,6 +47,12 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [
+          "spike_multiple"
+        ],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume-profile/volume.spike.html",
       "preview_agrees": ""
     },
@@ -94,6 +100,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume-profile/volume.initial_balance.html",
       "preview_agrees": ""
     },
@@ -141,6 +151,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume-profile/volume.single_prints.html",
       "preview_agrees": ""
     },
@@ -188,6 +202,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume-profile/volume.acceptance.html",
       "preview_agrees": ""
     },
@@ -235,6 +253,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume-profile/volume.poor_extreme.html",
       "preview_agrees": ""
     },
@@ -282,6 +304,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume-profile/volume.poc.html",
       "preview_agrees": ""
     },
@@ -329,6 +355,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume-profile/volume.value_area.html",
       "preview_agrees": ""
     },
@@ -376,6 +406,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume-profile/volume.hvn.html",
       "preview_agrees": ""
     },
@@ -423,6 +457,10 @@
         "scale": "price"
       },
       "detector": "",
+      "parameters": {
+        "declared": [],
+        "honoured": null
+      },
       "render": "reports/concept-visual-audit/volume-profile/volume.lvn.html",
       "preview_agrees": ""
     }
