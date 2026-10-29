@@ -458,18 +458,44 @@ dashes paint literally nothing for 208 events. Also recorded: the scan route's r
 window starts 20-30 bars later than a same-limit `/candles` fetch, so bar indices must
 come from the events.)*
 
-### Task 8 — Pass 3: Price Action (11)
-`render pa`. Breaks and retests outside the SMC family. Reference: TradingView's
-`Structural Labels`/swing documentation plus what a retest is drawn as in the
-platforms' structure indicators. Expect a `fires` disagreement here even where the
-shape matches, because a retest's bars are defined by the swing rule, not the picture.
-
 ### Task 9 — Pass 4: Sessions (14)
 `render session`. The full-height vertical time box, which has no `ConceptShape`
 variant at all — the pass that proves the ceiling is a wire, not an engine limit, since
 `ScriptDraw.Box` and the shell's clipping already do the work. Reference: TradingView's
 regular session and `session` box rendering, LuxAlgo's sessions indicator, and the
 killzone convention for the naming.
+
+*(Done — [`04-session.md`](../specs/concept-visual-audit/04-session.md), 14 rows judged,
+`check --family session` green and the sweep down from 135 to 121 problem rows. The
+vocabulary's fourth pass settled the candidate three passes had kept circling: `time_box`
+is **`wiring`**, not a new rendering — `scene_overlay_tints` (script.rs:785) already
+emits `ScriptDraw::Box { y1: plot.y, y2: plot.y + plot.h, border_width: 0.0 }` for Pine
+`bgcolor`, so the full-height, zero-price-extent box exists end to end and only the
+concept path lacks a variant to point at it. The brief was right that this is a wire, not
+an engine limit: 3 rows (`london_killzone`, `new_york_killzone`, `asian_range`) claim it
+and the other 11 are new renderings. The family's real failure is the clock. The windows
+are fixed UTC offsets (events.rs:2131-2135) while both references quote New York time, so
+judged on 2026-10-29 (EDT) the London box draws 03:00-06:00 NY against the cited
+02:00-05:00, New York draws 08:00-11:00 against 07:00-10:00, and the Asian range stretches
+7 h against a cited 4 — the x-extents are otherwise right (12/12/28 bars), so the shape
+is a clock error, not a geometry error. `div_euclid(7*DAY_NS)` (events.rs:2166) buckets the
+week from 1970-01-01, a Thursday: all 5 week rolls in the window land on Thursdays and
+`weekly_open` stamps 2026-10-29T00:00, so three rows (`previous_week_levels`,
+`weekly_open`, `weekly_bias`) share a wrong anchor. The two period biases measure the
+wrong quantity outright — `period_bias` (regime.rs:165-184) needs the new open outside the
+prior period's entire range, a clause 0 of 31 day rolls ever cleared, where the reference
+reads price *against* the open. The levels never run: 12 events across six level/open
+concepts and not one extends forward — `previous_day_levels` boxes the finished day
+(spans 60/96/96/96/96 ending on the roll bar, midpoints e.g. 80,077.15) and the period
+opens are zero-span 1.3px stubs. State keeps wearing event clothes: `htf_candle_bias`
+emits 50 events for 13 distinct H1 candles (one run of 16), ORB re-fires up to 11× per
+session (30 events, 11 prices), the opening-gap floor is 0.05% against a measured maximum
+gap of 0.00033%, and the monthly rows sit behind the 1000-bar clamp (unreachable, and
+truncated even when reachable). No parameter is honoured — all 14 declare `[]`. Tally: 14
+`differs_major`, 0 `differs_minor`, 0 `impossible_in_vocabulary`, 2 `same_bars`
+(`daily_open`, `monthly_open` — the UTC calendar boundary is the right anchor for both)
+against 12 `different_rule`, and 5 rows `not_rendered`. The audit has now judged 61 rows
+across four families (smc 32, sd 4, pa 11, session 14) and still has **no `matches`**.)*
 
 ### Task 10 — Pass 5: Fibonacci (6)
 `render fib`. The named ladder across an impulse, extended, with the ratio on each

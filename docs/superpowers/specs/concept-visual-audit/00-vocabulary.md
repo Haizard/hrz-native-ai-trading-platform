@@ -8,6 +8,9 @@ then was a candidate on pass 11's say-so. Pass 3 (Price Action, 11 rows) tested 
 time and it held again: ten of its eleven rows asked for `level_run`, `lifecycle_box` or
 `time_box` unchanged, and the eleventh claimed `bar_marker` as *wiring* rather than as a new
 shape, which is the first time a pass has asked for a form the app can already paint.
+Pass 4 (Sessions, 14 rows) tested it a fourth time and settled the candidate three passes
+kept circling: `time_box` is **wiring**, because the scripting path already paints exactly
+that draw and only the concept path has no variant for it.
 Plan Task 18 finalises the file.
 Its purpose is to be the one place the vocabulary is declared, so that a pass which
 needs a fifth kind or a new shape has to say so here, in front of the gate, instead of
@@ -75,7 +78,7 @@ and not two. A pass that renames or refuses one does it here, with the reason.
 | --- | --- | --- | --- | --- | --- |
 | `level_run` | event | **yes — pass 1** | A horizontal level at one price with a *run*: it starts at the bar that made it and extends right across the following bars, dashed or solid by class, labelled once at its left end. Never a point. | pass 1 (9 rows) | `smc.bos` answers `bars: [t, t]` for every event in a 501-bar window, so today it lowers to a 1.3px stub and a floating word |
 | `lifecycle_box` | event | **yes — pass 1, confirmed by pass 2** | A box between two prices whose right edge is *time, not the bar that made it*: unmitigated boxes reach forward, mitigated ones stop at the mitigation bar and are then removed. Same class carries the polarity (a failed one is redrawn in the opposite colour with a non-solid fill). | pass 1 (12 rows), pass 2 (3) | `smc.fvg`'s 50 measured events span 1 to 221 bars (median 174); `smc.ifvg` 2-219, `smc.order_block` 5-178 — the detector already knows a lifecycle, and the renderer treats it as a fixed two-bar box. Pass 2 found the same gap one layer closer to the source: `sd.zone_tested`'s band has both edges right and is 1-4 bars long, because the event boundary drops the `to` and `mitigated_at` its own detector already computed ([regions.rs:150-171](../../../../crates/analytics-core/src/regions.rs#L150)) |
-| `time_box` | interval | open | A full-height region over a time range, labelled, with no price extent at all | pass 1 (4), pass 4 | `smc.judas_swing`, `smc.power_of_three`, `smc.model2022` and `smc.market_maker_model` are states of the clock that the router sends to the price-zone branch, so they draw as a price band — a *where* answering a *when* |
+| `time_box` | interval | **yes — pass 4, as `wiring`** | A full-height region over a time range, labelled, with no price extent at all. The shade is the plot's full height, so it never claims a price; the window's own high and low, if the family wants them, are separate `level_run`s. | pass 1 (4), pass 4 (3) | `smc.judas_swing`, `smc.power_of_three`, `smc.model2022` and `smc.market_maker_model` are states of the clock that the router sends to the price-zone branch, so they draw as a price band — a *where* answering a *when*. Pass 4 then found the draw already exists one layer over: `scene_overlay_tints` turns a Pine `bgcolor` into `ScriptDraw::Box { y1: plot.y, y2: plot.y + plot.h, border_width: 0.0, fill_alpha: 0.10 }` — full plot height, zero price extent, already clipped by the shell ([script.rs:785](../../../../frontend/chart-engine/src/script.rs#L785)) — so the three clock windows are `wiring`, not `new_rendering`; what is missing is a `ConceptShape` variant, not a painter. Measured: the same three windows draw a 12-to-28-bar price band instead |
 | `outline` | event | open | A polyline traced through named pivot bars, plus an optional dashed neck level and a projected target | pass 1, pass 6 | Chart patterns draw as a flat band between two prices; `smc.trendline_sweep` computes a slope through three touches and then throws it away, drawing a horizontal level at the last one |
 | `pair_link` | event | open | A line joining a pivot on this instrument's pane to the matching pivot on a second series' pane | pass 1 | `smc.smt_divergence` emits nothing on the scan route at all: the gateway's `/concept-events/smt` lane has no caller and the card paints its "nothing to draw" hairline |
 | `legged_path` | event | open | An XABCD polyline with each leg labelled, optionally filled | pass 7 | Harmonics draw as a band or a mark |
@@ -94,6 +97,12 @@ bar, zone or band the figure is about — and the host's own shape carries the g
 the readout carries the number and the window it was measured over. A row whose host is a
 `lifecycle_box` therefore inherits that box's status; a per-bar figure like
 `indicators.zscore` hangs on a bar and needs no box at all.
+
+Pass 4 is the first family to test that rule from a second pass: three of its rows are
+readings, and the host decides the scale — `daily_bias` and `weekly_bias` hang on the period
+open and carry `price`, while `htf_candle_bias` hangs on the completed higher-timeframe candle
+and carries `time_only`. One settled shape, two hosts, and no second shape invented to carry
+them.
 
 ## How far a level or a box runs — the question pass 1 had to answer
 

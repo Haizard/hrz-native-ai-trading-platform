@@ -13,44 +13,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Killzones (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/killzones/",
+        "quote": "3. Mark the London open killzone: 02:00 to 05:00 NY time.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a price band 12 bars wide (min = median = max across all 4 events) drawn between the window's own low and high, labelled `london_killzone` in snake_case at the bar that crosses 10:00 UTC. The concept is a when and the drawing is a where: the shade covers a fraction of the plot height instead of the whole of it, so the window reads as a support-and-resistance band it was never meant to be. The windows are pinned to UTC, so today (EDT, UTC-4) the band runs 03:00-06:00 New York against the reference's 02:00-05:00.",
+        "canonical": "a full-height shaded region across the window's bars with no price extent at all, labelled once at its left edge; the window's high and low are separate levels carried forward as liquidity references, never the box's own height",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest bar crosses the fixed UTC end hour (previous bar's hour below 10, newest at or past 10), then one event carrying the UTC day's 07:00-10:00 bars' low and high, formed at the first bar of the window",
+        "their_rule": "a fixed intraday window anchored to the New York clock -- 02:00-05:00 NY, daylight-saving aware -- boxed off because the clock and not price defines it (the page's own calculation sets the chart to America/New_York so the boundaries stay aligned through US DST changes)",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "cross(t, 10:00 UTC) => emit(low = min(low[07:00..10:00]), high = max(high[07:00..10:00]), from = first bar of the window)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_sessions returns nothing under 2 candles (events.rs:2140); the crossing needs one bar inside the window and one at or past its end"
       },
       "target_shape": {
-        "name": "",
+        "name": "time_box",
         "status": "wiring",
-        "scale": "price"
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2129)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.london_killzone.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "session.new_york_killzone",
@@ -64,44 +69,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Killzones (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/killzones/",
+        "quote": "4. Mark the New York open killzone: 07:00 to 10:00 NY time (index-futures variants use 08:30 to 11:00).",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "the same 12-bar price band over 5 windows, labelled `new_york_killzone`, drawn between each window's low and high at 12:00-15:00 UTC; because that is the winter offset, today (EDT) the band covers 08:00-11:00 New York, an hour late, and the card stretches each of the five to its own right edge while the chart stops at the window's close.",
+        "canonical": "a full-height shaded region across the window's bars with no price extent, labelled once at its left edge, with the session's high and low carried right as separate levels",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest bar crosses the fixed UTC end hour 15, then one event carrying the UTC day's 12:00-15:00 bars' low and high, formed at the first bar of the window",
+        "their_rule": "07:00-10:00 on the New York clock, which is 11:00-14:00 UTC in summer and 12:00-15:00 UTC in winter -- the page says a chart left on UTC puts the windows on the wrong candles and DST makes the error worse",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "cross(t, 15:00 UTC) => emit(low = min(low[12:00..15:00]), high = max(high[12:00..15:00]), from = first bar of the window)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_sessions returns nothing under 2 candles (events.rs:2140)"
       },
       "target_shape": {
-        "name": "",
+        "name": "time_box",
         "status": "wiring",
-        "scale": "price"
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2129)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.new_york_killzone.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "session.previous_day_levels",
@@ -115,44 +125,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Prior Period Levels (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/prior-period-levels/",
+        "quote": "3. Project the high, low, and close (plus settlement on futures) forward as horizontal rays, keeping daily, weekly, and monthly sets visually distinct so higher-timeframe levels stand out.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a box over the day that just closed -- 5 events, spans 60 / 96 / 96 / 96 / 96 bars, each ending exactly on the roll bar -- between the prior day's true high and low, labelled at the midpoint price 80,077.15. None of the levels the concept is named for is drawn: no high line, no low line, no close, and nothing runs forward into the day that has just begun, so the drawing stops at the exact moment the levels become relevant.",
+        "canonical": "three horizontal rays -- prior high, prior low, prior close -- projected forward from the first bar of the new period, kept visually distinct by class; the completed day is not redrawn as a box at all",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "at a UTC day roll, take the previous day's low and high and emit one event placing both as a zone whose time span is that whole previous day",
+        "their_rule": "completed periods only, projected forward as rays onto the current chart; the levels are objective and identical on every platform using the same session convention",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "day_roll(t) => emit(low = min(low[d-1]), high = max(high[d-1]), price = (low+high)/2, bars = [first bar of d-1, t])",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "2 candles for the roll (events.rs:2140); the previous day must also have at least one bar inside the fetched window or range_of returns None"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2129)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.previous_day_levels.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "session.previous_week_levels",
@@ -166,44 +181,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Prior Period Levels (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/prior-period-levels/",
+        "quote": "The best known are the prior day high and low (PDH and PDL), with PWH/PWL for the prior week and equivalents up the calendar.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "one event on this window: a 444-bar box over the prior week between its high and low, labelled at the midpoint, ending on the roll bar at 2026-10-29T00:00 -- a Thursday, because the week bucket is epoch-anchored and 1970-01-01 was a Thursday. The week's high, low and close are never drawn as levels, so the box is a portrait of last week at the moment the week ends.",
+        "canonical": "prior week high, low and close projected forward as horizontal rays once the week closes, with the finished week itself left undrawn",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "at a week roll -- div_euclid(7 days) against the epoch, so the boundary lands on Thursday 00:00 UTC -- emit the closed week's low, high and midpoint as a box over that week",
+        "their_rule": "a completed week's high, low and close as forward references, with the week boundary taken from the venue's calendar -- the Period Opens page fixes the crypto convention at Monday 00:00 UTC, which is not where ours rolls",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "week_roll(t) => emit(low = min(low[w-1]), high = max(high[w-1]), price = (low+high)/2, bars = [first bar of w-1, t])",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "2 candles for the roll; the previous week must also have at least one bar in the window"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2129)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.previous_week_levels.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "session.previous_month_levels",
@@ -217,44 +237,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Prior Period Levels (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/prior-period-levels/",
+        "quote": "Prior period levels are the high, low, and close of a completed period, the previous day, week, month, quarter, or year, projected forward onto the current chart as horizontal references.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events on this window, and the reason is the route rather than the rule: the scan route caps the replay at 1000 bars (concept_routes.rs:229), which at 15m reaches back about ten days, and the only month roll in the reachable month is 2026-10-01. At a roll the code path is the one `previous_day_levels` already renders -- a box over the closed month labelled at its midpoint -- so it would draw the month's range as a box and still not draw its high, low or close.",
+        "canonical": "prior month high, low and close as horizontal rays on the current chart, visually distinct from the daily and weekly sets",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "at a UTC month roll, take the previous month's low and high across the bars this window happens to hold and emit them as a zone over that month",
+        "their_rule": "a completed month's high, low and close, from the whole month's data, projected forward",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "month_roll(t) => emit(low = min(low[m-1]), high = max(high[m-1]), price = (low+high)/2, bars = [first bar of m-1, t])",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "2 candles for the roll; the fetch must also reach back to the previous month's first bar, which a 1000-bar 15m window does for roughly the first ten days of a month and not after"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2129)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.previous_month_levels.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "session.monthly_open",
@@ -268,44 +293,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Period Opens (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/period-opens/",
+        "quote": "3. Plot Open_P as a horizontal level from bar s forward until the period ends.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events here for the same window reason as `previous_month_levels` -- the month roll of 2026-10-01 sits outside a 1000-bar 15m replay. At a roll it would draw exactly what `daily_open` draws: a zero-span segment at the month's first open, floored to a bar-width-and-a-bit by position_concept_shape, which is a dot where the reference asks for a level held all month.",
+        "canonical": "a horizontal level at the period's opening price, drawn from the period's first bar forward until the period ends, and left on the chart afterwards as a reference",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "at a UTC month roll, emit the new month's first bar's open once, with no length on it",
+        "their_rule": "detect the first bar of each new period and plot its open from that bar forward until the period ends",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "month_roll(t) => emit(price = open[t], bars = [t, t])",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "2 candles for the roll (events.rs:2140)"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2129)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.monthly_open.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "session.daily_bias",
@@ -319,44 +349,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "readout",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Period Opens (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/period-opens/",
+        "quote": "3. Read the side first: above or below each open is the period's green/red bookkeeping, the base bias layer.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events: the predicate needs the new day's open to sit outside the entire range of the prior day, and over 31 day rolls in a four-week window that never happened once -- so the row is silent for a reason no renderer can show. If it did fire it would draw a snake_case word at a bar and nothing else: the side is on the wire as `direction`, but no concept shape reads a direction.",
+        "canonical": "a green/red classification read against the period open -- price above it is the period's green bookkeeping, below it red -- rendered where the platform keeps its readings, with the open level itself carrying the geometry",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "at a day roll, buy if the new open is above the prior day's highest high and the structure lean agrees, sell if below its lowest low; otherwise say nothing",
+        "their_rule": "the side price is trading on relative to the open, which is a reading available on every bar and flips when price crosses the line",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "day_roll(t) && open[t] > max(high[d-1]) && structure_lean(3) == Buy => emit(buy); mirror for open[t] < min(low[d-1]) && lean == Sell",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 12,
+        "before": "detect_bias returns nothing under 12 candles (regime.rs:190), and the lean itself needs two swings on each side, so in practice a few dozen bars"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "readout",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::regime::detect_bias (regime.rs:188)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.daily_bias.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "session.htf_candle_bias",
@@ -370,44 +405,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "readout",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Higher-timeframe Trend Filter (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/higher-timeframe-trend-filter/",
+        "quote": "The filter reduces the higher timeframe to a simple directional state (long-permitted, short-permitted, sometimes neutral) using something computable",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 events over 13 distinct completed H1 candles -- 46 bearish, 4 bullish -- each re-stamped on 4 to 7 consecutive 15m bars, with one run of 16 bars: the box is the completed candle's own high and low, so one hour of one candle is drawn up to seven times, and the 50-event cap means the chart shows only the newest candles. A directional state, which the reference renders as one reading, is drawn here as a stack of rectangles.",
+        "canonical": "one directional state per completed higher-timeframe bar, shown as a single reading -- a dashboard cell coloured by side, or a word -- with the state changing only when a higher-timeframe bar closes",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "on every chart bar, look at the newest completed upper bar; if its body direction equals the structure lean of the upper series, emit an event stamped on this bar",
+        "their_rule": "one state derived from the last completed higher-timeframe bar, where 'a filter that reads the live, still-forming bar repaints' -- the anchor bar is right in ours, the cadence is not",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "upper = resample(candles, 4x); c = upper[len-2]; sign(c.close - c.open) == structure_lean(upper) => emit(price = c.close, zone = [c.low, c.high], from = c.open_time)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "the enclosing detector's floor (events.rs:1680) binds before the block's own requirement of three upper bars, which is 12 bars at 15m"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
+        "name": "readout",
+        "status": "new_rendering",
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1679), the higher-timeframe block at events.rs:1837",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.htf_candle_bias.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "session.opening_gap",
@@ -421,44 +461,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, New Day Opening Gap (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/new-day-opening-gap/",
+        "quote": "2. Mark the closing print and the reopening print, and box the span between them; that box is the NDOG, however small.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events: the largest open-to-prior-close move over 31 rolls was 0.00033% against this concept's 0.05% floor. If it did fire it would draw a band between the prior close and the open across a single bar -- no box over the unauctioned span, no midpoint, and nothing carried forward.",
+        "canonical": "a box over the span between the closing print and the reopening print, however small, with its high, low and midpoint marked as three working levels",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "on the day's first bar, emit if the open moved at least 0.05% from the prior close; a smaller move is declared not a gap",
+        "their_rule": "any span between a closing print and a reopening print is the gap, however small -- and on a market that never closes the object does not exist at all, since 'crypto trades continuously, so there is no daily closing print and no true NDOG'",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "first_bar_of_day(t) && abs(open[t] - close[t-1]) / close[t-1] >= 0.0005 => emit(zone = [min, max], from = t)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "the enclosing detector's floor (events.rs:1680); the gap itself needs the prior day's last bar in the window"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1679), the gap block at events.rs:1793",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.opening_gap.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "session.opening_range_breakout",
@@ -472,44 +517,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Opening Range & ORB (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/opening-range-and-orb/",
+        "quote": "5. When the window ends, freeze ORH, ORL, and ORM and extend them across the rest of the session.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "30 events over six sessions, 4 to 92 bars each (median 53), at 11 distinct prices -- but up to 11 in a single session (2026-10-26) because a close back inside the range arms the same break again. Each event boxes from the session's first bar to its own break bar at the first-four-bars range, so one opening range high is drawn 11 times over 11 different spans, and the range is never frozen and never extended across the session as the reference asks.",
+        "canonical": "two levels frozen when the opening window ends -- opening range high and low, plus the midpoint -- extended across the rest of the session, with the first close beyond an edge marked at that edge",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the previous bar closed inside the first four bars' range and the newest closes outside it, on any bar of the session, so a return inside the range re-arms the same break and the concept fires again",
+        "their_rule": "one breakout trigger defined in advance, where a first close beyond the range is stricter than a wick through it, on a range that is measured once and frozen",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "r = bars of day t[0..4); prev.close <= ORH && last.close > ORH => emit(buy, zone = [ORL, ORH], price = ORH, from = first bar of the day); mirror below ORL",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "the enclosing detector's floor (events.rs:1680); the range itself needs five bars in the session, since the block requires more than four day bars"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:1679), the opening-range block at events.rs:1818",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.opening_range_breakout.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "session.weekly_bias",
@@ -523,44 +573,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "readout",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Period Opens (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/period-opens/",
+        "quote": "As a bias filter: above the weekly or monthly open, longs are favored and dips read as pullbacks within a positive period; below it the lean flips.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events: over 5 week rolls in the four-week window no new open cleared the prior week's entire range, and the week bucket itself starts on Thursday. If it fired it would draw the same thing `daily_bias` would -- a word at a bar, with the side on the wire and unread.",
+        "canonical": "a green/red bookkeeping reading against the week's open, the same reading as the daily bias at a slower period, drawn where the platform keeps its readings",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "at a Thursday-anchored week roll, buy if the new open is above the prior week's highest high and the lean agrees; otherwise silence",
+        "their_rule": "price above or below the weekly open, a reading that holds all week and flips when price crosses -- with the week starting Monday 00:00 UTC for crypto",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "week_roll(t) && open[t] > max(high[w-1]) && structure_lean(3) == Buy => emit(buy); mirror for the low and Sell",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 12,
+        "before": "detect_bias returns nothing under 12 candles (regime.rs:190)"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "readout",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::regime::detect_bias (regime.rs:188)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.weekly_bias.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "session.asian_range",
@@ -574,44 +629,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "interval",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, ICT Session Ranges (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/ict-session-ranges/",
+        "quote": "3. Box the Asian range from 8:00 pm to midnight New York time; write-ups differ on bodies versus wicks here, so pick one convention and keep it.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a 28-bar (7 hour) box over 4 windows between the window's low and high, labelled `asian_range`. The cited window is 20:00-00:00 New York -- four hours, 16 bars -- so the box is 12 bars too long and in EDT ends at 03:00 New York. It also stops dead at the window's close: the two levels the page projects forward as the next day's measuring tool are not drawn at all.",
+        "canonical": "a box over the 20:00-00:00 New York window's high and low, then those two levels frozen and extended right as horizontal liquidity lines until each is swept",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest bar crosses 07:00 UTC, then one event with the UTC day's 00:00-07:00 bars' low and high -- a seven-hour window",
+        "their_rule": "20:00-00:00 on the New York clock, four hours, DST-aware, with the range's height projected in range multiples once it closes",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "cross(t, 07:00 UTC) => emit(low = min(low[00:00..07:00]), high = max(high[00:00..07:00]), from = first bar of the window)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_sessions returns nothing under 2 candles (events.rs:2140)"
       },
       "target_shape": {
-        "name": "",
+        "name": "time_box",
         "status": "wiring",
-        "scale": "price"
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2129)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.asian_range.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "session.daily_open",
@@ -625,44 +685,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Period Opens (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/period-opens/",
+        "quote": "3. Plot Open_P as a horizontal level from bar s forward until the period ends.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "5 events, each a zero-length segment at the day's first open (spans 0 / 0 / 0), floored to about a bar-width by position_concept_shape: the level exists for one bar and vanishes, where the reference plots it from the period's first bar until the period ends. The card draws nothing at all for any of the five, because from and to are the same instant and the path has no length.",
+        "canonical": "a horizontal level at the day's opening price running from the first bar of the day to its last, left on the chart afterwards as a reference",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "at a UTC day roll, emit the new day's first open once, with no length on it",
+        "their_rule": "detect the first bar of the new period and plot its open from that bar until the period ends; midnight UTC is the common crypto day boundary in the prior-period-levels FAQ, which is where ours rolls",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "day_roll(t) => emit(price = open[t], bars = [t, t])",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "2 candles for the roll (events.rs:2140)"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2129)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.daily_open.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "session.weekly_open",
@@ -676,44 +741,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Period Opens (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/period-opens/",
+        "quote": "Period boundaries follow the venue's calendar and timezone, so weekly opens differ between markets (crypto weeks start Monday 00:00 UTC, CME futures Sunday 18:00 ET).",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "one event, zero-length, at 2026-10-29T00:00 -- a Thursday, not the Monday 00:00 UTC the page specifies -- and a bar-width stub where the reference keeps the level running all week. The card draws nothing for it.",
+        "canonical": "a horizontal level at the week's opening price running from the week's first bar to its last, on a week that starts Monday 00:00 UTC for crypto",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "at a week roll measured by div_euclid(7 days) against the epoch, which lands on Thursday 00:00 UTC, emit the new open once with no length",
+        "their_rule": "the first bar of the week under the venue's own calendar -- Monday 00:00 UTC for crypto -- plotted forward until the week ends",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "week_roll(t) => emit(price = open[t], bars = [t, t])",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "2 candles for the roll (events.rs:2140)"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_sessions (events.rs:2129)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/session/session.weekly_open.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }
