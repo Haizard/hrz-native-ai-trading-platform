@@ -13,44 +13,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Fibonacci retracement drawing tool",
+        "url": "https://www.tradingview.com/support/solutions/43000518158-fibonacci-retracement-drawing-tool/",
+        "quote": "The vertical distance between those two points is then divided up vertically with horizontal lines placed at key levels of 23.6%, 38.2%, 61.8% and 100%.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 dashed 1px lines at 10 heights, every one of them inside the last 5.4% of the plot's width (x 1024-1082 of a 1074px plot), each labelled `retracement` in snake_case, 50 times, on top of each other. The five ratios are the reference's five and the arithmetic is exact — both generations fit the candles to the cent (bearish 81380.01 to 79710.00, R = 1670.01; bullish 79710.02 to 80527.02, R = 817) — but the drawing has none of the three things that make a retracement read: no ratio on any line, no price beside it, and no length. The longest line is 49px and the shortest 28px, so the ladder is a nest of dashes at the right edge instead of a grid across the leg.",
+        "canonical": "one horizontal level per ratio across the anchored leg, each carrying its ratio and its price, all of them extended right past the leg's end, with the anchor line joining the two swing points — TradingView's tool extends the levels left or right by toggle and prints \"an absolute or percent value … beside the level\"",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the last two strict 3-bar fractal pivots are taken as the leg, and for each of the five ratios an event is emitted at every bar for as long as those two pivots stay the newest pair — 50 events over emission bars 491-500, five per bar, from two anchors (bars 473 and 484)",
+        "their_rule": "one grid drawn once from the newest completed impulse leg, redrawn only when price sets a new extreme, because \"once price breaks the anchored extreme, the old grid is stale\"",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swing = newest_swing(lookback=3) => for r in {0.236, 0.382, 0.5, 0.618, 0.786}: emit(price = swing.to + (swing.from - swing.to) * r, from = swing.from_time)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 12,
+        "before": "newest_swing returns None under lookback * 3 + 3 = 12 bars (fibonacci.rs:40-44), so no leg exists before bar 12"
       },
       "target_shape": {
-        "name": "",
+        "name": "ladder",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::fibonacci::detect_fibonacci (fibonacci.rs:80)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/fib/fib.retracement.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "fib.golden_pocket",
@@ -64,44 +69,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Golden Pocket (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/golden-pocket/",
+        "quote": "Shade the zone between the two levels; the pocket is watched for a reaction as the pullback trades into it.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 boxes for 10 distinct pockets, 1.7-9.2px tall and 6-49px wide, stacked inside the last 13.8% of the width. Each carries a 0.08 fill and 50 of them compound to an effective 0.985 — a solid block, not a shade. The band is the right slice of the right leg (0.618-0.65 of the newest swing), so the geometry is right and the paint is wrong; the label is `golden_pocket` in snake_case, 50 times, and nothing on the chart says which swing or which two ratios the band belongs to.",
+        "canonical": "a translucent band between the 0.618 and 0.65 levels of the drawn retracement, on that grid and only that grid, once per anchored leg — the pocket is a slice of the retracement, so it inherits the grid's labels and the grid's lifetime",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the same newest 3-bar fractal pair as the retracement, band = [level_at(0.65), level_at(0.618)] clamped between the two prices, re-emitted at every bar while the pair stays newest — 50 events, one per bar, across 9 distinct swings",
+        "their_rule": "the 0.618-0.65 slice of the retracement grid already drawn on the leg: it exists once per leg, from the leg's own anchors, and moves only when the grid is redrawn",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swing = newest_swing(3) => emit(zone = [swing.to + (swing.from - swing.to) * 0.65, swing.to + (swing.from - swing.to) * 0.618], from = swing.from_time)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 12,
+        "before": "the pocket needs newest_swing, which returns None under 12 bars (fibonacci.rs:40-44)"
       },
       "target_shape": {
-        "name": "",
+        "name": "ladder",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::fibonacci::detect_fibonacci (fibonacci.rs:80)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/fib/fib.golden_pocket.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "fib.extension",
@@ -115,44 +125,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Fib Extension (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/fib-extension/",
+        "quote": "Plot extension levels beyond the swing end: E_e = A + e × Range for each ratio e in {1.272, 1.618, 2.0, 2.618}.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 dashed lines at 10 heights inside the last 8.0% of the width, and 10 of them are a level emitted ten times at y = 569.55 — below the plot's bottom edge at 494, so a fifth of the drawing is off-canvas and only two of the ten heights are ever readable. The ratios are 1.272 and 1.618 only, because EXTENSIONS stops at two and the registry declares no parameter to change them, and the label is `extension` in snake_case, 50 times.",
+        "canonical": "the continuation half of the same grid: 1.272, 1.618, 2 and 2.618 past the swing's end, drawn from the leg's anchors with each its own label, and dormant until the 100% point gives way",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "level = swing.to + (swing.to - swing.from) * (ratio - 1) for {1.272, 1.618}, emitted at every bar for as long as the newest fractal pair is the same pair — 50 events over emission bars 465-500, two per bar, five anchors, whether or not price has broken the swing's end",
+        "their_rule": "the extension is dormant until price breaks the 100% anchor, then reads 1.272, 1.618, 2.0 and 2.618 of the same leg",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swing = newest_swing(3) => for e in {1.272, 1.618}: emit(price = swing.to + (swing.to - swing.from) * (e - 1), from = swing.from_time)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 12,
+        "before": "newest_swing returns None under 12 bars (fibonacci.rs:40-44)"
       },
       "target_shape": {
-        "name": "",
+        "name": "ladder",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::fibonacci::detect_fibonacci (fibonacci.rs:80)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/fib/fib.extension.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "fib.confluence",
@@ -166,44 +181,53 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Fib Clusters (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/fib-clusters/",
+        "quote": "Mark each zone as the band from its lowest to its highest grouped level; more levels in a tighter band rank the zone stronger.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 boxes covering 13.3% of the whole plot, the largest a 52px-tall slab across the last bars, with bands averaging 210.62 points and reaching 301.72 — 12-18% of the 1670-point leg they are measured from. The band from the matched pair is the reference's own definition of a two-draw cluster, so the rule is right and the width discipline is what is missing: a 0.4% tolerance on an 80,000 price is a 324-point window, and the zones span the full window rather than the levels inside it. The 0.08 fills compound to 0.985, so the widest bands are opaque, and no label names the levels that agreed.",
+        "canonical": "narrow bands where levels from different swings agree: pool the levels, group them within a tolerance, keep only groups holding at least two draws, and span the zone over the grouped levels alone — \"a band wide enough to catch everything proves nothing\"",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a 5x5 cross product of the newest and prior 3-bar fractal swings: every pair of levels within 0.4% of each other emits a band from the lower to the higher, up to five per bar across 11 emission bars",
+        "their_rule": "pool the levels of M swings, bin them within a tolerance, and mark a zone where at least k levels from at least two swings land together — the zone then stands while its contributing swings stand, not once per bar",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "a = newest_swing(3), b = prior_swing(3) => for each level pair (a_r, b_s) with |a_r - b_s| <= 0.004 * |a_r|: emit(zone = [min, max], from = a.from_time)",
+        "inputs": [
+          {
+            "name": "newest swing (3-bar fractals)",
+            "channel": "candles"
+          },
+          {
+            "name": "prior swing (3-bar fractals)",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 26,
+        "before": "prior_swing returns None under lookback * 6 + 8 = 26 bars and needs four pivots (fibonacci.rs:162-166); the concept needs both swings"
       },
       "target_shape": {
-        "name": "",
+        "name": "ladder",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::fibonacci::detect_fibonacci (fibonacci.rs:80)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/fib/fib.confluence.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "fib.time_zones",
@@ -217,44 +241,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Fib Time Tools (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/fib-time-tools/",
+        "quote": "Draw vertical lines at t_0 and at t_0 + F_k for the Fibonacci numbers F_k = 1, 2, 3, 5, 8, 13, 21, 34, and so on.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "horizontal dashed lines where the reference draws vertical ones: 50 of them at 12 distinct heights, every one inside the last 5.4% of the width, because each event is pinned to the close of the bar that emitted it. The seven counts 3/5/8/13/21/34/55 are indistinguishable on the chart, 3-5 events land on the same bar, and the label `time_zones` repeats 50 times. No ConceptShape can draw a vertical rule, which is why the router fell back to a price level.",
+        "canonical": "a vertical line at each count bar measured forward from the anchor pivot — here the x axis is the measurement, so the lines have no price at all and cannot be confused with levels",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "for each count in {3, 5, 8, 13, 21, 34, 55}, if swing.from_time + count * tf <= bar_time then emit an event at the bar's close — every bar, so each count keeps re-firing after it is due: 50 events at 12 bars, 3-5 per bar",
+        "their_rule": "eight vertical lines at the anchor plus 1, 2, 3, 5, 8, 13, 21 and 34 bars, each drawn once at its own bar; the reference drops the duplicate 1, stops at 34, and warns that the first few crowd too tightly to read",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "for f in {3, 5, 8, 13, 21, 34, 55}: if swing.from_time + f * timeframe <= bar_time then emit(price = bar.close, at = bar_time)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 12,
+        "before": "the counts are measured from newest_swing, which returns None under 12 bars (fibonacci.rs:40-44)"
       },
       "target_shape": {
-        "name": "",
+        "name": "time_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "analytics_core::fibonacci::detect_fibonacci (fibonacci.rs:80)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/fib/fib.time_zones.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "fib.ote",
@@ -268,44 +297,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Optimal Trade Entry (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/optimal-trade-entry/",
+        "quote": "The OTE zone spans level(0.62) to level(0.79); the level(0.705) midpoint is the preferred entry price.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 boxes for 10 distinct zones, 8.8-48.9px tall, covering 6.3% of the plot and compounding 0.08 fills to 0.985. The band is the right slice of the right leg — 0.62-0.79 of the newest swing — but it has no 0.705 midline, no leg label, and the same 50-times `ote` label as every other fib concept, so on the chart the entry band is indistinguishable from the pocket drawn beside it.",
+        "canonical": "the 0.62-0.79 band of the drawn retracement with the 0.705 midline marked as the preferred entry, once per impulse leg, as part of the grid",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "band = [level_at(0.79), level_at(0.62)] of the newest 3-bar fractal pair, re-emitted at every bar while the pair stays newest — 50 events, one per bar, across 9 distinct swings",
+        "their_rule": "level(0.62) to level(0.79) of one completed impulsive leg, with 0.705 the preferred entry inside it",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swing = newest_swing(3) => emit(zone = [swing.to + (swing.from - swing.to) * 0.79, swing.to + (swing.from - swing.to) * 0.62], from = swing.from_time)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 12,
+        "before": "the zone needs newest_swing, which returns None under 12 bars (fibonacci.rs:40-44)"
       },
       "target_shape": {
-        "name": "",
+        "name": "ladder",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::fibonacci::detect_fibonacci (fibonacci.rs:80)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/fib/fib.ote.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }
