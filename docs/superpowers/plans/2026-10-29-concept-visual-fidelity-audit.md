@@ -413,6 +413,24 @@ rewritten for over-claiming, two for breaking the vocabulary's own wiring rule.)
 generalised, these four need no new shape. Reference: the zone as drawn in the ICT and
 LuxAlgo treatments — origin at the base, right edge live until mitigated, faded after.
 
+*(Done — [`02-sd.md`](../specs/concept-visual-audit/02-sd.md), 4 rows judged,
+`check --family sd` green and the sweep down from 150 to 146 problem rows. Pass 1
+generalised: 3 of the 4 rows ask for `lifecycle_box` and none asks for a new shape, while
+the fourth is the audit's first `readout` row and defines it in the vocabulary chapter.
+Two things the brief did not predict. The family is split between two incompatible zone
+theories — `sd.zone_tested` runs on a supply/demand detector that already implements the
+reference's rule (base of ≤3 candles, ≤0.5 the impulse's range, mitigation tracked, death
+candle recorded), and the event boundary drops `name`, `from`, `to`, `mitigated` and
+`mitigated_at`; the other three run on the S/R touch-cluster detector the reference page
+names as the opposite school, and read only its first result, which is why
+`sd.proximal_distal` paints 50 copies of one zone as two grey smudges. And "faded after" is
+not what the reference says — it says *consumed*: "zones are marked consumed once price
+trades cleanly through them", so the right edge is a removal, matching pass 1's correction.
+Also banked as defects: `sd.zone_strength`'s event is built and dropped
+(`deferred_strength`, events.rs:2000, never merged), `sd.zone_compression`'s threshold is
+3.7× out of reach on the window, and 19 of 50 `sd.proximal_distal` events carry
+`zone_low > zone_high`.)*
+
 ### Task 8 — Pass 3: Price Action (11)
 `render pa`. Breaks and retests outside the SMC family. Reference: TradingView's
 `Structural Labels`/swing documentation plus what a retest is drawn as in the

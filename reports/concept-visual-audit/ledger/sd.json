@@ -15,46 +15,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Supply & Demand Zones (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/supply-and-demand-zones/",
+        "quote": "A zone is treated as consumed once price trades decisively through it and as degraded by each test that eats into the interest it represents.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "a band at the zone's own low and high, 1 to 4 bars wide, ending at the bar that tested it, labelled 'zone_tested' in the side's colour; nine of these float around the window and the zone they belong to is never drawn",
+        "canonical": "the zone as a box from the base's first candle, its right edge running forward while the zone lives and stopping at the candle that trades cleanly through it, with the revisit that fired this event marked on the box -- the test is an event on a persistent drawing, not a drawing of its own",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a region from the platform's own supply/demand detector that is still completely unmitigated (`mitigated == 0.0`) and whose band the newest bar's range overlaps; the region is a run of at most 3 opposite-coloured candles before an impulse that breaks structure, and the origin may span at most half the impulse's own range",
+        "their_rule": "a base price left with an impulsive move, found by working backward from that move to the consolidation that launched it; the departure is required to be strong (wide-range candles, ideally breaking structure) and the first return is the one that counts",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "region.mitigated == 0.0 && last.high >= region.price_low && last.low <= region.price_high, over detect_zones(structure_lookback 3, max_origin_candles 3, max_origin_ratio 0.5)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 6,
+        "before": "detect_events' floor of structure_lookback*2 at the replay's lookback of 3; a zone additionally needs one opposite-coloured origin candle immediately before an impulse that breaks a swing"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_events (events.rs:3471) over regions::detect_zones (regions.rs:241)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/sd/sd.zone_tested.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "sd.zone_compression",
@@ -68,44 +73,47 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "no_convention": true,
+        "reason": "Nothing in the reference set draws a compressed zone as its own figure. A thin, brief base is a grading input -- 'base quality (a brief, tight base of a few candles outranks a long, choppy one)' -- and the refinement rules tighten a zone's edges (bodies rather than wicks) rather than adding a second object, so there is no canonical rendering to copy, only the zone the thinness describes."
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "nothing: the predicate is never met on a 501-bar BTCUSDT 15m window, and the one zone the detector can see is between 1.84 and 10.35 times the 14-bar average range across all 588 measurable bars -- 3.7x wider than the 0.5x trigger, so the concept has no picture to be wrong about",
+        "canonical": "the zone's own box, thinner than its neighbours and legible as a tight base; if a compression event is to be marked at all it is marked on the zone it describes, because no reference draws flatness as a separate object",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the top-ranked S/R cluster zone is thinner than half the 14-bar average true range, measured as (top - bottom) < atr14 * 0.5",
+        "their_rule": "no external rule to compare against: the reference grades a tight base, it does not detect one as an event",
+        "verdict": "no_external_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "zone.top - zone.bottom < 0.5 * atr14(candles)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels returns early below 30 candles (events.rs:1681); the ATR it then divides by needs 14 of them"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:2047) over sr_zones::detect_sr_zones (sr_zones.rs:89)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/sd/sd.zone_compression.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "sd.proximal_distal",
@@ -119,44 +127,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Supply & Demand Zones (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/supply-and-demand-zones/",
+        "quote": "Place the distal line at the base's far extreme (lowest wick of a demand base, highest wick of a supply base) and the proximal line at the near edge, commonly the candle bodies.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "one horizontal segment at the proximal price, 420 to 469 bars long, re-emitted on every bar so 50 copies of the same level paint over each other into a grey smudge, coloured slate because direction is always neutral, labelled 'proximal_distal'; the far edge is never drawn at all",
+        "canonical": "the zone drawn as a box whose two horizontal edges ARE the proximal and distal lines -- the near edge where the entry triggers, the far edge that anchors the stop -- both named once, under one constant wick-or-body convention, running while the zone lives",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the most-touched cluster of market-structure swings (within 0.4%, at least 2 touches, top 6) is the zone, and proximal is whichever of its two edges is nearer the current close; only that one zone is ever considered",
+        "their_rule": "the edges of a supply/demand base: distal at the base's far wick extreme, proximal at its near body edge, chosen by the base's geometry and not by where price happens to be",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "zone = argmax(touches) of swings clustered within 0.4% with >= 2 touches; proximal = argmin over {top, bottom} of |close - edge|; distal = the other",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels returns early below 30 candles (events.rs:1681); detect_sr_zones then needs two swings clustered within 0.4% to call anything a zone"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "lifecycle_box",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:2016) over sr_zones::detect_sr_zones (sr_zones.rs:89)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/sd/sd.proximal_distal.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "sd.zone_strength",
@@ -170,44 +183,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "readout",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Zone Scoring & Refinement (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/zone-scoring-and-refinement/",
+        "quote": "Zone scoring inverts that premise: each touch consumes the resting orders behind the zone, so freshness outranks touch count.",
+        "checked": "2026-10-29"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "nothing at all: the scored event is built and pushed into `deferred_strength` (events.rs:2031), which is declared at events.rs:2000 and never merged into the returned vector, so no renderer, card or chart ever receives it",
+        "canonical": "the grade is not a figure in the reference set -- 'strength classifiers render or alert on only the top-graded zones' -- so a zone score earns its place by deciding which zone boxes survive, and where it is shown it is a number pinned to the zone it scores, with the window it was computed over named beside it",
+        "verdict": "impossible_in_vocabulary"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "100 * (0.4 * min(touches / 4, 1) + 0.3 * (1 - bars since the last touch / window) + 0.3 * min(mean post-touch |close - open| / atr14, 3) / 3) for the single top-ranked S/R cluster zone, recomputed and re-emitted every bar",
+        "their_rule": "grade the zone on base quality, departure strength, freshness and room to the next level, where an untested zone scores best and every revisit spends the zone; the grade ranks and filters zones rather than measuring one per bar",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "score = 100 * (0.4 * min(touches/4, 1) + 0.3 * (1 - bars_since_last_touch/window) + 0.3 * min(mean_post_touch_body/atr14, 3)/3)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "detect_structure_levels returns early below 30 candles (events.rs:1681), and the score divides by a 14-bar ATR and by the window length"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "readout",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_structure_levels (events.rs:2031) -- unreachable: deferred_strength (events.rs:2000) is never merged into the output",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/sd/sd.zone_strength.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     }
   ]
 }

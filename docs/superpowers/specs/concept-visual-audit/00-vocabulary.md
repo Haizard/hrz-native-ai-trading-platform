@@ -1,8 +1,10 @@
 # The shape vocabulary
 
-Status: **levels and boxes are settled; the rest is open.** Pass 1 (Smart Money
+Status: **levels, boxes and readouts are settled; the rest is open.** Pass 1 (Smart Money
 Concepts, 32 rows) fixed what `level_run` and `lifecycle_box` mean, because nine later
-passes draw against them. Plan Task 18 finalises the file.
+passes draw against them. Pass 2 (Supply & Demand, 4 rows) tested that generalisation and
+it held — three of its four rows needed no new shape — and claimed `readout`, which until
+then was a candidate on pass 11's say-so. Plan Task 18 finalises the file.
 Its purpose is to be the one place the vocabulary is declared, so that a pass which
 needs a fifth kind or a new shape has to say so here, in front of the gate, instead of
 typing a value into a ledger row and hoping the count still adds up.
@@ -68,14 +70,26 @@ and not two. A pass that renames or refuses one does it here, with the reason.
 | Candidate shape | Kind | Settled? | What it must express | Claimed by | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | `level_run` | event | **yes — pass 1** | A horizontal level at one price with a *run*: it starts at the bar that made it and extends right across the following bars, dashed or solid by class, labelled once at its left end. Never a point. | pass 1 (9 rows) | `smc.bos` answers `bars: [t, t]` for every event in a 501-bar window, so today it lowers to a 1.3px stub and a floating word |
-| `lifecycle_box` | event | **yes — pass 1** | A box between two prices whose right edge is *time, not the bar that made it*: unmitigated boxes reach forward, mitigated ones stop at the mitigation bar and are then removed. Same class carries the polarity (a failed one is redrawn in the opposite colour with a non-solid fill). | pass 1 (12 rows) | `smc.fvg`'s 50 measured events span 1 to 221 bars (median 174); `smc.ifvg` 2-219, `smc.order_block` 5-178 — the detector already knows a lifecycle, and the renderer treats it as a fixed two-bar box |
+| `lifecycle_box` | event | **yes — pass 1, confirmed by pass 2** | A box between two prices whose right edge is *time, not the bar that made it*: unmitigated boxes reach forward, mitigated ones stop at the mitigation bar and are then removed. Same class carries the polarity (a failed one is redrawn in the opposite colour with a non-solid fill). | pass 1 (12 rows), pass 2 (3) | `smc.fvg`'s 50 measured events span 1 to 221 bars (median 174); `smc.ifvg` 2-219, `smc.order_block` 5-178 — the detector already knows a lifecycle, and the renderer treats it as a fixed two-bar box. Pass 2 found the same gap one layer closer to the source: `sd.zone_tested`'s band has both edges right and is 1-4 bars long, because the event boundary drops the `to` and `mitigated_at` its own detector already computed ([regions.rs:150-171](../../../../crates/analytics-core/src/regions.rs#L150)) |
 | `time_box` | interval | open | A full-height region over a time range, labelled, with no price extent at all | pass 1 (4), pass 4 | `smc.judas_swing`, `smc.power_of_three`, `smc.model2022` and `smc.market_maker_model` are states of the clock that the router sends to the price-zone branch, so they draw as a price band — a *where* answering a *when* |
 | `outline` | event | open | A polyline traced through named pivot bars, plus an optional dashed neck level and a projected target | pass 1, pass 6 | Chart patterns draw as a flat band between two prices; `smc.trendline_sweep` computes a slope through three touches and then throws it away, drawing a horizontal level at the last one |
 | `pair_link` | event | open | A line joining a pivot on this instrument's pane to the matching pivot on a second series' pane | pass 1 | `smc.smt_divergence` emits nothing on the scan route at all: the gateway's `/concept-events/smt` lane has no caller and the card paints its "nothing to draw" hairline |
 | `legged_path` | event | open | An XABCD polyline with each leg labelled, optionally filled | pass 7 | Harmonics draw as a band or a mark |
 | `ladder` | event | open | A set of named ratios across one impulse, each with its own level and label | pass 5 | Fibonacci draws as six anonymous segments |
 | `bar_marker` | event | open | A glyph at a bar — arrow, dot — with the name optional | pass 8 | Candlestick patterns draw as a text label, which is the noise a trader scans past |
-| `readout` | readout | open | A formed figure with the window it was computed over named in the row | pass 11 | A z-score concept currently routes to a `CandleMark`; the arithmetic stays in Rust and the shell never derives it |
+| `readout` | readout | **yes — pass 2** | A formed figure, the window it was computed over named in the row, and — because a score is about something — the drawing it hangs on named too: a bar for a per-bar figure, a zone or a band for a grade. Never a word that happens to contain a number. | pass 2 (`sd.zone_strength`), pass 11 | A z-score concept currently routes to a `CandleMark`; the arithmetic stays in Rust and the shell never derives it. Pass 2 found the number already on the wire (`evidence.magnitude` reaches the browser on 1,169 of 4,247 events) and read by neither renderer, and that `ConceptShape`'s only text member prints a *name* taken from `concept_id`, never a measured value — so the shape needs a painter, and `new_rendering` is the honest tag |
+
+## A readout is attached to something
+
+Pass 1 asked where an *interval* is supposed to live and found the registry has no answer
+(`pane: false, overlay: false` on all nine). Pass 2 found the same question on the
+`readout` side, in a sharper form: `sd.zone_strength` is a 0-100 grade, and the registry
+puts it on the price frame with no pane and no overlay, so the only scale available to it
+is a price it is not. The vocabulary's answer is that a readout names its **host** — the
+bar, zone or band the figure is about — and the host's own shape carries the geometry while
+the readout carries the number and the window it was measured over. A row whose host is a
+`lifecycle_box` therefore inherits that box's status; a per-bar figure like
+`indicators.zscore` hangs on a bar and needs no box at all.
 
 ## How far a level or a box runs — the question pass 1 had to answer
 
