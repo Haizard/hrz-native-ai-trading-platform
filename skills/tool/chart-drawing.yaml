@@ -1,6 +1,6 @@
 # Tool skill (docs/40, §18): doctrine for chart-drawing tools.
 name: "Chart Drawing"
-version: "2.1.0"
+version: "2.2.0"
 kind: tool
 artifact_kind: thesis
 category: "drawing"
@@ -44,6 +44,18 @@ knowledge: >
     pivots each. Only when the analysis names the construction -- a pitchfork
     thesis is a median-line thesis, and which template the pivots make is part
     of the claim, not a styling choice.
+  - The Fibonacci family, which splits on ONE question -- is the claim about
+    price or about time? fib (retracement) and fib_extension are the two-anchored
+    price ladders; trend_fib_extension and trend_fib_time take three anchors --
+    impulse, then pullback -- and project the impulse from the pullback, the
+    first in price and the second in *bars*, so a "when" claim that draws
+    horizontal levels is wrong twice over. fib_time_zone is the two-anchored
+    version of the same idea. fib_fan / pitchfan are rays out of the swing's
+    origin (the pitchfan's keep going past the swing's box); fib_arcs and
+    fib_circles are that distance as rings, arcs at both ends of the swing and
+    circles around the pivot; fib_spiral winds it by phi per quarter turn;
+    fib_channel is the ladder inside a trendline band; fib_wedge opens it
+    symmetrically about the swing's own line.
 
   The label carries the meaning the kind cannot: "Bullish OB 4H 68200-68500",
   "CHoCH 1H", "FVG 15m unfilled". Colour is per-kind and fixed by the shell --
@@ -52,7 +64,9 @@ rules:
   - "Anchor every coordinate to a number a tool returned -- a swing price, a VAH/VAL, a swept level, an OB candle's open/extreme. Never invent a price from the shape of the chart or from memory."
   - "Prefer updating an existing drawing over adding a duplicate: get_user_drawings first, then update_drawing when the level moved, create_drawing only for a genuinely new idea."
   - "One idea, one drawing set: a level plus its invalidation zone is a set; five nearby lines for one idea is clutter."
-  - "fib anchors come from detected swings (detect_market_structure's swing lists), chosen by the rule the question implies (last completed leg), never eyeballed."
+  - "fib anchors come from detected swings (detect_market_structure's swing lists), chosen by the rule the question implies (last completed leg), never eyeballed. The trend-based kinds take three, in order: impulse start, impulse end, pullback -- and the projection runs from the third."
+  - "Name the axis before the kind. A level that answers WHEN goes on a time tool (trend_fib_time, fib_time_zone) and one that answers WHERE goes on a price tool; the engine draws the first as vertical lines and will not correct the choice, because a ratio of a duration printed as a price is a number about the wrong variable."
+  - "Leave `level_profile` unset unless the thesis names a ladder: every fib kind already draws the grid its reference uses. Setting it to `ote`, `extension`, `classic` or `time` is a claim about which school's grid the level came from, not a styling choice."
   - "rect zones span the full candle or gap that created them: an order block rectangle covers the OB candle's open-to-extreme range and extends right to now or to mitigation; a half-zone reads as a different idea."
   - "Delete what the analysis no longer supports: a level that broke is deleted or moved with a reason, and the narrative says what changed."
   - "Always state the drawing ids you created or changed in the answer, so the user can find them. The AI layer is user-toggleable -- never assume an object is visible, say where it sits."

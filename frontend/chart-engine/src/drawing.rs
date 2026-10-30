@@ -199,6 +199,38 @@ pub enum DrawingKind {
     /// sit on the swing itself and the 1.272 / 1.618 / 2.0 / 2.618 targets are
     /// drawn past the second anchor, in the direction of the drag.
     FibExtension,
+    /// The **trend-based** extension: the impulse's start, its end, and the
+    /// pullback's end. The targets are projected from the third anchor along the
+    /// impulse's own price/time slope, so the ladder walks with the trend instead
+    /// of sitting flat on the swing.
+    TrendFibExtension,
+    /// The same three anchors with the ratios laid out on the **time** axis:
+    /// vertical lines at when each projection is due, not at what it prices.
+    TrendFibTime,
+    /// Vertical lines at the ladder's ratios of the anchors' time distance,
+    /// counted from the first anchor: a forecast of *when*.
+    FibTimeZone,
+    /// A channel whose width is divided by the ladder: the line through the first
+    /// two anchors, its parallel through the third, and the ratios between them.
+    FibChannel,
+    /// The speed-resistance fan: lines from the swing's origin through the
+    /// 38.2 / 50 / 61.8 divisions of its price range.
+    FibFan,
+    /// The fan's curved counterpart: arcs at the same divisions, centred on each
+    /// end of the swing.
+    FibArcs,
+    /// Concentric circles at the ladder's ratios of the swing's price distance.
+    FibCircles,
+    /// A logarithmic spiral from the swing's origin, its radius multiplied by φ
+    /// every quarter turn.
+    FibSpiral,
+    /// Lines on each side of the swing's own line, opening as the ladder's ratios
+    /// of its price distance: a trend with a widening band.
+    FibWedge,
+    /// Rays from a pivot at the ladder's coefficients of the slope through the
+    /// second anchor — the fan read as a slope rather than as a price range,
+    /// which is why its lines can run past the swing's box.
+    Pitchfan,
     /// The price/time delta between the two anchors: a box, dashed guides to
     /// both axes, and the delta as a label.
     Measure,
@@ -235,7 +267,7 @@ impl DrawingKind {
     /// The order is the flyout order, so a kind listed here in the wrong block is
     /// a tool that sits in the wrong menu -- and a kind missing is one the toolbar
     /// cannot offer at all.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 40] = [
         // Lines.
         Self::Trendline,
         Self::Ray,
@@ -267,6 +299,16 @@ impl DrawingKind {
         // Fibonacci.
         Self::Fib,
         Self::FibExtension,
+        Self::TrendFibExtension,
+        Self::TrendFibTime,
+        Self::FibTimeZone,
+        Self::FibChannel,
+        Self::FibFan,
+        Self::Pitchfan,
+        Self::FibArcs,
+        Self::FibCircles,
+        Self::FibSpiral,
+        Self::FibWedge,
         // Measurement.
         Self::Measure,
         Self::DatepriceRange,
@@ -299,8 +341,18 @@ impl DrawingKind {
             Self::SchiffPitchfork => "schiff_pitchfork",
             Self::ModifiedSchiffPitchfork => "modified_schiff_pitchfork",
             Self::InsidePitchfork => "inside_pitchfork",
-                        Self::Fib => "fib",
+            Self::Fib => "fib",
             Self::FibExtension => "fib_extension",
+            Self::TrendFibExtension => "trend_fib_extension",
+            Self::TrendFibTime => "trend_fib_time",
+            Self::FibTimeZone => "fib_time_zone",
+            Self::FibChannel => "fib_channel",
+            Self::FibFan => "fib_fan",
+            Self::Pitchfan => "pitchfan",
+            Self::FibArcs => "fib_arcs",
+            Self::FibCircles => "fib_circles",
+            Self::FibSpiral => "fib_spiral",
+            Self::FibWedge => "fib_wedge",
             Self::Measure => "measure",
             Self::Channel => "channel",
             Self::Angle => "angle",
@@ -333,7 +385,10 @@ impl DrawingKind {
             | Self::Pitchfork
             | Self::SchiffPitchfork
             | Self::ModifiedSchiffPitchfork
-            | Self::InsidePitchfork => AnchorCount::fixed(3),
+            | Self::InsidePitchfork
+            | Self::TrendFibExtension
+            | Self::TrendFibTime
+            | Self::FibChannel => AnchorCount::fixed(3),
             Self::DisjointChannel => AnchorCount::fixed(4),
             Self::Trendline
             | Self::Ray
@@ -344,6 +399,13 @@ impl DrawingKind {
             | Self::Rect
             | Self::Fib
             | Self::FibExtension
+            | Self::FibTimeZone
+            | Self::FibFan
+            | Self::Pitchfan
+            | Self::FibArcs
+            | Self::FibCircles
+            | Self::FibSpiral
+            | Self::FibWedge
             | Self::Measure
             | Self::Angle
             | Self::Circle
@@ -370,7 +432,10 @@ pub enum ToolGroup {
     Pitchforks,
     /// Shapes: rectangles and anything with an area.
     Shapes,
-    /// Measurement: Fibonacci and the price/time ruler.
+    /// Fibonacci: the ladder and everything drawn at its ratios — levels,
+    /// projections on the time axis, fans, arcs, spirals.
+    Fibonacci,
+    /// Measurement: the price/time ruler and the date-price range.
     Measurement,
     /// Positions: the long/short risk boxes a trade plan draws.
     Positions,
@@ -378,11 +443,12 @@ pub enum ToolGroup {
 
 impl ToolGroup {
     /// Every group, in toolbar order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Lines,
         Self::Channels,
         Self::Pitchforks,
         Self::Shapes,
+        Self::Fibonacci,
         Self::Measurement,
         Self::Positions,
     ];
@@ -395,6 +461,7 @@ impl ToolGroup {
             Self::Channels => "channels",
             Self::Pitchforks => "pitchforks",
             Self::Shapes => "shapes",
+            Self::Fibonacci => "fibonacci",
             Self::Measurement => "measurement",
             Self::Positions => "positions",
         }
@@ -408,6 +475,7 @@ impl ToolGroup {
             Self::Channels => "Channels",
             Self::Pitchforks => "Forks",
             Self::Shapes => "Shapes",
+            Self::Fibonacci => "Fibonacci",
             Self::Measurement => "Measure",
             Self::Positions => "Positions",
         }
@@ -447,7 +515,7 @@ pub struct ToolSpec {
 /// The cursor is deliberately absent: it is not an object the engine can draw,
 /// it is the shell's "select and pan" state, and a registry of *objects*
 /// pretending to contain it would be one more thing to filter out.
-pub const REGISTRY: [ToolSpec; 30] = [
+pub const REGISTRY: [ToolSpec; 40] = [
     ToolSpec {
         kind: DrawingKind::Trendline,
         label: "Trend",
@@ -552,20 +620,102 @@ pub const REGISTRY: [ToolSpec; 30] = [
         group_label: "Shapes",
         anchors: AnchorCount::fixed(2),
     },
+    // Fibonacci: the ladder, its projections on both axes, and the shapes drawn
+    // at its ratios.
     ToolSpec {
         kind: DrawingKind::Fib,
         label: "Fib",
         title: "Drag from one swing to another",
-        group: ToolGroup::Measurement,
-        group_label: "Measure",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
         anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::FibExtension,
         label: "Fib ext",
         title: "Drag from one swing to another — targets project past the second point",
-        group: ToolGroup::Measurement,
-        group_label: "Measure",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::TrendFibExtension,
+        label: "Trend ext",
+        title: "Impulse, its end, then the pullback — targets run on the trend's own slope",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(3),
+    },
+    ToolSpec {
+        kind: DrawingKind::TrendFibTime,
+        label: "Trend time",
+        title: "The same three points, with the ratios read on the time axis",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(3),
+    },
+    ToolSpec {
+        kind: DrawingKind::FibTimeZone,
+        label: "Time zones",
+        title: "Two points set the interval; vertical lines fall at its ratios",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::FibChannel,
+        label: "Fib channel",
+        title: "The line through the first two points, its parallel through the third, divided by the ladder",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(3),
+    },
+    ToolSpec {
+        kind: DrawingKind::FibFan,
+        label: "Fib fan",
+        title: "Speed-resistance fan: lines through 38.2, 50 and 61.8 of the swing's range",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::Pitchfan,
+        label: "Pitchfan",
+        title: "Rays from the pivot at the ladder's coefficients of the slope",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::FibArcs,
+        label: "Fib arcs",
+        title: "Speed-resistance arcs: the same divisions, curved around each end of the swing",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::FibCircles,
+        label: "Fib circles",
+        title: "Concentric circles at the ladder's ratios of the swing's price distance",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::FibSpiral,
+        label: "Fib spiral",
+        title: "A logarithmic spiral from the pivot, a quarter turn wider by φ",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::FibWedge,
+        label: "Fib wedge",
+        title: "The swing's line with the ladder opening on each side of it",
+        group: ToolGroup::Fibonacci,
+        group_label: "Fibonacci",
         anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
@@ -769,6 +919,68 @@ pub struct DrawingOptions {
     /// opposite direction, so a 0 and a 100 swap sides instead of the ladder
     /// being re-drawn from a re-dragged swing.
     pub reverse: bool,
+    /// Which ladder the Fibonacci tools read.
+    ///
+    /// The reference packages all spell it the same way — a retracement, an
+    /// extension and an optimal-trade-entry grid are three *ratio sets* over one
+    /// swing, not three tools. Pass 5 of the concept audit found the same set
+    /// drawn as an anonymous dash, so a level the trader cannot name is a level
+    /// they cannot use: the profile decides the ratios, and every one of them is
+    /// labelled with its ratio and its price.
+    ///
+    /// `None` is each kind's own default — the retracement reads [`LevelProfile::Classic`],
+    /// the projections read [`LevelProfile::Extension`], the time tools read
+    /// [`LevelProfile::Time`] — so the field changes the ladder without moving
+    /// any kind off its reference.
+    pub level_profile: Option<LevelProfile>,
+}
+
+/// The ratio set a Fibonacci tool draws.
+///
+/// Four named ladders rather than a free list of numbers, because the numbers
+/// are the claim: a grid drawn at 0.705 says "optimal trade entry", and one
+/// drawn at 0.236-to-0.786 says "retracement". A user-typed list would make the
+/// engine a spreadsheet, and the audit's finding was that the *named* set is
+/// what a trader reads off the chart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LevelProfile {
+    /// The retracement ladder: [`FIB_LEVELS`].
+    Classic,
+    /// The projection ladder, past the swing's end: [`FIB_EXTENSION_LEVELS`].
+    Extension,
+    /// The optimal-trade-entry band: [`FIB_OTE_LEVELS`].
+    Ote,
+    /// The ladder the time tools read, including the extensions of the leg:
+    /// [`FIB_TIME_LEVELS`].
+    Time,
+}
+
+impl LevelProfile {
+    /// Every profile, in the order a settings panel would list them.
+    pub const ALL: [Self; 4] = [Self::Classic, Self::Extension, Self::Ote, Self::Time];
+
+    /// The wire name, which is the storage's value.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Extension => "extension",
+            Self::Ote => "ote",
+            Self::Time => "time",
+        }
+    }
+
+    /// The ladder this profile means.
+    #[must_use]
+    pub const fn levels(self) -> &'static [(f64, &'static str)] {
+        match self {
+            Self::Classic => &FIB_LEVELS,
+            Self::Extension => &FIB_EXTENSION_LEVELS,
+            Self::Ote => &FIB_OTE_LEVELS,
+            Self::Time => &FIB_TIME_LEVELS,
+        }
+    }
 }
 
 /// How far a line or level runs past the points that define it.
@@ -896,6 +1108,54 @@ pub const FIB_LEVELS: [(f64, &str); 7] = [
     (0.618, "61.8"),
     (0.786, "78.6"),
     (1.0, "100"),
+];
+
+/// The projection ladder: the swing marked 0 and 100, then the targets beyond it.
+///
+/// The four the references agree on (127.2, 161.8, 200, 261.8) plus 361.8, which
+/// is the one a trader reaches for when a move runs: the ladder is a geometric
+/// series of the leg, so the set keeps going and the tool has to stop somewhere
+/// named rather than somewhere arbitrary.
+pub const FIB_EXTENSION_LEVELS: [(f64, &str); 7] = [
+    (0.0, "0"),
+    (1.0, "100"),
+    (1.272, "127.2"),
+    (1.618, "161.8"),
+    (2.0, "200"),
+    (2.618, "261.8"),
+    (3.618, "361.8"),
+];
+
+/// The optimal-trade-entry band: the deep half of a retracement, where a
+/// pullback is expected to be bought rather than merely survived.
+///
+/// 70.5 and 88.6 are not Fibonacci ratios; they are the two levels this school
+/// reads off the same grid, and the reason `ote` is a *profile* rather than a
+/// longer classic ladder — a trader asking for OTE wants these five and nothing
+/// above 50, which is exactly what makes the shape readable.
+pub const FIB_OTE_LEVELS: [(f64, &str); 5] = [
+    (0.5, "50"),
+    (0.618, "61.8"),
+    (0.705, "70.5"),
+    (0.786, "78.6"),
+    (0.886, "88.6"),
+];
+
+/// The ladder the time tools read.
+///
+/// The retracement ratios, then the extensions of the leg: a swing's *duration*
+/// projects the same way its price does, and 127.2 / 161.8 bars after the anchor
+/// are the two windows a trader watches for the next turn. There is no 0, because
+/// a time tool at ratio 0 is the anchor itself — a vertical line the user can
+/// already see.
+pub const FIB_TIME_LEVELS: [(f64, &str); 7] = [
+    (0.236, "23.6"),
+    (0.382, "38.2"),
+    (0.5, "50"),
+    (0.618, "61.8"),
+    (0.786, "78.6"),
+    (1.272, "127.2"),
+    (1.618, "161.8"),
 ];
 
 /// One positioned shape.
@@ -1620,6 +1880,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_level_profile_is_a_snake_case_wire_value_and_a_sorted_ladder() {
+        for profile in LevelProfile::ALL {
+            let json = serde_json::to_value(profile).expect("serializes");
+            assert_eq!(json, profile.name(), "{profile:?} renamed on the wire");
+            let ratios: Vec<f64> = profile.levels().iter().map(|(ratio, _)| *ratio).collect();
+            assert!(
+                ratios.windows(2).all(|pair| pair[0] < pair[1]),
+                "{:?} is not ascending, so its labels would read scrambled",
+                ratios
+            );
+            // Every level carries its own name: pass 5's finding was a grid of
+            // anonymous dashes, and a ratio the trader cannot read is not a level.
+            for (ratio, label) in profile.levels() {
+                assert!(!label.is_empty(), "{ratio} has no label");
+            }
+        }
+        // The four ladders are four different claims. Two profiles that resolve to
+        // the same set would be a settings panel offering a choice that is none.
+        for (index, profile) in LevelProfile::ALL.iter().enumerate() {
+            for other in &LevelProfile::ALL[index + 1..] {
+                assert_ne!(
+                    profile.levels(),
+                    other.levels(),
+                    "{} and {} draw the same ladder",
+                    profile.name(),
+                    other.name()
+                );
+            }
+        }
+    }
+
     /// The registry is the one list of tools, and these pin its invariants.
     mod registry {
         use super::*;
@@ -1672,7 +1964,7 @@ mod tests {
             // rather than a number because `Many` has no number to send: the
             // shell's click counter reads `form` to know whether the third click
             // is the last one or just the latest.
-            let json = serde_json::to_value(REGISTRY).expect("serializes");
+            let json = serde_json::to_value(&REGISTRY as &[ToolSpec]).expect("serializes");
             assert_eq!(json[0]["kind"], "trendline");
             assert_eq!(json[0]["label"], "Trend");
             assert_eq!(json[0]["group"], "lines");

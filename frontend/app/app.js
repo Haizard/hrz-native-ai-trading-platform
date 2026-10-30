@@ -613,6 +613,20 @@ const CHART_PALETTE_DARK = {
   rect: "#9564e2",
   fib: "#4caf8e",
   fib_extension: "#26a69a",
+  // The rest of the Fibonacci group. One hue for the whole family, because
+  // these tools differ by *construction* — a fan, an arc, a spiral over the same
+  // ladder are the same claim in different shapes — and the two that measure
+  // time take the ruler's blue, since what they read is the x axis.
+  trend_fib_extension: "#26a69a",
+  fib_channel: "#26a69a",
+  fib_fan: "#26a69a",
+  pitchfan: "#26a69a",
+  fib_arcs: "#26a69a",
+  fib_circles: "#26a69a",
+  fib_spiral: "#26a69a",
+  fib_wedge: "#26a69a",
+  trend_fib_time: "#4a9eff",
+  fib_time_zone: "#4a9eff",
   // The kinds the registry added. Distinct hues, one per kind, so a ray and
   // a trendline on the same chart are told apart by what they are; the
   // ruler is the value-area blue because it measures, like the fib.
@@ -706,6 +720,18 @@ const CHART_PALETTE_LIGHT = {
   rect: "#7c3aed",
   fib: "#0f7b6c",
   fib_extension: "#0f766e",
+  // The rest of the Fibonacci group, one hue for the family and the ruler's blue
+  // for the two tools that read the time axis.
+  trend_fib_extension: "#0f766e",
+  fib_channel: "#0f766e",
+  fib_fan: "#0f766e",
+  pitchfan: "#0f766e",
+  fib_arcs: "#0f766e",
+  fib_circles: "#0f766e",
+  fib_spiral: "#0f766e",
+  fib_wedge: "#0f766e",
+  trend_fib_time: "#2563eb",
+  fib_time_zone: "#2563eb",
   vline: "#1f2937",
   ray: "#b45309",
   extended: "#6b7686",
@@ -2882,18 +2908,23 @@ function createChartPane(root, hooks = {}) {
             break;
 
           case "ellipse":
-            // The engine's circle and arc arrive here: a full ellipse is a
-            // circle, `half` clips to the upper arc. Centred with
-            // `ctx.arc`-style parameters so the maths stays in Rust.
+            // The engine's circle, arc and fib arcs arrive here. `half` is the
+            // engine's word for "upper arc only" and has to be spent on the path
+            // itself: canvas y runs down, so the upper half is the angles past π.
+            // Clipping after building a whole ellipse cannot un-stroke it, and
+            // `clearRect` would erase the candles underneath rather than the shape.
             ctx.beginPath();
-            ctx.ellipse(part.cx, part.cy, part.rx, part.ry, 0, 0, Math.PI * 2);
+            if (part.half) {
+              ctx.ellipse(part.cx, part.cy, part.rx, part.ry, 0, Math.PI, Math.PI * 2);
+            } else {
+              ctx.ellipse(part.cx, part.cy, part.rx, part.ry, 0, 0, Math.PI * 2);
+            }
             if (part.filled) {
+              // The same tint as a filled rect, so a shape is read as a region and
+              // not as a block of colour over the price.
               ctx.save();
-              ctx.clip();
-              if (part.half) {
-                // Only the upper arc is stroked: clip to the centre line.
-                ctx.clearRect(part.cx - part.rx - 1, part.cy, part.rx * 2 + 2, part.ry + 1);
-              }
+              ctx.globalAlpha = drawing.selected ? 0.18 : 0.1;
+              ctx.fill();
               ctx.restore();
             }
             ctx.stroke();

@@ -344,13 +344,16 @@ fn absolute(anchor: Anchor) -> Result<(f64, f64), ApiError> {
 
 /// The options a row carries, in the column's own JSON.
 ///
-/// Both fields are always written, including `"extend": null` for "no opinion".
+/// Every field is always written, including `"extend": null` for "no opinion".
 /// That is deliberate: the engine reads an *absent* `extend` as "use this kind's
 /// reference default" -- a ray extends forward, a trendline does not -- and an
 /// explicit `"none"` as "stop at the points". Collapsing the two to save four
-/// bytes would turn a user's explicit choice into the other answer.
+/// bytes would turn a user's explicit choice into the other answer. A
+/// `"level_profile": null` is the same arrangement on the ladder: the kind's own
+/// reference set, which is why the retracement, the extensions and the time tools
+/// all draw different grids from one stored row.
 fn options_to_json(options: DrawingOptions) -> Value {
-    // Infallible in practice: two fields, one enum and one bool, and no float
+    // Infallible in practice: three fields, two enums and one bool, and no float
     // that could be a `NaN`. A fallback here would be a silent rewrite of a
     // setting the user chose, so the impossible case says so instead.
     serde_json::to_value(options).expect("drawing options are JSON-safe")
@@ -432,7 +435,7 @@ fn database(state: &AppState) -> Result<&std::sync::Arc<db::Database>, ApiError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chart_engine::Extend;
+    use chart_engine::{Extend, LevelProfile};
     use db::{DrawingRow, StoredPoint};
     use serde_json::json;
 
@@ -749,11 +752,13 @@ mod tests {
             DrawingOptions {
                 extend: Some(Extend::Both),
                 reverse: true,
+                level_profile: Some(LevelProfile::Ote),
             },
         ))
         .expect("must accept");
         assert_eq!(prepared.options["extend"], json!("both"));
         assert_eq!(prepared.options["reverse"], json!(true));
+        assert_eq!(prepared.options["level_profile"], json!("ote"));
 
         let described = describe(&stored_with_options(
             "ray",
@@ -775,6 +780,7 @@ mod tests {
             DrawingOptions {
                 extend: Some(Extend::Both),
                 reverse: true,
+                level_profile: Some(LevelProfile::Ote),
             }
         );
     }
@@ -829,11 +835,20 @@ mod tests {
         // percentage reads, on this build, as a drawing with no opinion about it --
         // which is what the same drawing looked like before the option existed.
         assert_eq!(
-            options_from_json(&json!({"level_profile":"extend","value_area_pct":70})),
+            options_from_json(&json!({"value_area_pct": 70, "trend_anchor": "latest swing"})),
             DrawingOptions::default()
         );
         // Including a column that is not an object at all.
         assert_eq!(options_from_json(&Value::Null), DrawingOptions::default());
+        // And the mirror of both: an option this build *does* know is read, so the
+        // tolerance above is not the whole struct being quietly dropped.
+        assert_eq!(
+            options_from_json(&json!({"level_profile": "ote"})),
+            DrawingOptions {
+                level_profile: Some(LevelProfile::Ote),
+                ..DrawingOptions::default()
+            }
+        );
     }
 
     #[test]
@@ -905,6 +920,7 @@ mod tests {
             options: DrawingOptions {
                 extend: Some(Extend::Left),
                 reverse: false,
+                level_profile: Some(LevelProfile::Extension),
             },
             created_by: Some("ai".into()),
             confidence: Some(0.82),
@@ -927,6 +943,7 @@ mod tests {
         }
         assert_eq!(points[2]["price"], 46_000.0);
         assert_eq!(wire["options"]["extend"], "left");
+        assert_eq!(wire["options"]["level_profile"], "extension");
         // The provenance keys the shell's layer filter reads.
         assert_eq!(wire["created_by"], "ai");
         assert_eq!(wire["confidence"], 0.82);

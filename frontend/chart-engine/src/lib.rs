@@ -51,10 +51,9 @@ pub mod viewport;
 
 pub use drawing::{
     Anchor, AnchorCount, Drawing, DrawingKind, DrawingOptions, DrawingPart, Extend, Fraction,
-    Overlay, OverlayRole, PlacedTimePrice, SceneDrawing, SceneOverlay, ScenePoint, ToolGroup,
-    ToolSpec, FIB_LEVELS, REGISTRY,
-};
-pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
+    LevelProfile, Overlay, OverlayRole, PlacedTimePrice, SceneDrawing, SceneOverlay, ScenePoint,
+    ToolGroup, ToolSpec, FIB_LEVELS, REGISTRY,
+};pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
 pub use indicator::{
     Evidence, EvidenceLink, IndicatorMarker, IndicatorOutput, IndicatorTrendline, IndicatorZone,
     MarkerKind, ReplayExit, ReplaySetup, SetupDirection, TrendPoint, ZoneState,
@@ -209,7 +208,10 @@ mod abi {
     /// button that draws nothing. The result is a constant, so this cannot fail.
     #[no_mangle]
     pub extern "C" fn tool_registry() -> i32 {
-        match serde_json::to_vec(&super::drawing::REGISTRY) {
+        // Spelled as a slice, not the array: serde implements `Serialize` for
+        // `[T; N]` only up to N = 32, so a registry that grows past thirty-one
+        // tools stops compiling here rather than in the shell that reads it.
+        match serde_json::to_vec(&super::drawing::REGISTRY[..]) {
             Ok(bytes) => {
                 RESULT.with(|slot| *slot.borrow_mut() = bytes);
                 0

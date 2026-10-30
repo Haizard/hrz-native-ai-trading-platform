@@ -266,6 +266,16 @@ pub fn parts(
         // Fibonacci.
         DrawingKind::Fib => fibonacci::retracement(geometry),
         DrawingKind::FibExtension => fibonacci::extension(geometry),
+        DrawingKind::TrendFibExtension => fibonacci::trend_extension(geometry),
+        DrawingKind::TrendFibTime => fibonacci::trend_time(geometry),
+        DrawingKind::FibTimeZone => fibonacci::time_zones(geometry),
+        DrawingKind::FibChannel => fibonacci::channel(geometry),
+        DrawingKind::FibFan => fibonacci::fan(geometry),
+        DrawingKind::Pitchfan => fibonacci::pitchfan(geometry),
+        DrawingKind::FibArcs => fibonacci::arcs(geometry),
+        DrawingKind::FibCircles => fibonacci::circles(geometry),
+        DrawingKind::FibSpiral => fibonacci::spiral(geometry),
+        DrawingKind::FibWedge => fibonacci::wedge(geometry),
         // Measurement.
         DrawingKind::Measure => measurement::ruler(geometry),
         DrawingKind::DatepriceRange => measurement::range(geometry),

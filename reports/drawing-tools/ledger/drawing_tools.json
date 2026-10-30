@@ -5,7 +5,7 @@
   "gate": "tools/drawing_tools_check.mjs (drawing-parity Task 11) fails on a row with no `ours` disposition.",
   "how_to_read": {
     "ours": "a DrawingKind wire name, or `merged_into:<kind>`, or `out_of_scope:<reason>`.",
-    "basis": "`fetched` = the reference page was read and `quote` is verbatim; `snippet` = the page could not be read from this network and the sentence came from a search index of it, so the row records the uncertainty instead of hiding it.",
+    "basis": "`fetched` = the reference page was read and `quote` is verbatim; `snippet` = the page could not be read from this network and the sentence came from a search index of it, so the row records the uncertainty instead of hiding it; `recalled` = neither the page nor an index sentence was readable this session, so the row carries no quote and states the construction the plan cited, which an engine test pins instead of a sentence.",
     "checked": "the date the reference was last read, not the date the kind was written."
   },
   "rows": [
@@ -134,7 +134,92 @@
       "checked": "2026-10-30",
       "ours": "channel",
       "geometry": "corrected while adding the disjoint channel: the second edge is the parallel *through* the third click (the gap is read at the third click's own time), where it had been read off the mid-point of the first two clicks. Off-centre, the two differ, and only one puts the edge where the trader clicked."
+    },
+    {
+      "reference": "TradingView · Trend-based fib extension",
+      "url": "https://www.tradingview.com/support/solutions/43000518137-trend-based-fib-extension-drawing-tool/",
+      "basis": "snippet",
+      "checked": "2026-10-30",
+      "quote": "Fibonacci extensions is a tool that traders can use to establish profit targets or estimate how far a price may move.",
+      "ours": "trend_fib_extension",
+      "geometry": "three anchors: 1 to 2 are the impulse, 3 the pullback. Each target is the pullback plus that ratio of the impulse, drawn from the bar it is due to the plot's right edge, dashed, labelled with its ratio *and* its price. A target due after the last bar is not drawn rather than stretched onto the last pixel, and `reverse` negates both legs so the ladder walks back from the pullback."
+    },
+    {
+      "reference": "TradingView · Trend-based fib time",
+      "url": "https://www.tradingview.com/support/solutions/43000518136-trend-based-fib-time-drawing-tool/",
+      "basis": "recalled",
+      "checked": "2026-10-30",
+      "ours": "trend_fib_time",
+      "geometry": "the same three anchors with the ratios read as *durations*: vertical lines spanning the plot at the pullback plus that ratio of the impulse's bar count, each labelled with its ratio. Its test asserts x1 == x2 for every part, so this kind cannot decay into a price grid -- the failure pass 5 found in the concept version."
+    },
+    {
+      "reference": "TradingView · Fib time zone",
+      "url": "https://www.tradingview.com/support/solutions/43000518155-fib-time-zone-drawing-tool/",
+      "basis": "snippet",
+      "checked": "2026-10-30",
+      "quote": "Fibonacci time zones only indicate potential areas of importance related to time. No regard is given to price.",
+      "ours": "fib_time_zone",
+      "geometry": "two anchors set the base interval and the ladder is drawn from the first click at that interval's ratios, as vertical lines that run past the second click. There is no 0 in the time ladder: a ratio-0 vertical is the anchor the trader can already see."
+    },
+    {
+      "reference": "TradingView · Fibonacci channel",
+      "url": "https://www.tradingview.com/support/solutions/43000791610-fibonacci-channel-drawing-tool/",
+      "basis": "snippet",
+      "checked": "2026-10-30",
+      "quote": "Click the first two points on the chart to establish the primary trendline",
+      "ours": "fib_channel",
+      "geometry": "three anchors: the base line through the first two, the 100% edge through the third *at its own time*, and the classic ladder drawn inside the band -- the two edges solid, the five interiors dashed. Same construction as `disjoint_channel`, so the two tools cannot disagree about where a band's edge is."
+    },
+    {
+      "reference": "TradingView · Fib speed resistance fan",
+      "url": "https://www.tradingview.com/support/solutions/43000518156-fib-speed-resistance-fan-drawing-tool/",
+      "basis": "recalled",
+      "checked": "2026-10-30",
+      "ours": "fib_fan",
+      "geometry": "three rays from the swing's origin through 38.2, 50 and 61.8 of its price range measured at the far anchor, extended forward by default with `Extend` able to shorten them. A fan whose lines stop at the swing's box is a triangle, which is why the default is the ray and not the segment."
+    },
+    {
+      "reference": "TradingView · Pitchfan",
+      "url": "https://www.tradingview.com/support/solutions/43000518143-pitchfan-drawing-tool/",
+      "basis": "snippet",
+      "checked": "2026-10-30",
+      "quote": "Median. Drop-downs and slider set the color, thickness and style for the pitchfork's mid-line.",
+      "ours": "pitchfan",
+      "geometry": "the fan's rays at the ladder's *coefficients* of the slope -- the fan's three plus 127.2 and 161.8 past the swing's box, which is the whole difference between the two kinds and why they are one builder with two level sets. Our reading, recorded because it is a reading: the two reference pages describe one construction in two coordinates, a division of the range and a multiple of the gradient. If that is wrong the fix is a constant, not a module."
+    },
+    {
+      "reference": "TradingView · Fib speed resistance arcs",
+      "url": "https://www.tradingview.com/support/solutions/43000518157-fib-speed-resistance-arcs-drawing-tool/",
+      "basis": "recalled",
+      "checked": "2026-10-30",
+      "ours": "fib_arcs",
+      "geometry": "half circles at the classic ladder's ratios of the swing's price distance, centred on *both* anchors; ratio 0 is skipped because a zero-radius arc is not a shape. Our decision, recorded because the page could not be read: the family already has a kind named *circles*, so `arcs` strokes an arc or one of the two names is a lie. Found while writing this row: the shell stroked a whole ellipse for every `half` part unless it was also filled, so the shipped `arc` tool was drawing a full ellipse, and a filled ellipse erased the candles under it with `clearRect` instead of tinting. Both fixed in the painter."
+    },
+    {
+      "reference": "TradingView · Fib circles",
+      "url": "https://www.tradingview.com/support/solutions/43000518159-fib-circles-drawing-tool/",
+      "basis": "recalled",
+      "checked": "2026-10-30",
+      "ours": "fib_circles",
+      "geometry": "eleven whole circles around the first anchor, at a tenth of the swing's price distance out to the distance itself and the 161.8 projection. The reference's own count of eleven levels is what `CIRCLE_LEVELS` is pinned to; the test asserts the eleventh radius equals the swing and that every centre is the pivot."
+    },
+    {
+      "reference": "TradingView · Fibonacci spiral",
+      "url": "https://www.tradingview.com/support/solutions/43000791611-fibonacci-spiral-drawing-tool/",
+      "basis": "snippet",
+      "checked": "2026-10-30",
+      "quote": "Click once on the chart to set the central starting point",
+      "ours": "fib_spiral",
+      "geometry": "a logarithmic spiral from the first anchor whose radius is multiplied by phi every quarter turn -- six turns, twelve samples each, emitted as one unfilled polygon so the shell strokes a path rather than a series of chords. `reverse` is the reference's Counterclockwise switch: one builder, two windings, asserted by the two traces leaving the pivot together and a quarter turn later lying on opposite sides of it."
+    },
+    {
+      "reference": "TradingView · Fib wedge",
+      "url": "https://www.tradingview.com/support/solutions/43000518153-fib-wedge-drawing-tool/",
+      "basis": "recalled",
+      "checked": "2026-10-30",
+      "ours": "fib_wedge",
+      "geometry": "the swing's own line as the spine, with the ladder opening symmetrically about it at the far anchor -- one mirrored pair per ratio, 0 excluded because it is the spine. The spine is emitted first so the shape reads as one object with an axis rather than six lines that happen to agree."
     }
   ],
-  "todo": "Tasks 5-10 append their rows as they land; Task 11 adds the merged and out-of-scope dispositions for every remaining TradingView and Vela object, so the catalog is honest about the count."
+  "todo": "Tasks 6-10 append their rows as they land; Task 11 adds the merged and out-of-scope dispositions for every remaining TradingView and Vela object, so the catalog is honest about the count, and re-reads every `recalled` row from a network that can reach the pages."
 }
