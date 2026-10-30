@@ -627,6 +627,14 @@ const CHART_PALETTE_DARK = {
   fib_wedge: "#26a69a",
   trend_fib_time: "#4a9eff",
   fib_time_zone: "#4a9eff",
+  // The Gann group. One hue of its own, because the family's claim is different
+  // from the Fibonacci ladder's: not ratios of a swing, but price and time held
+  // in one unit. A hue shared with the fib tools would make the two families
+  // read as one, and the unit is the whole point.
+  gann_box: "#d17fb0",
+  gann_fan: "#d17fb0",
+  gann_square: "#d17fb0",
+  gann_square_fixed: "#d17fb0",
   // The kinds the registry added. Distinct hues, one per kind, so a ray and
   // a trendline on the same chart are told apart by what they are; the
   // ruler is the value-area blue because it measures, like the fib.
@@ -732,6 +740,11 @@ const CHART_PALETTE_LIGHT = {
   fib_wedge: "#0f766e",
   trend_fib_time: "#2563eb",
   fib_time_zone: "#2563eb",
+  // The Gann group, one hue, darker for the light theme.
+  gann_box: "#9d2d6b",
+  gann_fan: "#9d2d6b",
+  gann_square: "#9d2d6b",
+  gann_square_fixed: "#9d2d6b",
   vline: "#1f2937",
   ray: "#b45309",
   extended: "#6b7686",
@@ -7950,6 +7963,8 @@ function setActive(pane) {
 const TOOL_GROUP_ICONS = {
   lines: "trending-up",
   shapes: "shapes",
+  fibonacci: "layers",
+  gann: "grid",
   measurement: "ruler",
   positions: "square",
 };

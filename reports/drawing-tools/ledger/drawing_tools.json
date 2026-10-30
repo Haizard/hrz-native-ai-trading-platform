@@ -219,7 +219,39 @@
       "checked": "2026-10-30",
       "ours": "fib_wedge",
       "geometry": "the swing's own line as the spine, with the ladder opening symmetrically about it at the far anchor -- one mirrored pair per ratio, 0 excluded because it is the spine. The spine is emitted first so the shape reads as one object with an axis rather than six lines that happen to agree."
+    },
+    {
+      "reference": "TradingView · Gann box",
+      "url": "https://www.tradingview.com/support/solutions/43000518152-gann-box-drawing-tool/",
+      "basis": "recalled",
+      "checked": "2026-10-30",
+      "ours": "gann_box",
+      "geometry": "the rectangle the two corners declare, cut into eighths on both axes with dashed interior lines, plus the corner angles: the drag's own diagonal solid as the 1x1 and its reflection dashed. `reverse` swaps which of the two is the solid claim, which is the page's Reverse setting read as a reflection about the box's vertical axis. Eighths rather than a level count because the box is the chart's version of the wheel, and a test asserts the seven divisions land at exactly k/8 of each axis."
+    },
+    {
+      "reference": "TradingView · Gann fan",
+      "url": "https://www.tradingview.com/support/solutions/43000518151-gann-fan-drawing-tool/",
+      "basis": "recalled",
+      "checked": "2026-10-30",
+      "ours": "gann_fan",
+      "geometry": "nine rays from the first anchor -- 1x16, 1x8, 1x4, 1x2, 1x1, 2x1, 4x1, 8x1, 16x1 -- each labelled with its ratio, at the scale the second point declares. The 1x1 passes through the second point exactly, and a test asserts that rather than the label: a fan whose 1x1 misses the drag is a fan about a different chart. Slopes are measured one bar out from the anchor so a logarithmic price axis draws a straight ray rather than a chord."
+    },
+    {
+      "reference": "TradingView · Gann square",
+      "url": "https://www.tradingview.com/support/solutions/43000518149-gann-square-drawing-tool/",
+      "basis": "recalled",
+      "checked": "2026-10-30",
+      "ours": "gann_square",
+      "geometry": "the box's outline, eighths and both diagonals, plus eight upper-arc ellipses centred on the first anchor at the eighths of the side -- Levels, Fan and Arcs in the reference's own three words. The arcs are `ellipse` parts with `half` set, so the shell spends the flag on the path and no arc is stroked as a whole circle."
+    },
+    {
+      "reference": "TradingView · Gann square fixed",
+      "url": "https://www.tradingview.com/support/solutions/43000791675-gann-square-fixed-drawing-tool/",
+      "basis": "recalled",
+      "checked": "2026-10-30",
+      "ours": "gann_square_fixed",
+      "geometry": "levels 0 through 5 as concentric squares whose size the second point sets, each with its own 1x1 diagonal and its level number; `reverse` walks the ladder the other way from the anchor. The spacing is the claim the word \"fixed\" makes, so a test asserts the six levels are evenly spaced by exactly the drag's own price and time deltas."
     }
   ],
-  "todo": "Tasks 6-10 append their rows as they land; Task 11 adds the merged and out-of-scope dispositions for every remaining TradingView and Vela object, so the catalog is honest about the count, and re-reads every `recalled` row from a network that can reach the pages."
+  "todo": "Tasks 7-10 still add the pattern, Elliott, cyclic, measurement, shape and annotation groups, the completeness gate, and a re-read of every `recalled` row from a network that can reach the TradingView pages. Gann's four rows are `recalled`: the pages rate-limited this session, so their constructions are pinned by the engine's own tests instead of by a quote."
 }

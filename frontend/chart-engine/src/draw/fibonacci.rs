@@ -33,7 +33,7 @@
 
 use crate::drawing::{DrawingPart, Extend, LevelProfile};
 
-use super::{pixel_slope, Geometry, Point};
+use super::{pixel_slope, ray_to, Geometry, Point};
 
 /// The golden ratio, the spiral's growth per quarter turn.
 ///
@@ -356,7 +356,7 @@ pub fn wedge(geometry: Geometry<'_>) -> Vec<DrawingPart> {
     let unit = (tip.1 - apex.1).abs();
     let mut parts = Vec::new();
     // The axis first, so the wedge reads as one shape with a spine.
-    parts.push(stretch(geometry, apex, pixel_slope(apex, tip), tip.0));
+    parts.push(ray_to(geometry, apex, pixel_slope(apex, tip), tip.0, Extend::Right));
     for (ratio, _) in ladder(geometry, LevelProfile::Classic) {
         if *ratio == 0.0 {
             continue;
@@ -364,7 +364,7 @@ pub fn wedge(geometry: Geometry<'_>) -> Vec<DrawingPart> {
         for side in [1.0, -1.0] {
             let at_tip = tip.1 + side * unit * ratio;
             let slope = pixel_slope(apex, (tip.0, at_tip));
-            parts.push(stretch(geometry, apex, slope, tip.0));
+            parts.push(ray_to(geometry, apex, slope, tip.0, Extend::Right));
         }
     }
     parts
@@ -383,7 +383,7 @@ fn rays(geometry: Geometry<'_>, default: &'static [(f64, &'static str)]) -> Vec<
     for (ratio, label) in set_or_profile(geometry, default) {
         let price = from + (to - from) * ratio;
         let slope = pixel_slope(apex, (tip.0, geometry.frame.y_at(price)));
-        parts.push(stretch(geometry, apex, slope, tip.0));
+        parts.push(ray_to(geometry, apex, slope, tip.0, Extend::Right));
         parts.push(DrawingPart::Text {
             x: tip.0 + 4.0,
             y: geometry.frame.y_at(price) - 3.0,
@@ -391,30 +391,6 @@ fn rays(geometry: Geometry<'_>, default: &'static [(f64, &'static str)]) -> Vec<
         });
     }
     parts
-}
-
-/// One ray, run out as `extend` says. The default is forward, because a fan whose
-/// lines stop at the swing's box is a triangle and the trader meant rays.
-fn stretch(geometry: Geometry<'_>, apex: (f64, f64), slope: f64, stop: f64) -> DrawingPart {
-    let plot = geometry.frame.plot;
-    let (mut left, mut right) = (apex.0.min(stop), apex.0.max(stop));
-    match geometry.options.extend.unwrap_or(Extend::Right) {
-        Extend::None => {}
-        Extend::Left => left = plot.x,
-        Extend::Right => right = plot.x + plot.w,
-        Extend::Both => {
-            left = plot.x;
-            right = plot.x + plot.w;
-        }
-    }
-    let y = |x: f64| apex.1 + slope * (x - apex.0);
-    DrawingPart::Segment {
-        x1: left,
-        y1: y(left),
-        x2: right,
-        y2: y(right),
-        dashed: false,
-    }
 }
 
 /// A vertical level spanning the plot, with its ratio written at the top.

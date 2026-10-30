@@ -29,6 +29,7 @@ use analytics_core::types::Candle;
 
 pub mod channels;
 pub mod fibonacci;
+pub mod gann;
 pub mod lines;
 pub mod measurement;
 pub mod pitchforks;
@@ -128,6 +129,43 @@ pub(crate) fn pixel_slope(from: (f64, f64), to: (f64, f64)) -> f64 {
         (to.1 - from.1) / f64::EPSILON
     } else {
         (to.1 - from.1) / dx
+    }
+}
+
+/// A ray from `apex` at `slope`, run out as `extend` says.
+///
+/// The fan-shaped tools in two groups — Fibonacci's fans and wedges, Gann's fan
+/// and corner angles — all ask the same question: where does this stroke stop?
+/// The answer must be one function, because a ray that stops at the swing's box
+/// in one group and at the plot's edge in another is the same tool disagreeing
+/// with itself. `stop` is the point the stroke would end at with no extension,
+/// and `default` is what the kind does when the user has set nothing: a fan's
+/// reference default is forward, a wedge's too.
+pub(crate) fn ray_to(
+    geometry: Geometry<'_>,
+    apex: (f64, f64),
+    slope: f64,
+    stop: f64,
+    default: Extend,
+) -> DrawingPart {
+    let plot = geometry.frame.plot;
+    let (mut left, mut right) = (apex.0.min(stop), apex.0.max(stop));
+    match geometry.options.extend.unwrap_or(default) {
+        Extend::None => {}
+        Extend::Left => left = plot.x,
+        Extend::Right => right = plot.x + plot.w,
+        Extend::Both => {
+            left = plot.x;
+            right = plot.x + plot.w;
+        }
+    }
+    let y = |x: f64| apex.1 + slope * (x - apex.0);
+    DrawingPart::Segment {
+        x1: left,
+        y1: y(left),
+        x2: right,
+        y2: y(right),
+        dashed: false,
     }
 }
 
@@ -276,6 +314,11 @@ pub fn parts(
         DrawingKind::FibCircles => fibonacci::circles(geometry),
         DrawingKind::FibSpiral => fibonacci::spiral(geometry),
         DrawingKind::FibWedge => fibonacci::wedge(geometry),
+        // Gann.
+        DrawingKind::GannBox => gann::boxed(geometry),
+        DrawingKind::GannFan => gann::fan(geometry),
+        DrawingKind::GannSquare => gann::square(geometry),
+        DrawingKind::GannSquareFixed => gann::square_fixed(geometry),
         // Measurement.
         DrawingKind::Measure => measurement::ruler(geometry),
         DrawingKind::DatepriceRange => measurement::range(geometry),

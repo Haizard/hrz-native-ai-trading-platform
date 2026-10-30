@@ -231,6 +231,21 @@ pub enum DrawingKind {
     /// second anchor — the fan read as a slope rather than as a price range,
     /// which is why its lines can run past the swing's box.
     Pitchfan,
+    /// A box divided into eighths on both axes, with the corner's 1×1 angle.
+    ///
+    /// The box's own drag *is* its scale: the two corners state how many price
+    /// units go with how many bars, and every other Gann tool on the chart is
+    /// read against that one number.
+    GannBox,
+    /// Nine rays from a pivot — 1×1, its quarters and its doubles — at the scale
+    /// the second point declares.
+    GannFan,
+    /// The box's eight-by-eight grid with the fan through its centre and the
+    /// arcs at the eighths of its side.
+    GannSquare,
+    /// The square repeated: levels 0 through 5, one unit square per level, the
+    /// second point setting how large a unit is.
+    GannSquareFixed,
     /// The price/time delta between the two anchors: a box, dashed guides to
     /// both axes, and the delta as a label.
     Measure,
@@ -267,7 +282,7 @@ impl DrawingKind {
     /// The order is the flyout order, so a kind listed here in the wrong block is
     /// a tool that sits in the wrong menu -- and a kind missing is one the toolbar
     /// cannot offer at all.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 44] = [
         // Lines.
         Self::Trendline,
         Self::Ray,
@@ -309,6 +324,11 @@ impl DrawingKind {
         Self::FibCircles,
         Self::FibSpiral,
         Self::FibWedge,
+        // Gann.
+        Self::GannBox,
+        Self::GannFan,
+        Self::GannSquare,
+        Self::GannSquareFixed,
         // Measurement.
         Self::Measure,
         Self::DatepriceRange,
@@ -353,6 +373,10 @@ impl DrawingKind {
             Self::FibCircles => "fib_circles",
             Self::FibSpiral => "fib_spiral",
             Self::FibWedge => "fib_wedge",
+            Self::GannBox => "gann_box",
+            Self::GannFan => "gann_fan",
+            Self::GannSquare => "gann_square",
+            Self::GannSquareFixed => "gann_square_fixed",
             Self::Measure => "measure",
             Self::Channel => "channel",
             Self::Angle => "angle",
@@ -406,6 +430,10 @@ impl DrawingKind {
             | Self::FibCircles
             | Self::FibSpiral
             | Self::FibWedge
+            | Self::GannBox
+            | Self::GannFan
+            | Self::GannSquare
+            | Self::GannSquareFixed
             | Self::Measure
             | Self::Angle
             | Self::Circle
@@ -435,6 +463,8 @@ pub enum ToolGroup {
     /// Fibonacci: the ladder and everything drawn at its ratios — levels,
     /// projections on the time axis, fans, arcs, spirals.
     Fibonacci,
+    /// Gann: price and time held in proportion — the box, the fan, the square.
+    Gann,
     /// Measurement: the price/time ruler and the date-price range.
     Measurement,
     /// Positions: the long/short risk boxes a trade plan draws.
@@ -443,12 +473,13 @@ pub enum ToolGroup {
 
 impl ToolGroup {
     /// Every group, in toolbar order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Lines,
         Self::Channels,
         Self::Pitchforks,
         Self::Shapes,
         Self::Fibonacci,
+        Self::Gann,
         Self::Measurement,
         Self::Positions,
     ];
@@ -462,6 +493,7 @@ impl ToolGroup {
             Self::Pitchforks => "pitchforks",
             Self::Shapes => "shapes",
             Self::Fibonacci => "fibonacci",
+            Self::Gann => "gann",
             Self::Measurement => "measurement",
             Self::Positions => "positions",
         }
@@ -476,6 +508,7 @@ impl ToolGroup {
             Self::Pitchforks => "Forks",
             Self::Shapes => "Shapes",
             Self::Fibonacci => "Fibonacci",
+            Self::Gann => "Gann",
             Self::Measurement => "Measure",
             Self::Positions => "Positions",
         }
@@ -515,7 +548,7 @@ pub struct ToolSpec {
 /// The cursor is deliberately absent: it is not an object the engine can draw,
 /// it is the shell's "select and pan" state, and a registry of *objects*
 /// pretending to contain it would be one more thing to filter out.
-pub const REGISTRY: [ToolSpec; 40] = [
+pub const REGISTRY: [ToolSpec; 44] = [
     ToolSpec {
         kind: DrawingKind::Trendline,
         label: "Trend",
@@ -716,6 +749,38 @@ pub const REGISTRY: [ToolSpec; 40] = [
         title: "The swing's line with the ladder opening on each side of it",
         group: ToolGroup::Fibonacci,
         group_label: "Fibonacci",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::GannBox,
+        label: "Gann box",
+        title: "Drag the two corners; the box is divided into eighths with its 1×1 angle",
+        group: ToolGroup::Gann,
+        group_label: "Gann",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::GannFan,
+        label: "Gann fan",
+        title: "Drag to set the 1×1; the fan draws 1×16, 1×8, 1×4, 1×2, 2×1, 4×1, 8×1 and 16×1",
+        group: ToolGroup::Gann,
+        group_label: "Gann",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::GannSquare,
+        label: "Gann sq",
+        title: "Drag the square's side; the eighths, the fan through its centre and the arcs",
+        group: ToolGroup::Gann,
+        group_label: "Gann",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::GannSquareFixed,
+        label: "Gann fixed",
+        title: "Levels 0 through 5 at the unit square the second point sets",
+        group: ToolGroup::Gann,
+        group_label: "Gann",
         anchors: AnchorCount::fixed(2),
     },
     ToolSpec {

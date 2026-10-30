@@ -1,6 +1,6 @@
 # Tool skill (docs/40, §18): doctrine for chart-drawing tools.
 name: "Chart Drawing"
-version: "2.2.0"
+version: "2.3.0"
 kind: tool
 artifact_kind: thesis
 category: "drawing"
@@ -56,6 +56,19 @@ knowledge: >
     circles around the pivot; fib_spiral winds it by phi per quarter turn;
     fib_channel is the ladder inside a trendline band; fib_wedge opens it
     symmetrically about the swing's own line.
+  - The Gann family, whose claim is a *proportion* rather than a ratio of a
+    swing: price and time in one unit. The second point of every Gann drawing
+    states that unit -- price per bar -- and nothing else does, so a Gann shape
+    whose two points share a time or a price says no unit and the fan draws
+    nothing -- the engine refusing to invent a price-per-bar it was not given. gann_box is the rectangle cut into
+    eighths with its 1x1 diagonal; gann_fan is nine rays (1x16 through 16x1)
+    from the first point at that scale; gann_square is the box with the fan
+    through its centre and arcs at the eighths; gann_square_fixed repeats one
+    unit square as levels 0 through 5. Use them only when the thesis is about
+    the proportion itself -- "price is rising one unit per bar, so the 1x1 is
+    support" -- never as decoration on a swing that a trendline or a fib would
+    state more plainly.
+
 
   The label carries the meaning the kind cannot: "Bullish OB 4H 68200-68500",
   "CHoCH 1H", "FVG 15m unfilled". Colour is per-kind and fixed by the shell --
@@ -67,6 +80,7 @@ rules:
   - "fib anchors come from detected swings (detect_market_structure's swing lists), chosen by the rule the question implies (last completed leg), never eyeballed. The trend-based kinds take three, in order: impulse start, impulse end, pullback -- and the projection runs from the third."
   - "Name the axis before the kind. A level that answers WHEN goes on a time tool (trend_fib_time, fib_time_zone) and one that answers WHERE goes on a price tool; the engine draws the first as vertical lines and will not correct the choice, because a ratio of a duration printed as a price is a number about the wrong variable."
   - "Leave `level_profile` unset unless the thesis names a ladder: every fib kind already draws the grid its reference uses. Setting it to `ote`, `extension`, `classic` or `time` is a claim about which school's grid the level came from, not a styling choice."
+  - "For a Gann kind, say the scale out loud in the label (\"Gann 1x1 @ 12.5/bar\") and place the second point on a price/time move you can name. The tools derive the unit from the two points alone, so an eyeballed second point is an eyeballed 1x1 -- and every other line in the fan is wrong by the same factor."
   - "rect zones span the full candle or gap that created them: an order block rectangle covers the OB candle's open-to-extreme range and extends right to now or to mitigation; a half-zone reads as a different idea."
   - "Delete what the analysis no longer supports: a level that broke is deleted or moved with a reason, and the narrative says what changed."
   - "Always state the drawing ids you created or changed in the answer, so the user can find them. The AI layer is user-toggleable -- never assume an object is visible, say where it sits."
