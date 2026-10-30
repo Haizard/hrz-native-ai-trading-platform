@@ -1,6 +1,6 @@
 # Tool skill (docs/40, §18): doctrine for chart-drawing tools.
 name: "Chart Drawing"
-version: "2.0.0"
+version: "2.1.0"
 kind: tool
 artifact_kind: thesis
 category: "drawing"
@@ -34,6 +34,16 @@ knowledge: >
     measurements and projection work.
   - channel / triangle / arc / circle / angle / vline: the parity shapes, only
     when the analysis genuinely has that geometry.
+  - hray / crossline / infoline / regression / arrow / arrow_mark_up /
+    arrow_mark_down: the rest of the lines group -- a level that runs one way,
+    a quadrant mark, a leg's price and bar count, a fitted trend with its R, and
+    a pointer at one bar. A mark is a comment on a single candle: use it where
+    one word would do.
+  - disjoint_channel / flat_top_bottom / pitchfork / schiff_pitchfork /
+    modified_schiff_pitchfork / inside_pitchfork: bands and forks, three or four
+    pivots each. Only when the analysis names the construction -- a pitchfork
+    thesis is a median-line thesis, and which template the pivots make is part
+    of the claim, not a styling choice.
 
   The label carries the meaning the kind cannot: "Bullish OB 4H 68200-68500",
   "CHoCH 1H", "FVG 15m unfilled". Colour is per-kind and fixed by the shell --

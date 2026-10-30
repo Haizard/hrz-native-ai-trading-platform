@@ -1,0 +1,140 @@
+{
+  "schema": 1,
+  "generated": "2026-10-30",
+  "purpose": "One row per reference drawing object, saying what the reference draws and what we draw. The concept audit's discipline, applied to the hand-placed tools: a kind added without a row here is this project's opinion wearing a citation.",
+  "gate": "tools/drawing_tools_check.mjs (drawing-parity Task 11) fails on a row with no `ours` disposition.",
+  "how_to_read": {
+    "ours": "a DrawingKind wire name, or `merged_into:<kind>`, or `out_of_scope:<reason>`.",
+    "basis": "`fetched` = the reference page was read and `quote` is verbatim; `snippet` = the page could not be read from this network and the sentence came from a search index of it, so the row records the uncertainty instead of hiding it.",
+    "checked": "the date the reference was last read, not the date the kind was written."
+  },
+  "rows": [
+    {
+      "reference": "TradingView · Horizontal Ray",
+      "url": "https://www.tradingview.com/support/solutions/43000518121-horizontal-ray-drawing-tool/",
+      "basis": "fetched",
+      "quote": "This tool is similar to a horizontal line and has only one anchor point. It extends from left to right and only at a fixed price.",
+      "checked": "2026-10-30",
+      "ours": "hray",
+      "geometry": "one anchor; the level runs from it to the plot's right edge and no further left; Extend Left/Both move the span, and the price is written at the anchor."
+    },
+    {
+      "reference": "TradingView · Crossline",
+      "url": "https://www.tradingview.com/support/solutions/43000477747-crossline-drawing-tool/",
+      "basis": "fetched",
+      "quote": "This tool consists of a horizontal and a vertical line, intersecting at the point where the user clicks on the chart.",
+      "checked": "2026-10-30",
+      "ours": "crossline",
+      "geometry": "one anchor; exactly two segments spanning the plot, one at the anchor's price and one at its time."
+    },
+    {
+      "reference": "TradingView · Info Line",
+      "url": "https://www.tradingview.com/support/solutions/43000791601-info-line-drawing-tool/",
+      "basis": "fetched",
+      "quote": "Drag it from one point to another... a small box shows the price and the bar count between the two points.",
+      "checked": "2026-10-30",
+      "ours": "infoline",
+      "geometry": "two anchors; the segment plus both prices and the inclusive bar count between them, counted from the traded series, not from pixels."
+    },
+    {
+      "reference": "TradingView · Regression Trend",
+      "url": "https://www.tradingview.com/support/solutions/43000518108-regression-trend-drawing-tool/",
+      "basis": "fetched",
+      "quote": "Plots a linear regression trendline between two anchor points. A line that shows you the overall trend of the last N bars with the correlation ratio (R) also being shown.",
+      "checked": "2026-10-30",
+      "ours": "regression",
+      "geometry": "two anchors; least squares over the closes of the bars between them, fitted on bar index (a timestamp fit cancels against a ~1e18 origin), spanning the first to the last of those bars, with the R readout. No bars, or a flat range, means no R — the engine does not invent a readout."
+    },
+    {
+      "reference": "TradingView · Arrow",
+      "url": "https://www.tradingview.com/support/solutions/43000518134-arrow-drawing-tool/",
+      "basis": "fetched",
+      "quote": "To create an arrow, click on the starting point of the arrow and drag the cursor to draw it to the end point.",
+      "checked": "2026-10-30",
+      "ours": "arrow",
+      "geometry": "two anchors; the shaft as a segment and the head as a filled polygon whose apex is the second anchor, sized in pixels (12 long, 10 wide) because an arrow that scales with the price axis is not an arrow."
+    },
+    {
+      "reference": "TradingView · Arrow Marks",
+      "url": "https://www.tradingview.com/support/solutions/43000518087-arrow-marks-drawing-tools/",
+      "basis": "fetched",
+      "quote": "The size and direction of such marks is fixed and cannot be changed.",
+      "checked": "2026-10-30",
+      "ours": "arrow_mark_up",
+      "geometry": "one anchor; a fixed 8x10 pixel triangle with its tip on the anchor, green for up."
+    },
+    {
+      "reference": "TradingView · Arrow Marks (down)",
+      "url": "https://www.tradingview.com/support/solutions/43000518087-arrow-marks-drawing-tools/",
+      "basis": "fetched",
+      "quote": "there are two types of them: bullish and bearish.",
+      "checked": "2026-10-30",
+      "ours": "arrow_mark_down",
+      "geometry": "the same pixels, mirrored, in red. Two kinds rather than one kind plus an option, because the direction is the tool, not a setting."
+    },
+    {
+      "reference": "TradingView · Disjoint Channel",
+      "url": "https://www.tradingview.com/support/solutions/43000791604-disjoint-channel-drawing-tool/",
+      "basis": "fetched",
+      "quote": "Draw the first part of the channel... then the tool will draw a second, parallel line.",
+      "checked": "2026-10-30",
+      "ours": "disjoint_channel",
+      "geometry": "four anchors; edge one runs between the first two, edge two is forced parallel to it through the third, and the fourth sets only how far edge two runs. The band is filled between the four ends, so where the edges do not overlap the fill tapers — the shape the tool is named for."
+    },
+    {
+      "reference": "TradingView · Flat Top/Bottom Channel",
+      "url": "https://www.tradingview.com/support/solutions/43000791603-flat-top-bottom-drawing-tool/",
+      "basis": "fetched",
+      "quote": "Click a third time to place the flat, horizontal boundary of the channel.",
+      "checked": "2026-10-30",
+      "ours": "flat_top_bottom",
+      "geometry": "three anchors; the angled edge from the first two, a horizontal at the third's price over the same x-span, and the wedge between them filled."
+    },
+    {
+      "reference": "TradingView · Pitchfork",
+      "url": "https://www.tradingview.com/support/solutions/43000518141-pitchfork-drawing-tool/",
+      "basis": "fetched",
+      "quote": "The median line is drawn from the first point to the midpoint between the second and third points. Two parallel lines are drawn through the second and third points.",
+      "checked": "2026-10-30",
+      "ours": "pitchfork",
+      "geometry": "three anchors; median from pivot 1 to midpoint(2,3), tines parallel through 2 and 3, running forward to the plot's right edge. Midpoints are taken in price and time, not in pixels, so a log-scaled window does not move the fork."
+    },
+    {
+      "reference": "TradingView · Schiff Pitchfork",
+      "url": "https://www.tradingview.com/support/solutions/43000518140-schiff-pitchfork-drawing-tool/",
+      "basis": "fetched",
+      "quote": "The first point is at the middle point of the vertical distance between the high and low.",
+      "checked": "2026-10-30",
+      "ours": "schiff_pitchfork",
+      "geometry": "as the plain fork, but the handle's *price* is the midpoint of pivots 1 and 2 at pivot 1's own time; the tines still pass through pivots 2 and 3. The reference's own page is thin and secondary sources swap the two Schiff names, so this row records which reading we ship: price-only shift for Schiff, both axes for Modified, matching the classic construction and the platform's own tooltip ('shifted in price only')."
+    },
+    {
+      "reference": "TradingView · Modified Schiff Pitchfork",
+      "url": "https://www.tradingview.com/support/solutions/43000791609-modified-schiff-pitchfork-drawing-tool/",
+      "basis": "fetched",
+      "quote": "The second point is placed at half the horizontal distance from the first point to the third.",
+      "checked": "2026-10-30",
+      "ours": "modified_schiff_pitchfork",
+      "geometry": "the handle is the true midpoint of pivots 1 and 2 in price *and* time, so the fork starts between the pivots instead of at the first one; tines through 2 and 3. The quoted sentence is the page's own, and it reads as a third construction (the median's *target* shifted toward pivot 3); we ship the price-and-time origin, which is what every secondary source and the platform's tooltip describe, and the row says so rather than pretending the page settles it."
+    },
+    {
+      "reference": "TradingView · Inside Pitchfork",
+      "url": "https://www.tradingview.com/support/solutions/43000518146-inside-pitchfork-drawing-tool/",
+      "basis": "fetched",
+      "quote": "Its origin is located at the first pivot point, and the upper and lower boundaries of its channel are at the midpoints of the lines connecting the first pivot point to the second and third.",
+      "checked": "2026-10-30",
+      "ours": "inside_pitchfork",
+      "geometry": "handle at pivot 1; tines parallel to the median through midpoint(1,2) and midpoint(1,3). Halving the fork about its handle puts its median on the same infinite line as the plain fork by construction — which the pitchforks tests assert instead of hiding, and the tines are what differ."
+    },
+    {
+      "reference": "TradingView · Channel",
+      "url": "https://www.tradingview.com/support/solutions/43000518904-channel-drawing-tool/",
+      "basis": "snippet",
+      "quote": "not re-read this pass; the shipped kind was judged in the 2026-09 parity round.",
+      "checked": "2026-10-30",
+      "ours": "channel",
+      "geometry": "corrected while adding the disjoint channel: the second edge is the parallel *through* the third click (the gap is read at the third click's own time), where it had been read off the mid-point of the first two clicks. Off-centre, the two differ, and only one puts the edge where the trader clicked."
+    }
+  ],
+  "todo": "Tasks 5-10 append their rows as they land; Task 11 adds the merged and out-of-scope dispositions for every remaining TradingView and Vela object, so the catalog is honest about the count."
+}

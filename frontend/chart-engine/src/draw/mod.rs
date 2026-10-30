@@ -25,11 +25,13 @@
 
 use crate::drawing::{DrawingKind, DrawingOptions, DrawingPart, Extend};
 use crate::scene::Frame;
+use analytics_core::types::Candle;
 
 pub mod channels;
 pub mod fibonacci;
 pub mod lines;
 pub mod measurement;
+pub mod pitchforks;
 pub mod positions;
 pub mod shapes;
 
@@ -46,9 +48,20 @@ pub struct Geometry<'a> {
     pub points: &'a [Point],
     /// What the user asked the shape to do beyond where its points are.
     pub options: &'a DrawingOptions,
+    /// The traded bars, ascending by open time.
+    ///
+    /// The **real** series, not the drawn one — the same rule [`crate::scene`]'s
+    /// region bands follow. A regression line, a volume profile and an anchored
+    /// VWAP are facts about prices that traded, so switching the chart to
+    /// Heikin-Ashi must not move them.
+    ///
+    /// Some kinds read every bar in it, some read none, and a tool that computed
+    /// its own idea of "the bars in this range" from the frame's width would be
+    /// a second price feed. Passing the series is what keeps one.
+    pub candles: &'a [Candle],
 }
 
-impl Geometry<'_> {
+impl<'a> Geometry<'a> {
     /// A point's canvas x.
     #[must_use]
     pub fn x(self, index: usize) -> f64 {
@@ -72,7 +85,142 @@ impl Geometry<'_> {
     pub fn point(self, index: usize) -> Option<Point> {
         self.points.get(index).copied()
     }
+
+    /// The traded bars whose open time falls between two points, inclusive.
+    ///
+    /// Order-independent — a drag left-to-right and the same drag right-to-left
+    /// select the same bars, because a range of time does not have a direction
+    /// — and empty rather than panicking when the window holds none. A tool that
+    /// reads the market returns what the market actually printed, and a caller
+    /// with nothing to read says so in its own geometry rather than inventing a
+    /// line from two anchors.
+    pub fn bars_between(self, a: Point, b: Point) -> &'a [Candle] {
+        let (from, to) = if a.0 <= b.0 { (a.0, b.0) } else { (b.0, a.0) };
+        let start = self.candles.partition_point(|candle| ms(candle) < from);
+        let end = self.candles.partition_point(|candle| ms(candle) <= to);
+        &self.candles[start..end]
+    }
 }
+
+/// A candle's open time in **milliseconds** — the unit a drawing's point uses.
+///
+/// The conversion is here rather than at each call site because the two units
+/// meet constantly in this module: bars arrive on the platform's nanosecond
+/// clock and every anchor in `draw/` is a millisecond. A silent `* 1e6` in one
+/// group and `/ 1_000_000` in another is the same unit bug the scene's two `x_`
+/// methods exist to prevent.
+#[must_use]
+pub fn ms(candle: &Candle) -> f64 {
+    (candle.open_time / 1_000_000) as f64
+}
+
+/// The slope of the line through two pixel positions.
+///
+/// A zero run is reported as a vertical line rather than as a division clamped to a
+/// positive epsilon: a band or a fork whose anchors were placed right-to-left has a
+/// *negative* run, and clamping it flips the sign of the slope, which mirrors the
+/// shape -- and a mirrored trendline reads as the chart disagreeing about the
+/// direction of the trader's own analysis.
+#[must_use]
+pub(crate) fn pixel_slope(from: (f64, f64), to: (f64, f64)) -> f64 {
+    let dx = to.0 - from.0;
+    if dx == 0.0 {
+        (to.1 - from.1) / f64::EPSILON
+    } else {
+        (to.1 - from.1) / dx
+    }
+}
+
+/// A stage: one frame, one traded series, and the points a drawing sits on.
+#[cfg(test)]
+pub(crate) struct Stage {
+    pub(crate) frame: Frame,
+    pub(crate) candles: Vec<Candle>,
+}
+
+#[cfg(test)]
+impl Stage {
+    /// `bars` M5 candles, each closing one `step` above the last from `first`,
+    /// over a price window from the first close to the last.
+    ///
+    /// A ramp is the fixture that catches a fit that is not a fit: every point is
+    /// on the line, so a regression drawn over it is the closes themselves and
+    /// its *R* is exactly 1.00 — and a stage whose window *is* that range puts
+    /// the first close at the bottom edge and the last at the top, which is a
+    /// pixel position a test can name without inverting the mapping.
+    pub(crate) fn ramp(bars: usize, first: f64, step: f64) -> Self {
+        Self::over(bars, |index| first + index as f64 * step, first, first + (bars as f64 - 1.0) * step)
+    }
+
+    /// `bars` candles that closed at one price, under a window wide enough to
+    /// make the scale a variable rather than a constant.
+    pub(crate) fn flat(bars: usize, price: f64) -> Self {
+        Self::over(bars, |_| price, price - 100.0, price + 100.0)
+    }
+
+    pub(crate) fn over(bars: usize, close: impl Fn(usize) -> f64, low: f64, high: f64) -> Self {
+        let candles = (0..bars)
+            .map(|index| {
+                let price = close(index);
+                Candle {
+                    symbol: "BTCUSDT".into(),
+                    timeframe: analytics_core::types::Timeframe::M5,
+                    open_time: T0_NS + index as i64 * BAR_NS,
+                    open: price,
+                    high: price + 0.25,
+                    low: price - 0.25,
+                    close: price,
+                    volume: 10.0,
+                    buy_volume: 6.0,
+                    sell_volume: 4.0,
+                }
+            })
+            .collect();
+        Self {
+            frame: Frame {
+                plot: crate::scene::Plot {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1_000.0,
+                    h: 500.0,
+                },
+                from: T0_NS,
+                to: T0_NS + bars as i64 * BAR_NS,
+                price_min: low,
+                price_max: high,
+                bar_nanos: BAR_NS,
+                scale: crate::scene::ScaleMap::Linear,
+            },
+            candles,
+        }
+    }
+
+    /// The open time of bar `index`, in the milliseconds a drawing carries.
+    pub(crate) fn ms(&self, index: usize) -> f64 {
+        ms(&self.candles[index])
+    }
+
+    /// What the group function is handed.
+    pub(crate) fn geometry<'a>(
+        &'a self,
+        points: &'a [Point],
+        options: &'a crate::drawing::DrawingOptions,
+    ) -> Geometry<'a> {
+        Geometry {
+            frame: &self.frame,
+            points,
+            options,
+            candles: &self.candles,
+        }
+    }
+}
+
+/// One M5 bar, in the two units the engine keeps apart.
+#[cfg(test)]
+pub(crate) const BAR_NS: i64 = 300_000_000_000;
+/// The instant the fixtures count from, in nanoseconds.
+#[cfg(test)]
+pub(crate) const T0_NS: i64 = 1_700_000_000_000_000_000;
 
 /// The shapes one drawing is made of, including its grab points.
 ///
@@ -91,9 +239,25 @@ pub fn parts(
         DrawingKind::Extended => lines::stroked(geometry, Extend::Both),
         DrawingKind::Angle => lines::stroked(geometry, Extend::None),
         DrawingKind::Hline => lines::horizontal(geometry),
+        DrawingKind::Hray => lines::horizontal_ray(geometry),
         DrawingKind::Vline => lines::vertical(geometry),
+        DrawingKind::Crossline => lines::cross(geometry),
+        DrawingKind::Infoline => lines::info(geometry),
+        DrawingKind::Regression => lines::regression(geometry),
+        DrawingKind::Arrow => lines::arrow(geometry),
+        DrawingKind::ArrowMarkUp => lines::mark(geometry, true),
+        DrawingKind::ArrowMarkDown => lines::mark(geometry, false),
         // Channels.
         DrawingKind::Channel => channels::parallel(geometry),
+        DrawingKind::DisjointChannel => channels::disjoint(geometry),
+        DrawingKind::FlatTopBottom => channels::flat_top_bottom(geometry),
+        // Pitchforks: one builder, four templates.
+        DrawingKind::Pitchfork => pitchforks::fork(geometry, pitchforks::Template::Andrews),
+        DrawingKind::SchiffPitchfork => pitchforks::fork(geometry, pitchforks::Template::Schiff),
+        DrawingKind::ModifiedSchiffPitchfork => {
+            pitchforks::fork(geometry, pitchforks::Template::ModifiedSchiff)
+        }
+        DrawingKind::InsidePitchfork => pitchforks::fork(geometry, pitchforks::Template::Inside),
         // Shapes.
         DrawingKind::Rect => shapes::rect(geometry),
         DrawingKind::Triangle => shapes::triangle(geometry),

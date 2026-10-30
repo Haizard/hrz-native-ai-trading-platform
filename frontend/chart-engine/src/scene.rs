@@ -2003,7 +2003,8 @@ pub fn build(request: &Request) -> Scene {
     // and the whole price range -- a trendline drawn last week is still a
     // trendline when the window has moved past it, so the anchors are mapped
     // absolutely and the canvas clips, exactly as a zone's band is.
-    let (drawings, unplaceable) = drawing_parts(&request.drawings, &frame, plot, &snap_points);
+    let (drawings, unplaceable) =
+        drawing_parts(&request.drawings, &frame, plot, &snap_points, &request.candles);
     scene.drawings = drawings;
 
     // The answer's levels, between the derived geometry and the user's own
@@ -3449,17 +3450,22 @@ fn region_label(name: &str, mitigated: f64) -> String {
 /// the arrangement a refused concept document already gets, and for the same
 /// reason: half a shape is worse than none, and a silent refusal teaches whoever
 /// drew it nothing.
+///
+/// `candles` is the **real** series, for the same reason [`region_rects`] takes
+/// it: a regression line or a volume profile is a fact about prices that traded,
+/// and must not move because the chart switched to Heikin-Ashi.
 fn drawing_parts(
     drawings: &[Drawing],
     frame: &Frame,
     plot: Plot,
     snap_points: &[SnapPoint],
+    candles: &[Candle],
 ) -> (Vec<SceneDrawing>, Vec<String>) {
     let mut placed = Vec::with_capacity(drawings.len());
     let mut refused = Vec::new();
 
     for drawing in drawings {
-        match place(drawing, frame, plot, snap_points) {
+        match place(drawing, frame, plot, snap_points, candles) {
             Ok(scene_drawing) => placed.push(scene_drawing),
             Err(reason) => refused.push(format!("`{}`: {reason}", drawing.id)),
         }
@@ -3473,6 +3479,7 @@ fn place(
     frame: &Frame,
     plot: Plot,
     snap_points: &[SnapPoint],
+    candles: &[Candle],
 ) -> Result<SceneDrawing, String> {
     drawing.validate_anchors()?;
     // The id is required *here* rather than in `validate_anchors`, because this
@@ -3516,6 +3523,7 @@ fn place(
             frame,
             points: &resolved,
             options: &drawing.options,
+            candles,
         },
     );
     Ok(SceneDrawing {

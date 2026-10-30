@@ -144,8 +144,55 @@ pub enum DrawingKind {
     Ray,
     /// The line through both anchors, extended in **both** directions.
     Extended,
+    /// A horizontal level that runs from its anchor to the plot's right edge.
+    ///
+    /// The half of [`DrawingKind::Hline`] that a trader marks a breakout with:
+    /// the price is the claim, and the part of the chart before the click is
+    /// evidence against it rather than part of the level.
+    Hray,
+    /// One anchor, and the two full-plot lines that cross through it.
+    Crossline,
+    /// The segment between two anchors, labelled with both prices and the bars
+    /// between them.
+    Infoline,
+    /// The least-squares line through the closes of the bars between two
+    /// anchors, with its Pearson's *R* written beside it.
+    Regression,
+    /// The segment between two anchors, with an arrowhead at the second.
+    ///
+    /// The head is a fixed number of **pixels**, not a fraction of the span:
+    /// TradingView's arrow keeps a constant head as you stretch it, because the
+    /// mark is a pointer at something rather than a shape that grows.
+    Arrow,
+    /// A fixed-size up arrow at one point.
+    ArrowMarkUp,
+    /// A fixed-size down arrow at one point.
+    ArrowMarkDown,
     /// The rectangle the two anchors span.
     Rect,
+    /// Two parallel lines whose edges start and end independently.
+    ///
+    /// Four points, not two: the whole point of the disjoint channel is that a
+    /// channel drawn over two impulses that did not begin together can still be
+    /// one band.
+    DisjointChannel,
+    /// An angled line with a horizontal boundary, and the region between.
+    FlatTopBottom,
+    /// Andrews' median line through three pivots, with its two parallel tines.
+    Pitchfork,
+    /// The fork whose handle is shifted halfway to the second pivot in price.
+    ///
+    /// TradingView's own two Schiff pages swap this pair against the classic
+    /// construction; we ship the classic one, matching the platform's tooltip, and
+    /// the discrepancy is recorded in `reports/drawing-tools/ledger/` rather than
+    /// left for the next reader to rediscover.
+    SchiffPitchfork,
+    /// The fork whose handle is shifted halfway to the second pivot, in price and
+    /// in time.
+    ModifiedSchiffPitchfork,
+    /// The fork shrunk toward its handle: tines through the midpoints of
+    /// handle-to-second and handle-to-third, so its median is the plain fork's line.
+    InsidePitchfork,
     /// Fibonacci retracement levels between the two anchors.
     Fib,
     /// Fibonacci **extension** levels projected beyond the swing: the 0 and 100
@@ -155,8 +202,8 @@ pub enum DrawingKind {
     /// The price/time delta between the two anchors: a box, dashed guides to
     /// both axes, and the delta as a label.
     Measure,
-    /// The line through the first two anchors, offset by the third: a parallel
-    /// channel. Three anchors.
+    /// The line through the first two anchors and its parallel through the third:
+    /// a band, both edges spanning the window. Three anchors.
     Channel,
     /// A straight line through the first anchor at an arbitrary angle; the
     /// second anchor sets the slope and the line extends from the first anchor
@@ -182,25 +229,50 @@ pub enum DrawingKind {
 }
 
 impl DrawingKind {
-    /// Every kind, for a client that wants to build a toolbar.
-    pub const ALL: [Self; 17] = [
+    /// Every kind, in toolbar order: group by group, the way the references group
+    /// them.
+    ///
+    /// The order is the flyout order, so a kind listed here in the wrong block is
+    /// a tool that sits in the wrong menu -- and a kind missing is one the toolbar
+    /// cannot offer at all.
+    pub const ALL: [Self; 30] = [
+        // Lines.
         Self::Trendline,
-        Self::Hline,
-        Self::Vline,
         Self::Ray,
         Self::Extended,
+        Self::Hline,
+        Self::Hray,
+        Self::Vline,
+        Self::Crossline,
+        Self::Infoline,
+        Self::Regression,
+        Self::Arrow,
+        Self::ArrowMarkUp,
+        Self::ArrowMarkDown,
+        Self::Angle,
+        // Channels.
+        Self::Channel,
+        Self::DisjointChannel,
+        Self::FlatTopBottom,
+        // Pitchforks.
+        Self::Pitchfork,
+        Self::SchiffPitchfork,
+        Self::ModifiedSchiffPitchfork,
+        Self::InsidePitchfork,
+        // Shapes.
         Self::Rect,
+        Self::Triangle,
+        Self::Circle,
+        Self::Arc,
+        // Fibonacci.
         Self::Fib,
         Self::FibExtension,
+        // Measurement.
         Self::Measure,
-        Self::Channel,
-        Self::Angle,
-        Self::Arc,
-        Self::Circle,
-        Self::Triangle,
+        Self::DatepriceRange,
+        // Positions.
         Self::PositionLong,
         Self::PositionShort,
-        Self::DatepriceRange,
     ];
 
     /// The wire name, which is also the storage's value and the shell's colour
@@ -213,7 +285,20 @@ impl DrawingKind {
             Self::Vline => "vline",
             Self::Ray => "ray",
             Self::Extended => "extended",
+            Self::Hray => "hray",
+            Self::Crossline => "crossline",
+            Self::Infoline => "infoline",
+            Self::Regression => "regression",
+            Self::Arrow => "arrow",
+            Self::ArrowMarkUp => "arrow_mark_up",
+            Self::ArrowMarkDown => "arrow_mark_down",
             Self::Rect => "rect",
+            Self::DisjointChannel => "disjoint_channel",
+            Self::FlatTopBottom => "flat_top_bottom",
+            Self::Pitchfork => "pitchfork",
+            Self::SchiffPitchfork => "schiff_pitchfork",
+            Self::ModifiedSchiffPitchfork => "modified_schiff_pitchfork",
+            Self::InsidePitchfork => "inside_pitchfork",
                         Self::Fib => "fib",
             Self::FibExtension => "fib_extension",
             Self::Measure => "measure",
@@ -239,11 +324,23 @@ impl DrawingKind {
         // Every kind here takes a fixed count; the open-ended ones arrive with
         // the tools that need them (`Many { min: 2 }` for a polyline, a brush).
         match self {
-            Self::Hline | Self::Vline => AnchorCount::fixed(1),
-            Self::Channel | Self::Arc | Self::Triangle => AnchorCount::fixed(3),
+            Self::Hline | Self::Vline | Self::Hray | Self::Crossline => AnchorCount::fixed(1),
+            Self::ArrowMarkUp | Self::ArrowMarkDown => AnchorCount::fixed(1),
+            Self::Channel
+            | Self::Arc
+            | Self::Triangle
+            | Self::FlatTopBottom
+            | Self::Pitchfork
+            | Self::SchiffPitchfork
+            | Self::ModifiedSchiffPitchfork
+            | Self::InsidePitchfork => AnchorCount::fixed(3),
+            Self::DisjointChannel => AnchorCount::fixed(4),
             Self::Trendline
             | Self::Ray
             | Self::Extended
+            | Self::Infoline
+            | Self::Regression
+            | Self::Arrow
             | Self::Rect
             | Self::Fib
             | Self::FibExtension
@@ -267,6 +364,10 @@ impl DrawingKind {
 pub enum ToolGroup {
     /// Lines: trendlines, rays, horizontals, verticals.
     Lines,
+    /// Channels: two parallel edges and the band between them.
+    Channels,
+    /// Pitchforks: the median-line forks, all four templates.
+    Pitchforks,
     /// Shapes: rectangles and anything with an area.
     Shapes,
     /// Measurement: Fibonacci and the price/time ruler.
@@ -277,8 +378,10 @@ pub enum ToolGroup {
 
 impl ToolGroup {
     /// Every group, in toolbar order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::Lines,
+        Self::Channels,
+        Self::Pitchforks,
         Self::Shapes,
         Self::Measurement,
         Self::Positions,
@@ -289,6 +392,8 @@ impl ToolGroup {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Lines => "lines",
+            Self::Channels => "channels",
+            Self::Pitchforks => "pitchforks",
             Self::Shapes => "shapes",
             Self::Measurement => "measurement",
             Self::Positions => "positions",
@@ -300,6 +405,8 @@ impl ToolGroup {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Lines => "Lines",
+            Self::Channels => "Channels",
+            Self::Pitchforks => "Forks",
             Self::Shapes => "Shapes",
             Self::Measurement => "Measure",
             Self::Positions => "Positions",
@@ -340,7 +447,7 @@ pub struct ToolSpec {
 /// The cursor is deliberately absent: it is not an object the engine can draw,
 /// it is the shell's "select and pan" state, and a registry of *objects*
 /// pretending to contain it would be one more thing to filter out.
-pub const REGISTRY: [ToolSpec; 17] = [
+pub const REGISTRY: [ToolSpec; 30] = [
     ToolSpec {
         kind: DrawingKind::Trendline,
         label: "Trend",
@@ -374,9 +481,65 @@ pub const REGISTRY: [ToolSpec; 17] = [
         anchors: AnchorCount::fixed(1),
     },
     ToolSpec {
+        kind: DrawingKind::Hray,
+        label: "H-ray",
+        title: "Click a price; the level runs right from there",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: AnchorCount::fixed(1),
+    },
+    ToolSpec {
         kind: DrawingKind::Vline,
         label: "V-line",
         title: "Click a time to mark it down the chart",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: AnchorCount::fixed(1),
+    },
+    ToolSpec {
+        kind: DrawingKind::Crossline,
+        label: "Cross",
+        title: "Click once; a price line and a time line cross there",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: AnchorCount::fixed(1),
+    },
+    ToolSpec {
+        kind: DrawingKind::Infoline,
+        label: "Info line",
+        title: "Drag between two points; both prices and the bars between them are written",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::Regression,
+        label: "Regression",
+        title: "Drag over a range; the least-squares line through its closes",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::Arrow,
+        label: "Arrow",
+        title: "Drag from one point to another; the head lands on the second",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::ArrowMarkUp,
+        label: "Up mark",
+        title: "Click to stamp an up arrow at that bar",
+        group: ToolGroup::Lines,
+        group_label: "Lines",
+        anchors: AnchorCount::fixed(1),
+    },
+    ToolSpec {
+        kind: DrawingKind::ArrowMarkDown,
+        label: "Down mark",
+        title: "Click to stamp a down arrow at that bar",
         group: ToolGroup::Lines,
         group_label: "Lines",
         anchors: AnchorCount::fixed(1),
@@ -414,20 +577,70 @@ pub const REGISTRY: [ToolSpec; 17] = [
         anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
-        kind: DrawingKind::Channel,
-        label: "Channel",
-        title: "Drag the line, then click where the parallel runs",
-        group: ToolGroup::Lines,
-        group_label: "Lines",
-        anchors: AnchorCount::fixed(3),
-    },
-    ToolSpec {
         kind: DrawingKind::Angle,
         label: "Angle",
         title: "Click the origin, then drag to set the slope",
         group: ToolGroup::Lines,
         group_label: "Lines",
         anchors: AnchorCount::fixed(2),
+    },
+    // Channels.
+    ToolSpec {
+        kind: DrawingKind::Channel,
+        label: "Channel",
+        title: "Drag the line, then click where the parallel runs",
+        group: ToolGroup::Channels,
+        group_label: "Channels",
+        anchors: AnchorCount::fixed(3),
+    },
+    ToolSpec {
+        kind: DrawingKind::DisjointChannel,
+        label: "Disjoint",
+        title: "Four clicks: two parallel edges that start and end apart",
+        group: ToolGroup::Channels,
+        group_label: "Channels",
+        anchors: AnchorCount::fixed(4),
+    },
+    ToolSpec {
+        kind: DrawingKind::FlatTopBottom,
+        label: "Flat band",
+        title: "Drag the angled line, then click the horizontal boundary",
+        group: ToolGroup::Channels,
+        group_label: "Channels",
+        anchors: AnchorCount::fixed(3),
+    },
+    // Pitchforks.
+    ToolSpec {
+        kind: DrawingKind::Pitchfork,
+        label: "Fork",
+        title: "Three pivots; the median runs through the midpoint of the last two",
+        group: ToolGroup::Pitchforks,
+        group_label: "Forks",
+        anchors: AnchorCount::fixed(3),
+    },
+    ToolSpec {
+        kind: DrawingKind::SchiffPitchfork,
+        label: "Schiff",
+        title: "The fork with its handle shifted halfway to the second pivot in price",
+        group: ToolGroup::Pitchforks,
+        group_label: "Forks",
+        anchors: AnchorCount::fixed(3),
+    },
+    ToolSpec {
+        kind: DrawingKind::ModifiedSchiffPitchfork,
+        label: "Mod Schiff",
+        title: "The fork with its handle shifted halfway to the second pivot in price and time",
+        group: ToolGroup::Pitchforks,
+        group_label: "Forks",
+        anchors: AnchorCount::fixed(3),
+    },
+    ToolSpec {
+        kind: DrawingKind::InsidePitchfork,
+        label: "Inside fork",
+        title: "The fork shrunk toward its handle: tines through the midpoints of its own arms",
+        group: ToolGroup::Pitchforks,
+        group_label: "Forks",
+        anchors: AnchorCount::fixed(3),
     },
     ToolSpec {
         kind: DrawingKind::Arc,

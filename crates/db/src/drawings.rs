@@ -70,17 +70,35 @@ use crate::repositories::dt_to_ns;
 /// `kline` is listed but is the parity oddball: it is a bar chart per day and
 /// draws with the candle geometry, not with anchors, so it lives in the
 /// registry while storage keeps its own vocabulary.
-pub const KINDS: [&str; 17] = [
+///
+/// The 2026-10 drawing-parity pass adds the rest of the lines group (a level that
+/// runs one way, a cross, an info line, a regression fit, arrows) and the two
+/// families that draw a *band* rather than a line: the disjoint and flat-top/bottom
+/// channels, and the four pitchfork templates.
+pub const KINDS: [&str; 30] = [
     "trendline",
     "hline",
     "vline",
     "ray",
     "extended",
+    "hray",
+    "crossline",
+    "infoline",
+    "regression",
+    "arrow",
+    "arrow_mark_up",
+    "arrow_mark_down",
     "rect",
     "fib",
     "fib_extension",
     "measure",
     "channel",
+    "disjoint_channel",
+    "flat_top_bottom",
+    "pitchfork",
+    "schiff_pitchfork",
+    "modified_schiff_pitchfork",
+    "inside_pitchfork",
     "angle",
     "arc",
     "circle",

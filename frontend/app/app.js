@@ -631,6 +631,31 @@ const CHART_PALETTE_DARK = {
   position_long: "#2ebd85",
   position_short: "#f6465d",
   dateprice_range: "#4a9eff",
+  // The lines group's parity tools. A horizontal ray is the hline's amber
+  // because it *is* a level; the cross is the vline's pale grey because it is
+  // a reference rather than a claim; the info line and the arrow take the
+  // measurement blue; a regression is the fitted purple the statistical marks
+  // use; and the two marks are the up/down greens and reds the whole platform
+  // already means, because that is exactly what they say.
+  hray: "#edb541",
+  crossline: "#d6dbe4",
+  infoline: "#4a9eff",
+  regression: "#9564e2",
+  arrow: "#4a9eff",
+  arrow_mark_up: "#2ebd85",
+  arrow_mark_down: "#f6465d",
+  // The band families. Three channels and four forks, and each family is ONE
+  // hue: the members differ by *construction* -- where the edges stop, which
+  // pivot the median is drawn between -- and a trader reading the chart tells
+  // them apart by the shape. Four near-identical forks in four colours would be
+  // four colours saying nothing. The forks take cyan because the blue, the
+  // greens and the amber are all already spoken for by a meaning.
+  disjoint_channel: "#4caf8e",
+  flat_top_bottom: "#4caf8e",
+  pitchfork: "#22d3ee",
+  schiff_pitchfork: "#22d3ee",
+  modified_schiff_pitchfork: "#22d3ee",
+  inside_pitchfork: "#22d3ee",
   // The footprint ladder. Buy-aggressed volume is the ask side winning and
   // sell-aggressed is the bid side winning, which is the same convention the
   // level colours above already follow -- a level drawn green means the same
@@ -693,6 +718,20 @@ const CHART_PALETTE_LIGHT = {
   position_long: "#067a4d",
   position_short: "#d92d3f",
   dateprice_range: "#2563eb",
+  hray: "#b45309",
+  crossline: "#1f2937",
+  infoline: "#2563eb",
+  regression: "#7c3aed",
+  arrow: "#2563eb",
+  arrow_mark_up: "#067a4d",
+  arrow_mark_down: "#d92d3f",
+  // The two band families, one hue each -- see the dark column for why.
+  disjoint_channel: "#0f7b6c",
+  flat_top_bottom: "#0f7b6c",
+  pitchfork: "#0e7490",
+  schiff_pitchfork: "#0e7490",
+  modified_schiff_pitchfork: "#0e7490",
+  inside_pitchfork: "#0e7490",
   footBuy: "#7c3aed",
   footSell: "#2563eb",
   footValue: "#2563eb",
