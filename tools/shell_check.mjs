@@ -1674,28 +1674,76 @@ check(
   painted.ops.length > 0,
   `${painted.ops.length} canvas calls`
 );
+// The toolbar's expected content is the engine's registry, read out of the page
+// the same way the painter reads it. A literal list of tool names here is a
+// second vocabulary: it goes stale the moment a kind lands, and a stale list
+// tests nothing except that nobody changed anything.
+const registry = () => (window.HRZApp && window.HRZApp.toolRegistry()) || [];
+const registryKinds = () => registry().map((t) => t.kind);
+const registryGroups = () => {
+  const seen = [];
+  for (const t of registry()) if (!seen.includes(t.group)) seen.push(t.group);
+  return seen;
+};
+
 check(
-  "the drawing toolbar is on the page",
-  paneNode().querySelectorAll(".tools button[data-tool]").length === 18,
-  `${paneNode().querySelectorAll(".tools button[data-tool]").length} tools`
+  "the engine handed the shell a tool registry",
+  registry().length > 0 &&
+    registry().every(
+      (t) =>
+        typeof t.kind === "string" &&
+        typeof t.label === "string" &&
+        typeof t.title === "string" &&
+        typeof t.group === "string" &&
+        typeof t.group_label === "string" &&
+        (typeof t.anchors === "number" || (t.anchors && typeof t.anchors === "object"))
+    ),
+  `${registry().length} tools`
 );
 check(
-  "every tool the engine's registry declares has a button",
+  "the drawing toolbar is on the page",
+  paneNode().querySelectorAll(".tools button[data-tool]").length === registry().length + 1,
+  `${paneNode().querySelectorAll(".tools button[data-tool]").length} tools for ${registry().length} registry rows (+ cursor)`
+);
+check(
+  "every tool the engine's registry declares has a button, and no button it does not",
   (() => {
     const toolbar = paneNode().querySelector(".tools");
     const names = [...toolbar.querySelectorAll("button[data-tool]")].map((b) => b.dataset.tool);
-    const expected = [
-      "cursor", "trendline", "hline", "vline", "ray", "extended", "rect", "fib", "fib_extension", "measure",
-      "channel", "angle", "arc", "circle", "triangle", "position_long", "position_short",
-      "dateprice_range",
-    ];
-    return expected.every((name) => names.includes(name)) && `${names.join(",")}`;
+    const expected = ["cursor", ...registryKinds()];
+    const missing = expected.filter((name) => !names.includes(name));
+    const extra = names.filter((name) => !expected.includes(name));
+    if (missing.length || extra.length) return false;
+    return true;
+  })(),
+  (() => {
+    const toolbar = paneNode().querySelector(".tools");
+    const names = [...toolbar.querySelectorAll("button[data-tool]")].map((b) => b.dataset.tool);
+    const expected = ["cursor", ...registryKinds()];
+    return `missing ${expected.filter((n) => !names.includes(n)).join(",")} extra ${names.filter((n) => !expected.includes(n)).join(",")}`;
   })()
 );
 check(
   "the tools are grouped into the registry's flyouts",
-  paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length === 17,
+  paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length ===
+    registry().length,
   `${paneNode().querySelectorAll(".tools .toolGroup .toolFlyout button[data-tool]").length} flyout tools`
+);
+check(
+  "every registry tool is stroked in both themes",
+  (() => {
+    const dark = window.HRZApp.chartPaletteFor("dark");
+    const light = window.HRZApp.chartPaletteFor("light");
+    return registryKinds().every((kind) => dark[kind] && light[kind]);
+  })(),
+  (() => {
+    const dark = window.HRZApp.chartPaletteFor("dark");
+    const light = window.HRZApp.chartPaletteFor("light");
+    return registryKinds()
+      .filter((kind) => !dark[kind] || !light[kind])
+      .map((kind) => `${kind}:${dark[kind] ? "" : "no-dark"}${light[kind] ? "" : " no-light"}`)
+      .join(", ") || "all keyed";
+  })()
 );
 check(
   "the magnet, AI layer, undo and redo controls are on the toolbar",
@@ -2239,7 +2287,10 @@ check(
 );
 check(
   "the rail is one button per tool group, each named but none lettered",
-  document.querySelectorAll("#globalTools .toolGroupTrigger").length === 4 &&
+  document.querySelectorAll("#globalTools .toolGroupTrigger").length === registryGroups().length &&
+    [...document.querySelectorAll("#globalTools .toolGroupTrigger")].map((b) => b.dataset.group).join(
+      ","
+    ) === registryGroups().join(",") &&
     [...document.querySelectorAll("#globalTools .toolGroupTrigger")].every(
       (b) => b.getAttribute("aria-label") && b.textContent.trim() === ""
     ) &&

@@ -17848,6 +17848,11 @@ window.HRZApp = {
   },
 
   chartPalette: () => chartPalette(),
+  // Both palettes, for whoever checks that a registry row is styled in each. The
+  // engine's registry grows from a page, so the check has to read the palettes
+  // the same way the painter does rather than parse the file.
+  chartPaletteFor: (theme) => chartPalette(theme),
+  toolRegistry: () => toolRegistry,
   chartSettings: () => chartSettings(),
   setChartSetting,
   openChartSettings,

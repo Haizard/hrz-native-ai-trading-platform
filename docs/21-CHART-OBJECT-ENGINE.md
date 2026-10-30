@@ -44,7 +44,23 @@ object itself. Consequences:
 
 `tool_registry() -> i32` serialises `REGISTRY` into the scene result buffer
 (read via `scene_ptr`/`scene_len`). The shell calls it once at engine load and
-rebuilds every pane's toolbar. `wasm_abi_check.mjs` covers it.
+rebuilds every pane's toolbar.
+
+### The harnesses read the registry, not a list of names
+
+`wasm_abi_check.mjs` now decodes `tool_registry()` itself and asserts its shape
+— non-empty, every row carrying `kind`/`label`/`title`/`group`/`group_label`/
+`anchors`, kinds unique and snake_case (the wire names storage stores), one
+`group_label` per group, every tool declaring its point count. `shell_check.mjs`
+counts the toolbar's buttons from the same list rather than from four literals,
+and checks that every registry kind is stroked in both theme palettes.
+
+That mattered while the vocabulary was closed, and decides the growth plan: with
+literals, each new tool meant editing the harness before the harness could tell
+whether the tool was wired. Now a registry row that renders nothing — no button,
+no palette key, an unnamed group — fails a check on the commit that adds it.
+The registry is grouped by first appearance in the row order, not by contiguous
+runs, so `measurement`'s rows need not be adjacent to share a flyout.
 
 ### Geometry & rendering — `chart-engine::scene`
 

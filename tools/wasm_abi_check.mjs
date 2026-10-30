@@ -67,6 +67,24 @@ function build(request) {
   return JSON.parse(new TextDecoder().decode(sceneBytes));
 }
 
+/// The tool registry, read the way the shell reads it (`app.js:474`).
+///
+/// This is the export every consumer of the drawing vocabulary goes through --
+/// the toolbar's buttons, the rail's flyouts, the shell's anchor count, the AI's
+/// list -- so its row shape is a contract in three languages, and a renamed key
+/// is a toolbar that builds with `undefined` labels rather than an error.
+function readRegistry() {
+  const status = wasm.tool_registry();
+  if (status !== 0) {
+    const start = wasm.last_error_ptr();
+    const length = wasm.last_error_len();
+    throw new Error(new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, start, length)) || "refused");
+  }
+  const start = wasm.scene_ptr();
+  const length = wasm.scene_len();
+  return JSON.parse(new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, start, length).slice()));
+}
+
 /// A rising series with a real range, so the profile has something to bucket.
 function candles(count) {
   return Array.from({ length: count }, (_, i) => {
@@ -654,6 +672,68 @@ for (const anchor of [1e308, 1e999, -1e308]) {
     refused ?? `price axis ${usable ? "ok" : "collapsed"}`
   );
 }
+
+// --- the tool registry ------------------------------------------------------
+//
+// docs/21 has claimed since phase 1 that this harness covers `tool_registry()`,
+// and until now it did not. The registry is the drawing vocabulary in three
+// languages -- Rust's enum, the toolbar's buttons, storage's kind list -- so a
+// renamed key is a toolbar that builds `undefined` labels, which is exactly the
+// class of failure only the ABI can see.
+
+const registry = readRegistry();
+check(
+  "the registry arrives as a non-empty list",
+  Array.isArray(registry) && registry.length > 0,
+  `${registry.length} rows`
+);
+check(
+  "every row carries the words the shell renders",
+  registry.every((row) =>
+    ["kind", "label", "title", "group", "group_label", "anchors"].every(
+      (key) => row[key] !== undefined && row[key] !== null
+    )
+  ),
+  JSON.stringify(registry[0])
+);
+check(
+  "kinds are unique and are the snake_case wire names storage stores",
+  new Set(registry.map((row) => row.kind)).size === registry.length &&
+    registry.every((row) => /^[a-z][a-z0-9_]*$/.test(row.kind)),
+  registry.map((row) => row.kind).join(",")
+);
+// The shell groups by first appearance, not by a contiguous run: `buildToolbar
+// FromRegistry` finds each row's group by name and pushes a new one only when
+// the name is new, so a registry that interleaves groups still renders one
+// flyout each. What the flyout cannot survive is two rows of the same group
+// calling it two different things -- that is the row the trigger shows.
+const groupNames = [...new Set(registry.map((row) => row.group))];
+check(
+  "every group names itself the same way in all of its rows",
+  groupNames.every((group) => {
+    const labels = new Set(
+      registry.filter((row) => row.group === group).map((row) => row.group_label)
+    );
+    return labels.size === 1;
+  }),
+  groupNames
+    .map((group) => `${group}=${[...new Set(registry.filter((row) => row.group === group).map((row) => row.group_label))].join("/")}`)
+    .join(" ")
+);
+check(
+  "the groups the toolbar will open are a list without repeats",
+  groupNames.length > 0 && new Set(groupNames).size === groupNames.length,
+  groupNames.join(",")
+);
+check(
+  "every tool declares how many points it takes",
+  registry.every((row) => {
+    const anchors = row.anchors;
+    if (typeof anchors === "number") return anchors >= 1 && anchors <= 3;
+    return Boolean(anchors && typeof anchors === "object");
+  }),
+  registry.map((row) => `${row.kind}:${JSON.stringify(row.anchors)}`).join(" ")
+);
 
 // --- drawings ---------------------------------------------------------------
 //
