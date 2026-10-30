@@ -209,7 +209,10 @@ fn zone_touch(
         .to_string();
     match drawing.kind.as_str() {
         "hline" => {
-            let price = drawing.a1_price;
+            let Some(first) = drawing.points.first() else {
+                return None;
+            };
+            let price = first.price;
             if candle.low <= price && candle.high >= price {
                 let direction = if previous_close < price && candle.close >= price {
                     "crossed up through"
@@ -226,11 +229,18 @@ fn zone_touch(
             }
         }
         "rect" | "zone" => {
-            let other = drawing.a2_price?;
-            let (low, high) = if drawing.a1_price <= other {
-                (drawing.a1_price, other)
+            // A zone's two prices are its first two points, in whichever order
+            // they were drawn — the low/high sort below is what makes the
+            // difference between a user's two click directions disappear.
+            let (Some(first), Some(second)) = (drawing.points.first(), drawing.points.get(1))
+            else {
+                return None;
+            };
+            let other = second.price;
+            let (low, high) = if first.price <= other {
+                (first.price, other)
             } else {
-                (other, drawing.a1_price)
+                (other, first.price)
             };
             if candle.close >= low && candle.close <= high {
                 Some(format!(
@@ -381,22 +391,17 @@ mod tests {
         }
     }
 
-    fn drawing(
-        kind: &str,
-        p1: f64,
-        p2: Option<f64>,
-        label: Option<&str>,
-    ) -> db::drawings::DrawingRow {
+    fn drawing(kind: &str, p1: f64, p2: Option<f64>, label: Option<&str>) -> db::drawings::DrawingRow {
+        let mut points = vec![db::drawings::StoredPoint { time: 0.0, price: p1 }];
+        if let Some(price) = p2 {
+            points.push(db::drawings::StoredPoint { time: 1.0, price });
+        }
         db::drawings::DrawingRow {
             id: uuid::Uuid::new_v4(),
             symbol: "BTCUSDT".to_string(),
             kind: kind.to_string(),
-            a1_time_ms: 0.0,
-            a1_price: p1,
-            a2_time_ms: p2.map(|_| 1.0),
-            a2_price: p2,
-            a3_time_ms: None,
-            a3_price: None,
+            points,
+            options: db::drawings::no_options(),
             label: label.map(str::to_string),
             created_by: Some("ai".to_string()),
             agent: None,

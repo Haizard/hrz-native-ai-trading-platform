@@ -3314,9 +3314,9 @@ function createChartPane(root, hooks = {}) {
       last_price: livePrice(),
       footprint: footprint ? footprint.candles : [],
       footprint_trades: footprint ? footprint.trades : 0,
-      // The user's drawings, with the one being placed appended. An anchor may be
+      // The user's drawings, with the one being placed appended. A point may be
       // a `fraction` here -- that is how placing and dragging work -- and the scene
-      // answers with every anchor absolute, which is the only form the API accepts.
+      // answers with every point absolute, which is the only form the API accepts.
       //
       // `selected` is *derived* from `selectedDrawing` rather than stored on each
       // drawing, the same arrangement the toolbar's `aria-pressed` uses: one
@@ -3773,7 +3773,7 @@ function createChartPane(root, hooks = {}) {
       // follows the grab rather than a separate click, because on a chart the two
       // are one intent and asking for both is one gesture too many.
       select(hit.drawing);
-      // The engine's absolute anchors at grab time. The drag itself writes
+      // The engine's absolute points at grab time. The drag itself writes
       // fractions into the list, so by the time the pointer comes up the "before"
       // state exists only here -- capturing it in `finishMoving` would capture
       // fractions and an undo would PUT them, which the storage rightly refuses.
@@ -3784,17 +3784,11 @@ function createChartPane(root, hooks = {}) {
         startX: event.clientX,
         startY: event.clientY,
         // Only a body grab needs these. A handle drag writes the pointer's own
-        // position into one anchor, so where the anchors started is not a question
-        // it asks; a body drag moves the whole shape, which means it needs the
+        // position into one point, so where the points started is not a question
+        // it asks; a body drag moves the whole shape, which means it needs every
         // starting point in a unit it can add to.
         base: hit.anchor === null ? fractionsOf(hit.drawing) : null,
-        movedFrom: grabbed
-          ? {
-              a1: { ...grabbed.a1 },
-              a2: grabbed.a2 ? { ...grabbed.a2 } : null,
-              a3: grabbed.a3 ? { ...grabbed.a3 } : null,
-            }
-          : null,
+        movedFrom: grabbed ? { points: grabbed.points.map(absoluteOf) } : null,
       };
       // `moving`, not `dragging`: the cursor should say which of the two drags
       // this is, and only one of them moves the view.
@@ -3891,16 +3885,14 @@ function createChartPane(root, hooks = {}) {
     // is generous because the glyphs are 3-5px.
     if (!drag) updateEvidenceTip(event);
     // A click-click-click placement is alive *between* clicks too: with no
-    // button held there is no `drag`, but the pending anchor still has to
+    // button held there is no `drag`, but the live point still has to
     // follow the pointer or the user draws blind -- the shape would sit frozen
     // at the last click until the next one. Hover tracking is the difference
     // between a placement the user can aim and one they cannot.
-    if (!drag && placing && placing.pending) {
+    if (!drag && placing && placing.clicks < placing.needed) {
       const at = plotFraction(event);
       if (!at) return;
-      const anchor = { unit: "fraction", x: at.x, y: at.y };
-      if (placing.pending === 2) placing.a2 = anchor;
-      else if (placing.pending === 3) placing.a3 = anchor;
+      placing.points[placing.clicks] = fractionPoint(at);
       scheduleRender();
       return;
     }
@@ -3980,13 +3972,11 @@ function createChartPane(root, hooks = {}) {
     if (drag.mode === "place") {
       const at = plotFraction(event);
       if (!at) return;
-      // Mid-placement the *pending* anchor follows the pointer and the ones
-      // already fixed stay where they were put. Which anchor is pending is a
-      // field on the placement (see `startPlacing`), not something inferred.
-      if (placing && placing.pending === 2) {
-        placing.a2 = { unit: "fraction", x: at.x, y: at.y };
-      } else if (placing && placing.pending === 3) {
-        placing.a3 = { unit: "fraction", x: at.x, y: at.y };
+      // Mid-placement the *live* point follows the pointer and the ones already
+      // fixed stay where they were put. Which point is live is the count of the
+      // fixed ones, so it cannot name a slot the list does not have.
+      if (placing && placing.clicks < placing.needed) {
+        placing.points[placing.clicks] = fractionPoint(at);
       }
       scheduleRender();
       return;
@@ -3997,19 +3987,27 @@ function createChartPane(root, hooks = {}) {
     if (drag.target.anchor !== null) {
       const at = plotFraction(event);
       if (!at) return;
-      // A handle: that one anchor follows the pointer and the other stays put.
-      // `0` is the first anchor and `1` the second, which is the engine's own
-      // numbering -- it emits the handles, so it decides what they are called.
+      // A handle: that one point follows the pointer and the others stay put.
+      // The index is the engine's own -- it emits the handles, one per point, in
+      // placement order -- so a channel's third handle moves its width and not
+      // its line.
+      //
+      // The whole list is rewritten in fractions, not just the grabbed one: a
+      // stored row is absolute through and through, and the engine reads one
+      // unit per drawing. Replacing one element of an absolute list with a
+      // screen position would be a shape that vanishes mid-drag with a note
+      // about mixing units, which is the mistake the list length already makes
+      // impossible to make by accident.
       const drawing = drawings.find((d) => d.id === drag.target.drawing);
-      if (!drawing) return;
-      const anchor = { unit: "fraction", x: at.x, y: at.y };
-      if (drag.target.anchor === 1) drawing.a2 = anchor;
-      else drawing.a1 = anchor;
+      const fractions = fractionsOf(drag.target.drawing);
+      if (!drawing || !fractions) return;
+      fractions[drag.target.anchor] = at;
+      drawing.points = fractions.map(fractionPoint);
       scheduleRender();
       return;
     }
 
-    // The body: the whole drawing moves, so every anchor takes the *same* delta.
+    // The body: the whole drawing moves, so every point takes the *same* delta.
     // Dragging one of them to the pointer instead -- which is what this branch did
     // before it had `drag.base` -- moves an endpoint rather than the shape, and a
     // rectangle dragged by its middle collapses to a corner.
@@ -4022,11 +4020,7 @@ function createChartPane(root, hooks = {}) {
     if (!moving || !drag.base) return;
     const dx = (event.clientX - drag.startX) / scene.plot.w;
     const dy = (event.clientY - drag.startY) / scene.plot.h;
-    moving.a1 = shifted(drag.base.a1, dx, dy);
-    if (drag.base.a2) moving.a2 = shifted(drag.base.a2, dx, dy);
-    // The third anchor moves with the shape or a channel keeps its line while
-    // its width runs away -- which reads as the channel having moved.
-    if (drag.base.a3) moving.a3 = shifted(drag.base.a3, dx, dy);
+    moving.points = drag.base.map((fraction) => shifted(fraction, dx, dy));
     scheduleRender();
   }
 
@@ -4050,11 +4044,10 @@ function createChartPane(root, hooks = {}) {
       if (v && Math.hypot(v.vx, v.vy) > 250) startKinetic(v.vx, v.vy);
     } else if (finished.mode === "place") {
       // A click-click-click tool is only *finished* by its last click. Every
-      // earlier release just fixes the current anchor and leaves `placing`
-      // armed -- the pointer keeps drawing the next anchor, and the placement
+      // earlier release just fixes the current point and leaves `placing`
+      // armed -- the pointer keeps drawing the next point, and the placement
       // survives the capture being released because the next click re-captures.
-      const needed = anchorsNeeded();
-      if (placing && needed > 2 && placing.clicks < needed) return;
+      if (placing && placing.needed > 2 && placing.clicks < placing.needed) return;
       finishPlacing();
     } else if (finished.mode === "move") {
       finishMoving(finished.target.drawing, finished.movedFrom);
@@ -4458,55 +4451,89 @@ function createChartPane(root, hooks = {}) {
   /// moves, and -- the part that is easy to leave out -- `onPointerUp` needs it to
   /// reach `finishPlacing` at all: without it every handler returns early and the
   /// shape appears under the press and then simply sits there, unstored.
-  /// How many anchors the armed tool places: 1 a click, 2 a drag, 3 a
-  /// click-click-click (channel, arc, triangle). Read from the engine's own
-  /// registry, with the same unknown-tool fallback `needs_second_anchor` has:
-  /// demanding more rather than less of an unrecognised kind is the safe way
-  /// to be wrong, and an unknown kind fails the click through to a drag.
+  /// How many points the armed tool places: 1 for a click, 2 for a drag, 3 for
+  /// a click-click-click. Read from the engine's registry rather than restated
+  /// here, because a kind's arity is one declaration (`DrawingKind::anchors`)
+  /// and a second copy in the shell is a count that can disagree with the engine
+  /// that refuses it. An unknown tool asks for two: demanding more rather than
+  /// less is the safe way to be wrong, and an over-eager count still fails the
+  /// click through to a drag.
   function anchorsNeeded() {
-    if (tool === "hline" || tool === "vline") return 1;
-    if (tool === "channel" || tool === "arc" || tool === "triangle") return 3;
-    if (tool === "cursor") return 0;
-    return 2;
+    const entry = toolRegistry && toolRegistry.find((t) => t.kind === tool);
+    if (!entry || !entry.anchors) return tool === "cursor" ? 0 : 2;
+    // `fixed` is a count. `many` has a floor and no ceiling, and the number here
+    // is that floor: drawing until Enter belongs to the tool that needs it, not
+    // to this machine.
+    return entry.anchors.form === "fixed" ? entry.anchors.points : entry.anchors.min;
+  }
+
+  /// A pointer position, as an anchor the engine resolves.
+  function fractionPoint(at) {
+    return { unit: "fraction", x: at.x, y: at.y };
+  }
+
+  /// One placed point, in the form the storage takes it.
+  ///
+  /// Accepts either shape the callers have: a scene point carries both units
+  /// under `absolute`/`fraction`, an anchor already *is* the absolute pair.
+  function absoluteOf(point) {
+    const absolute = point.absolute || point;
+    return { unit: "absolute", time: absolute.time, price: absolute.price };
+  }
+
+  /// A drawing the engine just placed, in the form a list row and the storage
+  /// both read.
+  ///
+  /// The scene reports both units of every point; a row keeps the absolute one,
+  /// because that is what `fromServer` hands back for a stored row and what a
+  /// PUT sends. Carrying the scene's `{absolute, fraction}` pair into the list
+  /// would put it on the wire the first time anybody dragged the shape.
+  function storable(resolved) {
+    return {
+      id: resolved.id,
+      kind: resolved.kind,
+      points: resolved.points.map(absoluteOf),
+      label: resolved.label ?? null,
+    };
   }
 
   function startPlacing(event) {
     const at = plotFraction(event);
     if (!at) return;
-    const needed = anchorsNeeded();
     // A click-click-click tool in flight: this pointerdown is its next click,
-    // which *fixes* the pending anchor and opens the following one. The first
+    // which *fixes* the live point and opens the following one. The first
     // click must have armed `placing` already, so falling through here without
     // it would be a second gesture on a tool that has none.
-    if (placing && placing.clicks < needed) {
+    if (placing && placing.clicks < placing.needed) {
       placing.clicks += 1;
-      // The click that fixes a2 is the one that opens a3. The last click
-      // opens nothing -- its release finishes the shape.
-      placing.pending = placing.clicks < needed ? placing.clicks + 1 : 0;
+      // The click that fixes the second point is the one that opens the third.
+      // The last click opens nothing -- its release finishes the shape.
+      if (placing.clicks < placing.needed) {
+        placing.points[placing.clicks] = fractionPoint(at);
+      }
       drag = { mode: "place", appliedX: event.clientX, appliedY: event.clientY };
       el("chart").setPointerCapture(event.pointerId);
       scheduleRender();
       return;
     }
+    const needed = anchorsNeeded();
+    // The list *is* the shape: `points[clicks]` is the one the pointer is
+    // drawing and the ones before it are fixed, so the length is `clicks + 1`
+    // while a point is live and `clicks` once the last click has fixed it.
+    // Nothing else names the live point, so nothing can name a different one
+    // than the list holds -- which is the failure an explicit `pending` index
+    // invited, where a mis-count would write the newest point into a slot the
+    // kind does not take and the shape would vanish with a note.
+    //
+    // Two separate objects even when they start in the same place: the live
+    // point follows the pointer and the placed one does not, and one shared
+    // object would move both.
     placing = {
       id: `new-${(drawingCounter += 1)}`,
       kind: tool,
-      a1: { unit: "fraction", x: at.x, y: at.y },
-      // Two separate objects even when they start in the same place: the next
-      // anchor follows the pointer and the placed ones do not, and one shared
-      // object would move both.
-      //
-      // `clicks` counts the anchors the user has *fixed*, and `pending` is the
-      // anchor the pointer is drawing: 2 after the first click of any
-      // multi-anchor tool, 3 once a three-anchor tool's second click has fixed
-      // a2, and 0 when nothing is pending. Explicit rather than inferred from
-      // null-vs-undefined because the engine refuses an `a3` on a kind that
-      // does not take one -- a mis-encoded 2-anchor drag would store its
-      // second anchor into `a3` and the shape would vanish with a note.
+      needed,
       clicks: 1,
-      pending: needed >= 2 ? 2 : 0,
-      a2: needed >= 2 ? { unit: "fraction", x: at.x, y: at.y } : null,
-      a3: null,
+      points: needed >= 2 ? [fractionPoint(at), fractionPoint(at)] : [fractionPoint(at)],
       label: null,
     };
     drag = { mode: "place", appliedX: event.clientX, appliedY: event.clientY };
@@ -4520,30 +4547,35 @@ function createChartPane(root, hooks = {}) {
   /// The price a drawing marks, as the engine resolved it.
   ///
   /// Read from the scene's own object rather than computed, for the same reason
-  /// `fractionsOf` reads the resolved anchors: the shell cannot turn a pointer
-  /// position into a price, and an anchor the engine has already resolved
-  /// carries the answer.
+  /// `fractionsOf` reads the resolved points: the shell cannot turn a pointer
+  /// position into a price, and a point the engine has already resolved carries
+  /// the answer.
   ///
-  /// A drawing can legitimately have no price -- as an unresolved anchor, or
-  /// once the whole shape has been dragged off the plot. `null` rather than `0`,
+  /// Which of the points is *the* price is the shape's business, and the rule is
+  /// the one the readout has always used: a two-point shape is named by its
+  /// second point, a one-point shape by its only one.
+  ///
+  /// A drawing can legitimately have no price -- as an unresolved point, or once
+  /// the whole shape has been dragged off the plot. `null` rather than `0`,
   /// because a level at zero on a BTC chart is a fact and "we do not know" is
   /// not.
   function anchorPrice(drawing) {
+    const marked = (points) => (points && points.length > 1 ? points[1] : points && points[0]) || null;
     const resolved = resolvedDrawing(drawing.id);
-    const anchor = resolved ? resolved.a2 || resolved.a1 : null;
-    if (anchor && anchor.unit === "absolute" && Number.isFinite(anchor.price)) {
-      return anchor.price;
+    const scene = marked(resolved && resolved.points);
+    if (scene && Number.isFinite(scene.absolute.price)) {
+      return scene.absolute.price;
     }
-    // Not yet resolved by the engine: fall back to whatever the stored anchor
+    // Not yet resolved by the engine: fall back to whatever the stored point
     // says, which is absolute for anything that has been saved.
-    const stored = drawing.a2 || drawing.a1;
+    const stored = marked(drawing.points);
     if (stored && stored.unit === "absolute" && Number.isFinite(stored.price)) {
       return stored.price;
     }
     return null;
   }
 
-  /// The engine's answer for one drawing: the same shape, anchors absolute.
+  /// The engine's answer for one drawing: the same shape, points absolute.
   ///
   /// This is where a placement or a drag stops being a pointer position. The scene
   /// is the only thing that knows what a fraction resolved to, and it is what gets
@@ -4552,7 +4584,7 @@ function createChartPane(root, hooks = {}) {
     return scene ? scene.drawings.find((d) => d.id === id) : undefined;
   }
 
-  /// Where a drawing's anchors sit in plot fractions, as the engine reported them.
+  /// Where a drawing's points sit in plot fractions, as the engine reported them.
   ///
   /// Read from the scene rather than computed, and that is the whole point: the
   /// shell has no way to turn a price into a fraction, so it asks for the answer
@@ -4560,11 +4592,7 @@ function createChartPane(root, hooks = {}) {
   function fractionsOf(id) {
     const drawing = resolvedDrawing(id);
     if (!drawing) return null;
-    return {
-      a1: drawing.a1_fraction,
-      a2: drawing.a2_fraction ?? null,
-      a3: drawing.a3_fraction ?? null,
-    };
+    return drawing.points.map((point) => point.fraction);
   }
 
   /// A plot fraction moved by a fraction of the plot.
@@ -4621,10 +4649,11 @@ function createChartPane(root, hooks = {}) {
     // drawing is found by what it *is*, not by which id it carries today.
     // Errors surface here rather than vanishing into a floating promise, the
     // way `void createDrawing(...)` would hide them.
-    const shape = shapeKey(resolved);
+    const placed = storable(resolved);
+    const shape = shapeKey(placed);
     const byShape = () => drawings.find((d) => shapeKey(d) === shape);
     try {
-      await createDrawing(resolved);
+      await createDrawing(placed);
     } catch (e) {
       note(`the drawing was not saved: ${e.message}`);
       return;
@@ -4637,7 +4666,7 @@ function createChartPane(root, hooks = {}) {
       // save twice: once awaited for its error handling, once from here.
       () => {
         if (byShape()) return;
-        void createDrawing(resolved);
+        void createDrawing(placed);
       },
       () => {
         const target = byShape();
@@ -4652,7 +4681,7 @@ function createChartPane(root, hooks = {}) {
 
   /// Store a drawing the user has just moved.
   ///
-  /// `movedFrom` is the engine's absolute anchors as the scene reported them when
+  /// `movedFrom` is the engine's absolute points as the scene reported them when
   /// the grab began -- captured there because the drag overwrites the list with
   /// fractions, and an undo that reinstated fractions would be refused by the
   /// storage. Async because the command is recorded **after** the PUT settles:
@@ -4665,14 +4694,15 @@ function createChartPane(root, hooks = {}) {
     if (!resolved || !stored) return;
 
     // The list takes the engine's numbers, so what is on screen and what is about
-    // to be stored are the same two points rather than two roundings of one.
-    const before = movedFrom ?? { a1: stored.a1, a2: stored.a2, a3: stored.a3 ?? null };
-    const after = { a1: resolved.a1, a2: resolved.a2, a3: resolved.a3 ?? null };
+    // to be stored are the same points rather than two roundings of one.
+    const before = (movedFrom && movedFrom.points) || stored.points;
+    const after = resolved.points.map(absoluteOf);
     // Applied optimistically -- the shape follows the pointer's release, which
     // is what "released" means -- and reconciled after the PUT like any save.
-    stored.a1 = after.a1;
-    stored.a2 = after.a2;
-    stored.a3 = after.a3;
+    // `slice()` because the command halves below hand the same list to another
+    // drawing: a drag that then replaced one of its points would edit the
+    // recorded "after" and the guard that reads it would be reading the drag.
+    stored.points = after.slice();
     renderNow();
     try {
       await api(`/drawings/${id}`, {
@@ -4684,22 +4714,18 @@ function createChartPane(root, hooks = {}) {
       note(`the drawing was moved but not saved: ${e.message}`);
       return;
     }
-    // "Already at the after-anchors" is the guard the do-half needs: the fresh
+    // "Already at the after-points" is the guard the do-half needs: the fresh
     // move applied them above, so only a redo-after-undo finds them behind.
-    const sameAnchor = (a, b) =>
+    const samePoint = (a, b) =>
       (!a && !b) || Boolean(a && b && a.time === b.time && a.price === b.price);
     const isAfter = (d) =>
-      sameAnchor(d.a1, after.a1) &&
-      sameAnchor(d.a2, after.a2) &&
-      sameAnchor(d.a3 ?? null, after.a3);
+      d.points.length === after.length && d.points.every((point, i) => samePoint(point, after[i]));
     runCommand(
       "move",
       () => {
         const target = byShapeId(stored, id);
         if (!target || isAfter(target)) return;
-        target.a1 = after.a1;
-        target.a2 = after.a2;
-        target.a3 = after.a3;
+        target.points = after.slice();
         if (selectedDrawing && selectedDrawing !== target.id) selectedDrawing = target.id;
         renderNow();
         void putDrawing(target);
@@ -4709,9 +4735,7 @@ function createChartPane(root, hooks = {}) {
         // undo/redo cycle through a delete), so it is found by shape.
         const target = byShapeId(stored, id);
         if (!target) return;
-        target.a1 = before.a1;
-        target.a2 = before.a2;
-        target.a3 = before.a3;
+        target.points = before.slice();
         if (selectedDrawing && selectedDrawing !== target.id) selectedDrawing = target.id;
         renderNow();
         void putDrawing(target);
@@ -4727,15 +4751,13 @@ function createChartPane(root, hooks = {}) {
 
   /// The API's body for one drawing.
   ///
-  /// Built from the engine's object rather than from a shape of our own: `kind` and
-  /// the two anchors are exactly what `scene.drawings` reports, which is why they
+  /// Built from the engine's object rather than from a shape of our own: `kind`
+  /// and the points are exactly what `scene.drawings` reports, which is why they
   /// are read from there and never assembled from a pointer position.
   function drawingBody(drawing) {
     return {
       kind: drawing.kind,
-      a1: drawing.a1,
-      a2: drawing.a2 ?? null,
-      a3: drawing.a3 ?? null,
+      points: drawing.points,
       label: drawing.label ?? null,
     };
   }
@@ -4745,17 +4767,11 @@ function createChartPane(root, hooks = {}) {
   /// Undo has to find a drawing again after its id has changed underneath it:
   /// a save replaces the shell's `new-N` with the server's UUID, and a redo
   /// creates the shape a second time under a third id. The shape -- kind,
-  /// anchors, label -- is what survives all of that, and the engine has
-  /// already resolved both anchors to absolute numbers, so the comparison is
-  /// exact equality rather than a tolerance.
-  const shapeKey = (d) =>
-    [
-      d.kind,
-      d.a1 && d.a1.time, d.a1 && d.a1.price,
-      d.a2 && d.a2.time, d.a2 && d.a2.price,
-      d.a3 && d.a3.time, d.a3 && d.a3.price,
-      d.label ?? "",
-    ].join("|");
+  /// points, label -- is what survives all of that, and the engine has
+  /// already resolved every point to absolute numbers, so the comparison is
+  /// exact equality rather than a tolerance. The point count is part of the key,
+  /// so a two-point trendline and a three-point channel never collide.
+  const shapeKey = (d) => [d.kind, ...d.points.map((p) => `${p && p.time},${p && p.price}`), d.label ?? ""].join("|");
 
   async function createDrawing(drawing) {
     // On the chart first and in the database second. The managed instance costs
@@ -5206,12 +5222,10 @@ function createChartPane(root, hooks = {}) {
     const out = {
       id: drawing.id,
       kind: drawing.kind,
-      a1: drawing.a1,
-      a2: drawing.a2 ?? null,
-      // The third anchor rides the same rule as the second: absent when the
-      // row has none, absolute when it does. A channel that lost its width on
-      // reload would be a stored shape that restores as a different shape.
-      a3: drawing.a3 ?? null,
+      // Absolute, in the kind's own order, and the length is the kind's arity:
+      // the row that stored a channel's third point restores a channel, not a
+      // line that lost its width on reload.
+      points: drawing.points,
       label: drawing.label ?? null,
     };
     if (drawing.created_by) {

@@ -9,12 +9,13 @@ instead of three lists that drift.
 
 > **Every visual thing on the chart has a structured representation.**
 
-A trendline is not pixels; it is `{ kind: "trendline", a1: {time, price},
-a2: {time, price} }`. The canvas is a *projection* of that object, never the
-object itself. Consequences:
+A trendline is not pixels; it is `{ kind: "trendline", points: [{time, price},
+{time, price}] }`, and the length of that list is the kind's own declaration.
+The canvas is a *projection* of that object, never the object itself.
+Consequences:
 
 - The shell never converts a pixel into a price. A placement or drag writes a
-  `fraction` anchor into the engine request; the engine's scene answers with
+  `fraction` point into the engine request; the engine's scene answers with
   the same drawing in absolute terms, and *that* is what gets stored. There is
   one implementation of "which price is under the pointer", in Rust.
 - The toolbar is **built from** the engine's registry over the ABI, not from a
@@ -29,16 +30,19 @@ object itself. Consequences:
 ### Object model — `chart-engine::drawing`
 
 - `DrawingKind`: `trendline, hline, vline, ray, extended, rect, fib, measure`.
-  Eight kinds, two anchors each (`hline`/`vline` need only one).
+  Eight kinds, each taking a fixed number of points (`hline`/`vline` one).
 - `Anchor`: `absolute {time, price}` (what is stored) or `fraction {x, y}`
   (what a pointer gives). `Absolute` uses milliseconds — f64 is exact there and
   loses precision past 2^53, so epoch-ms is the boundary unit everywhere.
 - `ToolGroup`: `lines, shapes, measurement` — a vocabulary, not free text.
 - `ToolSpec` / `REGISTRY`: the one declaration of each tool — kind, label,
-  tooltip, group, group label, anchor count.
-- The storage rule (`db::drawings::KINDS` + `needs_second_anchor`) is pinned
-  against `DrawingKind::ALL` by a test, so engine and database cannot disagree
-  silently.
+  tooltip, group, group label, `anchors` (how many points it takes).
+- The arity rule is `DrawingKind::anchors`, and it is the only one. The
+  registry's `anchors` field, the storage list length, the shell's click
+  counter and the route's refusal all read that declaration, and a test pins
+  the registry row to it — so `db::drawings::KINDS` and
+  `needs_second_anchor`/`needs_third_anchor` are gone with the columns they
+  described.
 
 ### Tool registry over the ABI — `chart-engine::lib`
 
@@ -210,29 +214,31 @@ re-hide that leaves the row in storage.
 The 2026-09 parity extension added the TradingView staples: `channel` (two
 points for the line, one for its width), `angle`, `arc` (centre, horizontal
 radius, vertical radius), `circle` (centre plus one radius point), `triangle`
-(one anchor per vertex), `position_long`/`position_short` (entry plus a 1:1
+(one point per vertex), `position_long`/`position_short` (entry plus a 1:1
 profit/stop band), and `dateprice_range` (a measure box that also counts bars).
-Each is one `DrawingKind` variant, one `shapes` arm, one registry row, one
+Each is one `DrawingKind` variant, one `draw/` arm, one registry row, one
 `KINDS` entry — the same one-each arithmetic phase 1 recorded, still holding.
 
-- **Three anchors, named `a3`, whole or absent.** `0011_drawing_third_anchor.sql`
-  adds `a3_time`/`a3_price` behind the same whole-or-absent CHECK the second
-  pair has. `needs_third_anchor` exists in both the engine (`DrawingKind`) and
-  storage (`db::drawings`), and a gateway test pins the two to each other —
-  the same cross-crate pin `needs_second_anchor` has, because a `channel` the
-  route believes stops at two is a channel the chart cannot restore. A circle
-  is centre + radius, deliberately **two** anchors: the radius is the distance
-  between them, and a third would be a second way to say it that could
-  disagree with the first.
+- **A kind could take three points.** When the vocabulary grew past two, the
+  columns grew an `a3_time`/`a3_price` pair (`0011_drawing_third_anchor.sql`)
+  behind the same whole-or-absent CHECK the second pair had, and
+  `needs_third_anchor` was written in both the engine and storage and pinned to
+  itself by a gateway test. A circle stayed at **two**: the radius is the
+  distance between centre and edge, and a third point would be a second way to
+  say it that could disagree with the first. Both of those mechanisms are
+  replaced by the list described in the 2026-10 section below — which is what
+  makes "a `channel` the route believes stops at two" unrepresentable rather
+  than merely tested-against.
 - **The gesture grew a third click.** Placing a channel, arc or triangle is
-  click, move, click, move, click — between clicks the pending anchor follows
-  the pointer on *hover* (no button held), because a placement the user cannot
-  aim is not a placement. The pending anchor is an explicit field
-  (`placing.pending`), not inferred from `null` vs `undefined`: the engine
-  refuses an `a3` on a kind that does not take one, so a mis-encoded drag
-  would store its second anchor into `a3` and the shape would vanish with a
-  note. Storage, the routes, the agent's drawing tools and the wire all carry
-  `a3` the way they carry `a2`.
+  click, move, click, move, click — between clicks the point still being drawn
+  follows the pointer on *hover* (no button held), because a placement the user
+  cannot aim is not a placement. Which point that is used to be an explicit
+  field (`placing.pending`) rather than something inferred from `null` versus
+  `undefined`, because a mis-encoded drag would store the newest point in a
+  slot the kind does not take and the shape would vanish with a note; the
+  point list made that state redundant, and it is now the index of the fixed
+  points. The part shapes, the provenance trio and the wire carry every point
+  the same way.
 - **Two new part shapes, and the shell paints them.** `DrawingPart::Ellipse`
   (`cx/cy/rx/ry`, `half` for the upper arc, `filled`) and
   `DrawingPart::Polygon` (`points`, `filled`) join Segment/Rect/Text/Handle.
@@ -251,5 +257,53 @@ Each is one `DrawingKind` variant, one `shapes` arm, one registry row, one
   resolve to a pane's own row, never to the page-level one.
 
 `shell_check.mjs` covers both toolbars agreeing, the three-click gesture
-storing one drawing with three absolute anchors, and a two-anchor drag
-sending no third anchor at all.
+storing one drawing with three absolute points, and a two-point drag
+sending exactly two points.
+
+## What shipped (2026-10): a drawing is a list of points
+
+Before this, a drawing was `a1` plus an optional `a2` plus an optional `a3`, and
+"how many does a `channel` take" was answered in four places: the engine's
+`needs_second_anchor`/`needs_third_anchor`, storage's copy of them, the HTTP
+route's body fields, and the toolbar's click counts. A sixth kind of shape would
+have needed a fourth column, and a shape could be stored with a second timestamp
+and no second price, because "half an anchor" had a spelling.
+
+Now `Drawing` carries `points: Vec<Anchor>` and the arity is
+`DrawingKind::anchors() -> AnchorCount`, which is the crate's only statement of
+it. That one change is what makes the open-ended tools possible: a polyline, a
+brush and a harmonic with a seventh pivot are a `Many { min }` and a longer
+list, not a schema migration.
+
+- **`AnchorCount`** is `Fixed { points }` or `Many { min }`, and it crosses the
+  ABI as an object tagged `form` — a bare `2` cannot say whether `3` is allowed,
+  which is the difference between a tool the toolbar can place and one it
+  cannot.
+- **`validate_anchors`** checks arity, then one-unit-per-drawing, then
+  finiteness, and names the *index* of the offending point. It never looks at
+  the id, so a route validating a request body has nothing to invent.
+- **The columns are gone.** `0018_drawing_points.sql` backfills one JSONB
+  `points` array per row — in the order each kind reads them, which is the
+  placement order, not the numeric order: a ray's origin is `points[0]`, not
+  the lowest timestamp — then drops the six anchor columns and adds a
+  non-empty-array CHECK. A half-anchor is now unrepresentable rather than
+  forbidden.
+- **Both units, always.** The scene reports `ScenePoint { absolute, fraction }`
+  for every point, so the shell stores the first and drags the body with the
+  second, and neither needs to invert the price mapping. `docs/14`'s rule is
+  what the shape of the type enforces.
+- **The agent's wire is the same list.** `create_drawing` takes
+  `points: [{time_ms, price}, …]` — the spelling `pattern_library` anchors
+  already used. `ai-agent` depends on neither chart-engine nor db, so it cannot
+  read `anchors()`; the count lives in that one schema description as prose and
+  `DbDrawingWriter::validate` re-runs the engine's own validator, which is where
+  a wrong count actually gets refused, in the engine's words.
+- **The toolbar's click counter reads the registry.** `anchorsNeeded()` asks the
+  engine instead of keeping a list of kind names, and the placement's live point
+  is `points[clicks]` — a count that could not be reconciled with the kind
+  stored one shape and the chart drew nothing.
+
+`wasm_abi_check.mjs` pins the registry's `anchors` shape and the refusal
+messages a mixed-unit list, a short list and a long list each get;
+`shell_check.mjs` places a three-point tool chosen from the registry rather than
+named in the harness.

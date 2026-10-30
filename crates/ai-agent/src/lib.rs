@@ -94,7 +94,7 @@ pub use tools::{
     ToolRegistry,
 };
 pub use user_drawings::{
-    DrawingProvenance, DrawingWriter, NewAgentDrawing, StoredDrawing, UserDrawing,
+    AgentPoint, DrawingProvenance, DrawingWriter, NewAgentDrawing, StoredDrawing, UserDrawing,
     UserDrawingsSource,
 };
 pub use web_search::{WebImage, WebSearchHit, WebSearcher};

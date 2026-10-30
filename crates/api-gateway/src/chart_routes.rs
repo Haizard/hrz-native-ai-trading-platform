@@ -520,12 +520,11 @@ pub async fn capture_snapshot(
                 id: Some(row.id.to_string()),
                 kind: row.kind.clone(),
                 label: row.label.clone(),
-                time1_ms: row.a1_time_ms,
-                price1: row.a1_price,
-                time2_ms: row.a2_time_ms,
-                price2: row.a2_price,
-                time3_ms: row.a3_time_ms,
-                price3: row.a3_price,
+                points: row
+                    .points
+                    .iter()
+                    .map(|p| ai_agent::AgentPoint::at(p.time, p.price))
+                    .collect(),
             })
             .unwrap_or_default()
         })

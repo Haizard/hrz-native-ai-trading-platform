@@ -43,7 +43,7 @@ use uuid::Uuid;
 
 // The engine's own vocabulary and anchor rule, shared with `drawing_routes`:
 // both doors into the drawings table validate the same way.
-use chart_engine::{Anchor, Drawing, DrawingKind};
+use chart_engine::{Anchor, Drawing, DrawingKind, DrawingOptions};
 
 /// Reads market data for the agent from RAM plus the venue.
 #[derive(Debug, Clone)]
@@ -197,16 +197,14 @@ impl ai_agent::UserDrawingsSource for DbUserDrawings {
                 id: Some(row.id.to_string()),
                 kind: row.kind.clone(),
                 label: row.label.clone(),
-                time1_ms: row.a1_time_ms,
-                price1: row.a1_price,
-                // The CHECK keeps the pair whole, so a half-populated one is a
-                // row edited by hand; reporting it as absent is the honest
-                // reading, the same one `drawing_routes::describe` gives it.
-                time2_ms: row.a2_time_ms,
-                price2: row.a2_price,
-                // The third anchor obeys the same whole-or-absent CHECK (`0011`).
-                time3_ms: row.a3_time_ms,
-                price3: row.a3_price,
+                // The order the points were stored in is the order they are
+                // read back in: a ray's origin is `points[0]`, not the lowest
+                // number in the row.
+                points: row
+                    .points
+                    .iter()
+                    .map(|p| ai_agent::AgentPoint::at(p.time, p.price))
+                    .collect(),
             })
             .collect())
     }
@@ -253,6 +251,12 @@ impl DbDrawingWriter {
     }
 
     /// The engine's anchor rule, applied to what the model sent.
+    ///
+    /// This adapter is a public door and not every caller goes through the
+    /// tool, so the rule is run here too — and it is the *same* rule, not a
+    /// restatement of it. Nothing is checked field by field any more: a point
+    /// carries its time and its price as one value, so the half-anchor states
+    /// this function used to refuse one at a time have no spelling.
     fn validate(drawing: &ai_agent::NewAgentDrawing) -> Result<(), AgentError> {
         const TOOL: &str = "create_drawing";
         let unknown = || AgentError::InvalidToolArgs {
@@ -266,43 +270,23 @@ impl DbDrawingWriter {
         if !db::drawings::KINDS.contains(&drawing.kind.as_str()) {
             return Err(unknown());
         }
-        let second = match (drawing.time2_ms, drawing.price2) {
-            (Some(time), Some(price)) => Some(Anchor::Absolute { time, price }),
-            (None, None) => None,
-            // `new_drawing_args` already refuses the half pair; this is the
-            // same rule stated where the write happens, because the adapter
-            // is a public door and not every caller goes through the tool.
-            _ => {
-                return Err(AgentError::InvalidToolArgs {
-                    tool: TOOL.into(),
-                    reason: "a second anchor needs both time and price".into(),
-                })
-            }
-        };
-        // The third anchor gets the same treatment: a broken pair refused at
-        // the door with a message about the shape, the engine's
-        // `validate_anchors` deciding *which kinds* need one.
-        let third = match (drawing.time3_ms, drawing.price3) {
-            (Some(time), Some(price)) => Some(Anchor::Absolute { time, price }),
-            (None, None) => None,
-            _ => {
-                return Err(AgentError::InvalidToolArgs {
-                    tool: TOOL.into(),
-                    reason: "a third anchor needs both time and price".into(),
-                })
-            }
-        };
         let check = Drawing {
             id: String::new(),
             kind: kind_from_name(&drawing.kind).ok_or_else(unknown)?,
-            a1: Anchor::Absolute {
-                time: drawing.time1_ms,
-                price: drawing.price1,
-            },
-            a2: second,
-            a3: third,
+            points: drawing
+                .points
+                .iter()
+                .map(|p| Anchor::Absolute {
+                    time: p.time_ms,
+                    price: p.price,
+                })
+                .collect(),
             label: drawing.label.clone(),
             selected: false,
+            // The agent places what a tool reported; it has no opinion about
+            // how the shape is extended, which is what the reference default
+            // for the kind means.
+            options: DrawingOptions::default(),
         };
         check
             .validate_anchors()
@@ -316,12 +300,15 @@ impl DbDrawingWriter {
     fn to_new(drawing: &ai_agent::NewAgentDrawing) -> db::drawings::NewDrawing {
         db::drawings::NewDrawing {
             kind: drawing.kind.clone(),
-            a1_time_ms: drawing.time1_ms,
-            a1_price: drawing.price1,
-            a2_time_ms: drawing.time2_ms,
-            a2_price: drawing.price2,
-            a3_time_ms: drawing.time3_ms,
-            a3_price: drawing.price3,
+            points: drawing
+                .points
+                .iter()
+                .map(|p| db::StoredPoint {
+                    time: p.time_ms,
+                    price: p.price,
+                })
+                .collect(),
+            options: db::drawings::no_options(),
             label: drawing.label.clone(),
             provenance: Some(db::drawings::Provenance {
                 created_by: "ai".into(),

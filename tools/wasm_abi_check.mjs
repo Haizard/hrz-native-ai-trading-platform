@@ -729,8 +729,10 @@ check(
   "every tool declares how many points it takes",
   registry.every((row) => {
     const anchors = row.anchors;
-    if (typeof anchors === "number") return anchors >= 1 && anchors <= 3;
-    return Boolean(anchors && typeof anchors === "object");
+    if (!anchors || typeof anchors !== "object") return false;
+    return anchors.form === "fixed"
+      ? Number.isInteger(anchors.points) && anchors.points >= 1
+      : anchors.form === "many" && Number.isInteger(anchors.min) && anchors.min >= 1;
   }),
   registry.map((row) => `${row.kind}:${JSON.stringify(row.anchors)}`).join(" ")
 );
@@ -757,8 +759,10 @@ const drawn = build({
     {
       id: "d1",
       kind: "trendline",
-      a1: { unit: "fraction", x: 0.2, y: 0.7 },
-      a2: { unit: "fraction", x: 0.6, y: 0.3 },
+      points: [
+        { unit: "fraction", x: 0.2, y: 0.7 },
+        { unit: "fraction", x: 0.6, y: 0.3 },
+      ],
       label: null,
       selected: false,
     },
@@ -779,23 +783,26 @@ if (line) {
   check("the id is echoed", line.id === "d1", line.id);
   check("the kind is snake_case on the wire", line.kind === "trendline", line.kind);
   check(
-    "the anchors come back absolute, ready to store",
-    line.a1.unit === "absolute" &&
-      Number.isFinite(line.a1.time) &&
-      Number.isFinite(line.a1.price) &&
-      line.a2.unit === "absolute",
-    JSON.stringify([line.a1, line.a2])
+    "every point comes back with both units, ready to store",
+    Array.isArray(line.points) &&
+      line.points.length === 2 &&
+      line.points.every(
+        (point) =>
+          Number.isFinite(point.absolute?.time) &&
+          Number.isFinite(point.absolute?.price) &&
+          Number.isFinite(point.fraction?.x) &&
+          Number.isFinite(point.fraction?.y)
+      ),
+    JSON.stringify(line.points)
   );
-  // The drag base. Not an `Anchor`: it is only ever a fraction, so it is only
-  // ever two numbers, and a `unit` here would be a field the shell can read and
-  // can never find to be anything else.
+  // The absolute pair is what the storage takes; a fraction reaching it would be
+  // a screen position persisted as if it were a timestamp.
   check(
-    "and the fractions a body drag adds to are a plain pair",
-    Number.isFinite(line.a1_fraction?.x) &&
-      Number.isFinite(line.a1_fraction?.y) &&
-      Number.isFinite(line.a2_fraction?.x) &&
-      line.a1_fraction.unit === undefined,
-    JSON.stringify([line.a1_fraction, line.a2_fraction])
+    "and the absolute pair carries no fraction fields",
+    line.points.every(
+      (point) => point.absolute.x === undefined && point.absolute.y === undefined
+    ),
+    JSON.stringify(line.points.map((point) => point.absolute))
   );
 
   const before = segment(line);
@@ -808,7 +815,13 @@ if (line) {
     width: 900,
     height: 420,
     drawings: [
-      { id: "d1", kind: "trendline", a1: line.a1, a2: line.a2, label: null, selected: false },
+      {
+        id: "d1",
+        kind: "trendline",
+        points: line.points.map((point) => ({ unit: "absolute", ...point.absolute })),
+        label: null,
+        selected: false,
+      },
     ],
   });
   const after = segment(reloaded.drawings[0]);
@@ -823,12 +836,11 @@ if (line) {
   );
 
   // The body drag, in the shell's own arithmetic: the pointer's offset over the
-  // plot's size, added to both fractions. Both ends have to move by the same
+  // plot's size, added to every fraction. All of them have to move by the same
   // pixels, or a trendline dragged by its middle changes slope -- which is what
   // the shell used to do by sending one anchor to the pointer.
   const dx = 0.1;
   const dy = -0.05;
-  const shift = (f) => ({ unit: "fraction", x: f.x + dx, y: f.y + dy });
   const moved = build({
     candles: candles(120),
     width: 900,
@@ -837,8 +849,9 @@ if (line) {
       {
         id: "d1",
         kind: "trendline",
-        a1: shift(line.a1_fraction),
-        a2: shift(line.a2_fraction),
+        points: line.points.map(
+          (point) => ({ unit: "fraction", x: point.fraction.x + dx, y: point.fraction.y + dy })
+        ),
         label: null,
         selected: false,
       },
@@ -846,7 +859,7 @@ if (line) {
   });
   const shifted = segment(moved.drawings[0]);
   check(
-    "a body drag moves both ends by the same pixels",
+    "a body drag moves every end by the same pixels",
     Boolean(shifted) &&
       Math.abs(shifted.x1 - before.x1 - dx * drawn.plot.w) < 1e-6 &&
       Math.abs(shifted.x2 - before.x2 - dx * drawn.plot.w) < 1e-6 &&
@@ -864,8 +877,8 @@ const pair = build({
   width: 900,
   height: 420,
   drawings: [
-    { id: "a", kind: "trendline", a1: { unit: "fraction", x: 0.1, y: 0.1 }, a2: { unit: "fraction", x: 0.2, y: 0.2 }, label: null, selected: false },
-    { id: "b", kind: "trendline", a1: { unit: "fraction", x: 0.3, y: 0.3 }, a2: { unit: "fraction", x: 0.4, y: 0.4 }, label: null, selected: true },
+    { id: "a", kind: "trendline", points: [{ unit: "fraction", x: 0.1, y: 0.1 }, { unit: "fraction", x: 0.2, y: 0.2 }], label: null, selected: false },
+    { id: "b", kind: "trendline", points: [{ unit: "fraction", x: 0.3, y: 0.3 }, { unit: "fraction", x: 0.4, y: 0.4 }], label: null, selected: true },
   ],
 });
 check(
@@ -881,22 +894,61 @@ check(
   JSON.stringify(handles(pair.drawings[1]).map((h) => h.anchor))
 );
 
-// A horizontal line takes one anchor, and a stored second one is not an error --
-// the column permits it. It must still offer a single handle, because the
-// drawing does not read the second anchor, and a grab point the engine would not
-// honour is a drag that does nothing.
-const horizontal = build({
+// A three-point kind gets a handle per point, in placement order: the channel's
+// third handle is its width, and a shell that numbered them itself would move
+// the line when the user grabbed the width.
+const three = build({
   candles: candles(120),
   width: 900,
   height: 420,
   drawings: [
-    { id: "h", kind: "hline", a1: { unit: "fraction", x: 0.5, y: 0.4 }, a2: { unit: "fraction", x: 0.9, y: 0.4 }, label: null, selected: true },
+    {
+      id: "ch",
+      kind: "channel",
+      points: [
+        { unit: "fraction", x: 0.1, y: 0.2 },
+        { unit: "fraction", x: 0.6, y: 0.4 },
+        { unit: "fraction", x: 0.6, y: 0.7 },
+      ],
+      label: null,
+      selected: true,
+    },
   ],
 });
 check(
-  "a horizontal line offers one handle even with a stored second anchor",
-  handles(horizontal.drawings[0]).length === 1,
-  JSON.stringify(handles(horizontal.drawings[0]))
+  "a three-point kind offers a handle for each point, in order",
+  three.drawings.length === 1 && handles(three.drawings[0]).map((h) => h.anchor).join(",") === "0,1,2",
+  JSON.stringify(three.drawings.map(handles))
+);
+
+// One point too many is an arity error, and the drawing that arrives with a
+// point the kind does not take is refused rather than drawn as something else.
+const extra = build({
+  candles: candles(120),
+  width: 900,
+  height: 420,
+  drawings: [
+    {
+      id: "h",
+      kind: "hline",
+      points: [
+        { unit: "fraction", x: 0.5, y: 0.4 },
+        { unit: "fraction", x: 0.9, y: 0.4 },
+      ],
+      label: null,
+      selected: true,
+    },
+  ],
+});
+check(
+  "a kind given more points than it takes is not drawn",
+  Array.isArray(extra.drawings) && extra.drawings.length === 0,
+  JSON.stringify(extra.drawings)
+);
+check(
+  "and the note names the count it wanted",
+  typeof extra.note === "string" && extra.note.includes("hline") && extra.note.includes("takes 1 point"),
+  extra.note ?? "(no note)"
 );
 
 // A refusal is a note and an absent drawing -- not a trap, and not a blank shape
@@ -906,11 +958,11 @@ const halfDrawn = build({
   width: 900,
   height: 420,
   drawings: [
-    { id: "r", kind: "rect", a1: { unit: "fraction", x: 0.2, y: 0.2 }, label: null, selected: false },
+    { id: "r", kind: "rect", points: [{ unit: "fraction", x: 0.2, y: 0.2 }], label: null, selected: false },
   ],
 });
 check(
-  "a two-anchor kind with one anchor is not drawn",
+  "a two-point kind with one point is not drawn",
   Array.isArray(halfDrawn.drawings) && halfDrawn.drawings.length === 0,
   JSON.stringify(halfDrawn.drawings)
 );
@@ -918,13 +970,39 @@ check(
   "and the note names the drawing and the reason",
   typeof halfDrawn.note === "string" &&
     halfDrawn.note.includes("rect") &&
-    halfDrawn.note.includes("two anchors"),
+    halfDrawn.note.includes("takes 2 points"),
   halfDrawn.note ?? "(no note)"
+);
+
+// A list that mixes units is not a shape: it is a client that turned a pixel
+// into a timestamp somewhere the engine never agreed to.
+const mixed = build({
+  candles: candles(120),
+  width: 900,
+  height: 420,
+  drawings: [
+    {
+      id: "m",
+      kind: "trendline",
+      points: [{ unit: "absolute", time: 1_700_000_000_000, price: 100 }, { unit: "fraction", x: 0.3, y: 0.3 }],
+      label: null,
+      selected: false,
+    },
+  ],
+});
+check(
+  "a list that mixes units is refused, and says which point",
+  Array.isArray(mixed.drawings) &&
+    mixed.drawings.length === 0 &&
+    typeof mixed.note === "string" &&
+    mixed.note.includes("point 2") &&
+    mixed.note.includes("one unit"),
+  mixed.note ?? JSON.stringify(mixed.drawings)
 );
 
 // A click with no drag on a tool that needs two points. This is the one refusal
 // the shell cannot pre-empt: it does not know whether the pointer moved, and it
-// should not have to -- the engine compares the two anchors it resolved.
+// should not have to -- the engine compares the points it resolved.
 const clicked = build({
   candles: candles(120),
   width: 900,
@@ -933,8 +1011,10 @@ const clicked = build({
     {
       id: "c",
       kind: "trendline",
-      a1: { unit: "fraction", x: 0.3, y: 0.3 },
-      a2: { unit: "fraction", x: 0.3, y: 0.3 },
+      points: [
+        { unit: "fraction", x: 0.3, y: 0.3 },
+        { unit: "fraction", x: 0.3, y: 0.3 },
+      ],
       label: null,
       selected: false,
     },
@@ -961,7 +1041,7 @@ try {
     width: 900,
     height: 420,
     drawings: [
-      { id: "x", kind: "gann_fan", a1: { unit: "fraction", x: 0.5, y: 0.5 }, label: null, selected: false },
+      { id: "x", kind: "gann_fan", points: [{ unit: "fraction", x: 0.5, y: 0.5 }], label: null, selected: false },
     ],
   });
 } catch (e) {
@@ -986,8 +1066,10 @@ try {
       {
         id: "n",
         kind: "trendline",
-        a1: { unit: "fraction", x: 0.5, y: null },
-        a2: { unit: "fraction", x: 0.6, y: 0.6 },
+        points: [
+          { unit: "fraction", x: 0.5, y: null },
+          { unit: "fraction", x: 0.6, y: 0.6 },
+        ],
         label: null,
         selected: false,
       },
@@ -997,7 +1079,7 @@ try {
   nullAnchor = e.message;
 }
 check(
-  "an anchor of `null` is refused rather than drawn",
+  "a point of `null` is refused rather than drawn",
   typeof nullAnchor === "string" && nullAnchor.length > 0,
   nullAnchor ?? "it was accepted"
 );

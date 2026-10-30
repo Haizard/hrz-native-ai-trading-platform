@@ -38,7 +38,7 @@ use analytics_core::{
 
 use crate::error::AgentError;
 use crate::llm_client::ToolCall;
-use crate::user_drawings::{DrawingWriter, NewAgentDrawing, UserDrawingsSource};
+use crate::user_drawings::{AgentPoint, DrawingWriter, NewAgentDrawing, UserDrawingsSource};
 
 use crate::agent_memory::{MemorySource, MemoryWriter, NewMemory};
 use crate::snapshots::{NewSnapshot, SnapshotStore};
@@ -1299,19 +1299,33 @@ fn get_user_drawings_schema() -> Value {
 /// would read to the model as "this kind is unsupported" (the same lesson
 /// `timeframe_arg` records for the same reason). `with_id` is the update
 /// form, which names an existing drawing rather than describing a new one.
+///
+/// A drawing is a list of points, and the list's length is the kind's arity.
+/// `ai-agent` cannot see the engine's declaration — it depends on neither
+/// chart-engine nor db — so the arity lives only in this one description, and
+/// the writer one layer down answers a wrong count with the engine's own
+/// words. There is no half-point state to guard: a point is whole, so the
+/// old "a2 needs both time and price" class of error cannot be spelled.
 fn drawing_write_schema(with_id: bool) -> Value {
     let mut properties = json!({
         "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
         "kind": {
             "type": "string",
-            "description": "What to draw. Kinds: trendline, hline, vline, ray, extended, rect, fib, measure, channel (3 anchors), angle, arc (3 anchors), circle, triangle (3 anchors), position_long, position_short, dateprice_range",
+            "description": "What to draw. Kinds: trendline, hline, vline, ray, extended, rect, fib, measure, channel, angle, arc, circle, triangle, position_long, position_short, dateprice_range",
         },
-        "time1_ms": {"type": "number", "description": "First anchor, milliseconds since the epoch"},
-        "price1": {"type": "number", "description": "First anchor's price"},
-        "time2_ms": {"type": "number", "description": "Second anchor's time, for kinds that need two anchors"},
-        "price2": {"type": "number", "description": "Second anchor's price"},
-        "time3_ms": {"type": "number", "description": "Third anchor's time, only for channel, arc and triangle"},
-        "price3": {"type": "number", "description": "Third anchor's price, only for channel, arc and triangle"},
+        "points": {
+            "type": "array",
+            "minItems": 1,
+            "description": "The anchors, in the order the kind reads them: {\"time_ms\": milliseconds since the epoch, \"price\": number}. One point for hline and vline; two for trendline, ray, extended, rect, fib, measure, angle, circle and the positions — first point is the start or corner, second the end or opposite corner; three for channel, arc and triangle. A kind given the wrong number of points is refused with the count it takes.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "time_ms": {"type": "number", "description": "Anchor time, milliseconds since the epoch"},
+                    "price": {"type": "number", "description": "Anchor price"},
+                },
+                "required": ["time_ms", "price"],
+            },
+        },
         "label": {"type": "string", "description": "A short name the user will read on the chart"},
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "How confident you are in this object, 0-1. Optional."},
         "reason": {"type": "string", "description": "Why this object belongs on the chart, in one or two sentences. Shown to the user."},
@@ -1322,7 +1336,7 @@ fn drawing_write_schema(with_id: bool) -> Value {
             "description": "The drawing's id, from get_user_drawings or a create_drawing answer",
         });
     }
-    let mut required = vec!["symbol", "kind", "time1_ms", "price1"];
+    let mut required = vec!["symbol", "kind", "points"];
     if with_id {
         required.push("id");
     }
@@ -1696,7 +1710,8 @@ const GET_MOVING_AVERAGE: &str = "A simple or exponential moving average over cl
 const DETECT_PATTERN: &str = "Detect a classical chart pattern over confirmed swings: \
     head_and_shoulders, inverse_head_and_shoulders, double_top, double_bottom, triangle, \
     wedge, flag -- or every kind when `pattern` is omitted. Each match carries its \
-    anchor swings (`time_ms` values feed create_drawing directly), the entry level whose \
+    anchor swings as `time_ms`/`price` pairs, which are the shape create_drawing's \
+    `points` array takes, the entry level whose \
     break activates it, the measured-move target, and the invalidation. A pattern that \
     is not reported did not form; do not describe near-misses as patterns.";
 
@@ -1705,8 +1720,8 @@ const DETECT_ZONES: &str = "Detect the chart's zones -- the bands a skill's DRAW
     how much of each band price has traded back through (fresh = untouched). Support and \
     resistance: the bands where confirmed swings keep clustering, with their touch counts. \
     Every zone carries absolute anchors, so draw what you cite: create_drawing as a rect with \
-    time1/price1 = from_ms/bottom and time2/price2 = to_ms/top. A zone that is not reported \
-    did not form; do not sketch one from memory.";
+    points = [{time_ms: from_ms, price: bottom}, {time_ms: to_ms, price: top}]. A zone that \
+    is not reported did not form; do not sketch one from memory.";
 
 const COMPARE_TIMEFRAMES: &str = "Structural read of one symbol on several timeframes at \
     once: per-timeframe trend and latest swings, which pairs of timeframes agree, and \
@@ -2842,9 +2857,9 @@ async fn detect_zones_tool(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
         "price": last_close,
         "order_blocks": order_blocks,
         "sr_zones": sr_zones,
-        "note": "draw what you cite: a rect with time1/price1 = from_ms/bottom and \
-                 time2/price2 = to_ms/top puts the zone on the chart. An empty list \
-                 means no zone formed; do not sketch one from memory.",
+        "note": "draw what you cite: a rect with points = [{time_ms: from_ms, \
+                 price: bottom}, {time_ms: to_ms, price: top}] puts the zone on the \
+                 chart. An empty list means no zone formed; do not sketch one from memory.",
     }))
 }
 
@@ -3388,7 +3403,8 @@ async fn get_user_drawings(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
         crate::user_drawings::clamp_drawings(&mut drawings, crate::chart_context::MAX_DRAWINGS);
     let returned = drawings.len();
 
-    // `price` on each entry is what folds into the grounding range
+    // Each drawing serialises as its kind and its point list, and every point
+    // carries a `price` — which is what folds into the grounding range
     // (`PriceRange` walks `PRICE_KEYS`, and `price` is one), so a level the
     // user drew is a level the thesis may be built against — which is the
     // point of the tool.
@@ -3439,77 +3455,22 @@ fn drawing_writer<'a>(
 
 /// A `NewAgentDrawing` from the model's arguments, or a correctable error.
 ///
-/// The anchor checks mirror what storage will refuse, stated here because the
-/// failure message is the model's only feedback: "a2 needs both time and
-/// price" is actionable, a storage-layer `CHECK` violation is not.
+/// The point list is checked for what storage cannot fix afterwards — an
+/// empty array, a point missing one of its two numbers, a non-finite value.
+/// *Which* count a kind takes is the engine's rule, enforced one layer down
+/// where the engine is visible; here it would be a second copy of a list
+/// that already exists.
 fn new_drawing_args(args: &Value, tool: &str) -> Result<NewAgentDrawing, AgentError> {
     let kind = string_arg(args, "kind", tool)?;
-    let symbol_independent_label = args
+    let label = args
         .get("label")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned);
-    let num = |key: &str| -> Result<f64, AgentError> {
-        args.get(key)
-            .and_then(Value::as_f64)
-            .ok_or_else(|| AgentError::InvalidToolArgs {
-                tool: tool.into(),
-                reason: format!("`{key}` is required and must be a number"),
-            })
-    };
-    let opt_num = |key: &str| -> Result<Option<f64>, AgentError> {
-        match args.get(key) {
-            None | Some(Value::Null) => Ok(None),
-            Some(v) => v
-                .as_f64()
-                .map(Some)
-                .ok_or_else(|| AgentError::InvalidToolArgs {
-                    tool: tool.into(),
-                    reason: format!("`{key}` must be a number when given"),
-                }),
-        }
-    };
 
-    let time1_ms = num("time1_ms")?;
-    let price1 = num("price1")?;
-    let time2_ms = opt_num("time2_ms")?;
-    let price2 = opt_num("price2")?;
-    if (time2_ms.is_some()) != (price2.is_some()) {
-        return Err(AgentError::InvalidToolArgs {
-            tool: tool.into(),
-            reason: "a second anchor needs both `time2_ms` and `price2`, or neither -- \
-                     a half-drawn anchor has no meaning"
-                .into(),
-        });
-    }
-    let time3_ms = opt_num("time3_ms")?;
-    let price3 = opt_num("price3")?;
-    // The third anchor obeys the same whole-or-absent rule. The *which kinds*
-    // half is the engine's `validate_anchors` one layer up; refusing a broken
-    // pair here keeps the message about the shape rather than the rule.
-    if (time3_ms.is_some()) != (price3.is_some()) {
-        return Err(AgentError::InvalidToolArgs {
-            tool: tool.into(),
-            reason: "a third anchor needs both `time3_ms` and `price3`, or neither".into(),
-        });
-    }
-    for (name, value) in [
-        ("time1_ms", time1_ms),
-        ("price1", price1),
-        ("time2_ms", time2_ms.unwrap_or_default()),
-        ("price2", price2.unwrap_or_default()),
-        ("time3_ms", time3_ms.unwrap_or_default()),
-        ("price3", price3.unwrap_or_default()),
-    ] {
-        if value.is_finite() {
-            continue;
-        }
-        return Err(AgentError::InvalidToolArgs {
-            tool: tool.into(),
-            reason: format!("`{name}` must be a finite number"),
-        });
-    }
+    let points = points_arg(args, tool)?;
+
     // A confidence the model invented at 1.4 is a claim nobody can read; clamp
     // the schema's own range here so the stored number is always 0..=1.
     let confidence = args
@@ -3530,15 +3491,54 @@ fn new_drawing_args(args: &Value, tool: &str) -> Result<NewAgentDrawing, AgentEr
 
     Ok(NewAgentDrawing {
         kind,
-        label: symbol_independent_label,
-        time1_ms,
-        price1,
-        time2_ms,
-        price2,
-        time3_ms,
-        price3,
+        label,
+        points,
         provenance,
     })
+}
+
+/// The `points` argument read as anchors.
+///
+/// A point is one object with both numbers in it, so the half-anchor errors
+/// the previous six-field shape invited ("`price2` without `time2_ms`") have
+/// no spelling here: an incomplete point is refused as a malformed point.
+fn points_arg(args: &Value, tool: &str) -> Result<Vec<AgentPoint>, AgentError> {
+    let invalid = |reason: String| AgentError::InvalidToolArgs {
+        tool: tool.into(),
+        reason,
+    };
+    let value = args
+        .get("points")
+        .filter(|p| !p.is_null())
+        .ok_or_else(|| invalid("`points` is required: the anchors the drawing sits on".into()))?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| invalid("`points` must be an array of {time_ms, price} objects".into()))?;
+    if items.is_empty() {
+        return Err(invalid(
+            "`points` has no anchors — a drawing with nowhere to sit is not a drawing".into(),
+        ));
+    }
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let get = |key: &str| -> Result<f64, AgentError> {
+                item.get(key)
+                    .and_then(Value::as_f64)
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "point {index} needs `{key}` as a finite number; it is {}",
+                            item.get(key).map(Value::to_string).unwrap_or_else(|| "absent".into())
+                        ))
+                    })
+            };
+            let time_ms = get("time_ms")?;
+            let price = get("price")?;
+            Ok(AgentPoint::at(time_ms, price))
+        })
+        .collect()
 }
 
 /// The answer a successful create returns, shaped for the model.
@@ -3906,29 +3906,50 @@ fn gap_words(ns: i64) -> String {
 }
 
 /// One drawing's identity for the diff: its id when it has one, else the
-/// kind-and-anchors signature, which is what "the same shape" means for a
-/// source without ids.
+/// kind-and-points signature, which is what "the same shape" means for a
+/// source without ids. The whole list participates, in order — a shape moved
+/// one anchor is a different shape, and a three-point kind that lost its
+/// third point is not the same drawing either.
 fn drawing_identity(drawing: &Value) -> String {
     if let Some(id) = drawing.get("id").and_then(Value::as_str) {
         return format!("id:{id}");
     }
+    let points = drawing
+        .get("points")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|point| {
+                    format!(
+                        "{},{}",
+                        point.get("time_ms").and_then(Value::as_f64).unwrap_or_default(),
+                        point.get("price").and_then(Value::as_f64).unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(";")
+        })
+        .unwrap_or_default();
     format!(
-        "sig:{}|{}|{}|{}|{}",
+        "sig:{}|{}",
         drawing.get("kind").and_then(Value::as_str).unwrap_or("?"),
-        drawing["time1_ms"],
-        drawing["price1"],
-        drawing["time2_ms"],
-        drawing["price2"],
+        points
     )
 }
 
-/// A drawing's one-line description for the diff's added/removed lists.
+/// A drawing's one-line description for the diff's added/removed lists. The
+/// price cited is the last point's, the same end a trendline's own summary
+/// reads from; `null` when the drawing has no points at all.
 fn drawing_line(drawing: &Value) -> Value {
     json!({
         "kind": drawing.get("kind").and_then(Value::as_str).unwrap_or("?"),
         "label": drawing.get("label").and_then(Value::as_str),
-        "price": drawing.get("price2").and_then(Value::as_f64)
-            .or_else(|| drawing.get("price1").and_then(Value::as_f64)),
+        "price": drawing
+            .get("points")
+            .and_then(Value::as_array)
+            .and_then(|list| list.last())
+            .and_then(|point| point.get("price"))
+            .and_then(Value::as_f64),
     })
 }
 
@@ -5057,12 +5078,7 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
             id: None,
             kind: "hline".into(),
             label: Some("the range low".into()),
-            time1_ms: 1_767_225_600_000.0,
-            price1: price,
-            time2_ms: None,
-            price2: None,
-            time3_ms: None,
-            price3: None,
+            points: vec![crate::user_drawings::AgentPoint::at(1_767_225_600_000.0, price)],
         }
     }
 
@@ -5075,7 +5091,7 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
     }
 
     #[tokio::test]
-    async fn the_drawings_tool_reports_the_users_marks_with_both_anchors() {
+    async fn the_drawings_tool_reports_the_users_marks_with_every_anchor() {
         let fixture = Fixture::rising(10);
         let source = DrawingsFixture(vec![
             hline(45_000.0),
@@ -5083,12 +5099,10 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
                 id: None,
                 kind: "trendline".into(),
                 label: None,
-                time1_ms: 1.0,
-                price1: 44_000.0,
-                time2_ms: Some(2.0),
-                price2: Some(46_000.0),
-                time3_ms: None,
-                price3: None,
+                points: vec![
+                    crate::user_drawings::AgentPoint::at(1.0, 44_000.0),
+                    crate::user_drawings::AgentPoint::at(2.0, 46_000.0),
+                ],
             },
         ]);
         let ctx = drawings_ctx(&fixture, &source, "user-1");
@@ -5103,11 +5117,11 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
 
         assert_eq!(out["count"], 2);
         assert_eq!(out["drawings"][0]["kind"], "hline");
-        assert_eq!(out["drawings"][0]["price1"], 45_000.0);
-        // The second anchor survives: which end a trendline points at is the
+        assert_eq!(out["drawings"][0]["points"][0]["price"], 45_000.0);
+        // Both ends of the trendline survive: which way a line runs is the
         // information a one-price summary throws away.
-        assert_eq!(out["drawings"][1]["price2"], 46_000.0);
-        assert_eq!(out["drawings"][1]["time2_ms"], 2.0);
+        assert_eq!(out["drawings"][1]["points"][1]["price"], 46_000.0);
+        assert_eq!(out["drawings"][1]["points"][1]["time_ms"], 2.0);
         assert_eq!(out["read_only"], true);
     }
 
@@ -5271,8 +5285,7 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
                     json!({
                         "symbol": "BTCUSDT",
                         "kind": "hline",
-                        "time1_ms": 1_767_225_600_000.0_f64,
-                        "price1": 45_000.0,
+                        "points": [{"time_ms": 1_767_225_600_000.0_f64, "price": 45_000.0}],
                         "label": "AI resistance",
                         "confidence": 0.87,
                         "reason": "three rejections in the last 80 bars",
@@ -5289,6 +5302,8 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         assert_eq!(user, "user-1", "the write goes out as the asking user");
         assert_eq!(symbol, "BTCUSDT");
         assert_eq!(drawing.kind, "hline");
+        assert_eq!(drawing.points.len(), 1, "a level is one point");
+        assert_eq!(drawing.points[0].price, 45_000.0);
         let provenance = drawing.provenance.as_ref().expect("stated provenance");
         assert_eq!(provenance.confidence, Some(0.87));
         assert_eq!(
@@ -5313,10 +5328,10 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
                     json!({
                         "symbol": "BTCUSDT",
                         "kind": "trendline",
-                        "time1_ms": 1.0,
-                        "price1": 44_000.0,
-                        "time2_ms": 2.0,
-                        "price2": 46_000.0,
+                        "points": [
+                            {"time_ms": 1.0, "price": 44_000.0},
+                            {"time_ms": 2.0, "price": 46_000.0},
+                        ],
                     }),
                 ),
                 &ctx,
@@ -5326,10 +5341,21 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         assert_eq!(out["created"], true);
         let (_, _, drawing) = &writer.created.lock().expect("lock")[0];
         assert!(drawing.provenance.is_none());
+        assert_eq!(
+            drawing.points,
+            vec![
+                crate::user_drawings::AgentPoint::at(1.0, 44_000.0),
+                crate::user_drawings::AgentPoint::at(2.0, 46_000.0),
+            ],
+            "the points reach the writer in the order the model sent them"
+        );
     }
 
     #[tokio::test]
-    async fn a_half_second_anchor_is_refused_with_an_actionable_message() {
+    async fn a_point_missing_one_of_its_two_numbers_is_refused() {
+        // The shape the previous six-field arguments let a model produce — a
+        // second time with no second price — has no spelling now: a point is
+        // one object with both numbers, and half a point is a broken point.
         let fixture = Fixture::rising(10);
         let source = DrawingsFixture(Vec::new());
         let writer = WriterFixture::new();
@@ -5342,10 +5368,40 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
                     json!({
                         "symbol": "BTCUSDT",
                         "kind": "trendline",
-                        "time1_ms": 1.0,
-                        "price1": 44_000.0,
-                        "time2_ms": 2.0,
+                        "points": [
+                            {"time_ms": 1.0, "price": 44_000.0},
+                            {"time_ms": 2.0},
+                        ],
                     }),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AgentError::InvalidToolArgs { .. }),
+            "got {err}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("point 1") && message.contains("price"),
+            "the refusal names which point and which number: {message}"
+        );
+        assert_eq!(writer.created_count(), 0, "nothing stored on refusal");
+    }
+
+    #[tokio::test]
+    async fn a_drawing_with_no_points_is_refused_before_storage_sees_it() {
+        let fixture = Fixture::rising(10);
+        let source = DrawingsFixture(Vec::new());
+        let writer = WriterFixture::new();
+        let ctx = write_ctx(&fixture, &source, &writer, "user-1");
+
+        let err = registry()
+            .execute(
+                &call(
+                    "create_drawing",
+                    json!({"symbol": "BTCUSDT", "kind": "hline", "points": []}),
                 ),
                 &ctx,
             )
@@ -5372,8 +5428,7 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
                     json!({
                         "symbol": "BTCUSDT",
                         "kind": "hline",
-                        "time1_ms": 1.0,
-                        "price1": 45_000.0,
+                        "points": [{"time_ms": 1.0, "price": 45_000.0}],
                         "confidence": 1.4,
                     }),
                 ),
@@ -5401,7 +5456,8 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
             .execute(
                 &call(
                     "create_drawing",
-                    json!({"symbol": "BTCUSDT", "kind": "hline", "time1_ms": 1.0, "price1": 1.0}),
+                    json!({"symbol": "BTCUSDT", "kind": "hline",
+                           "points": [{"time_ms": 1.0, "price": 1.0}]}),
                 ),
                 &ctx,
             )
@@ -5960,7 +6016,10 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
         fn seed(&self, id: &str, price: f64, trend: &str, drawing_ids: &[&str], at_ns: i64) {
             let drawings: Vec<Value> = drawing_ids
                 .iter()
-                .map(|id| json!({"id": id, "kind": "hline", "price1": price}))
+                .map(|id| {
+                    json!({"id": id, "kind": "hline",
+                           "points": [{"time_ms": 1_767_225_600_000.0, "price": price}]})
+                })
                 .collect();
             self.rows.lock().expect("lock").push(crate::snapshots::ChartSnapshot {
                 id: id.into(),

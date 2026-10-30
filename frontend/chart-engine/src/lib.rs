@@ -40,6 +40,7 @@
 
 #![deny(missing_docs)]
 
+pub mod draw;
 pub mod drawing;
 pub mod footprint;
 pub mod indicator;
@@ -49,8 +50,9 @@ pub mod script;
 pub mod viewport;
 
 pub use drawing::{
-    Anchor, Drawing, DrawingKind, DrawingPart, Fraction, Overlay, OverlayRole, SceneDrawing,
-    SceneOverlay, ToolGroup, ToolSpec, FIB_LEVELS, REGISTRY,
+    Anchor, AnchorCount, Drawing, DrawingKind, DrawingOptions, DrawingPart, Extend, Fraction,
+    Overlay, OverlayRole, PlacedTimePrice, SceneDrawing, SceneOverlay, ScenePoint, ToolGroup,
+    ToolSpec, FIB_LEVELS, REGISTRY,
 };
 pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
 pub use indicator::{

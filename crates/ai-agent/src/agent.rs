@@ -45,6 +45,7 @@ use crate::thesis::{
     parse_thesis, submit_thesis_spec, PriceRange, ToolTrace, TradeThesis, SUBMIT_THESIS,
 };
 use crate::tools::{ToolContext, ToolRegistry};
+use crate::user_drawings::AgentPoint;
 
 /// Default cap on round trips the model may spend calling analysis tools.
 pub const DEFAULT_MAX_TURNS: usize = 6;
@@ -2791,12 +2792,10 @@ async fn auto_draw_findings(
                         crate::user_drawings::NewAgentDrawing {
                             kind: "rect".into(),
                             label: Some(format!("{kind} ({direction})")),
-                            time1_ms: t_min,
-                            price1: p_min,
-                            time2_ms: Some(t_max),
-                            price2: Some(p_max),
-                            time3_ms: None,
-                            price3: None,
+                            points: vec![
+                                AgentPoint::at(t_min, p_min),
+                                AgentPoint::at(t_max, p_max),
+                            ],
                             provenance: auto_provenance(&format!("detect_pattern: {kind}"), confidence),
                         },
                         trace,
@@ -2815,12 +2814,10 @@ async fn auto_draw_findings(
                                 crate::user_drawings::NewAgentDrawing {
                                     kind: "hline".into(),
                                     label: Some(format!("{kind} entry")),
-                                    time1_ms: if t_max.is_finite() { t_max } else { now_ms },
-                                    price1: entry,
-                                    time2_ms: None,
-                                    price2: None,
-                                    time3_ms: None,
-                                    price3: None,
+                                    points: vec![AgentPoint::at(
+                                        if t_max.is_finite() { t_max } else { now_ms },
+                                        entry,
+                                    )],
                                     provenance: auto_provenance(
                                         &format!("detect_pattern: {kind} entry level"),
                                         confidence,
@@ -2871,12 +2868,10 @@ async fn auto_draw_findings(
                         crate::user_drawings::NewAgentDrawing {
                             kind: "rect".into(),
                             label: Some(format!("{name} OB")),
-                            time1_ms: from,
-                            price1: bottom,
-                            time2_ms: Some(to),
-                            price2: Some(top),
-                            time3_ms: None,
-                            price3: None,
+                            points: vec![
+                                AgentPoint::at(from, bottom),
+                                AgentPoint::at(to, top),
+                            ],
                             provenance: auto_provenance("detect_zones: order block", None),
                         },
                         trace,
@@ -2919,12 +2914,10 @@ async fn auto_draw_findings(
                         crate::user_drawings::NewAgentDrawing {
                             kind: "rect".into(),
                             label: Some(format!("{kind} ({touches} touches)")),
-                            time1_ms: from,
-                            price1: bottom,
-                            time2_ms: Some(now_ms),
-                            price2: Some(top),
-                            time3_ms: None,
-                            price3: None,
+                            points: vec![
+                                AgentPoint::at(from, bottom),
+                                AgentPoint::at(now_ms, top),
+                            ],
                             provenance: auto_provenance("detect_zones: sr zone", None),
                         },
                         trace,
@@ -2958,12 +2951,7 @@ async fn auto_draw_findings(
                             crate::user_drawings::NewAgentDrawing {
                                 kind: "hline".into(),
                                 label: Some(label.into()),
-                                time1_ms: now_ms,
-                                price1: price,
-                                time2_ms: None,
-                                price2: None,
-                                time3_ms: None,
-                                price3: None,
+                                points: vec![AgentPoint::at(now_ms, price)],
                                 provenance: auto_provenance("detect_liquidity", None),
                             },
                             trace,
@@ -3003,12 +2991,7 @@ async fn auto_draw_findings(
                             crate::user_drawings::NewAgentDrawing {
                                 kind: "hline".into(),
                                 label: Some(format!("FVG ({side})")),
-                                time1_ms: now_ms,
-                                price1: price,
-                                time2_ms: None,
-                                price2: None,
-                                time3_ms: None,
-                                price3: None,
+                                points: vec![AgentPoint::at(now_ms, price)],
                                 provenance: auto_provenance("detect_imbalance", None),
                             },
                             trace,
@@ -3042,12 +3025,7 @@ async fn auto_draw_findings(
                             crate::user_drawings::NewAgentDrawing {
                                 kind: "hline".into(),
                                 label: Some(label.into()),
-                                time1_ms: now_ms,
-                                price1: price,
-                                time2_ms: None,
-                                price2: None,
-                                time3_ms: None,
-                                price3: None,
+                                points: vec![AgentPoint::at(now_ms, price)],
                                 provenance: auto_provenance("detect_market_structure", None),
                             },
                             trace,
@@ -4637,10 +4615,10 @@ invalidation: []
                     input: json!({
                         "symbol": "BTCUSDT",
                         "kind": "rect",
-                        "time1_ms": 1_700_000_000_000.0_f64,
-                        "price1": 100_000.0,
-                        "time2_ms": 1_700_000_060_000.0_f64,
-                        "price2": 100_050.0,
+                        "points": [
+                            {"time_ms": 1_700_000_000_000.0_f64, "price": 100_000.0},
+                            {"time_ms": 1_700_000_060_000.0_f64, "price": 100_050.0},
+                        ],
                         "label": "Bullish OB 5m 100000-100050 (fresh)",
                     }),
                 }],

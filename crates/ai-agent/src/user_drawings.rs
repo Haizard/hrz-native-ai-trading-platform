@@ -23,19 +23,44 @@
 //! tool says so honestly rather than pretending the chart is blank — a blank
 //! chart is a claim about the market, and "nobody was listening" is not.
 //!
-//! ## Two prices, deliberately, and never a resample
+//! ## A list of points, and never a resample
 //!
-//! A drawing is two `(time, price)` anchors. Collapsing that to one price (the
-//! way a viewport packet must) throws away exactly the half that means
-//! "trendline": which end the user is pointing at. The tool reports both
-//! anchors, the kind, and the label, and leaves the geometry to the model.
+//! A drawing is its kind plus the points the user placed, in order. Collapsing
+//! that to one price (the way a viewport packet must) throws away exactly the
+//! half that means "trendline": which end the user is pointing at. Nor does it
+//! stop at two: a channel is three points and a polyline is as many as the user
+//! clicked, so the agent reads and writes a **list**, which is the same object
+//! model the chart engine and the drawings table use.
 //!
-//! `price2` is absent for a one-anchored kind (`hline`), and for a drawing
-//! whose second anchor never carried a price — both stored states, not
-//! inventions.
+//! The list is also what makes a malformed drawing unspellable. `time2_ms`
+//! without `price2` was a real state the old fields allowed, and both layers
+//! had a check for it; a point is one object with two numbers, so the half a
+//! model can get wrong is a point that is not a number at all, which is caught
+//! where the argument is read.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+
+/// One point of a drawing, in the two units the chart is measured in.
+///
+/// The key names are the ones the pattern tool's `anchors` already use, so a
+/// model has one spelling for "a place on the chart" rather than two:
+/// `{"time_ms": …, "price": …}`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AgentPoint {
+    /// Milliseconds since the epoch.
+    pub time_ms: f64,
+    /// The price.
+    pub price: f64,
+}
+
+impl AgentPoint {
+    /// A point, for the hosts and tests that build a drawing by hand.
+    #[must_use]
+    pub const fn at(time_ms: f64, price: f64) -> Self {
+        Self { time_ms, price }
+    }
+}
 
 /// One user drawing, normalized for the model.
 ///
@@ -49,7 +74,7 @@ pub struct UserDrawing {
     ///
     /// Snapshots freeze drawings, and the compare tool's added/removed diff is
     /// only as good as the identity it compares by: with an id the diff is
-    /// exact, without one it falls back to the kind-and-anchors signature.
+    /// exact, without one it falls back to the kind-and-points signature.
     /// `None` for sources that have no ids (tests, hand-built lists).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub id: Option<String>,
@@ -59,33 +84,21 @@ pub struct UserDrawing {
     /// What the user called it, when they named it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// The first anchor: milliseconds since the epoch, and the price.
-    pub time1_ms: f64,
-    /// The first anchor's price.
-    pub price1: f64,
-    /// The second anchor's time, for the kinds that have one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub time2_ms: Option<f64>,
-    /// The second anchor's price.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub price2: Option<f64>,
-    /// The third anchor's time, for the parity kinds that need one (channel,
-    /// arc, triangle). Absent for everything else, same wire rule as `a2`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub time3_ms: Option<f64>,
-    /// The third anchor's price.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub price3: Option<f64>,
+    /// The points, in the order they were placed: one for a level, two for a
+    /// segment, three for a channel, however many for a polyline.
+    pub points: Vec<AgentPoint>,
 }
 
 impl UserDrawing {
-    /// The most recent anchor's price, when the drawing carries one.
+    /// The last point's price, when there is a point to read.
     ///
-    /// A trendline "at" a price means the end the user last touched; a
-    /// degenerate one-anchored line is just its price.
+    /// A trendline "at" a price means the end the user last touched, and a
+    /// one-point level is just its price. This is the number that folds into the
+    /// grounding range, so it has to be a real price of the drawing rather than
+    /// whichever point a mapping happened to name first.
     #[must_use]
     pub fn price(&self) -> Option<f64> {
-        self.price2.or(Some(self.price1))
+        self.points.last().map(|point| point.price)
     }
 }
 
@@ -130,10 +143,10 @@ pub struct DrawingProvenance {
 
 /// One drawing the agent wants on the chart.
 ///
-/// The wire shape of a `create_drawing` call. Absolute anchors only: a
-/// fraction is a position on a plot and means nothing without the window it
-/// was measured in, which is the same rule the HTTP route enforces — the agent
-/// gets no shortcut around it because it is a model.
+/// The wire shape of a `create_drawing` call. Absolute points only: a screen
+/// fraction means nothing without the window it was measured in, which is the
+/// same rule the HTTP route enforces — the agent gets no shortcut around it
+/// because it is a model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NewAgentDrawing {
     /// The kind to draw. Free text here, **validated against the storage's
@@ -145,24 +158,12 @@ pub struct NewAgentDrawing {
     /// object list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// First anchor: milliseconds since the epoch, and the price.
-    pub time1_ms: f64,
-    /// First anchor's price.
-    pub price1: f64,
-    /// Second anchor, for the kinds that need two.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub time2_ms: Option<f64>,
-    /// Second anchor's price.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub price2: Option<f64>,
-    /// Third anchor, for the parity kinds that need three (channel, arc,
-    /// triangle). The engine's `validate_anchors` is the rule; this struct
-    /// only carries what it asked for.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub time3_ms: Option<f64>,
-    /// Third anchor's price.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub price3: Option<f64>,
+    /// The points, in placement order. How many a kind takes is the engine's
+    /// rule (`DrawingKind::anchors`), applied one layer up where the write
+    /// happens; this struct carries what the model asked for and does not
+    /// second-guess it, because a second copy of the count is how the two
+    /// vocabularies drift apart.
+    pub points: Vec<AgentPoint>,
     /// The model's confidence and stated reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provenance: Option<DrawingProvenance>,
@@ -196,8 +197,8 @@ pub trait DrawingWriter: Send + Sync {
     ///
     /// # Errors
     /// Any [`crate::AgentError`] when storage refuses — an unknown kind, a
-    /// half-populated anchor pair, a non-finite number. The message goes back
-    /// to the model, which can correct and retry.
+    /// point count the kind does not take, a non-finite number. The message
+    /// goes back to the model, which can correct and retry.
     async fn create(
         &self,
         user_id: &str,
@@ -255,51 +256,78 @@ pub fn clamp_drawings(drawings: &mut Vec<UserDrawing>, max: usize) -> usize {
 mod tests {
     use super::*;
 
-    fn drawing(kind: &str, price1: f64, price2: Option<f64>) -> UserDrawing {
+    fn drawing(kind: &str, points: &[f64]) -> UserDrawing {
         UserDrawing {
             id: None,
             kind: kind.into(),
             label: None,
-            time1_ms: 1_767_225_600_000.0,
-            price1,
-            time2_ms: price2.map(|_| 1_767_229_200_000.0),
-            price2,
-            time3_ms: None,
-            price3: None,
+            points: points
+                .iter()
+                .enumerate()
+                .map(|(index, price)| AgentPoint::at(1_767_225_600_000.0 + index as f64, *price))
+                .collect(),
         }
     }
 
     #[test]
     fn a_trendline_cites_its_recent_end() {
-        let d = drawing("trendline", 45_000.0, Some(45_500.0));
+        let d = drawing("trendline", &[45_000.0, 45_500.0]);
         assert_eq!(d.price(), Some(45_500.0));
     }
 
     #[test]
     fn a_horizontal_line_cites_its_one_price() {
-        let d = drawing("hline", 45_000.0, None);
+        let d = drawing("hline", &[45_000.0]);
         assert_eq!(d.price(), Some(45_000.0));
     }
 
     #[test]
-    fn a_half_populated_second_anchor_is_the_absent_anchor() {
-        // A storage row whose pair was broken by hand. Inventing a price from
-        // the first anchor would read as analysis the user never drew.
-        let d = drawing("rect", 45_000.0, None);
-        assert_eq!(d.time2_ms, None);
-        assert_eq!(d.price2, None);
-        assert_eq!(d.price(), Some(45_000.0));
+    fn a_many_point_drawing_cites_the_last_point_it_was_given() {
+        // The rule "the end the user last touched" generalised: a five-point
+        // polyline's price is its fifth point, not its first and not their mean.
+        // This is the number the grounding range walks, so a wrong pick here
+        // shifts what the thesis is allowed to cite.
+        let d = drawing("polyline", &[1.0, 2.0, 3.0, 4.0, 46_000.0]);
+        assert_eq!(d.points.len(), 5);
+        assert_eq!(d.price(), Some(46_000.0));
+    }
+
+    #[test]
+    fn a_drawing_with_no_points_has_no_price_rather_than_a_zero() {
+        // Sources are built by hosts, and an empty list is a thing a host can
+        // hand over. `Some(0.0)` here would be a price the user never drew,
+        // grounding a thesis against a level that does not exist.
+        assert_eq!(drawing("trendline", &[]).price(), None);
+    }
+
+    #[test]
+    fn a_point_that_is_half_a_point_does_not_deserialize() {
+        // The wire is why the old half-anchor checks could go. A `time2_ms`
+        // without a `price2` was a value the previous shape could spell and both
+        // layers had to refuse; a point is one object with two required numbers,
+        // so the incomplete version is simply not this type.
+        let missing_price: Result<UserDrawing, _> = serde_json::from_str(
+            r#"{"kind":"trendline","points":[{"time_ms":1767225600000}]}"#,
+        );
+        assert!(missing_price.is_err());
+
+        let ok: UserDrawing = serde_json::from_str(
+            r#"{"kind":"hline","points":[{"time_ms":1767225600000,"price":45000}]}"#,
+        )
+        .expect("a whole point parses");
+        assert_eq!(ok.points, vec![AgentPoint::at(1_767_225_600_000.0, 45_000.0)]);
     }
 
     #[test]
     fn clamping_reports_what_it_dropped() {
-        let mut many: Vec<UserDrawing> =
-            (0..30).map(|i| drawing("hline", i as f64, None)).collect();
+        let mut many: Vec<UserDrawing> = (0..30)
+            .map(|i| drawing("hline", &[i as f64]))
+            .collect();
         assert_eq!(clamp_drawings(&mut many, 24), 30, "the original count");
         assert_eq!(many.len(), 24);
 
         // Under the cap the report is the same as the length: nothing dropped.
-        let mut few = vec![drawing("hline", 1.0, None)];
+        let mut few = vec![drawing("hline", &[1.0])];
         assert_eq!(clamp_drawings(&mut few, 24), 1);
         assert_eq!(few.len(), 1);
     }

@@ -89,8 +89,8 @@ pub use community::{
 };
 pub use config::DatabaseConfig;
 pub use drawings::{
-    create_drawing, delete_drawing, list_drawings, needs_second_anchor, needs_third_anchor,
-    update_drawing, DrawingRow, NewDrawing, KINDS as DRAWING_KINDS,
+    create_drawing, delete_drawing, list_drawings, no_options, points_from_json, update_drawing,
+    DrawingRow, NewDrawing, StoredPoint, KINDS as DRAWING_KINDS,
 };
 pub use error::DbError;
 pub use indicator_workspaces::{

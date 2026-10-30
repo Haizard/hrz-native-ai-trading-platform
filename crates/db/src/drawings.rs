@@ -1,13 +1,22 @@
 //! Drawings: the shapes a user has drawn on a symbol (`docs/14`).
 //!
-//! ## Two anchors -- and sometimes three -- and a kind
+//! ## A list of points, and a kind that says how many
 //!
-//! Everything a trader draws is `(time, price)` points with a rule for what
-//! goes between them: `kind`, an anchor, an optional second anchor, and -- for
-//! the parity vocabulary -- an optional third. A trendline is the segment, a
+//! Everything a trader draws is `(time, price)` points with a rule for what goes
+//! between them: `kind`, and a list of points. A trendline is the segment, a
 //! rectangle is the area, a Fibonacci is the levels, a horizontal line is the
-//! degenerate case that needs one anchor, and a parallel channel is two points
-//! for the line plus one for its width.
+//! one-point case, a parallel channel is two points for the line plus one for
+//! its width, and a polyline or an Elliott impulse is a point per click however
+//! many the user places.
+//!
+//! Storage holds the list and no rule about its length. This used to keep a
+//! second copy of the engine's arity -- two `needs_*` functions whose case lists
+//! had to be edited in step with an enum in another crate, and whose only real
+//! test was a comparison of the two copies against each other. The route checks
+//! the shape with `chart_engine::DrawingKind::anchors` before it gets here, so
+//! what is in the column is a list the engine already said it can draw. The one
+//! thing with no per-kind exception is a `CHECK` on the column: an empty list is
+//! not a shape.
 //!
 //! ## This is the one user-authored table that is edited
 //!
@@ -22,18 +31,26 @@
 //!
 //! The platform's internal clock is unix nanoseconds (`docs/13`) and
 //! [`crate::repositories::dt_to_ns`] is how everything else crosses that
-//! boundary. An anchor does not use it, deliberately: an anchor is the one value
-//! that makes the round trip *out* to a browser and *back* into the database,
-//! and JSON numbers are doubles. A nanosecond timestamp is past 2^53, so one
-//! read into JavaScript and written back is a different number -- a few hundred
+//! boundary. A point's time does not use it, deliberately: a point is the value
+//! that makes the round trip *out* to a browser and *back* into the database, and
+//! JSON numbers are doubles. A nanosecond timestamp is past 2^53, so one read
+//! into JavaScript and written back is a different number -- a few hundred
 //! nanoseconds, which is invisible on a chart and is still a write that changed
-//! the data. Milliseconds fit exactly, so the wire is milliseconds and this
-//! module is where they become `TIMESTAMPTZ`.
+//! the data. Milliseconds fit exactly, so the times in this column are
+//! milliseconds and nothing converts them.
+//!
+//! `points` is `JSONB`, which is what the paragraph above forced: a fixed number
+//! of anchor columns cannot hold a drawing with five points, and keeping
+//! `a1_time … a3_price` beside a `points` array is two vocabularies for one fact.
+//! The case against JSONB was made in `0011` for a three-anchor vocabulary and
+//! expired when the vocabulary outgrew it -- the note at the top of
+//! `0018_drawing_points.sql` records which of its arguments still hold.
 //!
 //! `created_at` and `updated_at` are reported in nanoseconds like every other
 //! timestamp in this crate, because nothing sends them back.
 
-use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -49,7 +66,7 @@ use crate::repositories::dt_to_ns;
 ///
 /// The 2026-09 parity extension added the TradingView staples: channel, angle,
 /// arc, circle, triangle, long/short position boxes and the date/price range
-/// -- see `docs/21`. Each is one variant plus a `shapes` arm in the engine.
+/// -- see `docs/21`. Each is one variant plus a `draw/` arm in the engine.
 /// `kline` is listed but is the parity oddball: it is a bar chart per day and
 /// draws with the candle geometry, not with anchors, so it lives in the
 /// registry while storage keeps its own vocabulary.
@@ -73,57 +90,24 @@ pub const KINDS: [&str; 17] = [
     "dateprice_range",
 ];
 
-/// Whether a kind needs its second anchor.
+/// One point of a drawing: its time in **milliseconds** and its price in the
+/// instrument's own units.
 ///
-/// The one rule with eight cases. It is here rather than in SQL because the
-/// database can express "the pair is whole" (`drawings_anchor_pair_is_whole`)
-/// but not "this kind needs one and that kind needs two", and it is here rather
-/// than in the route because the route's job is the status code, not the
-/// vocabulary.
-///
-/// An unknown kind answers `true`: it is refused before this is reached, and
-/// demanding more rather than less of something unrecognised is the safe way to
-/// be wrong.
-#[must_use]
-pub fn needs_second_anchor(kind: &str) -> bool {
-    !matches!(kind, "hline" | "vline")
+/// The key names are part of the contract, not a detail of this struct:
+/// `0018_drawing_points.sql` builds the backfilled array with
+/// `jsonb_build_object('time', …, 'price', …)`, so renaming a field here would
+/// make the rows that migration wrote unreadable -- and unreadable *quietly*,
+/// because [`points_from_json`] answers an unknown shape with the empty list.
+/// `stored_point_json_matches_what_the_migration_wrote` pins both keys.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StoredPoint {
+    /// Milliseconds since the epoch.
+    pub time: f64,
+    /// The price at that time.
+    pub price: f64,
 }
 
-/// Whether a kind needs its **third** anchor.
-///
-/// The parity vocabulary's rule: a parallel channel is two points for the line
-/// and one for its width; an arc is a centre plus two radius points; a
-/// triangle is one anchor per vertex. A circle is a centre plus a *single*
-/// point on its radius -- the radius is the distance between the two, so it
-/// stops at two, matching the engine's `DrawingKind::needs_third_anchor`.
-/// Everything else stops at two as well.
-///
-/// Written as the *negation* of the two-anchor list, matching
-/// [`needs_second_anchor`]'s style: unknown kinds answer `true`, and demanding
-/// more rather than less of something unrecognised is the safe way to be
-/// wrong.
-#[must_use]
-pub fn needs_third_anchor(kind: &str) -> bool {
-    !matches!(
-        kind,
-        "trendline"
-            | "hline"
-            | "vline"
-            | "ray"
-            | "extended"
-            | "rect"
-            | "fib"
-            | "fib_extension"
-            | "measure"
-            | "angle"
-            | "circle"
-            | "position_long"
-            | "position_short"
-            | "dateprice_range"
-    )
-}
-
-/// A stored drawing, with its anchors in **milliseconds**.
+/// A stored drawing, with its points in **milliseconds**.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrawingRow {
     /// The row id.
@@ -132,18 +116,16 @@ pub struct DrawingRow {
     pub symbol: String,
     /// One of [`KINDS`].
     pub kind: String,
-    /// First anchor, milliseconds since the epoch.
-    pub a1_time_ms: f64,
-    /// First anchor's price.
-    pub a1_price: f64,
-    /// Second anchor, for the kinds that have one.
-    pub a2_time_ms: Option<f64>,
-    /// Second anchor's price.
-    pub a2_price: Option<f64>,
-    /// Third anchor, for the parity kinds that need one (`0011`).
-    pub a3_time_ms: Option<f64>,
-    /// Third anchor's price.
-    pub a3_price: Option<f64>,
+    /// The shape's points, in the order they were placed. Non-empty on anything
+    /// this module wrote; [`points_from_json`] is the only way a read comes back
+    /// empty.
+    pub points: Vec<StoredPoint>,
+    /// How to draw it: whether the line extends past its points, which way a
+    /// Fibonacci swing runs, and in later tasks the level set or the row count.
+    /// `{}` means "the engine's default for this kind", which is why the column
+    /// defaults to an empty object rather than being nullable: a missing key and
+    /// a null key would then be two spellings of the same answer.
+    pub options: Value,
     /// What the user called it, if anything.
     pub label: Option<String>,
     /// Who is accountable for this row: `None` is a hand-drawn one, and
@@ -163,9 +145,10 @@ pub struct DrawingRow {
 
 /// A drawing about to be written.
 ///
-/// Separate from [`DrawingRow`] because a row has an id and timestamps the
-/// caller does not supply, and because a struct with two optional fields that
-/// must agree is a thing to construct deliberately rather than to spread.
+/// Separate from [`DrawingRow`] because a row has an id and timestamps the caller
+/// does not supply. The points are a `Vec` rather than two or three pairs of
+/// fields so that a tool with a variable count -- a polyline, an impulse, a brush
+/// stroke -- is the ordinary case here rather than one the struct cannot spell.
 ///
 /// The symbol is *not* a field: it is a parameter of
 /// [`create_drawing`] and is deliberately absent from [`update_drawing`], which
@@ -176,18 +159,11 @@ pub struct DrawingRow {
 pub struct NewDrawing {
     /// One of [`KINDS`].
     pub kind: String,
-    /// First anchor, milliseconds since the epoch.
-    pub a1_time_ms: f64,
-    /// First anchor's price.
-    pub a1_price: f64,
-    /// Second anchor, milliseconds since the epoch.
-    pub a2_time_ms: Option<f64>,
-    /// Second anchor's price.
-    pub a2_price: Option<f64>,
-    /// Third anchor, milliseconds since the epoch.
-    pub a3_time_ms: Option<f64>,
-    /// Third anchor's price.
-    pub a3_price: Option<f64>,
+    /// The shape's points, in the order they were placed.
+    pub points: Vec<StoredPoint>,
+    /// How to draw it; see [`DrawingRow::options`]. Use [`no_options`] for the
+    /// drawing that has no opinion.
+    pub options: Value,
     /// What the user called it, if anything.
     pub label: Option<String>,
     /// Provenance (`0009_drawing_provenance.sql`): who is accountable, which
@@ -215,46 +191,46 @@ pub struct Provenance {
     pub reason: Option<String>,
 }
 
-/// Convert milliseconds to a UTC timestamp.
+/// The options value meaning "draw it the way this kind is drawn by default".
 ///
-/// Total, because a `NaN` or an out-of-range millisecond value reaching the
-/// driver is a 500 for a request that should have been refused earlier -- and a
-/// drawing at the epoch is visibly wrong, which is better than a drawing that
-/// silently is not there.
-fn ms_to_dt(ms: f64) -> DateTime<Utc> {
-    let rounded = if ms.is_finite() { ms.round() } else { 0.0 };
-    DateTime::from_timestamp_millis(rounded as i64).unwrap_or(DateTime::UNIX_EPOCH)
+/// A function rather than `Value::Object(Default::default())` at each call site
+/// because `{}` is a claim about the engine's defaults, not an empty map the
+/// caller happened not to fill in -- and a caller that spells it as `null` would
+/// be a drawing whose options the engine reads as nothing, which is the same
+/// answer by accident rather than by rule.
+#[must_use]
+pub fn no_options() -> Value {
+    Value::Object(serde_json::Map::new())
 }
 
-/// Convert a UTC timestamp to milliseconds.
+/// Read a point list out of the column's JSON.
 ///
-/// `timestamp_millis` rather than `dt_to_ns(..) / 1e6`: the second one converts
-/// to a nanosecond `i64` first, which for a present-day timestamp is 1.7e18 --
-/// past the range a `f64` represents exactly, so the division would be done on a
-/// number that had already lost the low bits. This one is exact.
-fn dt_to_ms(dt: DateTime<Utc>) -> f64 {
-    dt.timestamp_millis() as f64
+/// A list that cannot be read becomes empty rather than an error, for the same
+/// reason [`crate::repositories::levels_from_json`] is not fallible: this runs
+/// inside a `SELECT` over every drawing the user owns, and one row written by a
+/// future version of this module -- a key renamed, a point in a shape the current
+/// code does not understand -- would otherwise be a 500 for the whole chart. The
+/// empty list is then refused by the engine as a drawing with no points, so the
+/// cost is that one shape, visibly, rather than no shapes at all.
+///
+/// The all-or-nothing reading is the deliberate half of that: a five-point
+/// polyline whose third point is malformed comes back as nothing, because half a
+/// list would be drawn as a different shape and then saved as that other shape
+/// the next time the user drags it.
+#[must_use]
+pub fn points_from_json(value: &Value) -> Vec<StoredPoint> {
+    serde_json::from_value(value.clone()).unwrap_or_default()
 }
 
 fn row_to_drawing(row: &sqlx::postgres::PgRow) -> Result<DrawingRow, DbError> {
-    let a2_time: Option<DateTime<Utc>> = row.try_get("a2_time")?;
-    let a2_price: Option<f64> = row.try_get("a2_price")?;
-    let a3_time: Option<DateTime<Utc>> = row.try_get("a3_time")?;
-    let a3_price: Option<f64> = row.try_get("a3_price")?;
+    let points: Value = row.try_get("points")?;
+    let options: Value = row.try_get("options")?;
     Ok(DrawingRow {
         id: row.try_get("id")?,
         symbol: row.try_get("symbol")?,
         kind: row.try_get("kind")?,
-        a1_time_ms: dt_to_ms(row.try_get("a1_time")?),
-        a1_price: row.try_get("a1_price")?,
-        // Both columns move together -- `drawings_anchor_pair_is_whole` says so
-        // -- so a half-populated pair is a database that has been edited by
-        // hand, and reporting `None` is the honest reading of it.
-        a2_time_ms: a2_time.map(dt_to_ms),
-        a2_price,
-        // The third anchor obeys the same whole-or-absent CHECK (`0011`).
-        a3_time_ms: a3_time.map(dt_to_ms),
-        a3_price,
+        points: points_from_json(&points),
+        options,
         label: row.try_get("label")?,
         created_by: row.try_get("created_by")?,
         agent: row.try_get("agent")?,
@@ -279,7 +255,7 @@ pub async fn list_drawings(
     symbol: &str,
 ) -> Result<Vec<DrawingRow>, DbError> {
     let rows = sqlx::query(
-        "SELECT id, symbol, kind, a1_time, a1_price, a2_time, a2_price, a3_time, a3_price, label, \
+        "SELECT id, symbol, kind, points, options, label, \
          created_by, agent, confidence, reason, created_at, updated_at \
          FROM drawings WHERE user_id = $1 AND symbol = $2 ORDER BY created_at, id",
     )
@@ -297,8 +273,10 @@ pub async fn list_drawings(
 /// the struct's own comment gives: it belongs to one of the two writers.
 ///
 /// # Errors
-/// Returns [`DbError::Pool`] if the insert fails, or if the anchor pair is half
-/// populated -- which the `CHECK` refuses, and which the route refuses first.
+/// Returns [`DbError::Pool`] if the insert fails -- which covers both ways a
+/// write can be refused here: the `CHECK` on the array length, and a point that
+/// will not encode, since a non-finite price is not a JSON number. The route
+/// refuses both first, so reaching them is a caller that came in by another door.
 pub async fn create_drawing(
     pool: &PgPool,
     user_id: Uuid,
@@ -306,19 +284,15 @@ pub async fn create_drawing(
     drawing: &NewDrawing,
 ) -> Result<Uuid, DbError> {
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO drawings (user_id, symbol, kind, a1_time, a1_price, a2_time, a2_price, \
-         a3_time, a3_price, label, created_by, agent, confidence, reason) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id",
+        "INSERT INTO drawings (user_id, symbol, kind, points, options, label, \
+         created_by, agent, confidence, reason) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
     )
     .bind(user_id)
     .bind(symbol)
     .bind(drawing.kind.as_str())
-    .bind(ms_to_dt(drawing.a1_time_ms))
-    .bind(drawing.a1_price)
-    .bind(drawing.a2_time_ms.map(ms_to_dt))
-    .bind(drawing.a2_price)
-    .bind(drawing.a3_time_ms.map(ms_to_dt))
-    .bind(drawing.a3_price)
+    .bind(sqlx::types::Json(&drawing.points))
+    .bind(&drawing.options)
     .bind(drawing.label.as_deref())
     .bind(drawing.provenance.as_ref().map(|p| p.created_by.as_str()))
     .bind(drawing.provenance.as_ref().and_then(|p| p.agent.as_deref()))
@@ -355,6 +329,11 @@ pub async fn create_drawing(
 /// launder an AI object into a human one (or the reverse) by touching its
 /// geometry.
 ///
+/// The whole point list is replaced rather than patched. A drawing's points are
+/// one object's geometry, and an update that could address a point by index would
+/// let a client resize a trendline into a polyline without the kind changing --
+/// which is the disagreement the engine's arity rule exists to prevent.
+///
 /// # Errors
 /// Returns [`DbError::Pool`] if the update fails.
 pub async fn update_drawing(
@@ -364,19 +343,14 @@ pub async fn update_drawing(
     drawing: &NewDrawing,
 ) -> Result<bool, DbError> {
     let updated: Option<Uuid> = sqlx::query_scalar(
-        "UPDATE drawings SET kind = $3, a1_time = $4, a1_price = $5, a2_time = $6, \
-         a2_price = $7, a3_time = $8, a3_price = $9, label = $10, updated_at = now() \
+        "UPDATE drawings SET kind = $3, points = $4, options = $5, label = $6, updated_at = now() \
          WHERE id = $1 AND user_id = $2 RETURNING id",
     )
     .bind(id)
     .bind(user_id)
     .bind(drawing.kind.as_str())
-    .bind(ms_to_dt(drawing.a1_time_ms))
-    .bind(drawing.a1_price)
-    .bind(drawing.a2_time_ms.map(ms_to_dt))
-    .bind(drawing.a2_price)
-    .bind(drawing.a3_time_ms.map(ms_to_dt))
-    .bind(drawing.a3_price)
+    .bind(sqlx::types::Json(&drawing.points))
+    .bind(&drawing.options)
     .bind(drawing.label.as_deref())
     .fetch_optional(pool)
     .await?;
@@ -405,54 +379,7 @@ pub async fn delete_drawing(pool: &PgPool, user_id: Uuid, id: Uuid) -> Result<bo
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_a_horizontal_or_vertical_line_has_one_anchor() {
-        assert!(!needs_second_anchor("hline"));
-        assert!(!needs_second_anchor("vline"));
-        for kind in ["trendline", "ray", "extended", "rect", "fib", "measure"] {
-            assert!(needs_second_anchor(kind), "{kind} needs two anchors");
-        }
-    }
-
-    #[test]
-    fn an_unknown_kind_demands_more_rather_than_less() {
-        // The safe way to be wrong about something unrecognised. A `false` here
-        // would mean a kind nobody has heard of is allowed through with one
-        // anchor, which is the shape that reaches the engine and cannot be drawn.
-        assert!(needs_second_anchor("channel"));
-        assert!(needs_second_anchor(""));
-    }
-
-    #[test]
-    fn only_the_parity_kinds_need_a_third_anchor() {
-        // The 2026-09 vocabulary, one rule: channel, arc and triangle are
-        // three-point tools. A circle is centre plus one radius point, so it
-        // stops at two -- the same rule the engine's
-        // `DrawingKind::needs_third_anchor` states.
-        for kind in ["channel", "arc", "triangle"] {
-            assert!(needs_third_anchor(kind), "{kind} needs three anchors");
-        }
-        for kind in [
-            "trendline",
-            "hline",
-            "vline",
-            "ray",
-            "extended",
-            "rect",
-            "fib",
-            "measure",
-            "angle",
-            "circle",
-            "position_long",
-            "position_short",
-            "dateprice_range",
-        ] {
-            assert!(!needs_third_anchor(kind), "{kind} needs two");
-        }
-        // And the safe way to be wrong about something unrecognised.
-        assert!(needs_third_anchor(""));
-    }
+    use serde_json::json;
 
     #[test]
     fn every_kind_is_lowercase_ascii() {
@@ -468,38 +395,106 @@ mod tests {
     }
 
     #[test]
-    fn milliseconds_survive_the_round_trip_exactly() {
-        // The reason the wire is milliseconds at all. A present-day nanosecond
-        // timestamp is 1.7e18, past the 2^53 a JSON number can hold, so this
-        // round trip is the one that has to be exact.
+    fn stored_point_json_matches_what_the_migration_wrote() {
+        // The keys a point is stored under, pinned against the SQL that built the
+        // existing rows: `0018` writes jsonb_build_object('time', .., 'price', ..).
+        let value = serde_json::to_value(StoredPoint {
+            time: 1_767_225_600_000.0,
+            price: 45_000.5,
+        })
+        .expect("a point serializes");
+        assert_eq!(
+            value,
+            json!({"time": 1_767_225_600_000.0, "price": 45_000.5}),
+            "a renamed field would make the backfilled drawings read as empty"
+        );
+    }
+
+    #[test]
+    fn a_point_list_is_the_array_the_column_checks() {
+        // `drawings_points_is_a_non_empty_array` counts an array, so what reaches
+        // the driver is one JSON object per point -- not a map keyed by index, and
+        // not a flat list of numbers.
+        let points = vec![
+            StoredPoint {
+                time: 1_767_225_600_000.0,
+                price: 45_000.0,
+            },
+            StoredPoint {
+                time: 1_767_229_200_000.0,
+                price: 46_000.0,
+            },
+        ];
+        let value = serde_json::to_value(&points).expect("a list serializes");
+        assert_eq!(value.as_array().map(Vec::len), Some(2));
+        assert_eq!(points_from_json(&value), points, "and reads back");
+    }
+
+    #[test]
+    fn a_point_list_that_cannot_be_read_is_empty_rather_than_fatal() {
+        // The non-fatal half of `points_from_json`'s argument. Each case below is
+        // a payload a future version could plausibly have written, and none of
+        // them may turn a chart into an error page.
+        for unreadable in [
+            json!("a trendline"),
+            json!(null),
+            json!({}),
+            json!([{"t": 1.0, "p": 2.0}]),
+            json!([{"time": 1.0, "price": "high"}]),
+            json!([{"time": "1767225600000", "price": 2.0}]),
+            json!([[]]),
+            // The shape a row that predates the backfill carries: `DEFAULT '[]'`
+            // is a legal array of length zero, and the CHECK refuses it on write,
+            // not on read.
+            json!([]),
+        ] {
+            assert!(
+                points_from_json(&unreadable).is_empty(),
+                "{unreadable} read as something"
+            );
+        }
+        // One leniency worth knowing about, because it is the reader's and not a
+        // choice this module made: serde also deserialises a struct from a JSON
+        // array, so `[[1.0, 2.0]]` *is* a point. Nothing writes that shape -- the
+        // migration builds objects, and `StoredPoint` serialises to one -- so the
+        // only thing the leniency costs is a second spelling this reader would
+        // accept. Asserting it here rather than pretending it is refused.
+        assert_eq!(
+            points_from_json(&json!([[1_767_225_600_000.0, 45_000.0]])),
+            vec![StoredPoint {
+                time: 1_767_225_600_000.0,
+                price: 45_000.0,
+            }],
+            "a positional point parses, because serde does"
+        );
+        // And the all-or-nothing half: one bad point is not a shorter drawing.
+        let broken = json!([
+            {"time": 1_767_225_600_000.0, "price": 45_000.0},
+            {"time": 1_767_229_200_000.0, "price": null},
+        ]);
+        assert!(points_from_json(&broken).is_empty(), "not one point");
+    }
+
+    #[test]
+    fn milliseconds_survive_a_json_number_and_nanoseconds_do_not() {
+        // The reason a point's time is milliseconds, measured against the format
+        // it is really stored in. `float_roundtrip` is what makes this exact
+        // rather than merely close: serde_json's default parser is best-effort and
+        // can hand back a value one ULP away.
         for ms in [0.0, 1_672_515_782_136.0, 1_767_225_600_000.0, -86_400_000.0] {
-            let dt = ms_to_dt(ms);
-            assert_eq!(dt_to_ms(dt), ms, "{ms} did not survive");
+            let point = StoredPoint {
+                time: ms,
+                price: 45_000.5,
+            };
+            let text = serde_json::to_string(&point).expect("a point prints");
+            let back: StoredPoint = serde_json::from_str(&text).expect("a point parses");
+            assert_eq!(back, point, "{ms} did not survive the column");
         }
-    }
 
-    #[test]
-    fn a_nonsense_millisecond_value_lands_at_the_epoch_rather_than_panicking() {
-        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e300] {
-            let dt = ms_to_dt(bad);
-            // What matters is that it produced *a* timestamp and not a panic in
-            // the driver. `1e300` saturates rather than wrapping to a negative.
-            assert!(dt.timestamp_millis() >= 0, "{bad} produced {dt}");
-        }
-    }
-
-    #[test]
-    fn a_nanosecond_timestamp_would_not_have_survived_the_same_trip() {
-        // The test above says milliseconds work; this one says the alternative
-        // would not have, so the exception in this module's header is a measured
-        // claim rather than a belief.
-        //
-        // The first version of this used `1_767_225_600_000_000_000` and
-        // *failed*, because that value happens to be a multiple of 256 and is
-        // therefore exactly representable. Which is the point worth keeping: at
-        // this magnitude a `f64`'s spacing is 256, so a timestamp survives only by
-        // luck -- and the ones that matter, anything carrying real
-        // sub-millisecond precision, do not.
+        // The alternative would not have. A present-day nanosecond timestamp is
+        // 1.7e18, past the 2^53 a double holds exactly, so at this magnitude the
+        // spacing is 256 and a time that goes to JavaScript and comes back is a
+        // different instant.
         let base = 1_767_225_600_000_000_000i64;
         assert_eq!(
             (base + 1) as f64,
@@ -512,12 +507,15 @@ mod tests {
             "256 is the step that does move, so the collision above is about the \
              magnitude rather than about this number"
         );
+    }
 
-        let nanos = base + 1;
-        assert_ne!(
-            nanos as f64 as i64, nanos,
-            "a nanosecond timestamp is not representable past 2^53, so this one \
-             would come back from a browser as a different instant"
-        );
+    #[test]
+    fn empty_options_is_the_object_the_column_defaults_to() {
+        // `{}` and `null` are not the same claim, and the column's own default is
+        // the empty object. A writer that sends null is saying "no options", which
+        // the engine happens to read the same way -- by accident, and an accident
+        // is not a contract.
+        assert_eq!(no_options(), json!({}));
+        assert_ne!(no_options(), Value::Null);
     }
 }

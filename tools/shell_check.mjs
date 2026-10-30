@@ -1089,11 +1089,10 @@ window.fetch = async (path, options = {}) => {
         id: `server-${backend.nextId++}`,
         symbol: (body.symbol ?? symbol).toUpperCase(),
         kind: body.kind,
-        a1: body.a1,
-        a2: body.a2 ?? null,
-        // The parity kinds carry a third anchor; the stub echoes whatever the
-        // shell sent, which is also the check that the shell sends one.
-        a3: body.a3 ?? null,
+        // The list, in the order the shell sent it: a stub that re-paired the
+        // points into named columns could not tell a channel from a line that
+        // lost its width.
+        points: body.points,
         label: body.label ?? null,
       };
       backend.drawings.push(stored);
@@ -1696,7 +1695,7 @@ check(
         typeof t.title === "string" &&
         typeof t.group === "string" &&
         typeof t.group_label === "string" &&
-        (typeof t.anchors === "number" || (t.anchors && typeof t.anchors === "object"))
+        (t.anchors?.form === "fixed" ? Number.isInteger(t.anchors.points) : t.anchors?.form === "many" && Number.isInteger(t.anchors.min))
     ),
   `${registry().length} tools`
 );
@@ -3777,15 +3776,19 @@ check(
   stored && stored.kind
 );
 check(
-  "with absolute anchors, which is the only form storage keeps",
-  stored && stored.a1.unit === "absolute" && stored.a2.unit === "absolute",
-  stored && JSON.stringify([stored.a1, stored.a2])
+  "with one absolute point per anchor the kind takes",
+  stored &&
+    Array.isArray(stored.points) &&
+    stored.points.length === 2 &&
+    stored.points.every((p) => p.unit === "absolute"),
+  stored && JSON.stringify(stored.points)
 );
 check(
-  "and two anchors that are not the same point",
+  "and two points that are not the same place",
   stored &&
-    (stored.a1.time !== stored.a2.time || stored.a1.price !== stored.a2.price),
-  stored && JSON.stringify([stored.a1, stored.a2])
+    (stored.points[0].time !== stored.points[1].time ||
+      stored.points[0].price !== stored.points[1].price),
+  stored && JSON.stringify(stored.points)
 );
 
 // The fourth defect: the saved drawing replaced the local one with a row that
@@ -3847,10 +3850,10 @@ check(
 
 if (puts.length > putBefore) {
   const body = JSON.parse(puts[puts.length - 1].body);
-  const dt = body.a2.time - body.a1.time;
-  const dp = body.a2.price - body.a1.price;
-  const dtBefore = stored.a2.time - stored.a1.time;
-  const dpBefore = stored.a2.price - stored.a1.price;
+  const dt = body.points[1].time - body.points[0].time;
+  const dp = body.points[1].price - body.points[0].price;
+  const dtBefore = stored.points[1].time - stored.points[0].time;
+  const dpBefore = stored.points[1].price - stored.points[0].price;
   // Equal *differences* is exactly "the shape moved rather than deformed", and
   // it is checkable without knowing which way the axes run.
   check(
@@ -3860,13 +3863,14 @@ if (puts.length > putBefore) {
   );
   check(
     "both ends moved",
-    body.a1.time !== stored.a1.time || body.a1.price !== stored.a1.price,
-    `${JSON.stringify(stored.a1)} -> ${JSON.stringify(body.a1)}`
+    body.points[0].time !== stored.points[0].time ||
+      body.points[0].price !== stored.points[0].price,
+    `${JSON.stringify(stored.points[0])} -> ${JSON.stringify(body.points[0])}`
   );
   check(
     "and the scene agrees with what was stored",
-    Math.abs(lastScene().drawings[0].a1.time - body.a1.time) < 1e-6,
-    `${lastScene().drawings[0].a1.time} vs ${body.a1.time}`
+    Math.abs(lastScene().drawings[0].points[0].absolute.time - body.points[0].time) < 1e-6,
+    `${lastScene().drawings[0].points[0].absolute.time} vs ${body.points[0].time}`
   );
 }
 
@@ -3920,13 +3924,15 @@ if (anchorOne) {
     const dragged = lastBody();
     check(
       "and the end that was not grabbed did not move",
-      dragged.a1.time === afterBody.a1.time && dragged.a1.price === afterBody.a1.price,
-      `${JSON.stringify(afterBody.a1)} -> ${JSON.stringify(dragged.a1)}`
+      dragged.points[0].time === afterBody.points[0].time &&
+        dragged.points[0].price === afterBody.points[0].price,
+      `${JSON.stringify(afterBody.points[0])} -> ${JSON.stringify(dragged.points[0])}`
     );
     check(
       "while the one that was grabbed did, so the slope changed",
-      dragged.a2.time !== afterBody.a2.time || dragged.a2.price !== afterBody.a2.price,
-      `${JSON.stringify(afterBody.a2)} -> ${JSON.stringify(dragged.a2)}`
+      dragged.points[1].time !== afterBody.points[1].time ||
+        dragged.points[1].price !== afterBody.points[1].price,
+      `${JSON.stringify(afterBody.points[1])} -> ${JSON.stringify(dragged.points[1])}`
     );
   }
 }
@@ -4551,8 +4557,7 @@ backend.drawings.push({
   id: "ai-seeded-1",
   symbol: "BTCUSDT",
   kind: "hline",
-  a1: { unit: "absolute", time: FIXTURE_NOW_MS - 600_000, price: 830 },
-  a2: null,
+  points: [{ unit: "absolute", time: FIXTURE_NOW_MS - 600_000, price: 830 }],
   label: "AI resistance",
   created_by: "ai",
   confidence: 0.87,
@@ -5817,8 +5822,8 @@ check(
 );
 check(
   "and it is built from the engine's registry, not empty",
-  document.querySelectorAll("#globalTools button[data-tool]").length === 18,
-  `${document.querySelectorAll("#globalTools button[data-tool]").length} buttons`
+  document.querySelectorAll("#globalTools button[data-tool]").length === registry().length + 1,
+  `${document.querySelectorAll("#globalTools button[data-tool]").length} buttons for ${registry().length} rows (+ cursor)`
 );
 check(
   "and it names the chart it acts on",
@@ -5847,10 +5852,18 @@ check(
   paneNode(0).querySelector('.tools button[data-tool="rect"]').getAttribute("aria-pressed")
 );
 
-// A three-anchor tool takes three clicks, and the stored row carries the third
-// anchor the engine resolved. This is the parity gesture end to end.
+// A three-point tool takes three clicks, and the stored row carries a third
+// point the engine resolved. This is the parity gesture end to end -- and the
+// click count comes from the registry's `anchors`, not from a number the shell
+// remembers, so a tool the engine changed cannot be placed with the wrong count.
+const threePointKind = registry().find((row) => row.anchors?.form === "fixed" && row.anchors.points === 3)?.kind;
+check(
+  "the registry declares a three-point tool to place",
+  Boolean(threePointKind),
+  registry().map((row) => `${row.kind}:${JSON.stringify(row.anchors)}`).join(" ")
+);
 const drawingsBeforeThree = backend.drawings.length;
-pickTool("triangle");
+pickTool(threePointKind);
 pointer("pointerdown", 300, 200);
 pointer("pointerup", 300, 200);
 pointer("pointermove", 420, 200);
@@ -5863,23 +5876,22 @@ await settle();
 await settle();
 const triangle = backend.drawings[backend.drawings.length - 1];
 check(
-  "a three-anchor tool stores exactly one drawing after three clicks",
+  "a three-point tool stores exactly one drawing after three clicks",
   backend.drawings.length === drawingsBeforeThree + 1,
   `${backend.drawings.length - drawingsBeforeThree} stored`
 );
 check(
-  "and the stored row carries all three anchors, absolute",
+  "and the stored row carries all three points, absolute",
   triangle &&
-    triangle.a1?.unit === "absolute" &&
-    triangle.a2?.unit === "absolute" &&
-    triangle.a3?.unit === "absolute" &&
-    triangle.a1.time !== triangle.a2.time &&
-    triangle.a2.time !== triangle.a3.time,
-  triangle && JSON.stringify([triangle.a1, triangle.a2, triangle.a3])
+    triangle.points.length === 3 &&
+    triangle.points.every((p) => p.unit === "absolute") &&
+    triangle.points[0].time !== triangle.points[1].time &&
+    triangle.points[1].time !== triangle.points[2].time,
+  triangle && JSON.stringify(triangle.points)
 );
 
-// A two-anchor drag must still work -- and must not send a third anchor at
-// all, because the engine refuses an `a3` on a kind that does not take one.
+// A two-point drag must still work -- and must send exactly two points, because
+// the engine refuses a kind given a point it does not take.
 const drawingsBeforeTwo = backend.drawings.length;
 pickTool("trendline");
 pointer("pointerdown", 180, 280);
@@ -5889,10 +5901,10 @@ await settle();
 await settle();
 const trendline = backend.drawings[backend.drawings.length - 1];
 check(
-  "a two-anchor drag still stores, with no third anchor sent",
+  "a two-point drag still stores, with no third point sent",
   backend.drawings.length === drawingsBeforeTwo + 1 &&
-    trendline && trendline.a3 == null,
-  trendline && `a3: ${JSON.stringify(trendline.a3)}`
+    trendline && trendline.points.length === 2,
+  trendline && `points: ${JSON.stringify(trendline.points)}`
 );
 
 // Back to a neutral state for whatever reads the page after this file.

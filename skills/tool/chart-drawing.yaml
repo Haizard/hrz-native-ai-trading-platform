@@ -11,15 +11,20 @@ knowledge: >
   tool returned, and a chart littered with stale objects is worse than a bare
   one.
 
+  Every object is sent as `points`: an ordered list of {time_ms, price}, one
+  entry per anchor the kind takes. The order is the shape's own -- points[0]
+  is where a ray starts, where a rect's first corner was clicked, where a
+  fib's 100% level sits -- so it is never sorted before sending.
+
   WHICH KIND FOR WHICH IDEA (the engine's vocabulary is fixed; the gateway
   refuses anything else):
   - hline: a single price level -- support, resistance, swept liquidity, POC.
   - trendline / ray / extended: a slope between two swings -- trend lines,
     structure lines between a swing and its break.
   - rect: a price zone -- order blocks, fair value gaps, supply/demand,
-    premium/discount bands. First anchor one corner (earlier time, zone edge),
-    second anchor the opposite corner (later time, other edge). For an OB:
-    anchor1 = OB candle open time at its extreme price, anchor2 = mitigation
+    premium/discount bands. Point 1 one corner (earlier time, zone edge),
+    point 2 the opposite corner (later time, other edge). For an OB:
+    point 1 = OB candle open time at its extreme price, point 2 = mitigation
     time (or now) at the candle's other extreme.
   - fib: a measured retracement between two detected swings; fib_extension
     for projected targets beyond the swing.

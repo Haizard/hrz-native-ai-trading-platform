@@ -1,13 +1,20 @@
 //! The shapes a user draws on the chart (`docs/14-FRONTEND-CHART-ENGINE.md`).
 //!
-//! ## Two anchors -- sometimes three -- and a kind
+//! ## A list of points, and the kind says how many
 //!
 //! Every shape a trader draws is a set of points and a rule for what goes
-//! between them, so that is the whole vocabulary: a [`DrawingKind`], up to two
-//! [`Anchor`]s -- plus a third for the parity kinds. A trendline is the segment,
-//! a rectangle is the area, a Fibonacci is the levels, a horizontal line is the
-//! degenerate case that needs one anchor, and a parallel channel is two points
-//! for the line plus one for its width.
+//! between them, so that is the whole vocabulary: a [`DrawingKind`], a list of
+//! [`Anchor`]s whose length the kind declares ([`AnchorCount`]), and the
+//! [`DrawingOptions`] that kind reads. A trendline is the segment between two, a
+//! rectangle is the area two span, a Fibonacci is the ladder across one impulse,
+//! a horizontal line is the degenerate case that needs one, a parallel channel is
+//! two for the line plus one for its width, and a polyline is any number.
+//!
+//! The arity is *declared* rather than discovered, because one rule with two
+//! spellings is the rule that eventually disagrees: the engine's validator, the
+//! toolbar's click count, and storage's column shape all read the same
+//! [`DrawingKind::anchors`], and a registry row that contradicts its kind is a
+//! compile-time-free error the tests catch instead.
 //!
 //! The kinds are an enum rather than free text because a kind nobody can draw
 //! must be **refused**, not stored: a drawing that saves and then never appears
@@ -45,12 +52,84 @@
 
 use serde::{Deserialize, Serialize};
 
+/// How many points a kind takes.
+///
+/// The declaration the whole object model hangs on: the engine's validator, the
+/// toolbar's click count, the shell's placement machine and storage's list
+/// length all read this, so "how many points does a channel take" has one
+/// answer in the crate.
+///
+/// Two shapes, because there are two kinds of tool. [`AnchorCount::Fixed`] is
+/// the count a shape needs — a trendline is two points and a third would make it
+/// a different drawing. [`AnchorCount::Many`] is the open-ended one: a polyline,
+/// a brush stroke, a harmonic with an extra pivot — at least `min`, no upper
+/// bound, finished by the shell's Enter or double-click rather than by a count.
+///
+/// On the wire it is an object rather than a number, and that is the difference
+/// between a tool the toolbar can place and one it cannot: `2` says nothing about
+/// whether 3 is allowed, so `Many` needs a field of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "form", rename_all = "snake_case")]
+pub enum AnchorCount {
+    /// Exactly `points` of them, no more and no fewer.
+    Fixed {
+        /// How many the shape needs.
+        points: u8,
+    },
+    /// At least `min` of them, however many the user places.
+    Many {
+        /// The fewest that still makes a drawing rather than a dot.
+        min: u8,
+    },
+}
+
+impl AnchorCount {
+    /// A kind that takes exactly `n` points.
+    #[must_use]
+    pub const fn fixed(n: u8) -> Self {
+        Self::Fixed { points: n }
+    }
+
+    /// Whether a list of `n` points is this kind's arity.
+    #[must_use]
+    pub const fn accepts(self, n: usize) -> bool {
+        match self {
+            Self::Fixed { points } => n == points as usize,
+            Self::Many { min } => n >= min as usize,
+        }
+    }
+
+    /// The exact count, when there is one.
+    ///
+    /// `None` for [`AnchorCount::Many`], which has a floor and no ceiling: a
+    /// caller that wanted "the length to allocate" must not get `min` and believe
+    /// the drawing cannot grow.
+    #[must_use]
+    pub const fn points_for(self) -> Option<usize> {
+        match self {
+            Self::Fixed { points } => Some(points as usize),
+            Self::Many { .. } => None,
+        }
+    }
+
+    /// The fewest points this kind can draw with — the number the toolbar's
+    /// click counter starts from, and the one a refusal names.
+    #[must_use]
+    pub const fn minimum(self) -> usize {
+        match self {
+            Self::Fixed { points } => points as usize,
+            Self::Many { min } => min as usize,
+        }
+    }
+}
+
 /// The kinds this engine can draw.
 ///
 /// This is the **object vocabulary** of the chart (`docs/21-CHART-OBJECT-ENGINE.md`):
-/// every kind is a structured object -- two anchors and a rule for what goes
-/// between them -- that the AI can read, the storage can persist, and the
-/// toolbar can be *built from*, rather than a button someone typed twice.
+/// every kind is a structured object -- a list of points whose length it declares,
+/// and a rule for what goes between them -- that the AI can read, the storage can
+/// persist, and the toolbar can be *built from*, rather than a button someone
+/// typed twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DrawingKind {
@@ -149,26 +228,32 @@ impl DrawingKind {
         }
     }
 
-    /// Whether this kind needs its second anchor.
+    /// How many points this kind takes.
     ///
-    /// The one rule with sixteen cases. It lives beside the enum so it cannot
-    /// drift from the list of kinds -- and `db::drawings::needs_second_anchor`
-    /// is the same rule on the storage side, pinned against this one by a test.
+    /// The one arity rule. It lives beside the enum so it cannot drift from the
+    /// list of kinds, and both the registry's `anchors` and `db::drawings`' copy
+    /// are pinned against it by a test, because a `channel` the route believes
+    /// stops at two points is a channel the chart cannot restore.
     #[must_use]
-    pub const fn needs_second_anchor(self) -> bool {
-        !matches!(self, Self::Hline | Self::Vline)
-    }
-
-    /// Whether this kind needs its third anchor.
-    ///
-    /// The parity vocabulary's additions: a channel is two points for the line
-    /// and one for its width; an arc is a centre plus two radii points; a
-    /// triangle is one anchor per vertex. A circle stays at two (centre plus a
-    /// point on the radius). `db::drawings::needs_third_anchor` is the same
-    /// rule on the storage side, pinned against this one by a test.
-    #[must_use]
-    pub const fn needs_third_anchor(self) -> bool {
-        matches!(self, Self::Channel | Self::Arc | Self::Triangle)
+    pub const fn anchors(self) -> AnchorCount {
+        // Every kind here takes a fixed count; the open-ended ones arrive with
+        // the tools that need them (`Many { min: 2 }` for a polyline, a brush).
+        match self {
+            Self::Hline | Self::Vline => AnchorCount::fixed(1),
+            Self::Channel | Self::Arc | Self::Triangle => AnchorCount::fixed(3),
+            Self::Trendline
+            | Self::Ray
+            | Self::Extended
+            | Self::Rect
+            | Self::Fib
+            | Self::FibExtension
+            | Self::Measure
+            | Self::Angle
+            | Self::Circle
+            | Self::PositionLong
+            | Self::PositionShort
+            | Self::DatepriceRange => AnchorCount::fixed(2),
+        }
     }
 }
 
@@ -242,8 +327,12 @@ pub struct ToolSpec {
     /// What the group's trigger reads. Carried on the row rather than derived
     /// by the shell, so the engine decides every word on the toolbar.
     pub group_label: &'static str,
-    /// How many anchors placing it takes: `1` for a click, `2` for a drag.
-    pub anchors: u8,
+    /// How many points placing it takes, which the shell's click counter reads.
+    ///
+    /// Carried on the row rather than asked of the kind, so one registry test can
+    /// assert the two agree -- and if they disagree, the toolbar stops a click
+    /// short of the drawing the engine would have drawn.
+    pub anchors: AnchorCount,
 }
 
 /// The tools this engine can draw, in toolbar order.
@@ -258,7 +347,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Drag from one point to another",
         group: ToolGroup::Lines,
         group_label: "Lines",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::Ray,
@@ -266,7 +355,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Drag, and the line extends through the second point to the edge",
         group: ToolGroup::Lines,
         group_label: "Lines",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::Extended,
@@ -274,7 +363,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Drag; the line runs through both points in both directions",
         group: ToolGroup::Lines,
         group_label: "Lines",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::Hline,
@@ -282,7 +371,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Click a price to mark it across the chart",
         group: ToolGroup::Lines,
         group_label: "Lines",
-        anchors: 1,
+        anchors: AnchorCount::fixed(1),
     },
     ToolSpec {
         kind: DrawingKind::Vline,
@@ -290,7 +379,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Click a time to mark it down the chart",
         group: ToolGroup::Lines,
         group_label: "Lines",
-        anchors: 1,
+        anchors: AnchorCount::fixed(1),
     },
     ToolSpec {
         kind: DrawingKind::Rect,
@@ -298,7 +387,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Drag out a rectangle",
         group: ToolGroup::Shapes,
         group_label: "Shapes",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::Fib,
@@ -306,7 +395,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Drag from one swing to another",
         group: ToolGroup::Measurement,
         group_label: "Measure",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::FibExtension,
@@ -314,7 +403,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Drag from one swing to another — targets project past the second point",
         group: ToolGroup::Measurement,
         group_label: "Measure",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::Measure,
@@ -322,7 +411,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Drag to measure the price and time delta",
         group: ToolGroup::Measurement,
         group_label: "Measure",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::Channel,
@@ -330,7 +419,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Drag the line, then click where the parallel runs",
         group: ToolGroup::Lines,
         group_label: "Lines",
-        anchors: 3,
+        anchors: AnchorCount::fixed(3),
     },
     ToolSpec {
         kind: DrawingKind::Angle,
@@ -338,7 +427,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Click the origin, then drag to set the slope",
         group: ToolGroup::Lines,
         group_label: "Lines",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::Arc,
@@ -346,7 +435,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Click the centre, then set the horizontal and vertical radii",
         group: ToolGroup::Shapes,
         group_label: "Shapes",
-        anchors: 3,
+        anchors: AnchorCount::fixed(3),
     },
     ToolSpec {
         kind: DrawingKind::Circle,
@@ -354,7 +443,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Click the centre, then drag the radius",
         group: ToolGroup::Shapes,
         group_label: "Shapes",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::Triangle,
@@ -362,7 +451,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Click each of the three corners",
         group: ToolGroup::Shapes,
         group_label: "Shapes",
-        anchors: 3,
+        anchors: AnchorCount::fixed(3),
     },
     ToolSpec {
         kind: DrawingKind::PositionLong,
@@ -370,7 +459,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Click the entry, then drag the target extent upward",
         group: ToolGroup::Positions,
         group_label: "Positions",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::PositionShort,
@@ -378,7 +467,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Click the entry, then drag the target extent downward",
         group: ToolGroup::Positions,
         group_label: "Positions",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
         kind: DrawingKind::DatepriceRange,
@@ -386,7 +475,7 @@ pub const REGISTRY: [ToolSpec; 17] = [
         title: "Drag to measure the price and time range as a percentage",
         group: ToolGroup::Measurement,
         group_label: "Measure",
-        anchors: 2,
+        anchors: AnchorCount::fixed(2),
     },
 ];
 
@@ -430,21 +519,74 @@ impl Anchor {
     }
 }
 
+/// What the user asked the shape to do, beyond where its points are.
+///
+/// Typed, closed, and **every field read by at least one geometry arm** -- that
+/// is the rule (D4 in the parity spec), and the completeness gate enforces it,
+/// because an option nothing reads is a control on a settings panel that does
+/// nothing. So a field arrives with the arm that reads it and not before: the
+/// fib ratio profile comes with the Fibonacci group, the polyline's `closed`
+/// with the open path kinds, and the volume-profile numbers with the profile
+/// tools.
+///
+/// The defaults are the references', not ours: a hand-placed tool that disagrees
+/// with TradingView's default output is a tool the trader has to reconfigure
+/// every time they use it.
+///
+/// Serde-defaulted throughout, so a request that sends none of them is the
+/// documented behaviour rather than a 422: the shell sends options only when the
+/// user has changed them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct DrawingOptions {
+    /// Which side of the points the shape runs to.
+    ///
+    /// TradingView's *Extend Left* / *Extend Right* on the line and channel
+    /// tools, where each drawn edge can be pushed to the plot's own edge without
+    /// moving the anchor it came from.
+    ///
+    /// `None` means "whatever this kind's reference does by default": a ray
+    /// extends forward, a trendline does not extend at all, and a geometry arm
+    /// that has a documented default should not have it contradicted by an
+    /// absent field.
+    pub extend: Option<Extend>,
+    /// Whether to read the impulse the other way round.
+    ///
+    /// TradingView's *Reverse* on the retracement: the same two points, the
+    /// opposite direction, so a 0 and a 100 swap sides instead of the ladder
+    /// being re-drawn from a re-dragged swing.
+    pub reverse: bool,
+}
+
+/// How far a line or level runs past the points that define it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Extend {
+    /// Stop at the points -- the plain segment.
+    None,
+    /// Run to the plot's left edge from the first point.
+    Left,
+    /// Run to the plot's right edge from the last.
+    Right,
+    /// Both, which is the infinite line through the points.
+    Both,
+}
+
 /// One drawing, as a request carries it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Drawing {
     /// The caller's id for it. Stable across frames, and the row id once saved.
     pub id: String,
-    /// What to put between the anchors.
+    /// What to put between the points.
     pub kind: DrawingKind,
-    /// The first anchor, which every kind has.
-    pub a1: Anchor,
-    /// The second, for the kinds that have one.
-    #[serde(default)]
-    pub a2: Option<Anchor>,
-    /// The third, for the parity kinds that need one.
-    #[serde(default)]
-    pub a3: Option<Anchor>,
+    /// The points, in the order they were placed.
+    ///
+    /// A list rather than three named fields, because the vocabulary grew past
+    /// three: a polyline has as many as the user clicks, and a harmonic pattern
+    /// has six. The order is the placement order and the geometry reads it --
+    /// `points[0]` is where the drawing started, which is what a ray, a
+    /// projection and a pattern's X all mean by "first".
+    pub points: Vec<Anchor>,
     /// What the user called it, if anything.
     #[serde(default)]
     pub label: Option<String>,
@@ -454,16 +596,19 @@ pub struct Drawing {
     /// is visual noise, and it invites a drag nobody can aim.
     #[serde(default)]
     pub selected: bool,
+    /// What the user asked the shape to do beyond where it sits.
+    #[serde(default)]
+    pub options: DrawingOptions,
 }
 
 impl Drawing {
-    /// Why this drawing's anchors cannot be drawn, if they cannot.
+    /// Why this drawing's points cannot be drawn, if they cannot.
     ///
     /// Total, and it names the problem rather than answering a `bool`: the
     /// reason goes into the scene's note with the drawing's id, because a
     /// drawing that silently does not appear teaches whoever drew it nothing.
     ///
-    /// Anchors only, and not the id. The id is the shell's and the scene's --
+    /// Points only, and not the id. The id is the shell's and the scene's --
     /// storage mints its own -- so a caller that is validating a request body has
     /// no id to give and should not have to invent one. `place` checks it, which
     /// is the only place that needs it.
@@ -471,24 +616,37 @@ impl Drawing {
     /// # Errors
     /// Returns the reason as a `String`.
     pub fn validate_anchors(&self) -> Result<(), String> {
-        if self.kind.needs_second_anchor() && self.a2.is_none() {
-            return Err(format!(
-                "a {} needs two anchors and has one",
-                self.kind.name()
-            ));
+        let arity = self.kind.anchors();
+        if !arity.accepts(self.points.len()) {
+            return Err(match arity {
+                AnchorCount::Fixed { points } => format!(
+                    "a {} takes {points} point{} and this has {}",
+                    self.kind.name(),
+                    if points == 1 { "" } else { "s" },
+                    self.points.len()
+                ),
+                AnchorCount::Many { min } => format!(
+                    "a {} takes at least {min} points and this has {}",
+                    self.kind.name(),
+                    self.points.len()
+                ),
+            });
         }
-        if self.kind.needs_third_anchor() && self.a3.is_none() {
-            return Err(format!(
-                "a {} needs three anchors and has two",
-                self.kind.name()
-            ));
-        }
-        for (which, anchor) in [
-            ("first", Some(self.a1)),
-            ("second", self.a2),
-            ("third", self.a3),
-        ] {
-            let Some(anchor) = anchor else { continue };
+        // One unit per drawing. The two variants are the same two numbers with
+        // different names, so a list that mixes them is not a shape: it is a
+        // client that turned a fraction into a timestamp somewhere the engine
+        // never agreed to, which is exactly the mistake the names exist to make
+        // visible.
+        let absolute = self.points[0].absolute().is_some();
+        for (index, anchor) in self.points.iter().enumerate() {
+            if anchor.absolute().is_some() != absolute {
+                return Err(format!(
+                    "point {} of this {} is a screen position among chart points; \
+                     send every point in one unit",
+                    index + 1,
+                    self.kind.name()
+                ));
+            }
             let ok = match anchor {
                 // `is_finite` is false for both `NaN` and the infinities, which
                 // is the whole check: a `NaN` price produces a `NaN` y and the
@@ -498,7 +656,10 @@ impl Drawing {
                 Anchor::Fraction { x, y } => x.is_finite() && y.is_finite(),
             };
             if !ok {
-                return Err(format!("the {which} anchor is not a usable position"));
+                return Err(format!(
+                    "point {} is not a usable position",
+                    index + 1
+                ));
             }
         }
         Ok(())
@@ -578,7 +739,7 @@ pub enum DrawingPart {
         x: f64,
         /// Down.
         y: f64,
-        /// Which anchor: `0`, `1` or `2`.
+        /// Which point, counting from the first in placement order.
         anchor: u8,
     },
     /// An axis-aligned ellipse: a circle when the radii are equal, a half
@@ -629,9 +790,38 @@ pub struct Fraction {
     pub y: f64,
 }
 
-/// One drawing, positioned, with its anchors resolved.
+/// One placed point, in both units the shell can use.
 ///
-/// Carries the anchors as well as the shapes, and that is the point: the shell
+/// Both, always, and that is the whole type: the absolute pair is what gets
+/// **stored**, and the fraction pair is what a **body drag** adds to. A scene
+/// that reported only one of them would leave the shell inverting the price
+/// mapping -- which is arithmetic, and `docs/14` says arithmetic lives in Rust.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScenePoint {
+    /// Where it is on the chart, which is what outlives this window.
+    pub absolute: PlacedTimePrice,
+    /// Where it is on the plot, which is what a screen delta is measured in.
+    ///
+    /// Derived from the resolved numbers rather than passed down from the request,
+    /// so a point that arrived absolute and one that arrived as a fraction report
+    /// the same thing. That is what makes the round trip -- place with fractions,
+    /// save the answer, do not move the drawing -- hold for both, and it is why
+    /// there is one `resolve` and not two.
+    pub fraction: Fraction,
+}
+
+/// A millisecond timestamp and a price, as the scene reports them.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PlacedTimePrice {
+    /// Milliseconds since the epoch.
+    pub time: f64,
+    /// The price.
+    pub price: f64,
+}
+
+/// One drawing, positioned, with its points resolved.
+///
+/// Carries the points as well as the shapes, and that is the point: the shell
 /// needs the absolute form to **save** what the user just dragged. A scene that
 /// reported only pixels would leave the shell with no way to persist a change
 /// except to invert the price mapping, which is arithmetic and is forbidden
@@ -646,26 +836,10 @@ pub struct SceneDrawing {
     pub label: Option<String>,
     /// Whether it is selected, so the shell can highlight it.
     pub selected: bool,
-    /// The first anchor, always absolute.
-    pub a1: Anchor,
-    /// The second, always absolute, for the kinds that have one.
-    pub a2: Option<Anchor>,
-    /// The third, always absolute, for the parity kinds that need one.
-    pub a3: Option<Anchor>,
-    /// Where the first anchor sits in plot fractions.
+    /// The points, in placement order, each in both units.
     ///
-    /// Reported so a *body* drag can be a screen-space delta. Moving a whole
-    /// drawing means moving both anchors by the same amount, and the only unit
-    /// the shell can add in is the fraction it already divides by for `pan`.
-    /// Without this the shell has two ways to be wrong and no way to be right:
-    /// invert the price mapping itself, or drag one anchor and distort the
-    /// shape -- which is what it did before this field existed.
-    pub a1_fraction: Fraction,
-    /// The second, for the kinds that have one.
-    pub a2_fraction: Option<Fraction>,
-    /// The third, for the parity kinds that need one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub a3_fraction: Option<Fraction>,
+    /// The same length the kind declares -- `place` refused any other.
+    pub points: Vec<ScenePoint>,
     /// The shapes to draw, in order.
     pub parts: Vec<DrawingPart>,
 }
@@ -971,112 +1145,160 @@ mod tests {
         );
     }
 
-    fn drawing(kind: DrawingKind, a2: Option<Anchor>) -> Drawing {
+    fn point(index: u8) -> Anchor {
+        // Distinct in both coordinates for every index, so a misplaced offset
+        // (channel ray, arc ry, fork median) cannot pass a test by coincidence.
+        Anchor::Absolute {
+            time: 1_767_225_600_000.0 + f64::from(index) * 3_600_000.0,
+            price: 45_000.0 + f64::from(index) * 500.0,
+        }
+    }
+
+    /// A drawing of `kind` with exactly the points its kind declares.
+    fn drawing(kind: DrawingKind) -> Drawing {
+        let count = kind.anchors().minimum();
         Drawing {
             id: "d1".into(),
             kind,
-            a1: Anchor::Absolute {
-                time: 1_767_225_600_000.0,
-                price: 45_000.0,
-            },
-            a2,
-            a3: None,
+            points: (0..count as u8).map(point).collect(),
             label: None,
             selected: false,
+            options: DrawingOptions::default(),
         }
     }
 
-    fn second() -> Option<Anchor> {
-        Some(Anchor::Absolute {
-            time: 1_767_229_200_000.0,
-            price: 45_500.0,
-        })
-    }
-
-    fn third() -> Option<Anchor> {
-        // A third anchor distinct from the first two so a misplaced offset
-        // (channel ray, arc ry) cannot pass a test by coincidence.
-        Some(Anchor::Absolute {
-            time: 1_767_232_800_000.0,
-            price: 46_000.0,
-        })
-    }
-
-    #[test]
-    fn only_a_horizontal_or_vertical_line_has_one_anchor() {
-        assert!(!DrawingKind::Hline.needs_second_anchor());
-        assert!(!DrawingKind::Vline.needs_second_anchor());
-        for kind in [
-            DrawingKind::Trendline,
-            DrawingKind::Ray,
-            DrawingKind::Extended,
-            DrawingKind::Rect,
-            DrawingKind::Fib,
-            DrawingKind::Measure,
-        ] {
-            assert!(kind.needs_second_anchor(), "{kind:?} needs two anchors");
+    /// A drawing of `kind` with `n` points, whatever the kind asked for.
+    fn with_points(kind: DrawingKind, n: usize) -> Drawing {
+        Drawing {
+            points: (0..n as u8).map(point).collect(),
+            ..drawing(kind)
         }
     }
 
     #[test]
-    fn a_two_anchor_kind_with_one_anchor_is_refused_by_name() {
-        // Refused rather than drawn as a dot. A `fib` with one anchor has no
-        // levels to compute and a `rect` has no area, and either would appear on
-        // the chart as nothing at all -- which reads as "the drawing was lost"
-        // rather than as "this request was wrong".
-        for kind in [
-            DrawingKind::Trendline,
-            DrawingKind::Ray,
-            DrawingKind::Extended,
-            DrawingKind::Rect,
-            DrawingKind::Fib,
-            DrawingKind::Measure,
-        ] {
-            let error = drawing(kind, None)
+    fn a_kind_takes_exactly_the_points_it_declares() {
+        // The arity rule in both directions. The old model could only refuse *too
+        // few* -- a third anchor simply did not exist -- so a tool that wants a
+        // point list has to refuse too many as well, or a `trendline` sent with
+        // four points draws a segment through the first two and throws the rest
+        // away, which is a drawing that quietly is not what the user placed.
+        let trendline = DrawingKind::Trendline;
+        for n in [0, 1, 3, 4] {
+            let error = with_points(trendline, n)
                 .validate_anchors()
                 .expect_err("must refuse");
-            assert!(error.contains(kind.name()), "{error}");
-            assert!(error.contains("two anchors"), "{error}");
+            assert!(error.contains("trendline"), "{error}");
+            assert!(error.contains("2 points"), "{error}");
+            assert!(error.contains(&n.to_string()), "{error}");
         }
+        assert_eq!(with_points(trendline, 2).validate_anchors(), Ok(()));
     }
 
     #[test]
-    fn every_kind_accepts_the_anchors_it_needs() {
+    fn a_many_kind_accepts_two_five_and_forty() {
+        // The open-ended half of `AnchorCount`, and the reason it is a variant
+        // rather than a big number: a polyline stops when the user stops, so
+        // every count from its minimum up is legitimate, and `Fixed { points: 40 }`
+        // would refuse the 41st click.
+        let many = AnchorCount::Many { min: 2 };
+        assert!(many.accepts(2));
+        assert!(many.accepts(5));
+        assert!(many.accepts(40));
+        assert!(!many.accepts(1));
+        // And it has no exact count to hand a caller that wanted one.
+        assert_eq!(many.points_for(), None);
+        assert_eq!(AnchorCount::fixed(3).points_for(), Some(3));
+    }
+
+    #[test]
+    fn the_arity_rule_is_the_only_one() {
+        // Registry row and kind, one truth. A button that places one click for a
+        // two-point tool ships a drawing the engine refuses -- and the user sees
+        // the tool do nothing.
+        for tool in REGISTRY {
+            assert_eq!(
+                tool.anchors,
+                tool.kind.anchors(),
+                "{} disagrees with its own kind",
+                tool.kind.name()
+            );
+            assert!(
+                tool.anchors.accepts(tool.kind.anchors().minimum()),
+                "{} does not accept its own minimum",
+                tool.kind.name()
+            );
+        }
+        // Every kind's declared count is a drawing the validator accepts.
         for kind in DrawingKind::ALL {
-            let a2 = if kind.needs_second_anchor() {
-                second()
-            } else {
-                None
-            };
-            let mut d = drawing(kind, a2);
-            // Three-anchor tools (channel, arc, triangle) must see their
-            // third anchor in the same sweep, or `validate_anchors` rejects
-            // them for a reason the test itself created.
-            if kind.needs_third_anchor() {
-                d.a3 = third();
-            }
-            assert_eq!(d.validate_anchors(), Ok(()), "{kind:?}");
+            assert_eq!(drawing(kind).validate_anchors(), Ok(()), "{kind:?}");
         }
     }
 
     #[test]
-    fn a_horizontal_line_may_also_carry_a_second_anchor() {
-        // Permitted rather than refused, because the shell does not send one and
-        // refusing a field nobody sets is a rule with no user. What matters is
-        // that the *storage* rule is checked on the way in, which it is -- see
-        // the route's validator.
-        assert_eq!(
-            drawing(DrawingKind::Hline, second()).validate_anchors(),
-            Ok(())
-        );
+    fn validate_names_the_problem() {
+        // Two failures the point list makes *new*, and one the old model already
+        // caught. A list is where a mixed-unit drawing can happen: the old struct
+        // could not put a fraction and an absolute in the same drawing by
+        // construction, because they were different fields; a list can, and the
+        // numbers are the same shape, so nothing else would notice.
+        let mixed = Drawing {
+            points: vec![
+                Anchor::Absolute {
+                    time: 1_767_225_600_000.0,
+                    price: 45_000.0,
+                },
+                Anchor::Fraction { x: 0.5, y: 0.5 },
+            ],
+            ..drawing(DrawingKind::Trendline)
+        };
+        let error = mixed
+            .validate_anchors()
+            .expect_err("a mixed drawing must be refused");
+        assert!(error.contains("screen position"), "{error}");
+
+        let nan = Drawing {
+            points: vec![
+                point(0),
+                Anchor::Absolute {
+                    time: f64::NAN,
+                    price: 45_000.0,
+                },
+            ],
+            ..drawing(DrawingKind::Trendline)
+        };
+        let error = nan
+            .validate_anchors()
+            .expect_err("a NaN point must be refused");
+        assert!(error.contains("point 2"), "{error}");
+    }
+
+    #[test]
+    fn every_kind_accepts_the_points_it_needs() {
+        for kind in DrawingKind::ALL {
+            assert_eq!(drawing(kind).validate_anchors(), Ok(()), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_one_point_kind_refuses_the_point_it_does_not_read() {
+        // The rule the old model got wrong in the other direction: an `hline` that
+        // carried a second anchor was *permitted*, and the drawing then offered
+        // one handle for a value nothing reads. Under a point list the kind says
+        // how many points it takes and takes exactly that, so a stored
+        // two-point `hline` cannot exist and a spare handle cannot be offered.
+        let error = with_points(DrawingKind::Hline, 2)
+            .validate_anchors()
+            .expect_err("must refuse");
+        assert!(error.contains("1 point"), "{error}");
+        assert_eq!(with_points(DrawingKind::Hline, 1).validate_anchors(), Ok(()));
     }
 
     #[test]
     fn no_hostile_number_produces_a_drawable_drawing() {
         // A `NaN` price produces a `NaN` y, and a canvas silently ignores a
         // `NaN` -- so the drawing would be absent with nothing saying why. The
-        // sweep is over both variants and both anchors because the guard has two
-        // arms and only one of them was obvious.
+        // sweep is over both variants and every position in the list, because a
+        // point list has N of them and the old model could only check three.
         let hostile = [
             f64::NAN,
             f64::INFINITY,
@@ -1099,11 +1321,11 @@ mod tests {
                 Anchor::Fraction { x: bad, y: 0.5 },
                 Anchor::Fraction { x: 0.5, y: bad },
             ] {
-                for a2 in [None, Some(anchor)] {
-                    let candidate = Drawing {
-                        a1: anchor,
-                        ..drawing(DrawingKind::Hline, a2)
-                    };
+                for replace in [0, 1] {
+                    let mut candidate = drawing(DrawingKind::Trendline);
+                    if candidate.points.len() > replace {
+                        candidate.points[replace] = anchor;
+                    }
                     match candidate.validate_anchors() {
                         Ok(()) => accepted += 1,
                         Err(_) => refused += 1,
@@ -1126,7 +1348,7 @@ mod tests {
         // request body has no id to give, and a check here would force it to
         // invent one. `scene::place` is where the id is required, and it is
         // asserted there.
-        let mut candidate = drawing(DrawingKind::Hline, None);
+        let mut candidate = drawing(DrawingKind::Hline);
         candidate.id = String::new();
         assert_eq!(candidate.validate_anchors(), Ok(()));
     }
@@ -1202,19 +1424,17 @@ mod tests {
 
         #[test]
         fn every_anchor_count_agrees_with_the_kind_rule() {
-            // Two sources of one truth is how a button that places one anchor
-            // for a two-anchor tool ships. The registry is the toolbar's
-            // vocabulary, `needs_second_anchor`/`needs_third_anchor` are the
-            // engine's rule, and this is the pin between them.
+            // The registry is the toolbar's vocabulary and `DrawingKind::anchors`
+            // is the engine's rule; this is the pin between them. A row that says
+            // one and a kind that says another is a button that stops placing
+            // before the drawing has the points it needs.
             for tool in REGISTRY {
-                let expected = if tool.kind.needs_third_anchor() {
-                    3
-                } else if tool.kind.needs_second_anchor() {
-                    2
-                } else {
-                    1
-                };
-                assert_eq!(tool.anchors, expected, "{}", tool.kind.name());
+                assert_eq!(
+                    tool.anchors,
+                    tool.kind.anchors(),
+                    "{} disagrees with its own kind",
+                    tool.kind.name()
+                );
             }
         }
 
@@ -1235,15 +1455,59 @@ mod tests {
         #[test]
         fn the_registry_serializes_what_the_shell_reads() {
             // The shell builds its flyouts from this JSON over the ABI, so the
-            // field names are wire, not internal.
+            // field names are wire, not internal. The point count is an object
+            // rather than a number because `Many` has no number to send: the
+            // shell's click counter reads `form` to know whether the third click
+            // is the last one or just the latest.
             let json = serde_json::to_value(REGISTRY).expect("serializes");
             assert_eq!(json[0]["kind"], "trendline");
             assert_eq!(json[0]["label"], "Trend");
             assert_eq!(json[0]["group"], "lines");
-            assert_eq!(json[0]["anchors"], 2);
+            assert_eq!(json[0]["anchors"]["form"], "fixed");
+            assert_eq!(json[0]["anchors"]["points"], 2);
             assert_eq!(json[3]["kind"], "hline");
-            assert_eq!(json[3]["anchors"], 1);
+            assert_eq!(json[3]["anchors"]["points"], 1);
         }
+    }
+
+    #[test]
+    fn the_drawing_wire_is_a_point_list() {
+        // The shape the shell sends and the API stores. `points` is an array
+        // because a drawing's arity is the kind's business, not the transport's:
+        // a list needs no second and third field added every time a tool grows.
+        let json = serde_json::to_value(drawing(DrawingKind::Channel)).expect("serializes");
+        assert!(json["points"].is_array(), "{json}");
+        assert_eq!(json["points"].as_array().expect("array").len(), 3);
+        assert_eq!(json["points"][0]["unit"], "absolute");
+        assert_eq!(json["points"][1]["price"], 45_500.0);
+        assert!(json["a1"].is_null() && json["a2"].is_null() && json["a3"].is_null());
+        // Options are absent from a request that says nothing, and the struct's
+        // `#[serde(default)]` means it still parses.
+        let back: Drawing =
+            serde_json::from_value(serde_json::json!({"id":"d","kind":"hline","points":[
+                {"unit":"absolute","time":1.0,"price":2.0}
+            ]}))
+            .expect("parses without options");
+        assert_eq!(back.options, DrawingOptions::default());
+    }
+
+    #[test]
+    fn a_scene_point_carries_both_units_in_one_object() {
+        // The shell reads `absolute` to save and `fraction` to drag, and a point
+        // that reported only one of them is the bug `docs/21` names: the shell
+        // inverting the price mapping itself.
+        let json = serde_json::to_value(ScenePoint {
+            absolute: PlacedTimePrice {
+                time: 1.0,
+                price: 2.0,
+            },
+            fraction: Fraction { x: 0.25, y: 0.75 },
+        })
+        .expect("serializes");
+        assert_eq!(json["absolute"]["time"], 1.0);
+        assert_eq!(json["absolute"]["price"], 2.0);
+        assert_eq!(json["fraction"]["x"], 0.25);
+        assert_eq!(json["fraction"]["y"], 0.75);
     }
 
     #[test]
