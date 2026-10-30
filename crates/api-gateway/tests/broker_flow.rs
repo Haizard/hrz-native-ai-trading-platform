@@ -283,7 +283,10 @@ async fn a_live_bot_names_its_account_and_the_refusal_says_which_setup_is_missin
     let Some(h) = Harness::new().await else {
         return;
     };
-    let user = h.register().await;
+    // Pro, because a live bot is a paid rung: the plan's capacity is checked
+    // before the account and the gate, so a Free user would be answered with a
+    // 402 and this test would never reach the refusals it exists to pin.
+    let user = h.register_with_plan("pro").await;
 
     let (status, body) = h
         .post(
