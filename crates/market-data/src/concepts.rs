@@ -2448,7 +2448,10 @@ pub fn as_concept_event(event: &MarketEvent) -> Option<ConceptEvent> {
     };
     let status = match event.kind {
         EventKind::FvgCreated | EventKind::BprCreated => ConceptStatus::Forming,
-        EventKind::FvgFilled => ConceptStatus::Expired,
+        EventKind::FvgFilled
+        | EventKind::OrderBlockMitigated
+        | EventKind::RejectionBlockMitigated
+        | EventKind::MitigationBlockMitigated => ConceptStatus::Expired,
         EventKind::FvgInvalidated => ConceptStatus::Invalidated,
         _ => ConceptStatus::Confirmed,
     };

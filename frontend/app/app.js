@@ -5988,10 +5988,17 @@ function createChartPane(root, hooks = {}) {
 
   /// The enabled ids whose events belong on the price frame. A pane concept
   /// reports its measurement in the pane's own scale; its detections are drawn
-  /// as marks on its series line, so the price path gets the rest.
+  /// as marks on its series line, so the price path gets the rest -- except a
+  /// shape that claims no price at all (a regime's time boxes), which may
+  /// travel the price frame while its measurement stays in the pane.
   function priceFrameConcepts() {
     if (!conceptCatalog) return enabledConcepts;
-    const paneIds = new Set(conceptCatalog.filter((c) => c.pane === true).map((c) => c.id));
+    const shapes = globalThis.ConceptShapes;
+    const paneIds = new Set(
+      conceptCatalog
+        .filter((c) => c.pane === true && !(shapes && shapes.claimsNoPrice(c.id)))
+        .map((c) => c.id)
+    );
     if (!paneIds.size) return enabledConcepts;
     return new Set([...enabledConcepts].filter((id) => !paneIds.has(id)));
   }
@@ -15048,6 +15055,81 @@ function previewEvents(frame, events, scale) {
       ctx.lineTo(x, height);
       ctx.stroke();
       ctx.setLineDash([]);
+    } else if (shape.type === "bar_marker") {
+      const x = xAt(shape.at_ns);
+      const y = scale(shape.price) + (shape.below ? 7 : -2);
+      if (!Number.isFinite(y)) continue;
+      ctx.fillStyle = tone(shape.color);
+      ctx.font = "7px ui-sans-serif, system-ui";
+      ctx.fillText(shape.glyph, x - 2, y);
+    } else if (shape.type === "level_run") {
+      if (!Number.isFinite(shape.price)) continue;
+      const left = xAt(shape.from_ns);
+      const right = shape.until_ns > shape.from_ns ? xAt(shape.until_ns) : width;
+      ctx.strokeStyle = tone(shape.color);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, scale(shape.price));
+      ctx.lineTo(Math.max(left + 2, right), scale(shape.price));
+      ctx.stroke();
+    } else if (shape.type === "lifecycle_box") {
+      const left = xAt(shape.from_ns);
+      const right = shape.state === "forming" ? width : Math.max(left + 2, xAt(shape.to_ns));
+      const top = scale(shape.high);
+      const bottom = scale(shape.low);
+      if (!Number.isFinite(top) || !Number.isFinite(bottom)) continue;
+      ctx.fillStyle = globalThis.ConceptShapes.rgba(shape.color, 0.15);
+      ctx.fillRect(left, top, Math.max(2, right - left), Math.max(2, bottom - top));
+      ctx.strokeStyle = tone(shape.color);
+      ctx.lineWidth = 1;
+      ctx.setLineDash(shape.state === "forming" ? [3, 2] : []);
+      ctx.strokeRect(left, top, Math.max(2, right - left), Math.max(2, bottom - top));
+      ctx.setLineDash([]);
+    } else if (shape.type === "time_box") {
+      const left = xAt(shape.from_ns);
+      const right = Math.max(left + 2, xAt(shape.to_ns));
+      const banded = shape.low != null && shape.high != null;
+      const top = banded ? scale(shape.high) : 0;
+      const bottom = banded ? scale(shape.low) : height;
+      if (!Number.isFinite(top) || !Number.isFinite(bottom)) continue;
+      ctx.fillStyle = globalThis.ConceptShapes.rgba(shape.color, banded ? 0.14 : 0.08);
+      ctx.fillRect(left, top, Math.max(2, right - left), Math.max(2, bottom - top));
+    } else if (shape.type === "price_band") {
+      const top = scale(shape.high);
+      const bottom = scale(shape.low);
+      if (!Number.isFinite(top) || !Number.isFinite(bottom)) continue;
+      ctx.fillStyle = globalThis.ConceptShapes.rgba(shape.color, 0.16);
+      ctx.fillRect(0, top, width, Math.max(2, bottom - top));
+      ctx.strokeStyle = tone(shape.color);
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0, top, width, Math.max(2, bottom - top));
+    } else if (shape.type === "readout") {
+      const x = xAt(shape.at_ns);
+      const y = shape.price == null ? 8 : scale(shape.price) - 2;
+      if (!Number.isFinite(y)) continue;
+      ctx.fillStyle = tone(shape.color);
+      ctx.font = "6px ui-sans-serif, system-ui";
+      ctx.fillText(shape.text, x, y);
+    } else if (shape.type === "polyline") {
+      if (!shape.points || shape.points.length < 2) continue;
+      ctx.strokeStyle = tone(shape.color);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(xAt(shape.points[0].at_ns), scale(shape.points[0].price));
+      for (const p of shape.points.slice(1)) ctx.lineTo(xAt(p.at_ns), scale(p.price));
+      ctx.stroke();
+    } else if (shape.type === "ladder") {
+      if (!shape.rungs || shape.rungs.length < 2) continue;
+      ctx.strokeStyle = tone(shape.color);
+      ctx.lineWidth = 1;
+      const left = xAt(shape.from_ns);
+      const right = Math.max(left + 2, xAt(shape.to_ns));
+      for (const rung of shape.rungs) {
+        ctx.beginPath();
+        ctx.moveTo(left, scale(rung.price));
+        ctx.lineTo(right, scale(rung.price));
+        ctx.stroke();
+      }
     }
   }
 }

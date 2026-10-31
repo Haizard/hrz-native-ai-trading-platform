@@ -2896,6 +2896,97 @@ pub enum ConceptShape {
         /// The color, `0xAARRGGBB`.
         color: u32,
     },
+    /// A bar marker: a direction glyph at the bar's own extreme, the way a
+    /// candlestick pattern is marked -- the glyph is the mark, the name is
+    /// the panel's, so a chart dense with patterns stays readable.
+    BarMarker {
+        /// The bar, unix nanos.
+        at_ns: i64,
+        /// The extreme the glyph sits beside (the low for below, the high for above).
+        price: f64,
+        /// `true` places the glyph under the bar (bullish patterns).
+        below: bool,
+        /// The glyph (`▲`, `▼`).
+        glyph: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+    },
+    /// A level run: a level from its origin bar running right by policy --
+    /// the visible length is the meaning (`level_run`, not a bare point).
+    LevelRun {
+        /// The origin bar, unix nanos.
+        from_ns: i64,
+        /// The bar the level stops at; `0` runs it to the plot's right edge
+        /// (a level is valid until broken).
+        until_ns: i64,
+        /// The level's price.
+        price: f64,
+        /// Its label (`bos`, `pdl`).
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+    },
+    /// A lifecycle box: a zone whose right edge is its lifecycle -- open
+    /// states reach the chart's edge, closed ones stop at the bar that
+    /// closed them, and an invalidated box is drawn in its flipped side.
+    LifecycleBox {
+        /// The origin bar, unix nanos.
+        from_ns: i64,
+        /// The bar that closed the box (mitigation/fill); ignored while forming.
+        to_ns: i64,
+        /// The zone's bottom.
+        low: f64,
+        /// The zone's top.
+        high: f64,
+        /// Its label (`ob`, `fvg`).
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+        /// `forming` | `confirmed` | `mitigated` | `invalidated`.
+        state: String,
+    },
+    /// A time box: a span that matters. Full-height by default (it claims
+    /// no price); a state that measured a price extent carries one.
+    TimeBox {
+        /// The span's first bar, unix nanos.
+        from_ns: i64,
+        /// The span's last bar, unix nanos.
+        to_ns: i64,
+        /// The state's measured bottom, when it has one.
+        low: Option<f64>,
+        /// The state's measured top, when it has one.
+        high: Option<f64>,
+        /// Its label (`london`, `judas`).
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+    },
+    /// A price band: a measured price slice (a value area, an HVN) that runs
+    /// to the profile's right edge -- the VPVR band, not a drawn rectangle.
+    PriceBand {
+        /// The anchor bar, unix nanos.
+        at_ns: i64,
+        /// The band's bottom.
+        low: f64,
+        /// The band's top.
+        high: f64,
+        /// Its label (`value_area`).
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+    },
+    /// A readout: a measured figure attached to its host (the bar, level or
+    /// box it is about) -- the number travels, the host carries the shape.
+    Readout {
+        /// The host bar, unix nanos.
+        at_ns: i64,
+        /// The host's price the label hangs beside, when it has one.
+        price: Option<f64>,
+        /// The text: the figure and the window it was measured over.
+        text: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+    },
 }
 
 /// Position one concept shape into the draw vocabulary the shell already
@@ -3007,6 +3098,210 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                     color: *color,
                 },
             ]
+        }
+        ConceptShape::BarMarker { at_ns, price, below, glyph, color } => {
+            if !price.is_finite() {
+                return Vec::new();
+            }
+            let plot = frame.plot;
+            let x = x_at(*at_ns);
+            let y = frame.y_at(*price) + if *below { 10.0 } else { -4.0 };
+            // The glyph is clipped to the plot: a pattern marked on a bar
+            // outside the window (or a trend outside the band) is not drawn.
+            if x < plot.x || x > plot.x + plot.w || y < plot.y - 2.0 || y > plot.y + plot.h + 12.0 {
+                return Vec::new();
+            }
+            vec![crate::script::ScriptDraw::Label {
+                x,
+                y,
+                text: glyph.clone(),
+                color: *color,
+            }]
+        }
+        ConceptShape::LevelRun { from_ns, until_ns, price, label, color } => {
+            if !price.is_finite() {
+                return Vec::new();
+            }
+            let plot = frame.plot;
+            let right = plot.x + plot.w;
+            let y = frame.y_at(*price);
+            if y < plot.y || y > plot.y + plot.h {
+                return Vec::new();
+            }
+            // A level is a level until broken: with no end bar it runs to the
+            // plot's right edge, and one whose run has scrolled off the left
+            // still draws from the edge -- a level does not stop existing
+            // because its origin left the window.
+            let x1 = x_at(*from_ns).clamp(plot.x, right);
+            let x2 = if *until_ns > *from_ns {
+                x_at(*until_ns).clamp(x1, right)
+            } else {
+                right
+            };
+            if x2 - x1 < 1.0 {
+                return Vec::new();
+            }
+            vec![
+                crate::script::ScriptDraw::Line {
+                    x1,
+                    y1: y,
+                    x2,
+                    y2: y,
+                    color: *color,
+                    style: "solid".to_string(),
+                    width: 1.0,
+                    extend: "none".to_string(),
+                },
+                crate::script::ScriptDraw::Label {
+                    x: (x2 - 42.0).max(x1 + 3.0),
+                    y: y - 4.0,
+                    text: label.clone(),
+                    color: *color,
+                },
+            ]
+        }
+        ConceptShape::LifecycleBox { from_ns, to_ns, low, high, label, color, state } => {
+            if !low.is_finite() || !high.is_finite() {
+                return Vec::new();
+            }
+            let plot = frame.plot;
+            let right = plot.x + plot.w;
+            let x1 = x_at(*from_ns).clamp(plot.x, right);
+            // Forming reaches forward to the edge; every closed state stops
+            // at the bar that closed it -- that difference IS the lifecycle.
+            let open = state == "forming";
+            let x2 = if open {
+                right
+            } else {
+                x_at(*to_ns).max(x1 + bar_w * 0.6).clamp(x1, right)
+            };
+            if x2 - x1 < 1.0 {
+                return Vec::new();
+            }
+            let (y1, y2) = (frame.y_at(*high), frame.y_at(*low));
+            vec![
+                crate::script::ScriptDraw::Box {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    color: *color,
+                    border_color: Some(*color),
+                    border_width: 1.0,
+                    border_style: if open { "dashed" } else { "solid" }.to_string(),
+                    fill_alpha: Some(0.06),
+                },
+                crate::script::ScriptDraw::Label {
+                    x: x1 + 3.0,
+                    y: y1 + 10.0,
+                    text: label.clone(),
+                    color: *color,
+                },
+            ]
+        }
+        ConceptShape::TimeBox { from_ns, to_ns, low, high, label, color } => {
+            let plot = frame.plot;
+            let right = plot.x + plot.w;
+            let x1 = x_at(*from_ns).clamp(plot.x, right);
+            let x2 = x_at(*to_ns).max(x1 + bar_w * 0.6).clamp(x1, right);
+            if x2 - x1 < 1.0 {
+                return Vec::new();
+            }
+            match (low, high) {
+                // A state that measured a price extent draws that extent;
+                // a clock state draws the full height, because a session's
+                // where is not the session -- its when is.
+                (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() => {
+                    let (y1, y2) = (frame.y_at(*hi), frame.y_at(*lo));
+                    vec![
+                        crate::script::ScriptDraw::Box {
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            color: *color,
+                            border_color: Some(*color),
+                            border_width: 1.0,
+                            border_style: "dashed".to_string(),
+                            fill_alpha: Some(0.07),
+                        },
+                        crate::script::ScriptDraw::Label {
+                            x: x1 + 3.0,
+                            y: y1 + 10.0,
+                            text: label.clone(),
+                            color: *color,
+                        },
+                    ]
+                }
+                _ => vec![
+                    crate::script::ScriptDraw::Box {
+                        x1,
+                        y1: plot.y,
+                        x2,
+                        y2: plot.y + plot.h,
+                        color: *color,
+                        border_color: Some(*color),
+                        border_width: 1.0,
+                        border_style: "dotted".to_string(),
+                        fill_alpha: Some(0.05),
+                    },
+                    crate::script::ScriptDraw::Label {
+                        x: x1 + 3.0,
+                        y: plot.y + 10.0,
+                        text: label.clone(),
+                        color: *color,
+                    },
+                ],
+            }
+        }
+        ConceptShape::PriceBand { at_ns: _, low, high, label, color } => {
+            // The profile's window IS the visible window: the band spans the
+            // plot and its label rides the right edge, the VPVR reading.
+            if !low.is_finite() || !high.is_finite() {
+                return Vec::new();
+            }
+            let plot = frame.plot;
+            let x2 = plot.x + plot.w;
+            let (y1, y2) = (frame.y_at(*high), frame.y_at(*low));
+            vec![
+                crate::script::ScriptDraw::Box {
+                    x1: plot.x,
+                    y1,
+                    x2,
+                    y2,
+                    color: *color,
+                    border_color: Some(*color),
+                    border_width: 1.0,
+                    border_style: "solid".to_string(),
+                    fill_alpha: Some(0.10),
+                },
+                crate::script::ScriptDraw::Label {
+                    x: (x2 - 54.0).max(plot.x + 3.0),
+                    y: y1 + 10.0,
+                    text: label.clone(),
+                    color: *color,
+                },
+            ]
+        }
+        ConceptShape::Readout { at_ns, price, text, color } => {
+            let plot = frame.plot;
+            let x = x_at(*at_ns);
+            if x < plot.x || x > plot.x + plot.w {
+                return Vec::new();
+            }
+            let y = match price {
+                Some(p) if p.is_finite() => frame.y_at(*p) - 4.0,
+                _ => plot.y + 10.0,
+            };
+            if y < plot.y || y > plot.y + plot.h {
+                return Vec::new();
+            }
+            vec![crate::script::ScriptDraw::Label {
+                x,
+                y,
+                text: text.clone(),
+                color: *color,
+            }]
         }
     }
 }
@@ -3829,6 +4124,189 @@ mod concept_shape_tests {
         assert_eq!(y1, y2, "a level is horizontal");
         assert_eq!(style, "dashed");
         assert_eq!(extend, "none", "bounded, never extended to the edge");
+    }
+
+    #[test]
+    fn an_unbroken_level_runs_to_the_edge_and_a_broken_one_stops() {
+        let frame = frame_fixture();
+        let right = frame.plot.x + frame.plot.w;
+        let level = |until_ns: i64| {
+            position_concept_shape(
+                &ConceptShape::LevelRun {
+                    from_ns: 3_000_000_000_000,
+                    until_ns,
+                    price: 100.0,
+                    label: "pdh".to_string(),
+                    color: 0xcc90a4ae,
+                },
+                &frame,
+            )
+            .into_iter()
+            .find_map(|d| match d {
+                crate::script::ScriptDraw::Line { x1, x2, .. } => Some((x1, x2)),
+                _ => None,
+            })
+        };
+        let (x1, x2) = level(0).expect("a live level draws");
+        assert_eq!(x1, frame.x_at_nanos(3_000_000_000_000), "it starts where it was set");
+        assert_eq!(x2, right, "a level with no break runs to the edge");
+        let (_, broken_x2) = level(7_000_000_000_000).expect("a broken level still records its run");
+        assert!(broken_x2 < right, "the break is where it stops");
+    }
+
+    #[test]
+    fn a_forming_lifecycle_box_reaches_the_edge_and_a_closed_one_stops() {
+        let frame = frame_fixture();
+        let right = frame.plot.x + frame.plot.w;
+        let lifecycle = |state: &str| {
+            position_concept_shape(
+                &ConceptShape::LifecycleBox {
+                    from_ns: 2_000_000_000_000,
+                    to_ns: 6_000_000_000_000,
+                    low: 95.0,
+                    high: 105.0,
+                    label: "ob".to_string(),
+                    color: 0xcc26a69a,
+                    state: state.to_string(),
+                },
+                &frame,
+            )
+            .into_iter()
+            .find_map(|d| match d {
+                crate::script::ScriptDraw::Box { x1, x2, border_style, .. } => Some((x1, x2, border_style)),
+                _ => None,
+            })
+        };
+        let (_, forming_x2, forming_border) = lifecycle("forming").expect("forming draws");
+        assert_eq!(forming_x2, right, "forming reaches forward -- it is still happening");
+        assert_eq!(forming_border, "dashed", "a dashed border says undecided");
+        let (_, mitigated_x2, mitigated_border) = lifecycle("mitigated").expect("mitigated draws");
+        assert_eq!(mitigated_x2, frame.x_at_nanos(6_000_000_000_000), "a closed box stops at its closing bar");
+        assert_eq!(mitigated_border, "solid", "a closed box is decided");
+    }
+
+    #[test]
+    fn a_clock_time_box_is_full_height_and_a_measured_one_is_banded() {
+        let frame = frame_fixture();
+        let clock = position_concept_shape(
+            &ConceptShape::TimeBox {
+                from_ns: 2_000_000_000_000,
+                to_ns: 4_000_000_000_000,
+                low: None,
+                high: None,
+                label: "london".to_string(),
+                color: 0xcc42a5f5,
+            },
+            &frame,
+        );
+        let crate::script::ScriptDraw::Box { y1, y2, border_style, .. } =
+            clock.into_iter().find(|d| matches!(d, crate::script::ScriptDraw::Box { .. })).expect("box")
+        else {
+            panic!("a time box draws as a box");
+        };
+        assert_eq!((y1, y2), (frame.plot.y, frame.plot.y + frame.plot.h), "a clock claims no price, so it spans the plot");
+        assert_eq!(border_style, "dotted", "a clock's box is not a price claim's border");
+
+        let banded = position_concept_shape(
+            &ConceptShape::TimeBox {
+                from_ns: 2_000_000_000_000,
+                to_ns: 4_000_000_000_000,
+                low: Some(95.0),
+                high: Some(105.0),
+                label: "judas".to_string(),
+                color: 0xcc42a5f5,
+            },
+            &frame,
+        );
+        let crate::script::ScriptDraw::Box { y1, y2, .. } =
+            banded.into_iter().find(|d| matches!(d, crate::script::ScriptDraw::Box { .. })).expect("box")
+        else {
+            panic!("a banded time box draws as a box");
+        };
+        assert!(y1 > frame.plot.y && y2 < frame.plot.y + frame.plot.h, "the measured extent, not the plot");
+        assert_eq!((y1, y2), (frame.y_at(105.0), frame.y_at(95.0)), "top and bottom are the measured prices");
+    }
+
+    #[test]
+    fn a_bar_marker_off_the_window_is_not_drawn() {
+        let frame = frame_fixture();
+        let outside = position_concept_shape(
+            &ConceptShape::BarMarker {
+                at_ns: 20_000_000_000_000,
+                price: 100.0,
+                below: true,
+                glyph: "engulfing".to_string(),
+                color: 0xcc26a69a,
+            },
+            &frame,
+        );
+        assert!(outside.is_empty(), "a mark on a bar outside the window has nowhere to land");
+        let inside = position_concept_shape(
+            &ConceptShape::BarMarker {
+                at_ns: 5_000_000_000_000,
+                price: 100.0,
+                below: false,
+                glyph: "engulfing".to_string(),
+                color: 0xcc26a69a,
+            },
+            &frame,
+        );
+        assert_eq!(inside.len(), 1, "in the window it draws one glyph");
+    }
+
+    #[test]
+    fn a_price_band_spans_the_whole_plot() {
+        let frame = frame_fixture();
+        let band = position_concept_shape(
+            &ConceptShape::PriceBand {
+                at_ns: 5_000_000_000_000,
+                low: 96.0,
+                high: 104.0,
+                label: "value_area".to_string(),
+                color: 0xccab47bc,
+            },
+            &frame,
+        );
+        let crate::script::ScriptDraw::Box { x1, x2, y1, y2, fill_alpha, .. } =
+            band.into_iter().find(|d| matches!(d, crate::script::ScriptDraw::Box { .. })).expect("box")
+        else {
+            panic!("a price band draws as a box");
+        };
+        assert_eq!(x1, frame.plot.x, "the profile's window is the visible window");
+        assert_eq!(x2, frame.plot.x + frame.plot.w);
+        assert_eq!((y1, y2), (frame.y_at(104.0), frame.y_at(96.0)));
+        assert_eq!(fill_alpha, Some(0.10), "a band tint reads over the candles");
+    }
+
+    #[test]
+    fn a_readout_hangs_beside_its_price_or_at_the_top_without_one() {
+        let frame = frame_fixture();
+        let anchored = position_concept_shape(
+            &ConceptShape::Readout {
+                at_ns: 5_000_000_000_000,
+                price: Some(100.0),
+                text: "strength 72".to_string(),
+                color: 0xcc26a69a,
+            },
+            &frame,
+        )
+        .into_iter().next().expect("readout");
+        let crate::script::ScriptDraw::Label { x, y, .. } = anchored else { panic!("label") };
+        assert_eq!(x, frame.x_at_nanos(5_000_000_000_000), "it rides its host bar");
+        assert_eq!(y, frame.y_at(100.0) - 4.0, "just above its host price");
+
+        let floating = position_concept_shape(
+            &ConceptShape::Readout {
+                at_ns: 5_000_000_000_000,
+                price: None,
+                text: "bias long".to_string(),
+                color: 0xcc26a69a,
+            },
+            &frame,
+        )
+        .into_iter().next().expect("readout");
+        let crate::script::ScriptDraw::Label { y, .. } = floating else { panic!("label") };
+        assert_eq!(y, frame.plot.y + 10.0, "a hostless readout sits at the plot's top");
     }
 }
 

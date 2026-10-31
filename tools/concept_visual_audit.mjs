@@ -15,6 +15,7 @@
  *   seed      -- write one ledger shard per family, every row at its seeded value
  *   render    -- one page per concept, built by the real wasm from real events
  *   check    -- the completeness gate over the shards
+ *   routes   -- the shape router against the ledger's target_shape, id-for-id
  *
  * Usage: node tools/concept_visual_audit.mjs <subcommand> [family] [--symbol S --timeframe T --limit N]
  */
@@ -513,6 +514,39 @@ async function readShard(family) {
   return Array.isArray(parsed) ? parsed : parsed.rows;
 }
 
+/// The routing gate: the shape router's contract against the ledger.
+///
+/// Every ledger row names the shape its concept draws. The router in
+/// `frontend/app/concept_shapes.js` is the one place that drawing is decided,
+/// and this check makes the two agree id-for-id -- a concept cannot quietly
+/// change its shape, and the vocabulary cannot drift from the build.
+async function routes() {
+  let checked = 0;
+  let bad = 0;
+  for (const family of Object.keys(EXPECTED).filter((id) => EXPECTED[id] > 0)) {
+    const rows = await readShard(family);
+    if (!rows) {
+      console.log(`FAIL ${family}: no shard at reports/concept-visual-audit/ledger/${family}.json`);
+      bad += 1;
+      continue;
+    }
+    for (const row of rows) {
+      checked += 1;
+      const want = row.target_shape && row.target_shape.name;
+      const got = ConceptShapes.shapeOf(row.concept_id);
+      if (got !== want) {
+        bad += 1;
+        console.log(`  ${row.concept_id}: the ledger says ${want}, the router answers ${got ?? "nothing"}`);
+      }
+    }
+  }
+  if (bad) {
+    console.log(`FAIL ${bad} concept(s) do not route to the shape the vocabulary names`);
+    process.exit(1);
+  }
+  console.log(`ok ${checked} concept(s) route to the shape the vocabulary names`);
+}
+
 /// The completeness gate: the ledger against the registry, and every row against the
 /// rules above. `--family` scopes one pass; no flag sweeps the union.
 async function check(family) {
@@ -731,8 +765,10 @@ if (invokedDirectly) {
     await render(rest.find((arg) => !arg.startsWith("--")));
   } else if (subcommand === "check") {
     await check(rest.find((arg) => !arg.startsWith("--")));
+  } else if (subcommand === "routes") {
+    await routes();
   } else {
-    console.error(`unknown subcommand "${subcommand ?? ""}" -- expected: taxonomy | seed | render | check`);
+    console.error(`unknown subcommand "${subcommand ?? ""}" -- expected: taxonomy | seed | render | check | routes`);
     process.exit(2);
   }
 }

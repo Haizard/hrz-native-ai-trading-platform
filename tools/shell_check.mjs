@@ -3604,7 +3604,7 @@ check(
   "the painter strokes it under the candles and prints its name over them",
   painted.ops.length > conceptOpsBefore &&
     painted.ops.slice(conceptOpsBefore).includes("stroke") &&
-    conceptLabels.some((t) => t.includes("liquidity_sweep")),
+    conceptLabels.some((t) => t.includes("liquidity sweep")),
   `+${painted.ops.length - conceptOpsBefore} op(s) · ${conceptLabels.slice(0, 3).join("/") || "no labels"}`
 );
 
