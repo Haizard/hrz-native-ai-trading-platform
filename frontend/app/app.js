@@ -3520,8 +3520,10 @@ function createChartPane(root, hooks = {}) {
       ],
       // Concept detections as bounded shapes: zones from origin to end,
       // patterns as names on their candle, structure as segments. The engine
-      // positions them; nothing here computes pixels.
-      concept_shapes: ConceptShapes.from(conceptEvents, enabledConcepts),
+      // positions them; nothing here computes pixels. Pane concepts are
+      // withheld: their events carry a measurement (RSI's 30/70), not a price,
+      // and a mark at 70 on a BTC chart is a level that does not exist.
+      concept_shapes: ConceptShapes.from(conceptEvents, priceFrameConcepts()),
       // The profile's edge, in the engine's own spelling. Assigned only when
       // set: absent means Right, which keeps every existing request byte-identical.
       ...(profileLeft ? { profile_anchor: "left" } : {}),
@@ -5984,6 +5986,16 @@ function createChartPane(root, hooks = {}) {
   // raw list is kept beside the filtered one instead of fetched twice.
   let conceptScan = null;        // { key, events }
 
+  /// The enabled ids whose events belong on the price frame. A pane concept
+  /// reports its measurement in the pane's own scale; its detections are drawn
+  /// as marks on its series line, so the price path gets the rest.
+  function priceFrameConcepts() {
+    if (!conceptCatalog) return enabledConcepts;
+    const paneIds = new Set(conceptCatalog.filter((c) => c.pane === true).map((c) => c.id));
+    if (!paneIds.size) return enabledConcepts;
+    return new Set([...enabledConcepts].filter((id) => !paneIds.has(id)));
+  }
+
   /// Fetch the catalog for the pane's symbol (once per symbol).
   async function refreshConceptCatalog() {
     const symbol = el("symbol") && el("symbol").value;
@@ -6090,10 +6102,45 @@ function createChartPane(root, hooks = {}) {
     if (!url) return null;
     try {
       const body = await api(url);
-      return body && body.spec && Array.isArray(body.times) ? body : null;
+      if (!body || !body.spec || !Array.isArray(body.times)) return null;
+      const marks = paneMarkersFor(id, body);
+      if (marks.length) body.spec.markers = [...(body.spec.markers || []), ...marks];
+      return body;
     } catch {
       return null;
     }
+  }
+
+  /// A pane concept's detections, placed inside its own pane. The event's
+  /// `price_level` is the bar's close -- a price the pane does not draw -- so
+  /// the mark's y comes from the pane's own line at that bar: the measurement
+  /// the trader is looking at, on the pane's scale.
+  function paneMarkersFor(id, body) {
+    const times = (body && body.times) || [];
+    const lines = (body && body.spec && body.spec.lines) || [];
+    if (!times.length || !lines.length) return [];
+    const atByTime = new Map(times.map((time, i) => [time, i]));
+    const marks = [];
+    for (const e of conceptEvents) {
+      // A neutral detection (a regime entry) has no side to colour; the pane's
+      // line is its statement, and a two-tone mark would invent one.
+      if (e.concept_id !== id || e.direction === "neutral") continue;
+      const at = atByTime.get(e.event_time_ns);
+      if (at == null) continue;
+      let value = null;
+      for (const line of lines) {
+        const v = (line.values || [])[at];
+        if (v != null) { value = v; break; }
+      }
+      if (value == null) continue;
+      marks.push({
+        at,
+        value,
+        kind: e.direction === "bearish" ? "bearish" : "bullish",
+        label: (id.split(".")[1] || id).replace(/_/g, " "),
+      });
+    }
+    return marks;
   }
 
   /// Remap a fetched series onto this pane's own candles by open_time: the
@@ -6104,7 +6151,7 @@ function createChartPane(root, hooks = {}) {
     const indexByTime = new Map();
     candles.forEach((c, i) => indexByTime.set(c.open_time ?? c.time, i));
     const out = [];
-    for (const body of indicatorSeries.values()) {
+    for (const [id, body] of indicatorSeries) {
       const { times, spec } = body;
       const srcIndexByTime = new Map(times.map((t, i) => [t, i]));
       const remapValues = (values) => candles.map((c) => {
@@ -6115,6 +6162,10 @@ function createChartPane(root, hooks = {}) {
         const t = times[i];
         const ci = t != null ? indexByTime.get(t) : null;
         return ci != null ? ci : null;
+      };
+      const remapMarker = (m) => {
+        const at = remapIndex(m.at);
+        return at != null ? { at, value: m.value, kind: m.kind, label: m.label } : null;
       };
       const lines = (spec.lines || []).map((l) => ({ name: l.name, color: l.color, values: remapValues(l.values) }));
       if (spec.target === "overlay") {
@@ -6140,10 +6191,10 @@ function createChartPane(root, hooks = {}) {
             const to = remapIndex(seg.to);
             return from != null && to != null ? { from, from_value: seg.from_value, to, to_value: seg.to_value, kind: seg.kind } : null;
           }).filter(Boolean),
-          markers: (spec.markers || []).map((m) => {
-            const at = remapIndex(m.at);
-            return at != null ? { at, value: m.value, kind: m.kind, label: m.label } : null;
-          }).filter(Boolean),
+          markers: [
+            ...(spec.markers || []).map(remapMarker).filter(Boolean),
+            ...paneMarkersFor(id, body).map(remapMarker).filter(Boolean),
+          ],
         });
       }
     }

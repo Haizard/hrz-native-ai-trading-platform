@@ -801,6 +801,7 @@ function conceptScanEvents(symbol, timeframe) {
   const sweep = bars[150];
   const fomc = bars[180];
   const stale = bars[40];
+  const rsiBar = bars[170];
   return [
     {
       concept_id: "smc.liquidity_sweep", concept_version: "1.0.0", symbol, timeframe,
@@ -814,6 +815,15 @@ function conceptScanEvents(symbol, timeframe) {
       direction: "neutral", status: "confirmed", event_time_ns: fomc.open_time,
       price_level: fomc.close, evidence: "25bp cut",
       bars: [bars[176].open_time, fomc.open_time],
+    },
+    {
+      // A pane concept's event: its `price_level` is the bar's close, and the
+      // reading it is about (28.4) is the magnitude. The chart must place the
+      // mark at the pane's own line at this bar, not at the close.
+      concept_id: "indicators.rsi", concept_version: "1.0.0", symbol, timeframe,
+      direction: "bullish", status: "confirmed", event_time_ns: rsiBar.open_time,
+      price_level: rsiBar.close, zone_low: rsiBar.low, zone_high: rsiBar.high,
+      evidence: { magnitude: 28.4 }, bars: [rsiBar.open_time, rsiBar.open_time],
     },
     {
       concept_id: "smc.liquidity_sweep", concept_version: "1.0.0", symbol, timeframe,
@@ -3622,6 +3632,25 @@ await settle();
 await drain();
 conceptCard("indicators.macd").querySelector(".conceptCard__main").click();
 await settle();
+// The scale rule the audit recorded as ignored: a pane concept's reading is
+// not a price. With RSI and MACD on -- both pane concepts -- the price frame
+// must receive no shapes at all, and the RSI crossing must arrive as a mark on
+// the RSI pane's own line, at the value the line draws.
+const paneRequest = lastRequest();
+const rsiPane = (paneRequest.sub_panes || [])
+  .find((p) => p.kind === "series" && p.label === "RSI(14)");
+const rsiMark = rsiPane && (rsiPane.markers || [])[0];
+const rsiFixtureValue = 50 + 22 * Math.sin(70 / 6);
+check(
+  "a pane concept marks its own pane, not the price chart",
+  (paneRequest.concept_shapes || []).length === 0 &&
+    rsiPane && (rsiPane.markers || []).length === 1 &&
+    rsiMark.kind === "bullish" && rsiMark.at === 170 &&
+    Math.abs(rsiMark.value - rsiFixtureValue) < 1e-9,
+  `${(paneRequest.concept_shapes || []).length} price shape(s) · ` +
+    `${(rsiPane?.markers || []).length} pane mark(s)` +
+    (rsiMark ? ` at bar ${rsiMark.at}, value ${rsiMark.value.toFixed(2)}` : "")
+);
 panelTrigger("concepts").click();
 await settle();
 await drain();
