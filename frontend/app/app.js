@@ -635,6 +635,26 @@ const CHART_PALETTE_DARK = {
   gann_fan: "#d17fb0",
   gann_square: "#d17fb0",
   gann_square_fixed: "#d17fb0",
+  // The Patterns group. One rose-pink family for the harmonic shapes,
+  // distinct hues for the structural ones (H&S, triangle, drives).
+  xabcd: "#c084fc",
+  abcd_pattern: "#c084fc",
+  cypher: "#c084fc",
+  head_shoulders: "#f97316",
+  three_drives: "#f97316",
+  triangle_pattern: "#f97316",
+  // The Elliott group. One teal for the wave-count family — impulse and
+  // corrections share a language, just different counts.
+  elliott_impulse: "#06b6d4",
+  elliott_correction: "#06b6d4",
+  elliott_triangle: "#06b6d4",
+  elliott_double_combo: "#06b6d4",
+  elliott_triple_combo: "#06b6d4",
+  // The Cyclic group. A warm amber for time-oscillation tools, matching
+  // their kinship with the measurement/ruler family.
+  cyclic_lines: "#f59e0b",
+  time_cycles: "#f59e0b",
+  sine_line: "#f59e0b",
   // The kinds the registry added. Distinct hues, one per kind, so a ray and
   // a trendline on the same chart are told apart by what they are; the
   // ruler is the value-area blue because it measures, like the fib.
@@ -7962,9 +7982,14 @@ function setActive(pane) {
 /// blank square.
 const TOOL_GROUP_ICONS = {
   lines: "trending-up",
+  channels: "align-horizontal-justify-center",
+  pitchforks: "git-branch",
   shapes: "shapes",
   fibonacci: "layers",
   gann: "grid",
+  patterns: "diamond",
+  elliott: "activity",
+  cyclic: "repeat",
   measurement: "ruler",
   positions: "square",
 };

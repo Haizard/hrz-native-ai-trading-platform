@@ -28,10 +28,13 @@ use crate::scene::Frame;
 use analytics_core::types::Candle;
 
 pub mod channels;
+pub mod cyclic;
+pub mod elliott;
 pub mod fibonacci;
 pub mod gann;
 pub mod lines;
 pub mod measurement;
+pub mod patterns;
 pub mod pitchforks;
 pub mod positions;
 pub mod shapes;
@@ -319,6 +322,23 @@ pub fn parts(
         DrawingKind::GannFan => gann::fan(geometry),
         DrawingKind::GannSquare => gann::square(geometry),
         DrawingKind::GannSquareFixed => gann::square_fixed(geometry),
+        // Patterns.
+        DrawingKind::Xabcd => patterns::xabcd(geometry),
+        DrawingKind::AbcdPattern => patterns::abcd(geometry),
+        DrawingKind::Cypher => patterns::cypher(geometry),
+        DrawingKind::HeadShoulders => patterns::head_shoulders(geometry),
+        DrawingKind::ThreeDrives => patterns::three_drives(geometry),
+        DrawingKind::TrianglePattern => patterns::triangle_pattern(geometry),
+        // Elliott.
+        DrawingKind::ElliottImpulse => elliott::impulse(geometry),
+        DrawingKind::ElliottCorrection => elliott::correction(geometry),
+        DrawingKind::ElliottTriangle => elliott::triangle(geometry),
+        DrawingKind::ElliottDoubleCombo => elliott::double_combo(geometry),
+        DrawingKind::ElliottTripleCombo => elliott::triple_combo(geometry),
+        // Cyclic.
+        DrawingKind::CyclicLines => cyclic::lines(geometry),
+        DrawingKind::TimeCycles => cyclic::bands(geometry),
+        DrawingKind::SineLine => cyclic::sine(geometry),
         // Measurement.
         DrawingKind::Measure => measurement::ruler(geometry),
         DrawingKind::DatepriceRange => measurement::range(geometry),

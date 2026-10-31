@@ -246,6 +246,36 @@ pub enum DrawingKind {
     /// The square repeated: levels 0 through 5, one unit square per level, the
     /// second point setting how large a unit is.
     GannSquareFixed,
+    // Patterns: harmonic and other multi-leg shapes
+    /// Gartley / Bat / Crab / Butterfly / Shark with leg ratios and ✓/✗ badges.
+    Xabcd,
+    /// Four-point ABCD pattern drawn on custom ratios.
+    AbcdPattern,
+    /// Cypher pattern with 0.382–0.618 XA, 1.13–1.414 XA, 0.786 XC.
+    Cypher,
+    /// Head-and-shoulders with neckline. Five points: left shoulder high, head, right shoulder, plus two for the line.
+    HeadShoulders,
+    /// Three drives: six points across three impulse legs.
+    ThreeDrives,
+    /// Symmetrical triangle: four points marking converging higher lows and lower highs.
+    TrianglePattern,
+    /// Elliott: five-wave impulse labeled 1..5.
+    ElliottImpulse,
+    /// Elliott: three-wave correction labeled A..C.
+    ElliottCorrection,
+    /// Elliott: triangle labeled A..E.
+    ElliottTriangle,
+    /// Elliott: double three / W-X-Y correction.
+    ElliottDoubleCombo,
+    /// Elliott: triple three / W-X-Y-X-Z correction.
+    ElliottTripleCombo,
+    // Cyclic: time-based oscillations
+    /// Vertical lines repeating at a fixed interval into the future.
+    CyclicLines,
+    /// Alternating shaded bands in time, period set by two anchors.
+    TimeCycles,
+    /// Sine wave: second anchor sets cycle length and amplitude.
+    SineLine,
     /// The price/time delta between the two anchors: a box, dashed guides to
     /// both axes, and the delta as a label.
     Measure,
@@ -282,7 +312,7 @@ impl DrawingKind {
     /// The order is the flyout order, so a kind listed here in the wrong block is
     /// a tool that sits in the wrong menu -- and a kind missing is one the toolbar
     /// cannot offer at all.
-    pub const ALL: [Self; 44] = [
+    pub const ALL: [Self; 58] = [
         // Lines.
         Self::Trendline,
         Self::Ray,
@@ -329,6 +359,24 @@ impl DrawingKind {
         Self::GannFan,
         Self::GannSquare,
         Self::GannSquareFixed,
+        // Patterns.
+        Self::Xabcd,
+        Self::AbcdPattern,
+        Self::Cypher,
+        Self::HeadShoulders,
+        Self::ThreeDrives,
+        Self::TrianglePattern,
+        // Elliott.
+        Self::ElliottImpulse,
+        Self::ElliottCorrection,
+        Self::ElliottTriangle,
+        Self::ElliottDoubleCombo,
+        Self::ElliottTripleCombo,
+        // Cyclic.
+        Self::CyclicLines,
+        Self::TimeCycles,
+        Self::SineLine,
+
         // Measurement.
         Self::Measure,
         Self::DatepriceRange,
@@ -377,6 +425,20 @@ impl DrawingKind {
             Self::GannFan => "gann_fan",
             Self::GannSquare => "gann_square",
             Self::GannSquareFixed => "gann_square_fixed",
+            Self::Xabcd => "xabcd",
+            Self::AbcdPattern => "abcd_pattern",
+            Self::Cypher => "cypher",
+            Self::HeadShoulders => "head_shoulders",
+            Self::ThreeDrives => "three_drives",
+            Self::TrianglePattern => "triangle_pattern",
+            Self::ElliottImpulse => "elliott_impulse",
+            Self::ElliottCorrection => "elliott_correction",
+            Self::ElliottTriangle => "elliott_triangle",
+            Self::ElliottDoubleCombo => "elliott_double_combo",
+            Self::ElliottTripleCombo => "elliott_triple_combo",
+            Self::CyclicLines => "cyclic_lines",
+            Self::TimeCycles => "time_cycles",
+            Self::SineLine => "sine_line",
             Self::Measure => "measure",
             Self::Channel => "channel",
             Self::Angle => "angle",
@@ -412,8 +474,19 @@ impl DrawingKind {
             | Self::InsidePitchfork
             | Self::TrendFibExtension
             | Self::TrendFibTime
-            | Self::FibChannel => AnchorCount::fixed(3),
-            Self::DisjointChannel => AnchorCount::fixed(4),
+            | Self::FibChannel
+            | Self::ElliottCorrection => AnchorCount::fixed(3),
+            Self::DisjointChannel | Self::AbcdPattern | Self::TrianglePattern => {
+                AnchorCount::fixed(4)
+            }
+            Self::Xabcd
+            | Self::Cypher
+            | Self::HeadShoulders
+            | Self::ElliottImpulse
+            | Self::ElliottTriangle
+            | Self::ElliottDoubleCombo => AnchorCount::fixed(5),
+            Self::ThreeDrives => AnchorCount::fixed(6),
+            Self::ElliottTripleCombo => AnchorCount::fixed(7),
             Self::Trendline
             | Self::Ray
             | Self::Extended
@@ -434,6 +507,9 @@ impl DrawingKind {
             | Self::GannFan
             | Self::GannSquare
             | Self::GannSquareFixed
+            | Self::CyclicLines
+            | Self::TimeCycles
+            | Self::SineLine
             | Self::Measure
             | Self::Angle
             | Self::Circle
@@ -465,6 +541,12 @@ pub enum ToolGroup {
     Fibonacci,
     /// Gann: price and time held in proportion — the box, the fan, the square.
     Gann,
+    /// Patterns: harmonic and structural shapes — XABCD, Head & Shoulders, Triangles.
+    Patterns,
+    /// Elliott: wave counts — impulse, corrections, triangles, combinations.
+    Elliott,
+    /// Cyclic: time oscillations — verticals, bands, sine curves.
+    Cyclic,
     /// Measurement: the price/time ruler and the date-price range.
     Measurement,
     /// Positions: the long/short risk boxes a trade plan draws.
@@ -473,13 +555,16 @@ pub enum ToolGroup {
 
 impl ToolGroup {
     /// Every group, in toolbar order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 11] = [
         Self::Lines,
         Self::Channels,
         Self::Pitchforks,
         Self::Shapes,
         Self::Fibonacci,
         Self::Gann,
+        Self::Patterns,
+        Self::Elliott,
+        Self::Cyclic,
         Self::Measurement,
         Self::Positions,
     ];
@@ -494,6 +579,9 @@ impl ToolGroup {
             Self::Shapes => "shapes",
             Self::Fibonacci => "fibonacci",
             Self::Gann => "gann",
+            Self::Patterns => "patterns",
+            Self::Elliott => "elliott",
+            Self::Cyclic => "cyclic",
             Self::Measurement => "measurement",
             Self::Positions => "positions",
         }
@@ -509,6 +597,9 @@ impl ToolGroup {
             Self::Shapes => "Shapes",
             Self::Fibonacci => "Fibonacci",
             Self::Gann => "Gann",
+            Self::Patterns => "Patterns",
+            Self::Elliott => "Elliott",
+            Self::Cyclic => "Cyclic",
             Self::Measurement => "Measure",
             Self::Positions => "Positions",
         }
@@ -548,7 +639,7 @@ pub struct ToolSpec {
 /// The cursor is deliberately absent: it is not an object the engine can draw,
 /// it is the shell's "select and pan" state, and a registry of *objects*
 /// pretending to contain it would be one more thing to filter out.
-pub const REGISTRY: [ToolSpec; 44] = [
+pub const REGISTRY: [ToolSpec; 58] = [
     ToolSpec {
         kind: DrawingKind::Trendline,
         label: "Trend",
@@ -781,6 +872,121 @@ pub const REGISTRY: [ToolSpec; 44] = [
         title: "Levels 0 through 5 at the unit square the second point sets",
         group: ToolGroup::Gann,
         group_label: "Gann",
+        anchors: AnchorCount::fixed(2),
+    },
+    // Patterns.
+    ToolSpec {
+        kind: DrawingKind::Xabcd,
+        label: "XABCD",
+        title: "Five pivots: harmonic ratios and pattern recognition (Gartley, Bat, Crab, Butterfly, Shark)",
+        group: ToolGroup::Patterns,
+        group_label: "Patterns",
+        anchors: AnchorCount::fixed(5),
+    },
+    ToolSpec {
+        kind: DrawingKind::AbcdPattern,
+        label: "ABCD",
+        title: "Four pivots: a custom-ratio ABCD pattern",
+        group: ToolGroup::Patterns,
+        group_label: "Patterns",
+        anchors: AnchorCount::fixed(4),
+    },
+    ToolSpec {
+        kind: DrawingKind::Cypher,
+        label: "Cypher",
+        title: "Five pivots: the Cypher harmonic (0.382-0.786 XA, 1.13-1.414 AB)",
+        group: ToolGroup::Patterns,
+        group_label: "Patterns",
+        anchors: AnchorCount::fixed(5),
+    },
+    ToolSpec {
+        kind: DrawingKind::HeadShoulders,
+        label: "H&S",
+        title: "Five pivots: left shoulder, head, right shoulder, and two neckline points",
+        group: ToolGroup::Patterns,
+        group_label: "Patterns",
+        anchors: AnchorCount::fixed(5),
+    },
+    ToolSpec {
+        kind: DrawingKind::ThreeDrives,
+        label: "Drives",
+        title: "Six pivots: three impulse legs with their retracements",
+        group: ToolGroup::Patterns,
+        group_label: "Patterns",
+        anchors: AnchorCount::fixed(6),
+    },
+    ToolSpec {
+        kind: DrawingKind::TrianglePattern,
+        label: "Tri patt",
+        title: "Four pivots: converging trendlines from higher lows and lower highs",
+        group: ToolGroup::Patterns,
+        group_label: "Patterns",
+        anchors: AnchorCount::fixed(4),
+    },
+    // Elliott.
+    ToolSpec {
+        kind: DrawingKind::ElliottImpulse,
+        label: "Impulse",
+        title: "Five pivots: a 1-2-3-4-5 impulse wave sequence",
+        group: ToolGroup::Elliott,
+        group_label: "Elliott",
+        anchors: AnchorCount::fixed(5),
+    },
+    ToolSpec {
+        kind: DrawingKind::ElliottCorrection,
+        label: "Zigzag",
+        title: "Three pivots: an A-B-C corrective wave",
+        group: ToolGroup::Elliott,
+        group_label: "Elliott",
+        anchors: AnchorCount::fixed(3),
+    },
+    ToolSpec {
+        kind: DrawingKind::ElliottTriangle,
+        label: "E.Tri",
+        title: "Five pivots: an A-B-C-D-E triangle (contracting or expanding)",
+        group: ToolGroup::Elliott,
+        group_label: "Elliott",
+        anchors: AnchorCount::fixed(5),
+    },
+    ToolSpec {
+        kind: DrawingKind::ElliottDoubleCombo,
+        label: "Double",
+        title: "Five pivots: W-X-Y-X-Z double zigzag",
+        group: ToolGroup::Elliott,
+        group_label: "Elliott",
+        anchors: AnchorCount::fixed(5),
+    },
+    ToolSpec {
+        kind: DrawingKind::ElliottTripleCombo,
+        label: "Triple",
+        title: "Seven pivots: W-X-Y-X-Z-X-A triple zigzag",
+        group: ToolGroup::Elliott,
+        group_label: "Elliott",
+        anchors: AnchorCount::fixed(7),
+    },
+    // Cyclic.
+    ToolSpec {
+        kind: DrawingKind::CyclicLines,
+        label: "Cycle L",
+        title: "Two anchors: vertical lines repeating at the defined interval into the future",
+        group: ToolGroup::Cyclic,
+        group_label: "Cyclic",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::TimeCycles,
+        label: "Cycle B",
+        title: "Two anchors: alternating shaded time bands from the defined period",
+        group: ToolGroup::Cyclic,
+        group_label: "Cyclic",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::SineLine,
+        label: "Sine",
+        title: "Two anchors: a sine curve whose period and amplitude are set by the drag",
+        group: ToolGroup::Cyclic,
+        group_label: "Cyclic",
         anchors: AnchorCount::fixed(2),
     },
     ToolSpec {
