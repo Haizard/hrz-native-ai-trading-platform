@@ -182,7 +182,9 @@ pub async fn smt(
             zone_high: None,
             evidence: serde_json::json!({
                 "correlated_symbol": symbol_b,
+                "a_prior_level": d.a_prior_level,
                 "b_level": d.b_level,
+                "b_prior_level": d.b_prior_level,
                 "reading": "A swept the swing B did not confirm",
             }),
             bars: (d.prior_time, d.newest_time),

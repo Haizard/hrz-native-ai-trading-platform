@@ -1383,10 +1383,24 @@ function createChartPane(root, hooks = {}) {
       ctx.fillStyle = rgbaFromPacked(b.color, b.fill_alpha ?? 0.16);
       ctx.fill();
     }
-    if (!scene.overlay_lines || !scene.overlay_lines.length) return;
     let legendX = scene.plot.x + 8;
     ctx.font = "9px ui-sans-serif, system-ui";
-    for (const line of scene.overlay_lines) {
+    // Dot series (PSAR): one point per bar, side-coloured -- a stop flips
+    // sides without a connecting line to hide the flip.
+    for (const series of scene.overlay_dots || []) {
+      for (const dot of series.points) {
+        ctx.fillStyle = dot.up ? "#26a69a" : "#ef5350";
+        ctx.beginPath();
+        ctx.arc(dot.x, dot.y, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (series.name) {
+        ctx.fillStyle = "#" + (series.color >>> 0).toString(16).padStart(6, "0");
+        ctx.fillText(series.name, legendX, scene.plot.y + 12);
+        legendX += ctx.measureText(series.name).width + 8;
+      }
+    }
+    for (const line of scene.overlay_lines || []) {
       const css = "#" + (line.color >>> 0).toString(16).padStart(6, "0");
       if (line.points.length > 1) {
         ctx.strokeStyle = css;
@@ -1434,6 +1448,27 @@ function createChartPane(root, hooks = {}) {
         ctx.fillText(String(level.value), pane.plot.x + pane.plot.w + 4, level.y + 3);
       }
       ctx.setLineDash([]);
+
+      // A series pane's bands (a posterior's credible interval): both edges
+      // on the pane's own scale, a wash under the line so the trace stays
+      // readable through the interval.
+      if (pane.bands && pane.bands.length) {
+        for (const band of pane.bands) {
+          if (band.upper.length < 2) continue;
+          ctx.beginPath();
+          ctx.moveTo(band.upper[0].x, band.upper[0].y);
+          for (const point of band.upper) ctx.lineTo(point.x, point.y);
+          for (let i = band.lower.length - 1; i >= 0; i -= 1) {
+            ctx.lineTo(band.lower[i].x, band.lower[i].y);
+          }
+          ctx.closePath();
+          ctx.save();
+          ctx.globalAlpha = 0.16;
+          ctx.fillStyle = conceptColor(band.color, "rgba(167,139,250,1)");
+          ctx.fill();
+          ctx.restore();
+        }
+      }
 
       // The oscillator line itself.
       if (pane.line.length > 1) {
@@ -3587,7 +3622,7 @@ function createChartPane(root, hooks = {}) {
     }
     if (registryOverlays.length) {
       request.overlay_series = registryOverlays.flatMap((p) =>
-        p.lines.map((l) => ({ name: l.name, color: l.color, values: l.values }))
+        p.lines.map((l) => ({ name: l.name, color: l.color, values: l.values, dots: p.dots === true }))
       );
       const overlayFills = registryOverlays.flatMap((p) => p.fills || []);
       if (overlayFills.length) request.overlay_fills = overlayFills;
@@ -6022,6 +6057,35 @@ function createChartPane(root, hooks = {}) {
   /// make each of them its own identical scan.
   let conceptScanFlight = null;   // { key, promise }
 
+  /// The SMT pair scan, which the per-symbol scan cannot answer: the
+  /// divergence exists only between two instruments. Cached and shared like
+  /// the scan itself, so a grid of cards is one request and the chart rides
+  /// the same answer.
+  let pairScan = null;            // { key, events }
+  let pairScanFlight = null;      // { key, promise }
+
+  async function ensurePairEvents(symbol, timeframe) {
+    const pair = pairSymbol;
+    if (!symbol || !timeframe || !pair || pair === symbol) return [];
+    const key = `${symbol}|${timeframe}|${pair}`;
+    if (pairScan && pairScan.key === key) return pairScan.events;
+    if (pairScanFlight && pairScanFlight.key === key) return pairScanFlight.promise;
+    const promise = (async () => {
+      try {
+        const body = await api(`/concept-events/smt?symbol_a=${encodeURIComponent(symbol)}&symbol_b=${encodeURIComponent(pair)}&timeframe=${encodeURIComponent(timeframe)}`);
+        return (body && body.events) || [];
+      } catch {
+        return [];
+      }
+    })().then((events) => {
+      pairScan = { key, events };
+      if (pairScanFlight && pairScanFlight.promise === promise) pairScanFlight = null;
+      return events;
+    });
+    pairScanFlight = { key, promise };
+    return promise;
+  }
+
   async function ensureConceptScan() {
     const symbol = el("symbol") && el("symbol").value;
     const timeframe = el("timeframe") && el("timeframe").value;
@@ -6032,7 +6096,9 @@ function createChartPane(root, hooks = {}) {
     const promise = (async () => {
       try {
         const body = await api(`/concept-events/scan?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`);
-        return (body && body.events) || [];
+        const events = (body && body.events) || [];
+        // SMT is a pair concept: its card previews from the same merged list.
+        return events.concat(await ensurePairEvents(symbol, timeframe));
       } catch {
         return [];
       }
@@ -6057,7 +6123,13 @@ function createChartPane(root, hooks = {}) {
     if (!symbol || !timeframe || enabledConcepts.size === 0) { conceptEvents = []; return; }
     try {
       const body = await api(`/concept-events/scan?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`);
-      conceptEvents = (body && body.events) || [];
+      let events = (body && body.events) || [];
+      // The pair concept is not in the per-symbol answer; ask the pair route
+      // only when the trader has switched it on.
+      if (enabledConcepts.has("smc.smt_divergence")) {
+        events = events.concat(await ensurePairEvents(symbol, timeframe));
+      }
+      conceptEvents = events;
     } catch {
       conceptEvents = [];
     }
@@ -6177,14 +6249,16 @@ function createChartPane(root, hooks = {}) {
       const lines = (spec.lines || []).map((l) => ({ name: l.name, color: l.color, values: remapValues(l.values) }));
       if (spec.target === "overlay") {
         // Overlay series: prices, mapped by the engine through the price
-        // frame -- the request's overlay_series, not a sub-pane.
+        // frame -- the request's overlay_series, not a sub-pane. The shape
+        // table says whether the measurements are a trace or per-bar dots.
         const fills = (spec.fills || []).map((f) => ({
           name: f.name,
           color: f.color,
           upper: remapValues(f.upper),
           lower: remapValues(f.lower),
         }));
-        out.push({ overlay: true, lines, fills });
+        const dots = !!(globalThis.ConceptShapes && globalThis.ConceptShapes.shapeOf(id) === "series_dots");
+        out.push({ overlay: true, lines, fills, dots });
       } else {
         out.push({
           kind: "series",
@@ -6192,6 +6266,12 @@ function createChartPane(root, hooks = {}) {
           scale: spec.scale,
           levels: spec.levels || [],
           lines,
+          fills: (spec.fills || []).map((f) => ({
+            name: f.name,
+            color: f.color,
+            upper: remapValues(f.upper),
+            lower: remapValues(f.lower),
+          })),
           bars: spec.bars ? { name: spec.bars.name, color_up: spec.bars.color_up, color_down: spec.bars.color_down, values: remapValues(spec.bars.values) } : null,
           segments: (spec.segments || []).map((seg) => {
             const from = remapIndex(seg.from);
@@ -14784,14 +14864,14 @@ function conceptPreviewPaint(canvas, payload, concept, view) {
     if (!scale) { previewBaseline(ctx, width, height, colors); return; }
     previewGhost(frame, scale);
     if (events) previewEvents(frame, events, scale);
-    else previewSeries(frame, payload, scale);
+    else previewSeries(frame, payload, scale, concept);
     return;
   }
   if (spec) {
     const values = panePrices(payload);
     const scale = previewMapper(6, height - 6, values, previewFixedRange(spec.scale));
     if (!scale) { previewBaseline(ctx, width, height, colors); return; }
-    previewSeries(frame, payload, scale);
+    previewSeries(frame, payload, scale, concept);
     return;
   }
   previewBaseline(ctx, width, height, colors);
@@ -14868,6 +14948,8 @@ function eventPrices(events) {
     if (e.zone_low != null) out.push(e.zone_low);
     if (e.zone_high != null) out.push(e.zone_high);
     if (e.price_level != null) out.push(e.price_level);
+    // A pair link spans two swings; both ends must be in the card's scale.
+    if (e.evidence && e.evidence.a_prior_level != null) out.push(e.evidence.a_prior_level);
   }
   return out;
 }
@@ -14913,12 +14995,16 @@ function previewAligned(body, frame) {
   };
 }
 
-function previewSeries(frame, body, scale) {
+function previewSeries(frame, body, scale, concept) {
   const { ctx, colors } = frame;
   const spec = body.spec || {};
   const align = previewAligned(body, frame);
   const overlay = spec.target === "overlay";
   const lineColor = (color) => conceptColor(color, overlay ? colors.accent : colors.up);
+  // The shape table says whether an overlay is a trace or per-bar dots -- the
+  // same question the chart's own request answers.
+  const dots = overlay && concept && globalThis.ConceptShapes &&
+    globalThis.ConceptShapes.shapeOf(concept.id) === "series_dots";
 
   for (const fill of spec.fills || []) {
     const upper = align(fill.upper);
@@ -14968,6 +15054,19 @@ function previewSeries(frame, body, scale) {
 
   for (const line of spec.lines || []) {
     const values = align(line.values);
+    if (dots) {
+      // The engine's own side rule: at or under the bar's close is the stop
+      // riding support, over it is resistance.
+      values.forEach((value, i) => {
+        if (value == null) return;
+        const close = frame.axis.closes[i];
+        ctx.fillStyle = close == null || value <= close ? colors.up : colors.down;
+        ctx.beginPath();
+        ctx.arc(frame.x(i), scale(value), 1.2, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      continue;
+    }
     ctx.strokeStyle = lineColor(line.color);
     ctx.lineWidth = 1.4;
     ctx.beginPath();
@@ -15129,6 +15228,26 @@ function previewEvents(frame, events, scale) {
         ctx.moveTo(left, scale(rung.price));
         ctx.lineTo(right, scale(rung.price));
         ctx.stroke();
+      }
+    } else if (shape.type === "pair_link") {
+      if (!Number.isFinite(shape.from_price) || !Number.isFinite(shape.to_price)) continue;
+      const left = xAt(shape.from_ns);
+      const right = Math.max(left + 2, xAt(shape.to_ns));
+      const fromY = scale(shape.from_price);
+      const toY = scale(shape.to_price);
+      ctx.strokeStyle = tone(shape.color);
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 2]);
+      ctx.beginPath();
+      ctx.moveTo(left, fromY);
+      ctx.lineTo(right, toY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = tone(shape.color);
+      for (const [x, y] of [[left, fromY], [right, toY]]) {
+        ctx.beginPath();
+        ctx.arc(x, y, 1.6, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
   }

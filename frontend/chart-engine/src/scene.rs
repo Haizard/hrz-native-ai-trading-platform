@@ -424,6 +424,9 @@ pub enum SubPaneSpec {
         /// The value lines, oldest first, one `Option` per candle.
         #[serde(default)]
         lines: Vec<SeriesLine>,
+        /// Area bands on the pane's own scale (a posterior's interval).
+        #[serde(default)]
+        fills: Vec<SeriesFill>,
         /// An optional histogram (MACD and friends).
         #[serde(default)]
         bars: Option<SeriesBars>,
@@ -463,6 +466,20 @@ pub struct SeriesLine {
     pub values: Vec<Option<f64>>,
 }
 
+/// One band of a series pane: the area between two per-candle values on the
+/// pane's own scale (a posterior's credible interval).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesFill {
+    /// The band's name.
+    pub name: String,
+    /// 0xRRGGBB.
+    pub color: u32,
+    /// The band's upper edge, one value per candle (`None` is a gap).
+    pub upper: Vec<Option<f64>>,
+    /// The band's lower edge.
+    pub lower: Vec<Option<f64>>,
+}
+
 /// One overlay fill: the band between two per-candle PRICE series.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayFillSpec {
@@ -486,6 +503,11 @@ pub struct OverlaySeriesSpec {
     pub color: u32,
     /// One price per candle index; `None` is a gap.
     pub values: Vec<Option<f64>>,
+    /// Draw disconnected per-bar dots instead of a connected line (PSAR).
+    /// A dot sits above the bar's close when the value is above it and below
+    /// when under -- the side the stop is riding, read without a legend.
+    #[serde(default)]
+    pub dots: bool,
 }
 
 /// A histogram for a series pane (MACD's bars and friends).
@@ -1073,6 +1095,10 @@ pub struct Scene {
     /// UNDER the overlay lines.
     #[serde(default)]
     pub overlay_fills: Vec<crate::script::ScriptDraw>,
+    /// Overlay dot series mapped onto the price plot (PSAR), painted under
+    /// the candles so a stop dot never hides a wick.
+    #[serde(default)]
+    pub overlay_dots: Vec<SceneOverlayDots>,
     /// Pine-lite script panes (`docs/23`), after the built-in sub-panes.
     /// Always present and usually empty, like [`Scene::regions`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1165,6 +1191,23 @@ pub struct ScenePane {
     /// A series pane's point markers (signal crossings), coloured by kind.
     #[serde(default)]
     pub markers: Vec<PaneMarker>,
+    /// A series pane's area bands (a posterior's credible interval), painted
+    /// under the lines.
+    #[serde(default)]
+    pub bands: Vec<ScenePaneBand>,
+}
+
+/// One positioned band of a series pane: both edges on the pane's own scale.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScenePaneBand {
+    /// The band's name.
+    pub name: String,
+    /// 0xRRGGBB.
+    pub color: u32,
+    /// The upper edge, oldest first.
+    pub upper: Vec<Point>,
+    /// The lower edge, oldest first.
+    pub lower: Vec<Point>,
 }
 
 /// One positioned line of a series pane.
@@ -1213,6 +1256,30 @@ pub struct SceneOverlayLine {
     pub color: u32,
     /// The points, in canvas coordinates, oldest first.
     pub points: Vec<Point>,
+}
+
+/// One overlay dot series on the price plot: disconnected per-bar points,
+/// side-coloured by where the value sits against its bar's close.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneOverlayDots {
+    /// The series' name, for the legend.
+    pub name: String,
+    /// 0xRRGGBB -- the legend chip's colour; the dots themselves are
+    /// side-coloured by `SceneDot::up`.
+    pub color: u32,
+    /// The dots, in canvas coordinates, oldest first.
+    pub points: Vec<SceneDot>,
+}
+
+/// One positioned dot of an overlay dot series.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneDot {
+    /// Canvas x -- the bar slot's centre.
+    pub x: f64,
+    /// Canvas y.
+    pub y: f64,
+    /// The value sat at or under the bar's close (a support-side stop).
+    pub up: bool,
 }
 
 /// A horizontal reference line inside a sub-pane.
@@ -1597,6 +1664,7 @@ pub fn build(request: &Request) -> Scene {
         sub_panes: Vec::new(),
         overlay_lines: Vec::new(),
         overlay_fills: Vec::new(),
+        overlay_dots: Vec::new(),
         script_panes: Vec::new(),
         strategy_layers: Vec::new(),
         equity_panes: Vec::new(),
@@ -2186,6 +2254,33 @@ pub fn build(request: &Request) -> Scene {
     // through the same frame the candles use -- a line in the pane's own
     // scale would sit beside the price it describes rather than on it.
     for spec in &request.overlay_series {
+        if spec.dots {
+            // Disconnected per-bar points: a stop that flips sides must not
+            // be stitched into a line across the flip.
+            let points: Vec<SceneDot> = spec
+                .values
+                .iter()
+                .skip(window.from)
+                .enumerate()
+                .take(visible_real.len())
+                .filter_map(|(index, value)| {
+                    value.map(|price| SceneDot {
+                        x: plot.x + slot * (index as f64 + 0.5),
+                        y: price_to_y(price, scene.price_min, scene.price_max, &plot, scale_map),
+                        // A stop under the bar supports it; one over caps it.
+                        up: price <= visible_real[index].close,
+                    })
+                })
+                .collect();
+            if !points.is_empty() {
+                scene.overlay_dots.push(SceneOverlayDots {
+                    name: spec.name.clone(),
+                    color: spec.color,
+                    points,
+                });
+            }
+            continue;
+        }
         let points: Vec<Point> = spec
             .values
             .iter()
@@ -2394,10 +2489,11 @@ fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], value_offset: usize, slot: f
             scale,
             levels,
             lines,
+            fills,
             bars,
             segments,
             markers,
-        } => series_pane(candles, value_offset, slot, plot, label, *scale, levels, lines, bars.as_ref(), segments, markers),
+        } => series_pane(candles, value_offset, slot, plot, label, *scale, levels, lines, fills, bars.as_ref(), segments, markers),
     }
 }
 
@@ -2414,6 +2510,7 @@ fn series_pane(
     scale: SeriesScale,
     levels: &[f64],
     lines: &[SeriesLine],
+    fills: &[SeriesFill],
     bars: Option<&SeriesBars>,
     segments: &[SeriesSegment],
     markers: &[SeriesMarker],
@@ -2436,6 +2533,11 @@ fn series_pane(
             };
             for line in lines {
                 for v in line.values.iter().flatten() {
+                    eat(*v);
+                }
+            }
+            for fill in fills {
+                for v in fill.upper.iter().chain(&fill.lower).flatten() {
                     eat(*v);
                 }
             }
@@ -2507,7 +2609,49 @@ fn series_pane(
                 .collect()
         })
         .unwrap_or_default();
-    if positioned_lines.is_empty() && positioned_bars.is_empty() {
+    // Bands: both edges on the pane's scale, one band per contiguous run
+    // where BOTH edges exist -- a gap in either never smears a fill across
+    // missing bars.
+    let point_at = |values: &[Option<f64>], index: usize| -> Option<Point> {
+        values
+            .iter()
+            .skip(value_offset)
+            .nth(index)
+            .copied()
+            .flatten()
+            .map(|v| Point {
+                x: plot.x + slot * (index as f64 + 0.5),
+                y: y_at(v),
+            })
+    };
+    let mut positioned_bands: Vec<ScenePaneBand> = Vec::new();
+    for fill in fills {
+        let mut run_upper: Vec<Point> = Vec::new();
+        let mut run_lower: Vec<Point> = Vec::new();
+        let mut flush = |upper: &mut Vec<Point>, lower: &mut Vec<Point>| {
+            if upper.len() > 1 {
+                positioned_bands.push(ScenePaneBand {
+                    name: fill.name.clone(),
+                    color: fill.color,
+                    upper: std::mem::take(upper),
+                    lower: std::mem::take(lower),
+                });
+            }
+            upper.clear();
+            lower.clear();
+        };
+        for index in 0..candles.len() {
+            match (point_at(&fill.upper, index), point_at(&fill.lower, index)) {
+                (Some(u), Some(l)) => {
+                    run_upper.push(u);
+                    run_lower.push(l);
+                }
+                _ => flush(&mut run_upper, &mut run_lower),
+            }
+        }
+        flush(&mut run_upper, &mut run_lower);
+    }
+    if positioned_lines.is_empty() && positioned_bars.is_empty() && positioned_bands.is_empty() {
         return None;
     }
 
@@ -2570,6 +2714,7 @@ fn series_pane(
         lines: positioned_lines,
         bars: positioned_bars,
         markers: positioned_markers,
+        bands: positioned_bands,
     })
 }
 
@@ -2672,6 +2817,7 @@ fn rsi_pane(
         lines: Vec::new(),
         bars: Vec::new(),
         markers: Vec::new(),
+        bands: Vec::new(),
     })
 }
 
@@ -3052,6 +3198,26 @@ pub enum ConceptShape {
         /// The golden pocket's top.
         #[serde(default)]
         pocket_high: Option<f64>,
+    },
+    /// A pair link (SMT): the two swings of this instrument whose divergence
+    /// the correlated instrument did not confirm. The link is the claim; the
+    /// pair's name rides the label.
+    PairLink {
+        /// The prior swing's bar, unix nanos.
+        from_ns: i64,
+        /// The divergent swing's bar, unix nanos.
+        to_ns: i64,
+        /// The prior swing's price.
+        from_price: f64,
+        /// The divergent swing's price.
+        to_price: f64,
+        /// The short name (`SMT`).
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+        /// The correlated instrument, when named (`ETHUSDT`).
+        #[serde(default)]
+        pair: String,
     },
 }
 
@@ -3534,6 +3700,53 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                     color: *color,
                 });
             }
+            draws
+        }
+        ConceptShape::PairLink { from_ns, to_ns, from_price, to_price, label, color, pair } => {
+            if !from_price.is_finite() || !to_price.is_finite() {
+                return Vec::new();
+            }
+            let (x1, y1) = (x_at(*from_ns), frame.y_at(*from_price));
+            let (x2, y2) = (x_at(*to_ns), frame.y_at(*to_price));
+            if x2 <= x1 {
+                return Vec::new();
+            }
+            let mut draws = Vec::new();
+            // End ticks make the anchors read as the two swing bars, not as
+            // whatever the line happened to stop at.
+            for (x, y) in [(x1, y1), (x2, y2)] {
+                draws.push(crate::script::ScriptDraw::Line {
+                    x1: x,
+                    y1: y - 3.0,
+                    x2: x,
+                    y2: y + 3.0,
+                    color: *color,
+                    style: "solid".to_string(),
+                    width: 1.0,
+                    extend: "none".to_string(),
+                });
+            }
+            draws.push(crate::script::ScriptDraw::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                color: *color,
+                style: "dashed".to_string(),
+                width: 1.0,
+                extend: "none".to_string(),
+            });
+            let text = if pair.is_empty() {
+                label.clone()
+            } else {
+                format!("{label} · {pair}")
+            };
+            draws.push(crate::script::ScriptDraw::Label {
+                x: (x1 + x2) / 2.0,
+                y: (y1 + y2) / 2.0 - 4.0,
+                text,
+                color: *color,
+            });
             draws
         }
     }
@@ -4637,6 +4850,61 @@ mod concept_shape_tests {
         }).collect();
         assert_eq!(labels.len(), 4, "one name plus a ratio and price per rung");
         assert!(labels.iter().any(|t| t.contains("0.618") && t.contains("99.50")), "the rung reads its own math: {labels:?}");
+    }
+
+    #[test]
+    fn a_pair_link_joins_the_two_swings_and_names_its_pair() {
+        use crate::script::ScriptDraw;
+        let frame = frame_fixture();
+        let draws = position_concept_shape(
+            &ConceptShape::PairLink {
+                from_ns: 2_000_000_000_000,
+                to_ns: 6_000_000_000_000,
+                from_price: 98.0,
+                to_price: 96.0,
+                label: "SMT".to_string(),
+                color: 0xcc26a69a,
+                pair: "ETHUSDT".to_string(),
+            },
+            &frame,
+        );
+        let lines: Vec<_> = draws.iter().filter_map(|d| match d {
+            ScriptDraw::Line { x1, y1, x2, y2, style, .. } => Some((*x1, *y1, *x2, *y2, style.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(lines.len(), 3, "two end ticks and the link");
+        let link = lines.iter().find(|l| l.4 == "dashed").expect("the link is dashed");
+        assert_eq!(link.0, frame.x_at_nanos(2_000_000_000_000));
+        assert_eq!(link.2, frame.x_at_nanos(6_000_000_000_000));
+        assert_eq!((link.1, link.3), (frame.y_at(98.0), frame.y_at(96.0)));
+        assert!(lines.iter().filter(|l| l.4 == "solid").all(|l| l.0 == l.2), "the ticks are vertical");
+        let label = draws.iter().find_map(|d| match d {
+            ScriptDraw::Label { text, .. } => Some(text.clone()),
+            _ => None,
+        }).expect("the pair's name");
+        assert_eq!(label, "SMT · ETHUSDT");
+        // A pair-less link still draws, without the separator.
+        let bare = position_concept_shape(
+            &ConceptShape::PairLink {
+                from_ns: 2_000_000_000_000,
+                to_ns: 6_000_000_000_000,
+                from_price: 98.0,
+                to_price: 96.0,
+                label: "SMT".to_string(),
+                color: 1,
+                pair: String::new(),
+            },
+            &frame,
+        );
+        assert!(bare.iter().any(|d| matches!(d, ScriptDraw::Label { text, .. } if text == "SMT")));
+        // The router's wire: no `pair` key deserializes as unnamed.
+        let wire: ConceptShape = serde_json::from_str(
+            r#"{"type":"pair_link","from_ns":1,"to_ns":5,"from_price":100.0,
+                "to_price":101.0,"label":"SMT","color":1}"#,
+        )
+        .expect("the router's pair link");
+        let ConceptShape::PairLink { pair, .. } = wire else { panic!("pair link") };
+        assert!(pair.is_empty());
     }
 
     #[test]
@@ -7876,6 +8144,75 @@ mod tests {
         assert!(line.points[39].y < line.points[0].y, "a higher price maps higher");
         // Inside the price plot, never in a sub-pane.
         assert!(line.points.iter().all(|p| p.y >= scene.plot.y && p.y <= scene.plot.y + scene.plot.h));
+    }
+
+    #[test]
+    fn a_series_pane_band_maps_both_edges_and_breaks_at_gaps() {
+        let candles = test_candles(30);
+        // A posterior's 95% band: an upper edge above a lower edge, with a
+        // two-bar hole where the measurement was missing.
+        let upper: Vec<Option<f64>> = (0..30)
+            .map(|i| if (10..12).contains(&i) { None } else { Some(1.5) })
+            .collect();
+        let lower: Vec<Option<f64>> = (0..30)
+            .map(|i| if (10..12).contains(&i) { None } else { Some(-1.5) })
+            .collect();
+        let parsed: Request = serde_json::from_value(serde_json::json!({
+            "candles": candles, "width": 800.0, "height": 600.0,
+            "sub_panes": [{
+                "kind": "series", "label": "DRIFT",
+                "scale": { "mode": "auto" },
+                "fills": [{ "name": "95% band", "color": 10980346, "upper": upper, "lower": lower }]
+            }]
+        }))
+        .expect("the band wire form parses");
+        let scene = build(&parsed);
+        assert_eq!(scene.sub_panes.len(), 1, "a band alone is a pane, not a blank");
+        let pane = &scene.sub_panes[0];
+        assert!(pane.lines.is_empty() && pane.bars.is_empty());
+        assert_eq!(pane.bands.len(), 2, "the hole splits the band into two runs");
+        assert_eq!(pane.bands[0].upper.len(), 10);
+        assert_eq!(pane.bands[1].upper.len(), 18);
+        assert_eq!(pane.bands[0].name, "95% band");
+        for band in &pane.bands {
+            for (u, l) in band.upper.iter().zip(&band.lower) {
+                assert!(u.y < l.y, "the upper edge maps above the lower");
+                assert!((u.x - l.x).abs() < 1e-9, "both edges share the bar's x");
+                assert!(u.y >= pane.plot.y && u.y <= pane.plot.y + pane.plot.h);
+            }
+        }
+    }
+
+    #[test]
+    fn an_overlay_dot_series_is_side_coloured_and_never_a_line() {
+        let candles = test_candles(3);
+        // PSAR points: one under the bar's close (support side), one over it
+        // (resistance side). The test candles close between 99 and 101.
+        let parsed: Request = serde_json::from_value(serde_json::json!({
+            "candles": candles, "width": 800.0, "height": 600.0,
+            "overlay_series": [{
+                "name": "psar", "color": 16019958,
+                "values": [99.0, 102.0, null], "dots": true
+            }]
+        }))
+        .expect("the dots wire form parses");
+        let scene = build(&parsed);
+        assert!(scene.overlay_lines.is_empty(), "dots are disconnected points");
+        assert_eq!(scene.overlay_dots.len(), 1);
+        let dots = &scene.overlay_dots[0];
+        assert_eq!(dots.name, "psar");
+        assert_eq!(dots.points.len(), 2, "the null is a gap, not a dot");
+        assert!(dots.points[0].up, "a stop under the close supports the bar");
+        assert!(!dots.points[1].up, "a stop over the close caps the bar");
+        // A line-shaped overlay (no dots) still draws as a line.
+        let line: Request = serde_json::from_value(serde_json::json!({
+            "candles": test_candles(3), "width": 800.0, "height": 600.0,
+            "overlay_series": [{ "name": "ema", "color": 1, "values": [99.0, 102.0, null] }]
+        }))
+        .expect("a line overlay still parses");
+        let scene = build(&line);
+        assert_eq!(scene.overlay_lines.len(), 1);
+        assert!(scene.overlay_dots.is_empty());
     }
 
     #[test]

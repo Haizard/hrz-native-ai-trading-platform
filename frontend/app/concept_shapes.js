@@ -337,6 +337,23 @@
           text,
           color,
         });
+      } else if (shape === "pair_link") {
+        // SMT: the two swings whose divergence the correlated instrument did
+        // not confirm. Both levels are this instrument's (the pair's reading
+        // is the detector's evidence, not a second axis); the symbol rides
+        // the wire so the label can name what it was measured against.
+        const prior = e.evidence && e.evidence.a_prior_level;
+        if (prior == null || e.price_level == null) continue;
+        out.push({
+          type: "pair_link",
+          from_ns: origin,
+          to_ns: e.event_time_ns,
+          from_price: prior,
+          to_price: e.price_level,
+          label: "SMT",
+          color,
+          pair: (e.evidence && e.evidence.correlated_symbol) || "",
+        });
       } else if (shape === "outline" || shape === "legged_path") {
         // The detector's own vertices when they made the wire; until they
         // do, the entry-level span is the honest fallback.
@@ -432,8 +449,8 @@
           });
         }
       }
-      // `pair_link` and the series shapes draw elsewhere: a link needs a
-      // second pane, a series its own host. They have no price-frame shape.
+      // The series shapes draw elsewhere: a measurement lives in its own
+      // pane host, never on the price frame.
     }
     // A lifecycle box paints oldest first so a newer box's border wins where
     // two overlap -- the same rule the zones always had.

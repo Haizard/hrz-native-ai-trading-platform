@@ -22,8 +22,12 @@ pub struct SmtDivergence {
     pub direction: Side,
     /// A's divergent swing level.
     pub a_level: f64,
+    /// A's prior swing level (the one the divergence is measured from).
+    pub a_prior_level: f64,
     /// B's corresponding swing level.
     pub b_level: f64,
+    /// B's prior swing level.
+    pub b_prior_level: f64,
     /// The prior swing's open time on A (the span the divergence covers).
     pub prior_time: i64,
     /// The newest swing's open time on A.
@@ -76,7 +80,9 @@ pub fn detect_smt(a: &[Candle], b: &[Candle], lookback: usize) -> Vec<SmtDiverge
                 bar_time: a_new.0,
                 direction: Side::Buy,
                 a_level: a_new.1,
+                a_prior_level: a_prior.1,
                 b_level: b_new.1,
+                b_prior_level: b_prior.1,
                 prior_time: a_prior.0,
                 newest_time: a_new.0,
             });
@@ -91,7 +97,9 @@ pub fn detect_smt(a: &[Candle], b: &[Candle], lookback: usize) -> Vec<SmtDiverge
                 bar_time: a_new.0,
                 direction: Side::Sell,
                 a_level: a_new.1,
+                a_prior_level: a_prior.1,
                 b_level: b_new.1,
+                b_prior_level: b_prior.1,
                 prior_time: a_prior.0,
                 newest_time: a_new.0,
             });
@@ -148,7 +156,9 @@ mod tests {
         assert_eq!(smt.len(), 1, "exactly one divergence: {:?}", smt);
         assert_eq!(smt[0].direction, Side::Buy);
         assert_eq!(smt[0].a_level, 98.0);
+        assert_eq!(smt[0].a_prior_level, 99.0);
         assert_eq!(smt[0].b_level, 98.7);
+        assert_eq!(smt[0].b_prior_level, 98.5);
     }
 
     #[test]
