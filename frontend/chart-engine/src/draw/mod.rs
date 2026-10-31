@@ -388,3 +388,227 @@ pub fn parts(
 
     parts
 }
+
+#[cfg(test)]
+mod completeness_gate {
+    use super::*;
+    use crate::drawing::{DrawingKind, DrawingOptions, DrawingPart, REGISTRY};
+
+    /// The time_ms of bar `i` in the ramp stage.
+    fn t(i: usize) -> f64 {
+        (T0_NS + i as i64 * BAR_NS) as f64 / 1_000_000.0
+    }
+
+    /// The close price of bar `i` in a 40-bar ramp from 120 stepping 0.25.
+    fn p(i: usize) -> f64 {
+        120.0 + i as f64 * 0.25
+    }
+
+    /// n distinct points spread across bars.
+    fn points(n: usize) -> Vec<Point> {
+        (0..n).map(|i| (t(i * 3 % 40), p(i * 3 % 40))).collect()
+    }
+
+    fn assert_finite(parts: &[DrawingPart], kind: DrawingKind) {
+        for part in parts {
+            match part {
+                DrawingPart::Segment { x1, y1, x2, y2, .. } => {
+                    assert!(x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite(), "{kind:?} has NaN in a segment");
+                }
+                DrawingPart::Rect { x, y, w, h, .. } => {
+                    assert!(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite(), "{kind:?} has NaN in a rect");
+                }
+                DrawingPart::Text { x, y, .. } => {
+                    assert!(x.is_finite() && y.is_finite(), "{kind:?} has NaN in text position");
+                }
+                DrawingPart::Ellipse { cx, cy, rx, ry, .. } => {
+                    assert!(cx.is_finite() && cy.is_finite() && rx.is_finite() && ry.is_finite(), "{kind:?} has NaN in ellipse");
+                }
+                DrawingPart::Polygon { points: pts, .. } => {
+                    for &(px, py) in pts {
+                        assert!(px.is_finite() && py.is_finite(), "{kind:?} has NaN in polygon");
+                    }
+                }
+                DrawingPart::Handle { x, y, .. } => {
+                    assert!(x.is_finite() && y.is_finite(), "{kind:?} has NaN in handle");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_registry_kind_draws_something() {
+        let stage = Stage::ramp(40, 120.0, 0.25);
+        let opts = DrawingOptions::default();
+        for tool in REGISTRY {
+            let kind = tool.kind;
+            let min = kind.anchors().minimum();
+            let pts = points(min);
+            let geom = Geometry {
+                frame: &stage.frame,
+                points: &pts,
+                options: &opts,
+                candles: &stage.candles,
+                text: Some("test"),
+            };
+            let parts = parts(kind, false, geom);
+            assert!(!parts.is_empty(), "{kind:?} produced no parts with minimum points");
+            assert_finite(&parts, kind);
+        }
+    }
+
+    #[test]
+    fn parts_move_when_a_point_moves() {
+        let stage = Stage::ramp(40, 120.0, 0.25);
+        let opts = DrawingOptions::default();
+        for tool in REGISTRY {
+            let kind = tool.kind;
+            let min = kind.anchors().minimum();
+            let pts = points(min);
+            let geom1 = Geometry {
+                frame: &stage.frame,
+                points: &pts,
+                options: &opts,
+                candles: &stage.candles,
+                text: Some("test"),
+            };
+            let parts1 = parts(kind, false, geom1);
+
+            let mut shifted = pts.clone();
+            let last = shifted.len() - 1;
+            shifted[last] = (t(last * 3 % 40 + 1), p(last * 3 % 40) + 5.0);
+            let geom2 = Geometry {
+                frame: &stage.frame,
+                points: &shifted,
+                options: &opts,
+                candles: &stage.candles,
+                text: Some("test"),
+            };
+            let parts2 = parts(kind, false, geom2);
+
+            let changed = format!("{parts1:?}") != format!("{parts2:?}");
+            assert!(changed, "{kind:?}: parts did not change when the last point moved");
+        }
+    }
+
+    #[test]
+    fn many_kinds_draw_with_extra_points() {
+        let stage = Stage::ramp(40, 120.0, 0.25);
+        let opts = DrawingOptions::default();
+        let many_kinds: Vec<_> = REGISTRY.iter().filter(|t| t.anchors.points_for().is_none()).collect();
+        for tool in many_kinds {
+            let kind = tool.kind;
+            let min = kind.anchors().minimum();
+            for n in [min, 10, 30] {
+                let pts = points(n);
+                let geom = Geometry {
+                    frame: &stage.frame,
+                    points: &pts,
+                    options: &opts,
+                    candles: &stage.candles,
+                    text: Some("test"),
+                };
+                let parts = parts(kind, false, geom);
+                assert!(!parts.is_empty(), "{kind:?} with {n} points produced nothing");
+                assert_finite(&parts, kind);
+            }
+        }
+    }
+
+    #[test]
+    fn every_options_field_is_read() {
+        let stage = Stage::ramp(40, 120.0, 0.25);
+
+        // extend: a ray, a channel, and an extended line all honour it.
+        let opts_extend = DrawingOptions {
+            extend: Some(crate::drawing::Extend::Both),
+            ..DrawingOptions::default()
+        };
+        let pts = points(2);
+        let geom = Geometry {
+            frame: &stage.frame,
+            points: &pts,
+            options: &opts_extend,
+            candles: &stage.candles,
+            text: None,
+        };
+        let with_extend = parts(DrawingKind::Trendline, false, geom);
+        let base_opts = DrawingOptions::default();
+        let geom_base = Geometry {
+            frame: &stage.frame,
+            points: &pts,
+            options: &base_opts,
+            candles: &stage.candles,
+            text: None,
+        };
+        let without_extend = parts(DrawingKind::Trendline, false, geom_base);
+        assert!(
+            format!("{with_extend:?}") != format!("{without_extend:?}"),
+            "extend was not read by trendline"
+        );
+
+        // reverse: a fib retracement reads it.
+        let opts_rev = DrawingOptions {
+            reverse: true,
+            ..DrawingOptions::default()
+        };
+        let geom_rev = Geometry {
+            frame: &stage.frame,
+            points: &pts,
+            options: &opts_rev,
+            candles: &stage.candles,
+            text: None,
+        };
+        let reversed = parts(DrawingKind::Fib, false, geom_rev);
+        let normal = parts(DrawingKind::Fib, false, geom_base);
+        assert!(
+            format!("{reversed:?}") != format!("{normal:?}"),
+            "reverse was not read by fib retracement"
+        );
+
+        // level_profile: a fib retracement reads it.
+        let opts_prof = DrawingOptions {
+            level_profile: Some(crate::drawing::LevelProfile::Ote),
+            ..DrawingOptions::default()
+        };
+        let geom_prof = Geometry {
+            frame: &stage.frame,
+            points: &pts,
+            options: &opts_prof,
+            candles: &stage.candles,
+            text: None,
+        };
+        let profiled = parts(DrawingKind::Fib, false, geom_prof);
+        assert!(
+            format!("{profiled:?}") != format!("{normal:?}"),
+            "level_profile was not read by fib retracement"
+        );
+
+        // closed: a polyline reads it.
+        let opts_closed = DrawingOptions {
+            closed: true,
+            ..DrawingOptions::default()
+        };
+        let pts_many = points(5);
+        let geom_closed = Geometry {
+            frame: &stage.frame,
+            points: &pts_many,
+            options: &opts_closed,
+            candles: &stage.candles,
+            text: None,
+        };
+        let geom_open = Geometry {
+            frame: &stage.frame,
+            points: &pts_many,
+            options: &base_opts,
+            candles: &stage.candles,
+            text: None,
+        };
+        let closed = parts(DrawingKind::Polyline, false, geom_closed);
+        let open = parts(DrawingKind::Polyline, false, geom_open);
+        assert!(
+            format!("{closed:?}") != format!("{open:?}"),
+            "closed was not read by polyline"
+        );
+    }
+}

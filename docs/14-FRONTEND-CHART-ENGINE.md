@@ -401,28 +401,25 @@ CPU calc   GPU-friendly buffers
   rectangles — start minimal, expand later)" since this document was written, and none were
   built. This is the specification.
 
-  **A drawing is two anchors and a kind.** Nothing else is stored, because nothing else is
-  needed: every shape a trader draws is a pair of `(time, price)` points and a rule for what
-  to put between them.
+  **A drawing is a point list and a kind.** Nothing else is stored, because nothing else is
+  needed: every shape a trader draws is a list of `(time, price)` points and a rule for what
+  to put between them. The kind declares its arity — fixed (1 through 7) or open-ended
+  (`Many{min}`), and the list is validated against it before anything reaches storage.
 
-  | kind | anchors | drawn as |
-  |---|---|---|
-  | `trendline` | 2 | the segment between them |
-  | `hline` | 1 | a horizontal line across the plot at the first anchor's price |
-  | `rect` | 2 | the rectangle they span |
-  | `fib` | 2 | the retracement levels between them |
+  77 kinds across 12 groups ship today (see `docs/21` for the full table). Each is one
+  `DrawingKind` variant, one `draw/` geometry function, one registry `ToolSpec` row,
+  one `db::drawings::KINDS` entry. The kind is a `serde` enum rather than free text:
+  an unknown kind is **refused**, because a drawing that saves and then never appears is
+  worse than one that will not save.
 
-  Four kinds, and the kind is a `serde` enum rather than free text: a kind the engine does not
-  know is **refused**, because a drawing that saves and then never appears is worse than one
-  that will not save. `ray`, `channel` and a measured move are the obvious next ones, and each
-  is a variant plus an arm — no new storage, because they are all two anchors.
-
-  **An anchor is either absolute or a fraction of the plot, and the wire says which.**
+  **A point is either absolute or a fraction of the plot, and the wire says which.**
 
   ```json
   {"kind": "trendline",
-   "a1": {"unit": "fraction", "x": 0.31, "y": 0.62},
-   "a2": {"unit": "fraction", "x": 0.74, "y": 0.20}}
+   "points": [
+     {"unit": "fraction", "x": 0.31, "y": 0.62},
+     {"unit": "fraction", "x": 0.74, "y": 0.20}
+   ]}
   ```
 
   A `fraction` is a pointer position over the plot rectangle — the same number the viewport

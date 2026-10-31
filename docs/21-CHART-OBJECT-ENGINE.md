@@ -29,12 +29,21 @@ Consequences:
 
 ### Object model — `chart-engine::drawing`
 
-- `DrawingKind`: `trendline, hline, vline, ray, extended, rect, fib, measure`.
-  Eight kinds, each taking a fixed number of points (`hline`/`vline` one).
+- `DrawingKind`: 77 kinds across 12 groups — trendline, hline, vline, ray, extended,
+  hray, crossline, infoline, regression, arrow, arrow_mark_up/down, angle,
+  channel, disjoint_channel, flat_top_bottom, pitchfork family (4), rect,
+  triangle, circle, arc, rotated_rect, ellipse, polyline, curve, double_curve,
+  brush, highlighter, fib family (12), gann family (4), pattern family (6),
+  elliott family (5), cyclic family (3), price_range, date_range, forecast,
+  fixed_range_vp, anchored_vp, anchored_vwap, measure, dateprice_range,
+  position_long, position_short, text_note, sticky_note, callout, price_label,
+  flag_mark, icon_mark. Each declares its arity via `AnchorCount::Fixed(n)` or
+  `AnchorCount::Many{min}`.
 - `Anchor`: `absolute {time, price}` (what is stored) or `fraction {x, y}`
   (what a pointer gives). `Absolute` uses milliseconds — f64 is exact there and
   loses precision past 2^53, so epoch-ms is the boundary unit everywhere.
-- `ToolGroup`: `lines, shapes, measurement` — a vocabulary, not free text.
+- `ToolGroup`: `lines, channels, pitchforks, shapes, fibonacci, gann, patterns,
+  elliott, cyclic, measurement, positions, annotation` — 12 flyouts.
 - `ToolSpec` / `REGISTRY`: the one declaration of each tool — kind, label,
   tooltip, group, group label, `anchors` (how many points it takes).
 - The arity rule is `DrawingKind::anchors`, and it is the only one. The
@@ -107,14 +116,8 @@ set, flyout behaviour, magnet, and history buttons.
 
 ## Out of scope for phase 1 (deliberately)
 
-In registry order, the natural next kinds — each is one variant + one `shapes`
-arm + one row:
+All phase-1 next kinds have since shipped (phases 2–4). What remains:
 
-- **Fibonacci family**: extension, fan, arcs, time zones (retracement shipped).
-- **Channels & pitchforks**: parallel channel, regression, Schiff family.
-- **Positions**: long/short with entry/stop/target — this wants a third
-  anchor-class (levels as fractions of the risk distance), so design the
-  object first.
 - **AI analysis layers**: AI-drawn objects as a *separate, toggleable layer*
   with provenance (`createdBy, agent, confidence, reason`) and an
   accept/reject session, per the original architecture brief.
@@ -307,3 +310,40 @@ list, not a schema migration.
 messages a mixed-unit list, a short list and a long list each get;
 `shell_check.mjs` places a three-point tool chosen from the registry rather than
 named in the harness.
+
+## What shipped (2026-10): the full parity vocabulary (77 kinds)
+
+The 2026-10 parity plan extended the engine from 17 to 77 kinds across 12
+groups, closing the gap with TradingView, LuxAlgo, and MetaTrader 5's tool
+catalogs. Each addition follows the same arithmetic: one `DrawingKind` variant,
+one `anchors()` arm, one registry `ToolSpec` row, one `db::drawings::KINDS`
+entry, one `draw/` geometry function, one dispatch arm.
+
+Groups added or extended beyond the 2026-09 set:
+
+| Group | Kinds | Arity range |
+|-------|-------|-------------|
+| Lines (extended) | hray, crossline, infoline, regression, arrow, arrow_mark_up/down, angle | 1–2 |
+| Channels | channel, disjoint_channel, flat_top_bottom | 2–4 |
+| Pitchforks | pitchfork, schiff, modified_schiff, inside | 3 |
+| Shapes (extended) | rotated_rect, ellipse, polyline, curve, double_curve, brush, highlighter | 2–Many |
+| Fibonacci | 12: retracement, extension, trend_ext, trend_time, time_zone, channel, fan, pitchfan, arcs, circles, spiral, wedge | 2–3 |
+| Gann | box, fan, square, square_fixed | 2 |
+| Patterns | xabcd, abcd, cypher, head_shoulders, three_drives, triangle_pattern | 4–6 |
+| Elliott | impulse, correction, triangle, double_combo, triple_combo | 3–7 |
+| Cyclic | lines, bands, sine | 2 |
+| Measurement | price_range, date_range, forecast, fixed_range_vp, anchored_vp, anchored_vwap, measure, dateprice_range | 1–2 |
+| Positions | long, short | 2 |
+| Annotation | text_note, sticky_note, callout, price_label, flag_mark, icon_mark | 1–2 |
+
+The completeness gate (`draw::completeness_gate`) tests that every kind in the
+registry produces at least one non-handle `DrawingPart` from minimum points,
+that the output moves when an anchor moves, that no coordinate is `NaN`, that
+`Many`-arity kinds work at 2/10/30 points, and that every `DrawingOptions`
+field is read by at least one geometry arm.
+
+Reuse over reimplementation: `FixedRangeVP` and `AnchoredVP` delegate to
+`analytics_core::volume_profile::calculate_volume_profile_from_candles`;
+`AnchoredVWAP` computes running VWAP bar-by-bar (Σ(tp×vol)/Σ(vol));
+`Regression` uses least-squares over the candle closes within the anchor span.
+
