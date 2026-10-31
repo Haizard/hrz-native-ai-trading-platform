@@ -77,6 +77,15 @@
           label: short,
           color,
         });
+      } else if (e.concept_id.startsWith("econ.")) {
+        // A release is a vertical rule at its instant: the figure rides in
+        // the label, and neither the line nor the label touches a price.
+        out.push({
+          type: "time_line",
+          at_ns: e.event_time_ns,
+          label: (e.evidence && e.evidence.label) || short.replace(/_/g, " "),
+          color: NEUT,
+        });
       } else if (e.concept_id.startsWith("candles.") || e.concept_id.startsWith("indicators.")) {
         // A pattern or an indicator signal: its name on its own candle,
         // below for bullish, above for bearish.

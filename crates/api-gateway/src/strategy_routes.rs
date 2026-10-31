@@ -902,7 +902,7 @@ pub async fn backtest(
                 ApiError::bad_request("WINDOW_THIN", format!("no candles for {symbol}: {e}"))
             })?;
         let candles = window.candles;
-        let config = market_data::composer::event_config_for(&composition.parameters);
+        let plan = market_data::composer::DetectionPlan::for_catalog(&composition.parameters);
         let mut extra_series = Vec::new();
         for name in market_data::composer::involved_timeframes(&composition) {
             if let Ok(extra) = name.parse::<analytics_core::types::Timeframe>() {
@@ -925,7 +925,7 @@ pub async fn backtest(
         }
         let evaluation = market_data::composer::evaluate_mtf(
             &composition,
-            &config,
+            &plan,
             &symbol,
             tf,
             &candles,

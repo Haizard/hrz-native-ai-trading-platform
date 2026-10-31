@@ -203,6 +203,38 @@ pub struct ScanQuery {
     pub timeframe: String,
     /// How many bars to scan (default 500, capped at 1000).
     pub limit: Option<usize>,
+    /// Per-concept parameter overrides, as JSON:
+    /// `{"smc.bos":{"swing_lookback":5}}`. Omitted means every concept runs
+    /// its declared default. Each concept detects under its own set -- one
+    /// concept's lookback does not move another's.
+    pub params: Option<String>,
+}
+
+/// Parse and validate the scan's per-concept overrides. The catalog's own
+/// declarations are the gate: an unknown concept, an unknown name, or a value
+/// outside its range is a 400, never a silently different detector.
+fn parse_param_overrides(
+    raw: Option<&str>,
+) -> Result<market_data::composer::ParameterMap, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(market_data::composer::ParameterMap::new());
+    };
+    let parsed: market_data::composer::ParameterMap = serde_json::from_str(raw).map_err(|e| {
+        ApiError::bad_request(
+            "PARAMS_INVALID",
+            format!("`params` must be a JSON object of concept -> {{name: number}}: {e}"),
+        )
+    })?;
+    if let Some(error) = market_data::composer::validate_parameters(&parsed)
+        .into_iter()
+        .next()
+    {
+        return Err(ApiError::bad_request(
+            "PARAMS_INVALID",
+            format!("{}: {}", error.path, error.message),
+        ));
+    }
+    Ok(parsed)
 }
 
 /// `GET /concept-events/scan`: the explorer's backscan.
@@ -227,6 +259,9 @@ pub async fn scan(
         )
     })?;
     let limit = query.limit.unwrap_or(500).clamp(50, 1000);
+    let plan = market_data::composer::DetectionPlan::for_catalog(
+        &parse_param_overrides(query.params.as_deref())?,
+    );
     let to_ns = crate::now_ns();
     let from_ns = to_ns - limit as i64 * tf.nanos();
     let window = state
@@ -235,18 +270,25 @@ pub async fn scan(
         .await
         .map_err(|e| ApiError::unavailable(format!("no candles for {symbol}: {e}")))?;
     let candles = window.candles;
-    let config = analytics_core::events::EventConfig::default();
     let mut events: Vec<market_data::concepts::ConceptEvent> = Vec::new();
     // The replay: per bar, detect on the trailing window, keep only the
     // events that bar itself produced (the engine's own replay rule).
     for bar in 22..candles.len() {
-        let raw = analytics_core::events::detect_events(&candles[..=bar], &symbol, &config);
         events.extend(
-            raw.iter()
-                .filter(|e| e.bar_time == candles[bar].open_time)
-                .filter_map(market_data::concepts::as_concept_event),
+            plan.detect(&candles[..=bar], &symbol)
+                .into_iter()
+                .filter(|e| e.event_time_ns == candles[bar].open_time),
         );
     }
+    // A release is a clock fact, not a bar replay: merge the macro store's
+    // releases inside the same window so the econ concepts draw their
+    // `time_line` where a countdown alone used to be all there was.
+    events.extend(crate::econ_routes::concept_events(
+        &state.econ,
+        &query.timeframe,
+        from_ns,
+        to_ns,
+    ));
     // Bounded PER CONCEPT, not globally: a dense family (a fib ladder emits
     // per bar) would otherwise push every sparse family (an RSI cross fires
     // a dozen times in 500 bars) out of the newest-N window entirely, and an
@@ -510,7 +552,7 @@ pub async fn backtest(
     // Replay: the multi-timeframe core, shared with the agent's runner --
     // every condition's own timeframe is resampled from the base series and
     // fed with its tag.
-    let config = market_data::composer::event_config_for(&request.document.parameters);
+    let plan = market_data::composer::DetectionPlan::for_catalog(&request.document.parameters);
     let mut extra_series = Vec::new();
     for name in market_data::composer::involved_timeframes(&request.document) {
         if let Ok(extra) = name.parse::<analytics_core::types::Timeframe>() {
@@ -534,7 +576,7 @@ pub async fn backtest(
     }
     let evaluation = market_data::composer::evaluate_mtf(
         &request.document,
-        &config,
+        &plan,
         &symbol,
         tf,
         &candles,

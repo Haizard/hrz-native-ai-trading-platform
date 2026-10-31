@@ -14995,49 +14995,85 @@ function previewSeries(frame, body, scale) {
   }
 }
 
-/// The marks an event concept leaves: zones as bands, levels as short dashes from
-/// the bar that found them, and a dot on the bar for anything that names a
-/// candle rather than measures a price.
+/// The marks an event concept leaves -- the SAME router the chart runs, so the
+/// card can never contradict the chart it sells. `ConceptShapes.from` decides
+/// zone / segment / candle mark / time line; this painter only lowers those
+/// shapes into the miniature's pixels.
 function previewEvents(frame, events, scale) {
-  const { ctx, x, axis, colors } = frame;
-  const step = frame.width / axis.bars;
-  const tone = (event) => event.direction === "bullish"
-    ? colors.up : event.direction === "bearish" ? colors.down : colors.ghost;
-  for (const event of events) {
-    const at = axis.indexByTime.get(event.event_time_ns);
-    if (at == null) continue;
-    const from = axis.indexByTime.get(event.bars && event.bars[0]);
-    const color = tone(event);
-    if (event.zone_low != null && event.zone_high != null) {
-      const left = Math.min(from == null ? at : from, at);
-      const right = event.status === "forming" || event.status === "confirmed"
-        ? axis.bars - 1 : at;
-      const top = scale(event.zone_high);
-      const bottom = scale(event.zone_low);
-      ctx.fillStyle = color;
-      ctx.globalAlpha = 0.18;
-      ctx.fillRect(x(left) - step / 2, top, Math.max(2, x(right) - x(left) + step), Math.max(2, bottom - top));
-      ctx.globalAlpha = 0.75;
-      ctx.strokeStyle = color;
+  const { ctx, width, height } = frame;
+  if (!globalThis.ConceptShapes) return;
+  const shapes = globalThis.ConceptShapes.from(
+    events,
+    new Set(events.map((event) => event.concept_id))
+  );
+  const xAt = (ns) => previewTimeX(frame, ns);
+  const tone = (color) => globalThis.ConceptShapes.rgba(color, 0.85);
+  for (const shape of shapes) {
+    if (shape.type === "zone") {
+      const left = xAt(shape.from_ns);
+      const right = Math.max(left + 2, xAt(shape.to_ns));
+      const top = scale(shape.high);
+      const bottom = scale(shape.low);
+      if (!Number.isFinite(top) || !Number.isFinite(bottom)) continue;
+      ctx.fillStyle = globalThis.ConceptShapes.rgba(shape.color, 0.18);
+      ctx.fillRect(left, top, Math.max(2, right - left), Math.max(2, bottom - top));
+      ctx.strokeStyle = tone(shape.color);
       ctx.lineWidth = 1;
-      ctx.strokeRect(x(left) - step / 2, top, Math.max(2, x(right) - x(left) + step), Math.max(2, bottom - top));
-      ctx.globalAlpha = 1;
-    } else if (event.price_level != null) {
-      ctx.strokeStyle = color;
+      ctx.strokeRect(left, top, Math.max(2, right - left), Math.max(2, bottom - top));
+    } else if (shape.type === "segment") {
+      if (!Number.isFinite(shape.price)) continue;
+      ctx.strokeStyle = tone(shape.color);
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 2]);
       ctx.beginPath();
-      ctx.moveTo(x(from == null ? at : from), scale(event.price_level));
-      ctx.lineTo(x(at), scale(event.price_level));
+      ctx.moveTo(xAt(shape.from_ns), scale(shape.price));
+      ctx.lineTo(Math.max(xAt(shape.from_ns) + 2, xAt(shape.to_ns)), scale(shape.price));
       ctx.stroke();
       ctx.setLineDash([]);
-    } else {
-      ctx.fillStyle = color;
+    } else if (shape.type === "candle_mark") {
+      const x = xAt(shape.at_ns);
+      const y = scale(shape.price);
+      if (!Number.isFinite(y)) continue;
+      ctx.fillStyle = tone(shape.color);
       ctx.beginPath();
-      ctx.arc(x(at), frame.height - 5, 1.6, 0, Math.PI * 2);
+      ctx.arc(x, y, 1.8, 0, Math.PI * 2);
       ctx.fill();
+    } else if (shape.type === "time_line") {
+      const x = xAt(shape.at_ns);
+      ctx.strokeStyle = tone(shape.color);
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 2]);
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
   }
+}
+
+/// A timestamp's x inside the miniature, interpolating between bar opens.
+/// A release lands between two bars, and a card that snapped it to the wrong
+/// candle would disagree with the chart by a whole bar.
+function previewTimeX(frame, ns) {
+  const { axis, width } = frame;
+  const times = axis.times || [];
+  if (!times.length) return 0;
+  const step = width / Math.max(1, axis.bars);
+  const hit = axis.indexByTime.get(ns);
+  if (hit != null) return (hit + 0.5) * step;
+  if (ns <= times[0]) return 0;
+  if (ns >= times[times.length - 1]) return width;
+  let lo = 0;
+  let hi = times.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid] <= ns) lo = mid;
+    else hi = mid;
+  }
+  const span = times[hi] - times[lo];
+  const t = span > 0 ? (ns - times[lo]) / span : 0;
+  return (lo + 0.5 + t) * step;
 }
 
 /* ---- Panel interactions --------------------------------------------------- */

@@ -369,7 +369,7 @@ impl GatewayCompositionRunner {
         // The signals: the multi-timeframe core, shared with the route --
         // every condition's own timeframe is resampled from the base series
         // and fed with its tag.
-        let config = market_data::composer::event_config_for(&document.parameters);
+        let plan = market_data::composer::DetectionPlan::for_catalog(&document.parameters);
         let mut extra_series = Vec::new();
         for name in market_data::composer::involved_timeframes(document) {
             if let Ok(extra) = name.parse::<analytics_core::types::Timeframe>() {
@@ -392,7 +392,7 @@ impl GatewayCompositionRunner {
                 })?;
             extra_symbols.push((sym2, window2.candles));
         }
-        let evaluation = market_data::composer::evaluate_mtf(document, &config, &symbol, tf, &candles, &extra_series, &extra_symbols);
+        let evaluation = market_data::composer::evaluate_mtf(document, &plan, &symbol, tf, &candles, &extra_series, &extra_symbols);
         let signals = evaluation.signals;
 
         // The intents and the run (the route's own conversion).
@@ -418,11 +418,10 @@ impl GatewayCompositionRunner {
         let mut exit_intents: Vec<(usize, pine_lite::interp::Intent)> = Vec::new();
         if exit_composer.is_some() {
             for bar in 22..candles.len() {
-                let raw = analytics_core::events::detect_events(&candles[..=bar], &symbol, &config);
-                let events: Vec<market_data::concepts::ConceptEvent> = raw
-                    .iter()
-                    .filter(|e| e.bar_time == candles[bar].open_time)
-                    .filter_map(market_data::concepts::as_concept_event)
+                let events: Vec<market_data::concepts::ConceptEvent> = plan
+                    .detect(&candles[..=bar], &symbol)
+                    .into_iter()
+                    .filter(|e| e.event_time_ns == candles[bar].open_time)
                     .collect();
                 if let Some(composer) = exit_composer.as_mut() {
                     composer.set_last_close(candles[bar].close);

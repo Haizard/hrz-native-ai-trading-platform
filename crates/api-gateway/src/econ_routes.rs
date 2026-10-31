@@ -508,6 +508,93 @@ fn report_for(store: &EconStore, kind: &str) -> Result<ReleaseReport, ApiError> 
     })
 }
 
+/// The releases inside `[from_ns, to_ns]` as concept events, one `time_line`
+/// each. A release is a clock fact: the direction is neutral, the figure and
+/// the surprise ride in the evidence label, and the market's reaction -- not
+/// the headline -- stays the confirmation.
+#[must_use]
+pub fn concept_events(
+    store: &EconStore,
+    timeframe: &str,
+    from_ns: i64,
+    to_ns: i64,
+) -> Vec<market_data::concepts::ConceptEvent> {
+    use market_data::concepts::{ConceptEvent, ConceptStatus, Direction};
+    let Ok(releases) = store.releases.read() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (kind, list) in releases.iter() {
+        let concept_id = format!("econ.{kind}");
+        let Some(spec) = market_data::concepts::concept(&concept_id) else {
+            continue;
+        };
+        for (i, release) in list.iter().enumerate() {
+            if release.release_ns < from_ns || release.release_ns > to_ns {
+                continue;
+            }
+            // The trailing distribution is the same series' older releases:
+            // the list is ascending, so the window is everything before this.
+            let trailing: Vec<f64> = list[..i].iter().rev().take(12).map(|r| r.actual).collect();
+            let surprise = econ::surprise(release.actual, release.forecast, &trailing);
+            let prev = i.checked_sub(1).and_then(|p| list.get(p));
+            let bias = match kind.as_str() {
+                "claims" => -surprise.sigma.clamp(-2.0, 2.0),
+                "fomc" => ((release.actual - release.forecast) * 4.0).clamp(-2.0, 2.0),
+                _ => econ::macro_bias_with_context(
+                    release,
+                    &surprise,
+                    prev.and_then(|p| p.unemployment),
+                    prev.and_then(|p| p.earnings_change),
+                ),
+            };
+            out.push(ConceptEvent {
+                concept_id: concept_id.clone(),
+                concept_version: spec.version.to_string(),
+                symbol: "MACRO".to_string(),
+                timeframe: timeframe.to_string(),
+                direction: Direction::Neutral,
+                status: ConceptStatus::Confirmed,
+                event_time_ns: release.release_ns,
+                price_level: None,
+                zone_low: None,
+                zone_high: None,
+                evidence: serde_json::json!({
+                    "actual": release.actual,
+                    "forecast": release.forecast,
+                    "forecast_source": &release.forecast_source,
+                    "period": &release.period,
+                    "surprise_sigma": surprise.sigma,
+                    "macro_bias": bias,
+                    "label": release_label(kind, release, &surprise),
+                }),
+                bars: (release.release_ns, release.release_ns),
+            });
+        }
+    }
+    out.sort_by_key(|e| e.event_time_ns);
+    out
+}
+
+/// The figure a release's label carries: kind, actual against forecast, and
+/// the surprise in sigmas. Units are the release's own -- NFP and claims are
+/// thousands, FOMC is percentage points, the rest are percent.
+fn release_label(kind: &str, release: &econ::EconRelease, surprise: &econ::Surprise) -> String {
+    let (unit, prec) = match kind {
+        "nfp" | "claims" => ("K", 0),
+        "fomc" => ("pp", 2),
+        _ => ("%", 2),
+    };
+    format!(
+        "{} {:.prec$}{unit} vs {:.prec$}{unit} ({:+.2}σ)",
+        kind.to_uppercase(),
+        release.actual,
+        release.forecast,
+        surprise.sigma,
+        prec = prec,
+    )
+}
+
 /// `/econ/latest` query.
 #[derive(Debug, Deserialize)]
 pub struct LatestQuery {
@@ -530,6 +617,13 @@ pub async fn latest(
 const FOMC_2026_DATES: &[&str] = &[
     "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
     "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
+];
+
+/// The GDP advance estimates' published calendar: the BEA's typical
+/// quarter-end + four weeks at 08:30 ET, kept as a table because a countdown
+/// may approximate and a chart mark may not. Updated annually.
+const GDP_DATES: &[&str] = &[
+    "2026-01-29", "2026-04-29", "2026-07-29", "2026-10-28", "2027-01-28",
 ];
 
 /// The next of a date-table's entries after `now_ns`, at 18:00 UTC.
@@ -571,6 +665,7 @@ pub async fn next(State(_state): State<AppState>) -> Json<serde_json::Value> {
     // next + 3 weeks.
     let pce_next = econ::next_nfp_release(now_ns) + 21 * DAY_NS;
     let fomc_next = next_in_table(FOMC_2026_DATES, now_ns);
+    let gdp_next = next_in_table(GDP_DATES, now_ns);
     Json(serde_json::json!({
         "now_ns": now_ns,
         "releases": [
@@ -579,6 +674,7 @@ pub async fn next(State(_state): State<AppState>) -> Json<serde_json::Value> {
             { "kind": "cpi", "next_ns": cpi_next, "rule": "mid-month, 08:30 ET (approximate, documented)" },
             { "kind": "fomc", "next_ns": fomc_next, "rule": "the Fed's published table, 14:00 ET" },
             { "kind": "pce", "next_ns": pce_next, "rule": "end of month, 08:30 ET (approximate, documented)" },
+            { "kind": "gdp", "next_ns": gdp_next, "rule": "quarter end + four weeks, 08:30 ET (published table)" },
         ],
         "note": "the countdown arms you at T-0; the number itself lands when the source publishes it, and the engine reads it the moment the API has it. No API front-runs the wire.",
     }))

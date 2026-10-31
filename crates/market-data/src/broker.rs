@@ -73,6 +73,7 @@ impl DataChannels {
             (Self::OPEN_INTEREST, "open_interest"),
             (Self::LIQUIDATIONS, "liquidations"),
             (Self::TICK_QUOTES, "tick_quotes"),
+            (Self::MACRO, "macro"),
         ] {
             if self.supports(bit) {
                 out.push(name);

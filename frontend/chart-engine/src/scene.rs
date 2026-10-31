@@ -2886,6 +2886,16 @@ pub enum ConceptShape {
         /// The color, `0xAARRGGBB`.
         color: u32,
     },
+    /// A vertical rule at an instant, spanning the plot's full height and
+    /// claiming no price at all -- an economic release, a time count.
+    TimeLine {
+        /// The instant, unix nanos.
+        at_ns: i64,
+        /// The figure or count the line carries.
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+    },
 }
 
 /// Position one concept shape into the draw vocabulary the shell already
@@ -2970,6 +2980,33 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 text: label.clone(),
                 color: *color,
             }]
+        }
+        ConceptShape::TimeLine { at_ns, label, color } => {
+            // A full-height rule at the instant: geometry, not a price. An
+            // instant outside the visible window draws nothing.
+            let x = x_at(*at_ns);
+            let plot = frame.plot;
+            if x < plot.x || x > plot.x + plot.w {
+                return Vec::new();
+            }
+            vec![
+                crate::script::ScriptDraw::Line {
+                    x1: x,
+                    y1: plot.y,
+                    x2: x,
+                    y2: plot.y + plot.h,
+                    color: *color,
+                    style: "dashed".to_string(),
+                    width: 1.0,
+                    extend: "none".to_string(),
+                },
+                crate::script::ScriptDraw::Label {
+                    x: x + 3.0,
+                    y: plot.y + 10.0,
+                    text: label.clone(),
+                    color: *color,
+                },
+            ]
         }
     }
 }

@@ -187,12 +187,25 @@ pub struct ConceptEvent {
 // The first catalog: the existing detections, registered as concepts.
 
 /// Shared lookback tuning (the engine's own `structure_lookback`).
+///
+/// The default must be the engine's default: a declared 10 replayed at 3 is a
+/// catalog that lies about what the chart drew (the audit measured it).
 const STRUCTURE_PARAMS: &[ConceptParam] = &[ConceptParam {
     name: "swing_lookback",
-    default: 10.0,
+    default: 3.0,
     min: 3.0,
     max: 60.0,
     description: "bars either side a swing must clear to count",
+}];
+
+/// The fair-value gap's own knob: how much of the middle bar's range the gap
+/// must clear before it counts as displacement rather than a hairline.
+const FVG_PARAMS: &[ConceptParam] = &[ConceptParam {
+    name: "fvg_min_fraction",
+    default: 0.125,
+    min: 0.01,
+    max: 1.0,
+    description: "the gap's size as a fraction of the middle bar's range",
 }];
 
 /// The volume spike tuning.
@@ -251,7 +264,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Smc,
             name: "Fair Value Gap",
             description: "an imbalance left by displacement, tracked from creation to fill -- the zone price may return to",
-            parameters: STRUCTURE_PARAMS,
+            parameters: FVG_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: false,
@@ -263,7 +276,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Smc,
             name: "Inverse Fair Value Gap",
             description: "a gap whose close-through failed it flips polarity -- the zone now works against its birth",
-            parameters: STRUCTURE_PARAMS,
+            parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: false,
@@ -275,7 +288,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Smc,
             name: "Balanced Price Range",
             description: "two opposite open gaps overlapping -- the overlap is the balance price gravitates back to",
-            parameters: STRUCTURE_PARAMS,
+            parameters: &[],
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: false,
@@ -2575,6 +2588,47 @@ fn indicator_signals_map_to_their_concepts() {
         let mapped = crate::concepts::as_concept_event(&mk(kind));
         assert!(mapped.is_some(), "{want} maps its signal");
         assert_eq!(mapped.expect("mapped").concept_id, want);
+    }
+}
+
+#[test]
+fn declared_parameter_defaults_are_the_engine_defaults() {
+    use analytics_core::events::EventConfig;
+    let engine = EventConfig::default();
+    let default_of = |id: &str, name: &str| {
+        concept_registry()
+            .iter()
+            .find(|c| c.id == id)
+            .and_then(|c| c.parameters.iter().find(|p| p.name == name))
+            .map(|p| p.default)
+    };
+    // A declared default replayed at another value is a catalog that lies:
+    // the audit measured 10 declared / 3 drawn. Every declared default must
+    // equal the engine's own.
+    for id in ["smc.bos", "smc.choch", "smc.liquidity_sweep"] {
+        assert_eq!(
+            default_of(id, "swing_lookback"),
+            Some(engine.structure_lookback as f64),
+            "{id} draws the engine's swing lookback"
+        );
+    }
+    assert_eq!(
+        default_of("smc.fvg", "fvg_min_fraction"),
+        Some(engine.fvg_min_fraction)
+    );
+    assert_eq!(
+        default_of("volume.spike", "spike_multiple"),
+        Some(engine.volume_multiplier)
+    );
+    assert_eq!(
+        default_of("order_flow.delta_shift", "spike_multiple"),
+        Some(engine.delta_multiplier)
+    );
+    // The gap lifecycle variants read no config: a declared knob there would
+    // promise tuning that changes nothing.
+    for id in ["smc.ifvg", "smc.bpr"] {
+        let spec = concept_registry().iter().find(|c| c.id == id).expect("registered");
+        assert!(spec.parameters.is_empty(), "{id} declares no parameters");
     }
 }
 

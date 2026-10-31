@@ -235,7 +235,7 @@ pub struct ComposerStrategy {
     bar: u64,
     /// The trailing window detection reads (bounded like the runtime's).
     history: Vec<Candle>,
-    config: analytics_core::events::EventConfig,
+    plan: market_data::composer::DetectionPlan,
 }
 
 impl ComposerStrategy {
@@ -243,7 +243,7 @@ impl ComposerStrategy {
     #[must_use]
     pub fn new(document: market_data::composer::Composition, symbol: &str) -> Self {
         Self {
-            config: market_data::composer::event_config_for(&document.parameters),
+            plan: market_data::composer::DetectionPlan::for_catalog(&document.parameters),
             decision_tf: document.timeframe.parse().unwrap_or(analytics_core::types::Timeframe::M5),
             composer: market_data::composer::Composer::new(document),
             symbol: symbol.to_string(),
@@ -282,11 +282,11 @@ impl ComposerStrategy {
         if self.history.len() > depth {
             self.history.drain(..self.history.len() - depth);
         }
-        let raw = analytics_core::events::detect_events(&self.history, &self.symbol, &self.config);
-        let events: Vec<_> = raw
-            .iter()
-            .filter(|e| e.bar_time == view.candle.open_time)
-            .filter_map(market_data::concepts::as_concept_event)
+        let events: Vec<_> = self
+            .plan
+            .detect(&self.history, &self.symbol)
+            .into_iter()
+            .filter(|e| e.event_time_ns == view.candle.open_time)
             .collect();
         // The extra timeframes' events, fed with their tags: resample the
         // history upstream, detect on the newest completed extra bar, and
@@ -304,11 +304,8 @@ impl ComposerStrategy {
                 let completed_idx = resampled.len() - 2;
                 let completed_time = resampled[completed_idx].open_time + extra.nanos();
                 if completed_time != self.extra_fed.get(&extra).copied().unwrap_or(0) {
-                    let raw_extra = analytics_core::events::detect_events(&resampled[..=completed_idx], &self.symbol, &self.config);
-                    let extra_events: Vec<_> = raw_extra
-                        .iter()
-                        .filter_map(market_data::concepts::as_concept_event)
-                        .collect();
+                    let extra_events: Vec<_> =
+                        self.plan.detect(&resampled[..=completed_idx], &self.symbol);
                     let tf_name = extra.to_string();
                     let _ = self.composer.on_bar(self.bar as usize, &extra_events, Some(&tf_name), None);
                     self.extra_fed.insert(extra, completed_time);

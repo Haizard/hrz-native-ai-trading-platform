@@ -524,29 +524,7 @@ pub fn validate(doc: &Composition) -> Result<(), Vec<ValidationError>> {
     // Parameter overrides must name a registered concept, one of ITS
     // parameters, and a value inside the declared range -- a mistyped knob
     // must not silently become a different strategy.
-    for (concept_id, params) in &doc.parameters {
-        match crate::concepts::concept(concept_id) {
-            None => errors.push(ValidationError {
-                path: format!("parameters.{concept_id}"),
-                message: format!("`{concept_id}` is not a registered concept"),
-            }),
-            Some(spec) => {
-                for (name, value) in params {
-                    match spec.parameters.iter().find(|p| p.name == name.as_str()) {
-                        None => errors.push(ValidationError {
-                            path: format!("parameters.{concept_id}.{name}"),
-                            message: format!("`{name}` is not a parameter of {concept_id}"),
-                        }),
-                        Some(param) if *value < param.min || *value > param.max => errors.push(ValidationError {
-                            path: format!("parameters.{concept_id}.{name}"),
-                            message: format!("{value} is outside {name}'s range {}..{}", param.min, param.max),
-                        }),
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
+    errors.extend(validate_parameters(&doc.parameters));
     if let StopKind::AtrMultiple { multiple } = &doc.risk.stop {
         if !(*multiple > 0.0 && multiple.is_finite()) {
             errors.push(ValidationError {
@@ -721,30 +699,161 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
     }
 }
 
-/// Build the engine's config from a document's parameter overrides.
+/// Per-concept parameter overrides: concept id → parameter name → value.
+pub type ParameterMap =
+    std::collections::HashMap<String, std::collections::HashMap<String, f64>>;
+
+/// The detection configurations a parameter map asks for, grouped so one
+/// replay serves every concept that shares a config.
 ///
-/// Known parameters map onto the engine's own knobs; anything not named here
-/// keeps its default (validation already refused unknown names, so a param
-/// that lands here is always a known one).
-#[must_use]
-pub fn event_config_for(
-    parameters: &std::collections::HashMap<String, std::collections::HashMap<String, f64>>,
-) -> analytics_core::events::EventConfig {
-    let mut config = analytics_core::events::EventConfig::default();
-    for params in parameters.values() {
-        for (name, value) in params {
-            match name.as_str() {
-                "swing_lookback" => config.structure_lookback = (*value as usize).max(3),
-                "spike_multiple" => {
-                    config.volume_multiplier = *value;
-                    config.delta_multiplier = *value;
+/// This replaces a single flattened `EventConfig`: two concepts that asked for
+/// different lookbacks used to collapse last-write-wins, so one of them was
+/// silently detected under the other's knob.
+#[derive(Debug, Clone)]
+pub struct DetectionPlan {
+    groups: Vec<DetectionGroup>,
+    /// True when more than one config exists: each replay then keeps only the
+    /// concepts its own config governs.
+    partitioned: bool,
+}
+
+#[derive(Debug, Clone)]
+struct DetectionGroup {
+    config: analytics_core::events::EventConfig,
+    concepts: Vec<&'static str>,
+}
+
+impl DetectionPlan {
+    /// Every catalog concept under its own declared knobs -- the chart's
+    /// backscan, which has no composition to narrow the set.
+    #[must_use]
+    pub fn for_catalog(parameters: &ParameterMap) -> Self {
+        let mut groups: Vec<DetectionGroup> = Vec::new();
+        for spec in crate::concepts::concept_registry() {
+            let config = config_for(spec.id, parameters);
+            match groups.iter_mut().find(|group| group.config == config) {
+                Some(group) => group.concepts.push(spec.id),
+                None => groups.push(DetectionGroup {
+                    config,
+                    concepts: vec![spec.id],
+                }),
+            }
+        }
+        Self {
+            partitioned: groups.len() > 1,
+            groups,
+        }
+    }
+
+    /// The config one concept detects under, for a caller that shows the knobs.
+    #[must_use]
+    pub fn config_for(&self, concept_id: &str) -> Option<analytics_core::events::EventConfig> {
+        self.groups
+            .iter()
+            .find(|group| group.concepts.contains(&concept_id))
+            .map(|group| group.config)
+    }
+
+    /// The window's events. A partitioned plan runs one replay per config and
+    /// keeps each run's own concepts; the result is sorted back into the
+    /// engine's kind order so a composition sees the sequence one replay
+    /// would have produced.
+    #[must_use]
+    pub fn detect(
+        &self,
+        candles: &[analytics_core::types::Candle],
+        symbol: &str,
+    ) -> Vec<crate::concepts::ConceptEvent> {
+        use analytics_core::events::EventKind;
+        let mut kept = Vec::new();
+        for group in &self.groups {
+            for event in analytics_core::events::detect_events(candles, symbol, &group.config) {
+                let Some(concept_event) = crate::concepts::as_concept_event(&event) else {
+                    continue;
+                };
+                if self.partitioned
+                    && !group.concepts.contains(&concept_event.concept_id.as_str())
+                {
+                    continue;
                 }
-                "fvg_min_fraction" => config.fvg_min_fraction = *value,
-                _ => {}
+                kept.push((event.kind, concept_event));
+            }
+        }
+        if self.partitioned {
+            kept.sort_by_key(|(kind, _)| {
+                EventKind::ALL
+                    .iter()
+                    .position(|k| k == kind)
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        kept.into_iter().map(|(_, event)| event).collect()
+    }
+}
+
+/// One concept's knobs: the engine default, then that concept's own overrides.
+fn config_for(concept_id: &str, parameters: &ParameterMap) -> analytics_core::events::EventConfig {
+    let mut config = analytics_core::events::EventConfig::default();
+    if let Some(params) = parameters.get(concept_id) {
+        apply_parameters(&mut config, params);
+    }
+    config
+}
+
+/// Map declared parameter names onto the engine's knobs. Anything else is
+/// ignored here; `validate_parameters` is what refuses it.
+fn apply_parameters(
+    config: &mut analytics_core::events::EventConfig,
+    params: &std::collections::HashMap<String, f64>,
+) {
+    for (name, value) in params {
+        match name.as_str() {
+            "swing_lookback" => config.structure_lookback = (*value as usize).max(3),
+            "spike_multiple" => {
+                config.volume_multiplier = *value;
+                config.delta_multiplier = *value;
+            }
+            "fvg_min_fraction" => config.fvg_min_fraction = *value,
+            _ => {}
+        }
+    }
+}
+
+/// Parameter overrides must name a registered concept, one of ITS parameters,
+/// and a value inside the declared range -- a mistyped knob must not silently
+/// become a different strategy.
+#[must_use]
+pub fn validate_parameters(parameters: &ParameterMap) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+    for (concept_id, params) in parameters {
+        match crate::concepts::concept(concept_id) {
+            None => errors.push(ValidationError {
+                path: format!("parameters.{concept_id}"),
+                message: format!("`{concept_id}` is not a registered concept"),
+            }),
+            Some(spec) => {
+                for (name, value) in params {
+                    match spec.parameters.iter().find(|p| p.name == name.as_str()) {
+                        None => errors.push(ValidationError {
+                            path: format!("parameters.{concept_id}.{name}"),
+                            message: format!("`{name}` is not a parameter of {concept_id}"),
+                        }),
+                        Some(param) if *value < param.min || *value > param.max => {
+                            errors.push(ValidationError {
+                                path: format!("parameters.{concept_id}.{name}"),
+                                message: format!(
+                                    "{value} is outside {name}'s range {}..{}",
+                                    param.min, param.max
+                                ),
+                            })
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
-    config
+    errors
 }
 
 /// One fired signal: bar index, the direction, the structure level the stop
@@ -1220,7 +1329,7 @@ pub struct MtfEvaluation {
 /// fire" data).
 pub fn evaluate_mtf(
     doc: &Composition,
-    config: &analytics_core::events::EventConfig,
+    plan: &DetectionPlan,
     symbol: &str,
     base_timeframe: analytics_core::types::Timeframe,
     base_candles: &[analytics_core::types::Candle],
@@ -1316,11 +1425,10 @@ pub fn evaluate_mtf(
     for (tf, candles) in extra_series {
         let mut per_bar = Vec::new();
         for bar in 22..candles.len() {
-            let raw = analytics_core::events::detect_events(&candles[..=bar], symbol, config);
-            let events: Vec<ConceptEvent> = raw
-                .iter()
-                .filter(|e| e.bar_time == candles[bar].open_time)
-                .filter_map(crate::concepts::as_concept_event)
+            let events: Vec<ConceptEvent> = plan
+                .detect(&candles[..=bar], symbol)
+                .into_iter()
+                .filter(|e| e.event_time_ns == candles[bar].open_time)
                 .collect();
             per_bar.push((candles[bar].open_time, events));
         }
@@ -1363,11 +1471,10 @@ pub fn evaluate_mtf(
     for (sym, candles) in extra_symbols {
         let mut per_bar = Vec::new();
         for bar in 22..candles.len() {
-            let raw = analytics_core::events::detect_events(&candles[..=bar], sym, config);
-            let events: Vec<ConceptEvent> = raw
-                .iter()
-                .filter(|e| e.bar_time == candles[bar].open_time)
-                .filter_map(crate::concepts::as_concept_event)
+            let events: Vec<ConceptEvent> = plan
+                .detect(&candles[..=bar], sym)
+                .into_iter()
+                .filter(|e| e.event_time_ns == candles[bar].open_time)
                 .collect();
             per_bar.push((candles[bar].open_time, events));
         }
@@ -1412,11 +1519,10 @@ pub fn evaluate_mtf(
                 .or_else(|| bar.checked_sub(1).and_then(|b| values.get(b).copied().flatten()));
             composer.set_indicator_values(key, current, previous);
         }
-        let raw = analytics_core::events::detect_events(&base_candles[..=bar], symbol, config);
-        let events: Vec<ConceptEvent> = raw
-            .iter()
-            .filter(|e| e.bar_time == base_candles[bar].open_time)
-            .filter_map(crate::concepts::as_concept_event)
+        let events: Vec<ConceptEvent> = plan
+            .detect(&base_candles[..=bar], symbol)
+            .into_iter()
+            .filter(|e| e.event_time_ns == base_candles[bar].open_time)
             .collect();
         if let Some(signal) = composer.on_bar(bar, &events, None, None) {
             signals.push(signal);
@@ -2069,7 +2175,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_overrides_validate_and_reach_the_engine_config() {
+    fn parameter_overrides_validate_and_stay_with_their_concept() {
         let mut document = doc(Condition::Concept {
             concept: "smc.bos".to_string(),
             symbol: None,
@@ -2078,22 +2184,44 @@ mod tests {
                 min_bars_since: None,
                 timeframe: None,
         });
-        // A trader's own swing lookback validates and lands on the engine knob.
+        // A trader's own swing lookback validates and lands on that concept's
+        // own config.
         document.parameters.insert(
             "smc.bos".to_string(),
             [("swing_lookback".to_string(), 5.0)].into_iter().collect(),
         );
         assert!(validate(&document).is_ok());
-        let config = event_config_for(&document.parameters);
-        assert_eq!(config.structure_lookback, 5, "the override reached the engine");
+        // Two concepts, two lookbacks: the second no longer overwrites the
+        // first, and a concept with no override keeps the engine default.
+        document.parameters.insert(
+            "smc.liquidity_sweep".to_string(),
+            [("swing_lookback".to_string(), 12.0)].into_iter().collect(),
+        );
+        let plan = DetectionPlan::for_catalog(&document.parameters);
+        assert_eq!(plan.config_for("smc.bos").expect("bos").structure_lookback, 5);
+        assert_eq!(
+            plan.config_for("smc.liquidity_sweep").expect("sweep").structure_lookback,
+            12
+        );
+        assert_eq!(plan.config_for("smc.choch").expect("choch").structure_lookback, 3);
         // A spike override hits both spike thresholds.
         document.parameters.insert(
             "volume.spike".to_string(),
             [("spike_multiple".to_string(), 4.0)].into_iter().collect(),
         );
-        let config = event_config_for(&document.parameters);
-        assert_eq!(config.volume_multiplier, 4.0);
-        assert_eq!(config.delta_multiplier, 4.0);
+        let plan = DetectionPlan::for_catalog(&document.parameters);
+        let spike = plan.config_for("volume.spike").expect("spike");
+        assert_eq!(spike.volume_multiplier, 4.0);
+        assert_eq!(spike.delta_multiplier, 4.0);
+        assert_eq!(plan.config_for("smc.bos").expect("bos").volume_multiplier, 2.5);
+        // The gap detector's own knob is now declared, so it validates.
+        document.parameters.insert(
+            "smc.fvg".to_string(),
+            [("fvg_min_fraction".to_string(), 0.3)].into_iter().collect(),
+        );
+        assert!(validate(&document).is_ok(), "{:?}", validate(&document).err());
+        let plan = DetectionPlan::for_catalog(&document.parameters);
+        assert_eq!(plan.config_for("smc.fvg").expect("fvg").fvg_min_fraction, 0.3);
         // Out of range: refused with the parameter's own limits.
         document.parameters.insert(
             "smc.bos".to_string(),
