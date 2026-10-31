@@ -304,6 +304,13 @@ pub fn parts(
         DrawingKind::Triangle => shapes::triangle(geometry),
         DrawingKind::Circle => shapes::circle(geometry),
         DrawingKind::Arc => shapes::arc(geometry),
+        DrawingKind::RotatedRect => shapes::rotated_rect(geometry),
+        DrawingKind::EllipseTool => shapes::ellipse(geometry),
+        DrawingKind::Polyline => shapes::polyline(geometry),
+        DrawingKind::Curve => shapes::curve(geometry),
+        DrawingKind::DoubleCurve => shapes::double_curve(geometry),
+        DrawingKind::Brush => shapes::brush(geometry),
+        DrawingKind::Highlighter => shapes::highlighter(geometry),
         // Fibonacci.
         DrawingKind::Fib => fibonacci::retracement(geometry),
         DrawingKind::FibExtension => fibonacci::extension(geometry),

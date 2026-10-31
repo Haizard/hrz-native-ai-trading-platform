@@ -662,6 +662,14 @@ const CHART_PALETTE_DARK = {
   fixed_range_vp: "#8b5cf6",
   anchored_vp: "#8b5cf6",
   anchored_vwap: "#10b981",
+  // Shape extensions.
+  rotated_rect: "#64748b",
+  ellipse: "#64748b",
+  polyline: "#94a3b8",
+  curve: "#94a3b8",
+  double_curve: "#94a3b8",
+  brush: "#e2e8f0",
+  highlighter: "#fbbf24",
   // The kinds the registry added. Distinct hues, one per kind, so a ray and
   // a trendline on the same chart are told apart by what they are; the
   // ruler is the value-area blue because it measures, like the fib.

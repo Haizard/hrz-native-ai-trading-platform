@@ -113,3 +113,148 @@ pub(super) fn corners(geometry: Geometry<'_>) -> Option<(f64, f64, f64, f64)> {
         (y2 - y1).abs(),
     ))
 }
+
+/// A rotated rectangle: three clicks define one edge (points 0→1) and the
+/// depth/angle (point 2). The fourth corner is the vector sum.
+#[must_use]
+pub fn rotated_rect(geometry: Geometry<'_>) -> Vec<DrawingPart> {
+    let (x0, y0) = (geometry.x(0), geometry.y(0));
+    let (x1, y1) = (geometry.x(1), geometry.y(1));
+    let (x2, y2) = (geometry.x(2), geometry.y(2));
+    // The fourth corner = point 1 + (point 2 - point 0), closing the parallelogram.
+    let x3 = x1 + (x2 - x0);
+    let y3 = y1 + (y2 - y0);
+    vec![DrawingPart::Polygon {
+        points: vec![(x0, y0), (x1, y1), (x3, y3), (x2, y2)],
+        filled: false,
+    }]
+}
+
+/// A full ellipse: centre at anchor 0, anchor 1 on the circumference.
+///
+/// The radii are the absolute dx and dy from the centre.
+#[must_use]
+pub fn ellipse(geometry: Geometry<'_>) -> Vec<DrawingPart> {
+    let cx = geometry.x(0);
+    let cy = geometry.y(0);
+    let rx = (geometry.x(1) - cx).abs();
+    let ry = (geometry.y(1) - cy).abs();
+    vec![DrawingPart::Ellipse {
+        cx,
+        cy,
+        rx,
+        ry,
+        half: false,
+        filled: false,
+    }]
+}
+
+/// Polyline: a connected path through all points, optionally closed.
+#[must_use]
+pub fn polyline(geometry: Geometry<'_>) -> Vec<DrawingPart> {
+    let n = geometry.points.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let mut pts: Vec<(f64, f64)> = (0..n).map(|i| (geometry.x(i), geometry.y(i))).collect();
+    if geometry.options.closed && n >= 3 {
+        pts.push(pts[0]);
+        vec![DrawingPart::Polygon {
+            points: pts,
+            filled: false,
+        }]
+    } else {
+        let segments: Vec<DrawingPart> = (0..n - 1)
+            .map(|i| DrawingPart::Segment {
+                x1: pts[i].0,
+                y1: pts[i].1,
+                x2: pts[i + 1].0,
+                y2: pts[i + 1].1,
+                dashed: false,
+            })
+            .collect();
+        segments
+    }
+}
+
+/// Curve: a smooth path through 3+ points, approximated by subdividing
+/// quadratic Bézier segments between consecutive midpoints.
+#[must_use]
+pub fn curve(geometry: Geometry<'_>) -> Vec<DrawingPart> {
+    let n = geometry.points.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let pts: Vec<(f64, f64)> = (0..n).map(|i| (geometry.x(i), geometry.y(i))).collect();
+    let mut parts = Vec::new();
+    let subdivisions = 12;
+    // Each pair of consecutive points shares a quadratic curve with the
+    // midpoint between them as start/end and the actual point as control.
+    for i in 1..n - 1 {
+        let (sx, sy) = lerp_pair(&pts[i - 1], &pts[i], 0.5);
+        let (ex, ey) = lerp_pair(&pts[i], &pts[i + 1], 0.5);
+        let (cx, cy) = pts[i];
+        for s in 0..subdivisions {
+            let t0 = s as f64 / subdivisions as f64;
+            let t1 = (s + 1) as f64 / subdivisions as f64;
+            let (ax, ay) = quadratic(sx, sy, cx, cy, ex, ey, t0);
+            let (bx, by) = quadratic(sx, sy, cx, cy, ex, ey, t1);
+            parts.push(DrawingPart::Segment {
+                x1: ax,
+                y1: ay,
+                x2: bx,
+                y2: by,
+                dashed: false,
+            });
+        }
+    }
+    parts
+}
+
+/// Double curve (S-shape): three points — start, control, end. One quadratic.
+#[must_use]
+pub fn double_curve(geometry: Geometry<'_>) -> Vec<DrawingPart> {
+    let (sx, sy) = (geometry.x(0), geometry.y(0));
+    let (cx, cy) = (geometry.x(1), geometry.y(1));
+    let (ex, ey) = (geometry.x(2), geometry.y(2));
+    let subdivisions = 24;
+    let mut parts = Vec::with_capacity(subdivisions);
+    for s in 0..subdivisions {
+        let t0 = s as f64 / subdivisions as f64;
+        let t1 = (s + 1) as f64 / subdivisions as f64;
+        let (ax, ay) = quadratic(sx, sy, cx, cy, ex, ey, t0);
+        let (bx, by) = quadratic(sx, sy, cx, cy, ex, ey, t1);
+        parts.push(DrawingPart::Segment {
+            x1: ax,
+            y1: ay,
+            x2: bx,
+            y2: by,
+            dashed: false,
+        });
+    }
+    parts
+}
+
+/// Brush: freehand path, same geometry as an open polyline.
+#[must_use]
+pub fn brush(geometry: Geometry<'_>) -> Vec<DrawingPart> {
+    polyline(geometry)
+}
+
+/// Highlighter: same geometry as brush; the shell renders it wider and translucent.
+#[must_use]
+pub fn highlighter(geometry: Geometry<'_>) -> Vec<DrawingPart> {
+    polyline(geometry)
+}
+
+fn lerp_pair(a: &(f64, f64), b: &(f64, f64), t: f64) -> (f64, f64) {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+}
+
+fn quadratic(sx: f64, sy: f64, cx: f64, cy: f64, ex: f64, ey: f64, t: f64) -> (f64, f64) {
+    let u = 1.0 - t;
+    (
+        u * u * sx + 2.0 * u * t * cx + t * t * ex,
+        u * u * sy + 2.0 * u * t * cy + t * t * ey,
+    )
+}

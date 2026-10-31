@@ -293,6 +293,22 @@ pub enum DrawingKind {
     /// Anchored VWAP line from one anchor through all subsequent bars.
     #[serde(rename = "anchored_vwap")]
     AnchoredVWAP,
+    // Shape extensions.
+    /// A rectangle rotated by its second edge: three clicks define width, height and angle.
+    RotatedRect,
+    /// A full ellipse: centre at anchor 0, point on circumference at anchor 1.
+    #[serde(rename = "ellipse")]
+    EllipseTool,
+    /// An open or closed path through any number of points.
+    Polyline,
+    /// A smooth curve through three or more points (quadratic Bézier segments).
+    Curve,
+    /// A double curve (S-shape) through two endpoints with a midpoint controlling curvature.
+    DoubleCurve,
+    /// Freehand brush stroke: many points captured from pointer movement.
+    Brush,
+    /// Highlighter: wide, semi-transparent freehand stroke.
+    Highlighter,
     /// The price/time delta between the two anchors: a box, dashed guides to
     /// both axes, and the delta as a label.
     Measure,
@@ -329,7 +345,7 @@ impl DrawingKind {
     /// The order is the flyout order, so a kind listed here in the wrong block is
     /// a tool that sits in the wrong menu -- and a kind missing is one the toolbar
     /// cannot offer at all.
-    pub const ALL: [Self; 64] = [
+    pub const ALL: [Self; 71] = [
         // Lines.
         Self::Trendline,
         Self::Ray,
@@ -400,7 +416,14 @@ impl DrawingKind {
         Self::FixedRangeVP,
         Self::AnchoredVP,
         Self::AnchoredVWAP,
-
+        // Shape extensions.
+        Self::RotatedRect,
+        Self::EllipseTool,
+        Self::Polyline,
+        Self::Curve,
+        Self::DoubleCurve,
+        Self::Brush,
+        Self::Highlighter,
         // Measurement.
         Self::Measure,
         Self::DatepriceRange,
@@ -469,6 +492,13 @@ impl DrawingKind {
             Self::FixedRangeVP => "fixed_range_vp",
             Self::AnchoredVP => "anchored_vp",
             Self::AnchoredVWAP => "anchored_vwap",
+            Self::RotatedRect => "rotated_rect",
+            Self::EllipseTool => "ellipse",
+            Self::Polyline => "polyline",
+            Self::Curve => "curve",
+            Self::DoubleCurve => "double_curve",
+            Self::Brush => "brush",
+            Self::Highlighter => "highlighter",
             Self::Measure => "measure",
             Self::Channel => "channel",
             Self::Angle => "angle",
@@ -506,7 +536,9 @@ impl DrawingKind {
             | Self::TrendFibExtension
             | Self::TrendFibTime
             | Self::FibChannel
-            | Self::ElliottCorrection => AnchorCount::fixed(3),
+            | Self::ElliottCorrection
+            | Self::RotatedRect
+            | Self::DoubleCurve => AnchorCount::fixed(3),
             Self::DisjointChannel | Self::AbcdPattern | Self::TrianglePattern => {
                 AnchorCount::fixed(4)
             }
@@ -545,12 +577,15 @@ impl DrawingKind {
             | Self::DateRange
             | Self::Forecast
             | Self::FixedRangeVP
+            | Self::EllipseTool
             | Self::Measure
             | Self::Angle
             | Self::Circle
             | Self::PositionLong
             | Self::PositionShort
             | Self::DatepriceRange => AnchorCount::fixed(2),
+            Self::Polyline | Self::Brush | Self::Highlighter => AnchorCount::Many { min: 2 },
+            Self::Curve => AnchorCount::Many { min: 3 },
         }
     }
 }
@@ -674,7 +709,7 @@ pub struct ToolSpec {
 /// The cursor is deliberately absent: it is not an object the engine can draw,
 /// it is the shell's "select and pan" state, and a registry of *objects*
 /// pretending to contain it would be one more thing to filter out.
-pub const REGISTRY: [ToolSpec; 64] = [
+pub const REGISTRY: [ToolSpec; 71] = [
     ToolSpec {
         kind: DrawingKind::Trendline,
         label: "Trend",
@@ -1171,6 +1206,62 @@ pub const REGISTRY: [ToolSpec; 64] = [
         anchors: AnchorCount::fixed(3),
     },
     ToolSpec {
+        kind: DrawingKind::RotatedRect,
+        label: "R-Rect",
+        title: "Three clicks: two define one edge, the third sets the depth and angle",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: AnchorCount::fixed(3),
+    },
+    ToolSpec {
+        kind: DrawingKind::EllipseTool,
+        label: "Ellipse",
+        title: "Click the centre, then drag to set the radius",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::Polyline,
+        label: "Path",
+        title: "Click any number of points; Enter or double-click to finish",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: AnchorCount::Many { min: 2 },
+    },
+    ToolSpec {
+        kind: DrawingKind::Curve,
+        label: "Curve",
+        title: "Three or more points, smoothed by quadratic Bézier segments",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: AnchorCount::Many { min: 3 },
+    },
+    ToolSpec {
+        kind: DrawingKind::DoubleCurve,
+        label: "S-curve",
+        title: "Three points: start, control, end; traces an S-shaped arc",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: AnchorCount::fixed(3),
+    },
+    ToolSpec {
+        kind: DrawingKind::Brush,
+        label: "Brush",
+        title: "Freehand: many points captured from pointer movement",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: AnchorCount::Many { min: 2 },
+    },
+    ToolSpec {
+        kind: DrawingKind::Highlighter,
+        label: "Marker",
+        title: "Wide freehand stroke with semi-transparent fill",
+        group: ToolGroup::Shapes,
+        group_label: "Shapes",
+        anchors: AnchorCount::Many { min: 2 },
+    },
+    ToolSpec {
         kind: DrawingKind::PositionLong,
         label: "Long",
         title: "Click the entry, then drag the target extent upward",
@@ -1287,6 +1378,12 @@ pub struct DrawingOptions {
     /// [`LevelProfile::Time`] — so the field changes the ladder without moving
     /// any kind off its reference.
     pub level_profile: Option<LevelProfile>,
+    /// Whether a polyline or path closes back to its first point.
+    ///
+    /// The shell's *Close Path* toggle on polyline and brush tools; a closed
+    /// stroke becomes an outline the geometry fills like a polygon rather than
+    /// leaving the last gap open.
+    pub closed: bool,
 }
 
 /// The ratio set a Fibonacci tool draws.
