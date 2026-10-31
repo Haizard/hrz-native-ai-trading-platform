@@ -38,6 +38,7 @@ pub mod patterns;
 pub mod pitchforks;
 pub mod positions;
 pub mod shapes;
+pub mod annotation;
 
 /// One point of a drawing, resolved: `(milliseconds, price)`.
 pub type Point = (f64, f64);
@@ -63,6 +64,8 @@ pub struct Geometry<'a> {
     /// its own idea of "the bars in this range" from the frame's width would be
     /// a second price feed. Passing the series is what keeps one.
     pub candles: &'a [Candle],
+    /// The drawing's text content, for annotation kinds that render a label.
+    pub text: Option<&'a str>,
 }
 
 impl<'a> Geometry<'a> {
@@ -252,6 +255,7 @@ impl Stage {
             points,
             options,
             candles: &self.candles,
+            text: None,
         }
     }
 }
@@ -359,6 +363,13 @@ pub fn parts(
         // Positions.
         DrawingKind::PositionLong => positions::risk_box(geometry, true),
         DrawingKind::PositionShort => positions::risk_box(geometry, false),
+        // Annotations.
+        DrawingKind::TextNote => annotation::text_note(geometry),
+        DrawingKind::StickyNote => annotation::sticky_note(geometry),
+        DrawingKind::Callout => annotation::callout(geometry),
+        DrawingKind::PriceLabel => annotation::price_label(geometry),
+        DrawingKind::FlagMark => annotation::flag_mark(geometry),
+        DrawingKind::IconMark => annotation::icon_mark(geometry),
     };
 
     // A grab point at every point the kind declares, and only when this drawing

@@ -75,7 +75,7 @@ use crate::repositories::dt_to_ns;
 /// runs one way, a cross, an info line, a regression fit, arrows) and the two
 /// families that draw a *band* rather than a line: the disjoint and flat-top/bottom
 /// channels, and the four pitchfork templates.
-pub const KINDS: [&str; 71] = [
+pub const KINDS: [&str; 77] = [
     "trendline",
     "hline",
     "vline",
@@ -147,6 +147,12 @@ pub const KINDS: [&str; 71] = [
     "position_long",
     "position_short",
     "dateprice_range",
+    "text_note",
+    "sticky_note",
+    "callout",
+    "price_label",
+    "flag_mark",
+    "icon_mark",
 ];
 
 /// One point of a drawing: its time in **milliseconds** and its price in the

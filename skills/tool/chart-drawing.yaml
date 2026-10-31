@@ -1,6 +1,6 @@
 # Tool skill (docs/40, §18): doctrine for chart-drawing tools.
 name: "Chart Drawing"
-version: "2.4.0"
+version: "2.5.0"
 kind: tool
 artifact_kind: thesis
 category: "drawing"

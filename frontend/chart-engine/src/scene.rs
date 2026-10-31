@@ -3524,6 +3524,7 @@ fn place(
             points: &resolved,
             options: &drawing.options,
             candles,
+            text: drawing.label.as_deref(),
         },
     );
     Ok(SceneDrawing {

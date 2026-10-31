@@ -670,6 +670,13 @@ const CHART_PALETTE_DARK = {
   double_curve: "#94a3b8",
   brush: "#e2e8f0",
   highlighter: "#fbbf24",
+  // Annotations. Warm neutral — these marks say "look here", not "this price means X".
+  text_note: "#d6dbe4",
+  sticky_note: "#edb541",
+  callout: "#9564e2",
+  price_label: "#4a9eff",
+  flag_mark: "#f97316",
+  icon_mark: "#06b6d4",
   // The kinds the registry added. Distinct hues, one per kind, so a ray and
   // a trendline on the same chart are told apart by what they are; the
   // ruler is the value-area blue because it measures, like the fib.
@@ -806,6 +813,12 @@ const CHART_PALETTE_LIGHT = {
   schiff_pitchfork: "#0e7490",
   modified_schiff_pitchfork: "#0e7490",
   inside_pitchfork: "#0e7490",
+  text_note: "#1f2937",
+  sticky_note: "#b45309",
+  callout: "#7c3aed",
+  price_label: "#2563eb",
+  flag_mark: "#ea580c",
+  icon_mark: "#0e7490",
   footBuy: "#7c3aed",
   footSell: "#2563eb",
   footValue: "#2563eb",
@@ -8007,6 +8020,7 @@ const TOOL_GROUP_ICONS = {
   cyclic: "repeat",
   measurement: "ruler",
   positions: "square",
+  annotation: "sticky-note",
 };
 
 /// An icon for the rail, with a lettered fallback: a sprite that failed to load

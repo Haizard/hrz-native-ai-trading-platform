@@ -309,6 +309,19 @@ pub enum DrawingKind {
     Brush,
     /// Highlighter: wide, semi-transparent freehand stroke.
     Highlighter,
+    // Annotation marks.
+    /// A text label placed at one point.
+    TextNote,
+    /// A sticky note: a filled rectangle with text at one point.
+    StickyNote,
+    /// An arrow from a point to a floating label.
+    Callout,
+    /// A labelled horizontal line at a price (the axis tag style).
+    PriceLabel,
+    /// A flag marker at one point.
+    FlagMark,
+    /// An icon marker at one point.
+    IconMark,
     /// The price/time delta between the two anchors: a box, dashed guides to
     /// both axes, and the delta as a label.
     Measure,
@@ -345,7 +358,7 @@ impl DrawingKind {
     /// The order is the flyout order, so a kind listed here in the wrong block is
     /// a tool that sits in the wrong menu -- and a kind missing is one the toolbar
     /// cannot offer at all.
-    pub const ALL: [Self; 71] = [
+    pub const ALL: [Self; 77] = [
         // Lines.
         Self::Trendline,
         Self::Ray,
@@ -430,6 +443,13 @@ impl DrawingKind {
         // Positions.
         Self::PositionLong,
         Self::PositionShort,
+        // Annotations.
+        Self::TextNote,
+        Self::StickyNote,
+        Self::Callout,
+        Self::PriceLabel,
+        Self::FlagMark,
+        Self::IconMark,
     ];
 
     /// The wire name, which is also the storage's value and the shell's colour
@@ -508,6 +528,12 @@ impl DrawingKind {
             Self::PositionLong => "position_long",
             Self::PositionShort => "position_short",
             Self::DatepriceRange => "dateprice_range",
+            Self::TextNote => "text_note",
+            Self::StickyNote => "sticky_note",
+            Self::Callout => "callout",
+            Self::PriceLabel => "price_label",
+            Self::FlagMark => "flag_mark",
+            Self::IconMark => "icon_mark",
         }
     }
 
@@ -525,6 +551,8 @@ impl DrawingKind {
             Self::Hline | Self::Vline | Self::Hray | Self::Crossline => AnchorCount::fixed(1),
             Self::ArrowMarkUp | Self::ArrowMarkDown => AnchorCount::fixed(1),
             Self::AnchoredVP | Self::AnchoredVWAP => AnchorCount::fixed(1),
+            Self::TextNote | Self::StickyNote | Self::PriceLabel => AnchorCount::fixed(1),
+            Self::FlagMark | Self::IconMark => AnchorCount::fixed(1),
             Self::Channel
             | Self::Arc
             | Self::Triangle
@@ -583,7 +611,8 @@ impl DrawingKind {
             | Self::Circle
             | Self::PositionLong
             | Self::PositionShort
-            | Self::DatepriceRange => AnchorCount::fixed(2),
+            | Self::DatepriceRange
+            | Self::Callout => AnchorCount::fixed(2),
             Self::Polyline | Self::Brush | Self::Highlighter => AnchorCount::Many { min: 2 },
             Self::Curve => AnchorCount::Many { min: 3 },
         }
@@ -621,11 +650,13 @@ pub enum ToolGroup {
     Measurement,
     /// Positions: the long/short risk boxes a trade plan draws.
     Positions,
+    /// Annotations: text notes, sticky notes, callouts, price labels, flags, icons.
+    Annotation,
 }
 
 impl ToolGroup {
     /// Every group, in toolbar order.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Lines,
         Self::Channels,
         Self::Pitchforks,
@@ -637,6 +668,7 @@ impl ToolGroup {
         Self::Cyclic,
         Self::Measurement,
         Self::Positions,
+        Self::Annotation,
     ];
 
     /// The wire name.
@@ -654,6 +686,7 @@ impl ToolGroup {
             Self::Cyclic => "cyclic",
             Self::Measurement => "measurement",
             Self::Positions => "positions",
+            Self::Annotation => "annotation",
         }
     }
 
@@ -672,6 +705,7 @@ impl ToolGroup {
             Self::Cyclic => "Cyclic",
             Self::Measurement => "Measure",
             Self::Positions => "Positions",
+            Self::Annotation => "Annotate",
         }
     }
 }
@@ -709,7 +743,7 @@ pub struct ToolSpec {
 /// The cursor is deliberately absent: it is not an object the engine can draw,
 /// it is the shell's "select and pan" state, and a registry of *objects*
 /// pretending to contain it would be one more thing to filter out.
-pub const REGISTRY: [ToolSpec; 71] = [
+pub const REGISTRY: [ToolSpec; 77] = [
     ToolSpec {
         kind: DrawingKind::Trendline,
         label: "Trend",
@@ -1284,6 +1318,54 @@ pub const REGISTRY: [ToolSpec; 71] = [
         group: ToolGroup::Measurement,
         group_label: "Measure",
         anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::TextNote,
+        label: "Text",
+        title: "Click to place a text label",
+        group: ToolGroup::Annotation,
+        group_label: "Annotate",
+        anchors: AnchorCount::fixed(1),
+    },
+    ToolSpec {
+        kind: DrawingKind::StickyNote,
+        label: "Note",
+        title: "Click to place a sticky note",
+        group: ToolGroup::Annotation,
+        group_label: "Annotate",
+        anchors: AnchorCount::fixed(1),
+    },
+    ToolSpec {
+        kind: DrawingKind::Callout,
+        label: "Callout",
+        title: "Click the point, then the label position",
+        group: ToolGroup::Annotation,
+        group_label: "Annotate",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::PriceLabel,
+        label: "Price tag",
+        title: "Click to tag the price axis",
+        group: ToolGroup::Annotation,
+        group_label: "Annotate",
+        anchors: AnchorCount::fixed(1),
+    },
+    ToolSpec {
+        kind: DrawingKind::FlagMark,
+        label: "Flag",
+        title: "Click to drop a flag marker",
+        group: ToolGroup::Annotation,
+        group_label: "Annotate",
+        anchors: AnchorCount::fixed(1),
+    },
+    ToolSpec {
+        kind: DrawingKind::IconMark,
+        label: "Icon",
+        title: "Click to place an icon marker",
+        group: ToolGroup::Annotation,
+        group_label: "Annotate",
+        anchors: AnchorCount::fixed(1),
     },
 ];
 
