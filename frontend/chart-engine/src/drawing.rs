@@ -276,6 +276,23 @@ pub enum DrawingKind {
     TimeCycles,
     /// Sine wave: second anchor sets cycle length and amplitude.
     SineLine,
+    // Forecast and data-driven measurement.
+    /// A horizontal band between two price levels, spanning the full plot width.
+    PriceRange,
+    /// A vertical band between two time points, spanning the full plot height.
+    DateRange,
+    /// A projected target: origin point with a future time/price target, drawn as
+    /// a crosshair with connecting diagonal.
+    Forecast,
+    /// Fixed-range volume profile histogram between two time anchors.
+    #[serde(rename = "fixed_range_vp")]
+    FixedRangeVP,
+    /// Volume profile from one anchor to the right edge.
+    #[serde(rename = "anchored_vp")]
+    AnchoredVP,
+    /// Anchored VWAP line from one anchor through all subsequent bars.
+    #[serde(rename = "anchored_vwap")]
+    AnchoredVWAP,
     /// The price/time delta between the two anchors: a box, dashed guides to
     /// both axes, and the delta as a label.
     Measure,
@@ -312,7 +329,7 @@ impl DrawingKind {
     /// The order is the flyout order, so a kind listed here in the wrong block is
     /// a tool that sits in the wrong menu -- and a kind missing is one the toolbar
     /// cannot offer at all.
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 64] = [
         // Lines.
         Self::Trendline,
         Self::Ray,
@@ -376,6 +393,13 @@ impl DrawingKind {
         Self::CyclicLines,
         Self::TimeCycles,
         Self::SineLine,
+        // Forecast and measurement.
+        Self::PriceRange,
+        Self::DateRange,
+        Self::Forecast,
+        Self::FixedRangeVP,
+        Self::AnchoredVP,
+        Self::AnchoredVWAP,
 
         // Measurement.
         Self::Measure,
@@ -439,6 +463,12 @@ impl DrawingKind {
             Self::CyclicLines => "cyclic_lines",
             Self::TimeCycles => "time_cycles",
             Self::SineLine => "sine_line",
+            Self::PriceRange => "price_range",
+            Self::DateRange => "date_range",
+            Self::Forecast => "forecast",
+            Self::FixedRangeVP => "fixed_range_vp",
+            Self::AnchoredVP => "anchored_vp",
+            Self::AnchoredVWAP => "anchored_vwap",
             Self::Measure => "measure",
             Self::Channel => "channel",
             Self::Angle => "angle",
@@ -464,6 +494,7 @@ impl DrawingKind {
         match self {
             Self::Hline | Self::Vline | Self::Hray | Self::Crossline => AnchorCount::fixed(1),
             Self::ArrowMarkUp | Self::ArrowMarkDown => AnchorCount::fixed(1),
+            Self::AnchoredVP | Self::AnchoredVWAP => AnchorCount::fixed(1),
             Self::Channel
             | Self::Arc
             | Self::Triangle
@@ -510,6 +541,10 @@ impl DrawingKind {
             | Self::CyclicLines
             | Self::TimeCycles
             | Self::SineLine
+            | Self::PriceRange
+            | Self::DateRange
+            | Self::Forecast
+            | Self::FixedRangeVP
             | Self::Measure
             | Self::Angle
             | Self::Circle
@@ -639,7 +674,7 @@ pub struct ToolSpec {
 /// The cursor is deliberately absent: it is not an object the engine can draw,
 /// it is the shell's "select and pan" state, and a registry of *objects*
 /// pretending to contain it would be one more thing to filter out.
-pub const REGISTRY: [ToolSpec; 58] = [
+pub const REGISTRY: [ToolSpec; 64] = [
     ToolSpec {
         kind: DrawingKind::Trendline,
         label: "Trend",
@@ -988,6 +1023,54 @@ pub const REGISTRY: [ToolSpec; 58] = [
         group: ToolGroup::Cyclic,
         group_label: "Cyclic",
         anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::PriceRange,
+        label: "P band",
+        title: "Two prices: a horizontal band spanning the chart",
+        group: ToolGroup::Measurement,
+        group_label: "Measure",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::DateRange,
+        label: "T band",
+        title: "Two times: a vertical band spanning the chart height",
+        group: ToolGroup::Measurement,
+        group_label: "Measure",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::Forecast,
+        label: "Forecast",
+        title: "Drag from origin to target: shows the projected time and price",
+        group: ToolGroup::Measurement,
+        group_label: "Measure",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::FixedRangeVP,
+        label: "VP range",
+        title: "Two times: volume profile histogram for the bars in that range",
+        group: ToolGroup::Measurement,
+        group_label: "Measure",
+        anchors: AnchorCount::fixed(2),
+    },
+    ToolSpec {
+        kind: DrawingKind::AnchoredVP,
+        label: "VP anchor",
+        title: "Click: volume profile from the anchor bar to the right edge",
+        group: ToolGroup::Measurement,
+        group_label: "Measure",
+        anchors: AnchorCount::fixed(1),
+    },
+    ToolSpec {
+        kind: DrawingKind::AnchoredVWAP,
+        label: "AVWAP",
+        title: "Click: anchored VWAP line from that bar through all subsequent closes",
+        group: ToolGroup::Measurement,
+        group_label: "Measure",
+        anchors: AnchorCount::fixed(1),
     },
     ToolSpec {
         kind: DrawingKind::Measure,

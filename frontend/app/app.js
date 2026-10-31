@@ -655,6 +655,13 @@ const CHART_PALETTE_DARK = {
   cyclic_lines: "#f59e0b",
   time_cycles: "#f59e0b",
   sine_line: "#f59e0b",
+  // The measurement/forecast additions.
+  price_range: "#4a9eff",
+  date_range: "#4a9eff",
+  forecast: "#22d3ee",
+  fixed_range_vp: "#8b5cf6",
+  anchored_vp: "#8b5cf6",
+  anchored_vwap: "#10b981",
   // The kinds the registry added. Distinct hues, one per kind, so a ray and
   // a trendline on the same chart are told apart by what they are; the
   // ruler is the value-area blue because it measures, like the fib.

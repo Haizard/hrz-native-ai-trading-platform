@@ -339,6 +339,13 @@ pub fn parts(
         DrawingKind::CyclicLines => cyclic::lines(geometry),
         DrawingKind::TimeCycles => cyclic::bands(geometry),
         DrawingKind::SineLine => cyclic::sine(geometry),
+        // Measurement and forecast.
+        DrawingKind::PriceRange => measurement::price_band(geometry),
+        DrawingKind::DateRange => measurement::time_band(geometry),
+        DrawingKind::Forecast => measurement::forecast(geometry),
+        DrawingKind::FixedRangeVP => measurement::fixed_vp(geometry),
+        DrawingKind::AnchoredVP => measurement::anchored_vp(geometry),
+        DrawingKind::AnchoredVWAP => measurement::avwap(geometry),
         // Measurement.
         DrawingKind::Measure => measurement::ruler(geometry),
         DrawingKind::DatepriceRange => measurement::range(geometry),
