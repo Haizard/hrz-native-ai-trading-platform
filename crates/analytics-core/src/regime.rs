@@ -96,6 +96,7 @@ pub fn detect_regime(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
         zone_low: Some(last.low),
         zone_high: Some(last.high),
         magnitude: magnitude.or(adx_line[candles.len() - 1]),
+        geometry: None,
         formed_at: None,
     });
     out
@@ -153,6 +154,7 @@ pub fn detect_mtf_alignment(candles: &[Candle], symbol: &str) -> Vec<MarketEvent
         zone_low: Some(last.low),
         zone_high: Some(last.high),
         magnitude: None,
+        geometry: None,
         formed_at: None,
     });
     out
@@ -212,6 +214,7 @@ pub fn detect_bias(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: None,
                 zone_high: None,
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(last.open_time),
             });
         }
@@ -231,6 +234,7 @@ pub fn detect_bias(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: None,
                 zone_high: None,
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(last.open_time),
             });
         }

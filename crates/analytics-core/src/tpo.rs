@@ -126,6 +126,7 @@ pub fn detect_auction(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
             zone_low: low,
             zone_high: high,
             magnitude: None,
+            geometry: None,
             formed_at: formed,
         });
     };

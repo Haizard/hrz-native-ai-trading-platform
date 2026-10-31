@@ -15,7 +15,7 @@
 //! fires when the D swing confirms (the swing rule's own confirmation --
 //! there is no extra gate), and the zone is the PRZ around D.
 
-use crate::events::{EventKind, MarketEvent};
+use crate::events::{EventGeometry, EventKind, MarketEvent};
 use crate::types::{Candle, Side};
 
 /// One pattern's ratio windows, as learned from the reference
@@ -162,6 +162,13 @@ fn detect_wolfe(candles: &[Candle], symbol: &str, pivots: &[Pivot]) -> Vec<Marke
             zone_low: Some(p5.price),
             zone_high: Some(target),
             magnitude: Some(target - p5.price),
+            geometry: Some(EventGeometry::path(vec![
+                (p1.time, p1.price),
+                (p2.time, p2.price),
+                (p3.time, p3.price),
+                (p4.time, p4.price),
+                (p5.time, p5.price),
+            ])),
             formed_at: Some(p1.time),
         });
     } else if bearish {
@@ -177,6 +184,13 @@ fn detect_wolfe(candles: &[Candle], symbol: &str, pivots: &[Pivot]) -> Vec<Marke
             zone_low: Some(target),
             zone_high: Some(p5.price),
             magnitude: Some(p5.price - target),
+            geometry: Some(EventGeometry::path(vec![
+                (p1.time, p1.price),
+                (p2.time, p2.price),
+                (p3.time, p3.price),
+                (p4.time, p4.price),
+                (p5.time, p5.price),
+            ])),
             formed_at: Some(p1.time),
         });
     }
@@ -203,12 +217,9 @@ pub fn detect_harmonics(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
     }
     let Some(last) = candles.last() else { return out };
     let raw_pivots = pivots(candles, LOOKBACK);
-    eprintln!("raw: {:?}", raw_pivots);
     let Some([x, a, b, c, d]) = last_five_alternating(&raw_pivots) else {
-        eprintln!("no alternating five");
         return out;
     };
-    eprintln!("chain: x={:?} a={:?} b={:?} c={:?} d={:?}", x, a, b, c, d);
     // The direction: a low X starts a bullish XABCD, a high X a bearish one.
     let bullish = !x.high;
     if (x.high == a.high) || (a.high == b.high) || (b.high == c.high) || (c.high == d.high) {
@@ -250,6 +261,13 @@ pub fn detect_harmonics(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: Some(d.price - prz),
                 zone_high: Some(d.price + prz),
                 magnitude: None,
+                geometry: Some(EventGeometry::path(vec![
+                    (x.time, x.price),
+                    (a.time, a.price),
+                    (b.time, b.price),
+                    (c.time, c.price),
+                    (d.time, d.price),
+                ])),
                 formed_at: Some(x.time),
             });
         }

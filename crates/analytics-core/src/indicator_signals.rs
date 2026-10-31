@@ -42,6 +42,7 @@ pub fn detect_indicator_signals(candles: &[Candle], symbol: &str) -> Vec<MarketE
             zone_low: Some(last.low),
             zone_high: Some(last.high),
             magnitude,
+            geometry: None,
             formed_at: None,
         });
     };
@@ -667,6 +668,7 @@ fn oscillator_divergence(candles: &[Candle], series: &[Option<f64>], kind: Event
             zone_low: Some(last.low),
             zone_high: Some(last.high),
             magnitude: value,
+            geometry: None,
             formed_at: None,
         });
     };

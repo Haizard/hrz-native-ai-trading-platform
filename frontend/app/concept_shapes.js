@@ -191,6 +191,16 @@
     // Lifecycle boxes merge their events: a gap's creation, fill and flip are
     // one box with one right edge, not three little rectangles.
     const groups = new Map();
+    // A ladder is ONE measurement: the detector attaches its rungs to the
+    // first event of the concept, and the rest of that concept's events are
+    // rungs of the same study -- drawing them again would draw it five times.
+    const ladders = new Map();
+    const rungConcepts = new Set();
+    for (const e of events) {
+      if (!enabled.has(e.concept_id) || shapeOf(e.concept_id) !== "ladder") continue;
+      const rungs = e.evidence && e.evidence.rungs;
+      if (Array.isArray(rungs) && rungs.length >= 2) rungConcepts.add(e.concept_id);
+    }
     for (const e of events) {
       if (!enabled.has(e.concept_id)) continue;
       const shape = shapeOf(e.concept_id);
@@ -332,12 +342,31 @@
         // do, the entry-level span is the honest fallback.
         const points = e.evidence && e.evidence.points;
         if (Array.isArray(points) && points.length >= 2) {
+          // The rig that makes a path a pattern: an outline carries its
+          // neckline, a harmonic its terminal PRZ band, Wolfe its 1-4
+          // projection. None of these touches the pivots themselves.
+          const neck = shape === "outline" && e.price_level != null ? e.price_level : null;
+          let target = null;
+          let bandLow = null;
+          let bandHigh = null;
+          if (shape === "legged_path") {
+            if (e.concept_id === "harmonics.wolfe_wave") {
+              target = e.zone_high ?? null;
+            } else if (e.zone_low != null && e.zone_high != null) {
+              bandLow = e.zone_low;
+              bandHigh = e.zone_high;
+            }
+          }
           out.push({
             type: "polyline",
             points: points.map((p) => ({ at_ns: p[0], price: p[1] })),
             closed: false,
             label: short,
             color,
+            neck,
+            target,
+            band_low: bandLow,
+            band_high: bandHigh,
           });
         } else if (e.price_level != null) {
           out.push({
@@ -352,14 +381,36 @@
       } else if (shape === "ladder") {
         const rungs = e.evidence && e.evidence.rungs;
         if (Array.isArray(rungs) && rungs.length >= 2) {
-          out.push({
-            type: "ladder",
-            from_ns: origin,
-            to_ns: e.event_time_ns,
-            rungs: rungs.map((r) => ({ ratio: r[0], price: r[1] })),
-            label: short,
-            color,
-          });
+          // One ladder per study: the rung-carrying event starts it, and the
+          // concept's other events only widen its window.
+          let g = ladders.get(e.concept_id);
+          if (!g) {
+            const anchors = e.evidence && e.evidence.anchors;
+            g = {
+              type: "ladder",
+              from_ns: origin,
+              to_ns: e.event_time_ns,
+              rungs: rungs.map((r) => ({ ratio: r[0], price: r[1] })),
+              label: short,
+              color,
+              anchors: Array.isArray(anchors) && anchors.length === 4 ? anchors : null,
+              pocket_low: null,
+              pocket_high: null,
+            };
+            ladders.set(e.concept_id, g);
+          }
+          g.from_ns = Math.min(g.from_ns, origin);
+          g.to_ns = Math.max(g.to_ns, e.event_time_ns);
+          // The pocket concept's own band is the shaded slice between its
+          // two rungs -- the thing that makes it a pocket and not two lines.
+          if (e.concept_id === "fib.golden_pocket" && e.zone_low != null && e.zone_high != null) {
+            g.pocket_low = e.zone_low;
+            g.pocket_high = e.zone_high;
+          }
+        } else if (rungConcepts.has(e.concept_id)) {
+          // A rung-less event of a concept whose ladder is already drawn is
+          // the same measurement said again, not a second study.
+          continue;
         } else if (e.zone_low != null && e.zone_high != null) {
           out.push({
             type: "zone",
@@ -389,6 +440,7 @@
     for (const g of [...groups.values()].sort((a, b) => a.from_ns - b.from_ns)) {
       out.push({ ...g, rank: undefined, state: g.state });
     }
+    for (const g of ladders.values()) out.push(g);
     // The scan bounds the events to the newest 200; the shapes show ALL of
     // them. A 40-shape cap hid exactly the history the backscan exists to
     // reveal -- an attached indicator must mark every detection across the

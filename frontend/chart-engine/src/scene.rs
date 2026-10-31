@@ -2840,6 +2840,24 @@ fn indicator_parts(
     })
 }
 
+/// One vertex of a concept path, in semantic time and price.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ShapePoint {
+    /// The vertex's bar, unix nanos.
+    pub at_ns: i64,
+    /// The vertex's price.
+    pub price: f64,
+}
+
+/// One rung of a Fibonacci ladder: the ratio and the price it lands at.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LadderRung {
+    /// The retracement or extension ratio (`0.618`).
+    pub ratio: f64,
+    /// The price the ratio lands at.
+    pub price: f64,
+}
+
 /// A concept's shape as the host describes it: semantic (times and prices),
 /// colored and labeled. The engine positions it, like every other overlay.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2986,6 +3004,54 @@ pub enum ConceptShape {
         text: String,
         /// The color, `0xAARRGGBB`.
         color: u32,
+    },
+    /// A sloped pattern: the pivot path itself (chart outlines, harmonic
+    /// legs), with the neckline and the projection a pattern carries.
+    Polyline {
+        /// The pivot vertices, in time order.
+        points: Vec<ShapePoint>,
+        /// `true` closes the path back to its first vertex.
+        #[serde(default)]
+        closed: bool,
+        /// The study's name at the path's first vertex.
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+        /// The neckline price, drawn dashed from the first to the last pivot.
+        #[serde(default)]
+        neck: Option<f64>,
+        /// The projected target price, drawn dashed from the last pivot right.
+        #[serde(default)]
+        target: Option<f64>,
+        /// The PRZ band's bottom, drawn from the last pivot right.
+        #[serde(default)]
+        band_low: Option<f64>,
+        /// The PRZ band's top.
+        #[serde(default)]
+        band_high: Option<f64>,
+    },
+    /// A Fibonacci ladder: one measurement, drawn as its rungs -- the anchor
+    /// pair joined, the ratio and price on every line, the shaded pocket.
+    Ladder {
+        /// The measurement's first bar, unix nanos.
+        from_ns: i64,
+        /// The bar the rungs run to (the measurement's right edge).
+        to_ns: i64,
+        /// The rungs: ratio and price, in draw order.
+        rungs: Vec<LadderRung>,
+        /// The study's name at the first rung.
+        label: String,
+        /// The color, `0xAARRGGBB`.
+        color: u32,
+        /// The swing's two anchors, joined as one dashed leg.
+        #[serde(default)]
+        anchors: Option<(i64, f64, i64, f64)>,
+        /// The golden pocket's bottom, washed between the rungs.
+        #[serde(default)]
+        pocket_low: Option<f64>,
+        /// The golden pocket's top.
+        #[serde(default)]
+        pocket_high: Option<f64>,
     },
 }
 
@@ -3302,6 +3368,173 @@ fn position_concept_shape(shape: &ConceptShape, frame: &Frame) -> Vec<crate::scr
                 text: text.clone(),
                 color: *color,
             }]
+        }
+        ConceptShape::Polyline { points, closed, label, color, neck, target, band_low, band_high } => {
+            let plot = frame.plot;
+            let right = plot.x + plot.w;
+            let pts: Vec<(f64, f64)> = points
+                .iter()
+                .filter(|p| p.price.is_finite())
+                .map(|p| (x_at(p.at_ns), frame.y_at(p.price)))
+                .collect();
+            if pts.len() < 2 {
+                return Vec::new();
+            }
+            let (x_first, y_first) = pts[0];
+            let x_last = pts[pts.len() - 1].0;
+            let mut draws = Vec::new();
+            // The PRZ: the band the projection lands in, from the last pivot
+            // right -- the terminal zone a harmonic completes into.
+            if let (Some(lo), Some(hi)) = (band_low, band_high) {
+                if lo.is_finite() && hi.is_finite() && x_last < right - 1.0 {
+                    let (x1, x2) = (x_last.max(plot.x), right);
+                    let (y1, y2) = (frame.y_at(*hi), frame.y_at(*lo));
+                    draws.push(crate::script::ScriptDraw::Box {
+                        x1,
+                        y1,
+                        x2,
+                        y2,
+                        color: *color,
+                        border_color: Some(*color),
+                        border_width: 1.0,
+                        border_style: "dashed".to_string(),
+                        fill_alpha: Some(0.10),
+                    });
+                }
+            }
+            // The neckline: the pattern's base, dashed across its pivots.
+            if let Some(neck) = neck {
+                if neck.is_finite() {
+                    let y = frame.y_at(*neck);
+                    let (x1, x2) = (x_first.min(x_last), x_first.max(x_last));
+                    if x2 - x1 >= 1.0 && y >= plot.y && y <= plot.y + plot.h {
+                        draws.push(crate::script::ScriptDraw::Line {
+                            x1,
+                            y1: y,
+                            x2,
+                            y2: y,
+                            color: *color,
+                            style: "dashed".to_string(),
+                            width: 1.0,
+                            extend: "none".to_string(),
+                        });
+                    }
+                }
+            }
+            // The projection: the target the pattern breaks toward.
+            if let Some(target) = target {
+                if target.is_finite() {
+                    let y = frame.y_at(*target);
+                    let x1 = x_last.clamp(plot.x, right);
+                    if right - x1 >= 1.0 && y >= plot.y && y <= plot.y + plot.h {
+                        draws.push(crate::script::ScriptDraw::Line {
+                            x1,
+                            y1: y,
+                            x2: right,
+                            y2: y,
+                            color: *color,
+                            style: "dashed".to_string(),
+                            width: 1.0,
+                            extend: "none".to_string(),
+                        });
+                    }
+                }
+            }
+            draws.push(crate::script::ScriptDraw::Polyline {
+                points: pts,
+                closed: *closed,
+                line_color: *color,
+                fill_color: None,
+                width: 1.25,
+            });
+            draws.push(crate::script::ScriptDraw::Label {
+                x: x_first + 3.0,
+                y: y_first - 4.0,
+                text: label.clone(),
+                color: *color,
+            });
+            draws
+        }
+        ConceptShape::Ladder { from_ns, to_ns, rungs, label, color, anchors, pocket_low, pocket_high } => {
+            let plot = frame.plot;
+            let right = plot.x + plot.w;
+            let x1 = x_at(*from_ns).clamp(plot.x, right);
+            let x2 = x_at(*to_ns).max(x1 + bar_w * 0.6).clamp(x1, right);
+            if x2 - x1 < 1.0 {
+                return Vec::new();
+            }
+            let mut draws = Vec::new();
+            // The golden pocket: the shaded slice between its two rungs.
+            if let (Some(lo), Some(hi)) = (pocket_low, pocket_high) {
+                if lo.is_finite() && hi.is_finite() {
+                    let (y1, y2) = (frame.y_at(*hi), frame.y_at(*lo));
+                    draws.push(crate::script::ScriptDraw::Box {
+                        x1,
+                        y1,
+                        x2,
+                        y2,
+                        color: *color,
+                        border_color: None,
+                        border_width: 1.0,
+                        border_style: "solid".to_string(),
+                        fill_alpha: Some(0.10),
+                    });
+                }
+            }
+            // The anchor pair joined: the swing the ladder measures.
+            if let Some((from_time, from_price, to_time, to_price)) = anchors {
+                if from_price.is_finite() && to_price.is_finite() {
+                    draws.push(crate::script::ScriptDraw::Line {
+                        x1: x_at(*from_time).clamp(plot.x, right),
+                        y1: frame.y_at(*from_price),
+                        x2: x_at(*to_time).clamp(plot.x, right),
+                        y2: frame.y_at(*to_price),
+                        color: *color,
+                        style: "dashed".to_string(),
+                        width: 1.0,
+                        extend: "none".to_string(),
+                    });
+                }
+            }
+            let mut label_y: Option<f64> = None;
+            for rung in rungs {
+                if !rung.price.is_finite() {
+                    continue;
+                }
+                let y = frame.y_at(rung.price);
+                if y < plot.y || y > plot.y + plot.h {
+                    continue;
+                }
+                label_y.get_or_insert(y);
+                draws.push(crate::script::ScriptDraw::Line {
+                    x1,
+                    y1: y,
+                    x2,
+                    y2: y,
+                    color: *color,
+                    style: "solid".to_string(),
+                    width: 1.0,
+                    extend: "none".to_string(),
+                });
+                // The ratio and the price beside it: what makes a rung a
+                // measurement and not another anonymous line.
+                draws.push(crate::script::ScriptDraw::Label {
+                    x: (x2 - 62.0).max(x1 + 3.0),
+                    y: y - 3.0,
+                    text: format!("{:.3}  {:.2}", rung.ratio, rung.price),
+                    color: *color,
+                });
+            }
+            // One name for the study, above its topmost rung.
+            if let Some(y) = label_y {
+                draws.push(crate::script::ScriptDraw::Label {
+                    x: x1 + 3.0,
+                    y: y - 4.0,
+                    text: label.clone(),
+                    color: *color,
+                });
+            }
+            draws
         }
     }
 }
@@ -4307,6 +4540,137 @@ mod concept_shape_tests {
         .into_iter().next().expect("readout");
         let crate::script::ScriptDraw::Label { y, .. } = floating else { panic!("label") };
         assert_eq!(y, frame.plot.y + 10.0, "a hostless readout sits at the plot's top");
+    }
+
+    #[test]
+    fn a_path_carries_its_neckline_its_projection_and_its_prz_band() {
+        use crate::script::ScriptDraw;
+        let frame = frame_fixture();
+        let draws = position_concept_shape(
+            &ConceptShape::Polyline {
+                points: vec![
+                    ShapePoint { at_ns: 2_000_000_000_000, price: 100.0 },
+                    ShapePoint { at_ns: 4_000_000_000_000, price: 104.0 },
+                    ShapePoint { at_ns: 6_000_000_000_000, price: 98.0 },
+                ],
+                closed: false,
+                label: "double top".to_string(),
+                color: 0xccef5350,
+                neck: Some(100.0),
+                target: Some(94.0),
+                band_low: Some(97.5),
+                band_high: Some(98.5),
+            },
+            &frame,
+        );
+        // The pivots themselves are one stroked path.
+        let path = draws.iter().find_map(|d| match d {
+            ScriptDraw::Polyline { points, closed, .. } => Some((points.clone(), *closed)),
+            _ => None,
+        }).expect("a polyline");
+        assert_eq!(path.0.len(), 3, "every detector vertex is a vertex");
+        assert!(!path.1, "a chart pattern's pivot path is open");
+        // Two dashed rigs: the neckline at the pattern's base, the target
+        // projected right from its last pivot.
+        let dashed: Vec<_> = draws.iter().filter_map(|d| match d {
+            ScriptDraw::Line { y1, style, .. } if style == "dashed" => Some(*y1),
+            _ => None,
+        }).collect();
+        assert!(dashed.contains(&frame.y_at(100.0)), "the neck at its price: {dashed:?}");
+        assert!(dashed.contains(&frame.y_at(94.0)), "the projected target at its price");
+        // The PRZ is the band from the last pivot to the right edge.
+        let band = draws.iter().find_map(|d| match d {
+            ScriptDraw::Box { x1, x2, y1, y2, fill_alpha: Some(a), .. } => Some((*x1, *x2, *y1, *y2, *a)),
+            _ => None,
+        }).expect("a PRZ band");
+        assert_eq!(band.0, frame.x_at_nanos(6_000_000_000_000));
+        assert_eq!(band.1, frame.plot.x + frame.plot.w);
+        assert_eq!((band.2, band.3), (frame.y_at(98.5), frame.y_at(97.5)));
+        assert_eq!(band.4, 0.10, "the terminal zone is a wash, not a curtain");
+    }
+
+    #[test]
+    fn a_ladder_is_one_measurement_with_rungs_anchors_and_a_pocket() {
+        use crate::script::ScriptDraw;
+        let frame = frame_fixture();
+        let draws = position_concept_shape(
+            &ConceptShape::Ladder {
+                from_ns: 2_000_000_000_000,
+                to_ns: 10_000_000_000_000,
+                rungs: vec![
+                    LadderRung { ratio: 0.5, price: 101.0 },
+                    LadderRung { ratio: 0.618, price: 99.5 },
+                    LadderRung { ratio: 0.65, price: 99.0 },
+                ],
+                label: "retracement".to_string(),
+                color: 0xcc26a69a,
+                anchors: Some((2_000_000_000_000, 102.0, 6_000_000_000_000, 100.0)),
+                pocket_low: Some(99.0),
+                pocket_high: Some(99.5),
+            },
+            &frame,
+        );
+        let lines: Vec<_> = draws.iter().filter_map(|d| match d {
+            ScriptDraw::Line { y1, y2, x1, x2, .. } => Some((*x1, *x2, *y1, *y2)),
+            _ => None,
+        }).collect();
+        assert_eq!(lines.len(), 4, "three rungs plus the anchor pair");
+        let (x1, x2, _, _) = lines
+            .iter()
+            .find(|(_, _, y1, y2)| (*y1 - *y2).abs() < 1e-9)
+            .copied()
+            .expect("a horizontal rung");
+        assert_eq!(x1, frame.x_at_nanos(2_000_000_000_000));
+        assert_eq!(x2, frame.x_at_nanos(10_000_000_000_000));
+        assert!(lines.iter().any(|(_, _, y1, y2)| {
+            (*y1 - frame.y_at(102.0)).abs() < 1e-9 && (*y2 - frame.y_at(100.0)).abs() < 1e-9
+        }), "the swing's two anchors are joined");
+        let pocket = draws.iter().find_map(|d| match d {
+            ScriptDraw::Box { y1, y2, fill_alpha: Some(a), .. } => Some((*y1, *y2, *a)),
+            _ => None,
+        }).expect("the pocket slice");
+        assert_eq!((pocket.0, pocket.1), (frame.y_at(99.5), frame.y_at(99.0)));
+        assert_eq!(pocket.2, 0.10);
+        let labels: Vec<_> = draws.iter().filter_map(|d| match d {
+            ScriptDraw::Label { text, .. } => Some(text.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(labels.len(), 4, "one name plus a ratio and price per rung");
+        assert!(labels.iter().any(|t| t.contains("0.618") && t.contains("99.50")), "the rung reads its own math: {labels:?}");
+    }
+
+    #[test]
+    fn the_routers_wire_deserializes_into_the_two_path_shapes() {
+        // Exactly what `concept_shapes.js` emits: the field names are the
+        // contract between the router and the engine.
+        let poly: ConceptShape = serde_json::from_str(
+            r#"{"type":"polyline","points":[{"at_ns":1,"price":101.0},{"at_ns":3,"price":99.0}],
+                "closed":false,"label":"double top bottom","color":3438236496,
+                "neck":100.0,"target":null,"band_low":null,"band_high":null}"#,
+        )
+        .expect("the router's polyline");
+        let ConceptShape::Polyline { points, neck, .. } = poly else { panic!("polyline") };
+        assert_eq!(points.len(), 2);
+        assert_eq!(neck, Some(100.0));
+        let ladder: ConceptShape = serde_json::from_str(
+            r#"{"type":"ladder","from_ns":1,"to_ns":5,
+                "rungs":[{"ratio":0.236,"price":99.0},{"ratio":0.618,"price":98.0}],
+                "label":"retracement","color":3425085082,
+                "anchors":[1,100.0,5,96.0],"pocket_low":null,"pocket_high":null}"#,
+        )
+        .expect("the router's ladder");
+        let ConceptShape::Ladder { rungs, anchors, .. } = ladder else { panic!("ladder") };
+        assert_eq!(rungs.len(), 2);
+        assert_eq!(anchors, Some((1, 100.0, 5, 96.0)));
+        // A pre-rig wire (no optional keys) still deserializes: the fields
+        // are defaults, so an older host cannot break the newer engine.
+        let bare: ConceptShape = serde_json::from_str(
+            r#"{"type":"polyline","points":[{"at_ns":1,"price":101.0},{"at_ns":3,"price":99.0}],
+                "label":"x","color":1}"#,
+        )
+        .expect("a bare polyline");
+        let ConceptShape::Polyline { neck, band_low, closed, .. } = bare else { panic!("polyline") };
+        assert_eq!((neck, band_low, closed), (None, None, false));
     }
 }
 

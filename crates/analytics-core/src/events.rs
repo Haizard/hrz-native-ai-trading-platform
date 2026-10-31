@@ -856,6 +856,39 @@ impl EventKind {
     ];
 }
 
+/// The detector's own vertices and rig, when the shape needs more than a
+/// level and a band.
+///
+/// A pattern is its pivot path; a harmonic is its XABCD legs; a Fibonacci
+/// study is its rungs. The flat level/zone fields describe a box or a line,
+/// and squeezing a path into them loses the shape the concept is. This is
+/// the one place that extra geometry travels: the detector computes it, the
+/// concept path hands it to the renderer, and nothing re-derives it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EventGeometry {
+    /// The shape's own vertices, oldest first: (bar open time, price).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<(i64, f64)>,
+    /// A measured ladder's rungs: (ratio, price), lowest ratio first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rungs: Vec<(f64, f64)>,
+    /// The two swing anchors a ladder measures: (from time, from price,
+    /// to time, to price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchors: Option<(i64, f64, i64, f64)>,
+}
+
+impl EventGeometry {
+    /// A path through the detector's pivots.
+    #[must_use]
+    pub fn path(points: Vec<(i64, f64)>) -> Self {
+        Self {
+            points,
+            ..Self::default()
+        }
+    }
+}
+
 /// One derived market fact, as the engine emits it.
 ///
 /// Carries **levels, not prose**: `price` and `zone_low`/`zone_high` are
@@ -895,6 +928,11 @@ pub struct MarketEvent {
     /// Open time of the band's origin bar, when the event names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub formed_at: Option<i64>,
+    /// The detector's own vertices, when the shape needs a path rather than
+    /// a level. Absent for every event whose shape the fields above already
+    /// describe completely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<EventGeometry>,
 }
 
 /// Tuning for [`detect_events`].
@@ -1030,6 +1068,7 @@ pub fn detect_volume_profile(candles: &[Candle], symbol: &str) -> Vec<MarketEven
             zone_low: low,
             zone_high: high,
             magnitude: None,
+            geometry: None,
             formed_at: None,
         });
     };
@@ -1122,6 +1161,9 @@ pub fn detect_chart_patterns(candles: &[Candle], symbol: &str, config: &EventCon
                 zone_low,
                 zone_high,
                 magnitude: Some(m.confidence),
+                geometry: Some(EventGeometry::path(
+                    m.anchors.iter().map(|a| (a.timestamp, a.price)).collect(),
+                )),
                 formed_at: m.anchors.first().map(|a| a.timestamp),
             }
         })
@@ -1146,6 +1188,28 @@ fn collapse_edges(mut edges: Vec<(usize, f64)>, tolerance: f64, highs: bool) -> 
     out
 }
 
+/// A path through candle-indexed edges, oldest first.
+///
+/// The gap detectors keep their vertices as (bar index, price) pairs; the
+/// wire wants (time, price). One conversion, here, so a pattern's outline is
+/// the same vertices the rule that fired used.
+fn edge_path(candles: &[Candle], edges: &[(usize, f64)]) -> EventGeometry {
+    EventGeometry::path(
+        edges
+            .iter()
+            .map(|(index, price)| (candles[*index].open_time, *price))
+            .collect(),
+    )
+}
+
+/// A closed perimeter between two anchors, in time order: top edge forward,
+/// bottom edge back. The rectangle and the channel are both this.
+fn perimeter_path(candles: &[Candle], a: (usize, f64), b: (usize, f64), low: f64, high: f64) -> EventGeometry {
+    let (first, last) = if a.0 <= b.0 { (a.0, b.0) } else { (b.0, a.0) };
+    let (t0, t1) = (candles[first].open_time, candles[last].open_time);
+    EventGeometry::path(vec![(t0, high), (t1, high), (t1, low), (t0, low), (t0, high)])
+}
+
 /// The chart-pattern gap fills: triple tops, rectangles, cups, pennants.
 ///
 /// Same swing machinery as the rest of the family (strict lookback swings),
@@ -1168,20 +1232,19 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
     let bar_time = last.open_time;
     let tf = last.timeframe;
     let n = candles.len() - 1;
-    let mut push = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>, formed: Option<i64>| {
-        out.push(MarketEvent {
-            kind,
-            symbol: symbol.to_string(),
-            timeframe: tf,
-            bar_time,
-            close: last.close,
-            price,
-            side,
-            zone_low: low,
-            zone_high: high,
-            magnitude: None,
-            formed_at: formed,
-        });
+    let make = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>, formed: Option<i64>| MarketEvent {
+        kind,
+        symbol: symbol.to_string(),
+        timeframe: tf,
+        bar_time,
+        close: last.close,
+        price,
+        side,
+        zone_low: low,
+        zone_high: high,
+        magnitude: None,
+        geometry: None,
+        formed_at: formed,
     };
 
     // The strict swings of the STRUCTURE: the newest bar is the breakout or
@@ -1242,7 +1305,10 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
             let trough2 = candles[b.0..=c.0].iter().map(|k| k.low).fold(f64::MAX, f64::min);
             let neckline = trough1.min(trough2);
             if mid - neckline >= mid * 0.01 && last.close < neckline {
-                push(EventKind::TripleTopBottom, Some(Side::Sell), neckline, Some(neckline), Some(mid), Some(candles[a.0].open_time));
+                out.push(make(EventKind::TripleTopBottom, Some(Side::Sell), neckline, Some(neckline), Some(mid), Some(candles[a.0].open_time)));
+                if let Some(e) = out.last_mut() {
+                    e.geometry = Some(edge_path(candles, &[a, b, c]));
+                }
             }
         }
     }
@@ -1257,7 +1323,10 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
             let peak2 = candles[b.0..=c.0].iter().map(|k| k.high).fold(f64::MIN, f64::max);
             let neckline = peak1.max(peak2);
             if neckline - mid >= mid * 0.01 && last.close > neckline {
-                push(EventKind::TripleTopBottom, Some(Side::Buy), neckline, Some(mid), Some(neckline), Some(candles[a.0].open_time));
+                out.push(make(EventKind::TripleTopBottom, Some(Side::Buy), neckline, Some(mid), Some(neckline), Some(candles[a.0].open_time)));
+                if let Some(e) = out.last_mut() {
+                    e.geometry = Some(edge_path(candles, &[a, b, c]));
+                }
             }
         }
     }
@@ -1275,10 +1344,17 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
         // The channel must be a real band (height at least 1% of price).
         if flat_tops && flat_bottoms && top - bottom >= bottom * 0.01 {
             let from = candles[h1.0.min(l1.0)].open_time;
+            let (first_high, second_high) = if h1.0 <= h2.0 { (h1, h2) } else { (h2, h1) };
             if last.close > top {
-                push(EventKind::RectangleBreakout, Some(Side::Buy), top, Some(bottom), Some(top), Some(from));
+                out.push(make(EventKind::RectangleBreakout, Some(Side::Buy), top, Some(bottom), Some(top), Some(from)));
+                if let Some(e) = out.last_mut() {
+                    e.geometry = Some(perimeter_path(candles, first_high, second_high, bottom, top));
+                }
             } else if last.close < bottom {
-                push(EventKind::RectangleBreakout, Some(Side::Sell), bottom, Some(bottom), Some(top), Some(from));
+                out.push(make(EventKind::RectangleBreakout, Some(Side::Sell), bottom, Some(bottom), Some(top), Some(from)));
+                if let Some(e) = out.last_mut() {
+                    e.geometry = Some(perimeter_path(candles, first_high, second_high, bottom, top));
+                }
             }
         }
     }
@@ -1320,7 +1396,11 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
                 && handle_depth <= cup_depth * HANDLE_MAX_DEPTH
                 && last.close > rim
             {
-                push(EventKind::CupAndHandle, Some(Side::Buy), rim, Some(bottom), Some(rim), Some(candles[rim_idx].open_time));
+                out.push(make(EventKind::CupAndHandle, Some(Side::Buy), rim, Some(bottom), Some(rim), Some(candles[rim_idx].open_time)));
+                if let Some(e) = out.last_mut() {
+                    let right = recovery_idx.unwrap_or(n);
+                    e.geometry = Some(edge_path(candles, &[(rim_idx, rim), (bottom_idx, bottom), (right, rim)]));
+                }
             }
         }
     }
@@ -1353,7 +1433,11 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
                 && handle_rise <= bowl_depth * HANDLE_MAX_DEPTH
                 && last.close < rim
             {
-                push(EventKind::InverseCupHandle, Some(Side::Sell), rim, Some(rim), Some(top), Some(candles[rim_idx].open_time));
+                out.push(make(EventKind::InverseCupHandle, Some(Side::Sell), rim, Some(rim), Some(top), Some(candles[rim_idx].open_time)));
+                if let Some(e) = out.last_mut() {
+                    let right = recovery_idx.unwrap_or(n);
+                    e.geometry = Some(edge_path(candles, &[(rim_idx, rim), (top_idx, top), (right, rim)]));
+                }
             }
         }
     }
@@ -1372,7 +1456,10 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
         if let Some((rim_idx, rim)) = rim_entry {
             let recovered = candles[bottom_idx..].iter().any(|k| k.high >= rim * (1.0 - TOP_TOLERANCE));
             if recovered && rim - bottom > 0.0 && last.close > rim {
-                push(EventKind::RoundingBottomTop, Some(Side::Buy), rim, Some(bottom), Some(rim), Some(candles[rim_idx].open_time));
+                out.push(make(EventKind::RoundingBottomTop, Some(Side::Buy), rim, Some(bottom), Some(rim), Some(candles[rim_idx].open_time)));
+                if let Some(e) = out.last_mut() {
+                    e.geometry = Some(edge_path(candles, &[(rim_idx, rim), (bottom_idx, bottom), (n, rim)]));
+                }
             }
         }
         // The mirror: the rounding top breaking down through its rim.
@@ -1385,7 +1472,10 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
         if let Some((rim_idx, rim)) = rim_low {
             let recovered = candles[top_idx..].iter().any(|k| k.low <= rim * (1.0 + TOP_TOLERANCE));
             if recovered && top - rim > 0.0 && last.close < rim {
-                push(EventKind::RoundingBottomTop, Some(Side::Sell), rim, Some(rim), Some(top), Some(candles[rim_idx].open_time));
+                out.push(make(EventKind::RoundingBottomTop, Some(Side::Sell), rim, Some(rim), Some(top), Some(candles[rim_idx].open_time)));
+                if let Some(e) = out.last_mut() {
+                    e.geometry = Some(edge_path(candles, &[(rim_idx, rim), (top_idx, top), (n, rim)]));
+                }
             }
         }
     }
@@ -1405,7 +1495,10 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
             let touch = (l3.1 - line_at(l1, l2, l3.0)).abs() <= line_at(l1, l2, l3.0) * (TOP_TOLERANCE / 2.0);
             let break_level = line_at(l1, l2, n);
             if touch && last.close < break_level * (1.0 - TOP_TOLERANCE) {
-                push(EventKind::TrendlineBreak, Some(Side::Sell), break_level, Some(break_level), Some(line_at(l1, l2, l1.0)), Some(candles[l1.0].open_time));
+                out.push(make(EventKind::TrendlineBreak, Some(Side::Sell), break_level, Some(break_level), Some(line_at(l1, l2, l1.0)), Some(candles[l1.0].open_time)));
+                if let Some(e) = out.last_mut() {
+                    e.geometry = Some(edge_path(candles, &[l1, l2, (n, break_level)]));
+                }
             }
         }
     }
@@ -1416,7 +1509,10 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
             let touch = (h3.1 - line_at(h1, h2, h3.0)).abs() <= line_at(h1, h2, h3.0) * (TOP_TOLERANCE / 2.0);
             let break_level = line_at(h1, h2, n);
             if touch && last.close > break_level * (1.0 + TOP_TOLERANCE) {
-                push(EventKind::TrendlineBreak, Some(Side::Buy), break_level, Some(line_at(h1, h2, h1.0)), Some(break_level), Some(candles[h1.0].open_time));
+                out.push(make(EventKind::TrendlineBreak, Some(Side::Buy), break_level, Some(line_at(h1, h2, h1.0)), Some(break_level), Some(candles[h1.0].open_time)));
+                if let Some(e) = out.last_mut() {
+                    e.geometry = Some(edge_path(candles, &[h1, h2, (n, break_level)]));
+                }
             }
         }
     }
@@ -1430,10 +1526,21 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
         let (l1, l2, l3) = (lows[lows.len() - 3], lows[lows.len() - 2], lows[lows.len() - 1]);
         let expanding = h1.1 < h2.1 && h2.1 < h3.1 && l1.1 > l2.1 && l2.1 > l3.1;
         if expanding {
-            if last.close > h3.1 {
-                push(EventKind::BroadeningFormation, Some(Side::Buy), h3.1, Some(l3.1), Some(h3.1), Some(candles[h1.0].open_time));
+            let broken = if last.close > h3.1 {
+                out.push(make(EventKind::BroadeningFormation, Some(Side::Buy), h3.1, Some(l3.1), Some(h3.1), Some(candles[h1.0].open_time)));
+                true
             } else if last.close < l3.1 {
-                push(EventKind::BroadeningFormation, Some(Side::Sell), l3.1, Some(l3.1), Some(h3.1), Some(candles[l1.0].open_time));
+                out.push(make(EventKind::BroadeningFormation, Some(Side::Sell), l3.1, Some(l3.1), Some(h3.1), Some(candles[l1.0].open_time)));
+                true
+            } else {
+                false
+            };
+            if broken {
+                let mut edges = [h1, h2, h3, l1, l2, l3];
+                edges.sort_by_key(|edge| edge.0);
+                if let Some(e) = out.last_mut() {
+                    e.geometry = Some(edge_path(candles, &edges));
+                }
             }
         }
     }
@@ -1452,10 +1559,23 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
         if expanding && contracting {
             let top = h[3].1;
             let bottom = l[3].1;
-            if last.close < bottom * 0.997 {
-                push(EventKind::Diamond, Some(Side::Sell), bottom, Some(bottom), Some(top), Some(candles[h[0].0].open_time));
+            let broken = if last.close < bottom * 0.997 {
+                out.push(make(EventKind::Diamond, Some(Side::Sell), bottom, Some(bottom), Some(top), Some(candles[h[0].0].open_time)));
+                true
             } else if last.close > top * 1.003 {
-                push(EventKind::Diamond, Some(Side::Buy), top, Some(bottom), Some(top), Some(candles[l[0].0].open_time));
+                out.push(make(EventKind::Diamond, Some(Side::Buy), top, Some(bottom), Some(top), Some(candles[l[0].0].open_time)));
+                true
+            } else {
+                false
+            };
+            if broken {
+                let mut edges: Vec<(usize, f64)> = Vec::new();
+                edges.extend_from_slice(h);
+                edges.extend_from_slice(l);
+                edges.sort_by_key(|edge| edge.0);
+                if let Some(e) = out.last_mut() {
+                    e.geometry = Some(edge_path(candles, &edges));
+                }
             }
         }
     }
@@ -1478,10 +1598,33 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
             if parallel {
                 let low_line = line_at(l1, l2, n);
                 let high_line = line_at(h1, h2, n);
-                if last.close > high_line * (1.0 + TOP_TOLERANCE) {
-                    push(EventKind::TrendChannel, Some(Side::Buy), high_line, Some(low_line), Some(high_line), Some(candles[l1.0].open_time));
+                let broken = if last.close > high_line * (1.0 + TOP_TOLERANCE) {
+                    out.push(make(EventKind::TrendChannel, Some(Side::Buy), high_line, Some(low_line), Some(high_line), Some(candles[l1.0].open_time)));
+                    true
                 } else if last.close < low_line * (1.0 - TOP_TOLERANCE) {
-                    push(EventKind::TrendChannel, Some(Side::Sell), low_line, Some(low_line), Some(high_line), Some(candles[h1.0].open_time));
+                    out.push(make(EventKind::TrendChannel, Some(Side::Sell), low_line, Some(low_line), Some(high_line), Some(candles[h1.0].open_time)));
+                    true
+                } else {
+                    false
+                };
+                if broken {
+                    let first = l1.0.min(h1.0);
+                    let last_anchor = l2.0.max(h2.0);
+                    let (t0, t1) = (candles[first].open_time, candles[last_anchor].open_time);
+                    let low_at_first = line_at(l1, l2, first);
+                    let high_at_first = line_at(h1, h2, first);
+                    let low_at_last = line_at(l1, l2, last_anchor);
+                    let high_at_last = line_at(h1, h2, last_anchor);
+                    if let Some(e) = out.last_mut() {
+                        // The channel is its two lines: one closed perimeter.
+                        e.geometry = Some(EventGeometry::path(vec![
+                            (t0, low_at_first),
+                            (t1, low_at_last),
+                            (t1, high_at_last),
+                            (t0, high_at_first),
+                            (t0, low_at_first),
+                        ]));
+                    }
                 }
             }
         }
@@ -1504,7 +1647,17 @@ pub fn detect_chart_gaps(candles: &[Candle], symbol: &str, config: &EventConfig)
         let ch_span = (ch_high_last.max(ch_high_first)) - (ch_low_last.min(ch_low_first));
         if pole > avg_range * 6.0 && converging && ch_span < pole * 0.5 {
             let up = candles[n - 8].close > candles[n - 16].close;
-            push(EventKind::Pennant, Some(if up { Side::Buy } else { Side::Sell }), (ch_high_last + ch_low_last) / 2.0, Some(ch_low_last.min(ch_low_first)), Some(ch_high_last.max(ch_high_first)), Some(candles[n - 16].open_time));
+            out.push(make(EventKind::Pennant, Some(if up { Side::Buy } else { Side::Sell }), (ch_high_last + ch_low_last) / 2.0, Some(ch_low_last.min(ch_low_first)), Some(ch_high_last.max(ch_high_first)), Some(candles[n - 16].open_time)));
+            if let Some(e) = out.last_mut() {
+                let (t0, t1) = (channel[0].open_time, channel[channel.len() - 1].open_time);
+                e.geometry = Some(EventGeometry::path(vec![
+                    (t0, ch_low_first),
+                    (t1, ch_low_last),
+                    (t1, ch_high_last),
+                    (t0, ch_high_first),
+                    (t0, ch_low_first),
+                ]));
+            }
         }
     }
 
@@ -1552,6 +1705,7 @@ pub fn detect_displacement(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
             zone_low: Some(last.low),
             zone_high: Some(last.high),
             magnitude: Some(body / mean_body),
+            geometry: None,
             formed_at: None,
         });
     }
@@ -1603,6 +1757,7 @@ pub fn detect_range_liquidity(candles: &[Candle], symbol: &str) -> Vec<MarketEve
         zone_low: Some(range_lo),
         zone_high: Some(range_hi),
         magnitude: None,
+        geometry: None,
         formed_at: Some(candles[range_hi_idx].open_time),
     });
     out.push(MarketEvent {
@@ -1616,6 +1771,7 @@ pub fn detect_range_liquidity(candles: &[Candle], symbol: &str) -> Vec<MarketEve
         zone_low: Some(range_lo),
         zone_high: Some(range_hi),
         magnitude: None,
+        geometry: None,
         formed_at: Some(candles[range_lo_idx].open_time),
     });
     // IRL: the newest minor CLUSTER strictly inside the range -- two or more
@@ -1652,6 +1808,7 @@ pub fn detect_range_liquidity(candles: &[Candle], symbol: &str) -> Vec<MarketEve
             zone_low: Some(range_lo),
             zone_high: Some(range_hi),
             magnitude: None,
+            geometry: None,
             formed_at: Some(candles[idx].open_time),
         });
     }
@@ -1667,6 +1824,7 @@ pub fn detect_range_liquidity(candles: &[Candle], symbol: &str) -> Vec<MarketEve
             zone_low: Some(range_lo),
             zone_high: Some(range_hi),
             magnitude: None,
+            geometry: None,
             formed_at: Some(candles[idx].open_time),
         });
     }
@@ -1683,8 +1841,8 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
     }
     let n = candles.len() - 1;
     let last = &candles[n];
-    let mut push = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>, formed: Option<i64>| {
-        out.push(MarketEvent {
+    let make = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>, formed: Option<i64>| {
+        MarketEvent {
             kind,
             symbol: symbol.to_string(),
             timeframe: last.timeframe,
@@ -1695,8 +1853,9 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             zone_low: low,
             zone_high: high,
             magnitude: None,
+            geometry: None,
             formed_at: formed,
-        });
+        }
     };
 
     // -- MSS: the newest two swings define the prevailing trend; a close
@@ -1742,7 +1901,7 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             };
             if breaks && prev_held {
                 if let Some(level) = level {
-                    push(EventKind::Mss, Some(match trend { Side::Buy => Side::Sell, Side::Sell => Side::Buy }), level, Some(level), Some(level), None);
+                    out.push(make(EventKind::Mss, Some(match trend { Side::Buy => Side::Sell, Side::Sell => Side::Buy }), level, Some(level), Some(level), None));
                 }
             }
         }
@@ -1767,7 +1926,7 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
         }
         if found && range_hi > range_lo {
             let mid = (range_hi + range_lo) / 2.0;
-            push(EventKind::Equilibrium, None, mid, Some(range_lo), Some(range_hi), None);
+            out.push(make(EventKind::Equilibrium, None, mid, Some(range_lo), Some(range_hi), None));
         }
     }
 
@@ -1777,12 +1936,12 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             let (a, b, c) = (&candles[i - 2], &candles[i - 1], &candles[i]);
             if c.low > a.high {
                 let mid = (a.high + c.low) / 2.0;
-                push(EventKind::ConsequentEncroachment, Some(Side::Buy), mid, Some(a.high), Some(c.low), Some(a.open_time));
+                out.push(make(EventKind::ConsequentEncroachment, Some(Side::Buy), mid, Some(a.high), Some(c.low), Some(a.open_time)));
                 break;
             }
             if c.high < a.low {
                 let mid = (a.low + c.high) / 2.0;
-                push(EventKind::ConsequentEncroachment, Some(Side::Sell), mid, Some(c.high), Some(a.low), Some(a.open_time));
+                out.push(make(EventKind::ConsequentEncroachment, Some(Side::Sell), mid, Some(c.high), Some(a.low), Some(a.open_time)));
                 break;
             }
         }
@@ -1799,14 +1958,14 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
                 let prev_close = candles[first_idx - 1].close;
                 let gap = last.open - prev_close;
                 if prev_close > 0.0 && (gap / prev_close).abs() >= 0.0005 && candles[first_idx].open_time == last.open_time {
-                    push(
+                    out.push(make(
                         EventKind::OpeningGap,
                         Some(if gap > 0.0 { Side::Buy } else { Side::Sell }),
                         prev_close,
                         Some(prev_close.min(last.open)),
                         Some(prev_close.max(last.open)),
                         Some(candles[first_idx].open_time),
-                    );
+                    ));
                 }
             }
         }
@@ -1824,9 +1983,9 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             let ib_lo = day_bars[..4].iter().map(|k| k.low).fold(f64::MAX, f64::min);
             let prev = &candles[n - 1];
             if prev.close <= ib_hi && last.close > ib_hi {
-                push(EventKind::OpeningRangeBreakout, Some(Side::Buy), ib_hi, Some(ib_lo), Some(ib_hi), Some(day_bars[0].open_time));
+                out.push(make(EventKind::OpeningRangeBreakout, Some(Side::Buy), ib_hi, Some(ib_lo), Some(ib_hi), Some(day_bars[0].open_time)));
             } else if prev.close >= ib_lo && last.close < ib_lo {
-                push(EventKind::OpeningRangeBreakout, Some(Side::Sell), ib_lo, Some(ib_lo), Some(ib_hi), Some(day_bars[0].open_time));
+                out.push(make(EventKind::OpeningRangeBreakout, Some(Side::Sell), ib_lo, Some(ib_lo), Some(ib_hi), Some(day_bars[0].open_time)));
             }
         }
     }
@@ -1856,7 +2015,7 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             };
             let lean = crate::regime::structure_lean(&upper);
             if direction.is_some() && direction == lean {
-                push(EventKind::HtfCandleBias, direction, completed.close, Some(completed.low), Some(completed.high), Some(completed.open_time));
+                out.push(make(EventKind::HtfCandleBias, direction, completed.close, Some(completed.low), Some(completed.high), Some(completed.open_time)));
             }
         }
     }
@@ -1873,14 +2032,14 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             let wick_in = last.low <= hi && last.high >= lo;
             let close_out = last.close < lo || last.close > hi;
             if wick_in && close_out {
-                push(
+                out.push(make(
                     EventKind::LevelRejection,
                     Some(if last.close > hi { Side::Buy } else { Side::Sell }),
                     (lo + hi) / 2.0,
                     Some(lo),
                     Some(hi),
                     Some(zone.first_time),
-                );
+                ));
                 break;
             }
             // The flip: the zone traded through (close beyond it) and the
@@ -1888,11 +2047,11 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             let through_up = candles[n - 1].close > hi && last.close > hi && last.low <= hi && last.close > hi;
             let through_dn = candles[n - 1].close < lo && last.close < lo && last.high >= lo && last.close < lo;
             if through_up {
-                push(EventKind::LevelFlip, Some(Side::Buy), hi, Some(lo), Some(hi), Some(zone.first_time));
+                out.push(make(EventKind::LevelFlip, Some(Side::Buy), hi, Some(lo), Some(hi), Some(zone.first_time)));
                 break;
             }
             if through_dn {
-                push(EventKind::LevelFlip, Some(Side::Sell), lo, Some(lo), Some(hi), Some(zone.first_time));
+                out.push(make(EventKind::LevelFlip, Some(Side::Sell), lo, Some(lo), Some(hi), Some(zone.first_time)));
                 break;
             }
         }
@@ -1916,9 +2075,9 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             let mean_body: f64 = window.iter().map(|k| (k.close - k.open).abs()).sum::<f64>() / window.len() as f64;
             let displaced = mean_body > 0.0 && body >= 2.0 * mean_body;
             if contracted && displaced && last.close > hi {
-                push(EventKind::CompressionBreakout, Some(Side::Buy), hi, Some(lo), Some(hi), None);
+                out.push(make(EventKind::CompressionBreakout, Some(Side::Buy), hi, Some(lo), Some(hi), None));
             } else if contracted && displaced && last.close < lo {
-                push(EventKind::CompressionBreakout, Some(Side::Sell), lo, Some(lo), Some(hi), None);
+                out.push(make(EventKind::CompressionBreakout, Some(Side::Sell), lo, Some(lo), Some(hi), None));
             }
         }
     }
@@ -1932,11 +2091,11 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
                 // Bullish gap: filled when a later close trades back below
                 // the gap's bottom (a.high).
                 if last.close < a.high {
-                    push(EventKind::LiquidityVoidFill, Some(Side::Sell), a.high, Some(a.high), Some(c.low), Some(a.open_time));
+                    out.push(make(EventKind::LiquidityVoidFill, Some(Side::Sell), a.high, Some(a.high), Some(c.low), Some(a.open_time)));
                     break;
                 }
             } else if c.high < a.low && last.close > a.low {
-                push(EventKind::LiquidityVoidFill, Some(Side::Buy), a.low, Some(c.high), Some(a.low), Some(a.open_time));
+                out.push(make(EventKind::LiquidityVoidFill, Some(Side::Buy), a.low, Some(c.high), Some(a.low), Some(a.open_time)));
                 break;
             }
         }
@@ -1952,9 +2111,9 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             let mean_vol: f64 = candles[n - lookback..n].iter().map(|k| k.volume).sum::<f64>() / lookback as f64;
             let confirmed = mean_vol > 0.0 && last.volume >= 1.5 * mean_vol;
             if confirmed && last.close > hi && candles[n - 1].close <= hi {
-                push(EventKind::VolumeConfirmedBreakout, Some(Side::Buy), hi, Some(lo), Some(hi), None);
+                out.push(make(EventKind::VolumeConfirmedBreakout, Some(Side::Buy), hi, Some(lo), Some(hi), None));
             } else if confirmed && last.close < lo && candles[n - 1].close >= lo {
-                push(EventKind::VolumeConfirmedBreakout, Some(Side::Sell), lo, Some(lo), Some(hi), None);
+                out.push(make(EventKind::VolumeConfirmedBreakout, Some(Side::Sell), lo, Some(lo), Some(hi), None));
             }
         }
     }
@@ -1982,7 +2141,10 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             if l1.1 < l2.1 && l2.1 < l3.1 && (l3.1 - line_at(l1, l2, l3.0)).abs() <= line_at(l1, l2, l3.0) * 0.0015 {
                 let level = line_at(l1, l2, n);
                 if last.low < level * 0.997 && last.close > level {
-                    push(EventKind::TrendlineSweep, Some(Side::Buy), level, Some(last.low), Some(level), Some(candles[l1.0].open_time));
+                    out.push(make(EventKind::TrendlineSweep, Some(Side::Buy), level, Some(last.low), Some(level), Some(candles[l1.0].open_time)));
+                    if let Some(e) = out.last_mut() {
+                        e.geometry = Some(edge_path(candles, &[l1, l2, (n, level)]));
+                    }
                 }
             }
         }
@@ -1991,7 +2153,10 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             if h1.1 > h2.1 && h2.1 > h3.1 && (h3.1 - line_at(h1, h2, h3.0)).abs() <= line_at(h1, h2, h3.0) * 0.0015 {
                 let level = line_at(h1, h2, n);
                 if last.high > level * 1.003 && last.close < level {
-                    push(EventKind::TrendlineSweep, Some(Side::Sell), level, Some(level), Some(last.high), Some(candles[h1.0].open_time));
+                    out.push(make(EventKind::TrendlineSweep, Some(Side::Sell), level, Some(level), Some(last.high), Some(candles[h1.0].open_time)));
+                    if let Some(e) = out.last_mut() {
+                        e.geometry = Some(edge_path(candles, &[h1, h2, (n, level)]));
+                    }
                 }
             }
         }
@@ -2013,7 +2178,7 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
             } else {
                 (zone.top, zone.bottom)
             };
-            push(EventKind::ProximalDistal, None, proximal, Some(distal), Some(proximal), Some(zone.first_time));
+            out.push(make(EventKind::ProximalDistal, None, proximal, Some(distal), Some(proximal), Some(zone.first_time)));
             // The strength score: touches (x2), recency (the fraction of
             // the window since the newest touch), departure (the mean
             // post-touch move in ATRs, capped).
@@ -2039,12 +2204,13 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
                 zone_low: Some(zone.bottom),
                 zone_high: Some(zone.top),
                 magnitude: Some(score),
+                geometry: None,
                 formed_at: Some(zone.first_time),
             });
             // Compression: the zone's height against the ATR -- a zone
             // thinner than half an ATR is compressed.
             if atr14 > 0.0 && height < atr14 * 0.5 {
-                push(EventKind::ZoneCompression, None, (zone.top + zone.bottom) / 2.0, Some(zone.bottom), Some(zone.top), Some(zone.first_time));
+                out.push(make(EventKind::ZoneCompression, None, (zone.top + zone.bottom) / 2.0, Some(zone.bottom), Some(zone.top), Some(zone.first_time)));
             }
         }
         // MTF zone alignment: the newest zone exists on the 4x resample too
@@ -2068,7 +2234,7 @@ pub fn detect_structure_levels(candles: &[Candle], symbol: &str) -> Vec<MarketEv
                     (uc - center).abs() <= center * 0.003
                 });
                 if aligned {
-                    push(EventKind::MtfZoneAlignment, None, center, Some(zone.bottom), Some(zone.top), Some(zone.first_time));
+                    out.push(make(EventKind::MtfZoneAlignment, None, center, Some(zone.bottom), Some(zone.top), Some(zone.first_time)));
                 }
             }
         }
@@ -2115,6 +2281,7 @@ pub fn detect_round_numbers(candles: &[Candle], symbol: &str) -> Vec<MarketEvent
             zone_low: Some(last.low),
             zone_high: Some(last.high),
             magnitude: Some(step),
+            geometry: None,
             formed_at: None,
         });
     }
@@ -2161,6 +2328,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
             zone_low: None,
             zone_high: None,
             magnitude: None,
+            geometry: None,
             formed_at: Some(last.open_time),
         });
         let newest_week = last.open_time.div_euclid(WEEK_NS);
@@ -2177,6 +2345,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: None,
                 zone_high: None,
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(last.open_time),
             });
         }
@@ -2207,6 +2376,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: None,
                 zone_high: None,
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(last.open_time),
             });
         }
@@ -2239,6 +2409,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: Some(lo),
                 zone_high: Some(hi),
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(t),
             });
         }
@@ -2256,6 +2427,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                     zone_low: Some(lo),
                     zone_high: Some(hi),
                     magnitude: None,
+                    geometry: None,
                     formed_at: Some(t),
                 });
             }
@@ -2281,6 +2453,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                         zone_low: Some(lo),
                         zone_high: Some(hi),
                         magnitude: None,
+                        geometry: None,
                         formed_at: Some(t),
                     });
                 }
@@ -2328,6 +2501,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
             zone_low: Some(low),
             zone_high: Some(high),
             magnitude: None,
+            geometry: None,
             formed_at: Some(from),
         });
     }
@@ -2379,6 +2553,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: Some(asia_lo),
                 zone_high: Some(asia_hi),
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(asian.first().expect("checked").open_time),
             });
         } else if judas_low && back_inside && !prev_inside {
@@ -2393,6 +2568,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: Some(asia_lo),
                 zone_high: Some(asia_hi),
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(asian.first().expect("checked").open_time),
             });
         }
@@ -2419,6 +2595,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: Some(asia_lo),
                 zone_high: Some(asia_hi),
                 magnitude: Some(body / mean_body),
+                geometry: None,
                 formed_at: Some(asian.first().expect("checked").open_time),
             });
         } else if judas_low && displaced && last.close > asia_hi && prev_close <= asia_hi {
@@ -2433,6 +2610,7 @@ pub fn detect_sessions(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: Some(asia_lo),
                 zone_high: Some(asia_hi),
                 magnitude: Some(body / mean_body),
+                geometry: None,
                 formed_at: Some(asian.first().expect("checked").open_time),
             });
         }
@@ -2476,6 +2654,7 @@ pub fn detect_liquidity_family(candles: &[Candle], symbol: &str, config: &EventC
             zone_low: low,
             zone_high: high,
             magnitude: None,
+            geometry: None,
             formed_at: formed,
         });
     };
@@ -2593,6 +2772,7 @@ pub fn detect_smc_extended(candles: &[Candle], symbol: &str, config: &EventConfi
             zone_low: low,
             zone_high: high,
             magnitude: None,
+            geometry: None,
             formed_at: formed,
         });
     };
@@ -2829,6 +3009,7 @@ pub fn detect_order_blocks(candles: &[Candle], symbol: &str, config: &EventConfi
                 zone_low: Some(*low),
                 zone_high: Some(*high),
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(*origin),
             });
             continue;
@@ -2846,6 +3027,7 @@ pub fn detect_order_blocks(candles: &[Candle], symbol: &str, config: &EventConfi
                 zone_low: Some(*low),
                 zone_high: Some(*high),
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(*origin),
             });
         }
@@ -2868,6 +3050,7 @@ pub fn detect_order_blocks(candles: &[Candle], symbol: &str, config: &EventConfi
                 zone_low: Some(*low),
                 zone_high: Some(*high),
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(*origin),
             });
         }
@@ -2894,6 +3077,7 @@ pub fn detect_order_blocks(candles: &[Candle], symbol: &str, config: &EventConfi
             zone_low: Some(range_low),
             zone_high: Some(range_high),
             magnitude: None,
+            geometry: None,
             formed_at: Some(candles[start].open_time),
         });
     }
@@ -2933,6 +3117,7 @@ pub fn detect_price_action(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
             zone_low: None,
             zone_high: None,
             magnitude: None,
+            geometry: None,
             formed_at: None,
         });
     };
@@ -3106,6 +3291,7 @@ pub fn detect_patterns(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
             zone_low: Some(l),
             zone_high: Some(h),
             magnitude: None,
+            geometry: None,
             formed_at: None,
         });
     };
@@ -3258,6 +3444,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
             zone_low: None,
             zone_high: None,
             magnitude: Some(level.touches as f64),
+            geometry: None,
             formed_at: Some(level.formed_at),
         });
     }
@@ -3287,6 +3474,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
             zone_low: None,
             zone_high: None,
             magnitude: None,
+            geometry: None,
             formed_at: None,
         });
     }
@@ -3320,6 +3508,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
                 zone_low: Some(one.high),
                 zone_high: Some(three.low),
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(two.open_time),
             });
         }
@@ -3335,6 +3524,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
                 zone_low: Some(three.high),
                 zone_high: Some(one.low),
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(two.open_time),
             });
         }
@@ -3393,6 +3583,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
                 zone_low: Some(*low),
                 zone_high: Some(*high),
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(*origin),
             });
         }
@@ -3417,6 +3608,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
                 zone_low: Some(lo),
                 zone_high: Some(hi),
                 magnitude: None,
+                geometry: None,
                 formed_at: None,
             });
         }
@@ -3441,6 +3633,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
             zone_low: Some(low),
             zone_high: Some(high),
             magnitude: None,
+            geometry: None,
             formed_at: Some(origin),
         });
     }
@@ -3478,6 +3671,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
                 zone_low: Some(zone.price_low),
                 zone_high: Some(zone.price_high),
                 magnitude: None,
+                geometry: None,
                 formed_at: Some(zone.formed_at),
             });
         }
@@ -3503,6 +3697,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
                 zone_low: None,
                 zone_high: None,
                 magnitude: Some(last.volume / avg),
+                geometry: None,
                 formed_at: None,
             });
         }
@@ -3529,6 +3724,7 @@ pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> 
                 zone_low: None,
                 zone_high: None,
                 magnitude: Some(last.delta().abs() / avg_abs),
+                geometry: None,
                 formed_at: None,
             });
         }
@@ -4878,6 +5074,7 @@ mod tests {
             zone_low: None,
             zone_high: None,
             magnitude: Some(2.0),
+            geometry: None,
             formed_at: Some(BASE - MIN),
         };
         let json = serde_json::to_value(&event).expect("serializes");

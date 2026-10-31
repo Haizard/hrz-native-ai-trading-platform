@@ -6,7 +6,7 @@
 //! where two swings' levels agree, and the time zones at the swing's
 //! Fibonacci bar counts. Levels, zones, and counts -- never prose.
 
-use crate::events::{EventKind, MarketEvent};
+use crate::events::{EventGeometry, EventKind, MarketEvent};
 use crate::types::{Candle, Side};
 
 /// The canonical retracement ratios.
@@ -83,59 +83,87 @@ pub fn detect_fibonacci(candles: &[Candle], symbol: &str, lookback: usize) -> Ve
     let Some(swing) = newest_swing(candles, lookback) else { return out };
     let bar_time = last.open_time;
     let tf = last.timeframe;
-    let mut push = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>| {
-        out.push(MarketEvent {
-            kind,
-            symbol: symbol.to_string(),
-            timeframe: tf,
-            bar_time,
-            close: last.close,
-            price,
-            side,
-            zone_low: low,
-            zone_high: high,
-            magnitude: None,
-            formed_at: Some(swing.from_time),
-        });
+    // The study's rig: the two swing anchors every rung is measured from.
+    let anchors = Some((swing.from_time, swing.from, swing.to_time, swing.to));
+    let make = |kind: EventKind, side: Option<Side>, price: f64, low: Option<f64>, high: Option<f64>| MarketEvent {
+        kind,
+        symbol: symbol.to_string(),
+        timeframe: tf,
+        bar_time,
+        close: last.close,
+        price,
+        side,
+        zone_low: low,
+        zone_high: high,
+        magnitude: None,
+        geometry: None,
+        formed_at: Some(swing.from_time),
+    };
+    let ladder = |rungs: Vec<(f64, f64)>| EventGeometry {
+        points: Vec::new(),
+        rungs,
+        anchors,
     };
 
     // The retracement ladder (each level a line; the golden pocket a band).
-    for ratio in RETRACEMENTS {
-        push(EventKind::FibRetracement, Some(if swing.up { Side::Buy } else { Side::Sell }), level_at(&swing, ratio), None, None);
+    // The first rung's event carries the whole ladder: the five events are
+    // one measurement, and a ladder drawn five times is five studies.
+    let retracement_rungs: Vec<(f64, f64)> = RETRACEMENTS
+        .iter()
+        .map(|ratio| (*ratio, level_at(&swing, *ratio)))
+        .collect();
+    for (index, ratio) in RETRACEMENTS.iter().enumerate() {
+        let mut event = make(EventKind::FibRetracement, Some(if swing.up { Side::Buy } else { Side::Sell }), level_at(&swing, *ratio), None, None);
+        if index == 0 {
+            event.geometry = Some(ladder(retracement_rungs.clone()));
+        }
+        out.push(event);
     }
     // The golden pocket: 0.618-0.65 of the swing, the band traders mean when
     // they say "the pocket".
     let gp_lo = level_at(&swing, GOLDEN_POCKET.1);
     let gp_hi = level_at(&swing, GOLDEN_POCKET.0);
-    push(
+    let mut pocket = make(
         EventKind::GoldenPocket,
         Some(if swing.up { Side::Buy } else { Side::Sell }),
         (gp_lo + gp_hi) / 2.0,
         Some(gp_lo.min(gp_hi)),
         Some(gp_lo.max(gp_hi)),
     );
+    pocket.geometry = Some(ladder(vec![(GOLDEN_POCKET.0, gp_hi), (GOLDEN_POCKET.1, gp_lo)]));
+    out.push(pocket);
     // The OTE band: ICT's optimal trade entry, the 0.62-0.79 retracement of
     // the newest swing -- wider than the golden pocket and carrying the
     // entry's own name.
     let ote_lo = level_at(&swing, 0.79);
     let ote_hi = level_at(&swing, 0.62);
-    push(
+    let mut ote = make(
         EventKind::OptimalTradeEntry,
         Some(if swing.up { Side::Buy } else { Side::Sell }),
         (ote_lo + ote_hi) / 2.0,
         Some(ote_lo.min(ote_hi)),
         Some(ote_lo.max(ote_hi)),
     );
+    ote.geometry = Some(ladder(vec![(0.62, ote_hi), (0.79, ote_lo)]));
+    out.push(ote);
     // The extensions beyond the swing.
-    for ratio in EXTENSIONS {
+    let extension_rungs: Vec<(f64, f64)> = EXTENSIONS
+        .iter()
+        .map(|ratio| (*ratio, swing.to + (swing.to - swing.from) * (ratio - 1.0)))
+        .collect();
+    for (index, ratio) in EXTENSIONS.iter().enumerate() {
         let level = swing.to + (swing.to - swing.from) * (ratio - 1.0);
-        push(EventKind::FibExtension, Some(if swing.up { Side::Buy } else { Side::Sell }), level, None, None);
+        let mut event = make(EventKind::FibExtension, Some(if swing.up { Side::Buy } else { Side::Sell }), level, None, None);
+        if index == 0 {
+            event.geometry = Some(ladder(extension_rungs.clone()));
+        }
+        out.push(event);
     }
     // The time zones: the swing's Fibonacci-count bars, marked at the price.
     for count in TIME_COUNTS {
         let at = swing.from_time + count as i64 * (last.timeframe.nanos());
         if at <= bar_time {
-            push(EventKind::FibTimeZone, None, last.close, None, None);
+            out.push(make(EventKind::FibTimeZone, None, last.close, None, None));
         }
     }
 
@@ -149,7 +177,7 @@ pub fn detect_fibonacci(candles: &[Candle], symbol: &str, lookback: usize) -> Ve
                 if (l1 - l2).abs() <= l1.abs() * CONFLUENCE_TOL {
                     let lo = l1.min(l2);
                     let hi = l1.max(l2);
-                    push(EventKind::FibConfluence, None, (lo + hi) / 2.0, Some(lo), Some(hi));
+                    out.push(make(EventKind::FibConfluence, None, (lo + hi) / 2.0, Some(lo), Some(hi)));
                 }
             }
         }

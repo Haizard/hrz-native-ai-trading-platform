@@ -64,6 +64,7 @@ pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
             zone_low: Some(k.low),
             zone_high: Some(k.high),
             magnitude: None,
+            geometry: None,
             formed_at: None,
         });
     };

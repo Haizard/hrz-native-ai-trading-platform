@@ -2460,6 +2460,22 @@ pub fn as_concept_event(event: &MarketEvent) -> Option<ConceptEvent> {
     if let Some(magnitude) = event.magnitude {
         evidence.insert("magnitude".to_string(), serde_json::json!(magnitude));
     }
+    // The detector's own vertices and rig travel with the event, so the
+    // renderer draws the path the rule saw rather than a second guess at it.
+    if let Some(geometry) = &event.geometry {
+        if !geometry.points.is_empty() {
+            evidence.insert("points".to_string(), serde_json::json!(geometry.points));
+        }
+        if !geometry.rungs.is_empty() {
+            evidence.insert("rungs".to_string(), serde_json::json!(geometry.rungs));
+        }
+        if let Some(anchors) = geometry.anchors {
+            evidence.insert(
+                "anchors".to_string(),
+                serde_json::json!([anchors.0, anchors.1, anchors.2, anchors.3]),
+            );
+        }
+    }
     Some(ConceptEvent {
         concept_id: concept.id.to_string(),
         concept_version: concept.version.to_string(),
@@ -2528,6 +2544,7 @@ mod tests {
             zone_low: None,
             zone_high: None,
             magnitude: None,
+            geometry: None,
             formed_at: Some(1_699_999_000_000_000_000),
         };
         let wrapped = as_concept_event(&event).expect("a bos wraps");
@@ -2575,6 +2592,7 @@ fn indicator_signals_map_to_their_concepts() {
         zone_low: Some(99.0),
         zone_high: Some(101.0),
         magnitude: None,
+        geometry: None,
         formed_at: None,
     };
     for (kind, want) in [
@@ -2592,6 +2610,56 @@ fn indicator_signals_map_to_their_concepts() {
         assert!(mapped.is_some(), "{want} maps its signal");
         assert_eq!(mapped.expect("mapped").concept_id, want);
     }
+}
+
+#[test]
+fn a_detectors_vertices_ride_the_wire_as_evidence() {
+    use analytics_core::events::{EventGeometry, EventKind, MarketEvent};
+    use analytics_core::types::{Side, Timeframe};
+    let ev = |kind: EventKind, geometry: EventGeometry| MarketEvent {
+        kind,
+        symbol: "T".into(),
+        timeframe: Timeframe::H1,
+        bar_time: 3,
+        close: 100.0,
+        price: 100.0,
+        side: Some(Side::Sell),
+        zone_low: Some(99.0),
+        zone_high: Some(101.0),
+        magnitude: None,
+        geometry: Some(geometry),
+        formed_at: Some(1),
+    };
+    // A chart pattern's pivots travel as points: the router draws the shape
+    // the detector found, not one reconstructed from a level and two bars.
+    let wrapped = as_concept_event(&ev(
+        EventKind::DoubleTopBottom,
+        EventGeometry::path(vec![(1, 101.0), (2, 99.0), (3, 101.0)]),
+    ))
+    .expect("a double top wraps");
+    assert_eq!(
+        wrapped.evidence["points"],
+        serde_json::json!([[1, 101.0], [2, 99.0], [3, 101.0]]),
+        "the pivots, in time order"
+    );
+    // A ladder's rungs and its anchor pair are the measurement itself.
+    let wrapped = as_concept_event(&ev(
+        EventKind::FibRetracement,
+        EventGeometry {
+            points: Vec::new(),
+            rungs: vec![(0.618, 98.0), (0.65, 97.5)],
+            anchors: Some((10, 100.0, 20, 96.0)),
+        },
+    ))
+    .expect("a retracement wraps");
+    assert_eq!(wrapped.evidence["rungs"], serde_json::json!([[0.618, 98.0], [0.65, 97.5]]));
+    assert_eq!(wrapped.evidence["anchors"], serde_json::json!([10, 100.0, 20, 96.0]));
+    // A geometry-less event keeps the wire it always had: no empty keys.
+    let bare = as_concept_event(&ev(EventKind::DoubleTopBottom, EventGeometry::path(Vec::new())))
+        .expect("wraps");
+    assert!(bare.evidence.get("points").is_none(), "an empty rig adds no key");
+    assert!(bare.evidence.get("rungs").is_none());
+    assert!(bare.evidence.get("anchors").is_none());
 }
 
 #[test]

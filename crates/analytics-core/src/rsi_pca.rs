@@ -303,6 +303,7 @@ pub fn detect_rsi_pca(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
                 zone_low: None,
                 zone_high: None,
                 magnitude: Some(pred),
+                geometry: None,
                 formed_at: None,
             });
         }

@@ -488,6 +488,8 @@ mod tests {
             zone_low: None,
             zone_high: None,
             magnitude: None,
+            geometry: None,
+            geometry: None,
             formed_at: None,
         }
     }
