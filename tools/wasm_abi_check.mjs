@@ -1041,7 +1041,7 @@ try {
     width: 900,
     height: 420,
     drawings: [
-      { id: "x", kind: "gann_fan", points: [{ unit: "fraction", x: 0.5, y: 0.5 }], label: null, selected: false },
+      { id: "x", kind: "nonexistent_tool_xyz", points: [{ unit: "fraction", x: 0.5, y: 0.5 }], label: null, selected: false },
     ],
   });
 } catch (e) {
@@ -1049,7 +1049,7 @@ try {
 }
 check(
   "an unknown drawing kind is refused with a message",
-  typeof unknownKind === "string" && unknownKind.includes("gann_fan"),
+  typeof unknownKind === "string" && unknownKind.includes("nonexistent_tool_xyz"),
   unknownKind ?? "it was accepted"
 );
 

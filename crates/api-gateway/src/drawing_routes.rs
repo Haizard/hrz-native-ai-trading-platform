@@ -753,6 +753,7 @@ mod tests {
                 extend: Some(Extend::Both),
                 reverse: true,
                 level_profile: Some(LevelProfile::Ote),
+                closed: false,
             },
         ))
         .expect("must accept");
@@ -781,6 +782,7 @@ mod tests {
                 extend: Some(Extend::Both),
                 reverse: true,
                 level_profile: Some(LevelProfile::Ote),
+                closed: false,
             }
         );
     }
@@ -921,6 +923,7 @@ mod tests {
                 extend: Some(Extend::Left),
                 reverse: false,
                 level_profile: Some(LevelProfile::Extension),
+                closed: false,
             },
             created_by: Some("ai".into()),
             confidence: Some(0.82),
