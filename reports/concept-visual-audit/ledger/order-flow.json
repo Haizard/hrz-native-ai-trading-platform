@@ -15,46 +15,53 @@
           "spike_multiple"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Volume Delta",
+        "url": "https://www.tradingview.com/support/solutions/43000725057-volume-delta/",
+        "quote": "The Volume Delta indicator uses intrabar volume and price fluctuations to estimate the difference (delta) between buying and selling pressure within each chart bar, providing insight into an instrument's sentiment and market dynamics.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "42 dashed one-bar segments at the shift bar's close (x 59.3-1042.4, y 46.9-449.5) plus 42 labels reading 'delta_shift' with the underscore intact -- the segment branch does not replace '_' (concept_shapes.js:99). A volume delta is drawn as a price level, and the magnitude (x the 20-bar mean) never reaches the picture.",
+        "canonical": "a zero-anchored delta histogram in its own pane (or a per-bar delta column), with the exceptional bar emphasised -- 'the difference (delta) between buying and selling pressure within each chart bar' -- not a price level and not a word at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the bar delta over the mean |delta| of the previous 20 bars is defined on every bar; an event is emitted when the ratio is >= the spike_multiple threshold (default 2.5, composable via composer.rs:738-741 -> config.delta_multiplier; events.rs:3513-3525)",
+        "their_rule": "TradingView's Volume Delta plots delta per bar continuously and marks no 2.5x threshold event; our event has no external rule to compare against",
+        "verdict": "no_external_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "ratio = abs(delta[n]) / mean(abs(delta[n-20..n-1])) => event when ratio >= 2.5, side = sign(delta)",
+        "inputs": [
+          {
+            "name": "aggressor_delta",
+            "channel": "trades_aggressor"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 20,
+        "before": "the 20-bar mean needs 21 bars; the detector requires spike_window > 0"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_histogram",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_events -- EventKind::DeltaShift (events.rs:3513-3525)",
       "parameters": {
         "declared": [
           "spike_multiple"
         ],
-        "honoured": null
+        "honoured": [
+          "spike_multiple"
+        ]
       },
       "render": "reports/concept-visual-audit/order-flow/order_flow.delta_shift.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     }
   ]
 }

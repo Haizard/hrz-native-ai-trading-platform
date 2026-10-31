@@ -15,46 +15,51 @@
           "spike_multiple"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Volume Spike",
+        "url": "https://www.luxalgo.com/library/concept/volume-spike/",
+        "quote": "A volume spike is a bar that trades dramatically more volume than its recent norm.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "19 dashed 1px lines, every one 1.29px long — one bar width — at the spike bar's close: 19 events, 19 distinct prices (y 50.9-391.7), 19 copies of the word `spike`, and not one number saying how big the spike was. The magnitude that produced the event (2.5x the 20-bar average or more) reaches the browser as `evidence.magnitude` and neither renderer reads it; a volume property is drawn on the price axis as if it were a level.",
+        "canonical": "the volume column at the spike bar — the reference defines the spike as the bar's own volume, and the volume study draws it as a column in its own pane — or, on an overlay with no pane in the registry, a flag on the bar carrying the multiple; never a price level",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "volume >= 2.5 x the mean of the 20 bars before it (EventConfig::default, events.rs:3486-3509). The registry declares `spike_multiple` at the same 2.5, but the scan calls detect_events with EventConfig::default() and passes no per-concept parameter, so the declared knob is never read.",
+        "their_rule": "volume against a recent baseline, normalised for time of day (RVOL), with the threshold exposed as a setting; the reference calls the spike the discrete event that RVOL measures",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "volume[t] >= 2.5 * mean(volume[t-20 .. t-1])",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 21,
+        "before": "20 bars of volume history before the first average exists (spike_average_bars = 20); the scan replays from bar 22"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_events -> volume spike clause (events.rs:3486)",
       "parameters": {
         "declared": [
           "spike_multiple"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume-profile/volume.spike.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     },
     {
       "concept_id": "volume.initial_balance",
@@ -68,44 +73,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView script, Initial Balance Suite [ChartSmith]",
+        "url": "https://www.tradingview.com/script/HJHS7DKx-Initial-Balance-Suite-ChartSmith/",
+        "quote": "The Initial Balance is the price range established during the opening period of a session — traditionally the first hour of RTH trading.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "38 dashed 1px segments at only TWO prices — the band's high (y 187.73, 20 segments) and low (y 165.72, 18) — every one starting at x 12.14, the chart's very first bar, and ending at its breakout or reversal bar; lengths run 64.3px to 735.3px and the word `initial_balance` is printed 38 times. The band between the levels is never filled: the first-hour range is two horizontal lines 22px apart with no body, and neither line prints its price.",
+        "canonical": "one box over the current session's first hour between IB high and IB low, its left edge at the session open and its right edge at the hour's close or the session's end, labelled once; the breakout bar is marked when a close leaves the band",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "IB = high/low of candles[0..4] of the trailing slice; a breakout fires when the last close crosses the band and a reversal when price trades outside and closes back in (tpo.rs:133-150). The four bars are the first four of the 500-bar LOAD, not the current session, and `formed_at` stamps the band with the window's first bar — so the band is fixed for the whole chart and never rolls at a session boundary.",
+        "their_rule": "the range of the first hour of EACH session (9:30-10:30 ET by default), recomputed at every session open",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "ib_hi = max(high[0..4]); ib_lo = min(low[0..4]) over the loaded window; breakout = close[t] > ib_hi while close[t-1] <= ib_hi (or the mirror below); reversal = high/low beyond the band and close back inside",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "the auction detector needs 30 bars (tpo.rs:112); the band itself is the first four bars of the load, so it exists from bar 4 and never changes"
       },
       "target_shape": {
-        "name": "",
+        "name": "price_band",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::tpo::detect_auction (tpo.rs:110)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume-profile/volume.initial_balance.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     },
     {
       "concept_id": "volume.single_prints",
@@ -119,44 +129,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Senzou Kria glossary, Single print",
+        "url": "https://senzoukria.com/glossary/single-print",
+        "quote": "A single print is a price row in a Market Profile that was visited during only one time bracket, so it carries a single TPO letter.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 dashed 1px lines, each 1.29px long, at only TWO prices — y 474.17 (25 of them, below) and y 31.18 (25, above) — tiled one bar apart across the newest 50 bars (x 1030.4-1081.9) and labelled `single_prints` 50 times. The single print is a ROW of the profile: our drawing is a bar-wide tick at the event bar, so neither the row's bucket height nor the profile period it belongs to is on the chart, and the same two prices repeat for all 50 events.",
+        "canonical": "the single-print row highlighted in the TPO profile — one bucket tall and spanning the profile's period — labelled once; a rejected row is a price band, not a bar mark",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the TPO profile is rebuilt on every bar; the newest single print below the bar's low and above its high are emitted while unvisited (tpo.rs:164-181), so the last 50 bars re-emit the same two prices (two distinct y in 50 events)",
+        "their_rule": "a finished profile's rows that carry exactly one TPO letter; the row is read once per profile, not re-detected per bar",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "single_prints = {bucket rows with count == 1}; emit max(price < low[t]) and min(price > high[t])",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "the auction detector needs 30 bars and a TPO profile with more than four cells (tpo.rs:112,186)"
       },
       "target_shape": {
-        "name": "",
+        "name": "price_band",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::tpo::detect_auction (tpo.rs:110)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume-profile/volume.single_prints.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     },
     {
       "concept_id": "volume.acceptance",
@@ -170,44 +185,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Value Area",
+        "url": "https://www.luxalgo.com/library/concept/value-area/",
+        "quote": "None of these boundaries are guaranteed to hold; they mark where acceptance ended last time, not where it must end next time.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 dashed 1px lines, each 1.29px long, at 23 distinct prices inside a 35px strip at the right edge (x 976.8-1081.9), each labelled `acceptance`; the value-area edge the event is about is never drawn, so the mark asserts a relation it cannot show, and the 50 labels sit on top of each other.",
+        "canonical": "the accepting bar marked at the value-area edge it left — a flag or a short level at VAH/VAL, named once — with the value-area band drawn behind it as the host; the reference knows acceptance only as a relation to the band",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "two consecutive closes beyond the TPO profile's value edge (prev.close > vah && close > vah, or both < val), recomputed every bar (tpo.rs:157-163); the profile is rebuilt per bar, so a run of closes beyond the edge re-emits on every bar of the run and the newest-50 cap keeps the tail",
+        "their_rule": "acceptance is time or volume spent beyond a value boundary; the platform convention tests it with the 80% rule's two consecutive 30-MINUTE periods or a volume share, not two closes on a 15m chart",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "(close[t-1] > vah && close[t] > vah) || (close[t-1] < val && close[t] < val), vah/val from the TPO profile of the trailing slice",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "the auction detector needs 30 bars and a TPO profile with more than four cells (tpo.rs:112,156)"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::tpo::detect_auction (tpo.rs:110)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume-profile/volume.acceptance.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     },
     {
       "concept_id": "volume.poor_extreme",
@@ -221,44 +241,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Time price opportunity (TPO) indicator",
+        "url": "https://www.tradingview.com/support/solutions/43000713306-time-price-opportunity-tpo-indicator/",
+        "quote": "Poor highs and lows are extreme levels with more than one TPO block.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "nothing: 0 events on 501 bars, so this is the family's one empty page. If it fired it would draw what the detector already computes — a level at the poor extreme with a one-bucket zone_low/zone_high (tpo.rs:193-198) — as a 1.3px dash plus the word `poor_extreme`, because the id is not in CONCEPT_ZONE_IDS.",
+        "canonical": "a horizontal level at the poor extreme carried across the profile's period, labelled 'poor high' or 'poor low' once; the extreme is an unfinished-auction reference, so it is a price with a length",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the top (or bottom) TPO cell must carry MORE THAN 1.5x the profile's mean cell count, and the close must already sit one bucket beyond it (tpo.rs:186-199); neither edge cell of this window's profile is that heavy, so the detector is silent on all 501 bars",
+        "their_rule": "an extreme whose outermost row carries more than one TPO block — the reference's bar is 'more than one', ours is 1.5x the mean, a far heavier cell",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "mean = Σcount / cells; heavy(c) = count(c) > 1.5*mean; poor high = heavy(top cell) && close < top.price - bucket; poor low = heavy(bottom cell) && close > bottom.price + bucket",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "the auction detector needs 30 bars and a TPO profile with more than four cells (tpo.rs:112,186)"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::tpo::detect_auction (tpo.rs:110)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume-profile/volume.poor_extreme.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "volume.poc",
@@ -272,44 +297,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Volume Profile",
+        "url": "https://www.luxalgo.com/library/concept/volume-profile/",
+        "quote": "A volume profile is a histogram of traded volume organized by price instead of time.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 dashed 1px lines, all at the SAME price (one y, 166.46), tiled one bar apart across the newest 50 bars (x 976.8-1081.9): a dotted 105px line made of fifty back-to-back ticks, with `poc` printed 50 times on it. The price never moves across the 50 events (price_level 80225.98 on every one) because the profile is rebuilt over the whole window on every bar.",
+        "canonical": "one horizontal line at the POC across the profile's period, labelled once with the price; the reference draws the profile as a price histogram and the POC is its heaviest row, so the level has a length and the histogram has a body",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the heaviest bucket of a volume profile computed over the ENTIRE trailing window (events.rs:1003-1038); detect_events rebuilds it on every replay bar, so the same POC is emitted on every bar and the route's newest-50 cap keeps the last 50 — one level duplicated, not 50 detections",
+        "their_rule": "the POC of a defined period (session, visible range), redrawn when the period rolls; one level per profile",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "bucket = round_bucket(max(high)-min(low), 48); poc = argmax_bucket(Σ volume); emit on every bar",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 20,
+        "before": "detect_volume_profile returns nothing under 20 bars (events.rs:1005); the profile itself never warms up to a fixed period, it grows with the window"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "level_run",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_volume_profile (events.rs:1003)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume-profile/volume.poc.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     },
     {
       "concept_id": "volume.value_area",
@@ -323,44 +353,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Value Area",
+        "url": "https://www.luxalgo.com/library/concept/value-area/",
+        "quote": "The value area is the price band containing a set share of a period's trade, 70% by convention.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 boxes with the same top edge (y 55.32) and one of two heights — 254.04px (39 of them) or 238.16px (11) — each 1.29px wide, tiled across the newest 50 bars (x 976.8-1083.1) at fill 0.08: the value area renders as a 106x245px translucent curtain on the right edge of the plot, labelled `value_area` 50 times. Neither VAH nor VAL is printed, and the band covers the 50 newest BARS, not the 500-bar profile it summarises.",
+        "canonical": "two horizontal lines at VAH and VAL across the profile's period, the band between them shaded once and labelled 'value area (70%)' or VAH/VAL with prices at the right edge",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "grow outward from the POC bucket until 70% of the profile's volume is enclosed (DEFAULT_VALUE_AREA_PCT, volume_profile.rs:28); recomputed per replay bar, so the same band is re-emitted on every bar and the cap keeps the newest 50",
+        "their_rule": "the band holding a set share — 70% by common convention — of a period's volume, computed once per profile; the percentage is a setting on the platforms and a module constant here, with no registry parameter at all",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "form": "recursion",
+        "rule": "start at the POC bucket; repeatedly add the larger of the two buckets adjacent to the growing range until Σvolume >= 0.70 * total; val/vah = the range's edges",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 20,
+        "before": "detect_volume_profile returns nothing under 20 bars (events.rs:1005)"
       },
       "target_shape": {
-        "name": "",
+        "name": "price_band",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_volume_profile (events.rs:1003)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume-profile/volume.value_area.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "volume.hvn",
@@ -374,44 +409,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Volume Profile",
+        "url": "https://www.luxalgo.com/library/concept/volume-profile/",
+        "quote": "A volume profile is a histogram of traded volume organized by price instead of time.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 boxes 1.29px wide and 15.88px tall (one bucket) at three lower edges (y 158.52 x25, 380.81 x19, 396.69 x6), tiled across the newest 50 bars (x 1030.4-1083.1) and labelled `hvn` 50 times. A node is a bulge in a PRICE histogram — a row whose length is volume — and ours is a vertical tick one bucket tall, so the node's price band has no width in time and its volume has no length at all.",
+        "canonical": "a horizontal band at the node's price, one or more buckets tall, across the profile's period, labelled once; inside the profile it is the row of unusual length",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a bucket heavier than both neighbours across `node_lookback`, banded with adjacent nodes (volume_profile.rs detect_nodes, reached at events.rs:1043-1048); recomputed per bar, so the last 50 events are re-emissions of one profile",
+        "their_rule": "the local maxima of one finished profile's histogram",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "hvn = {bucket i : vol[i] > vol[i-k..i-1] and vol[i] > vol[i+1..i+k]}, merged with adjacent nodes into bands",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 20,
+        "before": "detect_volume_profile returns nothing under 20 bars (events.rs:1005)"
       },
       "target_shape": {
-        "name": "",
+        "name": "price_band",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_volume_profile (events.rs:1003)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume-profile/volume.hvn.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "volume.lvn",
@@ -425,44 +465,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Volume Profile",
+        "url": "https://www.luxalgo.com/library/concept/volume-profile/",
+        "quote": "A volume profile is a histogram of traded volume organized by price instead of time.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 boxes 1.29px wide and 15.88px tall (one bucket) at two lower edges (y 269.66 x25, 222.03 x25), tiled across the newest 50 bars (x 1030.4-1083.1) and labelled `lvn` 50 times. The rejected price is a thin SHELF of the profile — a row with almost no volume — and ours is a one-bucket vertical tick, so the shelf's price band has no width in time and its missing volume is invisible.",
+        "canonical": "a horizontal band at the node's price across the profile's period, labelled once; inside the profile the low-volume node is the row that is almost empty",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a bucket lighter than both neighbours across `node_lookback`, banded with adjacent nodes (volume_profile.rs detect_nodes, reached at events.rs:1053); recomputed per bar, so the last 50 events are re-emissions of one profile",
+        "their_rule": "the local minima of one finished profile's histogram",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "lvn = {bucket i : vol[i] < vol[i-k..i-1] and vol[i] < vol[i+1..i+k]}, merged with adjacent nodes into bands",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 20,
+        "before": "detect_volume_profile returns nothing under 20 bars (events.rs:1005)"
       },
       "target_shape": {
-        "name": "",
+        "name": "price_band",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_volume_profile (events.rs:1003)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume-profile/volume.lvn.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }

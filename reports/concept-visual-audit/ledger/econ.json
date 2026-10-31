@@ -5,295 +5,337 @@
       "concept_id": "econ.nfp",
       "family": "econ",
       "version": "1.0.0",
-      "registry": {
-        "pane": false,
-        "overlay": false,
-        "channels": [],
-        "parameters": []
-      },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView community script, Time Marker (the vertical event-marker convention used by the platform's events overlay)",
+        "url": "https://www.tradingview.com/script/IHgfEyaU-Time-Marker/",
+        "quote": "Time Marker draws vertical lines and optional background bands at user-defined times on the chart.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events, 0 shapes: `event_kinds: &[]` and neither pane nor overlay (concepts.rs:440-451), so the scan never emits it and the bar is never marked. The release lives off-chart only: the countdown chip reads `/econ/next` (app.js:6171-6183) and the landed alert box reads `/econ/latest` -- actual vs forecast, surprise in sigmas, bias label (app.js:6190-6204). The chart shows no trace that NFP ever landed.",
+        "canonical": "a vertical rule at the release bar, spanning the plot's full height, labelled with the payroll change against consensus and its surprise in sigmas; time-only, no price extent.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "none in the concept engine: the concept emits no events (`event_kinds: &[]`, concepts.rs:440-451). Off-chart, the schedule rule is the first Friday 08:30 ET (econ.rs:138-158), the number arriving from the BLS refresh (econ_routes.rs:40) through `/econ/latest` (econ_routes.rs:519-528)",
+        "their_rule": "a marker at the release instant, carrying the payroll change against consensus; the mark sits on time, never on price.",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "release('nfp') from the macro store at its release_ns => time_line at the containing bar, label = actual vs forecast and the surprise in sigmas",
+        "inputs": [
+          {
+            "name": "release",
+            "channel": "macro"
+          }
+        ]
       },
       "warmup": {
         "bars": 0,
-        "before": ""
+        "before": "none -- the mark is keyed to a release timestamp from the macro store, not to a bar count; it needs only the bar whose open_time contains release_ns"
       },
       "target_shape": {
-        "name": "",
+        "name": "time_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "none -- no `EventKind` variant exists for econ (analytics-core/src/events.rs:49); the release is stored by `EconStore` (econ_routes.rs:27) and served by `/econ/latest` (econ_routes.rs:519), never emitted into the concept event stream",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/econ/econ.nfp.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "macro"
+        ],
+        "parameters": []
+      }
     },
     {
       "concept_id": "econ.cpi",
       "family": "econ",
       "version": "1.0.0",
-      "registry": {
-        "pane": false,
-        "overlay": false,
-        "channels": [],
-        "parameters": []
-      },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView community script, Time Marker (the vertical event-marker convention used by the platform's events overlay)",
+        "url": "https://www.tradingview.com/script/IHgfEyaU-Time-Marker/",
+        "quote": "Time Marker draws vertical lines and optional background bands at user-defined times on the chart.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events, 0 shapes: `event_kinds: &[]` and neither pane nor overlay (concepts.rs:452-463), so the scan never emits it and the bar is never marked. The release lives off-chart only: the countdown chip reads `/econ/next` (app.js:6171-6183) and the landed alert box reads `/econ/latest` (app.js:6190-6204). The countdown's CPI instant is an approximation -- NFP + 5 days, labelled approximate (econ_routes.rs:564-571) -- while the release's own timestamp arrives with the BLS data.",
+        "canonical": "a vertical rule at the release bar, spanning the plot's full height, labelled with the CPI change against consensus and its surprise; time-only, no price extent.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "none in the concept engine: the concept emits no events (`event_kinds: &[]`, concepts.rs:452-463). Off-chart, the schedule rule is the BLS's monthly print, approximated in the countdown as NFP + 5 days (econ_routes.rs:564-571), the number arriving from the BLS refresh (econ_routes.rs:40) through `/econ/latest` (econ_routes.rs:519-528)",
+        "their_rule": "a marker at the release instant, carrying the CPI change against consensus; the mark sits on time, never on price.",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "release('cpi') from the macro store at its release_ns => time_line at the containing bar, label = actual vs forecast",
+        "inputs": [
+          {
+            "name": "release",
+            "channel": "macro"
+          }
+        ]
       },
       "warmup": {
         "bars": 0,
-        "before": ""
+        "before": "none -- the mark is keyed to a release timestamp from the macro store, not to a bar count; it needs only the bar whose open_time contains release_ns"
       },
       "target_shape": {
-        "name": "",
+        "name": "time_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "none -- no `EventKind` variant exists for econ (analytics-core/src/events.rs:49); the release is stored by `EconStore` (econ_routes.rs:27) and served by `/econ/latest` (econ_routes.rs:519), never emitted into the concept event stream",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/econ/econ.cpi.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "macro"
+        ],
+        "parameters": []
+      }
     },
     {
       "concept_id": "econ.fomc",
       "family": "econ",
       "version": "1.0.0",
-      "registry": {
-        "pane": false,
-        "overlay": false,
-        "channels": [],
-        "parameters": []
-      },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView community script, Time Marker (the vertical event-marker convention used by the platform's events overlay)",
+        "url": "https://www.tradingview.com/script/IHgfEyaU-Time-Marker/",
+        "quote": "Time Marker draws vertical lines and optional background bands at user-defined times on the chart.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events, 0 shapes: `event_kinds: &[]` and neither pane nor overlay (concepts.rs:464-475), so the scan never emits it and the decision bar is never marked. The release lives off-chart only: the countdown chip reads `/econ/next` (app.js:6171-6183) and the landed alert box reads `/econ/latest` (app.js:6190-6204). The countdown's FOMC instant comes from the Fed's published 2026 table at 14:00 ET (econ_routes.rs:530-539, 573-580).",
+        "canonical": "a vertical rule at the release bar, spanning the plot's full height, labelled with the target range and its change; time-only, no price extent.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "none in the concept engine: the concept emits no events (`event_kinds: &[]`, concepts.rs:464-475). Off-chart, the schedule rule is the Fed's published table at 14:00 ET (econ_routes.rs:530-539, 573), the number arriving from the FRED refresh (econ_routes.rs:152) through `/econ/latest` (econ_routes.rs:519-528)",
+        "their_rule": "a marker at the release instant, carrying the target range; the mark sits on time, never on price.",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "release('fomc') at its release_ns => time_line at the containing bar, label = the target range and its change",
+        "inputs": [
+          {
+            "name": "release",
+            "channel": "macro"
+          }
+        ]
       },
       "warmup": {
         "bars": 0,
-        "before": ""
+        "before": "none -- the mark is keyed to a release timestamp from the macro store, not to a bar count; it needs only the bar whose open_time contains release_ns"
       },
       "target_shape": {
-        "name": "",
+        "name": "time_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "none -- no `EventKind` variant exists for econ (analytics-core/src/events.rs:49); the release is stored by `EconStore` (econ_routes.rs:27) and served by `/econ/latest` (econ_routes.rs:519), never emitted into the concept event stream",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/econ/econ.fomc.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "macro"
+        ],
+        "parameters": []
+      }
     },
     {
       "concept_id": "econ.claims",
       "family": "econ",
       "version": "1.0.0",
-      "registry": {
-        "pane": false,
-        "overlay": false,
-        "channels": [],
-        "parameters": []
-      },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView community script, Time Marker (the vertical event-marker convention used by the platform's events overlay)",
+        "url": "https://www.tradingview.com/script/IHgfEyaU-Time-Marker/",
+        "quote": "Time Marker draws vertical lines and optional background bands at user-defined times on the chart.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events, 0 shapes: `event_kinds: &[]` and neither pane nor overlay (concepts.rs:476-487), so the scan never emits it and the bar is never marked. The release lives off-chart only: the countdown chip reads `/econ/next` (app.js:6171-6183) and the landed alert box reads `/econ/latest` (app.js:6190-6204). The countdown's claims instant is every Thursday 08:30 ET (econ_routes.rs:553-561).",
+        "canonical": "a vertical rule at the release bar, spanning the plot's full height, labelled with the claims level against its trailing mean; time-only, no price extent.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "none in the concept engine: the concept emits no events (`event_kinds: &[]`, concepts.rs:476-487). Off-chart, the schedule rule is every Thursday 08:30 ET (econ_routes.rs:553-561), the number arriving from the FRED refresh (econ_routes.rs:152) through `/econ/latest` (econ_routes.rs:519-528)",
+        "their_rule": "a marker at the release instant, carrying the claims level against its trailing mean; the mark sits on time, never on price.",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "release('claims') at its release_ns => time_line at the containing bar, label = the level vs its trailing mean",
+        "inputs": [
+          {
+            "name": "release",
+            "channel": "macro"
+          }
+        ]
       },
       "warmup": {
         "bars": 0,
-        "before": ""
+        "before": "none -- the mark is keyed to a release timestamp from the macro store, not to a bar count; it needs only the bar whose open_time contains release_ns"
       },
       "target_shape": {
-        "name": "",
+        "name": "time_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "none -- no `EventKind` variant exists for econ (analytics-core/src/events.rs:49); the release is stored by `EconStore` (econ_routes.rs:27) and served by `/econ/latest` (econ_routes.rs:519), never emitted into the concept event stream",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/econ/econ.claims.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "macro"
+        ],
+        "parameters": []
+      }
     },
     {
       "concept_id": "econ.pce",
       "family": "econ",
       "version": "1.0.0",
-      "registry": {
-        "pane": false,
-        "overlay": false,
-        "channels": [],
-        "parameters": []
-      },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView community script, Time Marker (the vertical event-marker convention used by the platform's events overlay)",
+        "url": "https://www.tradingview.com/script/IHgfEyaU-Time-Marker/",
+        "quote": "Time Marker draws vertical lines and optional background bands at user-defined times on the chart.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events, 0 shapes: `event_kinds: &[]` and neither pane nor overlay (concepts.rs:488-499), so the scan never emits it and the bar is never marked. The release lives off-chart only: the countdown chip reads `/econ/next` (app.js:6171-6183) and the landed alert box reads `/econ/latest` (app.js:6190-6204). The countdown's PCE instant is an approximation -- NFP + 21 days, labelled approximate (econ_routes.rs:572-581).",
+        "canonical": "a vertical rule at the release bar, spanning the plot's full height, labelled with the YoY change against consensus; time-only, no price extent.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "none in the concept engine: the concept emits no events (`event_kinds: &[]`, concepts.rs:488-499). Off-chart, the schedule rule is the BEA's end-of-month print, approximated in the countdown as NFP + 21 days (econ_routes.rs:572), the number arriving from the FRED refresh (econ_routes.rs:152) through `/econ/latest` (econ_routes.rs:519-528)",
+        "their_rule": "a marker at the release instant, carrying the YoY change against consensus; the mark sits on time, never on price.",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "release('pce') at its release_ns => time_line at the containing bar, label = the YoY change against forecast",
+        "inputs": [
+          {
+            "name": "release",
+            "channel": "macro"
+          }
+        ]
       },
       "warmup": {
         "bars": 0,
-        "before": ""
+        "before": "none -- the mark is keyed to a release timestamp from the macro store, not to a bar count; it needs only the bar whose open_time contains release_ns"
       },
       "target_shape": {
-        "name": "",
+        "name": "time_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "none -- no `EventKind` variant exists for econ (analytics-core/src/events.rs:49); the release is stored by `EconStore` (econ_routes.rs:27) and served by `/econ/latest` (econ_routes.rs:519), never emitted into the concept event stream",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/econ/econ.pce.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "macro"
+        ],
+        "parameters": []
+      }
     },
     {
       "concept_id": "econ.gdp",
       "family": "econ",
       "version": "1.0.0",
-      "registry": {
-        "pane": false,
-        "overlay": false,
-        "channels": [],
-        "parameters": []
-      },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView community script, Time Marker (the vertical event-marker convention used by the platform's events overlay)",
+        "url": "https://www.tradingview.com/script/IHgfEyaU-Time-Marker/",
+        "quote": "Time Marker draws vertical lines and optional background bands at user-defined times on the chart.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events, 0 shapes: `event_kinds: &[]` and neither pane nor overlay (concepts.rs:500-511), so the scan never emits it and the bar is never marked. And no countdown either: `/econ/next`'s releases array carries claims, nfp, cpi, fomc and pce and omits gdp (econ_routes.rs:576-583), so even the off-chart surface the other five have is missing. GDP is reachable only through `/econ/latest?kind=gdp` once the FRED refresh stores it (econ_routes.rs:152, 519-528).",
+        "canonical": "a vertical rule at the release bar, spanning the plot's full height, labelled with the annualized QoQ change against consensus; time-only, no price extent.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "none in the concept engine: the concept emits no events (`event_kinds: &[]`, concepts.rs:500-511). Off-chart there is no schedule surface at all: gdp is absent from `/econ/next`'s releases (econ_routes.rs:576-583); the number arrives from the FRED refresh (econ_routes.rs:152, 250-267) through `/econ/latest?kind=gdp`",
+        "their_rule": "a marker at the release instant, carrying the annualized QoQ change against consensus; the mark sits on time, never on price.",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "release('gdp') from the macro store at its release_ns => time_line at the containing bar, label = the annualized QoQ change against forecast",
+        "inputs": [
+          {
+            "name": "release",
+            "channel": "macro"
+          }
+        ]
       },
       "warmup": {
         "bars": 0,
-        "before": ""
+        "before": "none -- the mark is keyed to a release timestamp from the macro store, not to a bar count; it needs only the bar whose open_time contains release_ns"
       },
       "target_shape": {
-        "name": "",
+        "name": "time_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "time_only"
       },
-      "detector": "",
+      "detector": "none -- no `EventKind` variant exists for econ (analytics-core/src/events.rs:49); the release is stored by `EconStore` (econ_routes.rs:27) and served by `/econ/latest` (econ_routes.rs:519), never emitted into the concept event stream",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/econ/econ.gdp.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered",
+      "registry": {
+        "pane": false,
+        "overlay": false,
+        "channels": [
+          "macro"
+        ],
+        "parameters": []
+      }
     }
   ]
 }

@@ -15,46 +15,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Double Top (Adam & Adam), Identification Guidelines",
+        "url": "https://thepatternsite.com/aadt.html",
+        "quote": "The double top confirms as a true double top once price closes below the valley.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 horizontal `Line`s (11-43px, dy 0) at the neckline `price_level`, each with a `Label` reading `double_top_bottom`, 50 copies, unspaced. 35 distinct bars, only 8 distinct levels — the pass re-emits the same pair of swings every bar it stays the newest, and the scan's 50-event cap keeps just the newest run, all of them in the rightmost 18% of the plot (x 887-1082). The two equal peaks, the valley shape, the target (zone_low) and the invalidation (zone_high) are all on the wire — zone_low 77239.14, zone_high 78492.88 on the sample event — and all dropped by the router, which sends chart.* to the segment branch because it is not in CONCEPT_ZONE_IDS. 29 teal / 21 red by direction; the flat level carries neither.",
+        "canonical": "the outline traced through the two swing highs and the valley between them — two peaks at (near) one price with a real dip — a neckline at the valley whose CLOSE-BELOW is the confirming event, and a measured target one pattern-height under the breakout; the mirror holds for the bottom",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest two same-kind confirmed swings from `detect_market_structure` at hard-coded `lookback: 2` (events.rs:1083) within `tolerance_pct: 0.004` (patterns.rs:135), with any confirmed opposite swing between them; fires on the pattern's GEOMETRY, with no close-below-the-valley requirement, and re-fires every bar the pair stays newest; price = the valley (entry_level), zone = [target, invalidation], magnitude = 0.5+0.5*equality (patterns.rs:274-337)",
+        "their_rule": "two peaks with a valley between, \"the double top confirms as a true double top once price closes below the valley\"; Bulkowski also asks for a valley drop of at least 10% and peak variation usually under 3%",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lookback=2): |h1-h2| <= 0.4% and one confirmed valley(h1..h2) => emit(neckline=valley, zone=[valley-height, peak], every bar the pair stays newest)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 11,
+        "before": "nothing draws on bars 0-10: the adapter needs two confirmed same-kind swings plus a confirmed opposite swing between them, and the replay floor is bar 22 (concept_routes.rs:242) anyway; the module's own double-top test fires on an 11-bar series (patterns.rs:572-586)"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_patterns (events.rs:1078, adapting crate::patterns::detect_double, patterns.rs:274)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.double_top_bottom.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "chart.head_shoulders",
@@ -70,46 +75,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Bulkowski on the Head-and-Shoulders Chart Pattern",
+        "url": "https://thepatternsite.com/HSTExplained.html",
+        "quote": "A neckline is a trendline that connects the two armpits of a head-and-shoulders pattern.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "2 horizontal `Line`s at 79764.01 — the neckline — 49 and 51px wide, dy 0, at bars 290-291 of 501, each labelled `head_shoulders`. The three peaks, the two armpits and the sloped neckline the reference draws are all computed by the engine (the event's five anchors travel in `PatternMatch.anchors` and are dropped at events.rs:1125, which keeps only `anchors.first().timestamp` as the bar span) and all dropped by the router (chart.* is not in CONCEPT_ZONE_IDS). zone_low 79000.99 / zone_high 80527.02 carry the measured target and the head's top — the pattern's whole vertical extent — as an unpaired number and a word.",
+        "canonical": "an outline traced through five pivots — left shoulder, armpit, head, armpit, right shoulder — a neckline (a trendline, often sloped) joining the two armpits, confirmation on the close through it, and a target the head's height subtracted from the breakout",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the three newest confirmed swing highs and two lows interleaved shoulder-trough-head-trough-shoulder, shoulders within `tolerance_pct 0.004` of the head price and the head above both by that tol (patterns.rs:187-231); neckline = the FLAT MINIMUM of the two troughs, not the line joining them; fires on geometry alone — no close-below-neckline condition — re-firing every bar while the five swings stay newest; inverse H&S maps to the same concept id with Side::Buy (events.rs:1096); only tops fired this window (2 bearish events)",
+        "their_rule": "three peaks with the middle highest and roughly equal shoulders; \"a neckline is a trendline that connects the two armpits\"; the pattern confirms when price closes below the neckline and projects the head's height beyond it",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lookback=2): 3 highs + 2 lows interleaved, shoulders within 0.4% of head, head highest => emit(flat_neckline=min(troughs), zone=[target, invalidation], every bar while newest)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 15,
+        "before": "nothing draws on bars 0-14: five alternating confirmed swings at lookback 2 need roughly 13 bars, and the module's own H&S test fires on a 15-bar series (patterns.rs:549-569); the scan replay starts at bar 22"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_patterns (events.rs:1078, adapting crate::patterns::detect_head_and_shoulders + detect_inverse_head_and_shoulders, patterns.rs:187-272)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.head_shoulders.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "chart.triangle",
@@ -125,46 +135,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Symmetrical Triangles",
+        "url": "https://thepatternsite.com/st.html",
+        "quote": "Two trendlines bound prices; the bottom trendline slopes up and the top one slopes down.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 horizontal `Line`s at 8 distinct levels (19-114px, dy 0), every one in the NEUT slate because the detector hard-codes `PatternDirection::Neutral` (patterns.rs:371) and the router has no side to colour from, plus 50 copies of the word `triangle`. The coil's two sloping converging trendlines — the entire information content of the pattern — cannot appear: dy is structurally 0 on the segment branch (concept_shapes.js:92-102), and `min of the three newest highs / max of the three newest lows` reaches the wire as entry_level (the coil's narrowest point, not either line).",
+        "canonical": "two converging swing trendlines drawn through their touches — a down-sloping line along the highs and an up-sloping line along the lows — closing toward an apex, with the break of one of them setting the direction and a projected target",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "least-squares slopes over the last 3 confirmed highs and 3 lows (lookback 2, hard-coded): bullish-slope set requires `rel_high < 0 < rel_low` and closure/span >= 0.001 (patterns.rs:339-376); fires on the slopes alone — no breakout requirement — and re-fires every bar the swing set stays newest; direction is always Neutral, so even a confirmed upward break draws slate",
+        "their_rule": "\"prices move between two converging trendlines\"; the pattern completes and is traded when price breaks out of one of the two lines, most often before the apex",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lookback=2): lsqslope(highs,3)<0 and lsqslope(lows,3)>0 and closure/span>=0.001 => emit(neutral, entry=min(recent highs), zone=[bottom, top], every bar while newest)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 11,
+        "before": "nothing draws on bars 0-10: two confirmed highs and two confirmed lows (the coil's own floor, patterns.rs:343) need ~11 bars at lookback 2; the replay floor is bar 22"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_patterns (events.rs:1078, adapting crate::patterns::detect_coil, patterns.rs:339)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.triangle.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "chart.flag",
@@ -178,44 +193,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Flags",
+        "url": "https://thepatternsite.com/flags.html",
+        "quote": "Flags appear as small rectangles usually tilted against the prevailing price trend and mounted at the end of a flagpole.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "12 horizontal `Line`s (24-47px, dy 0) at only 2 distinct levels — one flag re-announced bar after bar — each labelled `flag`; all 12 events are bearish, so all 12 lines are red at the flag's bottom edge. Neither the pole (the sharp prior decline the reference makes the first half of the pattern) nor the two parallel tilted channel lines appear; the zone the detector computed (78518.60-80527.02 on the sample: the flag's own band) is dropped by the router.",
+        "canonical": "a flagpole — the sharp impulse — followed by a small tilted rectangle between two parallel (or near-parallel) counter-sloping trendlines, with the resumption of the pole's direction as the confirming break and a pole-length projection as the target",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "needs 20 candles (patterns.rs:411): a 10-bar net move into the swing region at least 5x the average candle range, then the last two highs and two lows sloping COUNTER to the pole and shallower than half its slope (patterns.rs:408-473); confidence is the constant 0.6; fires on the drift's existence, not on the breakout, and re-fires every bar while the swings stay newest — price = the flag edge, target = edge + pole are computed but drawn flat",
+        "their_rule": "\"price moves between two parallel, or near parallel, trendlines\" against the prior trend after a flagpole; the pattern confirms on the break of the flag in the pole's direction",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "candles>=20: |net move 10 bars into swings| >= 5*avg_range and drift slopes counter-pole and < half the pole slope => emit(entry=flag edge, target=entry+pole, every bar while newest)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 20,
+        "before": "nothing draws on bars 0-19: the detector's own guard is `candles.len() < 20` (patterns.rs:411); the replay floor is bar 22"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_patterns (events.rs:1078, adapting crate::patterns::detect_flag, patterns.rs:408)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.flag.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "chart.wedge",
@@ -231,46 +251,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Falling Wedges",
+        "url": "https://thepatternsite.com/fallwedge.html",
+        "quote": "Price follows two down-sloping and converging trendlines.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 horizontal `Line`s at 7 distinct levels (26-120px, dy 0), 37 teal and 13 red — the colour of the expected break, not the slope of the wedge — each labelled `wedge`. A wedge IS its two sloping converging lines; drawing a flat level at `entry_level` (the far edge of the coil, patterns.rs:393) removes the only thing that makes it a wedge. The band both lines sweep through is on the wire as zone_low/zone_high and dropped.",
+        "canonical": "two swing trendlines sloping the SAME way while converging — a rising wedge along higher highs and higher lows, a falling wedge along lower highs and lower lows — traded on the break opposite the slope, with the pattern's height projected from the breakout",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the same coil detector as the triangle: `rel_high` and `rel_low` share a sign, closure/span >= 0.001 (patterns.rs:354-404); rising slope maps to Bearish, falling to Bullish, entry = the converging edge, target = edge minus/plus the span; fires on geometry with no breakout and re-fires every bar the swing set stays newest",
+        "their_rule": "two same-sloping, converging trendlines through the swings, confirmed by the breakout against the slope",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lookback=2): lsqslope(highs,3) and lsqslope(lows,3) same-signed, converging, closure/span>=0.001 => emit(direction opposite slope, entry=converging edge, every bar while newest)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 11,
+        "before": "nothing draws on bars 0-10: four confirmed swings at lookback 2 need ~11 bars, the same floor as the triangle; the replay floor is bar 22"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_patterns (events.rs:1078, adapting crate::patterns::detect_coil, patterns.rs:339)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.wedge.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "chart.triple_top_bottom",
@@ -286,46 +311,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Triple Tops",
+        "url": "https://thepatternsite.com/tt.html",
+        "quote": "The pattern becomes valid when price closes below the lowest valley in the pattern.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "what the router would draw for it — a horizontal `Line` at the neckline `price_level` over the first-pivot-to-break span plus one `Label` reading `triple_top_bottom`; the three flat peaks, the two intervening valleys and the projection the code already computes would all vanish. On this window nothing was drawn at all: 0 events in 501 bars, so the page carries zero shapes and the label never reached the chart.",
+        "canonical": "three peaks near one price with two valleys between them, traced as an outline, valid only once price CLOSES below the lowest valley, with the pattern's height projected from that valley",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the three newest flat-tolerance (0.3%, TOP_TOLERANCE events.rs:1157) pivot highs that are still ALIVE until violated (events.rs:1207-1221), the neckline = the lower of the two intervening troughs, depth >= 1% of price, and the newest close through it (events.rs:1234-1263); price = neckline, zone = [neckline, peak mean]; unlike the classical pass this one DOES demand the confirming close — and it ran on `config.structure_lookback` (events.rs:1161, default 3), not the hard-coded 2",
+        "their_rule": "three peaks near the same price; \"the pattern becomes valid when price closes below the lowest valley in the pattern\"; height projected from the breakout",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lb=structure_lookback): 3 newest highs pairwise within 0.3% and alive-until-violated, neckline=min(two intervening troughs), depth>=1% => fire on the bar whose close crosses the neckline",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "nothing draws on bars 0-23: detect_chart_gaps returns empty below 24 candles (events.rs:1164); this window fired 0 events, so nothing drew through bar 500 either"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_gaps (events.rs:1156, triple top/bottom block events.rs:1231-1263)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.triple_top_bottom.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "chart.rectangle",
@@ -341,46 +371,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Rectangle Bottoms",
+        "url": "https://thepatternsite.com/rectbots.html",
+        "quote": "Prices have flat tops and flat bottoms, crossing the pattern from side to side following two parallel trendlines.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "4 horizontal `Line`s (60-146px, dy 0) at the broken side of the range only — 3 teal, 1 red — each labelled `rectangle`. The rectangle is exactly TWO flat levels (top and bottom), and the event carries both: the sample zone_low 76566.06 / zone_high 77377.68 IS the channel's floor and ceiling. The concept path draws one of the two lines and throws the other away, because chart.* is not in CONCEPT_ZONE_IDS and the segment branch has one `price` (concept_shapes.js:92-102).",
+        "canonical": "a channel traced as two parallel horizontal lines through at least two swing highs and two swing lows, price crossing between them, and the breakout drawn as the close outside one side — the range and the side, both",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the two newest alive pivot highs flat within 0.3% AND the two newest pivot lows flat within 0.3%, band height >= 1% of the floor, and the newest close beyond either side (events.rs:1265-1284); price = the broken side, zone = [bottom, top] — the whole channel, computed and dropped; ran on structure_lookback (events.rs:1161); fires on the breakout bar and on every later bar whose close stays outside",
+        "their_rule": "flat tops and flat bottoms as two parallel horizontal trendlines; \"wait for price to close outside the trendline before taking a position\" — the close beyond the boundary is the confirming event",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lb=structure_lookback): two newest highs flat(0.3%) and two newest lows flat(0.3%), height>=1% => fire on the bar closing beyond either side, price=that side",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "nothing draws on bars 0-23: detect_chart_gaps returns empty below 24 candles (events.rs:1164); first rectangle event in this window at bar 448"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_gaps (events.rs:1156, rectangle block events.rs:1265-1284)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.rectangle.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "chart.cup_and_handle",
@@ -396,46 +431,51 @@
           "swing_lookback"
         ]
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Cup with Handle",
+        "url": "https://thepatternsite.com/cup.html",
+        "quote": "A rounded turn that looks like a cup with a handle on the right of the cup.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "2 horizontal `Line`s (11 and 26px wide, dy 0) at the rim 77319.87, both teal, labelled `cup_and_handle` twice. A cup is a rounded bowl traced through many bars — here the deepest swing low, the recovery to the rim and the shallow handle (spans 5 and 12 bars) collapse to one number, the rim; zone_low 76500.11 is the bowl's bottom and reaches the wire, then the router drops it. Nothing on screen is curved, and the handle is invisible.",
+        "canonical": "a U-shaped bowl traced through the swings from rim down to base and back to rim, a shallow handle drifting below the rim in the cup's upper half, confirmed by the close above the rim/handle high, with the cup's depth projected as the target",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the deepest alive swing low against the newest swing high before it as rim, recovery back to within 0.3% of the rim, handle depth <= 50% of cup depth (HANDLE_MAX_DEPTH, events.rs:1286-1326), and the newest close above the rim; price = rim, zone = [bottom, rim]; ran on structure_lookback; the \"rounding\" is never modelled — three points make a cup here, and the arc is asserted, not measured",
+        "their_rule": "a rounded bowl with a handle in its upper part; the upside breakout above the rim (or the handle's high) is the confirming close; target by the measure rule from the breakout",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lb=structure_lookback): deepest low under an earlier rim, recovery to rim(0.3%), handle<=50% cup depth => fire on the bar closing above the rim, price=rim",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "nothing draws on bars 0-23: detect_chart_gaps returns empty below 24 candles (events.rs:1164); first cup event in this window at bar 445"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_gaps (events.rs:1156, cup and handle block events.rs:1286-1326)",
       "parameters": {
         "declared": [
           "swing_lookback"
         ],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.cup_and_handle.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "chart.pennant",
@@ -449,44 +489,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Pennants",
+        "url": "https://thepatternsite.com/pennants.html",
+        "quote": "Looks like a short symmetrical triangle.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "5 horizontal `Line`s, every one 34px wide at dy 0, at 5 distinct levels (the channel's mid-price, events.rs:1507), 1 teal 4 red, each labelled `pennant`. The pennant is a tiny converging triangle — two lines closing over ~8 bars — and a flat 34px dash at its mid-height carries neither the convergence, the pole that precedes it, nor the channel's edges, although zone_low/zone_high (78626.83-79811.23 on the sample) hold them.",
+        "canonical": "a flagpole followed by a short symmetrical triangle between two converging trendlines, traded on the break in the pole's direction, with the pole projected from the apex edge",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "a fixed window, not swings: bars n-16..n-8 as the pole, bars n-8..n as the channel; fires when pole > 6x the 24-bar average range, the channel's first-half highs above its second-half highs while lows rise (converging), and the channel span < 50% of the pole (events.rs:1490-1509); there is NO breakout condition — the 5 events fire on the channel's shape alone, 5 separate bars, and re-fire would need the same window to hold; price = the mid-height of the channel's late bars",
+        "their_rule": "\"prices move between two converging trendlines\" forming a short triangle at the end of a flagpole; the confirming event is the break of one boundary in the pole's direction",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "bars(n-24..n): pole(bars n-16..n-8) >= 6*avg_range and channel(bars n-8..n) converging and span <= 50% pole => fire on the shape, price=channel mid-height",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 25,
+        "before": "nothing draws on bars 0-24: the branch needs `n >= 24` (events.rs:1493), i.e. 25 candles, to slice bars n-24..n; first pennant event in this window at bar 429"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_gaps (events.rs:1156, pennant block events.rs:1490-1509)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.pennant.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "chart.trend_channel",
@@ -500,44 +545,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Channels",
+        "url": "https://thepatternsite.com/channels.html",
+        "quote": "When price trends upward or downward and fits between two parallel trendlines, the chart pattern is called a channel.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "what the router would draw — one horizontal `Line` at the broken channel edge over the first-anchor-to-break span, labelled `trend_channel` — and nothing else, because two PARALLEL SLOPED lines are the pattern and the segment branch can paint neither. On this window 0 events in 501 bars: the branch demands the three newest highs ascending as well as the three newest lows (events.rs:1468-1472), so a DESCENDING channel can never fire at all, and no up-channel break closed the window; the page carries zero shapes.",
+        "canonical": "two parallel sloped trendlines — one along three swing extremes, its twin along the opposite swings — with price channelling between them and a close beyond either line as the signal",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "three ascending lows validated by the third sitting within 0.15% (TOP_TOLERANCE/2) of the line through the first two, AND three ascending highs similarly validated, AND |slope_low - slope_high| <= 50% of the larger (events.rs:1463-1488); the parallel test is against the slope MAGNITUDE, not offset, and the requirement that BOTH sides ascend makes the rule asymmetric — bearish channels are unreachable; signal = the close beyond either projected line at bar n",
+        "their_rule": "price fits between two parallel trendlines along the swings; the breakout is a close outside the channel line; the reference gives no numeric parallelism or slope test",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lb=structure_lookback): 3 ascending lows + 3 ascending highs, both third-touch-validated, slopes within 50% => fire on the bar closing beyond either projected line",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "nothing draws on bars 0-23: detect_chart_gaps returns empty below 24 candles (events.rs:1164); this window fired 0 events, so nothing drew through bar 500 either"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_gaps (events.rs:1156, trend channel block events.rs:1463-1488)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.trend_channel.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "chart.diamond",
@@ -551,44 +601,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Diamond Tops",
+        "url": "https://thepatternsite.com/diamondt.html",
+        "quote": "Looks like a diamond, but one usually tilted to the side.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "what the router would draw — a horizontal `Line` at the break level across the span of the formation, labelled `diamond` — and nothing else. 0 events in 501 bars, so the page draws zero shapes. A diamond is eight pivots (four per side: broadening out, then contracting in); a flat level would flatten both halves into one number even if the rule fired.",
+        "canonical": "an outline of a broadening top (higher peaks, lower valleys) immediately followed by a contracting bottom (lower peaks, higher valleys), meeting in the middle, tilted like a diamond on its side, confirmed by the close through the formation's lower edge",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the four newest high/low PAIRS, oldest first: their four spans must widen (spans[0] < spans[1] <= spans[2] or spans[0]*1.05 < spans[1] < spans[2]) then narrow (spans[2] > spans[3], spans[1] > spans[2]*0.98), and the newest close must sit 0.3% beyond the newest extreme (events.rs:1441-1461); the condition mixes strict and slack comparisons, and the break of the formation's low is read as a fixed 0.997 factor rather than the lower line's value at that bar",
+        "their_rule": "\"prices form higher peaks and lower valleys\" then \"price action narrows with lower peaks and higher valleys\"; four swing points per side traced in order, confirmed by the downside break",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lb=structure_lookback): 4 newest high/low pair-spans widen then narrow => fire on the bar closing 0.3% beyond the newest extreme",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "nothing draws on bars 0-23: detect_chart_gaps returns empty below 24 candles (events.rs:1164); this window fired 0 events, so nothing drew through bar 500 either"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_gaps (events.rs:1156, diamond block events.rs:1441-1461)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.diamond.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "chart.inverse_cup_handle",
@@ -602,44 +657,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Inverted Cup with Handle",
+        "url": "https://thepatternsite.com/icup.html",
+        "quote": "The pattern confirms as valid when price closes below the right cup lip.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "24 horizontal `Line`s (39-358px, dy 0) at 5 distinct levels, all red, all labelled `inverse_cup_handle` unspaced. Like the cup, the rounded top, its rim, and the handle in its lower half collapse into the single rim number the code pushes as price (events.rs:1356); the bowl's ceiling (zone_high, e.g. 81971 against rim 79916) is carried and dropped. The 5-levels-in-24-bars pattern is the re-emission run while the close stays under the lip — the 358px widest line still spans only the rim-anchor to the newest bar.",
+        "canonical": "a rounded top — an upside-down cup traced through the swings from rim up to the bowl's crown and back down — with a shallow handle in the LOWER half, confirmed by the close below the rim/lip and projecting the bowl's depth",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the highest alive swing high after the newest earlier swing low (the rim), a drop back to within 0.3% of the rim, handle rise <= 50% of bowl depth, and the newest close below the rim (events.rs:1328-1359); price = rim, zone = [rim, top]; ran on structure_lookback; re-fires every bar the close stays through the lip while the geometry survives",
+        "their_rule": "an inverted cup: \"look for a smooth, rounded looking turn\"; \"the pattern confirms as valid when price closes below the right cup lip\", with the bowl's height projected down for the target",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lb=structure_lookback): rounded top under an earlier rim, retest to rim(0.3%), handle<=50% bowl depth => fire on the bar closing below the rim, price=rim",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "nothing draws on bars 0-23: detect_chart_gaps returns empty below 24 candles (events.rs:1164); first inverse-cup event in this window at bar 334"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_gaps (events.rs:1156, inverse cup and handle block events.rs:1328-1359)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.inverse_cup_handle.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "chart.rounding_bottom_top",
@@ -653,44 +713,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Rounding Bottoms",
+        "url": "https://thepatternsite.com/roundb.html",
+        "quote": "Look for a rounded bowl shape, usually over many months and usually after an upward price trend.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "44 horizontal `Line`s at 10 distinct levels (9-358px, dy 0), 38 red / 6 teal, each labelled `rounding_bottom_top` — the longest snake_case word in the family, printed 44 times. The rounding is the pattern's ENTIRE identity — a gradual arc over many bars, Bulkowski says usually months — and our detector models it with three swings: deepest low, earlier rim, a close through it. The arc's curvature is nowhere, and the 44 re-emitted lines at 10 levels are one turn announced on every bar after the break.",
+        "canonical": "a saucer — a gently curving outline traced across dozens of bars from rim down through the base and back to the rim — confirmed when price closes over the rim, with the rim-to-base depth projected; Bulkowski notes the shape \"usually\" spans months, not 59 bars",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the cup without the handle: deepest alive swing low under the newest earlier swing-high rim, recovery to within 0.3% of the rim, no depth floor, and the newest close beyond the rim (events.rs:1361-1391); price = rim, zone = [bottom, rim]; mirror rounding-top branch fires the Sell side — 38 of the 44 events here are tops breaking down; re-fires every bar the close stays through the rim",
+        "their_rule": "\"a gradual turn that resembles the shape of a saucer\" traced as a curve; confirmation is the breakout close over the rim, and Bulkowski uses \"a close above the left peak\"",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lb=structure_lookback): deepest low under earlier rim, recovery to rim(0.3%), no handle clause => fire on the bar closing beyond the rim, price=rim",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "nothing draws on bars 0-23: detect_chart_gaps returns empty below 24 candles (events.rs:1164); first rounding event in this window at bar 299"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_gaps (events.rs:1156, rounding bottom/top block events.rs:1361-1391)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.rounding_bottom_top.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "chart.broadening",
@@ -704,44 +769,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Broadening Tops",
+        "url": "https://thepatternsite.com/bt.html",
+        "quote": "Higher peaks and lower valleys -- a megaphone shape.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "what the router would draw — a horizontal `Line` at the broken extreme across the formation's span, labelled `broadening` — and that is the ceiling of the concept path for a shape defined by two DIVERGING sloped lines. 0 events in 501 bars: the newest three pivot highs never rose while the newest three lows fell inside one window; the page carries zero shapes. Had it fired, the fan the reference draws would have arrived as one number, in teal or red with no slope.",
+        "canonical": "a fan/megaphone traced through five or more swings — three ascending peaks on an up-sloping upper line, two or more descending valleys on a down-sloping lower line, the lines diverging — directional on the close beyond either line",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the three newest alive pivot highs strictly ascending AND the three newest pivot lows strictly descending, and the newest close beyond the newest high (or low) extreme (events.rs:1424-1439); the check is against the PIVOT VALUE, not the diverging line's value at that bar; ran on structure_lookback; price = the extreme, zone = [l3, h3]",
+        "their_rule": "a megaphone of higher peaks and lower valleys — \"at least five touches total, three peaks or three valleys should touch the associated trend line\" — with the signal the breakout beyond one of the two trendlines",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lb=structure_lookback): 3 newest highs strictly ascending and 3 newest lows strictly descending => fire on the bar closing beyond the newest extreme of the side it breaks",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "nothing draws on bars 0-23: detect_chart_gaps returns empty below 24 candles (events.rs:1164); this window fired 0 events, so nothing drew through bar 500 either"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_gaps (events.rs:1156, broadening block events.rs:1424-1439)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.broadening.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "chart.trendline",
@@ -755,44 +825,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Up-Sloping Trendlines",
+        "url": "https://thepatternsite.com/uptrendlines.html",
+        "quote": "Draw an up-sloping trendline along the price valleys.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "4 horizontal `Line`s (24-56px, dy 0) at the break bar's PROJECTION of the line — the one number on the whole slanted object that is not the line — each labelled `trendline`. The line itself is sloped by definition and its slope is computed (line_at through the two anchor lows/highs, events.rs:1398), yet the segment branch flattens it: the same when-answered-as-where failure pass 4 recorded for the session clock and pass 5 for fib time, in a third family. All 4 events carry zone_low > zone_high — the pair is (anchor value, break value) pushed unsorted (events.rs:1408, 1419), so even the card's box is inverted here.",
+        "canonical": "a straight line drawn along two swing lows (up-sloping) or two swing highs (down-sloping), validated by a third touch on the line, extended forward, and the break read when price closes through the line's value at the breaking bar",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the three newest alive pivot lows strictly ascending, the third within 0.15% (TOP_TOLERANCE/2) of the line through the first two, and the newest close 0.3% under the line's value at bar n — mirrored on descending highs for the up-break (events.rs:1393-1422); price = line_at(anchors, n), so the event carries the line only at its newest point; ran on structure_lookback",
+        "their_rule": "\"draw an up-sloping trendline along the price valleys\"; the line must be validated by touching a third swing, and the signal is price closing through the line itself",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "swings(lb=structure_lookback): 3 ascending lows, l3 within 0.15% of line(l1,l2), close < line(n)*0.997 => fire at price=line(n) (highs mirrored)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "nothing draws on bars 0-23: detect_chart_gaps returns empty below 24 candles (events.rs:1164); first trendline event in this window at bar 305"
       },
       "target_shape": {
-        "name": "",
+        "name": "outline",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_chart_gaps (events.rs:1156, trendline block events.rs:1393-1422)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/chart/chart.trendline.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }

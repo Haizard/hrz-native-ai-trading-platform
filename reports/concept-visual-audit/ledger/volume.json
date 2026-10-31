@@ -13,44 +13,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, On Balance Volume (OBV)",
+        "url": "https://www.tradingview.com/support/solutions/43000502593-on-balance-volume-obv/",
+        "quote": "The On Balance Volume indicator (OBV) is used in technical analysis to measure buying and selling pressure.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "11 'obv' labels (x 192.2-1026.1, y 77.4-417.2) at price while the OBV pane is drawn below. The pane draws only the line -- obv_pane has no segments or markers (indicator_series.rs:392-409) -- so the concept's actual mark, a price/OBV divergence, exists nowhere except as a word at price. A cumulative volume line has no price level, so the label's height is meaningless as well as duplicated.",
+        "canonical": "one cumulative OBV line in its own pane, auto-scaled -- 'used ... to measure buying and selling pressure' -- with the divergence, when drawn, as a segment on the OBV line, not a word at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "OBV is defined on every bar; price/OBV divergences are emitted when the tail confirms them (indicator_signals.rs:26 via oscillator_divergence at 630, n >= 40)",
+        "their_rule": "TradingView plots OBV continuously in its own pane and marks no divergence; the divergence line is drawn on the OBV trace",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "obv = cumsum(sign(close - prev_close) * volume) => divergence when price and obv disagree at two confirmed pivots",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 40,
+        "before": "OBV exists from bar 2; the divergence detector requires n >= 40"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::oscillator_divergence -- EventKind::ObvDivergence (indicator_signals.rs:26, 630)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume/indicators.obv.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.ad_line",
@@ -64,44 +69,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Accumulation Distribution (ADL)",
+        "url": "https://www.tradingview.com/support/solutions/43000501770-accumulation-distribution-adl/",
+        "quote": "The Accumulation Distribution (ADL) indicator is a cumulative volume-based technical analysis tool that measures the flow of money into and out of a security.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "20 'ad line' labels (x 155.8-1045.4, y 77.4-416.6) at price while the A/D pane is drawn below. The pane draws the line only (ad_pane has no marks, indicator_series.rs:644-657), so the divergence the event names is drawn nowhere but as a word at price -- and the A/D line is not a price.",
+        "canonical": "one cumulative A/D line in its own pane, auto-scaled -- 'a cumulative volume-based technical analysis tool that measures the flow of money into and out of a security'.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "A/D is defined on every bar; price/A-D divergences are emitted when the tail confirms them (indicator_signals.rs:30 via oscillator_divergence at 630, n >= 40)",
+        "their_rule": "TradingView plots the A/D line continuously in its own pane and marks no divergence; the divergence is drawn on the line",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "ad = cumsum(((close - low) - (high - close)) / (high - low) * volume) => divergence when price and ad disagree at two confirmed pivots",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 40,
+        "before": "A/D exists from bar 2; the divergence detector requires n >= 40"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::oscillator_divergence -- EventKind::AdDivergence (indicator_signals.rs:30, 630)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume/indicators.ad_line.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.cmf",
@@ -115,44 +125,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Chaikin Money Flow (CMF)",
+        "url": "https://www.tradingview.com/support/solutions/43000501974-chaikin-money-flow-cmf/",
+        "quote": "Chaikin Money Flow (CMF) is a technical analysis indicator used to measure Money Flow Volume over a set period of time.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 'cmf' labels (x 280.1-1081.9, y 80.2-447.3) at price while the CMF pane with its zero line is drawn below. A ratio bounded in -1..1 is being drawn as a price word.",
+        "canonical": "one CMF line in its own pane, zero line, auto-scaled -- 'a technical analysis indicator used to measure Money Flow Volume over a set period of time'.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "CMF(20) is defined on every bar; a label is emitted when it crosses zero (indicator_signals.rs:52-55, n > 22)",
+        "their_rule": "TradingView plots CMF continuously across zero and marks no cross; the line crossing zero is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "cmf = sum(mfv, 20) / sum(volume, 20) => signal when cmf crosses zero",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 22,
+        "before": "CMF(20) exists from bar 20; the detector requires n > 22"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::CmfZeroCross (indicator_signals.rs:52-55)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume/indicators.cmf.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.mfi",
@@ -166,44 +181,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Money Flow Index (MFI)",
+        "url": "https://www.tradingview.com/support/solutions/43000502348-money-flow-mfi/",
+        "quote": "The Money Flow Index indicator (MFI) is a tool used in technical analysis for measuring buying and selling pressure.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "17 'mfi' labels (x 130-998.3, y 70.4-486.1) at price while the MFI pane -- fixed 0-100, 80/20 -- is drawn below. The bounded oscillator is already the drawing; the labels add a price-space copy.",
+        "canonical": "one MFI line in its own pane, fixed 0-100, levels at 80 and 20 -- 'a tool used ... for measuring buying and selling pressure', with no mark at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "MFI(14) is defined on every bar; a label is emitted when it enters the 80/20 zone (indicator_signals.rs:65-67, n > 16)",
+        "their_rule": "TradingView plots MFI continuously against 80/20 and marks no zone entry; the line entering the band is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "mfi = MFI(typical, volume, 14) => signal when mfi enters 80/20",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 16,
+        "before": "MFI(14) exists from bar 14; the detector requires n > 16"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::MfiZoneEntry (indicator_signals.rs:65-67)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume/indicators.mfi.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.anchored_vwap",
@@ -217,44 +237,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Anchored VWAP drawing tool",
+        "url": "https://www.tradingview.com/support/solutions/43000669764-anchored-vwap-drawing-tool/",
+        "quote": "Anchored VWAP displays the volume-weighted average price for a specific time period, starting from a user-selected point.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 'anchored vwap' labels (x 417.3-1081.9, y 46.8-479.7) at price while two anchored VWAP lines are drawn on the same price frame. Here the label's scale is at least a price, but it is still a second mark over a line that already shows the level.",
+        "canonical": "one VWAP line per anchor on the price plot, running from the anchor bar forward -- 'starting from a user-selected point' -- with no word at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "two AVWAP lines (newest swing high and newest swing low) are defined on every bar; a label is emitted when price crosses either anchor line (indicator_signals.rs:91-93, n > 30)",
+        "their_rule": "TradingView draws the anchored VWAP continuously from its anchor and marks no cross; the line crossing price is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "avwap(anchor) = cumsum(typical * volume from anchor) / cumsum(volume from anchor) => signal when close crosses either anchor line",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "a 3-bar fractal anchor exists after ~7 bars; the detector requires n > 30"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::AvwapCross (indicator_signals.rs:91-93)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volume/indicators.anchored_vwap.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }

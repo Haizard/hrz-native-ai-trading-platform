@@ -13,44 +13,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Gartley (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/gartley/",
+        "quote": "B retraces 0.618 of XA, C retraces 0.382 to 0.886 of AB, and D completes at the 0.786 retracement of XA.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "events: 0 on the 501-bar window, so the page is empty and the only evidence is the route it would take. `harmonics.gartley` is not in `CONCEPT_ZONE_IDS` (concept_shapes.js:27) and its event carries `price_level`, so it lowers to one dashed 1px `Segment` at D's price plus a `Label` reading `gartley` (concept_shapes.js:92-102) — no path through X→A→B→C→D, no ratio on any leg, and the PRZ band the detector did compute (`zone_low`/`zone_high`, D ± 1%, harmonics.rs:196+241) is dropped at that branch. Against the window's structure: 465 of 479 replay bars held an alternating five-pivot chain and the detector saw 71 distinct chains — 10 cleared its 0.55-0.70 AB/XA window, 4 its 0.74-0.84 AD/XA window, 0 cleared all four.",
+        "canonical": "the five swing pivots joined in order — X→A→B→C→D — as one stroked path (optionally filled at a wash), each leg carrying its own ratio (B at 0.618 XA, C at 0.382-0.886 AB, D at 0.786 XA), one name `Gartley` at the figure, and the PRZ where the 0.786 XA level and the BC projection overlap drawn as a tight band at D",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "an AND-test of four ratio windows on the newest five strictly alternating lookback-3 fractals, measured on the pivots' own extremes: ab/xa 0.55-0.70, bc/ab 0.382-0.886, cd/bc 1.13-1.618, ad/xa 0.74-0.84 (harmonics.rs:39-44); announced when the D fractal confirms (D's bar + 3) and re-announced on every following bar while the chain stays newest — 0 events across 501 bars",
+        "their_rule": "B is the 0.618 XA retracement and D the 0.786 (the page notes 0.786 = √0.618), C sits between 0.382 and 0.886 of AB and CD is an AB=CD projection of BC; completion is price trading into the zone those projections overlap — a level watched forward, not a post-hoc test on five already-confirmed fractals, and the swing engine is the trader's zigzag, not a lookback-3 strict extreme",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "chain = newest_five_alternating(lookback3_fractals(candles)) ⇒ (ab, bc, cd, ad) = (|B−A|/|A−X|, |C−B|/|B−A|, |D−C|/|C−B|, |D−A|/|A−X|); all four inside gartley's windows ⇒ emit(price = D, zone = D ± 1%, from = X.time, at = emitting bar)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 14,
+        "before": "nothing draws — detect_harmonics returns early at `candles.len() < 14` (harmonics.rs:201), and the lookback-3 fractals that feed the chain exist only from bar 3 to bar n-4, so a completion is first announced three bars after its own D bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "legged_path",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::harmonics::detect_harmonics (harmonics.rs:194), called from events.rs:3565",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/harmonics/harmonics.gartley.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "harmonics.bat",
@@ -64,44 +69,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Bat (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/bat/",
+        "quote": "B at 0.382 to 0.50 of XA ... C at 0.382 to 0.886 of AB, and D at the 0.886 retracement of XA, confluent with a BC extension between 1.618 and 2.618.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "events: 0 on the window. `harmonics.bat` is not in `CONCEPT_ZONE_IDS` (concept_shapes.js:27) and its event carries `price_level`, so it lowers to one dashed 1px `Segment` at D's price plus a `Label` reading `bat` (concept_shapes.js:92-102) — no path through X→A→B→C→D, no ratio on any leg, and the PRZ band the detector did compute (`zone_low`/`zone_high`, D ± 1%, harmonics.rs:196+241) is dropped at that branch. This row's drawing is the reference's arithmetic — all four windows (0.382-0.50, 0.382-0.886, 1.618-2.618, and 0.84-0.93 around the 0.886) are the page's four numbers — and it still produced nothing: the AD/XA window was cleared by 0 of the 71 distinct chains the detector evaluated.",
+        "canonical": "the same XABCD path as the Gartley with its own leg ratios written on it (B 0.382-0.50 of XA, C 0.382-0.886 of AB, D 0.886 of XA), one name `Bat`, and the PRZ band where the 0.886 XA retracement and the 1.618-2.618 BC extension meet",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "four-window AND-test on the newest five alternating lookback-3 fractals: ab/xa 0.382-0.50, bc/ab 0.382-0.886, cd/bc 1.618-2.618, ad/xa 0.84-0.93 (harmonics.rs:45-50) — 0 events across 501 bars; the closest chain on the window (pivots 429-443-448-452-468) satisfied the first three and missed AD/XA by 0.095, which is 170 price points of a 1,784-point XA leg",
+        "their_rule": "B at 0.382-0.50 of XA (the defining Carney shallow), C at 0.382-0.886 of AB, D at the 0.886 XA retracement confluent with a 1.618-2.618 BC extension; the trader's completion is the price entering that confluence, and the pattern is drawn from the swings the trader anchors",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "chain = newest_five_alternating(lookback3_fractals(candles)) ⇒ (ab, bc, cd, ad) = (|B−A|/|A−X|, |C−B|/|B−A|, |D−C|/|C−B|, |D−A|/|A−X|); all four inside bat's windows ⇒ emit(price = D, zone = D ± 1%, from = X.time, at = emitting bar)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 14,
+        "before": "nothing draws — detect_harmonics returns early at `candles.len() < 14` (harmonics.rs:201), and the lookback-3 fractals that feed the chain exist only from bar 3 to bar n-4, so a completion is first announced three bars after its own D bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "legged_path",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::harmonics::detect_harmonics (harmonics.rs:194), called from events.rs:3565",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/harmonics/harmonics.bat.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "harmonics.butterfly",
@@ -115,44 +125,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Butterfly (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/butterfly/",
+        "quote": "The common grid: B at 0.786 of XA, C between 0.382 and 0.886 of AB, and D at a 1.27 extension of XA with 1.618 as the outer limit.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "events: 0 on the window. `harmonics.butterfly` is not in `CONCEPT_ZONE_IDS` (concept_shapes.js:27) and its event carries `price_level`, so it lowers to one dashed 1px `Segment` at D's price plus a `Label` reading `butterfly` (concept_shapes.js:92-102) — no path through X→A→B→C→D, no ratio on any leg, and the PRZ band the detector did compute (`zone_low`/`zone_high`, D ± 1%, harmonics.rs:196+241) is dropped at that branch. The window did hold one: chain 76-82-99-103-107 has AB/XA 0.755 and AD/XA 1.258 against the 1.27 lower bound — a Butterfly short by 0.012 of the ratio, 8 price points on a 660-point XA leg — and the detector reported those five pivots as `abcd` instead.",
+        "canonical": "the XABCD path with D drawn beyond X (the extended completion), legs labelled 0.786 / 0.382-0.886 / 1.27-1.618, the name `Butterfly` at the figure and the PRZ band at the 1.27-1.618 XA extension past X",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "ab/xa 0.74-0.84, bc/ab 0.382-0.886, cd/bc 1.618-2.618, ad/xa 1.27-1.618 on the newest five alternating lookback-3 fractals (harmonics.rs:51-56) — 0 events; per-window pass counts over the 71 distinct chains were 4 / 28 / 4 / 10 and no chain cleared all four",
+        "their_rule": "B at 0.786 of XA, C between 0.382 and 0.886 of AB, D at a 1.27 extension of XA with 1.618 as the outer limit — the completion is a projected XA extension beyond the origin, tested by price reaching the zone rather than by a fifth confirmed fractal",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "chain = newest_five_alternating(lookback3_fractals(candles)) ⇒ (ab, bc, cd, ad) = (|B−A|/|A−X|, |C−B|/|B−A|, |D−C|/|C−B|, |D−A|/|A−X|); all four inside butterfly's windows ⇒ emit(price = D, zone = D ± 1%, from = X.time, at = emitting bar)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 14,
+        "before": "nothing draws — detect_harmonics returns early at `candles.len() < 14` (harmonics.rs:201), and the lookback-3 fractals that feed the chain exist only from bar 3 to bar n-4, so a completion is first announced three bars after its own D bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "legged_path",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::harmonics::detect_harmonics (harmonics.rs:194), called from events.rs:3565",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/harmonics/harmonics.butterfly.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "harmonics.crab",
@@ -166,44 +181,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Crab (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/crab/",
+        "quote": "B retraces 0.382 to 0.618 of the XA leg, C retraces 0.382 to 0.886 of AB, and D completes well beyond the X extreme at a 1.618 extension of XA, typically confluent with a 2.618 to 3.618 projection of BC",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "events: 0 on the window. `harmonics.crab` is not in `CONCEPT_ZONE_IDS` (concept_shapes.js:27) and its event carries `price_level`, so it lowers to one dashed 1px `Segment` at D's price plus a `Label` reading `crab` (concept_shapes.js:92-102) — no path through X→A→B→C→D, no ratio on any leg, and the PRZ band the detector did compute (`zone_low`/`zone_high`, D ± 1%, harmonics.rs:196+241) is dropped at that branch. Bulkowski's Crab page names the same defect from the other side — the turns, not a shaded body, are the pattern: \"The bullish crab can resemble a double top chart pattern except that the turns are located using Fibonacci ratios.\"",
+        "canonical": "the XABCD path with D drawn well past X at the 1.618 XA extension, legs labelled 0.382-0.618 / 0.382-0.886 / 2.618-3.618, and the PRZ band at the 1.618 extension; a flat level at D cannot express the overshoot past X that names the pattern",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "ab/xa 0.382-0.618, bc/ab 0.382-0.886, cd/bc 2.24-3.618, ad/xa 1.55-1.65 on the newest five alternating lookback-3 fractals (harmonics.rs:57-62) — 0 events; pass counts over the 71 chains were 14 / 28 / 5 / 4, none all four. Our CD window opens at 2.24 where the page's projection starts at 2.618",
+        "their_rule": "B retraces 0.382-0.618 of XA, C 0.382-0.886 of AB, D the 1.618 XA extension confluent with a 2.618-3.618 BC projection — the deepest completion in the family, and the reference's own tolerance sits on the BC projection, not on a fourth independent window",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "chain = newest_five_alternating(lookback3_fractals(candles)) ⇒ (ab, bc, cd, ad) = (|B−A|/|A−X|, |C−B|/|B−A|, |D−C|/|C−B|, |D−A|/|A−X|); all four inside crab's windows ⇒ emit(price = D, zone = D ± 1%, from = X.time, at = emitting bar)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 14,
+        "before": "nothing draws — detect_harmonics returns early at `candles.len() < 14` (harmonics.rs:201), and the lookback-3 fractals that feed the chain exist only from bar 3 to bar n-4, so a completion is first announced three bars after its own D bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "legged_path",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::harmonics::detect_harmonics (harmonics.rs:194), called from events.rs:3565",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/harmonics/harmonics.crab.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "harmonics.shark",
@@ -217,44 +237,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Shark (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/shark/",
+        "quote": "The AB leg extends 1.13 to 1.618 of XA ... completion at C lands between the 0.886 retracement and 1.13 extension ... confluent with a 1.618 to 2.24 extension.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "events: 0 on the window. `harmonics.shark` is not in `CONCEPT_ZONE_IDS` (concept_shapes.js:27) and its event carries `price_level`, so it lowers to one dashed 1px `Segment` at D's price plus a `Label` reading `shark` (concept_shapes.js:92-102) — no path through X→A→B→C→D, no ratio on any leg, and the PRZ band the detector did compute (`zone_low`/`zone_high`, D ± 1%, harmonics.rs:196+241) is dropped at that branch. The naming also fails before the drawing does: the page labels this pattern's pivots \"0, X, A, B, C\", so its completion is C where ours is D — a `legged_path` has to carry per-pattern vertex names or the label will contradict the reference it cites.",
+        "canonical": "a five-pivot path whose first pivot sits inside the second leg (X between 0 and A in the reference's naming, the pattern's defining trait), legs labelled 1.13-1.618 / 1.618-2.24 / 0.382-0.886, completion drawn between the 0.886 retracement and the 1.13 extension, with the PRZ band there",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "ab/xa 1.13-1.618, bc/ab 1.618-2.24, cd/bc 0.382-0.886, ad/xa 0.886-1.13 (harmonics.rs:63-68) on the newest five alternating lookback-3 fractals — 0 events; per-window passes over the 71 chains were 11 / 2 / 32 / 4. Our B is measured as AB/XA, which is the page's 1.13-1.618 clause, but we read the page's 1.618-2.24 extension as BC/AB while the page attaches it to the completion",
+        "their_rule": "AB extends 1.13-1.618 of XA, the completion lands between the 0.886 retracement and the 1.13 extension of the XA range confluent with a 1.618-2.24 extension, on pivots named 0-X-A-B-C",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "chain = newest_five_alternating(lookback3_fractals(candles)) ⇒ (ab, bc, cd, ad) = (|B−A|/|A−X|, |C−B|/|B−A|, |D−C|/|C−B|, |D−A|/|A−X|); all four inside shark's windows ⇒ emit(price = D, zone = D ± 1%, from = X.time, at = emitting bar)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 14,
+        "before": "nothing draws — detect_harmonics returns early at `candles.len() < 14` (harmonics.rs:201), and the lookback-3 fractals that feed the chain exist only from bar 3 to bar n-4, so a completion is first announced three bars after its own D bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "legged_path",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::harmonics::detect_harmonics (harmonics.rs:194), called from events.rs:3565",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/harmonics/harmonics.shark.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "harmonics.cypher",
@@ -268,44 +293,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Cypher (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/cypher/",
+        "quote": "B retraces 0.382 to 0.618 of XA, C extends to 1.272 to 1.414 of XA beyond the A point, and D completes at the 0.786 retracement of the full XC swing.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "events: 0, and not because of the window — the concept is unreachable by construction. `detect_harmonics` iterates six kinds (harmonics.rs:229-236) and `windows_for` has no `HarmonicCypher` arm (harmonics.rs:75 returns `None` for it), so the loop skips it on every bar of every instrument; `EventKind::HarmonicCypher` still sits in `EventKind::ALL` (events.rs:730), which is why the registry's integrity test passes and the card paints its blank hairline. Even if it were added, `Windows` holds ab/xa, bc/ab, cd/bc and ad/xa — no XC basis — so the 0.786-of-XC completion it names cannot be written in today's struct.",
+        "canonical": "the XABCD path with B inside XA (0.382-0.618), C pushed 1.272-1.414 of XA beyond A, and the PRZ band at the 0.786 retracement of the whole XC swing — the one pattern in the family whose terminal ratio is measured from C rather than from X",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "no rule exists — the kind is never iterated and has no window arm, so 0 events on any window; the module's own doc says the family keeps wickra's canonical windows and swaps the swing engine, and the swap left two kinds behind",
+        "their_rule": "B retraces 0.382-0.618 of XA, C extends to 1.272-1.414 of XA beyond A, D completes at the 0.786 retracement of XC — three named ratios, the last on a leg (XC) our four-field window struct does not have",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "no predicate is evaluated: the kind is absent from detect_harmonics' iterated list (harmonics.rs:229-236) and windows_for returns None for it (harmonics.rs:75). The rule the concept asks for is (|B−A|/|A−X| ∈ 0.382-0.618) ∧ (|C−A|/|A−X| ∈ 1.272-1.414) ∧ (|D−C|/|C−X| → completion at 0.786 of XC), whose third term has no field in struct Windows",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 14,
+        "before": "nothing draws — detect_harmonics returns early at `candles.len() < 14` (harmonics.rs:201), and the lookback-3 fractals that feed the chain exist only from bar 3 to bar n-4, so a completion is first announced three bars after its own D bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "legged_path",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::harmonics::detect_harmonics (harmonics.rs:194), called from events.rs:3565",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/harmonics/harmonics.cypher.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "harmonics.abcd",
@@ -319,44 +349,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, ABCD (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/abcd/",
+        "quote": "Project the final leg CD from C in the direction of AB with abs(D - C) = abs(B - A), the AB = CD condition.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "29 events, 29 dashed 1px `Segment`s and 29 labels (58 draws) at four distinct levels — 77,654.44 / 79,558.49 / 79,728.57 / 80,497.31, which are the four chains' own D extremes — spanning 23-55 bars (median 37, 49.3-117.9px wide) between x 117.2 and x 1047.6 of a 1,074px plot. The word `abcd` is printed 29 times and 14 of those labels share one y row. Nothing resembling the pattern reaches the chart: no A, B or C on the wire (the event has one `price` slot, filled with D, harmonics.rs:249), no ratio on any leg, no fill, and four undrawn PRZ bands of 1,553-1,610 points — 123-128px, 26% of the plot height — sitting in `zone_low`/`zone_high` that the router discards because the id has no zone id. Two of its four chains (the 79,558.49 and 80,497.31 ones) are announced on the same bars at the same price as `harmonics.wolfe_wave`, so the two firing concepts of this family are partly the same detection under two ids.",
+        "canonical": "four pivots and three legs — A→B→C→D — stroked as a path with the AB and CD legs visibly equal (the pattern is that equality), BC marked with its retracement ratio, the name `AB=CD` once at the figure, and the completion at D where CD = AB",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "bc/ab 0.382-0.886 and cd/bc 1.13-2.618, with ab/xa and ad/xa left unconstrained (0.0-f64::MAX, harmonics.rs:69-74) — CD measured against BC, never against AB; 29 events over the window's 4 passing chains. Recomputed from the window's own pivots, the four announced chains have CD/AB = 0.666, 0.654, 0.997 and 1.192, and BC/AB = 0.528, 0.545, 0.486 and 0.652",
+        "their_rule": "BC between 0.618 and 0.786 of AB and CD equal to AB — abs(D - C) = abs(B - A), the page's stated condition, \"two price legs of matching length separated by a correction\"; on that rule this window contains no AB=CD at all: 1 of our 4 chains clears the equality (0.997) and 1 of 4 clears the 0.618-0.786 correction band",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "chain = newest_five_alternating(lookback3_fractals(candles)) ⇒ (ab, bc, cd, ad) = (|B−A|/|A−X|, |C−B|/|B−A|, |D−C|/|C−B|, |D−A|/|A−X|); all four inside abcd's windows ⇒ emit(price = D, zone = D ± 1%, from = X.time, at = emitting bar)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 14,
+        "before": "nothing draws — detect_harmonics returns early at `candles.len() < 14` (harmonics.rs:201), and the lookback-3 fractals that feed the chain exist only from bar 3 to bar n-4, so a completion is first announced three bars after its own D bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "legged_path",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::harmonics::detect_harmonics (harmonics.rs:194), called from events.rs:3565",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/harmonics/harmonics.abcd.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "harmonics.three_drives",
@@ -370,44 +405,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Three Drives (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/three-drives/",
+        "quote": "The Three Drives is a harmonic exhaustion pattern: three successive, symmetrical pushes to new extremes, each separated by a corrective pullback of similar depth.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "events: 0, and unreachable by construction the same way its sibling Cypher is — the kind is not in the iterated list (harmonics.rs:229-236) and `windows_for` returns `None` for it (harmonics.rs:75), so it never fires on any instrument. Had it fired it would have routed to the flat-level branch like the rest of the family (concept_shapes.js:92-102): one dashed 1px `Segment` labelled `three_drives`, underscores and all, because the segment branch never applies the `replace(/_/g, \" \")` the candlestick branch does (concept_shapes.js:89 vs :99).",
+        "canonical": "four pivots and three same-direction pushes each extending the last (1.27-1.618), with the two intervening corrections near 0.618 of the drive they correct, drawn as a stepped path with each drive named — a shape the XABCD five-vertex path does not have and the registry's description (1.272-1.618) already promises",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "no rule is evaluated — 0 events on every window; the description in the catalog (\"three pushes at Fibonacci extensions (1.272-1.618)\") is the reference's numbers with no code behind them",
+        "their_rule": "three symmetrical pushes to new extremes, corrections retracing near 0.618 of each drive and drives completing near 1.27-1.618 extensions — a three-leg rule on four pivots, which the four-window XABCD struct (ab/xa, bc/ab, cd/bc, ad/xa) cannot state",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "no predicate is evaluated: the kind is absent from detect_harmonics' iterated list (harmonics.rs:229-236) and windows_for returns None (harmonics.rs:75). The rule the concept asks for is drives d1,d2,d3 with |d2|/|d1| and |d3|/|d2| ∈ 1.27-1.618 and each correction near 0.618 of the drive it retraces — three extension terms, four of them on a struct that holds two",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 14,
+        "before": "nothing draws — detect_harmonics returns early at `candles.len() < 14` (harmonics.rs:201), and the lookback-3 fractals that feed the chain exist only from bar 3 to bar n-4, so a completion is first announced three bars after its own D bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "legged_path",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::harmonics::detect_harmonics (harmonics.rs:194), called from events.rs:3565",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/harmonics/harmonics.three_drives.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "harmonics.wolfe_wave",
@@ -421,44 +461,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Wolfe Waves (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/wolfe-waves/",
+        "quote": "Wolfe Waves are drawn rather than detected from a single bar: the construction is the identification.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "22 events, 22 dashed 1px `Segment`s plus 22 labels (44 draws) at five distinct levels, all of them between x 172.9 and x 340.1 — bars 76 to 154 of 501, the left fifth of the plot — with the concept silent for the remaining 346 bars. Spans 21-37 bars (median 26, 45.0-79.3px); the label reads `wolfe_wave` with the underscore intact, 22 times, because the segment branch skips the `replace(/_/g, \" \")` the candle branch applies (concept_shapes.js:89 vs :99). The wave itself is gone: of its five points only the entry (p5, in `price`) and the first pivot's *time* (`formed_at`, harmonics.rs:165) survive the event boundary — points 2, 3 and 4 never leave Rust. Two of its waves (76-82-99-103-107 and 111-121-123-128-131) are also this window's only AB=CD completions at the same prices and on the same bars, so 18 of the family's 51 events are one geometry announced twice; its own `evidence.magnitude` carries the target's distance (690.65 on the first event) and neither renderer reads it. The 1-4 target does reach the wire — as `zone_high` on a bullish wave and `zone_low` on a bearish one (harmonics.rs:162-163, 177-178), 690-1,533 points away, 55-122px — and the router drops it, so the drawing prints neither the channel nor the line the pattern is named for.",
+        "canonical": "five swing points labelled 1-5 traced as one path inside a converging channel (the 1-3 and 2-4 trendlines), plus the 1-4 line extended forward as the target — the reference's own words make the construction the drawing, so a level at wave 5 is the one thing this pattern is not",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the newest five strictly alternating lookback-3 fractals, side-matched L-H-L-H-L (bullish) or H-L-H-L-H (bearish), with p3 beyond p1, p4 inside p2 (the narrowing channel), p5 beyond p3 and p4 on the far side of p5 (harmonics.rs:142-151); the target is the 1-4 line evaluated at `candles.len() - 1 + 10` — ten bars past the *emitting* bar (harmonics.rs:136-140, 153) — so it re-announces every bar with a new target. 22 events over the window came from 5 distinct waves on 4 distinct origins; wave 123-128-131-136-141's target moved 146.70 points across its own 8 events",
+        "their_rule": "low 1, high 2, lower low 3, lower high 4 with the 1-3 and 2-4 trendlines narrowing toward each other, and \"draw the EPA line from point 1 through point 4 and extend it forward as the target\" — the target is a fixed line the trader extends and reads where price crosses it, not a per-bar projection of a moving bar count; the wave-5 rule itself is contested even among practitioners (new extreme beyond 3 vs a 5 that holds inside the channel), so only the channel and the 1-4 line are citable",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "chain = newest_five_alternating(lookback3_fractals(candles)); bullish ⇒ sides L,H,L,H,L ∧ p3 < p1 ∧ p4 < p2 ∧ p5 < p3 ∧ p4 > p5 (bearish mirrors); target = line(p1, p4) evaluated at bar (emitting_index + 10) ⇒ emit(price = p5, zone = [p5, target], from = p1.time, at = emitting bar)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 11,
+        "before": "nothing draws — detect_wolfe (harmonics.rs:131) carries no length guard at all, unlike detect_harmonics' `len() < 14` bail; its floor is arithmetic: lookback-3 fractals exist only from bar 3 to bar n-4, so five alternating pivots are impossible below 11 bars"
       },
       "target_shape": {
-        "name": "",
+        "name": "legged_path",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::harmonics::detect_wolfe_waves → detect_wolfe (harmonics.rs:188, 131), called from events.rs:3551",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/harmonics/harmonics.wolfe_wave.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }

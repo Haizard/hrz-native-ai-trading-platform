@@ -13,44 +13,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Average Directional Index (ADX)",
+        "url": "https://www.tradingview.com/support/solutions/43000589099-average-directional-index-adx/",
+        "quote": "The Average Directional Index (ADX) is a line that plots in its own pane below the price chart.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "29 'adx' labels stamped on the price frame at their signal bars (x 301.5-979, y 67.9-429.6 in the 484px plot), while the concept's own series spec -- ADX with +DI and -DI, fixed 0-100, a level at 25 -- is simultaneously requested and drawn in a bottom pane. ADX therefore draws twice: once correctly below the chart and once as a word at price.",
+        "canonical": "ADX with +DI and -DI in their own pane below the price, fixed 0-100 with a level at 25; the reference draws the three lines and prints no signal at price, so the 25-cross is read off the pane.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "ADX(14), +DI(14), -DI(14) are defined on every bar; a label is emitted when ADX crosses 25, or +DI crosses -DI while ADX > 20 (indicator_signals.rs:285-291, n > 30)",
+        "their_rule": "TradingView plots ADX, +DI and -DI on every bar and marks no cross on the price chart; the cross is a reading of the pane, not a drawn event",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "adx = ADX(14); pdi = +DI(14); mdi = -DI(14) => signal when adx[n-1] <= 25 < adx[n], or pdi and mdi cross while adx > 20",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 30,
+        "before": "ADX needs 14 bars; the detector requires n > 30, so the first possible label is bar 31"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::AdxTrendCross (indicator_signals.rs:285-291)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.adx.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.keltner",
@@ -64,44 +69,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Keltner Channels (KC)",
+        "url": "https://www.tradingview.com/support/solutions/43000502266-keltner-channels-kc/",
+        "quote": "The Keltner Channels (KC) indicator is a banded indicator similar to Bollinger Bands and Moving Average Envelopes.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "16 'keltner' labels on the price frame (x 185.8-989.7, y 67.9-398.6) while the same concept's three-line Keltner overlay is drawn on the price plot from overlay_series; the word is a second, senseless mark on top of the band it names.",
+        "canonical": "an EMA(20) centre with upper and lower bands two ATR(10) away, drawn over the candles as a band; the reference calls it 'a banded indicator ... similar to Bollinger Bands' and puts no word at the bar.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "EMA(20) +/- 2*ATR(10) is defined on every bar; a label is emitted when close is outside the band (indicator_signals.rs:316-318, n > 22)",
+        "their_rule": "TradingView draws the Keltner band on every bar and marks no breakout at price; the band's edge is itself the signal",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "mid = EMA(close, 20); up = mid + 2*ATR(10); lo = mid - 2*ATR(10) => signal when close > up or close < lo",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 22,
+        "before": "EMA(20) exists from bar 20; the detector requires n > 22"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::KeltnerBreakout (indicator_signals.rs:316-318)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.keltner.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.donchian",
@@ -115,44 +125,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Donchian Channels (DC)",
+        "url": "https://www.tradingview.com/support/solutions/43000502253-donchian-channels-dc/",
+        "quote": "It is a banded indicator consisting of an upper band, lower band and middle line.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 shapes. The detector never fires -- donchian() includes the current bar in the 20-bar channel (trend.rs:79-95), so close > upper and close < lower are unsatisfiable -- and the three-line overlay that the series route draws is the only Donchian on the chart. The drawing is the reference's channel; the concept's signal does not exist.",
+        "canonical": "upper, lower and middle lines of the 20-bar channel on the price plot; the reference draws the channel only and marks no breakout, so there is nothing to stamp at the bar.",
+        "verdict": "matches"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "upper/middle/lower are defined on every bar; the breakout clause requires close beyond a channel that already contains that close, so the detector emitted 0 events in 501 bars (indicator_signals.rs:324-326 with trend.rs:79-95)",
+        "their_rule": "TradingView draws the channel on every bar and marks no breakout; our 0 events match its drawing, but our threshold names a signal the reference never draws",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "up = max(high, 20 bars incl. current); lo = min(low, 20 bars incl. current) => signal when close > up or close < lo [unsatisfiable]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 22,
+        "before": "the channel exists from bar 20; the detector requires n > 22, and can never fire at any warmup"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::DonchianBreakout (indicator_signals.rs:324-326) over analytics_core::indicators::trend::donchian (trend.rs:79-95)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.donchian.html",
-      "preview_agrees": ""
+      "preview_agrees": "agrees"
     },
     {
       "concept_id": "indicators.supertrend",
@@ -166,44 +181,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Supertrend",
+        "url": "https://www.tradingview.com/support/solutions/43000634738-supertrend/",
+        "quote": "The calculation of its single line combines trend detection and volatility.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "13 'supertrend' labels at signal bars (x 82.9-989.7, y 67.9-416.3) on top of the one-line Supertrend overlay the series route draws. That line is also single-coloured (indicator_series.rs:518-539), so the side the reference encodes in colour is lost, and the label adds a 13th mark at price.",
+        "canonical": "one trailing line on the price plot, coloured by side -- below price while long, above while short -- because 'its single line combines trend detection and volatility'.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the ATR(10)x3 trailing line is defined on every bar; a label is emitted when the line flips side (indicator_signals.rs:336-338, n > 12)",
+        "their_rule": "TradingView draws the trailing line on every bar and colours it by side; it marks no flip at price",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "band = ATR(10) * 3; trend flips when close crosses the trailing stop => signal on side change",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 12,
+        "before": "ATR(10) exists from bar 10; the detector requires n > 12"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::SupertrendFlip (indicator_signals.rs:336-338)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.supertrend.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.psar",
@@ -217,44 +237,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Parabolic SAR (SAR)",
+        "url": "https://www.tradingview.com/support/solutions/43000502597-parabolic-sar-sar/",
+        "quote": "The indicator is plotted as dots above or below the price.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "38 'psar' labels (x 59.3-1071.1, y 58-454.6) on top of the series route's single pink line. Neither route draws the reference's dots: the overlay is a connected line (indicator_series.rs:541-559), and the only per-bar mark is the word, which says nothing about the stop's value.",
+        "canonical": "dots above or below the price, one per bar, flipping side with the trend -- 'plotted as dots above or below the price'.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "SAR(0.02, 0.2) is defined on every bar; a label is emitted when SAR flips above or below price (indicator_signals.rs:346-348, n > 12)",
+        "their_rule": "TradingView plots every SAR dot and marks no flip separately; the dot's side is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "sar = parabolic_sar(0.02, 0.2) => signal when sar crosses price",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 12,
+        "before": "SAR exists from bar 2; the detector requires n > 12"
       },
       "target_shape": {
-        "name": "",
-        "status": "wiring",
+        "name": "series_dots",
+        "status": "new_rendering",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::PsarFlip (indicator_signals.rs:346-348)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.psar.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.ichimoku",
@@ -268,44 +293,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Ichimoku Cloud",
+        "url": "https://www.tradingview.com/support/solutions/43000589152-ichimoku-cloud/",
+        "quote": "The Ichimoku Cloud is a package of multiple technical indicators that signal support, resistance, market trend, and market momentum.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 'ichimoku' labels (x 661.7-1058.3, y 63-438.1) on top of the series route's tenkan, kijun, chikou lines and kumo fill. Senkou A and B are never stroked (indicator_series.rs:561-595), so the cloud has no edges, and the label adds a 50th mark at price.",
+        "canonical": "tenkan, kijun and chikou as lines, senkou A/B as the kumo fill and as their own lines, all on the price plot; the cloud is a fill, not a word at the bar.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "tenkan(9), kijun(26), senkou A/B, chikou(26) are defined on every bar; labels are emitted on tenkan/kijun cross, kijun/price cross, kumo twist and cloud break (indicator_signals.rs:360-380, n > 80)",
+        "their_rule": "TradingView draws all five lines and the cloud on every bar and marks no cross at price; the cloud's edge is the reference",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "tenkan = mid(9); kijun = mid(26); senkou_a = (tenkan+kijun)/2 shifted 26; senkou_b = mid(52) shifted 26 => signals on tenkan/kijun cross, kijun/price cross, kumo twist, close beyond the cloud",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 80,
+        "before": "senkou B needs 52 + 26 = 78 bars; the detector requires n > 80"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_band",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::IchimokuTenkanKijunCross / IchimokuKijunCross / IchimokuKumoTwist / IchimokuCloudBreakout (indicator_signals.rs:360-380)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.ichimoku.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.chandelier",
@@ -319,44 +349,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Chandelier Exit",
+        "url": "https://www.tradingview.com/support/solutions/43000773013-chandelier-exit/",
+        "quote": "The Chandelier Exit, created by Charles Le Beau and popularized by Alexander Elder, is a volatility-based indicator that identifies stop-loss exit points based on local price extremes and Average True Range (ATR).",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "39 'chandelier' labels (x 67.9-976.8, y 55.3-431.3) on top of two stop lines the series route always draws -- the long stop and the short stop together (indicator_series.rs:736-756), where the canonical chart shows the active one. The label is the third mark at price.",
+        "canonical": "one active stop line on the price plot: the long stop under the highs while long, the short stop over the lows while short -- never both at once.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "highest-high(22) - 3*ATR and lowest-low(22) + 3*ATR are defined on every bar; a label is emitted when price crosses the active stop (indicator_signals.rs:77-79, n > 24)",
+        "their_rule": "TradingView draws the active stop on every bar and marks no exit separately; the line crossing price is the reference",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "long_stop = highest(high, 22) - 3*ATR(22); short_stop = lowest(low, 22) + 3*ATR(22) => signal when close crosses the active stop",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 24,
+        "before": "ATR(22) exists from bar 22; the detector requires n > 24"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::ChandelierFlip (indicator_signals.rs:77-79)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.chandelier.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.macd_family",
@@ -370,44 +405,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Moving Average Convergence Divergence (MACD) indicator",
+        "url": "https://www.tradingview.com/support/solutions/43000502344-moving-average-convergence-divergence-macd-indicator/",
+        "quote": "The indicator plots the MACD and signal values as lines, and the histogram values as color-coded columns.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "37 'macd family' labels (x 115-1081.9, y 89.8-409.5) on the price frame while the 23-line family ribbon is drawn in its own pane; the ribbon is the indicator, and the word is a second draw at a scale MACD never uses.",
+        "canonical": "23 MACD lines in one pane, zero line, fast-to-slow gradient -- our composition of the reference's MACD pane (line, signal, histogram) repeated across periods, with no mark printed at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the MACD line for every fast 2..=24 with slow = 2*fast is defined on every bar; a label is emitted when all 23 lines sit on the same side of zero (indicator_signals.rs:554, n > 47)",
+        "their_rule": "TradingView's MACD pane plots one period continuously and marks no consensus event; there is no external rule for a 23-line ribbon",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "for fast in 2..=24: line[fast] = MACD(fast, 2*fast).line => signal when all lines > 0 or all lines < 0",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 47,
+        "before": "the slowest MACD line exists from bar 52; the consensus detector requires n > 47 and reads whichever lines are defined"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::MacdFamilyConsensus (indicator_signals.rs:554)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.macd_family.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.ema_family",
@@ -421,44 +461,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView community script, Guppy Multiple Moving Average (GMMA)",
+        "url": "https://www.tradingview.com/script/IucqmN3a-Guppy-Multiple-Moving-Average-GMMA/",
+        "quote": "The GMMA plots two groups of Exponential Moving Averages: short-term and long-term.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "11 'ema family' labels (x 162.2-1039, y 94.4-410.7) on the price frame on top of the 12-line GMMA overlay the series route draws; the ribbon is visible, and the word adds a separate mark for the same group cross.",
+        "canonical": "twelve EMAs on the price plot in two distinguishable groups (3-15 and 30-60) -- 'two groups of Exponential Moving Averages: short-term and long-term' -- with no word at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "12 EMAs (3..15 and 30..60) are defined on every bar; a label is emitted when the short-group mean crosses the long-group mean (indicator_signals.rs:601-603, n > 62)",
+        "their_rule": "TradingView draws all twelve GMMA lines continuously and marks no group cross; the compression/expansion of the groups is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "short = mean(EMA(p) for p in 3..=15); long = mean(EMA(p) for p in 30..=60) => signal when short crosses long",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 62,
+        "before": "EMA(60) exists from bar 60; the detector requires n > 62"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::GmmaCross (indicator_signals.rs:601-603)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.ema_family.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.macd",
@@ -472,44 +517,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Moving Average Convergence Divergence (MACD) indicator",
+        "url": "https://www.tradingview.com/support/solutions/43000502344-moving-average-convergence-divergence-macd-indicator/",
+        "quote": "The indicator plots the MACD and signal values as lines, and the histogram values as color-coded columns.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 'macd' labels (x 222.2-1081.9, y 55.3-447.3) at price while the MACD pane -- line, signal, histogram, zero line -- is drawn below the chart. The whole oscillator is already drawn correctly; the labels are 50 copies of its name on the price axis.",
+        "canonical": "MACD and signal as lines with the histogram as colour-coded columns in their own pane, a zero line -- 'the MACD and signal values as lines, and the histogram values as color-coded columns' -- and no word at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "MACD(12,26,9) line, signal and histogram are defined on every bar; a label is emitted on signal cross or zero cross (indicator_signals.rs:177-184, n > 36)",
+        "their_rule": "TradingView plots MACD continuously and marks no signal cross; the histogram crossing zero is itself the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "line = EMA(12)-EMA(26); signal = EMA(line, 9); hist = line - signal => signal when line crosses signal, or line crosses zero",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 36,
+        "before": "MACD exists from bar 26; the detector requires n > 36"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::MacdSignalCross / MacdZeroCross (indicator_signals.rs:177-184)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.macd.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.ema",
@@ -523,44 +573,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Moving Averages",
+        "url": "https://www.tradingview.com/support/solutions/43000502589-moving-averages/",
+        "quote": "Exponential Moving Average is very similar to (and is a type of) WMA. The major difference with the EMA is that old data points never leave the average.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "3 'ema' labels (x 616.7-751.7, y 63-234.5) while the EMA 20/50/200 overlay is drawn from the series route. Only three 50/200 crosses exist in 501 bars, so the event path is nearly silent while the overlay carries the indicator; the three marks it does make are words at price.",
+        "canonical": "three EMA lines (20/50/200) on the price plot, price-scaled; a moving average is a continuous line and the reference draws no cross marker.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "EMA(20), EMA(50) and EMA(200) are defined on every bar; a label is emitted when EMA(50) crosses EMA(200) (indicator_signals.rs:192, n > 201)",
+        "their_rule": "TradingView plots the EMAs continuously and marks no golden/death cross; the line ordering is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "fast = EMA(close, 50); slow = EMA(close, 200) => signal when fast crosses slow",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 201,
+        "before": "EMA(200) exists from bar 200; the detector requires n > 201"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::EmaCross (indicator_signals.rs:192)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.ema.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.sma",
@@ -574,44 +629,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Moving Averages",
+        "url": "https://www.tradingview.com/support/solutions/43000502589-moving-averages/",
+        "quote": "The Simple Moving Average (SMA) is calculated by adding up the prices of a security over a set period and then dividing that total by the number of periods.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "1 'sma' label (x 636, y 179.1) while the SMA 20/50/200 overlay is drawn. A single 50/200 cross in 501 bars makes the event path almost invisible, and the one mark it makes is a word at price.",
+        "canonical": "three SMA lines (20/50/200) on the price plot, price-scaled; the reference draws the averages as continuous lines and marks no cross.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "SMA(20), SMA(50) and SMA(200) are defined on every bar; a label is emitted when SMA(50) crosses SMA(200) (indicator_signals.rs:192, n > 201)",
+        "their_rule": "TradingView plots the SMAs continuously and marks no cross; the line ordering is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "fast = SMA(close, 50); slow = SMA(close, 200) => signal when fast crosses slow",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 201,
+        "before": "SMA(200) exists from bar 200; the detector requires n > 201"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::SmaCross (indicator_signals.rs:192)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/trend/indicators.sma.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }

@@ -13,44 +13,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Bollinger Bands %B",
+        "url": "https://www.tradingview.com/support/solutions/43000501971-bollinger-bands-b-b/",
+        "quote": "What the %b indicator does is quantify or display where price is in relation to the bands.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "10 'bollinger percent' labels (x 340.1-1077.6, y 93.6-419.2) at price while the %B pane is drawn below. That pane also puts %B and bandwidth on one auto scale (indicator_series.rs:437-467), so the 1 and 0 levels sit on a scale neither series fills -- the pane and the labels are both wrong, differently.",
+        "canonical": "%B in its own pane with levels at 1 and 0, and the bandwidth on its own scale if drawn at all -- 'what the %b indicator does is quantify or display where price is in relation to the bands'.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "%B(20,2) is defined on every bar; a label is emitted when %B crosses 1 or 0 (indicator_signals.rs:212-214, n > 21)",
+        "their_rule": "TradingView plots %B continuously against its 0/1 levels and marks no band break; the line crossing 1 or 0 is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "pctb = (close - lower) / (upper - lower) => signal when pctb crosses 1 or 0",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 21,
+        "before": "bands exist from bar 20; the detector requires n > 21"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::BollingerBreakout (indicator_signals.rs:212-214)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volatility/indicators.bollinger_percent.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.atr_family",
@@ -64,44 +69,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Average True Range (ATR)",
+        "url": "https://www.tradingview.com/support/solutions/43000501823-average-true-range-atr/",
+        "quote": "The way to interpret the Average True Range is that the higher the ATR value, then the higher the level of volatility.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "2 'atr family' labels (x 696-747.4, y 52.4-136.9) at price while the 23-line ATR ribbon is drawn below. The ribbon's expansion is the indicator and it is already visible; two words at price add nothing to it.",
+        "canonical": "the ATR ribbon in its own pane, auto-scaled, fast-to-slow gradient -- our composition of the reference's single ATR line, which establishes the pane and the units.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "ATR(2)..ATR(24) are defined on every bar; a label is emitted when the family mean exceeds 1.5x its own 20-bar mean (indicator_signals.rs:581, n > 60)",
+        "their_rule": "TradingView plots one ATR continuously in its own pane and marks no expansion event; the family expansion is ours",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "for p in 2..=24: atr[p] = ATR(p) => signal when mean(atr[p]) > 1.5 * mean(mean(atr[p]), 20)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 60,
+        "before": "ATR(24) exists from bar 24; the family-mean detector requires n > 60"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::AtrFamilyExpansion (indicator_signals.rs:581)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volatility/indicators.atr_family.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.atr",
@@ -115,44 +125,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Average True Range (ATR)",
+        "url": "https://www.tradingview.com/support/solutions/43000501823-average-true-range-atr/",
+        "quote": "The way to interpret the Average True Range is that the higher the ATR value, then the higher the level of volatility.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "2 'atr' labels (x 696-751.7, y 52.4-234.5) at price while the ATR(14) pane is drawn below. A volatility in price units is being announced at a price.",
+        "canonical": "one ATR line in its own pane, auto-scaled in the instrument's units, no levels -- 'the higher the ATR value, then the higher the level of volatility'.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "ATR(14) is defined on every bar; a label is emitted when it exceeds 1.5x its 20-bar mean (indicator_signals.rs:618, n > 36)",
+        "their_rule": "TradingView plots ATR continuously in its own pane and marks no expansion event; the line's rise is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "atr = ATR(14) => signal when atr > 1.5 * mean(atr, 20)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 36,
+        "before": "ATR(14) exists from bar 14; the detector requires n > 36"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::AtrExpansion (indicator_signals.rs:618)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volatility/indicators.atr.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.bollinger",
@@ -166,44 +181,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Bollinger Bands (BB)",
+        "url": "https://www.tradingview.com/support/solutions/43000501840-bollinger-bands-bb/",
+        "quote": "Bollinger Bands consist of a band of three lines: a middle simple moving average, and upper and lower bands set two standard deviations away from the middle line.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 'bollinger' labels (x 265.1-1071.1, y 67.9-486.1) across the price frame while the three-band overlay is drawn on the same frame. Two independent drawings of one indicator: the correct band and 50 words where it already is.",
+        "canonical": "three lines -- the middle SMA(20) and upper/lower at two standard deviations -- on the price plot; 'Bollinger Bands consist of a band of three lines', and the reference marks no word at the bar.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "SMA(20) +/- 2 sigma is defined on every bar; a label is emitted when close is outside the band (indicator_signals.rs:212-214, n > 21)",
+        "their_rule": "TradingView draws the bands continuously and marks no breakout; price beyond the band is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "mid = SMA(close, 20); sd = stdev(close, 20); up = mid + 2*sd; lo = mid - 2*sd => signal when close > up or close < lo",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 21,
+        "before": "bands exist from bar 20; the detector requires n > 21"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::BollingerBreakout (indicator_signals.rs:212-214)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/volatility/indicators.bollinger.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }

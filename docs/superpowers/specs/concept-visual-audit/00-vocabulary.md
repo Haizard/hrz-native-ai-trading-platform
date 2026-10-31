@@ -1,152 +1,266 @@
 # The shape vocabulary
 
-Status: **levels, boxes and readouts are settled; the rest is open.** Pass 1 (Smart Money
-Concepts, 32 rows) fixed what `level_run` and `lifecycle_box` mean, because nine later
-passes draw against them. Pass 2 (Supply & Demand, 4 rows) tested that generalisation and
-it held — three of its four rows needed no new shape — and claimed `readout`, which until
-then was a candidate on pass 11's say-so. Pass 3 (Price Action, 11 rows) tested it a third
-time and it held again: ten of its eleven rows asked for `level_run`, `lifecycle_box` or
-`time_box` unchanged, and the eleventh claimed `bar_marker` as *wiring* rather than as a new
-shape, which is the first time a pass has asked for a form the app can already paint.
-Pass 4 (Sessions, 14 rows) tested it a fourth time and settled the candidate three passes
-kept circling: `time_box` is **wiring**, because the scripting path already paints exactly
-that draw and only the concept path has no variant for it.
-Plan Task 18 finalises the file.
-Its purpose is to be the one place the vocabulary is declared, so that a pass which
-needs a fifth kind or a new shape has to say so here, in front of the gate, instead of
-typing a value into a ledger row and hoping the count still adds up.
+Status: **final — Task 18, 2026-10-31.** Judged over **182 rows** in sixteen shards
+([`ledger/`](../../../../reports/concept-visual-audit/ledger)) and the sixteen family sections
+([`01-smc.md`](01-smc.md) through [`16-econ.md`](16-econ.md)). This chapter is the contract the
+build reads; the gate enforces it. Where a pass's row and this chapter disagree, the row keeps what
+the pass measured and this chapter records the painter reality — the split is named under *Status
+is per row where the host changes the draw*, never smoothed over.
 
-The gate enforces exactly this file's four kinds:
-[`concept_visual_audit.mjs`](../../../tools/concept_visual_audit.mjs) refuses a `kind`
-it was not told about, and `check` fails if any kind stops being named here.
+The audit's shape numbers after twelve passes:
+
+| | rows |
+| --- | --- |
+| kinds | **124 `event`, 40 `series`, 14 `interval`, 4 `readout`** |
+| statuses | **126 `wiring`, 56 `new_rendering`** |
+| `draw.verdict` | 133 `differs_major`, 25 `differs_minor`, 22 `impossible_in_vocabulary`, 2 `matches` |
+| `fires.verdict` | 115 `different_rule`, 39 `continuous`, 21 `same_bars`, 7 `no_external_rule` |
+| `preview_agrees` | 132 `differs`, 38 `not_rendered`, 12 `agrees` |
+| `rule_as_data.form` | 176 `predicate`, 6 `recursion` |
+
+The two `matches` are `indicators.donchian` and `indicators.changepoint`; the twenty-two
+`impossible_in_vocabulary` rows are SMC concepts whose draw needs a shape the three-member concept
+path cannot express at all. The ceiling the audit measured is the vocabulary in this file, not the
+engine: the scripting path already paints every primitive named below.
 
 ## The four kinds of thing a concept can be
 
-| `kind` | What the concept is | Drawn as | Families |
-| --- | --- | --- | --- |
-| `event` | Fires on a set of bars | A mark, a segment, a box | SMC, Price Action, Candlesticks, Economic Releases |
-| `series` | One value per bar, over a scale | A line, a band — on the price scale or its own | Trend, Momentum, Volatility, Volume, GARCH, Kalman |
-| `interval` | A state held across time, whatever price does | A full-height box with a label | Sessions, HMM regime, changepoint |
-| `readout` | A number the trader reads | The figure, and the reference it is unusual against | `indicators.zscore` today; every score the engines beside the chart will want |
+| `kind` | What the concept is | Drawn as | Rows | Families |
+| --- | --- | --- | --- | --- |
+| `event` | Fires on a set of bars or at an instant | A mark, a segment, a path, a box, or a vertical rule | 124 | SMC 23, Candlesticks 34, Chart Patterns 15, Harmonics 9, Price Action 10, Supply & Demand 3, Sessions 8, Fibonacci 6, Volume Profile 9, Order Flow 1, Economic Releases 6 |
+| `series` | One value per bar, over a scale | A line, a histogram, a band, or dots — on the price scale or its own | 40 | Trend 12, Momentum 10, Volatility 4, Volume 5, Statistical 9 |
+| `interval` | A state held across time, whatever price does | A full-height box with a label | 14 | SMC 9, Sessions 3, Price Action 1, Statistical 1 |
+| `readout` | A number the trader reads | The figure, the window it was measured over, and the host it hangs on | 4 | Supply & Demand 1, Sessions 3 |
 
-`kind` is the axis the drawing question is asked on. `ConceptShape` answers only *where
-on the chart*; it never says what the concept is, and that is how a `+2.7σ` deviation and
-a doji ended up with the same text mark.
+`kind` is the axis the drawing question is asked on. `ConceptShape` answers only *where on the
+chart*; it never says what the concept is, and that is how a `+2.7σ` deviation and a doji ended up
+with the same text mark.
 
-Three rules the passes do not get to renegotiate:
+## The nine gate rules
 
-- **A shape does not know which venue fed it.** What differs between a Binance tier and a
-  derived tier is the rule's inputs and the provenance on the signal, never the geometry.
-- **Wiring before rendering.** The scripting path already draws `Line { extend }`,
-  `Polyline`, `Polygon`, `Band` and `Table`
-  ([script.rs:67](../../../../frontend/chart-engine/src/script.rs)); a vocabulary item the
-  engine can already paint is `wiring`, and only a shape it cannot paint at all is
-  `new_rendering`. The ledger's `target_shape.status` is where that distinction is recorded.
-- **A series' scale comes from the registry,** not from the pass: `pane` true means its own
-  scale, `overlay` true means the price frame, and the gate rejects a row that disagrees
-  ([rule 5](../../../../docs/superpowers/plans/2026-10-29-concept-visual-fidelity-audit.md)).
+The gate is [`tools/concept_visual_audit.mjs`](../../../tools/concept_visual_audit.mjs); `check`
+with no flag sweeps the union. Every row passes all nine:
 
-The rule is enforced by reading, not by code, so it is worth recording that pass 1 found
-two of its own rows breaking it and fixed them: `smc.trendline_sweep` is not a `segment`
-(a horizontal level cannot carry a projected slope, so it is `outline`) and
-`smc.smt_divergence` is not a `segment` either (it needs a second series, so it is
-`pair_link`). A name the engine can already paint is never tagged `new_rendering`.
+| Rule | What it enforces |
+| --- | --- |
+| 1 | Exactly one row per registry concept, in the shard `familyOf(id)` puts it in, at the registry's version |
+| 2 | Nothing left at its seeded value; `kind`, both verdicts, `form`, `status` and `scale` are values from this chapter's vocabulary |
+| 3 | A citation — `source`, `url`, one quoted sentence, and a `YYYY-MM-DD` checked date — or `no_convention: true` with a reason that is more than "none found" |
+| 4 | An `event` cannot fire `continuous`; a rule that fires every bar is a series wearing an event's row |
+| 5 | A `series`' scale is the registry's: `pane: true` → `own_pane`, `overlay` only → `price`; a series concept with neither flag is a recorded defect, not a row to route around |
+| 6 | `rule_as_data.inputs` is non-empty, and each input is `{ name, channel }` where `channel` is a `DataChannels` constant — the lowercase name or the bit name; `macro` is legal because the channel constants (not the catalog's `names()`) are the source |
+| 7 | The render the row was judged from exists on disk |
+| 8 | `preview_agrees` is `agrees`, `differs`, or `not_rendered` — the card in the Indicators face is a second renderer and must be judged |
+| 9 | `parameters.declared` equals the registry's parameter list and `parameters.honoured` is an array drawn from it; `[]` is the honest answer, an absent list is an unjudged row |
 
-## What the concept path can draw today
+The rules are enforced by reading the ledger, not by re-running the engine: each row names the
+detector function it measured, so a later diff can find the pair.
 
-Three members, and both spatial ones are bounded by their own two bars
-([scene.rs:2847](../../../../frontend/chart-engine/src/scene.rs)):
+## What `wiring` and `new_rendering` mean
 
-- `Zone` — a rectangle from `from_ns` to `to_ns` between `low` and `high`. Lowers to a
-  Box plus a Label, two draws.
-- `Segment` — a horizontal level from `from_ns` to `to_ns` at `price`. Lowers to a Line
-  plus a Label, two draws.
-- `CandleMark` — a word at a bar, above or below it. One Label.
+- **`wiring`** — the shape can be lowered to a painter that already exists; the entry below names
+  the arm. What remains is plumbing: a `ConceptShape` member, a wire field, a registry flag, a
+  dispatch arm. None of those is a painter, and the audit counts them as wiring on purpose.
+- **`new_rendering`** — no existing lowering paints the shape. Three cases qualify, and the entry
+  says which one applies: **no painter exists** (pane dots, pane fills), **the shape's data contract
+  is not on the wire** (a run's start, a lifecycle's edge, the slope `smc.trendline_sweep` computes
+  and discards), or **the host does not exist** (a second pane for `pair_link`, a value-carrying
+  label for `readout`).
+- The rule "a name the engine can already paint is never tagged `new_rendering`" still holds: every
+  `new_rendering` entry names the missing painter, data or host — never merely a missing variant.
 
-`position_concept_shape` then floors a zero-length segment at `bar_w * 0.6`, which is why
-the audit's most common `draw.today` reads "a 1.3px stub and a floating word": 10 of the
-29 SMC concepts that fired at all in a 501-bar window answer `bars: [t, t]` for **every**
-event they produce, so every one of them draws that stub.
+### Status is per row where the host changes the draw
 
-## Vocabulary the family passes have asked for
+Two shapes split by host and one splits by data. The chapter records both halves; it does not
+average them:
 
-Each row below is a *candidate*, named by the gap the audit measured rather than by the
-family that first needs it, so pass 4's session box and pass 1's model boxes are one shape
-and not two. A pass that renames or refuses one does it here, with the reason.
+- **`time_box`** — the full-height host is `wiring` (the `Box` tint arm); the price-extent clock
+  states (four SMC rows, `pa.regime`) are `new_rendering` because the state's span is not on the
+  wire. The geometry for the latter is `price_band`'s box; the missing piece is the span.
+- **`series_band`** — the overlay host is `wiring` (`OverlayFillSpec` → `ScriptDraw::Band`); the
+  pane host is `new_rendering` because `SubPaneSpec::Series` has no fills field and the pane branch
+  of the mapper drops them.
+- **`outline`** — fifteen Chart Pattern rows are `wiring` (`Polyline`); `smc.trendline_sweep` is
+  `new_rendering` because the detector computes the slope through three touches and then discards
+  it, so no arm can draw the line the row asks for.
 
-| Candidate shape | Kind | Settled? | What it must express | Claimed by | Evidence |
-| --- | --- | --- | --- | --- | --- |
-| `level_run` | event | **yes — pass 1** | A horizontal level at one price with a *run*: it starts at the bar that made it and extends right across the following bars, dashed or solid by class, labelled once at its left end. Never a point. | pass 1 (9 rows) | `smc.bos` answers `bars: [t, t]` for every event in a 501-bar window, so today it lowers to a 1.3px stub and a floating word |
-| `lifecycle_box` | event | **yes — pass 1, confirmed by pass 2** | A box between two prices whose right edge is *time, not the bar that made it*: unmitigated boxes reach forward, mitigated ones stop at the mitigation bar and are then removed. Same class carries the polarity (a failed one is redrawn in the opposite colour with a non-solid fill). | pass 1 (12 rows), pass 2 (3) | `smc.fvg`'s 50 measured events span 1 to 221 bars (median 174); `smc.ifvg` 2-219, `smc.order_block` 5-178 — the detector already knows a lifecycle, and the renderer treats it as a fixed two-bar box. Pass 2 found the same gap one layer closer to the source: `sd.zone_tested`'s band has both edges right and is 1-4 bars long, because the event boundary drops the `to` and `mitigated_at` its own detector already computed ([regions.rs:150-171](../../../../crates/analytics-core/src/regions.rs#L150)) |
-| `time_box` | interval | **yes — pass 4, as `wiring`** | A full-height region over a time range, labelled, with no price extent at all. The shade is the plot's full height, so it never claims a price; the window's own high and low, if the family wants them, are separate `level_run`s. | pass 1 (4), pass 4 (3) | `smc.judas_swing`, `smc.power_of_three`, `smc.model2022` and `smc.market_maker_model` are states of the clock that the router sends to the price-zone branch, so they draw as a price band — a *where* answering a *when*. Pass 4 then found the draw already exists one layer over: `scene_overlay_tints` turns a Pine `bgcolor` into `ScriptDraw::Box { y1: plot.y, y2: plot.y + plot.h, border_width: 0.0, fill_alpha: 0.10 }` — full plot height, zero price extent, already clipped by the shell ([script.rs:785](../../../../frontend/chart-engine/src/script.rs#L785)) — so the three clock windows are `wiring`, not `new_rendering`; what is missing is a `ConceptShape` variant, not a painter. Measured: the same three windows draw a 12-to-28-bar price band instead |
-| `time_line` | event | **yes — pass 5, as `wiring`** | A vertical rule at a bar, spanning the plot's full height, labelled with its count and carrying no price at all. Not a zero-width `time_box`: an instant has no extent, and the label would sit inside a rectangle that is not there. | pass 5 (1 row) | [LuxAlgo's Fib Time Tools](https://www.luxalgo.com/library/concept/fibonacci-time-tools.md): *"Draw vertical lines at t_0 and at t_0 + F_k for the Fibonacci numbers F_k = 1, 2, 3, 5, 8, 13, 21, 34, and so on."* Ours draws `fib.time_zones` as horizontal *price* segments — a *when* answered in prices. The painter already exists and so does the geometry: `ScriptDraw::Line` with `x1 == x2` is a vertical segment that does not extend ([script.rs:69](../../../../frontend/chart-engine/src/script.rs#L69)), and `scene_overlay_tints` already paints full plot height ([script.rs:785](../../../../frontend/chart-engine/src/script.rs#L785)) |
-| `outline` | event | open | A polyline traced through named pivot bars, plus an optional dashed neck level and a projected target | pass 1, pass 6 | Chart patterns draw as a flat band between two prices; `smc.trendline_sweep` computes a slope through three touches and then throws it away, drawing a horizontal level at the last one |
-| `pair_link` | event | open | A line joining a pivot on this instrument's pane to the matching pivot on a second series' pane | pass 1 | `smc.smt_divergence` emits nothing on the scan route at all: the gateway's `/concept-events/smt` lane has no caller and the card paints its "nothing to draw" hairline |
-| `legged_path` | event | open | An XABCD polyline with each leg labelled, optionally filled | pass 7 | Harmonics draw as a band or a mark |
-| `ladder` | event | **yes — pass 5, as `wiring`** | A set of named ratios across one impulse: each rung a horizontal level with the ratio *on* the line and the price beside it, the two anchors joined, one name for the whole study, and two rungs free to enclose a shaded band (the pocket, the OTE). | pass 5 (5 rows) | Measured: 50 dashed 1px lines at ten heights inside the last 5.4% of the plot width, no ratio on any line and no price beside it, the word `retracement` printed 50 times — while the arithmetic matches the reference to the cent, so the gap is entirely in the drawing. A rung is `ScriptDraw::Line` + `ScriptDraw::Label`, both already painted ([script.rs:69](../../../../frontend/chart-engine/src/script.rs#L69), [151](../../../../frontend/chart-engine/src/script.rs#L151)); the missing piece is a `ConceptShape` variant and the ratio on the wire — the same class of gap pass 3 found on `bar_marker` |
-| `bar_marker` | event | open — claimed as `wiring` by pass 3 | A glyph at a bar — arrow, dot — with the name optional | pass 3, pass 8 | Candlestick patterns draw as a text label, which is the noise a trader scans past. Pass 3 found the same gap one layer closer to the source: `pa.higher_highs` knows which swings stepped up but pushes *prices* into its swing vectors ([events.rs:3014](../../../../crates/analytics-core/src/events.rs#L3014)), so the pivot's bar never reaches the painter that already exists — the row is `wiring` because the missing piece is an index, not a shape |
-| `readout` | readout | **yes — pass 2** | A formed figure, the window it was computed over named in the row, and — because a score is about something — the drawing it hangs on named too: a bar for a per-bar figure, a zone or a band for a grade. Never a word that happens to contain a number. | pass 2 (`sd.zone_strength`), pass 11 | A z-score concept currently routes to a `CandleMark`; the arithmetic stays in Rust and the shell never derives it. Pass 2 found the number already on the wire (`evidence.magnitude` reaches the browser on 1,169 of 4,247 events) and read by neither renderer, and that `ConceptShape`'s only text member prints a *name* taken from `concept_id`, never a measured value — so the shape needs a painter, and `new_rendering` is the honest tag |
+## The three rules that never bend
+
+- **A shape does not know which venue fed it.** What differs between a Binance tier and a derived
+  tier is the rule's inputs and the provenance on the signal, never the geometry.
+- **Wiring before rendering.** The scripting path already paints `Line`, `Polyline`, `Polygon`,
+  `Band`, `Table`, `Label` and `Box` ([`script.rs:69-150`](../../../../frontend/chart-engine/src/script.rs#L69));
+  a shape expressible as one of those is wiring, and the missing work is named as plumbing.
+- **A series' scale comes from the registry,** not from the pass: `pane` true means its own scale,
+  `overlay` true means the price frame, and the gate rejects a row that disagrees (rule 5). Event
+  and interval shapes take their scale from the shape, never from a guess — see *Scale*.
+
+## The shape contract
+
+Every shape the audit asked for, with the status its rows carry and the arm to reuse. `Rows` counts
+all 182; a shape with a host split names both statuses.
+
+| Shape | Kind | Rows | Status | Existing arm, or what is missing |
+| --- | --- | --- | --- | --- |
+| `bar_marker` | event | 37 | **wiring** | `CandleMark` lowers to `ScriptDraw::Label` ([scene.rs:2955](../../../../frontend/chart-engine/src/scene.rs#L2955), [script.rs:139](../../../../frontend/chart-engine/src/script.rs#L139)); the glyph, the plot clip and the hover path are the work |
+| `series_line` | series | 36 | **wiring** | `SubPaneSpec::Series` ([scene.rs:400-445](../../../../frontend/chart-engine/src/scene.rs#L400), painter [2408](../../../../frontend/chart-engine/src/scene.rs#L2408)) and `OverlaySeriesSpec` ([scene.rs:370-400](../../../../frontend/chart-engine/src/scene.rs#L370)); `series_marks` is folded in (below) |
+| `level_run` | event | 24 | **new_rendering** | The primitives are `Line` + `Label`; the missing piece is the run's two edges — the detector answers `bars: [t, t]` and eight of eleven PA detectors pass `None` for a start |
+| `lifecycle_box` | event | 19 | **new_rendering** | The primitives are `Box` + `Label` (Zone lowering, [scene.rs:2897](../../../../frontend/chart-engine/src/scene.rs#L2897)); the missing piece is the status-driven edge and the removal, plus the `to`/`mitigated_at` the event boundary drops ([regions.rs:150-171](../../../../crates/analytics-core/src/regions.rs#L150)) |
+| `outline` | event | 16 | **15 wiring, 1 new** | `ScriptDraw::Polyline` for the pivots ([script.rs:91](../../../../frontend/chart-engine/src/script.rs#L91)) plus a dashed neck `Line` and a projected target `Line`; `smc.trendline_sweep` adds the missing slope to the wire first |
+| `legged_path` | event | 9 | **wiring** | `Polyline` ([script.rs:91](../../../../frontend/chart-engine/src/script.rs#L91)) + a `Label` per leg ([139](../../../../frontend/chart-engine/src/script.rs#L139)) + an optional `Polygon` wash ([105](../../../../frontend/chart-engine/src/script.rs#L105)); one name at the figure, a terminal PRZ band where projections overlap |
+| `time_box` | interval | 9 | **4 wiring, 5 new** | Wiring host: the full-height `Box` from `scene_overlay_tints` ([script.rs:785](../../../../frontend/chart-engine/src/script.rs#L785)); new host: a price-extent state span, whose geometry is `price_band`'s and whose start/end is missing from the wire |
+| `time_line` | event | 7 | **wiring** | `ScriptDraw::Line` with `x1 == x2` is a vertical segment that does not extend ([script.rs:69](../../../../frontend/chart-engine/src/script.rs#L69)); the label is a `Label` ([139](../../../../frontend/chart-engine/src/script.rs#L139)) and carries the figure |
+| `ladder` | event | 5 | **wiring** | `Line` per rung ([69](../../../../frontend/chart-engine/src/script.rs#L69)) + `Label` for ratio and price ([139](../../../../frontend/chart-engine/src/script.rs#L139)), the two anchors joined, one name for the study; the pocket is a `Polygon` ([105](../../../../frontend/chart-engine/src/script.rs#L105)) or `Band` ([115](../../../../frontend/chart-engine/src/script.rs#L115)) |
+| `price_band` | event | 5 | **wiring** | `Box` + `Label` through the Zone lowering ([scene.rs:2897](../../../../frontend/chart-engine/src/scene.rs#L2897)); the two x edges are the measurement window, there is no lifecycle and no removal, the label sits once at the right edge |
+| `readout` | readout | 4 | **new_rendering** | `Label` prints the concept name today ([script.rs:139](../../../../frontend/chart-engine/src/script.rs#L139)); the missing piece is a label that carries the measured figure and its window, attached to its host |
+| `candle_mark` | event | 3 | **wiring** | The existing `ConceptShape::CandleMark` ([scene.rs:2955](../../../../frontend/chart-engine/src/scene.rs#L2955)); the work is routing and a display name, not a painter |
+| `series_histogram` | series | 2 | **wiring** | `SeriesBars` inside `SubPaneSpec::Series` ([scene.rs:429](../../../../frontend/chart-engine/src/scene.rs#L429), struct [493](../../../../frontend/chart-engine/src/scene.rs#L493)), painted by `series_pane`; zero-anchored, signed |
+| `segment` | event | 2 | **wiring** | The existing `ConceptShape::Segment` ([scene.rs:2928](../../../../frontend/chart-engine/src/scene.rs#L2928)) → `Line` + `Label`; the run direction and the display name are the work |
+| `series_band` | series | 2 | **1 wiring, 1 new** | Overlay: `OverlayFillSpec` → `ScriptDraw::Band` ([scene.rs:468](../../../../frontend/chart-engine/src/scene.rs#L468), [2232](../../../../frontend/chart-engine/src/scene.rs#L2232)). Pane: `SubPaneSpec::Series` has no fills field and the pane mapper drops `spec.fills` ([app.js:6101-6106](../../../../frontend/app/app.js#L6101)) |
+| `pair_link` | event | 1 | **new_rendering** | `Line` can join two points, but the second pane/series host does not exist on the chart; `/concept-events/smt` exists and has no caller |
+| `series_dots` | series | 1 | **new_rendering** | No dot-series painter: `series_pane` draws connected traces; a per-bar point series, side-coloured, must be built |
+
+### The entries that need more than a row
+
+**`level_run` is one shape, not a segment with a parameter.** A `segment` says *a level exists
+between these two bars*; a `level_run` says *this level exists from the bar that made it and runs
+right by policy*. The visible length is part of the meaning — a level drawn as a 1.3px point is not
+read as a level — so the run's start and its length policy are shape fields, not a cosmetic
+setting. The reference documents the policy as a count (`Extend Imbalance`, default 10 bars), which
+is why the run length is a parameter with a default; a row whose canonical says "until swept"
+without a citation was corrected by Pass 1.
+
+**`lifecycle_box` is one shape, not a static zone.** Its right edge is a lifecycle: `forming` and
+`confirmed` reach forward, `mitigated` stops at the mitigation bar and is removed, and an
+invalidated box flips polarity. The information already exists in the detector's statuses; the
+renderer's two-bar box ignores it. The count of boxes shown last is a parameter, not a shape
+property.
+
+**`price_band` is not `lifecycle_box` and not `time_box`.** A lifecycle box's right edge is an
+event; a price band's two x edges are the **measurement window** and the band persists as long as
+that window does; a time box has no price extent at all. A price band has both price and time
+extent and neither lifecycle nor removal.
+
+**`time_box` and `time_line` are the clock's two shapes.** A time box says *this span matters* and
+needs two edges, drawn full height so it never claims a price. A time line says *this bar is the
+count* (or the release) and has one. An instant is never a zero-width box: the label would sit
+inside a rectangle that is not there.
+
+**`ladder` is one measurement, not five levels.** A run says *a level exists here*; a ladder says
+*these levels are one measurement*, so it carries the rig a run does not — the anchor pair, the
+ratio on each line, the price beside it, and the shaded slice between two rungs. Five independent
+runs make a fib grid nine unrelated parallel lines, which is exactly what Pass 5 measured.
+
+**`outline` covers the sloped pattern and the trendline.** The pivot path is a polyline, the neck is
+a dashed line, the target is a projected line. One degenerate case is two or three named points
+joined plus the projection; it does not need a `sloped_level` shape. `smc.trendline_sweep` is the
+one row that cannot use it yet because the slope is discarded before the wire.
+
+**`series_marks` is folded into `series_line`, not a fifth series shape.** Three rows draw marks on
+a trace — `rsi_divergence`, `rsi_pca`, and the OBV/A-D divergences — and in every one the mark's y
+is meaningful only relative to the line underneath it. `series_line` already carries `segments` and
+`markers` members; a mark without a line would have to carry the line anyway.
+
+## Scale
+
+The scale is a property of the shape and its host, recorded per row and never invented:
+
+- **`series`** — the registry decides: `pane: true` → `own_pane`; `overlay` true with `pane` false
+  → `price`. A series concept with neither flag is a registry defect (Order Flow's `delta_shift`),
+  and the row records the defect rather than choosing a scale for it.
+- **`event` / `interval`** — the shape decides. Anything with a y carries `price` (marks, runs,
+  boxes, paths, price bands). A full-height time box and a time line carry `time_only`, because
+  they claim no price. `pair_link` carries `own_pane`: it joins two panes.
+- Six shapes live on both frames by host: price bands and lifecycle boxes on price, full-height
+  time boxes on time. The row's `scale` says which host that row uses; the entry says what to
+  build.
+
+## The warm-up contract
+
+`warmup.bars` is the first bar index at which the detector can emit on the 501-bar scan, and
+`warmup.before` says what is missing before it. The audit's rows span **0 to 248 bars**:
+
+- **External-time concepts need no bars.** The six Economic Releases rows carry `bars: 0`: the mark
+  is keyed to a release timestamp, and it needs only the bar whose `open_time` contains it.
+- **Event concepts warm up on their lookback.** Candlestick patterns need 2-7 bars; chart patterns
+  11-25; harmonics 11-14; SMC 2-60; Price Action 2-34; Fibonacci 12-26.
+- **Series concepts warm up on their longest window.** Trend 12-201, Momentum 14-248, Statistical
+  22-150, Volatility 21-60, Volume 16-40.
+- **The shape is not drawn before warm-up is complete.** A renderer that seeds the first N bars
+  with a neutral value is drawing a claim the detector has not made. The first N bars carry no
+  shape, and a row with an empty `warmup.before` is an incomplete row.
 
 ## A readout is attached to something
 
-Pass 1 asked where an *interval* is supposed to live and found the registry has no answer
-(`pane: false, overlay: false` on all nine). Pass 2 found the same question on the
-`readout` side, in a sharper form: `sd.zone_strength` is a 0-100 grade, and the registry
-puts it on the price frame with no pane and no overlay, so the only scale available to it
-is a price it is not. The vocabulary's answer is that a readout names its **host** — the
-bar, zone or band the figure is about — and the host's own shape carries the geometry while
-the readout carries the number and the window it was measured over. A row whose host is a
-`lifecycle_box` therefore inherits that box's status; a per-bar figure like
-`indicators.zscore` hangs on a bar and needs no box at all.
+A readout names its **host** — the bar, zone or band the figure is about — and the host's own shape
+carries the geometry while the readout carries the number and the window it was measured over. A
+row whose host is a `lifecycle_box` inherits that box's status; a per-bar figure like
+`indicators.zscore` hangs on a bar and needs no box at all. The host decides the scale: Sessions'
+`daily_bias` and `weekly_bias` hang on the period open and carry `price`, while
+`htf_candle_bias` hangs on the completed higher-timeframe candle and carries `time_only` — one
+shape, two hosts, no second shape invented to carry them.
 
-Pass 4 is the first family to test that rule from a second pass: three of its rows are
-readings, and the host decides the scale — `daily_bias` and `weekly_bias` hang on the period
-open and carry `price`, while `htf_candle_bias` hangs on the completed higher-timeframe candle
-and carries `time_only`. One settled shape, two hosts, and no second shape invented to carry
-them.
+**The `time_line` label is a readout member.** Pass 5's Fibonacci row labels the rule with its
+count; Pass 12's six Economic Releases rows label it with the release figure, the forecast and the
+surprise between them. The line is time-only; the figure rides the label; neither ever touches a
+price. That is the same host rule one step further: the line is the host, and the number is the
+readout.
 
-`ladder` is not five `level_run`s, and the difference is what makes it a shape. A run says *a
-level exists here*; a ladder says *these levels are one measurement*, so it carries the rig that
-a run does not — the anchor pair, the ratio beside each price, and the shaded slice between two
-rungs. Drawn as five independent runs, a fib grid is nine unrelated lines that happen to be
-parallel, which is what the pass measured. `time_line` is the mirror case on the clock: a
-`time_box` says *this span matters* and needs two edges, a `time_line` says *this bar is the
-count* and has one.
+## What this chapter refuses
 
-## How far a level or a box runs — the question pass 1 had to answer
+- **No fifth kind.** The four kinds are declared once, here; the gate rejects a value it was not
+  told about, so a hard concept cannot quietly become a new kind in a ledger row.
+- **No `series_marks`.** Folded into `series_line`; a mark on nothing is not a shape.
+- **No `sloped_level`.** `outline` covers the two-pivot line and its projection.
+- **No zero-width `time_box`.** An instant is a `time_line`.
+- **No price extent on a `time_box`, no lifecycle on a `price_band`.** The three boxes mean three
+  different things, and conflating them is what made the sessions draw a *where* for a *when*.
+- **No candle-colouring convenience.** The reference's `Color Candles` toggle behind a BOS/CHoCH
+  read is a candle colour, not a concept shape; it is recorded in Pass 1 and left alone.
+- **No shape that knows its venue.** Provenance is on the signal; the geometry is shared.
 
-The spec predicted "a broken level runs rightward until mitigated". **That sentence is not
-in the reference set**, and the audit says so rather than drawing it. What is documented,
-verbatim, on
-[the toolkit's settings page](https://docs.luxalgo.com/platform/algos/price-action-concepts/settings):
+## Definition of done — the close-out, 2026-10-31
 
-> `Extend Imbalance` — Numerical, default: 10 — *Extend the imbalance area to the right by
-> the selected amount of bars.*
+`node tools/concept_visual_audit.mjs check` sweeps the union and prints
+`ok 182 row(s) complete across 16 families`. The spec's five items, one line at a time:
 
-and on the same page a `Mitigation Method` per concept family (`Close`, `Wick`, `Average`),
-with the imbalance areas removed once mitigated, and for order blocks
-`Show Last` default 5 — *how many of the most recent volumetric order blocks to display on
-the chart*. The four concept pages (market-structures, imbalances, order-blocks, liquidity)
-contain no use of the word "extend" at all.
+1. **Our output is photographable — met by substitution, not by the named file.**
+   `tools/chart_preview.mjs` still renders a band-DSL `concepts` document, not `concept_shapes`.
+   The photograph Task 4 built lives in `tools/concept_visual_audit.mjs render`: it sends
+   `concept_shapes` through the real wasm ([mjs:331](../../../tools/concept_visual_audit.mjs#L331)),
+   inlines the page's own `frontend/app/concept_shapes.js`
+   ([mjs:315](../../../tools/concept_visual_audit.mjs#L315)), and paints it under and over in the
+   app's order. The plan's wording — "the same shape `chart_preview.mjs` writes" — made the
+   preview tool the model, not the renderer. This is the one DoD clause that is not literally
+   true; the guarantee it existed for, that the audit cannot draw a concept better than the app,
+   is.
+2. **The chapter and the passes — met.** The four kinds, the tier rule (*a shape does not know
+   which venue fed it*), and the warm-up contract are above. Twelve passes are written as sixteen
+   family sections — Pass 10 covered five families — and every row carries a citation or a
+   `no_convention` reason, a render on disk, a kind, and both verdicts.
+3. **182 complete rows and a passing gate — met.** Zero incomplete; rule 4's
+   `continuous`-on-`event` guard ([mjs:445](../../../tools/concept_visual_audit.mjs#L445)) is
+   enforced and covered by the fixtures. Nothing is left at a seeded value.
+4. **The shape additions are implementable and their status is honest — met.** Seventeen shapes,
+   each with its status and, where wired, the arm that paints it: 126 rows are `wiring`, 56 are
+   `new_rendering` and name what is missing — a painter, a field on the wire, or a host.
+5. **The three systems and the parameter gap are recorded and untouched — met.** The spec's
+   *Ground truth* names the registry, the band DSL and the composition; the ledger records
+   156 of 182 rows with `parameters.declared: []`; and [01-smc](01-smc.md) photographs the
+   catalog's `swing_lookback: 10` against the engine's real 3. No production file changed during
+   the passes. The one code move — `concept_shapes.js` out of `app.js` — was Task 2, before
+   pass 1, so the photograph uses the page's own painter.
 
-So the two settled shapes take their right edge from different places, and this is the rule
-the next nine passes inherit:
+The plan's four defects, each with its photograph:
 
-- **`lifecycle_box` — the edge is a lifecycle.** For the gap and block family the reference
-  does document both halves: the area extends right by a count and is removed when
-  mitigated. Our `forming` / `mitigated` / `invalidated` statuses already carry the same
-  information; only the renderer ignores them, and `concept_shapes.js`'s
-  `status === "forming" || status === "confirmed" ? toNs : toNs` is the dead branch that
-  proves it. The count is a parameter, not a shape property.
-- **`level_run` — the edge is a run, and its length is a policy.** A level must have
-  visible length, because a level drawn as a point is not read as a level. Nothing in the
-  reference set fixes where a structure or liquidity line ends, so the shape specifies the
-  run and the pass leaves its length to a parameter with a default — the same choice
-  LuxAlgo exposes as `Extend Imbalance`. A row whose canonical says "until swept" without a
-  citation is a row that was corrected; pass 1 corrected seven.
+| Defect | Where it is photographed |
+| --- | --- |
+| The concept path ignores `pane`/`overlay` | The scale rule here; [05-fib](05-fib.md), [06-chart](06-chart.md), [07-harmonics](07-harmonics.md), [10-trend](10-trend.md), [14-order-flow](14-order-flow.md), [15-statistical](15-statistical.md) |
+| `app.js:6066` — the `indicators.*` route | The cited line predates the extraction. Today the route is [concept_shapes.js:80](../../../../frontend/app/concept_shapes.js#L80) (`indicators.*` becomes a `candle_mark` on the price pane), and the series path beside it is [app.js:6073](../../../../frontend/app/app.js#L6073) |
+| Catalog default versus engine default | [01-smc](01-smc.md): declared 10, replayed at 3; [06-chart](06-chart.md) for the gap detector's own 3 |
+| 156 concepts with no parameters | The count above, read from the ledger; rule 9 makes `[]` the honest declaration; the spec's *Ground truth* argues what it means |
 
-One more convention pass 1 found and did **not** copy: the reference toolkit optionally
-colours the candles themselves by the structure read — *Bullish BOS: Bright Green, Bearish
-BOS: Bright Red, Bullish CHoCH: Dark Green, Bearish CHoCH: Dark Red* — behind a
-`Color Candles` toggle. It is a toggle, not the drawing, so no `level_run` row asks for it;
-if the platform ever wants it, it is a candle colour, not a concept shape.
+What could not be met, and why: DoD 1's literal file name, as above. Nothing else failed. What
+this chapter does not do — design the concept-state container, act on a `fires` disagreement, or
+give the three systems one definition — the spec put out of scope before the first pass, and the
+rows record the evidence those designs will need.

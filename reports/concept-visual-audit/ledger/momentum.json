@@ -13,44 +13,47 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "no_convention": true,
+        "reason": "The RSI-PCA prediction pane is an in-house model (rsi_pca.rs header: 'The neurotrader RSI-PCA idea, in-house'). Its only published form is the model's own repo, not a chart with a standard drawing, so there is no external look to match -- the target is our own pane: one prediction line, a zero line, a dot per signal."
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "7 'rsi pca' labels (x 586.7-796.7, y 61.4-407.1) on the price frame while the prediction pane -- one auto-scaled line, zero line, signal dots -- is drawn below. A prediction is not a price, and a word at price is not a prediction.",
+        "canonical": "one auto-scaled prediction line in its own pane with a zero line and a dot at each signal bar; the shape is ours, so the standard is the pane the model already has, not an external chart.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the walk-forward RSI-PCA prediction is defined on every bar after the model can fit; a label is emitted when the 95% band excludes zero (rsi_pca.rs:262-320)",
+        "their_rule": "there is no external drawing of this model, so no external rule to compare against; its own pane marks the crossings",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "pred = RSI-PCA walk-forward prediction (refit every 24 bars on 200) => signal when the 95% band excludes zero",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 248,
+        "before": "the model refuses before 48 + 200 = 248 bars (rsi_pca.rs:237-241); the first prediction is bar 249 in a 501-bar window"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::rsi_pca::detect_rsi_pca (rsi_pca.rs:262)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/momentum/indicators.rsi_pca.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.rsi",
@@ -64,44 +67,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Relative Strength Index (RSI)",
+        "url": "https://www.tradingview.com/support/solutions/43000502338-relative-strength-index-rsi/",
+        "quote": "It is plotted in a separate pane below the price chart, oscillating between 0 and 100 with overbought at 70 and oversold at 30.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "9 'rsi' labels (x 436.6-768.9, y 45.7-297.3) at price while the RSI pane -- one line, fixed 0-100, 70/30 levels -- is drawn below. The zone cross the label announces is already visible as the line passing 30 or 70.",
+        "canonical": "one RSI line in its own pane, fixed 0-100, levels at 70 and 30 -- the reference says it 'is plotted in a separate pane below the price chart, oscillating between 0 and 100'.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "RSI(14) is defined on every bar; a label is emitted when it crosses the 30 or 70 band (indicator_signals.rs:121-123, n > 15)",
+        "their_rule": "TradingView plots RSI continuously against 30/70 and marks no zone entry; the line crossing the band is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "rsi = RSI(close, 14) => signal when rsi crosses 30 or 70",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 15,
+        "before": "RSI(14) exists from bar 14; the detector requires n > 15"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::RsiZoneCross (indicator_signals.rs:121-123)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/momentum/indicators.rsi.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.rsi_divergence",
@@ -115,44 +123,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, RSI Divergence indicator",
+        "url": "https://www.tradingview.com/support/solutions/43000589127-rsi-divergence-indicator/",
+        "quote": "The divergence indicator helps traders assess changes in the price trend and indicates when price will move with or against the direction of another indicator.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "4 'rsi divergence' labels (x 511.6-807.5, y 37.9-460.3) at price while the RSI pane plus its divergence segments and dots is drawn below. The word duplicates the pane's own marks, at the wrong scale.",
+        "canonical": "the RSI pane with a segment joining the two RSI pivots and a dot at the confirming bar -- 'the divergence indicator ... indicates when price will move with or against the direction of another indicator'.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "RSI(14) is defined on every bar; price/RSI divergences are emitted when the tail confirms them (indicator_signals.rs:160, n > 40)",
+        "their_rule": "TradingView's divergence tool draws the pivot-to-pivot line on the oscillator; it does not stamp a word at price",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "divergence = price makes higher high while RSI(14) makes lower high (or the bearish mirror) => segment from prior pivot to confirming pivot, dot at confirmation",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 40,
+        "before": "RSI(14) exists from bar 14; the divergence detector requires n > 40"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::RsiDivergenceSignal (indicator_signals.rs:160)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/momentum/indicators.rsi_divergence.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.rsi_family",
@@ -166,44 +179,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Relative Strength Index (RSI)",
+        "url": "https://www.tradingview.com/support/solutions/43000502338-relative-strength-index-rsi/",
+        "quote": "It is plotted in a separate pane below the price chart, oscillating between 0 and 100 with overbought at 70 and oversold at 30.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "8 'rsi family' labels (x 438.7-792.5, y 29.7-460.3) at price while the 23-line ribbon is drawn in its own fixed 0-100 pane. The ribbon is the indicator; the labels are a second draw of its name on the price axis.",
+        "canonical": "23 RSI periods on one fixed 0-100 pane with 70/30 levels and a fast-to-slow gradient -- our composition of the reference's single RSI pane, which establishes the scale, the levels and the pane.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "RSI(2)..RSI(24) are defined on every bar; a label is emitted when all 23 sit on the same side of 50 (indicator_signals.rs:146, n > 26)",
+        "their_rule": "TradingView draws one RSI period continuously and has no 23-period ribbon or consensus event; the pane convention is borrowed, the signal is ours",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "for p in 2..=24: rsi[p] = RSI(close, p) => signal when all rsi[p] > 50 or all rsi[p] < 50",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 26,
+        "before": "RSI(24) exists from bar 24; the detector requires n > 26"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::RsiFamilyConsensus (indicator_signals.rs:146)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/momentum/indicators.rsi_family.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.stochastic",
@@ -217,44 +235,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Stochastic (STOCH)",
+        "url": "https://www.tradingview.com/support/solutions/43000502332-stochastic-stoch/",
+        "quote": "Overbought levels are at 80 and oversold levels are at 20.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 'stochastic' labels (x 876.1-1081.9, y 324.4-486.1) at price while %K/%D with 80/20 are drawn in their own pane. The labels sit in the last fifth of the window, all saying the same word at price.",
+        "canonical": "%K and %D in their own pane, fixed 0-100, levels at 80 and 20 -- the reference puts overbought at 80 and oversold at 20 and marks no zone entry at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "%K(14,3) and %D(3) are defined on every bar; a label is emitted on 80/20 zone entry and on %K crossing %D (indicator_signals.rs:225-232, n > 18)",
+        "their_rule": "TradingView plots both lines continuously against 80/20 and marks no cross; the lines are the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "%k = Stochastic(14, 3); %d = SMA(%k, 3) => signal when %k enters 80/20 or %k crosses %d",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 18,
+        "before": "%K/%D exist from bar 16; the detector requires n > 18"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::StochasticZoneEntry / StochasticCross (indicator_signals.rs:225-232)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/momentum/indicators.stochastic.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.cci",
@@ -268,44 +291,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Commodity Channel Index (CCI)",
+        "url": "https://www.tradingview.com/support/solutions/43000502001-commodity-channel-index-cci/",
+        "quote": "Values above +100 indicate overbought conditions, while values below -100 signal oversold markets.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "46 'cci' labels (x 65.7-1081.9, y 71.2-455.3) at price while the CCI pane with its +/-100 levels is drawn below. The oscillator is drawn correctly; the labels are its name repeated at price.",
+        "canonical": "one CCI line in its own pane with levels at +100 and -100 -- the reference reads 'values above +100 ... below -100' and draws no word at the bar.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "CCI(20) is defined on every bar; a label is emitted when it crosses +/-100 (indicator_signals.rs:242-244, n > 22)",
+        "their_rule": "TradingView plots CCI continuously against +/-100 and marks no zone entry; the line crossing the level is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "cci = CCI(typical, 20) => signal when cci crosses +100 or -100",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 22,
+        "before": "CCI(20) exists from bar 20; the detector requires n > 22"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::CciZoneEntry (indicator_signals.rs:242-244)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/momentum/indicators.cci.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.williams_r",
@@ -319,44 +347,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Williams %R",
+        "url": "https://www.tradingview.com/support/solutions/43000501985-williams-r-r/",
+        "quote": "Williams %R (%R) is a momentum-based oscillator used in technical analysis, primarily to identify overbought and oversold conditions.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 'williams r' labels (x 215.8-1081.9, y 48.2-477.3) at price while the %R pane is drawn below. The word, not the oscillator, is what the concept path adds.",
+        "canonical": "one %R line in its own pane, fixed -100..0, levels at -20 and -80 -- a bounded oscillator, and the reference marks no zone entry at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "Williams %R(14) is defined on every bar; a label is emitted when it crosses -80 or -20 (indicator_signals.rs:254-256, n > 16)",
+        "their_rule": "TradingView plots %R continuously against -20/-80 and marks no cross; the line is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "wr = Williams%R(14) => signal when wr crosses -80 or -20",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 16,
+        "before": "%R(14) exists from bar 14; the detector requires n > 16"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::WilliamsZoneEntry (indicator_signals.rs:254-256)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/momentum/indicators.williams_r.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.roc",
@@ -370,44 +403,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Rate of Change (ROC)",
+        "url": "https://www.tradingview.com/support/solutions/43000502343-rate-of-change-roc/",
+        "quote": "The Rate of Change indicator (ROC) is a momentum oscillator. It calculates the percent change in price between periods.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 'roc' labels (x 142.9-1058.3, y 60.1-447.1) at price while the ROC pane with its zero line is drawn below. The percent-change line is the indicator; the labels are its name at price.",
+        "canonical": "one ROC line in its own pane, auto-scaled, zero line -- 'a momentum oscillator ... the percent change in price between periods', with no mark printed at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "ROC(12) is defined on every bar; a label is emitted when it crosses zero (indicator_signals.rs:266-268, n > 14)",
+        "their_rule": "TradingView plots ROC continuously across zero and marks no cross; the line crossing zero is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "roc = 100 * (close / close[12] - 1) => signal when roc crosses zero",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 14,
+        "before": "ROC(12) exists from bar 12; the detector requires n > 14"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::RocZeroCross (indicator_signals.rs:266-268)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/momentum/indicators.roc.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.tsi",
@@ -421,44 +459,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, True Strength Index",
+        "url": "https://www.tradingview.com/support/solutions/43000592290-true-strength-index/",
+        "quote": "The True Strength Index indicator is a momentum oscillator designed to detect, confirm or visualize the strength of a trend.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "39 'tsi' labels (x 100-1060.4, y 55.3-447.3) at price while the TSI pane with its signal line is drawn below. Two continuous lines become a word at price on the concept path.",
+        "canonical": "TSI and its signal as two lines in their own pane, zero line -- 'a momentum oscillator designed to detect, confirm or visualize the strength of a trend' -- no mark at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "TSI(13,25,7) and its signal are defined on every bar; a label is emitted when the line crosses the signal (indicator_signals.rs:390-392, n > 40)",
+        "their_rule": "TradingView plots both TSI lines continuously and marks no cross; the signal-line cross is a pane reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "tsi = TSI(close, 13, 25); signal = EMA(tsi, 7) => signal when tsi crosses signal",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 40,
+        "before": "TSI(25) exists from bar 25; the detector requires n > 40"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_line",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::TsiCross (indicator_signals.rs:390-392)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/momentum/indicators.tsi.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "indicators.awesome",
@@ -472,44 +515,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "series",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "TradingView Help Center, Awesome Oscillator (AO)",
+        "url": "https://www.tradingview.com/support/solutions/43000501826-awesome-oscillator-ao/",
+        "quote": "The Awesome Oscillator is an indicator used to measure market momentum.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "24 'awesome' labels (x 97.9-1034.7, y 94.4-419.5) at price while the zero-anchored AO histogram is drawn below. A histogram and a word at price are two different drawings of one momentum measure.",
+        "canonical": "zero-anchored histogram bars in their own pane, green above zero and red below -- 'an indicator used to measure market momentum' -- with no word at price.",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "AO(5,34) is defined on every bar; a label is emitted when it crosses zero (indicator_signals.rs:402-404, n > 36)",
+        "their_rule": "TradingView plots the AO histogram continuously and marks no zero cross; the bar colour is the reading",
+        "verdict": "continuous"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "ao = SMA(median, 5) - SMA(median, 34) => signal when ao crosses zero",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 36,
+        "before": "AO(34) exists from bar 34; the detector requires n > 36"
       },
       "target_shape": {
-        "name": "",
+        "name": "series_histogram",
         "status": "wiring",
-        "scale": "price"
+        "scale": "own_pane"
       },
-      "detector": "",
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::AwesomeZeroCross (indicator_signals.rs:402-404)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/momentum/indicators.awesome.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }

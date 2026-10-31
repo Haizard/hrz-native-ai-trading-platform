@@ -13,44 +13,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Hammer (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/Hammer.html",
+        "quote": "Look for the hammer to appear in a downward price trend and have a long lower shadow at least two or three times the height of the body with little or no upper shadow.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "8 teal words — `hammer` — one per marked bar, 29px wide over a 1.5px bar, x exactly on the pattern bar and y 10px under that bar's low (the router takes zone_low for bullish events, concept_shapes.js:86-89, and scene.rs:2959 nudges 10px). Position, bar and side are right on all 8. The glyph is not: Bulkowski circles the pattern and TradingView drops a placemark whose name only appears on hover, while we paint the lowercase word permanently, so 1 of the 8 pairs sits within 21px of its neighbour and the newest is at x 953 with room to spare.",
+        "canonical": "a bullish glyph (arrow/placemark) under the confirming candle with the name available on hover, not printed",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "lower >= 2 * body, upper <= max(body, 0.05 * range), body > 0, and >60% of the six close-to-close steps before the bar pointing down (events.rs:3122-3127) — 8 bars in the window, 1.6% of the 495 the replay evaluates",
+        "their_rule": "the same shape clause read in a downtrend, with the lower shadow at two to three times the body rather than a flat two",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body > 0 && lower >= 2*body && upper <= max(body, 0.05*range) && down_steps(closes[n-6..n])/5 > 0.6 => mark(bar = n, side = bullish, anchor = low)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — nothing draws on bars 0-5; on the confirming bar the marker is a single word and the six trend bars behind it stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3122-3127)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.hammer.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.hanging_man",
@@ -64,44 +69,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Hanging Man (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/HangingMan.html",
+        "quote": "Look for a small bodied candle atop a long lower shadow in an uptrend.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "3 red words — `hanging man` — each 53px wide, x on the pattern bar and y 10px above its high; no collisions (nearest pair 148px apart, newest at x 1002). Bar, price and side all match the reference reading; only the always-painted word differs from a hover-named placemark.",
+        "canonical": "a bearish glyph above the confirming candle, named on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "identical shape clause to the hammer (lower >= 2*body, upper <= max(body, 0.05*range)) with the trend gate flipped to >60% up-steps (events.rs:3122-3128) — 3 bars in the window; the hammer and the hanging man are literally one clause plus a sign test on the six closes before it",
+        "their_rule": "a small bodied candle atop a long lower shadow in an uptrend — same shape, same context, no numeric ratio",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body > 0 && lower >= 2*body && upper <= max(body, 0.05*range) && up_steps(closes[n-6..n])/5 > 0.6 => mark(bar = n, side = bearish, anchor = high)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — nothing draws on bars 0-5; on the confirming bar the marker is a single word and the six trend bars behind it stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3122-3128)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.hanging_man.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.shooting_star",
@@ -115,44 +125,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Shooting Star (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/ShootingStar.html",
+        "quote": "Look for a small bodied candle (but not a doji) with little or no lower shadow and a tall upper shadow at least twice the height of the body.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "8 red words — `shooting star` — 62px each, x on the bar, y 10px above the high; 2 of the 8 sit within 21px of a neighbour and the newest lands at x 1075, 9px from the plot's right edge (1084 of 1180). Geometry correct, glyph wrong: a permanent word where the reference uses a hover-named marker.",
+        "canonical": "a bearish glyph over the confirming candle, name on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "upper >= 2*body, lower <= max(body, 0.05*range), body > 0, uptrend gate (events.rs:3130-3135) — 8 bars; the `body > 0` test only excludes a bar whose open equals its close, so a doji-bodied bar with a tall wick still reads as a shooting star",
+        "their_rule": "the mirror shape in an uptrend, explicitly excluding the doji and capping the lower shadow at `little or no`",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body > 0 && upper >= 2*body && lower <= max(body, 0.05*range) && up_steps(closes[n-6..n])/5 > 0.6 => mark(bar = n, side = bearish, anchor = high)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — nothing draws on bars 0-5; on the confirming bar the marker is a single word and the six trend bars behind it stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3130-3135)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.shooting_star.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.inverted_hammer",
@@ -166,44 +181,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Inverted Hammer (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/inverted-hammer/",
+        "quote": "An inverted hammer is a single-candle bottom-reversal candidate: after a decline, a bar with a small real body at the lower end of its range, an upper shadow commonly at least twice the body's height, and little or no lower shadow.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "4 teal words — `inverted hammer` — 72px each over a 1.5px bar, x on the bar, y 10px below its low, no collisions (nearest pair 120px, newest x 775). The bar choice and side are right; at 4-9 characters per mark against a 2.14px bar pitch, the word is the whole drawing and it is 48x the bar's width.",
+        "canonical": "a bullish glyph under the candle after a decline, named on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the shooting star clause with the trend gate on downtrend: upper >= 2*body, lower <= max(body, 0.05*range), body > 0, >60% down-steps (events.rs:3130-3133) — 4 bars in the window",
+        "their_rule": "Bulkowski's own page makes this a two-candle pattern (`Number of candle lines: Two.`) whose second candle cannot be a doji and must open below the prior close; the single-candle reading needs a preceding decline, which we approximate with the six-close step count",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body > 0 && upper >= 2*body && lower <= max(body, 0.05*range) && down_steps(closes[n-6..n])/5 > 0.6 => mark(bar = n, side = bullish, anchor = low)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — nothing draws on bars 0-5; on the confirming bar the marker is a single word and the six trend bars behind it stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3130-3133)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.inverted_hammer.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.doji",
@@ -217,44 +237,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Doji (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/doji/",
+        "quote": "A doji is a candlestick whose open and close land at, or almost at, the same price, collapsing the real body to a thin line while the shadows record the session's full travel.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "37 slate words — `doji` is the shortest label in the family at 19px, still 13x the 1.5px bar — x on the bar and y 10px above its high, because the event carries no side and the router puts anything not bullish over the top (concept_shapes.js:86-89). 19 of the 37 pairs are within 21px of each other and the newest starts at x 1067, running past the plot edge into the price gutter. Bar and neutral colour agree with the reference; the permanent word does not.",
+        "canonical": "a neutral/grey marker at the bar (TradingView paints `gray for indicators that can show both bullish and bearish signals`), the name on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "body <= 0.1 * range, no trend clause, side None (events.rs:3115-3116) — 39 bars in the window, 7.9%; the same bar also satisfies dragonfly, gravestone or long-legged doji on 28 of the 40 doji bars, so up to four words stack on one candle",
+        "their_rule": "the body collapses to a thin line — the reference states no ratio at all, so any threshold is a house choice; 10% of range is a reasonable reading and fires on a plausible share of bars",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body <= 0.1 * range => mark(bar = n, side = neutral, anchor = high)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — nothing draws on bars 0-5; on the confirming bar the marker is a single word and the six trend bars behind it stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3115-3116)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.doji.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.marubozu",
@@ -268,44 +293,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Marubozu (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/marubozu/",
+        "quote": "A marubozu is a candlestick that is all body: open and close sit at (or nearly at) the bar's extremes, leaving no meaningful shadow on either end.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "38 words — `marubozu`, 38px, 17 teal under the low and 21 red over the high — x on the bar in every case, y exactly 10px off the extreme; 20 of the 38 sit within 21px of a neighbour, newest starts at x 1030. Correct bars and correct direction split; a permanent word where the reference uses a marker.",
+        "canonical": "a marker at the bar in the bar's own colour, named on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "body >= 0.9 * range, side = the bar's colour (events.rs:3119-3120) — 41 bars, 8.3%; the same document calls a bar a marubozu at >= 0.95 * range in candlesticks.rs:40, where the kicker test reads it, so one word means two thresholds in one tree",
+        "their_rule": "open and close at, or nearly at, the extremes with no meaningful shadow — again a plain-language clause, and our 90% allowance buys up to a tenth of the range in shadow",
+        "verdict": "same_bars"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body >= 0.9 * range => mark(bar = n, side = (close >= open ? bullish : bearish), anchor = (bullish ? low : high))",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — nothing draws on bars 0-5; on the confirming bar the marker is a single word and the six trend bars behind it stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3119-3120)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.marubozu.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.engulfing",
@@ -319,44 +349,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Bullish Engulfing (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/BullEngulfing.html",
+        "quote": "In other words, the body of the white candle should engulf or overlap the body of the black candle.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 teal/red words — `engulfing` (43px) on 50 distinct bars, 24 bullish below the low and 26 bearish above the high — which is the route's per-concept cap of the newest 50, not the pattern count: the same clause fires 94 times over the 495 evaluated bars, 19% of them. 44 of the 50 labels sit within 21px of a neighbour, and the newest starts at x 1069 and runs off the plot edge (right edge 1084, canvas 1180) unclipped. The bars it marks are engulfing bars; the drawing is a word painted over the candles.",
+        "canonical": "a marker on the engulfing candle that names the pair on hover — the reference's read is a two-candle relationship, so the parent bar is part of the figure",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "min(o,c) <= min(po,pc) && max(o,c) >= max(po,pc) && bullish != pbull && body > pbody, with no trend clause at all (events.rs:3145-3149) — a bar that engulfs its parent mid-range reads the same as one that reverses a decline",
+        "their_rule": "two candles in a downward (or, mirrored, upward) price trend where the second body covers the first and shadows are ignored",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "covers(body_n, body_{n-1}) && colour_n != colour_{n-1} && body_n > body_{n-1} => mark(bar = n, side = colour_n, anchor = (bullish ? low : high))",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — the parent bar draws nothing: a two-bar pattern reaches the renderer as one word on the confirming bar (formed_at is None, so bars is [t,t]), and the reference reads the pair together"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3145-3149)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.engulfing.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.harami",
@@ -370,44 +405,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Bullish Harami (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/HaramiBull.html",
+        "quote": "The next day a white candle should be nestled within the body of the prior candle.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 words — `harami` (29px) on 50 bars, 24 below the low / 26 above the high — capped at the route's 50 newest (the clause actually fires 98 times, 19.8% of the evaluated bars). 41 of the 50 are within 21px of a neighbour; the newest starts at x 1080, one pixel inside the plot edge, and paints across the price gutter. Side is the reversal against the parent (events.rs:3155-3156), which is the reference's read; the drawing is still a word.",
+        "canonical": "a marker at the inside candle, with the parent bar implied by the figure rather than a second label",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "inside(parent_body) && bullish != pbull, side = against the parent's colour, no trend clause (events.rs:3152-3156) — 98 fires uncapped; nothing in the clause requires the tall parent candle the reference draws attention to, and both body edges may coincide where the reference allows one but not both",
+        "their_rule": "a tall candle in a trend followed by a candle nestled within its body, ignoring shadows",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body_n inside body_{n-1} && colour_n != colour_{n-1} => mark(bar = n, side = against colour_{n-1})",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — the parent bar draws nothing: a two-bar pattern reaches the renderer as one word on the confirming bar (formed_at is None, so bars is [t,t]), and the reference reads the pair together"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3152-3156)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.harami.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.morning_star",
@@ -421,44 +461,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Morning Star (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/MorningStar.html",
+        "quote": "The last day is a tall white candle that gaps above the body of the second candle and closes at least midway into the body of the first day.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "6 teal words — `morning star` (58px) on 6 distinct bars, all 10px under the low, x on the confirming candle; 1 pair within 21px, newest at x 1073. The marked bar is the third candle, which is where a marker belongs — but nothing on the chart says which three bars formed the pattern: the event's bars field is [t,t], so bars n-2 and n-1 stay blank.",
+        "canonical": "a marker at the third candle plus the bracket of all three bars, since the pattern is the trio and the reference describes it bar by bar",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "abody > 0.5*arange && bbody <= 0.4*abody && body > 0.5*arange && first bar bearish && bullish && close > (a.open+a.close)/2 (events.rs:3172-3179) — 7 fires uncapped; both gap clauses the reference states are absent",
+        "their_rule": "three candles in a downtrend, the middle one gapping below the first body and the last gapping above the middle and closing past the first body's midpoint",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body_{n-2} > 0.5*range_{n-2} && body_{n-1} <= 0.4*body_{n-2} && body_n > 0.5*range_{n-2} && colour_{n-2} == bearish && colour_n == bullish && close_n > mid(body_{n-2}) => mark(bar = n, side = bullish) [no gap clause]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — bars 0-1 draw nothing before the confirming third bar: both detectors set formed_at to None, so the event's bars field is [t,t] and the renderer gets no span to mark — the two pattern bars that make the pattern a pattern arrive unlabelled"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3172-3179)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.morning_star.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.evening_star",
@@ -472,44 +517,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Evening Star (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/EveningStar.html",
+        "quote": "The last day is a tall black candle that opens below the prior candle, and closes at least midway down the body of the first day.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "6 red words — `evening star` (58px) on 6 bars, all 10px above the high, no collisions (nearest pair 24px, newest x 1015) — 7 fires uncapped. Correct bar, correct side, and again a single word for a three-bar figure whose first two bars carry nothing.",
+        "canonical": "a marker at the third candle with the three-bar span named on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the morning star clause mirrored: first bar bullish, third bearish, close < (a.open+a.close)/2 (events.rs:3172-3182); the reference's `small bodied candle should gap above the bodies of the two adjacent candles` is not tested",
+        "their_rule": "three candles in an uptrend with the star gapping above both neighbours and the last closing at least midway into the first body",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body_{n-2} > 0.5*range_{n-2} && body_{n-1} <= 0.4*body_{n-2} && body_n > 0.5*range_{n-2} && colour_{n-2} == bullish && colour_n == bearish && close_n < mid(body_{n-2}) => mark(bar = n, side = bearish) [no gap clause]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — bars 0-1 draw nothing before the confirming third bar: both detectors set formed_at to None, so the event's bars field is [t,t] and the renderer gets no span to mark — the two pattern bars that make the pattern a pattern arrive unlabelled"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3172-3182)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.evening_star.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.piercing_line",
@@ -523,44 +573,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Piercing Pattern (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/Piercing.html",
+        "quote": "Look for a black candle followed by a white one that opens below the black candle’s low and closes between the midpoint of the black body and opening price.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "10 teal words — `piercing line` (62px) on 10 bars, all below the low, none closer than 26px to a neighbour, newest at x 1056. Right bar, right side, permanent word instead of a marker.",
+        "canonical": "a bullish marker at the second candle with the pair readable on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "!pbull && bullish && open < prev.close && close > (po+pc)/2 && close < po (events.rs:3158-3160) — the open only has to be below the parent's CLOSE; 10 fires uncapped, 2% of bars",
+        "their_rule": "a white candle that opens below the black candle's LOW — a gap-down entry the reference treats as the pattern's whole point — and closes in the upper half of the black body",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "colour_{n-1} == bearish && colour_n == bullish && open_n < close_{n-1} && mid(body_{n-1}) < close_n < open_{n-1} => mark(bar = n, side = bullish) [open clause weaker than the reference's below-the-low]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — the parent bar draws nothing: a two-bar pattern reaches the renderer as one word on the confirming bar (formed_at is None, so bars is [t,t]), and the reference reads the pair together"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3158-3160)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.piercing_line.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.dark_cloud_cover",
@@ -574,44 +629,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Dark Cloud Cover (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/DarkCloudCover.html",
+        "quote": "The first candle is a tall white one followed by a black candle with an opening price above the top of the white candle (an opening price above the prior high), but a close below the mid point of the white body.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "5 red words — `dark cloud cover` (77px, the widest two-word label that still fits the story) on 5 bars, all above the high; 1 pair within 21px, newest at x 868. Bar and side correct; the reference's opening ABOVE the prior high is not tested, which is the pattern's name.",
+        "canonical": "a bearish marker over the second candle, pair named on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "pbull && !bullish && open > prev.close && close < (po+pc)/2 && close > po (events.rs:3162-3163) — 5 fires uncapped; open beyond the prior close only, and no `tall white first candle` requirement",
+        "their_rule": "the mirror of the piercing line in an uptrend: open above the prior HIGH, close below the midpoint of the white body",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "colour_{n-1} == bullish && colour_n == bearish && open_n > close_{n-1} && open_{n-1} < close_n < mid(body_{n-1}) => mark(bar = n, side = bearish) [open clause weaker than above-the-high]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — the parent bar draws nothing: a two-bar pattern reaches the renderer as one word on the confirming bar (formed_at is None, so bars is [t,t]), and the reference reads the pair together"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3162-3163)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.dark_cloud_cover.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.three_white_soldiers",
@@ -625,44 +685,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Three White Soldiers (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/ThreeWhiteSoldiers.html",
+        "quote": "Each of the three candles is white, tall, opens within the body of the prior candle and closes higher, with a short upper shadow (meaning each white candle closes near the high).",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events — the render is empty and an independent re-implementation of the same clauses over the same 501 bars also returns 0, so the concept is unreachable rather than lost to the route's 50-event cap. Of the 50 rising bullish three-bar triples in the window, 3 clear the body >= 60%-of-range test and none clear the close-within-20%-of-the-high test, so the `strong()` gate at events.rs:3187-3193 never sees three bars in a row. Nothing draws: the family's most-published continuation pattern has no pixels.",
+        "canonical": "three consecutive tall white candles flagged with a marker at the third, the trio named on hover — Bulkowski ranks it 67/103 by frequency and reports `Bullish reversal 82% of the time`",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "for all three bars: body >= 0.6*range && close > open && close >= high - 0.2*range, plus b.close > a.close && c > b.close (events.rs:3186-3194) — 0 fires in 495 bars; the `close >= high - 0.2*range` clause is the wall, and the reference's `opens within the body of the prior candle` is not tested at all",
+        "their_rule": "three tall white candles each closing near its high with higher closes and overlapping bodies, in a downward price trend",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "all3(body >= 0.6*range && close >= high - 0.2*range && close > open) && closes ascending => mark(bar = n, side = bullish) [unreachable on a continuous 15m feed]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — bars 0-1 draw nothing before the confirming third bar: both detectors set formed_at to None, so the event's bars field is [t,t] and the renderer gets no span to mark — the two pattern bars that make the pattern a pattern arrive unlabelled the pattern is silent on this window either way"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3186-3194)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.three_white_soldiers.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "candles.three_black_crows",
@@ -676,44 +741,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Three Black Crows (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/ThreeBlackCrows.html",
+        "quote": "Candles 2 and 3 of the pattern should open within the body of the prior candle, and all three should close near their lows, making new lows along the way.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "2 red words — `three black crows` (82px, the widest label in the family) on 2 bars, both 10px above the high, 493px apart so no collision, newest at x 608. Right bar and side; the drawing is a single permanent word 55x the bar width, and the three crows themselves stay unmarked.",
+        "canonical": "a bearish marker at the third crow with the trio named on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "the mirror of the soldiers clause — 72 three-bar bearish windows, 4 pass body >= 60% of range, 2 pass the close-within-20%-of-low test (events.rs:3186-3197) — 2 fires, 0.4% of bars; the reference's `open within the prior body` is absent",
+        "their_rule": "three tall black candles in an uptrend, each closing near its low and making new lows, candles 2 and 3 opening within the prior body",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "all3(body >= 0.6*range && close <= low + 0.2*range && close < open) && closes descending => mark(bar = n, side = bearish)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 7,
+        "before": "the pass returns nothing until the window holds 7 candles (events.rs:3070 — six closes of trend context plus the pattern bar), so bars 0-5 draw nothing at all — bars 0-1 draw nothing before the confirming third bar: both detectors set formed_at to None, so the event's bars field is [t,t] and the renderer gets no span to mark — the two pattern bars that make the pattern a pattern arrive unlabelled"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::events::detect_patterns (events.rs:3186-3197)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.three_black_crows.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.dragonfly_doji",
@@ -727,44 +797,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Dragonfly Doji (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/Dragonfly.html",
+        "quote": "Look for a long lower shadow with a small body (open and close are within pennies of each other).",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "9 teal words — `dragonfly doji` (67px) on 9 bars, all 10px under the low; 2 pairs within 21px, newest at x 1003. Every marked bar is a genuine dragonfly (doji plus lower >= 50% of range, upper <= 10%), and 7 of the 9 bars also carry the plain `doji` word from events.rs, so two labels stack on one 1.5px candle. Direction: Bulkowski's page gives this one `Price trend leading to the pattern: None required`, and we always paint bullish.",
+        "canonical": "a marker at the bar, grey unless the surrounding trend licenses a direction — the reference does not assign one",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "is_doji(body <= 0.1*range) && upper <= 0.1*range && lower >= 0.5*range, side hardcoded Buy (candlesticks.rs:73-75) — 9 fires uncapped, 1.8% of bars",
+        "their_rule": "a doji whose lower shadow does the work, with no trend and no directional claim",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body <= 0.1*range && upper <= 0.1*range && lower >= 0.5*range => mark(bar = n, side = bullish) [the reference states no side]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; on the confirming bar nothing marks the prior bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:73-75)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.dragonfly_doji.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.gravestone_doji",
@@ -778,44 +853,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Gravestone Doji (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/Gravestone.html",
+        "quote": "Look for a candle with a tall upper shadow and little or no lower one.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "2 red words — `gravestone doji` (72px) on 2 bars, 10px above the high, 285px apart, newest at x 657. Correct bars and correct bearish read; both bars also carry the plain `doji` word, and the label is a permanently painted 10-character string where the reference draws one glyph.",
+        "canonical": "a bearish marker over the bar, name on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "is_doji && lower <= 0.1*range && upper >= 0.5*range, side hardcoded Sell (candlesticks.rs:77-78) — 3 fires uncapped, 0.6% of bars; the mirror of the dragonfly clause",
+        "their_rule": "a doji with a tall upper shadow and little or no lower one, no trend required",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body <= 0.1*range && lower <= 0.1*range && upper >= 0.5*range => mark(bar = n, side = bearish)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; on the confirming bar nothing marks the prior bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:77-78)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.gravestone_doji.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.long_legged_doji",
@@ -829,44 +909,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Long-Legged Doji (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/LongLegDoji.html",
+        "quote": "Look for a doji (opening and closing prices are within a few pennies of each other) accompanied by long shadows.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "15 teal words — `long legged doji` (77px) — every one of them drawn UNDER the low, because the detector hardwires Side::Buy (candlesticks.rs:80-81) and the router sends bullish marks to zone_low-10px. All 15 sit on real long-shadowed dojis, so the bar is right and the claim is wrong: this is the indecision candle, Bulkowski's own page answers `Price trend leading to the pattern: None`, and a teal bottom-marker on a doji printed after a rally is a lie the reference never tells. 2 pairs within 21px, newest starts at x 1067 and runs over the price gutter unclipped.",
+        "canonical": "a neutral/grey marker at the bar — TradingView's rule for a pattern that can read either way is grey, and the name comes from the hover tooltip",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "is_doji && upper >= 0.3*range && lower >= 0.3*range, always Side::Buy (candlesticks.rs:80-81) — 16 fires uncapped, 3.2% of bars; the shape clause is the reference's, the direction is invented",
+        "their_rule": "a doji with long shadows, trend not required and direction not assigned; Bulkowski's identification table has no bullish claim on this line",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body <= 0.1*range && upper >= 0.3*range && lower >= 0.3*range => mark(bar = n, side = neutral) [our code emits bullish]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; on the confirming bar nothing marks the prior bar"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:80-81)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.long_legged_doji.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.spinning_top",
@@ -880,44 +965,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "LuxAlgo Library, Spinning Top (concept page)",
+        "url": "https://www.luxalgo.com/library/concept/spinning-top/",
+        "quote": "A spinning top is a single candle with a small real body near the middle of its range and upper and lower shadows that are each longer than the body.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 words — `spinning top` (58px), 22 teal under the low and 28 red over the high — on 50 distinct bars, which is the route's cap: the clause fires 110 times uncapped, 22% of the evaluated bars. 43 of the 50 labels sit within 21px of a neighbour, so the word soup is the dominant visual on the chart. The bar choice is defensible — Bulkowski ranks the spinning top 2/103 by frequency, the commonest pattern on his list — but our clause accepts shadows of ANY length while the reference requires each shadow longer than the body, which drops 21 of the 112 qualifying bars.",
+        "canonical": "a neutral indecision marker at the bar, name on hover; the reference flags one candle out of a common shape, we flag a quarter of them",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "0.1 * range < body <= 0.3 * range && upper > 0 && lower > 0, side = the bar's colour (candlesticks.rs:85-86) — 110 fires uncapped; `> 0` is the only shadow test, so a one-tick shadow makes a top",
+        "their_rule": "a small body with both shadows LONGER than the body, colour immaterial — an indecision candle, not a directional signal",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "0.1*range < body <= 0.3*range && upper > 0 && lower > 0 => mark(bar = n, side = colour_n) [reference: upper > body && lower > body]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:85-86)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.spinning_top.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.tweezer",
@@ -931,44 +1021,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Tweezers Bottom (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/TweezersBottom.html",
+        "quote": "Look for two candles sharing the same low price.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 words — `tweezer` (34px), 39 teal below the low / 11 red above the high — on 50 consecutive-ish bars, and that is the cap: the clause fires on 378 of the 495 evaluated bars, 76%. 49 of the 50 label pairs are within 21px of each other at a 2.14px bar pitch, so the right half of the chart is a solid band of the word `tweezer`, and the newest one starts at x 1082 and paints over the price gutter. This is not a marker that is drawn wrong — it is a marker drawn on bars that are not tweezers.",
+        "canonical": "two bars sharing one extreme, flagged once at a swing top or bottom inside a trend — 3 pairs in this series share a low to the cent, 0 share a high",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "|low_n - low_{n-1}| <= 0.001 * max(|low|), else |high_n - high_{n-1}| <= 0.001 * max(|high|), no trend clause, no requirement that either bar be a reversal bar (candlesticks.rs:101-107) — the 0.1%-of-price tolerance is 79.9 USD here, about half the median 15m bar range (166.3 USD), so `the same low` means `within half a bar of each other`",
+        "their_rule": "two candles sharing the same low price (Bulkowski ranks tweezer bottoms 39/103 by frequency), read at the bottom of a decline; the same-price test is a matching, not a near-match",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "|low_n - low_{n-1}| <= 0.001*price || |high_n - high_{n-1}| <= 0.001*price => mark(bar = n, side = (lows ? bullish : bearish)) [tolerance is ~0.5 median bar ranges]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:101-107)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.tweezer.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.kicker",
@@ -982,44 +1077,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Kicking Bullish (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/KickingBull.html",
+        "quote": "Look for a tall black marubozu candle followed by an upward gap then a tall white marubozu candle.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events — the render is empty, and an independent re-implementation of these exact clauses over the same 501-bar series also returns 0, so the concept is unreachable rather than lost to the route's newest-50 cap (concept_routes.rs:252-260). The clause needs three things this feed never produces at once: two ADJACENT 95%-marubozu bars (22 bars in the window clear the 0.95 body/range test, 0 pairs are adjacent) and a gap (0 bars sit entirely above or below their neighbour). Nothing draws for a pattern Bulkowski ranks 100/103 — the rarest candlestick on his list — so the miss is faithful to the data and the silence is honest, but the concept can never be exercised end to end on spot crypto 15m.",
+        "canonical": "a marker at the second marubozu with the gap visible between the two bodies — the pattern's identity is the gap, which nothing in our drawing could show anyway since only the confirming bar is marked",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "is_marubozu(prev) && is_marubozu(last) && opposite colour && (last.low > prev.high or last.high < prev.low), body >= 0.95 * range in both bars (candlesticks.rs:109-115) — 0 fires in 495 bars; the note's marubozu concept itself uses 0.90, so two thresholds for one word live in one tree",
+        "their_rule": "two marubozu candles of opposite colour separated by a gap in the direction of the new trend, no trend clause required",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body_{n-1} >= 0.95*range_{n-1} && body_n >= 0.95*range_n && colours opposite && gap(n over n-1) => mark(bar = n, side = colour_n) [gap clause unsatisfiable on this feed]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:109-115)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.kicker.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "candles.matching_low",
@@ -1033,44 +1133,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Matching Low (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/MatchingLow.html",
+        "quote": "Following that, find a black body with a close ( not the low) that matches the prior close.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "10 teal words — `matching low` (58px) — all drawn under the low, all on real two-bar matching closes, 3 pairs within 21px, newest at x 788. 12 fires uncapped (2.4%), a sane base rate for Bulkowski's rank 58/103. The defect is the claim: the detector hardwires Side::Buy while Bulkowski reports these `act as continuations most often` near a yearly low, and the clause never checks that the SECOND bar is black.",
+        "canonical": "a marker at the second bar with both bars readable as the pair; the direction is a downtrend continuation, not a bullish flag",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "!prev.bullish && |last.close - prev.close| <= 0.05 * mean_range(prev, last), side hardcoded Buy (candlesticks.rs:118-120) — the tolerance is ~10.7 USD here; the second bar's colour is not tested, and no trend clause exists",
+        "their_rule": "a tall black candle followed by another black candle whose CLOSE (not low) matches the prior close, in a decline",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "colour_{n-1} == bearish && |close_n - close_{n-1}| <= 0.05*mean(range) => mark(bar = n, side = bullish) [reference also requires colour_n == bearish]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:118-120)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.matching_low.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.on_neck",
@@ -1084,44 +1189,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — On-Neck (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/OnNeck.html",
+        "quote": "Following that, a white candle has a close that matches (or nearly matches) the prior low.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "5 red words — `on neck` (34px) — above the high of 5 bars, 1 pair within 21px, newest at x 657. The marked bars are the reference's shape (a bearish bar, then a bullish bar closing within a tenth of the prior range above its low); the drawing is the same permanent word, and the pattern's first bar is unmarked.",
+        "canonical": "a bearish marker at the second bar with the pair named on hover — the reference's read is a weak bounce that fails at the low",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "!prev.bullish && last.bullish && 0 <= last.close - prev.low <= 0.1 * prev.range, side hardcoded Sell (candlesticks.rs:124-128) — 6 fires uncapped, 1.2%; the band is one-sided (a close AT or a hair BELOW the prior low, which is what `matches` says, is only reachable at exactly 0 above)",
+        "their_rule": "a tall black candle in a decline, then a white candle closing at or nearly at the prior low — a continuation, no numeric band stated",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "colour_{n-1} == bearish && colour_n == bullish && 0 <= close_n - low_{n-1} <= 0.1*range_{n-1} => mark(bar = n, side = bearish)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph the parent bar draws nothing: the event reaches the renderer as one word on the confirming bar (formed_at None, so bars is [t,t]), while the reference reads the pair as one figure"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:124-128)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.on_neck.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.three_inside",
@@ -1135,44 +1245,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Three Inside Up (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/ThreeInsideUp.html",
+        "quote": "The last day is a white candle that closes above the prior close.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 words — `three inside` (58px), 25 below the low and 25 above the high — the capped view of 65 uncapped fires (13.1% of bars). 36 of the 50 pairs are within 21px; the newest starts at x 1082 and runs off the plot edge into the price gutter, unclipped, because paint() sets no clip. The marked bar is the third candle of a real harami-plus-recovery, and it is the only one of the three that draws anything.",
+        "canonical": "a marker at the third bar spanning the three-bar figure the reference describes bar by bar",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "bar 1 body > bar 2 body, bar 2 inside bar 1's body with opposite colour, then bar 3 closes through bar 2's body EXTREME: last.close > max(prev.open, prev.close) for the bullish branch (candlesticks.rs:139-148) — the reference only asks it to close above the prior CLOSE, so ours is stricter on the close and looser on the trend",
+        "their_rule": "a harami (tall candle in a trend plus a small opposite candle inside its body) whose third candle closes above the second candle's close in the reversal direction",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "harami(n-2, n-1) && colour_n != colour_{n-1} && (bullish ? close_n > top(body_{n-1}) : close_n < bottom(body_{n-1})) => mark(bar = n, side = colour_n)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — three-bar shapes are behind the early return at candlesticks.rs:132, so the three-bar block sits behind the early return at candlesticks.rs:132, so bars 0-1 draw nothing, and the confirming third bar carries one word: formed_at is None (candlesticks.rs:67) so the wire says bars:[t,t] and the two pattern bars that make the pattern stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:139-148)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.three_inside.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.three_outside",
@@ -1186,44 +1301,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Three Outside Up (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/ThreeOutsideUp.html",
+        "quote": "Following that, a white candle opens below the prior body and closes above it, too.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "42 words — `three outside` (62px), 22 teal below the low / 20 red above the high — on 42 distinct bars; 44 fires uncapped (8.9%). 23 of the 41 label pairs sit within 21px and the newest starts at x 1063. The marked bar is the third candle and the shape test is the reference's; only the always-painted word differs.",
+        "canonical": "a marker at the third candle, engulfing pair implied, name on hover",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "bar 2 engulfs bar 1's body with opposite colour, then bar 3 keeps the same colour as bar 2 and closes beyond bar 2's CLOSE (candlesticks.rs:150-158) — no trend clause, and the reference's `opens below the prior body` for the engulfing bar is not required",
+        "their_rule": "an engulfing pair in a trend whose third candle continues in the new direction with a higher (or lower) close than the engulfing candle",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "engulfing(n-2, n-1) && colour_n == colour_{n-1} && (bullish ? close_n > close_{n-1} : close_n < close_{n-1}) => mark(bar = n, side = colour_n)",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — the three-bar block sits behind the early return at candlesticks.rs:132, so bars 0-1 draw nothing, and the confirming third bar carries one word: formed_at is None (candlesticks.rs:67) so the wire says bars:[t,t] and the two pattern bars that make the pattern stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:150-158)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.three_outside.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.three_methods",
@@ -1237,44 +1357,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Rising Three Methods (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/Rising3Methods.html",
+        "quote": "Look for a tall white candle followed by three small candles that trend lower but close within the high-low range of the first candle.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events — the render is empty, and an independent re-implementation of these exact clauses over the same 501-bar series also returns 0, so the concept is unreachable rather than lost to the route's newest-50 cap (concept_routes.rs:252-260). The funnel is instructive: of 105 windows that open with a tall white bar (body >= 50% of its range), 20 keep all three mid bodies under half that body, 11 make all three mids black, 9 keep every mid high below bar 1's high — and 0 clear all five mid clauses together. Only 2 windows in the whole series hold three bars wholly inside bar 1's range, which is what a 15m crypto pullback essentially never does.",
+        "canonical": "a marker spanning the five-bar figure — this pattern IS a box: three counter-trend bars inside the first bar's range and a resumption bar, which the reference describes as a shape, not a point",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "b1 bullish && b1.body >= 0.5*b1.range && all three mids (body <= 0.5*b1.body && close < open && open >= b1.open && close >= b1.open && high <= b1.high) && mids' closes descending && last bullish && last.close > b1.close (candlesticks.rs:206-220) — 0 fires in 495 bars",
+        "their_rule": "a tall white candle, three small black candles trending lower but closing inside the first candle's high-low range, then a tall white candle closing above the first day's close",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "b1 tall white && all3 mids small/black/inside && closes descending && last bullish && close_n > b1.close => mark(bar = n, side = bullish) [inside-range clause unsatisfiable at 15m]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — the five-bar block needs 5 candles (candlesticks.rs:200), so the five-bar block only runs when candles.len() >= 5 (candlesticks.rs:200), so bars 0-3 draw nothing, and the confirming fifth bar carries one word — bars:[t,t] again, so the four pattern bars behind it stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:206-220)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.three_methods.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "candles.abandoned_baby",
@@ -1288,44 +1413,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Bullish Abandoned Baby (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/AbandonBabyBull.html",
+        "quote": "Following that, a doji should appear that gaps below the two adjacent candle shadows.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events — the render is empty, and an independent re-implementation of these exact clauses over the same 501-bar series also returns 0, so the concept is unreachable rather than lost to the route's newest-50 cap (concept_routes.rs:252-260). The clause needs the middle bar isolated from its neighbour by a gap, and the window has no gaps at all: 0 of the 500 adjacent pairs put one bar entirely above or entirely below the other, and the largest body-to-body gap is 0.01 USD, because Binance spot 15m candles chain open to prior close (275 of 500 opens are exactly the prior close; the rest deviate by at most 1.21 USD). 258 windows have a near-flat middle bar (the code's own doji test is |close - open| <= 0.001 * price, not a body/range ratio), but 0 of them put that bar's high below the prior bar's low. Bulkowski ranks the pattern 92/103 by frequency, so a rare miss on a gapless feed is expected — the defect is that the concept is untestable end to end here.",
+        "canonical": "a marker at the third bar isolating the doji island — the reference figure is the gap on both sides, which our single-word mark could not show even if it fired",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "|prev.close - prev.open| <= 0.001*price && bar 1 bearish && prev.high < bar1.low && last.bullish && last.low > prev.high (and the mirror) — candlesticks.rs:172-178, 0 fires in 495 bars; the doji test is a price-fraction absolute rather than a ratio, and the island needs two gaps",
+        "their_rule": "a black candle in a decline, a doji gapped below BOTH adjacent candles' shadows, then a white candle gapped above the doji — Bulkowski's configuration requires the island on both sides",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "flat(prev) && prev.high < low(n-2) && low_n > high(prev) && colours opposite => mark(bar = n, side = bullish) [two gaps required, feed has none]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — the three-bar block sits behind the early return at candlesticks.rs:132, so bars 0-1 draw nothing, and the confirming third bar carries one word: formed_at is None (candlesticks.rs:67) so the wire says bars:[t,t] and the two pattern bars that make the pattern stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:172-178)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.abandoned_baby.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "candles.tri_star",
@@ -1339,44 +1469,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Bullish Tri-Star (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/TriStarBull.html",
+        "quote": "Look for three doji after a downward price trend.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events — the render is empty, and an independent re-implementation of these exact clauses over the same 501-bar series also returns 0, so the concept is unreachable rather than lost to the route's newest-50 cap (concept_routes.rs:252-260). The window holds 40 doji bars (body <= 0.1 * range) but 0 windows of three consecutive dojis, and the pattern additionally demands the middle body separated from both neighbours — impossible without gaps. Bulkowski ranks tri-star 79/103, so the miss is the feed's; the row's complaint is that a silent concept still ships in the registry with no way to be seen or tested.",
+        "canonical": "three dojis marked as a figure (the middle one gapped), with the reversal direction named on hover",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "is_doji(all three bars, body <= 0.1*range) && middle body strictly above/below both neighbours' bodies (candlesticks.rs:163-168) — 0 fires; no trend clause despite the reference's `after a downward price trend`",
+        "their_rule": "three consecutive dojis after a decline with the middle doji's body below (bullish) or above (bearish) the other two — shadows may touch, the bodies must not",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "is_doji(n) && is_doji(n-1) && is_doji(n-2) && middle body clear of both neighbours => mark(bar = n, side = (middle below ? bullish : bearish)) [needs 3 adjacent dojis: 0 in this window]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — the three-bar block sits behind the early return at candlesticks.rs:132, so bars 0-1 draw nothing, and the confirming third bar carries one word: formed_at is None (candlesticks.rs:67) so the wire says bars:[t,t] and the two pattern bars that make the pattern stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:163-168)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.tri_star.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "candles.stick_sandwich",
@@ -1390,44 +1525,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Stick Sandwich (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/StickSandwich.html",
+        "quote": "The last candle is a black one that closes at or near the close of the first day.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events — the render is empty, and an independent re-implementation of these exact clauses over the same 501-bar series also returns 0, so the concept is unreachable rather than lost to the route's newest-50 cap (concept_routes.rs:252-260). Funnel: 69 down-up-down triples, 1 where the middle bar's low stayed above the first bar's close, and that one failed the last clause (|close_n - close_{n-2}| <= 0.1 * range of the FIRST bar, ~20 USD here). Bulkowski's rank is 59/103, so the pattern is uncommon but not exotic — this rule is what keeps it invisible.",
+        "canonical": "a marker at the third bar with the two matching closes and the middle recovery bar readable as one figure",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "!q.bullish && p.bullish && !s.bullish && prev.low > pp.close && |last.close - pp.close| <= 0.1 * q.range (candlesticks.rs:182-186) — 0 fires in 495 bars; the tolerance is tied to the FIRST bar's range while the reference ties the match to the price itself, and no downtrend is required",
+        "their_rule": "a black candle in a falling trend, a white candle trading above the prior close, then a black candle closing at or near the FIRST day's close",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "down-up-down && low_{n-1} > close_{n-2} && |close_n - close_{n-2}| <= 0.1*range_{n-2} => mark(bar = n, side = bullish) [0 fires: 1 of 69 triples survives the middle clause]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — the three-bar block sits behind the early return at candlesticks.rs:132, so bars 0-1 draw nothing, and the confirming third bar carries one word: formed_at is None (candlesticks.rs:67) so the wire says bars:[t,t] and the two pattern bars that make the pattern stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:182-186)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.stick_sandwich.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "candles.mat_hold",
@@ -1441,44 +1581,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Mat Hold (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/MatHold.html",
+        "quote": "The fourth day is, again, a small black candle and all three candles (days 2 to 4) show a downward price trend but their bodies remain above the low of the first day.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "1 word — `mat hold` (38px) — teal, 10px under the low of the fifth bar at x 184, alone on the canvas. 2 fires uncapped (0.4%), which sits well with Bulkowski's rank 93/103. The marked bar is the resumption candle and the four bars under the mat are blank; the label is a permanent word where the reference shows a five-bar figure.",
+        "canonical": "a marker at the resumption bar with the five-bar span readable on hover — the pattern is a trend continuation the trader has to see the pullback for",
+        "verdict": "differs_minor"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "b1 bullish && b1.body >= 0.5*b1.range && all three mids (body <= 0.5*b1.body && min(open, close) > b1.close) && last bullish && last.close > b1.close (candlesticks.rs:224-231) — the mids must stay above bar 1's CLOSE, where the reference only asks them to stay above its LOW, and the resumption bar's size is never checked",
+        "their_rule": "a tall white candle, three small candles trending lower with their bodies ABOVE THE LOW of the first day, then a tall white candle closing above the high of the prior four candles",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "b1 tall white && all3 mids small && min(body_mid) > b1.close && last bullish && close_n > b1.close => mark(bar = n, side = bullish) [reference: bodies above b1.low, last candle tall]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — the five-bar block needs 5 candles, so the five-bar block only runs when candles.len() >= 5 (candlesticks.rs:200), so bars 0-3 draw nothing, and the confirming fifth bar carries one word — bars:[t,t] again, so the four pattern bars behind it stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:224-231)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.mat_hold.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.tasuki_gap",
@@ -1492,44 +1637,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Upside Tasuki Gap (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/UpsideTasukiGap.html",
+        "quote": "The last day is a black candle that opens in the body of the prior candle and closes within the gap created between the first two candles.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events — the render is empty, and an independent re-implementation of these exact clauses over the same 501-bar series also returns 0, so the concept is unreachable rather than lost to the route's newest-50 cap (concept_routes.rs:252-260). 243 adjacent same-direction pairs, 60 where the second bar opens beyond the first bar's close (the code's stand-in for the gap), and 0 complete the third-bar clause. The reference's gap is between the two BODIES and even includes `a gap between the shadows`, which the window has no gaps at all: 0 of the 500 adjacent pairs put one bar entirely above or entirely below the other, and the largest body-to-body gap is 0.01 USD, because Binance spot 15m candles chain open to prior close (275 of 500 opens are exactly the prior close; the rest deviate by at most 1.21 USD).",
+        "canonical": "a marker at the third bar with the gap drawn — the whole pattern is the gap the pullback partially fills but does not close",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "two same-colour bars with prev.open beyond pp.close, then a bar of the opposite colour opening inside the second bar's body and closing inside the gap (candlesticks.rs:189-197) — 0 fires; `prev.open > pp.close` is not a gap and still produced nothing, so the third-bar window is the wall",
+        "their_rule": "a white candle in an uptrend, a second white candle gapping higher (gap between the shadows too), then a black candle opening in the prior body and closing within the gap without filling it",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "colour_{n-2} == colour_{n-1} && open_{n-1} > close_{n-2} && colour_n opposite && open_n in body_{n-1} && close_n in gap => mark(bar = n, side = colour_{n-1}) [0 fires]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — the three-bar block sits behind the early return at candlesticks.rs:132, so bars 0-1 draw nothing, and the confirming third bar carries one word: formed_at is None (candlesticks.rs:67) so the wire says bars:[t,t] and the two pattern bars that make the pattern stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:189-197)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.tasuki_gap.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "candles.upside_gap_two_crows",
@@ -1543,44 +1693,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Upside Gap Two Crows (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/UpGapTwoCrows.html",
+        "quote": "The last day is another black candle that engulfs the body of the middle day with a close that remains above the close of the first candle.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events — the render is empty, and an independent re-implementation of these exact clauses over the same 501-bar series also returns 0, so the concept is unreachable rather than lost to the route's newest-50 cap (concept_routes.rs:252-260). The funnel walks most of the way and dies at the end: 105 tall white first bars, 50 followed by a black bar, 9 of those gapping above the first bar's close (`second.low > first.close || second.open > first.close`, the code's own widened definition of the gap — the true shadow gap the reference wants appears 0 times), and 0 completing the third bar. Bulkowski ranks it 75/103 with `bullish continuation 60% of the time`, i.e. the pattern is rare AND usually wrong.",
+        "canonical": "a bearish marker at the third crow with the gap and the failed engulfing readable — a top-reversal warning, not a bar's worth of text",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "first bullish && first.body >= 0.5*first.range && second bearish && (second.low > first.close || second.open > first.close) && third bearish && third.open >= second.open && third.close < second.open && third.close > first.close (candlesticks.rs:262-280) — 0 fires in 495 bars",
+        "their_rule": "a tall white candle in an uptrend, a black candle gapping above its body, then a black candle engulfing the middle body while holding above the first candle's close",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "tall_white(n-2) && black(n-1) && gap_above_body(n-1, n-2) && black(n) && engulfs_body(n, n-1) && close_n > close_{n-2} => mark(bar = n, side = bearish) [0 fires]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — the three-bar block sits behind the early return at candlesticks.rs:132, so bars 0-1 draw nothing, and the confirming third bar carries one word: formed_at is None (candlesticks.rs:67) so the wire says bars:[t,t] and the two pattern bars that make the pattern stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:262-280)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.upside_gap_two_crows.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "candles.ladder_bottom",
@@ -1594,44 +1749,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Ladder Bottom (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/LadderBottom.html",
+        "quote": "The 4th day should be a black candle with an upper shadow, and the last day should be a white candle that gaps open above the body of the prior day.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "0 events — the render is empty, and an independent re-implementation of these exact clauses over the same 501-bar series also returns 0, so the concept is unreachable rather than lost to the route's newest-50 cap (concept_routes.rs:252-260). 72 windows hold three consecutive black bars and all 72 also decline in closes; 0 end with a white bar opening above the prior bar's OPEN. The rule already relaxed the reference's `gaps open above the body` to a plain higher open and still never fires, and it never checks the 4th day's upper shadow the reference names.",
+        "canonical": "a marker at the fifth bar with the four rungs readable on hover — a five-bar bottom that the reference draws as a staircase, not a word",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "bars n-3..n-1 all bearish && closes descending && last bullish && last.open > prev.open (candlesticks.rs:235-242) — 0 fires in 495 bars; side hardcoded Buy, no upper-shadow test on the fourth bar, no trend context",
+        "their_rule": "five candles in a downtrend: three tall black candles with successively lower opens and closes, a fourth black candle with an upper shadow, then a white candle gapping open above the prior body",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "3 black bars with descending closes && last bullish && open_n > open_{n-1} => mark(bar = n, side = bullish) [0 fires: 0 of 72 candidate windows]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — the five-bar block needs 5 candles, so the five-bar block only runs when candles.len() >= 5 (candlesticks.rs:200), so bars 0-3 draw nothing, and the confirming fifth bar carries one word — bars:[t,t] again, so the four pattern bars behind it stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:235-242)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.ladder_bottom.html",
-      "preview_agrees": ""
+      "preview_agrees": "not_rendered"
     },
     {
       "concept_id": "candles.belt_hold",
@@ -1645,44 +1805,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Bullish Belt Hold (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/BeltHoldBull.html",
+        "quote": "Look for a white candle with no lower shadow, but closing near the high.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "50 words — `belt hold` (43px), 21 teal under the low / 29 red over the high — the capped view of 123 uncapped fires: a quarter of the evaluated bars (24.8%) are marked. 46 of 50 label pairs sit within 21px, and the newest starts at x 1082, past the plot edge and into the price gutter, unclipped. A belt hold is Bulkowski's rank 22/103, not a quarter of all bars, so the marker is being placed on bars the reference would not mark — on top of the always-painted word.",
+        "canonical": "a marker at the bar whose open IS the extreme — a gap-open at the bottom of a decline, which the reference ties to a trend and to having no shadow at all on that side",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "body >= 0.5 * range && (bullish ? open - low <= 0.1 * range : high - open <= 0.1 * range), side = the bar's colour, no trend clause (candlesticks.rs:89-95) — 123 fires; a tenth-of-range allowance where the reference allows no lower shadow, and body >= 50% of range is not `tall` by any reading",
+        "their_rule": "a white candle in a downtrend with NO lower shadow, closing near the high (the bearish mirror opens at the high after an uptrend)",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "body >= 0.5*range && |open - extreme| <= 0.1*range => mark(bar = n, side = colour_n) [reference: no shadow at the open, plus a trend]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:89-95)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.belt_hold.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     },
     {
       "concept_id": "candles.hikkake",
@@ -1696,44 +1861,49 @@
         ],
         "parameters": []
       },
-      "kind": "",
+      "kind": "event",
       "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
+        "source": "Thomas Bulkowski, The Pattern Site — Bullish Hikkake (Encyclopedia of Candlestick Charts entry)",
+        "url": "https://thepatternsite.com/HikkakeBull.html",
+        "quote": "Look for an inside day (lower high and higher low compared to the prior day) followed by a lower high and lower low.",
+        "checked": "2026-10-31"
       },
       "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
+        "today": "49 words — `hikkake` (34px), 29 teal under the low / 20 red over the high — 51 uncapped fires (10.3% of bars). Every marked bar follows an inside bar and breaks one of its extremes, which is the middle of the reference's figure; the bar we mark is the FALSE break, painted teal exactly when the reference says the pattern is not yet a pattern. 27 of 49 pairs sit within 21px, newest at x 1082 running into the gutter.",
+        "canonical": "the mark lands only after confirmation — price must return above the inside day's high within three bars, and until then the reference has no signal to draw",
+        "verdict": "differs_major"
       },
       "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
+        "our_rule": "prev inside pp (prev.high < pp.high && prev.low > pp.low) && ((last.high < prev.high && last.low < prev.low) => Buy | (last.high > prev.high && last.low > prev.low) => Sell) (candlesticks.rs:247-255) — 51 fires; no confirmation clause, no three-bar window, and the two-sided break of the inside bar's own extremes is not the reference's trigger",
+        "their_rule": "an inside day, then a false break of it, then confirmation: price must rise above the inside day's high in three days or less, after the candle ends, before the pattern counts",
+        "verdict": "different_rule"
       },
       "rule_as_data": {
         "form": "predicate",
-        "rule": "",
-        "inputs": []
+        "rule": "inside(prev, pp) && break_below(prev, last) => mark(bar = n, side = bullish) [reference: confirmed only if a later bar closes above inside.high within 3 bars]",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
       },
       "warmup": {
-        "bars": 0,
-        "before": ""
+        "bars": 2,
+        "before": "detect_candlesticks returns nothing under 2 candles (candlesticks.rs:48), so bar 0 draws nothing; the single confirming bar carries one word and no glyph — the hikkake block is behind candlesticks.rs:132, so the three-bar block sits behind the early return at candlesticks.rs:132, so bars 0-1 draw nothing, and the confirming third bar carries one word: formed_at is None (candlesticks.rs:67) so the wire says bars:[t,t] and the two pattern bars that make the pattern stay unmarked"
       },
       "target_shape": {
-        "name": "",
+        "name": "bar_marker",
         "status": "wiring",
         "scale": "price"
       },
-      "detector": "",
+      "detector": "analytics_core::candlesticks::detect_candlesticks (candlesticks.rs:247-255)",
       "parameters": {
         "declared": [],
-        "honoured": null
+        "honoured": []
       },
       "render": "reports/concept-visual-audit/candles/candles.hikkake.html",
-      "preview_agrees": ""
+      "preview_agrees": "differs"
     }
   ]
 }

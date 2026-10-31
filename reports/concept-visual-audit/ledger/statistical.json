@@ -5,6 +5,49 @@
       "concept_id": "indicators.hv",
       "family": "statistical",
       "version": "1.0.0",
+      "kind": "series",
+      "reference": {
+        "source": "TradingView Help Center, Historical Volatility",
+        "url": "https://www.tradingview.com/support/solutions/43000589145-historical-volatility/",
+        "quote": "Historical volatility is a statistical measure used to analyze the general dispersion of security or market index returns for a specified period of time.",
+        "checked": "2026-10-31"
+      },
+      "draw": {
+        "today": "12 `hv` labels (x 340.1-946.8, y 32.4-397.6) at price while the HV pane draws below -- and the pane puts HV (a return deviation of order 0.003) and its percentile rank (0..1) on ONE auto scale (indicator_series.rs:763-776), so the rank line sets the scale and HV flattens onto the axis. The labels add a price-space copy on top of a pane that already cannot show the HV it is named for.",
+        "canonical": "HV as a volatility line in its own pane, in percent or return units, with the percentile rank as a second pane or a separate scale -- 'a statistical measure used to analyze the general dispersion of ... returns'; no word at price.",
+        "verdict": "differs_major"
+      },
+      "fires": {
+        "our_rule": "the 20-bar return deviation is defined on every bar; an event is emitted when its 126-bar percentile rank enters the top or bottom decile (indicator_signals.rs:101-110, n > 150)",
+        "their_rule": "TradingView plots HV continuously and marks no regime event; the percentile rank is a separate study",
+        "verdict": "continuous"
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "hv = stdev(log returns, 20); rank = percentile(hv, 126) => event when rank crosses 0.9 or 0.1",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
+      },
+      "warmup": {
+        "bars": 150,
+        "before": "HV(20) exists from bar 20; the 126-bar rank needs 126 more, and the detector requires n > 150"
+      },
+      "target_shape": {
+        "name": "series_line",
+        "status": "wiring",
+        "scale": "own_pane"
+      },
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::HvRegimeShift (indicator_signals.rs:101-110)",
+      "parameters": {
+        "declared": [],
+        "honoured": []
+      },
+      "render": "reports/concept-visual-audit/statistical/indicators.hv.html",
+      "preview_agrees": "differs",
       "registry": {
         "pane": true,
         "overlay": false,
@@ -12,50 +55,55 @@
           "candles"
         ],
         "parameters": []
-      },
-      "kind": "",
-      "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
-      },
-      "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
-      },
-      "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
-      },
-      "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
-      },
-      "warmup": {
-        "bars": 0,
-        "before": ""
-      },
-      "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
-      },
-      "detector": "",
-      "parameters": {
-        "declared": [],
-        "honoured": null
-      },
-      "render": "reports/concept-visual-audit/statistical/indicators.hv.html",
-      "preview_agrees": ""
+      }
     },
     {
       "concept_id": "indicators.zscore",
       "family": "statistical",
       "version": "1.0.0",
+      "kind": "series",
+      "reference": {
+        "source": "Wikipedia, Standard score",
+        "url": "https://en.wikipedia.org/wiki/Standard_score",
+        "quote": "In statistics, the standard score or z-score is the number of standard deviations by which the value of a raw score (i.e., an observed value or data point) is above or below the mean value of what is being observed or measured.",
+        "checked": "2026-10-31"
+      },
+      "draw": {
+        "today": "28 `zscore` labels (x 65.7-1079.7, y 55.3-477.3) at price while the Z-Score pane with its +2/-2/0 levels is drawn below. A value measured in sigmas is being announced at a price, once per zone entry.",
+        "canonical": "one z trace in its own pane against the +2 and -2 levels and zero -- 'the number of standard deviations by which the value of a raw score ... is above or below the mean' -- with no mark at price.",
+        "verdict": "differs_major"
+      },
+      "fires": {
+        "our_rule": "the 20-bar z-score is defined on every bar; an event is emitted when it crosses -2 (buy side) or +2 (sell side) (indicator_signals.rs:409-419, n > 22)",
+        "their_rule": "a z-score is read continuously against its own +/-2 bands; the reference marks no crossing event",
+        "verdict": "continuous"
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "z = (close - mean(close, 20)) / stdev(close, 20) => event when z crosses +2 or -2",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
+      },
+      "warmup": {
+        "bars": 22,
+        "before": "the 20-bar mean and sigma exist from bar 20; the detector requires n > 22"
+      },
+      "target_shape": {
+        "name": "series_line",
+        "status": "wiring",
+        "scale": "own_pane"
+      },
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::ZscoreZoneEntry (indicator_signals.rs:409-419)",
+      "parameters": {
+        "declared": [],
+        "honoured": []
+      },
+      "render": "reports/concept-visual-audit/statistical/indicators.zscore.html",
+      "preview_agrees": "differs",
       "registry": {
         "pane": true,
         "overlay": false,
@@ -63,50 +111,53 @@
           "candles"
         ],
         "parameters": []
-      },
-      "kind": "",
-      "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
-      },
-      "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
-      },
-      "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
-      },
-      "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
-      },
-      "warmup": {
-        "bars": 0,
-        "before": ""
-      },
-      "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
-      },
-      "detector": "",
-      "parameters": {
-        "declared": [],
-        "honoured": null
-      },
-      "render": "reports/concept-visual-audit/statistical/indicators.zscore.html",
-      "preview_agrees": ""
+      }
     },
     {
       "concept_id": "indicators.kalman",
       "family": "statistical",
       "version": "1.0.0",
+      "kind": "series",
+      "reference": {
+        "no_convention": true,
+        "reason": "the Kalman filter is an estimator, not a chart study: no trading platform ships a canonical Kalman drawing, and the ones that do differ in the state model, the process and measurement noise, and the seed. There is no reference geometry to copy; the row is judged against the house bar instead."
+      },
+      "draw": {
+        "today": "50 `kalman` labels (x 211.5-1075.4, y 55.3-453.7) at price over an overlay line that already is the estimate. The line is smooth and correct; the words are a second mark for the same reading, capped by the route's newest-50 limit.",
+        "canonical": "one smooth adaptive line on the price plot, tracking price with a lag the filter chooses, no mark at the bar -- legible, quiet, explainable in one line on the card.",
+        "verdict": "differs_major"
+      },
+      "fires": {
+        "our_rule": "the local-level Kalman estimate is defined on every bar from bar 0; a cross event is emitted when close crosses the estimate (indicator_signals.rs:421-431, n > 30)",
+        "their_rule": "there is no external rule; the estimate is a continuous line and the cross is our reading of it",
+        "verdict": "continuous"
+      },
+      "rule_as_data": {
+        "form": "recursion",
+        "rule": "level_0 = close_0, var_0 = r; per bar: var += q; gain = var / (var + r); level += gain * (close - level); var *= 1 - gain => event when close crosses level",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
+      },
+      "warmup": {
+        "bars": 30,
+        "before": "the filter is defined from bar 0; the detector requires n > 30"
+      },
+      "target_shape": {
+        "name": "series_line",
+        "status": "wiring",
+        "scale": "price"
+      },
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::KalmanCross (indicator_signals.rs:421-431)",
+      "parameters": {
+        "declared": [],
+        "honoured": []
+      },
+      "render": "reports/concept-visual-audit/statistical/indicators.kalman.html",
+      "preview_agrees": "differs",
       "registry": {
         "pane": false,
         "overlay": true,
@@ -114,50 +165,55 @@
           "candles"
         ],
         "parameters": []
-      },
-      "kind": "",
-      "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
-      },
-      "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
-      },
-      "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
-      },
-      "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
-      },
-      "warmup": {
-        "bars": 0,
-        "before": ""
-      },
-      "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
-      },
-      "detector": "",
-      "parameters": {
-        "declared": [],
-        "honoured": null
-      },
-      "render": "reports/concept-visual-audit/statistical/indicators.kalman.html",
-      "preview_agrees": ""
+      }
     },
     {
       "concept_id": "indicators.changepoint",
       "family": "statistical",
       "version": "1.0.0",
+      "kind": "series",
+      "reference": {
+        "source": "NIST/SEMATECH e-Handbook of Statistical Methods, CUSUM Control Charts",
+        "url": "https://www.itl.nist.gov/div898/handbook/pmc/section3/pmc323.htm",
+        "quote": "CUSUM charts, while not as intuitive and simple to operate as Shewhart charts, have been shown to be more efficient in detecting small shifts in the mean of a process.",
+        "checked": "2026-10-31"
+      },
+      "draw": {
+        "today": "0 events on this window, so no label appears; the pane draws the signed CUSUM statistic with its +2.5/-2.5 gates and zero line (indicator_series.rs:816-834), which is the control chart's own geometry.",
+        "canonical": "the CUSUM statistic as a line in its own pane, a decision interval on both sides of zero, and the crossing marked as the break -- the reference's control-chart drawing, no mark at price.",
+        "verdict": "matches"
+      },
+      "fires": {
+        "our_rule": "the signed maximum excursion of 60-bar returns, normalized by sigma*sqrt(n), crossing +/-2.5 (indicator_signals.rs:433-443, n > 70)",
+        "their_rule": "the classic CUSUM uses a decision interval h chosen for a target average run length; our 2.5 is a fixed gate on a different (normalized-excursion) statistic",
+        "verdict": "different_rule"
+      },
+      "rule_as_data": {
+        "form": "recursion",
+        "rule": "S_k = sum(r_i - mean(r), 60); stat = max|S_k| / (sigma * sqrt(n)); sign = sign(S_n) => event when |stat| >= 2.5 and it was below last bar",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
+      },
+      "warmup": {
+        "bars": 70,
+        "before": "the 60-bar window fills at bar 60; the detector requires n > 70"
+      },
+      "target_shape": {
+        "name": "series_line",
+        "status": "wiring",
+        "scale": "own_pane"
+      },
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::ChangePoint (indicator_signals.rs:433-443)",
+      "parameters": {
+        "declared": [],
+        "honoured": []
+      },
+      "render": "reports/concept-visual-audit/statistical/indicators.changepoint.html",
+      "preview_agrees": "agrees",
       "registry": {
         "pane": true,
         "overlay": false,
@@ -165,50 +221,53 @@
           "candles"
         ],
         "parameters": []
-      },
-      "kind": "",
-      "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
-      },
-      "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
-      },
-      "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
-      },
-      "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
-      },
-      "warmup": {
-        "bars": 0,
-        "before": ""
-      },
-      "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
-      },
-      "detector": "",
-      "parameters": {
-        "declared": [],
-        "honoured": null
-      },
-      "render": "reports/concept-visual-audit/statistical/indicators.changepoint.html",
-      "preview_agrees": ""
+      }
     },
     {
       "concept_id": "indicators.entropy",
       "family": "statistical",
       "version": "1.0.0",
+      "kind": "series",
+      "reference": {
+        "no_convention": true,
+        "reason": "Shannon entropy of returns has no chart convention: no platform ships an entropy study, and the community ones disagree on binning, window and normalisation. There is no canonical geometry, so the drawing is ours and judged against the house bar -- legible, smooth, low noise, quiet by default, explainable in one line."
+      },
+      "draw": {
+        "today": "6 `entropy` labels (x 224.4-1079.7, y 86.3-364.9) at price while the entropy pane draws on its correct fixed 0..1 scale with 0.85/0.35 levels. The pane is the measurement; the labels are noise at a scale entropy does not have.",
+        "canonical": "one entropy line on a fixed 0..1 scale with the two regime levels, in its own pane, nothing at price.",
+        "verdict": "differs_major"
+      },
+      "fires": {
+        "our_rule": "Shannon entropy of 60-bar returns over 6 bins is defined on every bar; an event is emitted when it crosses 0.85 or 0.35 (indicator_signals.rs:445-455, n > 70)",
+        "their_rule": "there is no external rule; the line's level is the reading and the two thresholds are ours",
+        "verdict": "continuous"
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "H = -sum(p_b log p_b) / log(6) over 6 bins of 60-bar log returns => event when H crosses 0.85 or 0.35",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
+      },
+      "warmup": {
+        "bars": 70,
+        "before": "the 60-bar entropy window fills at bar 60; the detector requires n > 70"
+      },
+      "target_shape": {
+        "name": "series_line",
+        "status": "wiring",
+        "scale": "own_pane"
+      },
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::EntropyRegimeShift (indicator_signals.rs:445-455)",
+      "parameters": {
+        "declared": [],
+        "honoured": []
+      },
+      "render": "reports/concept-visual-audit/statistical/indicators.entropy.html",
+      "preview_agrees": "differs",
       "registry": {
         "pane": true,
         "overlay": false,
@@ -216,50 +275,53 @@
           "candles"
         ],
         "parameters": []
-      },
-      "kind": "",
-      "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
-      },
-      "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
-      },
-      "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
-      },
-      "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
-      },
-      "warmup": {
-        "bars": 0,
-        "before": ""
-      },
-      "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
-      },
-      "detector": "",
-      "parameters": {
-        "declared": [],
-        "honoured": null
-      },
-      "render": "reports/concept-visual-audit/statistical/indicators.entropy.html",
-      "preview_agrees": ""
+      }
     },
     {
       "concept_id": "indicators.bayesian_drift",
       "family": "statistical",
       "version": "1.0.0",
+      "kind": "series",
+      "reference": {
+        "no_convention": true,
+        "reason": "a Bayesian posterior drift with a credible band is a statistical object, not a chart study: no platform ships a canonical drift estimator, and the band's meaning (a 95% credible interval under a stated prior) is ours to draw and ours to explain. The plan routes these hidden-state estimators to house style, judged against the stated bar."
+      },
+      "draw": {
+        "today": "0 events on this window. The builder emits the drift line plus a 95% band as a SeriesFill (indicator_series.rs:857-881), but a pane fill has no field in SubPaneSpec::Series and the chart drops it (app.js:6101-6119): the band -- the concept's whole point -- never reaches the chart. The card paints spec.fills directly (app.js:14836) and does draw it, so the two renderers disagree.",
+        "canonical": "the posterior mean with its 95% credible band in a pane, a zero line, nothing at price -- the trend AND its uncertainty, which is the whole Bayesian point.",
+        "verdict": "differs_major"
+      },
+      "fires": {
+        "our_rule": "the normal-normal conjugate update over log returns is defined from bar 2; an event is emitted when the 95% band first excludes zero (indicator_signals.rs:457-473, n > 30)",
+        "their_rule": "there is no external rule; the band excluding zero is our reading of a posterior we compute",
+        "verdict": "continuous"
+      },
+      "rule_as_data": {
+        "form": "recursion",
+        "rule": "precision_n = precision_{n-1} + 1/sigma^2; mean_n = weighted / precision; sd_n = sqrt(1/precision) => event when mean +/- 2sd excludes zero and did not last bar",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
+      },
+      "warmup": {
+        "bars": 30,
+        "before": "the posterior exists from bar 2; the detector requires n > 30"
+      },
+      "target_shape": {
+        "name": "series_band",
+        "status": "new_rendering",
+        "scale": "own_pane"
+      },
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::BayesianDriftShift (indicator_signals.rs:457-473)",
+      "parameters": {
+        "declared": [],
+        "honoured": []
+      },
+      "render": "reports/concept-visual-audit/statistical/indicators.bayesian_drift.html",
+      "preview_agrees": "differs",
       "registry": {
         "pane": true,
         "overlay": false,
@@ -267,50 +329,53 @@
           "candles"
         ],
         "parameters": []
-      },
-      "kind": "",
-      "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
-      },
-      "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
-      },
-      "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
-      },
-      "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
-      },
-      "warmup": {
-        "bars": 0,
-        "before": ""
-      },
-      "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
-      },
-      "detector": "",
-      "parameters": {
-        "declared": [],
-        "honoured": null
-      },
-      "render": "reports/concept-visual-audit/statistical/indicators.bayesian_drift.html",
-      "preview_agrees": ""
+      }
     },
     {
       "concept_id": "indicators.ar_forecast",
       "family": "statistical",
       "version": "1.0.0",
+      "kind": "series",
+      "reference": {
+        "no_convention": true,
+        "reason": "an AR(2) one-step forecast of the next return has no chart convention: platforms that show forecasts project them forward as a price path, not as a per-bar return estimate around zero, and no canonical geometry exists. The row is judged against the house bar."
+      },
+      "draw": {
+        "today": "50 `ar forecast` labels (x 663.8-1081.9, y 33-451.1) at price while the AR(2) pane with its zero line draws below. A forecast measured in returns is being announced at a price, 50 times.",
+        "canonical": "the one-step forecast as a line around zero in its own pane, zero as the only reference, nothing at price.",
+        "verdict": "differs_major"
+      },
+      "fires": {
+        "our_rule": "the OLS fit of r_t on its two lags over 120 bars is defined from bar 120; an event is emitted when the forecast crosses zero (indicator_signals.rs:475-485, n > 125)",
+        "their_rule": "there is no external rule; a forecast crossing zero is our reading of the line",
+        "verdict": "continuous"
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "fit r_t = b1*r_{t-1} + b2*r_{t-2} over 120 bars; forecast = b1*r_t + b2*r_{t-1} => event when forecast crosses zero",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
+      },
+      "warmup": {
+        "bars": 125,
+        "before": "the 120-bar fit needs 120 returns; the detector requires n > 125"
+      },
+      "target_shape": {
+        "name": "series_line",
+        "status": "wiring",
+        "scale": "own_pane"
+      },
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::ArForecastCross (indicator_signals.rs:475-485)",
+      "parameters": {
+        "declared": [],
+        "honoured": []
+      },
+      "render": "reports/concept-visual-audit/statistical/indicators.ar_forecast.html",
+      "preview_agrees": "differs",
       "registry": {
         "pane": true,
         "overlay": false,
@@ -318,50 +383,53 @@
           "candles"
         ],
         "parameters": []
-      },
-      "kind": "",
-      "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
-      },
-      "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
-      },
-      "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
-      },
-      "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
-      },
-      "warmup": {
-        "bars": 0,
-        "before": ""
-      },
-      "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
-      },
-      "detector": "",
-      "parameters": {
-        "declared": [],
-        "honoured": null
-      },
-      "render": "reports/concept-visual-audit/statistical/indicators.ar_forecast.html",
-      "preview_agrees": ""
+      }
     },
     {
       "concept_id": "indicators.garch",
       "family": "statistical",
       "version": "1.0.0",
+      "kind": "series",
+      "reference": {
+        "no_convention": true,
+        "reason": "GARCH has a canonical recursion but no chart convention: platforms that ship it differ in window, alpha/beta and whether sigma or variance is plotted, and no reference drawing fixes the pane's shape. The row is judged against the house bar."
+      },
+      "draw": {
+        "today": "9 `garch` labels (x 434.5-777.4, y 45.7-336.3) at price while the GARCH sigma pane is drawn below. The pane is auto-scaled in return units; the labels place the same words on the price axis.",
+        "canonical": "one GARCH(1,1) sigma line in its own pane, auto-scaled, no levels, nothing at price -- volatility that remembers, read as a level.",
+        "verdict": "differs_major"
+      },
+      "fires": {
+        "our_rule": "sigma2_t = omega + alpha*r_{t-1}^2 + beta*sigma2_{t-1}, with omega from the 60-bar variance; an event is emitted when sigma enters its 120-bar top decile (indicator_signals.rs:487-503, n > 130)",
+        "their_rule": "there is no external rule; the top-decile regime is our reading of a model we fit",
+        "verdict": "continuous"
+      },
+      "rule_as_data": {
+        "form": "recursion",
+        "rule": "sigma2_t = omega + alpha*r_{t-1}^2 + beta*sigma2_{t-1} => event when sigma crosses into its 120-bar top decile",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
+      },
+      "warmup": {
+        "bars": 130,
+        "before": "the 60-bar seed fills at bar 60; the 120-bar rank needs 120 more, and the detector requires n > 130"
+      },
+      "target_shape": {
+        "name": "series_line",
+        "status": "wiring",
+        "scale": "own_pane"
+      },
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::GarchRegimeShift (indicator_signals.rs:487-503)",
+      "parameters": {
+        "declared": [],
+        "honoured": []
+      },
+      "render": "reports/concept-visual-audit/statistical/indicators.garch.html",
+      "preview_agrees": "differs",
       "registry": {
         "pane": true,
         "overlay": false,
@@ -369,50 +437,53 @@
           "candles"
         ],
         "parameters": []
-      },
-      "kind": "",
-      "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
-      },
-      "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
-      },
-      "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
-      },
-      "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
-      },
-      "warmup": {
-        "bars": 0,
-        "before": ""
-      },
-      "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
-      },
-      "detector": "",
-      "parameters": {
-        "declared": [],
-        "honoured": null
-      },
-      "render": "reports/concept-visual-audit/statistical/indicators.garch.html",
-      "preview_agrees": ""
+      }
     },
     {
       "concept_id": "indicators.hmm",
       "family": "statistical",
       "version": "1.0.0",
+      "kind": "interval",
+      "reference": {
+        "no_convention": true,
+        "reason": "a two-state Gaussian HMM's posterior is a model output, not a chart study: no platform ships a canonical HMM drawing, and hand-drawn regime shading is a human annotation rather than a computable convention. The plan's rule stands: a regime is an interval, judged against the house bar."
+      },
+      "draw": {
+        "today": "50 `hmm` labels (x 766.7-1081.9, y 251.8-419.6) at price -- the route's newest-50 cap -- while the pane draws the volatile-state posterior on 0..1 with a 0.5 line. A regime is a state that holds across bars; both drawings treat it as a per-bar reading, and the labels add price-space noise to a probability.",
+        "canonical": "each volatile-regime interval as a full-height shade over the bars it covers, one name for the state, quiet by default -- pass 4's time_box, not a word at price.",
+        "verdict": "differs_major"
+      },
+      "fires": {
+        "our_rule": "a two-state Gaussian HMM is EM-fit over 120 bars; the filtered posterior of the volatile state crossing 0.5 starts or ends a regime (indicator_signals.rs:505-515, n > 125)",
+        "their_rule": "there is no external rule; the state is a latent variable and the 0.5 split is ours",
+        "verdict": "no_external_rule"
+      },
+      "rule_as_data": {
+        "form": "recursion",
+        "rule": "two-state Gaussian HMM (EM over 120 bars, state 1 high-variance) => regime = volatile while p(volatile) >= 0.5, else quiet",
+        "inputs": [
+          {
+            "name": "candles",
+            "channel": "candles"
+          }
+        ]
+      },
+      "warmup": {
+        "bars": 125,
+        "before": "the 120-bar EM window fills at bar 120; the detector requires n > 125"
+      },
+      "target_shape": {
+        "name": "time_box",
+        "status": "wiring",
+        "scale": "time_only"
+      },
+      "detector": "analytics_core::indicator_signals::detect_indicator_signals -- EventKind::HmmRegimeShift (indicator_signals.rs:505-515)",
+      "parameters": {
+        "declared": [],
+        "honoured": []
+      },
+      "render": "reports/concept-visual-audit/statistical/indicators.hmm.html",
+      "preview_agrees": "differs",
       "registry": {
         "pane": true,
         "overlay": false,
@@ -420,50 +491,59 @@
           "candles"
         ],
         "parameters": []
-      },
-      "kind": "",
-      "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
-      },
-      "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
-      },
-      "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
-      },
-      "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
-      },
-      "warmup": {
-        "bars": 0,
-        "before": ""
-      },
-      "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
-      },
-      "detector": "",
-      "parameters": {
-        "declared": [],
-        "honoured": null
-      },
-      "render": "reports/concept-visual-audit/statistical/indicators.hmm.html",
-      "preview_agrees": ""
+      }
     },
     {
       "concept_id": "indicators.pairs",
       "family": "statistical",
       "version": "1.0.0",
+      "kind": "series",
+      "reference": {
+        "source": "TradingView script, Statistical Pairs Trading Indicator",
+        "url": "https://www.tradingview.com/script/ubEBOMfJ-statistical-pairs-trading-indicator/",
+        "quote": "It calculates the Z-Score of the log-price spread between any two symbols you choose, providing both long-term and short-term Z-Score signals.",
+        "checked": "2026-10-31"
+      },
+      "draw": {
+        "today": "Nothing on this window: 0 events (the registry declares no event kinds) and no pane, because the single-symbol scan cannot compute a spread. The concept's only renderer is the pane the gateway builds when a second instrument is named (concept_routes.rs:346-390) -- pair_series with the z line, +/-2 levels and the zone-entry markers -- and that pane is the reference's drawing.",
+        "canonical": "the spread's z-score in a pane with +/-2 levels and entry markers, one line named for the pair -- 'the Z-Score of the log-price spread between any two symbols you choose'; no mark at price.",
+        "verdict": "differs_major"
+      },
+      "fires": {
+        "our_rule": "the log-price spread of two time-aligned instruments, z-scored over 60 shared bars; entry markers when z crosses +/-2 (pair_series, indicator_series.rs:946-972)",
+        "their_rule": "the reference plots the spread z continuously and marks its threshold crossings; our markers use the same +/-2 convention",
+        "verdict": "continuous"
+      },
+      "rule_as_data": {
+        "form": "predicate",
+        "rule": "spread = log(close_a) - log(close_b) on bars both printed; z = zscore(spread, 60); gate = mean-reversion test => markers when z crosses +/-2",
+        "inputs": [
+          {
+            "name": "candles_primary",
+            "channel": "candles"
+          },
+          {
+            "name": "candles_secondary",
+            "channel": "candles"
+          }
+        ]
+      },
+      "warmup": {
+        "bars": 80,
+        "before": "the route requires at least 80 shared bars before it will draw; the spread's z window is 60"
+      },
+      "target_shape": {
+        "name": "series_line",
+        "status": "wiring",
+        "scale": "own_pane"
+      },
+      "detector": "none -- event_kinds is empty; the drawing is served as a series by concept_routes.rs:346-390 (analytics_core::indicator_series::pair_series)",
+      "parameters": {
+        "declared": [],
+        "honoured": []
+      },
+      "render": "reports/concept-visual-audit/statistical/indicators.pairs.html",
+      "preview_agrees": "not_rendered",
       "registry": {
         "pane": true,
         "overlay": false,
@@ -471,45 +551,7 @@
           "candles"
         ],
         "parameters": []
-      },
-      "kind": "",
-      "reference": {
-        "source": "",
-        "url": "",
-        "quote": "",
-        "checked": ""
-      },
-      "draw": {
-        "today": "",
-        "canonical": "",
-        "verdict": ""
-      },
-      "fires": {
-        "our_rule": "",
-        "their_rule": "",
-        "verdict": ""
-      },
-      "rule_as_data": {
-        "form": "predicate",
-        "rule": "",
-        "inputs": []
-      },
-      "warmup": {
-        "bars": 0,
-        "before": ""
-      },
-      "target_shape": {
-        "name": "",
-        "status": "wiring",
-        "scale": "price"
-      },
-      "detector": "",
-      "parameters": {
-        "declared": [],
-        "honoured": null
-      },
-      "render": "reports/concept-visual-audit/statistical/indicators.pairs.html",
-      "preview_agrees": ""
+      }
     }
   ]
 }
