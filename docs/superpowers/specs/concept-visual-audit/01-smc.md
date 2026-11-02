@@ -220,3 +220,88 @@ None of 1-5 changes what a concept *means*: every one is a router, a label or a 
 That is deliberate — this pass is about the picture, and `fires.verdict` records where the
 rule itself differs (20 `different_rule`, 8 `same_bars`, 4 `no_external_rule`) without
 fixing those here.
+
+## The fires decisions (2026-10-31)
+
+28 of the 32 rows carry a verdict to decide (20 `different_rule`, 8 `same_bars`,
+4 `no_external_rule`; the ledger JSON's counts match the pass exactly, and no row in this
+family is `continuous`). Eleven are adopted: the three dealing-range anchors, the four
+state rows that must fire on formation instead of every bar, and the four ICT composites
+whose missing beat the reference pins. Seventeen are keep_ours, the eight `same_bars` rows
+among them — their bars already agree and the disagreement is a label. Nothing is deferred:
+every remaining row has either a citable predicate or a defensible subset argument. Every
+decision was taken against the current code, not the ledger's line numbers, which have
+drifted (`detect_sessions` is now events.rs:2296, `detect_structure_levels` events.rs:1837);
+the function names did not move.
+
+| concept_id | verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `bos`, `choch` | different_rule | keep_ours | the bar gap is the lookback argument, not the predicate; the reference's internal/swing split is one rule shown twice |
+| `ifvg` | different_rule | adopt | invert only the newest open gap per polarity, as LuxAlgo's iFVG does |
+| `order_block` | different_rule | keep_ours | the reference's volume clause ranks blocks, it does not gate them; ours is the candle-only read of "displacement-driven" |
+| `premium_discount` | different_rule | adopt | anchor to the newest major-swing dealing range, not the rolling 4×lookback bars |
+| `mitigation_block` | different_rule | keep_ours | sweep-without-break is the deliberate complement of `order_block`; the reference corpus is itself ambiguous here |
+| `liquidity_grab` | different_rule | keep_ours | the coloured-close filter is the only thing separating grab from `liquidity_sweep`; without it one predicate names two concepts |
+| `inducement` | different_rule | adopt | fire once, on the bar the nearest opposing swing confirms |
+| `displacement` | different_rule | keep_ours | the reference's "run" pins no length; ours is the strict deterministic one-bar reading |
+| `external_range_liquidity` | different_rule | adopt | emit once per range formation and retire an edge when taken, not re-stamp per bar |
+| `judas_swing` | different_rule | keep_ours | ours stamps the first close back inside — a subset, once, never a standing state; the clock half is settled in pass 4's family |
+| `power_of_three` | different_rule | keep_ours | the reference is a template with no mechanical trigger to match; ours is the only pinned predicate in circulation |
+| `silver_bullet` | different_rule | adopt | NY-clock 03:00-04:00 / 10:00-11:00 / 14:00-15:00, DST computed, replacing fixed UTC hours |
+| `unicorn` | different_rule | adopt | add the bearish mirror; a unicorn without a short side is half the reference concept |
+| `model2022` | different_rule | adopt | require the post-MSS displaced FVG; the model completes at the gap entry, not at the break |
+| `mss` | different_rule | adopt | add the displacement gate — without it MSS is a CHoCH synonym under two ids |
+| `equilibrium` | different_rule | adopt | midpoint of the *current* dealing range (the same swing pair as ERL), re-anchored on change |
+| `consequent_encroachment` | different_rule | adopt | stamp it at the gap's own bar, gated by `fvg_min_fraction` like `smc.fvg` |
+| `liquidity_void_fill` | different_rule | keep_ours | a close back under the gap floor is the engine's close-based lifecycle standard and a strict subset of a wick touch |
+| `mtf_zone_alignment` | different_rule | adopt | emit on the bar the 0.3% agreement forms, not on every bar it persists |
+| `liquidity_sweep`, `fvg`, `bpr`, `breaker_block`, `equal_levels`, `turtle_soup`, `trendline_sweep`, `smt_divergence` | same_bars | keep_ours | the bars already match the cited rule; what differs is labels, run length and caps — pass 1's fixes 1-5, not the detector |
+| `rejection_block` | no_external_rule | nothing to adopt | the wick-ratio rule is ours; the audit recorded `no_convention` for the reference |
+| `internal_range_liquidity` | no_external_rule | nothing to adopt | no separate primitive exists to compare against; the minor-swing cluster is our reading |
+| `market_maker_model` | no_external_rule | nothing to adopt | no standard drawing; the sequence rule stands |
+| `mtf_alignment` | no_external_rule | nothing to adopt | the convention draws HTF levels, not agreement; this concept is a platform composite by registration |
+
+### What each decision means
+
+**The dealing-range anchor** (`premium_discount`, `equilibrium`, `external_range_liquidity`,
+one rule for all three): the range is the newest lookback-5 swing high/low pair that
+`detect_range_liquidity` already computes (events.rs:1729-1747). `premium_discount` stops
+scanning the rolling 4×lookback bars (events.rs:3064-3066) and `equilibrium` stops taking
+the window's whole swing extremes (events.rs:2010-2031 region); both emit only when that
+pair changes. ERL additionally retires an edge once taken — "mark the sweep and stop
+extending the line" (Session Liquidity, cited in pass 4) — by testing
+`last.high >= range_hi` before emitting it.
+
+**Fire-on-formation** (`inducement`, `consequent_encroachment`, `mtf_zone_alignment`):
+each predicate is reconstructed per window already, so the previous bar's value is computable
+and the emit gains a `!= prior-window` guard. `consequent_encroachment` also gains the size
+gate: today any three-bar gap qualifies regardless of height (events.rs:1935-1948), while
+`smc.fvg` requires 12.5% of the middle bar — CE is the encroachment *of a significant gap*,
+so it reads `fvg_min_fraction` too.
+
+**The composites.** `ifvg`: narrow the invalidation loop (events.rs:3554, `take(50)`) to the
+newest open gap of each polarity. `mss` (events.rs:1861-1908): require the breaking bar's
+body ≥ 2× mean-14, `detect_displacement`'s own arithmetic (events.rs:1679-1684).
+`unicorn` (ict_models.rs:129-172): mirror the existing block for a swing low closed
+through below with a bearish overlapping gap, entered from underneath. `model2022`
+(ict_models.rs:205-218): after `changed`, require `fresh_fvg(candles, break_idx, !high_side)`
+— the helper is in the same file. `silver_bullet` (ict_models.rs:94-95): the hours become
+the NY clock decided in pass 4's family, via the shared DST helper; a finding — the comment
+calls 07/14/18 UTC "the winter offsets of ICT's 03:00, 10:00, 14:00", but those equal 03/10/14
+only under EDT (UTC−4); under EST they are 02/09/13. The killzone table is winter-correct
+and the SB table summer-correct; no fixed UTC set is right in both halves of the year, which
+is the second argument for the DST computation.
+
+**Keep, with the reason stated.** `bos`/`choch`: the registry's declared `swing_lookback`
+default has since been corrected to 3, matching the engine (concepts.rs:193-199), so the
+bar-count gap is closed on paper and honouring the parameter (fix 7) is a wiring task, not
+a fires decision; the close-through-a-confirmed-swing predicate itself is what both the
+ICT corpus and LuxAlgo describe, and LuxAlgo's leading/supported CHoCH+ variants have no
+documented bar rule. `liquidity_void_fill`: note as a finding that the engine now holds two
+fill standards — this row wants a close under the gap floor (events.rs:2090-2099) while
+`FvgFilled` wants a full wick traversal (events.rs:3621); the close-based one is kept and
+the inconsistency is the combined-state work's to reconcile.
+
+This section authorises the eleven adopted rule changes, each inside its named detector,
+and nothing else; the parameter wiring, the shape and label fixes, the card/chart split and
+the `FvgFilled`-versus-void-fill reconciliation stay explicitly parked.

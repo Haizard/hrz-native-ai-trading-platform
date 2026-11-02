@@ -164,3 +164,82 @@ Warm-up is zero bars by definition; an event does not need history, it needs a c
 5. **Keep the doctrine in the drawing.** Neutral rule, figure in the label, reaction stays the
    confirmation — no arrow, no surprise colour on price. The alert box's closing line is the
    contract, and the chart mark should obey it.
+
+## The fires decisions (2026-10-31)
+
+Six rows, six `different_rule`, and the disagreement is the same single sentence six times: the
+reference puts a mark at the release instant and we put none. Decided: **6 adopt, 0 keep_ours, 0 defer.**
+This is the family where `adopt` is not about a threshold at all — every one of the six would be settled
+by the same change, and the interesting question the rows raise sideways is *which* instants we are
+allowed to draw.
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `econ.nfp` | different_rule | adopt | a mark at the release instant, carrying the print against consensus — the engine's `event_kinds: &[]` is the only thing missing |
+| `econ.cpi` | different_rule | adopt | same, and the mark's time must come from a published calendar: today it is `next NFP + 5 days` |
+| `econ.fomc` | different_rule | adopt | same, on the Fed's published table at 14:00 ET — the schedule is already exact |
+| `econ.claims` | different_rule | adopt | same, every Thursday 08:30 ET — the schedule is already exact |
+| `econ.pce` | different_rule | adopt | same, and like CPI its forward date is an approximation (NFP + 21 days) that must not become a mark |
+| `econ.gdp` | different_rule | adopt | same, on the BEA table the code already keeps — and the row's "absent from `/econ/next`" is stale |
+
+### What each decision means
+
+**The mark, once for all six.** Every row's `our_rule` opens with "none in the concept engine", and
+that is literally true of the registry — `event_kinds: &[]` with `pane: false, overlay: false` and
+`required_channels: MACRO`
+([concepts.rs:454-464](../../../../crates/market-data/src/concepts.rs#L454)) — but it is **not** true of
+the served chart, and two ledger claims need correcting before the decision means anything. Historical
+releases already reach the chart: the scan route merges the macro store's releases into the same window
+([econ_routes.rs:516-577](../../../../crates/api-gateway/src/econ_routes.rs#L516)), stamped
+`event_time_ns = release.release_ns` with `price_level: None`, and each carries actual, forecast,
+surprise in sigmas, macro bias and a label. And GDP *is* on `/econ/next`, from the `GDP_DATES` table
+([econ_routes.rs:677](../../../../crates/api-gateway/src/econ_routes.rs#L677)). So the adopted change is
+narrower and clearer than "start emitting": the release mark already exists **after the fact**; what it
+does not do is appear **at the appointment**, and a marker whose whole purpose is the instant arrives
+when the instant is behind it. Adopted: the schedule emits the mark at `next_ns` as a pending release,
+and the store's refresh turns it from pending to printed with the figure and the surprise. That is the
+reference's contract — "the mark sits on time, never on price" — and our own event already gets the
+price half right by carrying `price_level: None`.
+
+**Approximation may arm a countdown, never place a mark.** The row that matters is the schedule's two
+honest fudges: CPI is computed as `next_nfp_release + 5 days`
+([econ_routes.rs:658-664](../../../../crates/api-gateway/src/econ_routes.rs#L658)) and PCE as NFP + 21
+days ([econ_routes.rs:666](../../../../crates/api-gateway/src/econ_routes.rs#L666)), each labelled
+"(approximate, documented)" in the JSON the countdown reads. For a countdown that is exactly right — the
+BLS's day moves and an estimate that is two days early still tells you to stay at your desk. For a
+vertical line on a chart it is wrong in kind: a mark claims a precision the rule does not have, on the
+axis where the error is visible. Adopted: the two approximate rules feed the countdown and are excluded
+from the chart until they come from a published table — the FOMC's (`FOMC_2026_DATES`,
+[econ_routes.rs:617-621](../../../../crates/api-gateway/src/econ_routes.rs#L617)) and the BEA's
+(`GDP_DATES`, [econ_routes.rs:625-628](../../../../crates/api-gateway/src/econ_routes.rs#L625)) are the
+pattern; the BLS and BEA publish both calendars years ahead, so a CPI/PCE table is the same shape of
+data, refreshed annually. Until one exists, CPI and PCE print their mark when the number lands, not
+before. The code's own comment already states the principle — "a countdown may approximate and a chart
+mark may not" ([econ_routes.rs:623-624](../../../../crates/api-gateway/src/econ_routes.rs#L623)) — this
+decision is that sentence made enforceable.
+
+**The per-kind figures are already right.** The reference for each row wants a different number next to
+the mark — payroll change against consensus, CPI change, the target range, the claims level against its
+trailing mean, the YoY change, the annualised QoQ — and `release_label` formats exactly that, with the
+units per kind (K for NFP and claims, pp for FOMC, % for the rest) and the surprise in sigmas
+([econ_routes.rs:582-599](../../../../crates/api-gateway/src/econ_routes.rs#L582)). The surprise's
+trailing window is the same series' own previous 12 releases
+([econ_routes.rs:536-539](../../../../crates/api-gateway/src/econ_routes.rs#L536)), which is the claims
+row's "against its trailing mean" generalised. FOMC's bias multiplies the rate difference by 4 and clamps
+to ±2 ([econ_routes.rs:542](../../../../crates/api-gateway/src/econ_routes.rs#L542)) — a house scaling
+that belongs to the AI layer's vocabulary, not to the mark, and is recorded as such. Claims inverts the
+surprise sign, which is right (a higher print is worse) and is the one place the direction is a fact of
+the series rather than an opinion.
+
+**Nothing here is a price statement.** The doctrine the pass already wrote — neutral rule, the figure in
+the label, the market's reaction as the confirmation — is the reason the family's `different_rule` is not
+an invitation to make econ events like other events. Adopting the mark does not adopt a side, a zone or
+a magnitude on the price axis, and the `Direction::Neutral` the route already sets is the correct
+carrying-through of that.
+
+This section authorises, now: the release mark at the scheduled instant for the six kinds, sourced only
+from a published table, with the approximate CPI/PCE rules confined to the countdown, and the pending →
+printed transition when the number arrives. It keeps the label formats, the 12-release trailing window,
+and the neutral direction. It records FOMC's ×4 bias scaling as a house number for the reasoning layer,
+not the chart. It authorises nothing about how the mark is painted — `time_line`, the label and the
+absence of an arrow are the shape work above.

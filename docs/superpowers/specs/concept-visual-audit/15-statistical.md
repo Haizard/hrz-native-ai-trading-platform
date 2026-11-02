@@ -188,3 +188,80 @@ auto-scale one — because `hv` is the second instance of that mistake in two fa
    right; the rule should be named as ours.
 6. **Stop routing `indicators.*` events into `candle_mark`** — the pass-wide fix stated once in
    [`10-trend.md`](10-trend.md#fixes-this-pass-asks-for). This family's 205 words come off.
+
+## The fires decisions (2026-10-31)
+
+Ten rows: 8 `continuous`, 1 `different_rule` (`changepoint`), 1 `no_external_rule` (`hmm`). This is the
+family where `adopt` and `keep_ours` needed separating first, because most of its estimators have **no
+external convention to adopt** — a Kalman local level, a Bayesian drift, an AR(2) fit and a fitted HMM
+are not things TradingView defines. Decided: **2 adopt, 6 keep_ours, 1 defer, 1 nothing-to-adopt.** The
+two adopts are the only two rows with a citable convention behind them.
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `indicators.hv` | continuous | adopt | the 126-bar percentile decile event retires — the reference plots HV and "the percentile rank is a separate study"; the guard `n > 150` is honest and stays |
+| `indicators.zscore` | continuous | adopt | the ±2 crossing is read off the bands, not marked; the number a trader wants is the percentile the label should carry, not a word at a price |
+| `indicators.kalman` | continuous | keep_ours | no external rule; the cross is our reading, and the fixed (q=0.01, r=0.5) is a house tuning nobody can change ([indicator_signals.rs:424](../../../../crates/analytics-core/src/indicator_signals.rs#L424)) |
+| `indicators.entropy` | continuous | keep_ours | no external rule; the line is normalised by ln(bins) so 0.85/0.35 are on a [0,1] scale, which is ours to defend and not the reference's |
+| `indicators.bayesian_drift` | continuous | keep_ours | no external rule; "the 95% band first excludes zero" is the honest statement of a normal-normal posterior we chose |
+| `indicators.ar_forecast` | continuous | keep_ours | no external rule; AR(2) by OLS over 120 bars is a house specification, and the zero-cross is its reading |
+| `indicators.garch` | continuous | keep_ours | the recursion is Bollerslev's, but α=0.1, β=0.85 are **assumed**, not estimated ([indicator_signals.rs:491](../../../../crates/analytics-core/src/indicator_signals.rs#L491)) — so the top-decile event is ours and the card must stop implying a fit |
+| `indicators.pairs` | continuous | keep_ours | the reference marks its own ±2 spread crossings and ours use the same convention — this is the family's one row where the event is the reading |
+| `indicators.changepoint` | different_rule | defer | our gate is 2.5 on a σ√n-normalised maximum excursion; the classic CUSUM's h is chosen for a target average run length, so the two are different statistics — the count decides |
+| `indicators.hmm` | no_external_rule | nothing to adopt | the state is latent, the 0.5 posterior split is ours, and there is no external rule to agree or disagree with |
+
+### What each decision means
+
+**The two adopts** (`hv`, `zscore`). Both rows' `their_rule` is the same sentence as the volatility and
+volume families: the reference plots the line and marks nothing. HV's event fires when the 126-bar
+percentile rank crosses into the top or bottom decile
+([indicator_signals.rs:101-110](../../../../crates/analytics-core/src/indicator_signals.rs#L101)), which
+is a *separate study* on the reference side and a price-frame word on ours; the `n > 150` floor — 20 for
+the deviation, 126 for the rank, plus the guard — is one of the most honest warm-ups in the audit and
+stays. The z-score's ±2 cross
+([indicator_signals.rs:409-419](../../../../crates/analytics-core/src/indicator_signals.rs#L409)) is
+read off its own bands. Adopted for both: the condition survives as a state of the series, and the label
+becomes the **percentile** — "+2.7σ / 99.1th percentile", the platform's stated convention for expressing
+a z-score — which is information the number already has and the current mark throws away.
+
+**The six keep_ours.** Each of these is a model, not an indicator, and the audit's citation standard
+does not let us invent an external convention to conform to. The right answer for a house model is to
+keep it, label it, and make its tuning reachable — which is exactly what the roadmap's
+Evidence/Inference/Confidence triad asks of it. Concretely: the Kalman's (0.01, 0.5), the Bayesian
+prior's 0.01, the entropy's 6 bins and its 0.85/0.35 gates, the AR fit's 120 bars and the GARCH's (α, β)
+are **parameters that do not exist as parameters** — they are literals at the call sites
+([indicator_signals.rs:424, 461, 448, 478, 491](../../../../crates/analytics-core/src/indicator_signals.rs#L424)).
+The one real correction inside these rows is GARCH: the recursion at
+[indicator_signals.rs:491](../../../../crates/analytics-core/src/indicator_signals.rs#L491) is called as
+`garch(&closes2, 60, 0.1, 0.85)` — ω seeded from the 60-bar variance, α and β assumed. That is a
+legitimate variance filter and a poor GARCH *estimate*; the concept is sold as the latter. Adopted
+wording, no code change beyond the card: it is a fixed-parameter variance recursion until a fit lands,
+and α+β = 0.95 (stationary) should be stated where a trader can read it. `pairs` is the exception that
+proves the rule: its ±2 markers match the reference's own convention, so the row keeps the event.
+
+**The defer** (`indicators.changepoint` — the family's only `different_rule`). `cusum_inner` computes
+the running cumulative deviation of the window's returns from their own mean, takes the **largest
+absolute excursion**, and normalises it by σ·√n
+([quant.rs:74-110](../../../../crates/analytics-core/src/indicators/quant.rs#L74)); the detector then
+gates |stat| at 2.5 ([indicator_signals.rs:436-441](../../../../crates/analytics-core/src/indicator_signals.rs#L436)).
+That is a range-type statistic (KPSS-adjacent), not a CUSUM with a decision interval h chosen against a
+target average run length — and the module's own doc comment calls the gate "the classic 4-sigma-ish
+gate" while the call site uses 2.5, which is the row's disagreement in miniature. Two things follow and
+neither can be settled from a page: the statistic's name, and whether 2.5 is a tight or a meaningless
+gate on a normalised max excursion. Measurement: over the audited BTCUSDT 15m 501 bars plus ETHUSDT 15m
+and BTCUSDT 1h, emit the crossing rate at gate ∈ {2.0, 2.5, 3.0, 4.0} and the mean bars between crossings.
+If 2.5 crosses more than ~10 times in 500 bars, the gate is noise and the classic CUSUM with h sized from
+the measured run length is adopted; if it crosses 0-2 times, keep the statistic, fix the doc comment and
+the card's name.
+
+**`indicators.hmm` — nothing to adopt.** The row's verdict is `no_external_rule` and it is the truest
+statement of that verdict in the audit: a two-state Gaussian HMM EM-fit over 120 bars has no TradingView
+convention to photograph. Adopted here means only this: the concept stays as a house model with its
+0.5 posterior split declared as ours, its `n > 125` floor respected, and the EM window's two assumptions
+(2 states, 120 bars) registered as parameters like the rest of the family's.
+
+This section authorises, now: the HV and z-score events demoted to series states with percentile labels,
+the parameterisation of every literal the house models run on, and the GARCH card's correction. It keeps
+the six house readings and the pairs ±2 convention. It defers the changepoint gate and its name behind
+the crossing-rate count at four thresholds. It authorises nothing about drawing — the 205 labels and the
+pane routing are the shape work above.

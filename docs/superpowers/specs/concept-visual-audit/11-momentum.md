@@ -157,3 +157,66 @@ the levels on every one of these panes. The audit records the gap; it does not f
 5. **Carry the RSI-PCA reason into the card copy.** The card currently shows a house model beside
    externally-defined indicators with no distinction; the row's `no_convention` is the distinction
    the panel should state.
+
+## The fires decisions (2026-10-31)
+
+Ten rows, all `continuous` — the same shape of disagreement the trend family answers: the reference
+draws a line, we draw a line, and the question is whether ours is the same line. It is, for eight of
+the ten. Decided: **2 adopt, 8 keep_ours.** Both adopts are warm-up defects, and both are the same
+class of defect the audit keeps finding where an indicator fills its own undefined prefix: not a wrong
+formula, but a confident number printed at exactly the bars where no number exists yet.
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `indicators.tsi` | continuous | adopt | the double EMA fill-forwards its own undefined prefix and the signal is an EMA of a **zero-filled** line, so the first ~40 signal bars are a decaying zero |
+| `indicators.stochastic` | continuous | adopt | ours is the **fast** stochastic; the pane a TradingView user has in mind is the slow one, %K = SMA(raw, 3) |
+| `indicators.rsi` | continuous | keep_ours | Wilder smoothing, seeded by the plain mean of the first `period` changes, first value at `period` ([rsi.rs:17-59](../../../../crates/analytics-core/src/indicators/rsi.rs#L17)) |
+| `indicators.rsi_divergence` | continuous | keep_ours | confirmed at the pivot's `strength` bar — i.e. at the bar where it is knowable, not before |
+| `indicators.rsi_family` | continuous | keep_ours | a house ribbon with a real floor; the reference marks nothing here either |
+| `indicators.rsi_pca` | continuous | keep_ours | `no_convention` is the row's own verdict; the code refuses below 248 bars rather than guessing ([rsi_pca.rs:236](../../../../crates/analytics-core/src/rsi_pca.rs#L236)) |
+| `indicators.cci` | continuous | keep_ours | Lambert's 0.015 with the mean absolute deviation over N — `/N` is right here, so the sample/population question does not arise ([oscillators.rs:43-61](../../../../crates/analytics-core/src/indicators/oscillators.rs#L43)) |
+| `indicators.williams_r` | continuous | keep_ours | Williams' own %R over 14 ([oscillators.rs:65-86](../../../../crates/analytics-core/src/indicators/oscillators.rs#L65)) |
+| `indicators.roc` | continuous | keep_ours | the percentage change over `period` bars ([oscillators.rs:89-100](../../../../crates/analytics-core/src/indicators/oscillators.rs#L89)) |
+| `indicators.awesome` | continuous | keep_ours | Williams' AO: the 5/34 difference of **midpoint** SMAs ([misc.rs:46-56](../../../../crates/analytics-core/src/indicators/misc.rs#L46)) |
+
+### What each decision means
+
+**TSI** (`indicators.tsi`). `tsi`
+([misc.rs:13-43](../../../../crates/analytics-core/src/indicators/misc.rs#L13)) fill-forwards the
+undefined prefix of each EMA at `:22` and `:24`, and then takes the signal EMA of a **zero-filled**
+line at `:35`. The result is that the first ~40 signal bars are a decaying zero — a definite,
+plausible-looking value at exactly the place the `warmup` column is about. Adopted: remove the fills
+and seed the signal from the line's own defined tail, which is what
+[macd.rs:51-52](../../../../crates/analytics-core/src/indicators/macd.rs#L51) already does for the
+same shape of problem. Two notes on the row itself: its `warmup.before` ("TSI(25) exists from bar 25")
+is wrong — Blau's double smoothing makes the line defined from `fast + slow - 1` = bar **37**
+([misc.rs:31](../../../../crates/analytics-core/src/indicators/misc.rs#L31)); and there is no `0.5`
+factor in Blau's TSI or in our code, so the ratio question the row raises has nothing to decide.
+
+**Stochastic** (`indicators.stochastic`). The pane is labelled `Stochastic (14, 3)` and the ledger
+reads "%K(14,3)", but `oscillators.rs:10-40` applies **no smoothing** to %K: %D is an SMA(3) of the raw
+%K. So ours is Lane's *fast* stochastic — which the concept card names correctly — while the reference
+pane a TradingView user pictures is the *slow* one, %K = SMA(raw, 3) with %D = SMA(%K, 3). The audit's
+own tie-break settles it (design spec §Citation standard: pick what a TradingView user expects, for
+recognition): adopted, the 3-smoothed %K, with %D kept as the SMA(3) **of that smoothed %K**. The
+card's "Lane's" wording is corrected with it, because Lane's original is the fast form we are moving
+away from. This is also why the row fires at the route's cap of 50 while the reference marks nothing:
+raw %K crosses 80/20 constantly; smoothed %K does not.
+
+**The eight we already match.** RSI is Wilder's with the standard seeding, and its first value lands at
+index `period` — the row's warm-up claim is answered by the code, not argued; `atr` follows the same
+discipline. CCI keeps Lambert's 0.015 and the mean absolute deviation over the window; the
+sample-versus-population divisor debate that recurs in this audit does not arise for an MAD. Williams
+%R, ROC and AO are single-formula indicators with no variants, and each of ours is that formula.
+`rsi_divergence` confirms at the pivot's `strength` bar, which is when a divergence is knowable, not
+when it is visible in hindsight — the honest end of the "repaint" argument. `rsi_family` is a house
+ribbon with a real floor, and `rsi_pca` is a house model whose row verdict is `no_convention`: there is
+no external rule to adopt, and the code's refusal to compute below 248 bars
+([rsi_pca.rs:236](../../../../crates/analytics-core/src/rsi_pca.rs#L236)) is the correct behaviour for
+a fitted estimator.
+
+This section authorises, now: TSI's undefined prefix left undefined with the signal seeded off the
+defined tail, and the slow (3-smoothed) %K with %D taken from it. It keeps the other eight estimators
+unchanged, records the TSI warm-up floor as bar 37, and leaves `rsi_pca` as a house model whose card
+copy must say so. It authorises nothing about drawing — the `candle_mark` routing, the pane marks and
+the parameter exposure are the shape work above.

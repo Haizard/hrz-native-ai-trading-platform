@@ -328,3 +328,77 @@ keep it inside `outline`'s neck clause rather than inventing a third shape.
 8. **Expose the tolerances.** 0.004/0.003 valley/flat bands, the 10% Bulkowski gate, the handle
    50% depth, the third-touch 0.15% window: five today-constants that are six reference-set
    parameters.
+
+## The fires decisions (2026-10-31)
+
+Fifteen rows: eight `different_rule`, seven `same_bars`, no `continuous`, no `no_external_rule` — so this
+family has no nothing-to-adopt line. Decided: **8 adopt, 7 keep_ours, 0 defer.** The five classical ids
+share one defect: they fire on geometry while every cited page names the *break* as the completion, and the
+engine already computes the level to break — `entry_level`, "the level whose break activates the pattern"
+([patterns.rs:109](../../../../crates/analytics-core/src/patterns.rs#L109)). The cadence rule settled for
+fib, one emission per anchor chain, is family-neutral and is inherited here; no row re-litigates it.
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `chart.double_top_bottom`, `chart.head_shoulders`, `chart.triangle`, `chart.flag`, `chart.wedge` | different_rule | adopt | emit only on the close through the `entry_level` the engine already returns; the triangle's close also decides its side, and the neckline becomes the armpit trendline |
+| `chart.pennant` | different_rule | adopt | the same break clause, against the channel's own late edge in the pole's direction |
+| `chart.trend_channel` | different_rule | adopt | the reference says "trends upward or downward"; requiring both sides to ascend makes every bearish channel unreachable |
+| `chart.diamond` | different_rule | adopt | one comparison form across the four spans, and the break read at the line's value rather than `× 0.997` |
+| `chart.triple_top_bottom`, `chart.rectangle` | same_bars | keep_ours | both already require the confirming close the pages describe, and their flat bands are the family's own equality tolerance |
+| `chart.cup_and_handle`, `chart.inverse_cup_handle`, `chart.rounding_bottom_top` | same_bars | keep_ours | the rim close is already ours; "rounded" is an `outline` claim, not a fires rule |
+| `chart.broadening`, `chart.trendline` | same_bars | keep_ours | each test is a subset of the line test the reference names, so bars that fire here fire there and no more |
+
+### What each decision means
+
+**The confirming close** (the five classical ids). The gate belongs in the adapter, not the detectors:
+[detect_chart_patterns](../../../../crates/analytics-core/src/events.rs#L1117) maps every `PatternMatch` to
+an event (events.rs:1131-1168) and drops none on price. Adopted: emit a match only when the newest close is
+through `m.entry_level` in the pattern's own direction — `Side::Sell` needs `last.close < m.entry_level`,
+`Side::Buy` the opposite — which is "the double top confirms as a true double top once price closes below
+the valley", read against the valley the detector returns (patterns.rs:304-318), the neckline at `:223`/`:264`,
+the coil edge at `:374`/`:393`, the flag edge at `:462`. Two specials live in the same edit. The triangle is
+forced `Neutral` at patterns.rs:371, so a confirmed upward break still draws slate; reading both edges (above
+`entry_level` is Buy, below `invalidation` is Sell) closes that row's two complaints at once. The H&S neckline
+is the flat minimum of the troughs (`:213`, maximum `:256`) where the page says "a neckline is a trendline that
+connects the two armpits": evaluate the armpit line at the newest bar with the gap family's `line_at`, keeping
+the flat level when the armpits already sit within `tolerance_pct` of each other. Not adopted, not parked: the
+≥10% valley drop and <3% peak variation — daily-equity thresholds against 15m legs of 1-3%, and our 0.004 band
+(patterns.rs:135) is already tighter than the 3% clause, so our test is a subset of that filter. Both go to the
+registry.
+
+**The pennant's break** (`chart.pennant`, events.rs:1636-1662). The block tests a pole over 6× the 24-bar
+average range, a converging channel and a span under half the pole, then emits on shape alone; "Looks like a
+short symmetrical triangle" is a description, and the confirming event is the break. Adopted, reusing the
+direction computed at `:1649`: `up` needs `last.close > ch_high_last`, `!up` needs `last.close < ch_low_last`.
+The fixed `n-16`/`n-8` window is a parameter, not a fires rule.
+
+**The channel's missing half** (`chart.trend_channel`, events.rs:1588-1631). `lows_ok` and `highs_ok`
+(`:1591-1592`) both demand strictly ascending triples, so a descending channel dies at the first comparison;
+the mirror is adopted because the page's own words are "trends upward or downward". The parallelism test at
+`:1597` (slopes within 50% of the larger, by magnitude, not offset) stays ours: the cited page states no
+numeric test, so there is nothing to adopt.
+
+**The diamond's two forms** (`chart.diamond`, events.rs:1552-1581). `:1557` mixes a strict widening with a
+5%-slack one inside one predicate, and `:1562`/`:1565` read the break as `bottom × 0.997` / `top × 1.003`.
+Adopted: one comparison form across the four spans, and the break measured at the value of the line through the
+formation's first two extremes at bar n — the `line_at` the trendline block already uses.
+
+**The seven keeps.** `chart.triple_top_bottom` and `chart.rectangle` (events.rs:1294-1332, 1334-1359) already
+ask for the close through the lowest valley and outside the flat band, and `TOP_TOLERANCE`'s 0.3% is the band
+"usually under 3%" accepts. The cup, inverse-cup and rounding trio (`:1362-1481`) already gate on the rim close;
+what they never test is roundness, which is `outline` work — a drawing disagreement, not a fires one.
+Broadening (`:1529`, `:1532`) compares the close with the newest pivot rather than its line, but in a megaphone
+the newest pivot lies beyond its own line, so ours is the stricter test and every bar it fires on is a bar the
+reference fires on. The trendline (`:1483-1518`) validates the third touch and breaks the line's value, which is
+the cited rule.
+
+**Corrections from the code.** The rows' line numbers have drifted (1117 not 1078, 1220 not 1156,
+1636/1588/1552 not 1490/1463/1441), and "geometry dies at the event boundary" is now false here: the classical
+pass ships its anchor path and `formed_at` (events.rs:1164-1167) and the gap family ships
+`edge_path`/`perimeter_path` at `:1542`, `:1577`, `:1620`, `:1653`, in commit 7334420. The trendline's inverted
+zone pair is still there (`:1498`, `:1512`). Each row's `fires` half stands as recorded.
+
+This section authorises, now: the confirming-close gate with the triangle's direction and the armpit neckline,
+the pennant's break, the channel's descending mirror, the diamond's single form and line-based break. It defers
+no row; the parallelism constant, the flat bands, the pennant's window and the 10%/3% gates go to the registry,
+and every curve and label to the shape pass.

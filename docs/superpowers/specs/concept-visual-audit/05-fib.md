@@ -273,3 +273,80 @@ payload, not a painter — and adds `time_line` as its second new candidate, als
 10. **Fix the 1m scan window.** `limit=500` at 1m returns an empty replay while 50, 200 and 1000
     all return events; a 1m chart currently renders no concept at all. This is a transport bug
     the family exposed, not a fib rule.
+
+## The fires decisions (2026-10-31)
+
+Six rows, six `different_rule`, no `same_bars`, no `no_external_rule` — so there is no nothing-to-adopt
+line in this family. Decided: **5 adopt, 0 keep_ours, 1 defer.** Five of the six share one defect, that
+a fib grid is a state of one leg and the detector announces it at every bar, so one change — anchor the
+grid to a leg and emit when the anchor changes — is decided once and inherited by the retracement, the
+pocket, the OTE, the extension and the confluence. Two rows additionally disagree on their own numbers:
+the extension's ratio set and dormancy, and the time zones' sequence and predicate.
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `fib.retracement`, `fib.golden_pocket`, `fib.ote` | different_rule | adopt | one grid per anchored leg, re-announced only when the leg is replaced; the ratios and the arithmetic already answer to the cent |
+| `fib.extension` | different_rule | adopt | the page's four ratios, not two, and dormant until price takes the leg's extreme |
+| `fib.time_zones` | different_rule | adopt | the page's sequence `{1, 2, 3, 5, 8, 13, 21, 34}` and a predicate that can only be true at one bar |
+| `fib.confluence` | different_rule | defer | the structure is settled with the anchor rule; `w` and `k` need a count, and the repo cites no number for either |
+
+### What each decision means
+
+**The anchored grid** (`fib.retracement`, `fib.golden_pocket`, `fib.ote`). The adopted change is the
+grid's *lifetime*, not its mathematics. `newest_swing` ([fibonacci.rs:40](../../../../crates/analytics-core/src/fibonacci.rs#L40))
+returns the last two opposite strict lookback-3 fractal pivots, so the grid moves the moment a new pivot
+confirms — even where price has not exceeded the leg's extreme. LuxAlgo's retracement page requires the
+opposite: "redraw once price sets a new extreme", "Once price breaks the anchored extreme, the old grid
+is stale". Two edits, both inside `detect_fibonacci` ([fibonacci.rs:80](../../../../crates/analytics-core/src/fibonacci.rs#L80)):
+keep the leg while no later bar takes `swing.to`, and re-anchor only when one does; emit on the bar whose
+anchor pair differs from the last one emitted. The pocket and the OTE are slices of that grid
+([fibonacci.rs:124-148](../../../../crates/analytics-core/src/fibonacci.rs#L124)), so they inherit both,
+and the OTE gains the page's own 0.705 midline as one more rung. The swing *source* stays the platform's
+fractal engine: fib, chart and harmonics already read swings the same way, and a fib-only engine would
+desync the ladder from the structure it sits on. This is the smallest instance of what the concept-state
+design ([2026-10-31](../../2026-10-31-concept-state-architecture-design.md)) owns at the container level;
+the decision here does not wait for it.
+
+**The extension** (`fib.extension`). `EXTENSIONS` is `[1.272, 1.618]`
+([fibonacci.rs:17](../../../../crates/analytics-core/src/fibonacci.rs#L17)) against the page's `{1.272,
+1.618, 2.0, 2.618}`, and the loop at [fibonacci.rs:150-161](../../../../crates/analytics-core/src/fibonacci.rs#L150)
+emits them whether or not the extreme has given way — while the page says plainly "Extension levels are
+dormant until the 100% point gives way". Adopting is both changes in the same function: the array grows
+to four, and the loop is guarded on a bar after `swing.to_time` exceeding `swing.to`. The arithmetic at
+`swing.to + (swing.to − swing.from) × (e − 1)` is already the page's second form.
+
+**Time zones** (`fib.time_zones`). `if at <= bar_time`
+([fibonacci.rs:163-168](../../../../crates/analytics-core/src/fibonacci.rs#L163)) is
+due-and-stays-due, which is why seven counts became 50 events at 12 bars. Adopted: `at == bar_time`, so
+each count emits once at its own bar, on the page's sequence rather than our `{3, 5, 8, 13, 21, 34, 55}`
+— which drops the out-of-sequence 55 and adds 1 and 2 with the page's own caveat that "the first few
+zones sit close together and are usually disregarded". The event also stops carrying `price = last.close`
+as the price the rule never measured, because that is exactly what the router then draws as a level. The
+vertical drawing itself is `time_line`, which this section does not authorise.
+
+**Confluence** (`fib.confluence`) — the one defer. Settled without measurement, and inherited from the
+anchor rule: a zone must not be re-emitted up to five times a bar, and it must be pooled from more than
+the newest two swings. Not settled: `w` and `k`. `CONFLUENCE_TOL = 0.004` of price
+([fibonacci.rs:21](../../../../crates/analytics-core/src/fibonacci.rs#L21)) is a 324-point window on this
+window's BTC, and a matched pair's band is that wide by construction; the cluster page names no number and
+hands both to the user, so choosing one here would be invention. The measurement: over the audited BTCUSDT
+15m 501 bars, plus ETHUSDT 15m and BTCUSDT 1h at the same length, pool every swing pair's five levels and
+report, per cell of `w` ∈ {0.004, 0.002, 0.001} × `k` ∈ {2, 3}, the zone count per 500 bars and the median
+band as a share of the median leg range. Adopt the first cell with a non-empty set whose median band is
+under 2% of the leg range; if no cell is non-empty at `w` = 0.001, keep the two-swing rule and register
+`w` and `k` as parameters instead.
+
+**One correction to the rows, from the code.** The pass's headline that fib draws no ratio and no anchor
+is stale: `detect_fibonacci` now attaches an `EventGeometry` ladder of `(ratio, price)` rungs plus the two
+anchors to the retracement, pocket, OTE and extension
+([fibonacci.rs:102-161](../../../../crates/analytics-core/src/fibonacci.rs#L102)), in the commit that gave
+patterns, harmonics and Fibonacci their geometry. That is the drawing half. The `fires` half is unchanged:
+the detector still answers once per bar, and every number in the table above is what a per-bar detector
+produces. The rows' `detector` strings also need their line numbers refreshed — `fibonacci.rs:80` is still
+right, but `prior_swing` is at [fibonacci.rs:190](../../../../crates/analytics-core/src/fibonacci.rs#L190),
+not 162.
+
+This section authorises, now and in `detect_fibonacci`: the anchored leg with one emission per anchor pair,
+the four-ratio dormant extension, the time-zone sequence with a single emission and no price. It parks the
+confluence tolerance and `k`. It authorises nothing about how a fib study is painted — rungs, ratio labels,
+band alpha and `time_line` belong to the shape work.

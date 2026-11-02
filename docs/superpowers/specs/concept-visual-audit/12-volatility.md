@@ -139,3 +139,53 @@ is a builder rule, not a renderer rule; the vocabulary records it because Task 1
 3. **Stop routing `indicators.*` events into `candle_mark`** — the pass-wide fix stated once in
    [`10-trend.md`](10-trend.md#fixes-this-pass-asks-for). For this family it removes 64 words,
    including 50 lying on top of the band they name.
+
+## The fires decisions (2026-10-31)
+
+Four rows, four `continuous`, and every `their_rule` ends the same way — "marks no band break",
+"marks no expansion event". The family's disagreement is therefore not arithmetic: it is that we turn a
+line's condition into a price-frame event. Decided: **3 adopt, 1 keep_ours, 0 defer.** In this family
+`adopt` means a specific thing: adopt the reference's *silence* — the condition stays readable on the
+line and stops being announced as a mark.
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `indicators.bollinger` | continuous | adopt | the band-break label retires; the estimator stays exactly Bollinger's — SMA(20) ± 2·σ with σ **population**, documented as TradingView's `ta.stdev` default |
+| `indicators.bollinger_percent` | continuous | adopt | %B has no rule of its own: the same crossing is the event both rows name ([indicator_signals.rs:206-217](../../../../crates/analytics-core/src/indicator_signals.rs#L206)) — one event for two concepts |
+| `indicators.atr` | continuous | adopt | Wilder ATR(14) is the standard form; the 1.5× its own 20-bar mean is a house expansion gate on a line the reference simply plots |
+| `indicators.atr_family` | continuous | keep_ours | there is no external rule to adopt: ATR(2)..ATR(24) is a house construct and the family's expansion **is** the concept, not a reading of one |
+
+### What each decision means
+
+**The Bollinger pair** (`indicators.bollinger`, `indicators.bollinger_percent`). The math is confirmed
+correct and stays: `bollinger` is SMA(20) ± 2·sd
+([bollinger.rs:47-70](../../../../crates/analytics-core/src/indicators/bollinger.rs#L47)) with
+`population_stddev` explicitly argued in the source — "the window IS the whole population being
+described … This matches TradingView's `ta.stdev` default"
+([bollinger.rs:25-39](../../../../crates/analytics-core/src/indicators/bollinger.rs#L25)). That closes
+the sample-versus-population question this audit raises repeatedly, with a citation rather than a
+preference. What is adopted is the retirement of the *event*: the clause tests `close[n-2] <= prev.upper
+&& close[n-1] > curr.upper` and pushes a candle-mark label, while the reference plots the bands and lets
+price beyond them be the reading. And the two rows are one rule: the event is `BollingerBreakout`
+carrying a `pct_b` magnitude, so `%B` is not a second detector but a second *name* for the same crossing
+— %B(20,2) against 0 and 1 is arithmetically identical to a close outside the band. Adopted: one event
+kind for the pair, drawn where %B lives (a pane line against its 0/1 levels), and no mark at either.
+
+**ATR** (`indicators.atr`). The estimator is Wilder's and the trend section already confirmed its form
+([atr.rs:38-60](../../../../crates/analytics-core/src/indicators/atr.rs#L38)). The event is
+`curr > 1.5 * mean(curr over 20)` ([indicator_signals.rs:608-622](../../../../crates/analytics-core/src/indicator_signals.rs#L608))
+— a house gate, and a defensible one, but it is placed on the price frame at a price the ATR does not
+have. Adopted: the gate survives as a **state** of the ATR line (which is where an expansion is visible)
+and not as a mark; the concept-state design is where a "the line is in expansion" state is expressed.
+
+**ATR family** (`indicators.atr_family`) — the one keep_ours. An ATR(2)..ATR(24) ribbon has no
+TradingView or LuxAlgo page behind it, so there is nothing to agree or disagree with, and its whole
+content is the relative-speed expansion read across the family — retire the event and the concept says
+nothing. It keeps its gate, with two conditions attached: the ratio belongs in the pane next to the
+lines it compares, and the card must state that the family is ours. The `n > 60` floor is honest and
+stays.
+
+This section authorises, now: the Bollinger/`%B` event merge with both crossings demoted from marks to
+line states, and the same demotion for the ATR expansion. It keeps the population-σ Bollinger, Wilder's
+ATR, and the ATR-family gate. It parks nothing. It authorises nothing about drawing — the band fills,
+the pane routing and the removal of 64 candle-mark words are the shape work above.

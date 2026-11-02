@@ -380,3 +380,119 @@ family is the closest any pass has come, and the gap it records is one glyph wid
    (doji body, shadow multiple, trend step fraction, mid-body ceiling) are the parameters a candle
    library exposes, and the ones that decide hit rate (tweezer tolerance, belt-hold shadow
    allowance) are the ones a trader needs to tighten.
+
+## The fires decisions (2026-10-31)
+
+Thirty-four rows — the largest family in the audit — of which 32 are `different_rule` and 2
+`same_bars`. Decided: **25 adopt, 4 keep_ours, 5 defer.** The family is not 34 arguments; it is four
+recurring ones, and naming them is what makes the table below readable: the **context clause** (the
+reference's sentence begins "in a downtrend", and only four of our thirty-odd kinds test for one),
+the **binary clause read as a ratio** ("no lower shadow" implemented as ≤10% of range, "both shadows
+longer than the body" as `> 0`), the **invented direction** (six kinds hardcode a `Side` the page
+never claims), and the **gap** (which on this feed cannot occur at all).
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `candles.hammer` | different_rule | adopt | the page's band is 2-3× the body; a flat ≥2× calls a 6× wick a hammer |
+| `candles.hanging_man` | different_rule | keep_ours | the reference gives shape + uptrend and **no number**, which is exactly what [events.rs:3309](../../../../crates/analytics-core/src/events.rs#L3309) tests |
+| `candles.shooting_star` | different_rule | adopt | `body > 0.0` excludes only a bar whose open equals its close, so a doji-bodied wick still reads as a star; the page excludes the doji |
+| `candles.inverted_hammer` | different_rule | keep_ours | Bulkowski's page makes it two-candle; the single-candle-after-a-decline reading is what a TradingView user expects, and the decline gate stands in for his opening condition |
+| `candles.doji` | same_bars | keep_ours | the page states no ratio, so 0.1 × range is a house reading; it fires on a plausible 7.9% of bars |
+| `candles.marubozu` | same_bars | keep_ours | same house-reading answer — but **one** threshold, not 0.90 in [events.rs:3304](../../../../crates/analytics-core/src/events.rs#L3304) and 0.95 in [candlesticks.rs:40](../../../../crates/analytics-core/src/candlesticks.rs#L40) |
+| `candles.engulfing` | different_rule | adopt | no trend clause at all, so a mid-range engulf reads as a reversal |
+| `candles.harami` | different_rule | adopt | the trend clause and the tall parent the page points at are both absent; 98 uncapped fires |
+| `candles.morning_star` | different_rule | adopt | the page defines it by two gaps; we test neither, so what fires is a derived variant and must be labelled one |
+| `candles.evening_star` | different_rule | adopt | mirrored, same reason |
+| `candles.piercing_line` | different_rule | adopt | open below the prior **close** against the page's below the prior **low** — the gap-down is the pattern's whole point |
+| `candles.dark_cloud_cover` | different_rule | adopt | mirrored: open above the prior high, and the tall white first candle is untested |
+| `candles.three_white_soldiers` | different_rule | adopt | silence is our clause, not the market: `close ≥ high − 0.2 × range` on all three bars is house, and the page's "opens within the prior body" is untested |
+| `candles.three_black_crows` | different_rule | adopt | mirrored, plus the missing uptrend context |
+| `candles.dragonfly_doji` | different_rule | adopt | `Side::Buy` is hardcoded where the page makes no directional claim |
+| `candles.gravestone_doji` | different_rule | adopt | the mirrored invented `Side::Sell` |
+| `candles.long_legged_doji` | different_rule | adopt | always `Side::Buy`; Bulkowski's identification table has no bullish claim on this line |
+| `candles.spinning_top` | different_rule | adopt | `upper > 0 && lower > 0` is the only shadow test — the page requires both shadows **longer than the body**, and colour is immaterial |
+| `candles.tweezer` | different_rule | adopt | 0.1% of price is 79.9 USD here, about half the median bar range; "the same low" is a match, not a near-match, and the page reads it at the bottom of a decline |
+| `candles.kicker` | different_rule | defer | needs two consecutive marubozus *and* a price gap; on this feed 0 of 500 adjacent pairs gap at all |
+| `candles.matching_low` | different_rule | adopt | the second bar's colour is untested and the context is absent; the tolerance rebases with the tweezer fix |
+| `candles.on_neck` | different_rule | adopt | the band is one-sided (`0 ≤ Δ ≤ 0.1 × range`), so "closes **at** the prior low" is reachable only at exactly 0 |
+| `candles.three_inside` | different_rule | adopt | we demand a close through the second body's **extreme**; the page asks only that it close above the second close |
+| `candles.three_outside` | different_rule | adopt | the engulfing bar's "opens below the prior body" is untested, and there is no trend clause |
+| `candles.three_methods` | different_rule | adopt | the mid clause puts every mid's body above bar 1's **open** where the page keeps them inside bar 1's high-low range |
+| `candles.abandoned_baby` | different_rule | defer | an island needs two gaps, and its middle-bar test is an absolute (`0.001 × price`), which 258 of 501 bars pass |
+| `candles.tri_star` | different_rule | adopt | the page's "after a downward price trend" is missing; the three-consecutive-dojis wall is a frequency fact, not our clause |
+| `candles.stick_sandwich` | different_rule | adopt | the match tolerance is tied to the first bar's range where the page ties the match to the price, and no downtrend is required |
+| `candles.mat_hold` | different_rule | adopt | the mids must sit above bar 1's **close** where the page keeps them above its low, and the resumption bar's size is never checked |
+| `candles.tasuki_gap` | different_rule | defer | the third bar must close inside a gap that this feed does not produce |
+| `candles.upside_gap_two_crows` | different_rule | defer | the gap is load-bearing, and our `\|\| `clause (`second.low > first.close \|\| second.open > first.close`) is not a shadow gap |
+| `candles.ladder_bottom` | different_rule | defer | the reference's gap-up fifth day we already relaxed to `open > prev.open`, which is not a gap — the row is a venue question, not a threshold |
+| `candles.belt_hold` | different_rule | adopt | "no lower shadow" implemented as ≤0.1 × range, and body ≥50% of range is not "tall" by any reading; no context clause |
+| `candles.hikkake` | different_rule | adopt | the page's confirmation (above the inside day's high within three bars, after the false break) is absent, so the pattern is claimed before it exists |
+
+### The four decisions that cover the family
+
+**The context clause** (most of the multi-bar rows). The references say "in a downtrend" almost everywhere —
+and only four kinds test for one: the hammer family reads the step count of the six closes before the
+bar ([events.rs:3273-3277](../../../../crates/analytics-core/src/events.rs#L3273), >60% down-steps),
+and everything else fires mid-range. Adopted: promote that proxy to one helper and apply it to every
+kind whose cited sentence names a context, rather than inventing a second trend definition per row.
+The proxy itself stays ours — the page says "downtrend" in prose and the audit's citation standard does
+not let us turn prose into an MA slope, so "the majority of the six prior close-to-close steps point
+down" is the house formalisation and its step-fraction becomes a parameter.
+
+**Binary clauses read as ratios** (the single- and two-bar shapes). "Little or no lower shadow", "both shadows
+longer than the body", "opens within the prior body", "the same low", "no lower shadow" are conditions,
+not magnitudes, and each one our table loosens into a fraction of range lets a whole population of
+non-patterns in (110 spinning tops because a one-tick shadow is a shadow; 123 belt holds on a tenth of
+range of slack; 79.9 USD of "same" for the tweezer). Adopted: the reference's condition, with any
+slack it needs expressed in **ticks or in a share of the median bar range**, never in a share of price
+— which is the tweezer and abandoned-baby defect in one line: `0.001 × price` grows with the asset and
+has no relation to bar size, so the same constant means different things on BTCUSDT and on a 1.00
+index.
+
+**The invented direction** (adopted for 6 rows). `dragonfly_doji`, `gravestone_doji`,
+`long_legged_doji` and `spinning_top` hardcode a `Side`
+([candlesticks.rs:73-86](../../../../crates/analytics-core/src/candlesticks.rs#L73)) that their pages
+do not claim; matching_low and on_neck do the same. The shape is the signal — the direction is the
+trader's read of the context. Adopted: `side: None` where the citation is silent, which also removes
+four of the family's invented arrow marks. Where the page *does* claim a direction (engulfing, piercing
+line, the soldiers and crows), ours stays.
+
+**One word, one home** (adopted for the family, recorded here as the structural finding behind the
+`marubozu` and `kicker` rows). The candles live in two modules: `detect_patterns` in events.rs owns the
+single-bar shapes and the two- and three-bar reversals, and `detect_candlesticks` in candlesticks.rs
+owns the rest — each with its own doji and marubozu predicate. They agree on the doji (0.1 × range) and
+disagree on the marubozu (0.90 vs 0.95), so the marubozu's `same_bars` verdict is correct against the
+reference and wrong against our own tree. Adopted: one predicate per word, one threshold per word,
+which is also the precondition for the family's parameters meaning anything: `candles.marubozu.body`
+must have one value to report.
+
+### The five defers, which are one measurement
+
+`kicker`, `abandoned_baby`, `tasuki_gap`, `upside_gap_two_crows` and `ladder_bottom` are the
+gap-bound kinds, and the pass's gap algebra is the reason none can be decided from the page: **0 of 500
+adjacent pairs trade entirely above or below their neighbour, 275 of 500 opens equal the prior close
+exactly, and the largest body-to-body gap in the window is 0.01 USD.** For these five the disagreement
+with the reference is not a threshold — it is that the reference describes a market where sessions
+break. Adopting their clauses verbatim gives five concepts that are correct and permanently silent on
+the platform's bootstrap feed; keeping our relaxed clauses gives five concepts that fire and are not the
+patterns they are named after.
+
+That is the venue-tier question from the quant-brain roadmap, not a candle question, and it is decided
+as such: the concept keeps the reference's clause and gains a **declared degraded variant** whose
+provenance says `derived: body gap, not a price gap` — rung 1 on a gapping feed, rung 2 on a continuous
+one, one id, never a hidden feature. What is deferred is the count that sizes it: run both clause sets
+(a price gap, and a body gap where the two bodies do not overlap) over the audited BTCUSDT 15m 501 bars,
+ETHUSDT 15m, and BTCUSDT 1h, and report the fires per 500 bars for each. If the body-gap variant fires
+under ~5 times in 500 bars on all three, the honest registration is "unreachable on a continuous feed"
+and the id stays eventless here; if it fires often, the derived variant ships with its provenance and
+the card says so. `morning_star` and `evening_star` are **not** deferred — they are the two rows that
+already demonstrate the derived variant (7 fires each only because our clause drops the gap test), so
+they adopt the body-gap form now and carry the provenance label.
+
+This section authorises, now: the shared context helper, conditions expressed in ticks or bar-range
+rather than shares of price, `side: None` where the page claims no direction, one predicate and one
+threshold per word, and the 25 clause corrections in the table. It keeps our 6-step trend proxy, our
+2× hammer floor for the hanging man, the single-candle inverted hammer and the 0.1-doji reading. It
+parks the five gap-bound kinds behind the price-gap-vs-body-gap count above. It authorises nothing about
+drawing — the dedupe to the most specific kind, the single word per bar, and the label placement are the
+shape work.

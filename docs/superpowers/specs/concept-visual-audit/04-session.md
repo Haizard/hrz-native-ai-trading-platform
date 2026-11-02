@@ -381,3 +381,83 @@ fire and the one that cannot exist on this venue.
 10. **Humanise the labels** (`london_killzone` → `London Killzone`), the fix passes 1, 3 and now
     4 have asked for, and add the four session ids to whatever replaces `CONCEPT_ZONE_IDS` so the
     router stops deciding placement from a hardcoded list the registry cannot see.
+
+## The fires decisions (2026-10-31)
+
+Fourteen rows, twelve `different_rule` and two `same_bars`. The decisions: 12 adopt / 2
+keep_ours / 0 defer / 0 nothing-to-adopt. Every disagreement here has a cited mechanical
+rule, so every one is settled; no row is `continuous`. The ledger's `detector` coordinates
+are stale (`detect_sessions` is at
+[events.rs:2296](../../../../crates/analytics-core/src/events.rs#L2296), the fused blocks at
+1837, the bias in regime.rs:167-240); the decisions cite current code.
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `session.london_killzone` | `different_rule` | adopt | 02:00-05:00 on the New York clock, DST-computed, not 07:00-10:00 UTC fixed |
+| `session.new_york_killzone` | `different_rule` | adopt | 07:00-10:00 NY, DST-computed |
+| `session.asian_range` | `different_rule` | adopt | 20:00-00:00 NY — four hours, not the seven-hour UTC gap it boxes today |
+| `session.weekly_open` | `different_rule` | adopt | Monday 00:00 UTC: shift the bucket origin four days off the Thursday epoch |
+| `session.previous_week_levels` | `different_rule` | adopt | same Monday bucket, plus the week's close and forward rays |
+| `session.weekly_bias` | `different_rule` | adopt | Monday bucket, and the reading against the weekly open, not a gap detector |
+| `session.previous_day_levels` | `different_rule` | adopt | add the prior day's close; project high, low and close forward from the roll |
+| `session.previous_month_levels` | `different_rule` | adopt | same, and emit only when the fetch covers the whole prior month |
+| `session.daily_bias` | `different_rule` | adopt | side of price relative to the period open, announced on crosses; the outside-prior-range gate never fires |
+| `session.htf_candle_bias` | `different_rule` | adopt | once per completed upper bar, not once per chart bar; keep the anti-repaint anchor |
+| `session.opening_gap` | `different_rule` | adopt | valid only where the tape halts: a time break before the day's first bar, then the box "however small" |
+| `session.opening_range_breakout` | `different_rule` | adopt | freeze the range at the window's end and mark only the first close beyond, per side |
+| `session.daily_open` | `same_bars` | keep_ours | midnight UTC is the cited crypto boundary; the forward run is the shape work of fix 4 |
+| `session.monthly_open` | `same_bars` | keep_ours | same boundary arithmetic and it is right; its silence is the fetch contract of fix 9 |
+
+### What each decision means
+
+**The clock (three rows, one helper).** `WINDOWS` (events.rs:2298-2302) and the window block
+at events.rs:2464-2507 stop comparing fixed UTC hours and compare New York civil hours
+instead. `analytics-core` is a dependency leaf (serde and thiserror only, wasm32 target —
+Cargo.toml), so chrono-tz is not admissible: compute the offset with pure arithmetic from the
+cited US rule — EDT (UTC−4) from the second Sunday of March 02:00 local to the first Sunday
+of November 02:00, EST (UTC−5) otherwise — reusing the civil-from-days machinery already in
+the file (`month_of`, events.rs:2354-2366). The table then reads London 02:00-05:00, New York
+07:00-10:00, Asian 20:00-00:00 on that clock: the Asian row changes both anchor and length,
+from the generic seven-hour UTC gap to ICT's cited four hours. The same helper is what
+`smc.silver_bullet` was adopted against in pass 1's decisions — one implementation serves two
+families, and it retires the "right half the year" finding.
+
+**The week bucket (three rows).** `(open_time − 4·DAY_NS).div_euclid(WEEK_NS)` puts the roll
+at Monday 00:00 UTC (1970-01-01 was a Thursday; the four days are the offset). One shared
+helper, in two call sites: events.rs:2316/2334 and the copy of the same arithmetic in
+`detect_bias`'s weekly block (regime.rs:221-223). A finding for fix 3: it says "in one place",
+but today the Thursday bucket is written twice, so editing only `detect_sessions` would move
+one weekly row and leave two behind.
+
+**The prior-period levels (three rows).** `range_of` (events.rs:2386-2398) returns only low
+and high; add the period's last close and emit three levels projected forward from the roll —
+the Prior Period Levels page's rays — instead of one midpoint zone over the finished period.
+`previous_month_levels` gains a guard: the month-start probe (events.rs:2439-2441) must find
+a month that *ended* inside the fetch, or emit nothing — a sliced month must not be drawn as
+a whole one. The fetch contract that would make the row reachable at all stays fix 9's, named
+here so the guard's silence is not mistaken for the fix.
+
+**The biases (two rows).** `period_bias`'s gate (regime.rs:177-182) — new open outside the
+prior range — measured 0 of 31 day rolls, so the concept is a gap detector on a gapless
+market. Redefine: bias = sign of the newest close against the period's open (the Period Opens
+page's green/red reading), emitted once when the roll sets the open and again whenever price
+crosses it; the structure lean becomes a confluence note, not a gate. `weekly_bias` takes the
+same rule on the Monday bucket.
+
+**The cadence rows.** `htf_candle_bias` (events.rs:1993-2021) keeps its completed-bar anchor
+(2008) and lean agreement (2017) and fires only when the completed upper bar differs from the
+one last announced — the first chart bar of each new upper period: 50 events become 13.
+`opening_range_breakout` (events.rs:1974-1991) freezes the ORH/ORL once the four-bar window
+closes, marks only the *first* close beyond each side (the re-fires come from the predicate
+re-reading the frozen levels at 1985-1988 — track per-side "already broken"), and extends the
+frozen pair to the session's end. `opening_gap` (events.rs:1950-1972) becomes honest to its
+page instead of its threshold: a gap exists only where the tape paused — require a time break
+of more than one bar between the prior close and the day's first open — then box the span
+however small and drop the 0.0005 floor; on crypto it then never fires because the object
+never occurs.
+
+This section authorises the twelve rule changes above — the New York DST helper, the Monday
+bucket, the close-added rays with the month guard, the open-anchored readings, the HTF
+cadence, the frozen first-break ORB and the halt-gated gap — and nothing else; the
+`time_box`/`level_run` routing, the fetch contract, the labels and the parameter registry
+stay parked.

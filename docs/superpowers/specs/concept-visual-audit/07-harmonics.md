@@ -408,3 +408,139 @@ records that no TradingView harmonic page could be verified rather than quoting 
    the family's only unconditional output.
 12. **Mark these ids `overlay` in the registry** and stop deriving placement from `CONCEPT_ZONE_IDS`
     — the sixth consecutive pass to ask.
+
+## The fires decisions (2026-10-31)
+
+Nine rows, nine `different_rule`, and the family splits the audit's verdicts differently from every
+section before it: nothing here is `same_bars` and nothing is `no_external_rule`. Seven kinds are
+silent because their windows drifted, and two kinds are silent because they do not exist. Decided:
+**9 adopt, 0 keep_ours, 0 defer** — with two *clause-level* keep_ours recorded inside (the swing
+engine, and Wolfe's wave-5 condition), because the row-level verdict is right and the disagreement is
+about one clause of it.
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `harmonics.gartley` | different_rule | adopt | B and D are the page's two **levels** (0.618, 0.786) ± the PRZ, not the 0.15- and 0.10-wide ranges we test |
+| `harmonics.bat` | different_rule | adopt | B and C already match; D becomes the 0.886 XA confluence ± PRZ instead of a 0.84-0.93 band |
+| `harmonics.butterfly` | different_rule | adopt | B at the 0.786 level; our D window (1.27-1.618 of XA) is already the page's |
+| `harmonics.crab` | different_rule | adopt | the BC projection starts at 2.618, where our window opens at 2.24 |
+| `harmonics.shark` | different_rule | adopt | our `bc_ab` 1.618-2.24 clause is a misread: the page attaches that projection to the **completion**, and it killed 69 of 71 chains |
+| `harmonics.cypher` | different_rule | adopt | the rule was never written; it needs an **XC** leg, which the four-field `Windows` struct cannot state |
+| `harmonics.abcd` | different_rule | adopt | BC = 0.618-0.786 of AB and \|CD\| = \|AB\| — ours tests CD against BC, the wrong leg |
+| `harmonics.three_drives` | different_rule | adopt | a three-leg, four-pivot rule, which is not an XABCD shape and needs its own arm rather than `windows_for` |
+| `harmonics.wolfe_wave` | different_rule | adopt | the 1-4 target is a fixed line on the wave's own geometry, emitted once — not `emitting_index + 10` recomputed per bar |
+
+### The three decisions that cover all nine rows
+
+**Levels, not ranges** (seven rows). `windows_for`
+([harmonics.rs:37-77](../../../../crates/analytics-core/src/harmonics.rs#L37)) holds 44 finite bounds
+where the pages name about twenty ratios, each a single number with a tolerance. The pages say "B is
+the 0.618 XA retracement" and "D is the 0.786"; we say 0.55-0.70 and 0.74-0.84. That is not a wider
+net — it is a *different* pattern, because a window that wide admits chains the reference would not
+draw as a Gartley, while the ±1% PRZ
+([harmonics.rs:210](../../../../crates/analytics-core/src/harmonics.rs#L210)) the code already carries
+is the tolerance the page actually intends. Adopted: express each defining ratio as `(level,
+PRZ_FRACTION)` and keep the genuinely-banded clauses (`bc_ab` 0.382-0.886 is the page's own C range)
+as ranges. The pass's own statistics are the evidence: an alternating five-pivot chain existed on 465
+of 479 bars and seven of the nine kinds still printed nothing, so the bottleneck is the window table,
+not the swing engine.
+
+**One emission per completion** (all nine). `detect_harmonics` re-tests the newest chain at every bar
+and the D pivot is "newest by construction", so a completion is announced on its own bar and on every
+bar after it — 4 chains bought 29 `abcd` events, 4 wave origins bought 22 Wolfe events. Adopted: key
+the emission on the chain (the five pivot times) and emit when the key changes, the same rule the
+fibonacci section adopted for the anchored grid and volume profile adopted for the period. This is the
+third family to decide it, and it is the container-level state question the concept-state design owns;
+the family decision does not wait for it.
+
+**The swing engine stays ours** (clause-level keep_ours, all nine). Every row's `their_rule` ends with
+the same aside — "the swing engine is the trader's zigzag, not a lookback-3 strict extreme". Not
+adopted, for the reason the fibonacci section gave and which applies here harder: `find_swings`
+([market_structure.rs:185](../../../../crates/analytics-core/src/market_structure.rs#L185)) is what the
+structure, chart-pattern and fib concepts already read, and a harmonics-only engine would put the
+pattern's vertices on different swings than the ladder sitting next to them. The ATR-minimum-leg
+zigzag returns a *different set of legs*, which changes which patterns exist at all — that is a
+platform-wide swing-resolution decision, not a harmonics fix, and it is recorded as an open question
+for the state design rather than decided here. What *is* adopted now is the pass's own #9:
+`harmonics::pivots`
+([harmonics.rs:88-102](../../../../crates/analytics-core/src/harmonics.rs#L88)) duplicates the
+structure machinery privately and its `Pivot` carries a time but no index, forcing
+`line_at` to re-scan candles by `open_time`
+([harmonics.rs:136-139](../../../../crates/analytics-core/src/harmonics.rs#L136)); consolidate onto
+`find_swings` + `collapse_edges` and name the lookback.
+
+### What each decision means
+
+**Gartley, Bat, Butterfly** (`harmonics.gartley`, `harmonics.bat`, `harmonics.butterfly`). The three
+are the same edit in three rows: the defining retracements become levels. Gartley B 0.55-0.70 →
+**0.618 ± PRZ**, D 0.74-0.84 → **0.786 ± PRZ** (the page's note that 0.786 = √0.618 is why it is one
+number, not a band). Bat's B (0.382-0.50) and C (0.382-0.886) are the page's own ranges and stay; its
+D goes 0.84-0.93 → **0.886 ± PRZ**, confluent with the 1.618-2.618 BC projection the code already
+tests. Butterfly's D (1.27-1.618 of XA) is already right and its B goes 0.74-0.84 → **0.786 ± PRZ**.
+The Bat row states the cost of the current form precisely: the closest chain on the window missed
+AD/XA by 0.095 — 170 points of a 1,784-point leg — and a 1% PRZ at the 0.886 level is a rule under
+which that chain is a completion.
+
+**Crab** (`harmonics.crab`). Two clauses. `cd_bc` (2.24, 3.618) against the page's 2.618-3.618: the
+lower bound is ours and it is the difference between a crab and a deep-gartley-shaped chain, so adopt
+2.618. `ad_xa` (1.55, 1.65) is already the page's 1.618 XA extension with a symmetric tolerance; keep
+it as the level ± PRZ for consistency with the clause above, which is a widening (1.55-1.65 is not
+1% of price, so this changes behaviour — the PRZ depth itself is the house number).
+
+**Shark** (`harmonics.shark`). The page's clauses are AB = 1.13-1.618 of XA, and the completion
+between the 0.886 retracement and the 1.13 extension of XA, confluent with a 1.618-2.24 extension.
+Ours puts 1.618-2.24 on `bc_ab` instead, which is why the pass counted 11 / **2** / 32 / 4 window
+passes: BC is the clause that eliminates everything, and it is not the page's clause at all. Adopted:
+drop the `bc_ab` constraint from Shark (leave it unconstrained, as AB=CD already does at
+[harmonics.rs:69-74](../../../../crates/analytics-core/src/harmonics.rs#L69)) and keep `ab_xa`
+1.13-1.618 and `ad_xa` 0.886-1.13, which are the page's.
+
+**Cypher** (`harmonics.cypher`). The kind is absent from the loop's list
+([harmonics.rs:240-246](../../../../crates/analytics-core/src/harmonics.rs#L240)) and from
+`windows_for`, so it is unreachable by construction — a catalog entry with no rule, which the pass's
+"unreachable by construction" verdict already said. Adopted: B 0.382-0.618 of XA, C 1.272-1.414 of XA
+beyond A, D 0.786 of **XC**. The third clause is what makes this more than a table entry: `Windows`
+has four fields keyed to XA/AB/BC legs and cannot name an XC leg, so the struct gains one ratio slot
+(or the Cypher gets its own arm). The 0.786-on-XC is the reason the Carney family is the one pattern
+that breaks the four-window shape, and it is worth saying in the row so the next pass does not "fix"
+cypher by reusing another pattern's AD/XA window.
+
+**AB=CD** (`harmonics.abcd`). Ours tests `bc_ab` 0.382-0.886 and `cd_bc` 1.13-2.618 with XA clauses
+left open. The page's two conditions are BC = 0.618-0.786 of AB and \|CD\| = \|AB\| — the leg equality
+is against **AB**, and the pass recomputed it: the four announced chains have CD/AB = 0.666, 0.654,
+0.997, 1.192, so one of four is an AB=CD pattern, and one of four is even in the correction band.
+Adopted: `cd_ab` ≈ 1.0 ± PRZ and the narrow BC band, which will *reduce* the count — the correct
+direction for a concept whose 29 events came from 4 chains.
+
+**Three drives** (`harmonics.three_drives`). Also absent from `windows_for`, with a catalog
+description ("three pushes at Fibonacci extensions (1.272-1.618)") quoting the reference's numbers and
+no code behind them. It is not an XABCD shape: three drives over four pivots, corrections near 0.618
+of the preceding drive, drives completing near 1.27-1.618. Adopted as its own detector arm rather than
+a fifth field bolted onto a struct built for five pivots. If it were left as-is, the honest verdict
+would be to retire the id, because a concept that advertises numbers it never evaluates is worse than
+no concept.
+
+**Wolfe** (`harmonics.wolfe_wave`). Adopted: the 1-4 line is the wave's geometry frozen at emission —
+compute the line's slope from p1/p4's bar indices once, carry the target and an explicit arrival bar
+on the event, and emit once per wave (the same chain-key rule as the other eight). Today
+[harmonics.rs:136-141](../../../../crates/analytics-core/src/harmonics.rs#L136) evaluates the line at
+`candles.len() - 1 + 10`, ten bars past *whichever bar is emitting*, so one wave's target moved 146.70
+points across its own 8 events. Kept at clause level: `p5` beyond `p3`
+([harmonics.rs:142-151](../../../../crates/analytics-core/src/harmonics.rs#L142)). The wave-5 rule is
+genuinely contested among practitioners — a new extreme beyond 3 versus a 5 that holds inside the
+channel — and only the narrowing 1-3 / 2-4 channel and the 1-4 target are citable, so ours stays as
+the more extreme variant and the card says which.
+
+**One house number, recorded as such.** `PRZ_FRACTION = 0.01` is not the page's; the pages say "the
+zone" and hand the width to the user. Adopting levels-with-a-tolerance inherits that number, so it is
+registered as a house parameter under the same rule the order-flow section used for the 2.5× delta
+ratio — a house constant with a working knob is legitimate, an uncited constant nobody can change is
+not. That makes the family's missing parameters (#10) part of this decision, not a separate ask: the
+lookback, the PRZ fraction and the ratio set are the rule.
+
+This section authorises, now: levels-with-PRZ for the defining ratios, Shark's dropped BC clause,
+Crab's 2.618 floor, AB=CD measured against AB, a real Cypher rule with an XC leg, a real three-drives
+arm, the frozen Wolfe target, one emission per chain, and consolidation onto `find_swings`. It keeps
+our fractal swing engine and our beyond-3 wave 5, and it leaves the PRZ depth as a house number that
+must become a parameter. It authorises nothing about drawing — the pattern path, the PRZ band, the
+target ray and the dedupe-against-candles rule are the shape work above.

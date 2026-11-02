@@ -120,3 +120,40 @@ on `series_line`. `new_rendering` is reserved for shapes the engine cannot paint
    the ratio (the `evidence.magnitude` already on the wire) as its label — not the concept's id.
 3. **Normalise the label text in the segment branch.** `delta_shift` should read `delta shift`;
    the `candle_mark` branch already does this substitution and the segment branch does not.
+
+## The fires decisions (2026-10-31)
+
+One row, and its verdict is `no_external_rule` — the family has no `different_rule` and no
+`continuous` to argue with. Decided: **1 nothing-to-adopt.**
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `order_flow.delta_shift` | no_external_rule | nothing to adopt | TradingView plots delta per bar and marks no threshold event, so there is no external rule to agree or disagree with |
+
+### What this decision means
+
+**`order_flow.delta_shift` — nothing to adopt.** The absence of an external rule is the finding, not a
+gap: the reference draws the delta histogram and lets the eye find the shift. Our 2.5× ratio is
+therefore a **house reading**, and it is the one fully plumbed parameter in the whole audit — the
+composer maps `spike_multiple` onto both `volume_multiplier` and `delta_multiplier`
+([composer.rs:812-814](../../../../crates/market-data/src/composer.rs#L812)) and the scan route
+validates and parses `params`
+([concept_routes.rs:218-240](../../../../crates/api-gateway/src/concept_routes.rs#L218)). A house rule
+with a working knob does not need a reference to justify it; it needs the label and the pane that the
+"Fixes this pass asks for" above already demand.
+
+**The tier, which is the only real decision here.** The row sits at **rung 1**: the registry already
+demands `TRADES_AGGRESSOR`
+([concepts.rs:1864](../../../../crates/market-data/src/concepts.rs#L1864)), and `Candle::delta()` is
+aggressor-derived ([types.rs:298-333](../../../../crates/analytics-core/src/types.rs#L298)). Where a
+product serves no aggressor side, the concept resolves to **nothing** — which is the correct floor,
+and the opposite of the fabricated alternative. The up/down-tick estimate that would stand in for
+aggressor flow is a **new input**, not a re-threshold of an existing one, so it is parked with the
+concept-state design's `DataProvenance` field
+([2026-10-31 design](../../2026-10-31-concept-state-architecture-design.md)): a derived delta is only
+allowed to exist once the event can say it is derived, because a tick-based delta printed as
+"order-flow delta" is exactly the mistake the venue rule forbids.
+
+This section authorises no rule change. It records the 2.5× ratio as a house parameter with a working
+knob, fixes the concept's tier at rung 1 with "nothing" as its honest floor, and parks the
+derived-delta estimator until the provenance field can travel with it.

@@ -226,3 +226,94 @@ expectation that "most rows here are `wiring`" holds: seven of nine.
    lookback, the initial-balance bar count (4) and the spike multiple (declared, never read). Today the
    family declares one parameter and honours none, while the reference's profile page is a settings
    panel.
+
+## The fires decisions (2026-10-31)
+
+Nine rows, nine `different_rule`, and six of them are the same disagreement wearing six hats: the
+profile has no period, so it re-answers at every bar. Decided: **8 adopt, 0 keep_ours, 1 defer.** The
+adopted change for those six is one primitive — the profile's period is the **UTC day** — and the tier
+question the family raises resolves underneath it: the four histogram rows move to rung 2 (candle
+volume, uniform spread across the bar range) because no rule in this family reads the buy/sell split,
+so rung 1 is not needed and the concept id stays single. The four TPO-derived rows count **bars**, not
+volume, so they depend on CANDLES alone and have no tier dependency at all. One correction to the rows
+first: the headline that `spike_multiple` is "declared, never read" is stale — the composer maps it
+onto both `volume_multiplier` and `delta_multiplier`
+([composer.rs:812-814](../../../../crates/market-data/src/composer.rs#L812)) and the scan route parses
+`params` ([concept_routes.rs:218-240](../../../../crates/api-gateway/src/concept_routes.rs#L218)).
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `volume.poc` | different_rule | adopt | one profile per closed UTC day, `formed_at` = session open — not the same snapshot re-emitted every bar |
+| `volume.value_area` | different_rule | adopt | same period fix; the 70% area is a day's property |
+| `volume.hvn` | different_rule | adopt | same period fix; a node is a row of a finished profile |
+| `volume.lvn` | different_rule | adopt | same period fix |
+| `volume.single_prints` | different_rule | adopt | same period fix, and the row set is a *finished* profile's `count == 1` rows, which a per-bar rebuild makes self-referential |
+| `volume.acceptance` | different_rule | adopt | test the **prior** session's value area, and state the two-close rule as a duration so it means the same thing at 1m and 1h |
+| `volume.initial_balance` | different_rule | adopt | the IB is the session's first hour, not the load's first four bars, and `formed_at` is the session open |
+| `volume.poor_extreme` | different_rule | adopt | `heavy` becomes the reference's "more than one TPO block" (`count > 1`), which is why the concept is silent today |
+| `volume.spike` | different_rule | defer | 2.5× a 20-bar norm is the reference's own sentence; the RVOL time-of-day baseline needs ~20 sessions and the scan caps the load at 1000 bars |
+
+### What each decision means
+
+**The period** (six rows). `detect_volume_profile`
+([events.rs:1041-1096](../../../../crates/analytics-core/src/events.rs#L1041)) builds a 48-row
+profile over the whole 20-bar-and-up prefix and pushes POC, value area, banded HVN and banded LVN on
+*every* call. The period primitive already exists in this crate: `cvd::session_of(ts)`
+([cvd.rs:26](../../../../crates/analytics-core/src/cvd.rs#L26)) returns the day index and
+`profile_memory.rs:158` already uses it to build one profile per UTC day. Adopted: compute the
+profile once and emit when the period closes, with `formed_at` = session open. The route's
+newest-50-per-concept cap is what makes this urgent rather than merely untidy — 200 events for eight
+measurements, and the four label rows are 50 copies of one number.
+
+**The tier** (the four histogram rows). The candle-derived builder documents its own rung at
+[volume_profile.rs:210-216](../../../../crates/analytics-core/src/volume_profile.rs#L210): "uniform
+distribution is the standard assumption … Prefer `calculate_volume_profile` with real trades when you
+have them." Rung 2 is the adopted reading for POC / VA / HVN / LVN; rung 1 (`calculate_volume_profile`
+over trades) is not needed because no rule in the family reads the split. Per the venue rule, where a
+product serves real trades the same id may resolve to rung 1 — that is a provenance difference, not a
+second concept.
+
+**The initial balance** (`volume.initial_balance`). `initial_balance(candles, 4)`
+([tpo.rs:100-107](../../../../crates/analytics-core/src/tpo.rs#L100)) takes the first four bars of
+the *load*, and the clause stamps `formed_at = candles[0].open_time`
+([tpo.rs:136-151](../../../../crates/analytics-core/src/tpo.rs#L136)) — which is why the pass
+measured 38 segments all anchored to x 12.14. Adopted: the bars of the current session with
+`open_time < session_open + 3600s`, stamped with the session open. Where a product has no session,
+the honest derived variant is the **UTC-day open** and the provenance says derived; the id does not
+split.
+
+**Acceptance** (`volume.acceptance`). Two closes beyond a value-area edge is Steidlmayer's, and
+[tpo.rs:158-164](../../../../crates/analytics-core/src/tpo.rs#L158) tests it against an edge the same
+session's own profile just produced, which is self-referential. Adopted: test the **prior** session's
+value area, and express the two bars as a **duration** — 30 minutes beyond the edge — because two
+bars of 1m is not two bars of 1h, and the rule was judged on a 15m window.
+
+**Single prints** (`volume.single_prints`). [tpo.rs:167-182](../../../../crates/analytics-core/src/tpo.rs#L167)
+selects rows with `count == 1` from a *finished* day's profile. A per-bar rebuild makes the set
+self-referential (almost every price looks single-printed early in the day), so the period fix is not
+a nicety here — it is the precondition for the row meaning anything.
+
+**Poor extreme** (`volume.poor_extreme`). `heavy()` at
+[tpo.rs:191](../../../../crates/analytics-core/src/tpo.rs#L191) is `count > 1.5 * mean`, against the
+reference's "more than one TPO block", i.e. `count > 1`. Adopted: `count > 1`. This is the reason the
+concept produced nothing in 501 bars — a rule that never fires is a rule problem, not a drawing
+problem. The period fix must land with it: a threshold this light on a per-bar profile floods the
+chart.
+
+**Spike** (`volume.spike`) — the one defer. 2.5× a 20-bar norm is the reference's own sentence, and
+the code already does it ([events.rs:3680-3704](../../../../crates/analytics-core/src/events.rs#L3680));
+what is not settled is whether the baseline should be time-of-day-normalised (RVOL), because that
+needs ~20 sessions and the scan caps the load at 1000 bars (`concept_routes.rs:263`), which is 5.2
+days at 15m. Measurement: spike rate per hour-of-day, BTCUSDT and ETHUSDT, 15m, 30 days; report the
+busiest hour's rate over the quietest's. >2× flips this to adopt; <1.5× settles it as keep_ours.
+Independent of the measurement, and adopted now: the baseline must stop silently shrinking — `:3681`
+takes `spike_average_bars.min(len-1)`, so a short window quietly substitutes a one-bar average. A
+window too short to have a baseline should yield no spike, which is the same honesty the momentum
+section asks of its warm-ups.
+
+This section authorises, now: the UTC-day period with one emission per closed profile and
+`formed_at` = session open, the prior-session value area with a duration-based acceptance test, the
+hour-based initial balance, and `count > 1` for the poor extreme. It parks the RVOL time-of-day
+baseline for `volume.spike` behind the hour-rate count above. It authorises nothing about how a
+profile is painted — `price_band`, `level_run`, the bucket-tall single print and the label text are
+the shape work.

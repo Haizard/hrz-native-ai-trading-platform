@@ -132,3 +132,59 @@ segments and markers in one spec — and it is the precedent these two rows shou
 3. **Stop routing `indicators.*` events into `candle_mark`** — the pass-wide fix stated once in
    [`10-trend.md`](10-trend.md#fixes-this-pass-asks-for). This family's 148 labels come off, and
    on `obv`/`ad_line` fix 1 is what replaces the information they were wrongly carrying.
+
+## The fires decisions (2026-10-31)
+
+Five rows, five `continuous`, and — as in volatility — the estimators win on inspection while the
+events lose it. Every `their_rule` here says the same sentence: TradingView plots the line in its own
+pane and **marks nothing**; the cross, the zone entry, the divergence is what the trader reads off the
+line. Decided: **5 adopt, 0 keep_ours, 0 defer**, where adopt means once again the reference's silence:
+the condition becomes a state of the series, not a word on the price frame. Not one of the five
+estimators needs to change, and that is recorded per row so the next pass does not re-open them.
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `indicators.obv` | continuous | adopt | Granville's running ±volume by close-to-close sign ([oscillators.rs:104-120](../../../../crates/analytics-core/src/indicators/oscillators.rs#L104)); the divergence belongs on the OBV trace, not at a price |
+| `indicators.ad_line` | continuous | adopt | Williams/Chaikin's money-flow multiplier summed ([misc.rs:58-76](../../../../crates/analytics-core/src/indicators/misc.rs#L58)); same divergence placement |
+| `indicators.cmf` | continuous | adopt | Chaikin's ΣMFV/Σvolume over the period ([misc.rs:81-95](../../../../crates/analytics-core/src/indicators/misc.rs#L81)); the zero cross is a reading of a line that already crosses zero |
+| `indicators.mfi` | continuous | adopt | the volume-weighted RSI on typical price ([misc.rs:98-122](../../../../crates/analytics-core/src/indicators/misc.rs#L98)); 80/20 is drawn as levels on the pane, and the reference marks no entry |
+| `indicators.anchored_vwap` | continuous | adopt | the math is right but the anchor is a house choice, and the event watches **one** of the two lines the chart draws ([indicator_signals.rs:85-98](../../../../crates/analytics-core/src/indicator_signals.rs#L85)) |
+
+### What each decision means
+
+**The four accumulators** (`obv`, `ad_line`, `cmf`, `mfi`). Each was opened against its definition and
+each is the standard form: OBV adds or subtracts volume on the close-to-close sign and holds flat on an
+unchanged close; A/D uses `(2·close − high − low)/(high − low) · volume` with the degenerate one-tick
+bar returning 0 rather than dividing
+([misc.rs:58-65](../../../../crates/analytics-core/src/indicators/misc.rs#L58)); CMF is the period-sum
+of that same money-flow volume over the period-sum of volume; MFI is RSI's ratio computed on money flow
+with the conventional `neg == 0 → 100` limit and its first value at `period`. The disagreements are
+entirely about the emitted mark: `oscillator_divergence` fires a price-frame label when the tail confirms
+a divergence
+([indicator_signals.rs:26-30](../../../../crates/analytics-core/src/indicator_signals.rs#L26)), and the
+zero-cross and zone-entry clauses do the same for CMF and MFI. Adopted: the divergence, the cross and
+the zone entry stay *detected* — they are the useful part — and become marks **in the pane on the series
+that owns them**, which is what a trader looks at. On the price frame they mean nothing, because an OBV
+divergence's y-value is a cumulative volume count.
+
+**Anchored VWAP** (`indicators.anchored_vwap`) — the one row with a substantive decision. The
+computation is the textbook cumulative Σ(typical·volume)/Σvolume from the anchor bar
+([misc.rs:126-137](../../../../crates/analytics-core/src/indicators/misc.rs#L126)). Two things are ours,
+and both are visible on the chart. The **anchor**: we take the newest swing high and the newest swing
+low, while the built-in a TradingView user adds anchors at a chosen event — most commonly the session
+start. Adopted: the **session open** becomes the default anchor (the same UTC-day primitive the volume
+profile section settled on, `cvd::session_of` at [cvd.rs:26](../../../../crates/analytics-core/src/cvd.rs#L26)),
+and the swing-anchored pair stays as a named variant rather than the definition — because "the VWAP from
+the last swing low" is a house construction that a session VWAP makes unnecessary, and it repaints every
+time a new swing confirms, which is the state problem the same design owns. The second is a defect the
+event makes visible: the pane draws **two** anchored lines and the cross clause reads only the swing-low
+one — a concept with two drawings and one watched, so a cross of the high-anchored line never fires.
+Adopted: whichever lines are drawn are the lines the state is computed over; the event follows the
+drawing, not the other way round. The `n > 30` floor also needs to be stated as what it is: an anchor
+that recent is not a VWAP anyone reads, so the floor belongs to the anchor choice, not a constant.
+
+This section authorises, now: the four divergence/cross/zone conditions demoted to pane marks, the
+session-open default anchor with the swing pair kept as a declared variant, and the fix that makes the
+cross state cover every drawn line. It keeps all five estimators unchanged and records them as verified.
+It parks nothing. It authorises nothing about drawing — the pane wiring, the 148 labels and the level
+lines are the shape work above.

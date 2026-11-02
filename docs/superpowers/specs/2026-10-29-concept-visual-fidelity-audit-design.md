@@ -463,3 +463,57 @@ is fixed.
 | Rule-as-data drifts from the Rust detector it describes | Each row names the detector function, so a later diff can find the pair |
 | The audit becomes a document nobody implements | Every row's `target_shape` is a work item with a verdict attached, and the completeness gate fails on gaps |
 | The four kinds grow a fifth and sixth by pass 12, because a hard concept makes a tempting exception | The kinds are declared once, in the vocabulary chapter, and the completeness gate rejects a value it was not told about — so a new kind is a decision made in the open rather than a row quietly typed |
+
+## The fires decisions — all 182 rows (2026-10-31)
+
+The ledger's `fires` half is now closed. Each family section carries a `## The fires decisions
+(2026-10-31)` chapter with a table covering every one of its concept ids, the reason per row, and a
+closing line separating what the decision **authorises** from what it **parks**. Every decision was
+taken against the current Rust, not the ledger's `detector` line numbers, which have drifted in every
+family (the function names did not move).
+
+| family | rows | adopt | keep_ours | defer | nothing to adopt |
+| --- | --- | --- | --- | --- | --- |
+| [01-smc.md](concept-visual-audit/01-smc.md) | 32 | 11 | 17 | 0 | 4 |
+| [02-sd.md](concept-visual-audit/02-sd.md) | 4 | 2 | 1 | 0 | 1 |
+| [03-pa.md](concept-visual-audit/03-pa.md) | 11 | 8 | 2 | 1 | 0 |
+| [04-session.md](concept-visual-audit/04-session.md) | 14 | 12 | 2 | 0 | 0 |
+| [05-fib.md](concept-visual-audit/05-fib.md) | 6 | 5 | 0 | 1 | 0 |
+| [06-chart.md](concept-visual-audit/06-chart.md) | 15 | 8 | 7 | 0 | 0 |
+| [07-harmonics.md](concept-visual-audit/07-harmonics.md) | 9 | 9 | 0 | 0 | 0 |
+| [08-candles.md](concept-visual-audit/08-candles.md) | 34 | 25 | 4 | 5 | 0 |
+| [09-volume-profile.md](concept-visual-audit/09-volume-profile.md) | 9 | 8 | 0 | 1 | 0 |
+| [10-trend.md](concept-visual-audit/10-trend.md) | 12 | 2 | 10 | 0 | 0 |
+| [11-momentum.md](concept-visual-audit/11-momentum.md) | 10 | 2 | 8 | 0 | 0 |
+| [12-volatility.md](concept-visual-audit/12-volatility.md) | 4 | 3 | 1 | 0 | 0 |
+| [13-volume.md](concept-visual-audit/13-volume.md) | 5 | 5 | 0 | 0 | 0 |
+| [14-order-flow.md](concept-visual-audit/14-order-flow.md) | 1 | 0 | 0 | 0 | 1 |
+| [15-statistical.md](concept-visual-audit/15-statistical.md) | 10 | 2 | 6 | 1 | 1 |
+| [16-econ.md](concept-visual-audit/16-econ.md) | 6 | 6 | 0 | 0 | 0 |
+| **total** | **182** | **108** | **58** | **9** | **7** |
+
+**What the shape of the result says.** 108 adopts are not 108 arguments; they cluster into a handful of
+recurring decisions — a period or anchor for a state that currently re-emits per bar (volume profile,
+fibonacci, session, smc), a cited clause replacing an approximation (harmonics' ratio windows, candles'
+context and shadow conditions), and, in the four `indicators.*` families, the reference's *silence*:
+where TradingView plots a line and marks nothing, the threshold condition is demoted from a price-frame
+event to a state of the series. 58 keep_ours split into two honest kinds — the estimators that turned
+out to already carry their author's form (ten of twelve trend rows, eight of ten momentum rows, all
+five volume accumulators, Bollinger's documented population σ), and the house models with no external
+convention to adopt (the statistical family's Kalman, entropy, Bayesian drift, AR(2), GARCH).
+
+**The nine defers are named, and each has its measurement.** `pa.round_numbers`, `fib.confluence`
+(the tolerance × cluster-size grid), `volume.spike` (the RVOL time-of-day baseline against the 1000-bar
+scan cap), `indicators.changepoint` (crossing rate at gate ∈ {2.0, 2.5, 3.0, 4.0}, which decides whether
+the statistic is a CUSUM or gets renamed), and the five gap-bound candle kinds — `candles.kicker`,
+`candles.abandoned_baby`, `candles.tasuki_gap`, `candles.upside_gap_two_crows`, `candles.ladder_bottom`
+— deferred together because they are one venue question, not nine: 0 of 500 adjacent 15m bars on this
+feed gap at all, so the reference's clause is correct and permanently silent here. Their resolution is
+the data-tier rule in this spec's §"Venue tiers": keep the reference's definition, add the honest
+degraded variant, carry the provenance.
+
+**Verification.** Every `concept_id` in `reports/concept-visual-audit/ledger/*.json` appears exactly once
+in its family's decisions table — 182 rows, no omissions and no duplicates — and the counts in each
+section's opening line match the shard's own `fires.verdict` histogram. The chart shape gates
+(`node tools/concept_visual_audit.mjs check` and `… routes`) are unaffected: these sections decide
+`fires` and authorise no implementation.

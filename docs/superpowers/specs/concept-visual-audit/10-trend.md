@@ -231,3 +231,70 @@ judges it there.
    other unfilled band, belongs to the volatility section).
 8. **Give the pane a fill field** (`SubPaneSpec::Series`) before any pane band is wired; today a
    pane band cannot reach the engine even if the gateway sends one.
+
+## The fires decisions (2026-10-31)
+
+Twelve rows, all `continuous`, so there is no external event to disagree about — the disagreement is
+about the *value*, and for ten of twelve rows the code turns out to already carry the textbook
+recursion it is claimed not to. Decided: **2 adopt, 10 keep_ours.** The ten keep_ours are a
+confirmation, not a dismissal: each was opened against its author's definition rather than its ledger
+claim, and each has an honest warm-up floor, which is what the `continuous` verdict was really asking
+for.
+
+| concept_id | fires verdict | decision | the one-line reason |
+| --- | --- | --- | --- |
+| `indicators.donchian` | continuous | adopt | the channel keeps bar `i` inside itself, so the breakout clause is unsatisfiable — 0 events in 501 bars |
+| `indicators.psar` | continuous | adopt | warm-up honesty: the direction is seeded from `candles[1]` and written to `out[0]`/`out[1]`, i.e. two dots drawn with the future |
+| `indicators.adx` | continuous | keep_ours | Wilder sums with DX seeded by the mean of the first `period` DX ([trend.rs:11-61](../../../../crates/analytics-core/src/indicators/trend.rs#L11)) |
+| `indicators.keltner` | continuous | keep_ours | EMA 20 ± 2·ATR 10, the form Keltner traders expect |
+| `indicators.supertrend` | continuous | keep_ours | the ratchet and both flip conditions match the TV formula line for line ([trend.rs:100-137](../../../../crates/analytics-core/src/indicators/trend.rs#L100)) |
+| `indicators.ichimoku` | continuous | keep_ours | range midpoints, spans projected 26 forward, chikou 26 back ([ichimoku.rs:22-67](../../../../crates/analytics-core/src/indicators/ichimoku.rs#L22)) |
+| `indicators.chandelier` | continuous | keep_ours | 22, 3× Wilder ATR, from the window extremes ([misc.rs:142-157](../../../../crates/analytics-core/src/indicators/misc.rs#L142)) |
+| `indicators.macd` | continuous | keep_ours | 12/26/9 with the signal seeded off its own defined tail ([macd.rs:51-52](../../../../crates/analytics-core/src/indicators/macd.rs#L51)) |
+| `indicators.macd_family` | continuous | keep_ours | the ribbon's consensus refuses to count an undefined line (`map_or(false, …)`, [indicator_signals.rs:543](../../../../crates/analytics-core/src/indicator_signals.rs#L543)) |
+| `indicators.ema_family` | continuous | keep_ours | GMMA groups are Elder's exactly — 3/5/8/10/12/15 and 30/35/40/45/50/60 ([indicator_signals.rs:591-592](../../../../crates/analytics-core/src/indicator_signals.rs#L591)) |
+| `indicators.ema` | continuous | keep_ours | SMA seed, first value at `period-1` ([ema.rs:16-38](../../../../crates/analytics-core/src/indicators/ema.rs#L16)) |
+| `indicators.sma` | continuous | keep_ours | plain mean over the window ([sma.rs:12-29](../../../../crates/analytics-core/src/indicators/sma.rs#L12)) |
+
+### What each decision means
+
+**Donchian** (`indicators.donchian`). `donchian` builds its window as `i+1-period..=i`
+([trend.rs:79-95](../../../../crates/analytics-core/src/indicators/trend.rs#L79)), so bar `i` is
+inside its own channel, and then
+[indicator_signals.rs:322-329](../../../../crates/analytics-core/src/indicator_signals.rs#L322)
+compares that same bar's `close` against the same bar's upper — a close can never exceed a maximum it
+is included in. That is why the detector emits 0 events across 501 bars while the drawn channel is
+correct. Adopted: **fix the clause, not the builder.** The comparison should use `pup`/`plo`, the
+channel as of the *previous* bar
+([indicator_signals.rs:324-327](../../../../crates/analytics-core/src/indicator_signals.rs#L324)).
+Keeping bar `i` inside the channel is right for the line a trader draws and wrong for the breakout;
+the turtle entry rule is the current close against the prior 20 bars, and that is the change.
+
+**PSAR** (`indicators.psar`). [trend.rs:148](../../../../crates/analytics-core/src/indicators/trend.rs#L148)
+decides the starting direction from `candles[1].close` and
+[trend.rs:152-153](../../../../crates/analytics-core/src/indicators/trend.rs#L152) writes that
+decision into `out[0]` **and** `out[1]`. The first dot is therefore drawn using information from the
+next bar — a small, real lookahead, at exactly the place a backtest begins counting. Adopted: emit
+`None` until bar 2. The recursion after that seed is Wilder's and is not touched.
+
+**The ten we already match.** ADX uses Wilder's sums with DX seeded by the plain mean of the first
+`period` DX values; Keltner is EMA 20 with 2·ATR 10; Supertrend's bands ratchet (the lower only rises
+while long, the upper only falls while short) and flip on the closing condition exactly as TV writes
+it; Ichimoku takes range midpoints rather than closes and projects the spans 26 forward with chikou 26
+back; Chandelier is 22-period, 3× Wilder ATR from the window extreme; MACD's signal is seeded from its
+own line's defined tail, so no zero-filled prefix escapes into a histogram; `ema_family` is Elder's
+own two groups; `ema` seeds from an SMA and starts at `period-1`; `sma` is the plain mean. These ids
+stay as they are, and their `continuous` verdict is answered the way momentum answers it: the
+reference draws a line, we draw the same line, there is no event to have an opinion about.
+
+**One recorded finding.** The ADX row's `warmup.before` says "ADX needs 14 bars". It does not: with
+Wilder's sums the first ADX value lands at index `2*period - 1` = **27**, not 14. Harmless today — the
+`n > 30` guard at the call site dominates the true floor, so no wrong value escapes — but wrong as
+documentation, and it belongs in the ledger as a correction rather than in the next pass as a live
+defect.
+
+This section authorises, now: the Donchian breakout tested against the **prior** channel, and PSAR
+emitting `None` for its first two bars. It keeps the other ten estimators unchanged and records the
+ADX warm-up string as a ledger correction. It authorises nothing about drawing — `series_dots`, the
+Supertrend side colour, the senkou strokes, the single Chandelier stop and the band fills are in the
+shape work above.
