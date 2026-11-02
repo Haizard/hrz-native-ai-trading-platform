@@ -47,8 +47,8 @@
 
 pub mod binance;
 pub mod credentials;
-pub mod deriv;
 pub mod decisions;
+pub mod deriv;
 pub mod error;
 pub mod execution;
 pub mod gate;
@@ -58,6 +58,48 @@ pub mod paper;
 pub mod risk;
 pub mod secrets;
 pub mod store;
+
+/// Evaluate the strategy's pinned registry detectors over each closed
+/// timeframe window and attach the readings to its execution context.
+pub fn populate_registry_concepts(
+    context: &mut strategy_runtime::context::MarketContext,
+    declarations: &[strategy_dsl::schema::RegistryConcept],
+) -> Result<(), String> {
+    for (frame_name, view) in &context.timeframes {
+        let params: Vec<std::collections::HashMap<String, f64>> = declarations
+            .iter()
+            .map(|declaration| declaration.parameters.clone().into_iter().collect())
+            .collect();
+        let states: Vec<(&str, &str, &str, &std::collections::HashMap<String, f64>)> = declarations
+            .iter()
+            .zip(&params)
+            .map(|(declaration, params)| {
+                (
+                    declaration.name.as_str(),
+                    declaration.concept_id.as_str(),
+                    declaration.concept_version.as_str(),
+                    params,
+                )
+            })
+            .collect();
+        let readings =
+            market_data::composer::registry_readings(&view.history, &context.symbol, &states)?;
+        for (name, reading) in readings {
+            context.registry_concepts.insert(
+                format!("{frame_name}::{name}"),
+                strategy_runtime::RegistryConceptValue {
+                    exists: reading.exists,
+                    fresh: reading.fresh,
+                    top: reading.top,
+                    bottom: reading.bottom,
+                    value: reading.value,
+                    mitigated: reading.mitigated,
+                },
+            );
+        }
+    }
+    Ok(())
+}
 
 pub use binance::{base_url_from_env as binance_base_url, AccountCheck, BinanceRest};
 pub use credentials::ExchangeCredentials;

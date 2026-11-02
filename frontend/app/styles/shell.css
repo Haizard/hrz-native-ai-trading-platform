@@ -62,7 +62,7 @@
 .destination[hidden] { display: none; }
 .destHeading { margin: 0; padding: var(--page-pad) var(--page-pad) 0; font-size: var(--text-lg); }
 .destHost { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 0 var(--page-pad) var(--page-pad); }
-#dest-dashboard, #dest-studio { overflow: auto; }
+#dest-dashboard { overflow: auto; }
 #dest-charts { flex-direction: row; overflow: hidden; }
 #panePark { display: none; }
 

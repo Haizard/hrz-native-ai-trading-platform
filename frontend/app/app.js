@@ -1047,7 +1047,8 @@ function createChartPane(root, hooks = {}) {
   // frame and draws its own output over the same candles. `visible === false`
   // withholds the layer from the scene request rather than deleting it -- the
   // engine draws what it is sent, so the filter lives here, the same place
-  // the AI drawing layer's does. Attached by the studio's "attach to chart"
+  // the AI drawing layer's does. Attached by the indicator workbench's
+  // "attach to chart"
   // action once the gateway has vetted the source.
   let attachedScripts = [];
   // Which layer's settings popover is open (its index in attachedScripts), or
@@ -3558,7 +3559,7 @@ function createChartPane(root, hooks = {}) {
       // positions them; nothing here computes pixels. Pane concepts are
       // withheld: their events carry a measurement (RSI's 30/70), not a price,
       // and a mark at 70 on a BTC chart is a level that does not exist.
-      concept_shapes: ConceptShapes.from(conceptEvents, priceFrameConcepts()),
+      concept_shapes: ConceptShapes.from(conceptEvents, priceFrameConcepts(), conceptAliasesForRequest()),
       // The profile's edge, in the engine's own spelling. Assigned only when
       // set: absent means Right, which keeps every existing request byte-identical.
       ...(profileLeft ? { profile_anchor: "left" } : {}),
@@ -6014,6 +6015,9 @@ function createChartPane(root, hooks = {}) {
 
   // The pane's enabled concept ids and the catalog + events cache.
   let enabledConcepts = new Set();
+  // Trader-owned edits are pane state, separate from the shared registry.
+  // The same concept can have a different name and parameter set in another pane.
+  let conceptStates = {};
   let conceptCatalog = null;     // /concepts entries for the pane's symbol
   let conceptEvents = [];        // the enabled concepts' events
   // The whole scan, enabled or not. The route answers for the instrument, and the
@@ -6027,15 +6031,35 @@ function createChartPane(root, hooks = {}) {
   /// shape that claims no price at all (a regime's time boxes), which may
   /// travel the price frame while its measurement stays in the pane.
   function priceFrameConcepts() {
-    if (!conceptCatalog) return enabledConcepts;
+    const ids = new Set([...enabledConcepts, ...registryIndicatorStates().map((state) => state.concept_id)]);
+    if (!conceptCatalog) return ids;
     const shapes = globalThis.ConceptShapes;
     const paneIds = new Set(
       conceptCatalog
         .filter((c) => c.pane === true && !(shapes && shapes.claimsNoPrice(c.id)))
         .map((c) => c.id)
     );
-    if (!paneIds.size) return enabledConcepts;
-    return new Set([...enabledConcepts].filter((id) => !paneIds.has(id)));
+    if (!paneIds.size) return ids;
+    return new Set([...ids].filter((id) => !paneIds.has(id)));
+  }
+
+  function registryIndicatorStates() {
+    return indicator && Array.isArray(indicator.registry_concepts) ? indicator.registry_concepts : [];
+  }
+
+  function registryIndicatorState(id) {
+    return registryIndicatorStates().find((state) => state.concept_id === id) || null;
+  }
+
+  function requestedConceptIds() {
+    return new Set([...enabledConcepts, ...registryIndicatorStates().map((state) => state.concept_id)]);
+  }
+
+  function conceptAliasesForRequest() {
+    const aliases = {};
+    for (const [id, state] of Object.entries(conceptStates)) if (state && state.alias) aliases[id] = state.alias;
+    for (const state of registryIndicatorStates()) if (state.alias) aliases[state.concept_id] = state.alias;
+    return aliases;
   }
 
   /// Fetch the catalog for the pane's symbol (once per symbol).
@@ -6086,16 +6110,48 @@ function createChartPane(root, hooks = {}) {
     return promise;
   }
 
+  function conceptEventParams() {
+    const out = {};
+    for (const [id, state] of Object.entries(conceptStates)) {
+      const entry = conceptCatalog && conceptCatalog.find((item) => item.id === id);
+      if (entry && !(entry.pane || entry.overlay) && state && state.parameters && Object.keys(state.parameters).length) {
+        out[id] = state.parameters;
+      }
+    }
+    for (const state of registryIndicatorStates()) {
+      const entry = conceptCatalog && conceptCatalog.find((item) => item.id === state.concept_id);
+      if (entry && !(entry.pane || entry.overlay) && state.parameters && Object.keys(state.parameters).length) {
+        out[state.concept_id] = state.parameters;
+      }
+    }
+    return out;
+  }
+
+  function conceptEventVersions() {
+    const out = {};
+    for (const [id, state] of Object.entries(conceptStates)) if (state && state.version) out[id] = state.version;
+    for (const state of registryIndicatorStates()) if (state.concept_version) out[state.concept_id] = state.concept_version;
+    return out;
+  }
+
+  function conceptEventScanUrl(symbol, timeframe) {
+    const params = conceptEventParams();
+    const overrides = Object.keys(params).length ? `&params=${encodeURIComponent(JSON.stringify(params))}` : "";
+    const versions = conceptEventVersions();
+    const pinned = Object.keys(versions).length ? `&versions=${encodeURIComponent(JSON.stringify(versions))}` : "";
+    return `/concept-events/scan?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}${overrides}${pinned}`;
+  }
+
   async function ensureConceptScan() {
     const symbol = el("symbol") && el("symbol").value;
     const timeframe = el("timeframe") && el("timeframe").value;
     if (!symbol || !timeframe) return [];
-    const key = `${symbol}|${timeframe}`;
+    const key = `${symbol}|${timeframe}|${JSON.stringify(conceptEventParams())}|${JSON.stringify(conceptEventVersions())}`;
     if (conceptScan && conceptScan.key === key) return conceptScan.events;
     if (conceptScanFlight && conceptScanFlight.key === key) return conceptScanFlight.promise;
     const promise = (async () => {
       try {
-        const body = await api(`/concept-events/scan?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`);
+        const body = await api(conceptEventScanUrl(symbol, timeframe));
         const events = (body && body.events) || [];
         // SMT is a pair concept: its card previews from the same merged list.
         return events.concat(await ensurePairEvents(symbol, timeframe));
@@ -6120,13 +6176,14 @@ function createChartPane(root, hooks = {}) {
   async function refreshConceptEvents() {
     const symbol = el("symbol") && el("symbol").value;
     const timeframe = el("timeframe") && el("timeframe").value;
-    if (!symbol || !timeframe || enabledConcepts.size === 0) { conceptEvents = []; return; }
+    const wanted = requestedConceptIds();
+    if (!symbol || !timeframe || wanted.size === 0) { conceptEvents = []; return; }
     try {
-      const body = await api(`/concept-events/scan?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`);
+      const body = await api(conceptEventScanUrl(symbol, timeframe));
       let events = (body && body.events) || [];
       // The pair concept is not in the per-symbol answer; ask the pair route
       // only when the trader has switched it on.
-      if (enabledConcepts.has("smc.smt_divergence")) {
+      if (wanted.has("smc.smt_divergence")) {
         events = events.concat(await ensurePairEvents(symbol, timeframe));
       }
       conceptEvents = events;
@@ -6143,12 +6200,17 @@ function createChartPane(root, hooks = {}) {
   /// The series route for one concept on this pane's window. The enabled set and
   /// the panel's previews ask the same question of the same instrument, so they
   /// build the same string here rather than keeping two of them in step.
-  function indicatorSeriesUrl(id) {
+  function indicatorSeriesUrl(id, overrides) {
     const symbol = el("symbol") && el("symbol").value;
     const timeframe = el("timeframe") && el("timeframe").value;
     if (!symbol || !timeframe) return null;
     const pairParam = id === "indicators.pairs" ? `&symbol2=${encodeURIComponent(pairSymbol)}` : "";
-    return `/indicator-series?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&concept=${encodeURIComponent(id)}${pairParam}`;
+    const params = overrides && Object.keys(overrides).length
+      ? `&params=${encodeURIComponent(JSON.stringify(overrides))}` : "";
+    const state = registryIndicatorState(id) || conceptStates[id];
+    const pinnedVersion = state && (state.concept_version || state.version);
+    const version = pinnedVersion ? `&version=${encodeURIComponent(pinnedVersion)}` : "";
+    return `/indicator-series?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&concept=${encodeURIComponent(id)}${pairParam}${params}${version}`;
   }
 
   /// Fetch the enabled pane concepts' series. A pane concept is a
@@ -6158,12 +6220,14 @@ function createChartPane(root, hooks = {}) {
     const symbol = el("symbol") && el("symbol").value;
     const timeframe = el("timeframe") && el("timeframe").value;
     if (!symbol || !timeframe || !conceptCatalog) { indicatorSeries = new Map(); return; }
-    const wanted = conceptCatalog.filter((c) => (c.pane === true || c.overlay === true) && enabledConcepts.has(c.id));
+    const wantedIds = requestedConceptIds();
+    const wanted = conceptCatalog.filter((c) => (c.pane === true || c.overlay === true) && wantedIds.has(c.id));
     if (!wanted.length) { indicatorSeries = new Map(); return; }
     const next = new Map();
     await Promise.all(wanted.map(async (c) => {
       try {
-        const body = await api(indicatorSeriesUrl(c.id));
+        const state = registryIndicatorState(c.id) || conceptStates[c.id];
+        const body = await api(indicatorSeriesUrl(c.id, state && state.parameters));
         if (body && body.spec && Array.isArray(body.times)) next.set(c.id, body);
       } catch {
         // A pane that cannot compute over this window is simply absent --
@@ -6177,7 +6241,7 @@ function createChartPane(root, hooks = {}) {
   /// concept that cannot compute over this window is null -- the card draws no
   /// line, which is the honest reading of "this instrument has no data for it".
   async function conceptSeriesPreview(id) {
-    const url = indicatorSeriesUrl(id);
+    const url = indicatorSeriesUrl(id, (conceptStates[id] || {}).parameters);
     if (!url) return null;
     try {
       const body = await api(url);
@@ -6232,6 +6296,8 @@ function createChartPane(root, hooks = {}) {
     const out = [];
     for (const [id, body] of indicatorSeries) {
       const { times, spec } = body;
+      const state = registryIndicatorState(id) || conceptStates[id];
+      const alias = state && state.alias;
       const srcIndexByTime = new Map(times.map((t, i) => [t, i]));
       const remapValues = (values) => candles.map((c) => {
         const si = srcIndexByTime.get(c.open_time ?? c.time);
@@ -6246,7 +6312,7 @@ function createChartPane(root, hooks = {}) {
         const at = remapIndex(m.at);
         return at != null ? { at, value: m.value, kind: m.kind, label: m.label } : null;
       };
-      const lines = (spec.lines || []).map((l) => ({ name: l.name, color: l.color, values: remapValues(l.values) }));
+      const lines = (spec.lines || []).map((l) => ({ name: alias ? `${alias}${l.name ? ` · ${l.name}` : ""}` : l.name, color: l.color, values: remapValues(l.values) }));
       if (spec.target === "overlay") {
         // Overlay series: prices, mapped by the engine through the price
         // frame -- the request's overlay_series, not a sub-pane. The shape
@@ -6262,7 +6328,7 @@ function createChartPane(root, hooks = {}) {
       } else {
         out.push({
           kind: "series",
-          label: spec.label,
+          label: alias || spec.label,
           scale: spec.scale,
           levels: spec.levels || [],
           lines,
@@ -6309,6 +6375,35 @@ function createChartPane(root, hooks = {}) {
     document.dispatchEvent(new CustomEvent("hrz:concepts", { detail: { pane: paneId } }));
     refreshConceptEvents().then(() => refresh && refresh());
     refreshIndicatorSeries().then(() => refresh && refresh());
+  }
+
+  function setConceptState(id, state) {
+    if (!conceptCatalog || !conceptCatalog.some((entry) => entry.id === id)) return false;
+    const entry = conceptCatalog.find((item) => item.id === id);
+    const previous = conceptStates[id] || {};
+    const next = {
+      state_id: previous.state_id || (globalThis.crypto && globalThis.crypto.randomUUID ? globalThis.crypto.randomUUID() : `state-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+      version: entry.version,
+      alias: String(state.alias || "").trim().slice(0, 80),
+      description: String(state.description || "").trim().slice(0, 240),
+      included: Boolean(state.included),
+      parameters: {},
+    };
+    for (const parameter of entry.parameters || []) {
+      const value = state.parameters && state.parameters[parameter.name] !== undefined
+        ? Number(state.parameters[parameter.name]) : parameter.default;
+      if (!Number.isFinite(value) || value < parameter.min || value > parameter.max) return false;
+      if ((parameter.name === "period" || parameter.name === "smooth" || parameter.name.endsWith("_period")) && !Number.isInteger(value)) return false;
+      next.parameters[parameter.name] = value;
+    }
+    if (id === "indicators.macd" && !(next.parameters.fast_period < next.parameters.slow_period && next.parameters.signal_period < next.parameters.slow_period)) return false;
+    if ((id === "indicators.ema" || id === "indicators.sma") && !(next.parameters.fast_period < next.parameters.medium_period && next.parameters.medium_period < next.parameters.slow_period)) return false;
+    conceptStates[id] = next;
+    noteWorkspaceChange();
+    document.dispatchEvent(new CustomEvent("hrz:concepts", { detail: { pane: paneId } }));
+    refreshConceptEvents().then(() => refresh && refresh());
+    refreshIndicatorSeries().then(() => refresh && refresh());
+    return true;
   }
 
   /// The release countdown: the clock chips every scheduled kind shows its
@@ -7005,6 +7100,8 @@ function createChartPane(root, hooks = {}) {
     attachIndicator(output) {
       indicator = output || null;
       diffIndicator = null;
+      refreshConceptEvents().then(() => refresh && refresh());
+      refreshIndicatorSeries().then(() => refresh && refresh());
       renderNow();
       syncIndicatorChip();
       noteWorkspaceChange();
@@ -7053,6 +7150,7 @@ function createChartPane(root, hooks = {}) {
         mode: el("mode").value,
         limit: el("limit").value,
         indicator: indicator ? JSON.parse(JSON.stringify(indicator)) : null,
+        concept_states: JSON.parse(JSON.stringify(conceptStates)),
         scripts: attachedScripts.map((script) => ({
           source: script.source,
           inputs: script.inputs || {},
@@ -7070,6 +7168,7 @@ function createChartPane(root, hooks = {}) {
       if (saved.mode) el("mode").value = saved.mode;
       if (saved.limit) el("limit").value = saved.limit;
       indicator = saved.indicator || null;
+      conceptStates = saved.concept_states && typeof saved.concept_states === "object" ? saved.concept_states : {};
       attachedScripts = (Array.isArray(saved.scripts) ? saved.scripts : [])
         .filter((script) => script && typeof script.source === "string")
         .map((script) => ({
@@ -7467,6 +7566,8 @@ function createChartPane(root, hooks = {}) {
       timeframe: (el("timeframe") && el("timeframe").value) || "",
       catalog: conceptCatalog,
       enabled: enabledConcepts,
+      states: conceptStates,
+      registryStates: registryIndicatorStates(),
       pair: pairSymbol,
       // The pane's own window: the bars the panel's card previews draw on. The
       // preview is a crop of this chart, so it is aligned by the same timestamps
@@ -7482,6 +7583,7 @@ function createChartPane(root, hooks = {}) {
     /// it on open; a pane that has one is not asked to fetch again.
     loadConcepts: refreshConceptCatalog,
     setConcept: setConceptEnabled,
+    setConceptState,
     setConceptPair(value) {
       const next = String(value || "").trim().toUpperCase();
       if (!next) return pairSymbol;
@@ -10418,35 +10520,64 @@ async function chatAttachFiles(files) {
   }
   renderChatChips();
 }
-/// The agent asked the studio to build an indicator. The build runs in the
-/// workspace pipeline; the report lands as a bubble here.
+/// The agent asked for an indicator. Its persistent workspace is embedded in
+/// AI chat so the generated revision and its editing tools stay in context.
 async function chatRunIndicator(description, attachments) {
   const working = chatBubble(`<p>Building your indicator — drafting, validating, previewing…</p><div class="skl-line skeleton w70"></div><div class="skl-line skeleton w45"></div>`, "working");
   try {
-    // A chat-scoped studio per symbol+timeframe: find it or create it.
+    // A chat-scoped indicator workspace per symbol+timeframe: find or create it.
     const symbol = activeSymbol();
     const timeframe = activeTimeframe();
     const list = await api("/indicator-workspaces");
     const wss = Array.isArray(list) ? list : (list.workspaces || []);
-    let ws = wss.find((w) => w.name === "Chat Studio" && w.symbol === symbol && w.timeframe === timeframe);
+    let ws = wss.find((w) => w.name === "AI Chat Indicator" && w.symbol === symbol && w.timeframe === timeframe);
     if (!ws) {
       ws = await api("/indicator-workspaces", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "Chat Studio", symbol, timeframe }),
+        body: JSON.stringify({ name: "AI Chat Indicator", symbol, timeframe }),
       });
+    }
+    const conceptStates = activeConceptStateDeclarations(32);
+    if (conceptStates.length && /\b(indicator|plot|visualization)\b/i.test(description) && /\b(concept|state|combine|compose)\b/i.test(description)) {
+      const named = description.match(/\b(?:called|named)\s+["“]?([a-z0-9][a-z0-9 _-]{1,48})/i);
+      const name = (named ? named[1].replace(/["”].*$/, "").trim() : "Concept State Indicator").slice(0, 80);
+      const states = conceptStates.map((state) => ({
+        state_id: state.state_id || `chat-${state.concept_id.replace(/[^a-zA-Z0-9_-]/g, "-")}`.slice(0, 80),
+        concept_id: state.concept_id,
+        concept_version: state.concept_version,
+        alias: state.alias,
+        description: state.description,
+        parameters: state.parameters,
+      }));
+      const revision = await api(`/indicator-workspaces/${ws.id}/concept-compositions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, summary: `Composed from ${states.map((state) => state.alias).join(" + ")}`.slice(0, 280), states }),
+      });
+      if (!revision || !revision.preview) throw new Error("The concept composition did not return a validated indicator preview");
+      const workspaceTools = el("chatIndicatorWorkspace");
+      if (workspaceTools) workspaceTools.open = true;
+      await selectWorkspace(ws.id);
+      loadLibrary();
+      working.querySelector(".bubble").innerHTML = `<p>Built <b>${escapeHtml(name)}</b> from ${states.length} trader-edited concept state${states.length === 1 ? "" : "s"} across the active chart. The composition is attached; its pinned revision and editing tools are in Indicator workspaces below this chat.</p>`;
+      el("chatStream").scrollTop = el("chatStream").scrollHeight;
+      return;
     }
     const resp = await api(`/indicator-workspaces/${ws.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: description, ...(attachments && attachments.images && attachments.images.length ? { images: attachments.images } : {}), ...(attachments && attachments.document ? { document: attachments.document } : {}) }),
+      body: JSON.stringify({ content: conceptStates.length
+        ? `${description}\n\nActive trader-edited chart concept states (preserve these ids, versions, terminology and parameters when using them):\n${JSON.stringify(conceptStates)}`
+        : description,
+        ...(attachments && attachments.images && attachments.images.length ? { images: attachments.images } : {}),
+        ...(attachments && attachments.document ? { document: attachments.document } : {}) }),
     });
-    // Attach the new revision to the chart, then report.
-    if (resp && resp.assistant_message && resp.assistant_message.payload && resp.assistant_message.payload.source && activePane) {
-      const p = resp.assistant_message.payload;
-      activePane.attachScript({ source: p.source, inputs: {}, name: "Chat Studio", inputsSpec: Array.isArray(p.inputs) ? p.inputs : [] });
-      syncIndicatorChip();
-    }
+    // Opening the embedded workspace exposes its full revision history,
+    // editable source files, alerts and publishing controls.
+    const workspaceTools = el("chatIndicatorWorkspace");
+    if (workspaceTools) workspaceTools.open = true;
+    await selectWorkspace(ws.id);
     const report = resp && resp.assistant_message ? resp.assistant_message.content : "Built — see the chart.";
     loadLibrary();
     working.querySelector(".bubble").innerHTML = report.split(/\n{2,}/).map((para) => `<p>${escapeHtml(para)}</p>`).join("");
@@ -10475,18 +10606,22 @@ async function chatRunScan(criteria, metric, timeframe) {
 
 /// The agent asked for a strategy: generate, then report.
 async function chatRunStrategy(description) {
+  const strategyPane = activePane;
   const working = chatBubble(`<p>Building your strategy — generating and validating…</p><div class="skl-line skeleton w70"></div>`, "working");
   try {
     const result = await api("/agent/generate-strategy", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ description, market: activeSymbol(), timeframe: activeTimeframe() }),
+      body: JSON.stringify({ description, market: activeSymbol(), timeframe: activeTimeframe(), concept_states: activeConceptStateDeclarations(5) }),
     });
     el("strategySource").value = result.yaml;
     sourceOrigin = "ai_agent";
     sourceDirty = true;
     savedStrategyId = null;
     paintStrategyActions();
+    if (/(edit|change|rename|retune|adjust|update|modify|set|tune).{0,50}(concept|state|terminology|parameter|alias|description)|(concept|state|terminology|parameter|alias|description).{0,50}(edit|change|rename|retune|adjust|update|modify|set|tune)/i.test(description)) {
+      applyStrategyConceptStateChanges(result.document && result.document.registry_concepts, strategyPane);
+    }
     loadLibrary();
     const repairs = (result.repaired_errors || []).length;
     working.querySelector(".bubble").innerHTML = `<p>Strategy <b>${escapeHtml(result.document.name)}</b> v${escapeHtml(result.document.version)} is generated and loaded into the Strategy tab — ${result.attempts} attempt(s)` + (repairs ? `, the validator rejected ${repairs} thing(s) and they were repaired` : "") + ` — it is loaded as your working draft; say the word and I will adjust the rules.</p>`;
@@ -10494,6 +10629,25 @@ async function chatRunStrategy(description) {
     working.querySelector(".bubble").innerHTML = `<p class="fail">Strategy generation failed: ${escapeHtml(e.message)}</p>`;
   }
   el("chatStream").scrollTop = el("chatStream").scrollHeight;
+}
+
+function applyStrategyConceptStateChanges(declarations, targetPane) {
+  if (!targetPane || !targetPane.setConceptState || !Array.isArray(declarations)) return;
+  const view = targetPane.concepts ? targetPane.concepts() : null;
+  if (!view || !Array.isArray(view.catalog)) return;
+  let applied = 0;
+  for (const declaration of declarations) {
+    const concept = view.catalog.find((entry) => entry.id === declaration.concept_id);
+    if (!concept) continue;
+    const previous = (view.states || {})[concept.id] || {};
+    if (targetPane.setConceptState(concept.id, {
+      alias: declaration.alias || previous.alias || concept.name,
+      description: declaration.description || previous.description || concept.description || "",
+      included: Boolean(previous.included),
+      parameters: declaration.parameters || previous.parameters || {},
+    })) applied++;
+  }
+  if (applied) pageToast(`Applied ${applied} edited concept state${applied === 1 ? "" : "s"} to the chart used for this request`);
 }
 
 /// ---------------------------------------------------------------------------
@@ -10512,12 +10666,12 @@ async function chatRunStrategy(description) {
 /// The environment agents: the picker chooses WHICH pipeline the chat is in.
 ///
 /// "Any" leaves routing to the agent; a picked environment sends every
-/// message straight to that pipeline — the indicator studio, strategy
+/// message straight to that pipeline — the indicator workspace, strategy
 /// generation, the skill-authoring interview, bot context, or the scanner.
 /// ---------------------------------------------------------------------------
 const CHAT_ENVS = [
   { id: "any",       icon: "✦",  name: "Any agent",      desc: "The router picks the capability from your request" },
-  { id: "indicator", icon: "📊", name: "Indicator agent", desc: "Build and refine chart indicators — every message goes to the studio" },
+  { id: "indicator", icon: "📊", name: "Indicator agent", desc: "Build, refine and manage indicator workspaces in AI chat" },
   { id: "strategy",  icon: "📈", name: "Strategy agent",  desc: "Create backtestable strategies from plain language" },
   { id: "skill",     icon: "📚", name: "Skill agent",     desc: "Author a reusable skill through the interview" },
   { id: "bot",       icon: "🤖", name: "Bot agent",       desc: "Ask about bots and live execution — answers in bot context" },
@@ -10718,6 +10872,10 @@ async function libRowUse(type, id) {
         });
         syncIndicatorChip();
         pageToast(`Attached "${ws.name}" to ${activePane.symbol()} — it re-runs on every candle`);
+      } else if (rev.preview && Array.isArray(rev.preview.registry_concepts) && rev.preview.registry_concepts.length) {
+        activePane.attachIndicator(rev.preview);
+        syncIndicatorChip();
+        pageToast(`Attached "${ws.name}" with ${rev.preview.registry_concepts.length} adjusted concepts`);
       }
     } else if (type === "skill") {
       pinSkill(id);
@@ -11024,6 +11182,7 @@ async function ask() {
       symbol: activeSymbol(),
       question,
       timeframes: [activeTimeframe()],
+      concept_states: activeConceptStateDeclarations(),
     };
     // Chat attachments ride the same socket message the author interview uses;
     // the server validates them and the model sees them ahead of the question.
@@ -13878,7 +14037,10 @@ async function setCommunityStatus(slug, status) {
 
 /// Open an indicator workspace from elsewhere in the shell (an install).
 async function openWorkspaceById(workspaceId) {
-  selectPane("indicator");
+  if (window.Shell) Shell.openInspector("ai");
+  const tools = el("chatIndicatorWorkspace");
+  if (tools) tools.open = true;
+  runPaneLoaders("indicator");
   await selectWorkspace(workspaceId);
 }
 
@@ -14240,6 +14402,40 @@ function conceptViewState() {
   return activePane && activePane.concepts ? activePane.concepts() : null;
 }
 
+/// Snapshot the chart's enabled and explicitly included trader states for the
+/// AI. Canonical ids/versions stay stable while aliases and descriptions carry
+/// the trader's own vocabulary into chat and strategy generation.
+function activeConceptStateDeclarations(limit = 16) {
+  const view = conceptViewState();
+  if (!view || !Array.isArray(view.catalog)) return [];
+  const byId = new Map(view.catalog.map((concept) => [concept.id, concept]));
+  const states = new Map();
+  for (const id of view.enabled || []) {
+    const concept = byId.get(id);
+    if (!concept) continue;
+    const state = (view.states || {})[id] || {};
+    states.set(id, { concept, state });
+  }
+  for (const [id, state] of Object.entries(view.states || {})) {
+    if (!state || !(state.state_id || state.included) || !byId.has(id)) continue;
+    states.set(id, { concept: byId.get(id), state });
+  }
+  for (const state of view.registryStates || []) {
+    if (!state || !state.concept_id || states.has(state.concept_id)) continue;
+    const concept = byId.get(state.concept_id);
+    if (concept) states.set(state.concept_id, { concept, state });
+  }
+  return [...states.entries()].slice(0, limit).map(([id, { concept, state }]) => ({
+    state_id: state.state_id || null,
+    name: `registry_${id.replace(/[^a-zA-Z0-9_]/g, "_")}`.slice(0, 64),
+    alias: state.alias || concept.name || id,
+    concept_id: id,
+    concept_version: state.version || state.concept_version || concept.version || "1.0.0",
+    description: state.description || concept.description || "",
+    parameters: state.parameters || {},
+  }));
+}
+
 function conceptMatchesQuery(concept, query) {
   if (!query) return true;
   return (
@@ -14339,10 +14535,11 @@ function conceptLibraryCard(concept, view) {
   body.className = "conceptCard__body";
   const name = document.createElement("span");
   name.className = "conceptCard__name";
-  name.textContent = concept.name;
+  const state = (view.states && view.states[concept.id]) || {};
+  name.textContent = state.alias || concept.name;
   const description = document.createElement("span");
   description.className = "conceptCard__desc";
-  description.textContent = concept.description || "";
+  description.textContent = state.description || concept.description || "";
   const kind = document.createElement("span");
   kind.className = "conceptCard__kind";
   for (const chip of conceptKindChips(concept)) {
@@ -14366,6 +14563,65 @@ function conceptLibraryCard(concept, view) {
 
   main.append(preview, body, mark);
   card.append(main);
+
+  const editor = document.createElement("details");
+  editor.className = "conceptCard__state";
+  const summary = document.createElement("summary");
+  summary.textContent = state.alias || (state.parameters && Object.keys(state.parameters).length)
+    ? "Edit this trading state" : "Customize this concept";
+  editor.append(summary);
+  const aliasLabel = document.createElement("label");
+  aliasLabel.textContent = "Your trading name";
+  const aliasInput = document.createElement("input");
+  aliasInput.className = "hrz-input";
+  aliasInput.type = "text";
+  aliasInput.maxLength = 80;
+  aliasInput.placeholder = concept.name;
+  aliasInput.value = state.alias || "";
+  aliasInput.dataset.stateAlias = "";
+  aliasLabel.append(aliasInput);
+  editor.append(aliasLabel);
+  const descriptionLabel = document.createElement("label");
+  descriptionLabel.textContent = "How you define it";
+  const descriptionInput = document.createElement("textarea");
+  descriptionInput.className = "hrz-input";
+  descriptionInput.maxLength = 240;
+  descriptionInput.rows = 2;
+  descriptionInput.placeholder = concept.description || "Optional note about your setup";
+  descriptionInput.value = state.description || "";
+  descriptionInput.dataset.stateDescription = "";
+  descriptionLabel.append(descriptionInput);
+  editor.append(descriptionLabel);
+  const includeLabel = document.createElement("label");
+  includeLabel.className = "conceptCard__include";
+  const includeInput = document.createElement("input");
+  includeInput.type = "checkbox";
+  includeInput.checked = state.included === true;
+  includeInput.dataset.stateIncluded = "";
+  includeLabel.append(includeInput, document.createTextNode("Include in combined indicator"));
+  editor.append(includeLabel);
+  for (const parameter of concept.parameters || []) {
+    const label = document.createElement("label");
+    label.textContent = `${parameter.name.replace(/_/g, " ")} · ${parameter.description || ""}`;
+    const input = document.createElement("input");
+    input.className = "hrz-input";
+    input.type = "number";
+    input.min = String(parameter.min);
+    input.max = String(parameter.max);
+    input.step = parameter.name === "deviations" || parameter.name.includes("multiple") ? "0.05" : "1";
+    input.value = String(state.parameters && state.parameters[parameter.name] !== undefined
+      ? state.parameters[parameter.name] : parameter.default);
+    input.dataset.stateParam = parameter.name;
+    label.append(input);
+    editor.append(label);
+  }
+  const saveState = document.createElement("button");
+  saveState.type = "button";
+  saveState.className = "hrz-btn hrz-btn--ghost hrz-btn--sm";
+  saveState.dataset.saveConceptState = "";
+  saveState.textContent = "Apply state";
+  editor.append(saveState);
+  card.append(editor);
 
   if (concept.id === "indicators.pairs") {
     const row = document.createElement("label");
@@ -14414,6 +14670,7 @@ function renderConceptPanel() {
   if (!grid || !rail || !coverage || !empty) return;
 
   if (!view) {
+    el("conceptBuildIndicator").hidden = true;
     rail.replaceChildren();
     grid.replaceChildren();
     coverage.textContent = "Open a chart to choose its indicators.";
@@ -14427,6 +14684,7 @@ function renderConceptPanel() {
   }
   const catalog = view.catalog;
   if (!catalog) {
+    el("conceptBuildIndicator").hidden = true;
     rail.replaceChildren();
     grid.replaceChildren();
     coverage.textContent = "Reading the library…";
@@ -14435,6 +14693,9 @@ function renderConceptPanel() {
   }
 
   const enabled = view.enabled;
+  const includedCount = Object.values(view.states || {}).filter((state) => state && state.included).length;
+  el("conceptBuildIndicator").hidden = includedCount === 0;
+  el("conceptBuildIndicator").textContent = includedCount ? `Build indicator (${includedCount})` : "Build indicator";
   const group = conceptSelectedGroup();
   const total = catalog.length;
   const ready = catalog.filter((c) => c.available !== false).length;
@@ -14613,7 +14874,7 @@ function queueConceptPreviews(shown, view) {
     );
     const canvas = card && card.querySelector(".conceptCard__canvas");
     if (!canvas) continue;
-    const cacheKey = `${key}|${concept.id}`;
+    const cacheKey = `${key}|${concept.id}|${JSON.stringify((view.states || {})[concept.id] || {})}`;
     if (conceptPreviewCache.has(cacheKey)) {
       drawConceptPreview(canvas, conceptPreviewCache.get(cacheKey), concept, view);
       continue;
@@ -14663,7 +14924,7 @@ function pumpConceptPreviews() {
 /// card's read is still open would otherwise put a second request on the wire
 /// for the same picture.
 async function drawConceptPreviewLoaded(concept, view, canvas, token) {
-  const key = `${view.symbol}|${view.timeframe}|${concept.id}`;
+  const key = `${view.symbol}|${view.timeframe}|${concept.id}|${JSON.stringify((view.states || {})[concept.id] || {})}`;
   if (conceptPreviewCache.has(key)) {
     if (token.used) drawConceptPreview(canvas, conceptPreviewCache.get(key), concept, view);
     return;
@@ -14716,7 +14977,7 @@ function repaintConceptPreviews() {
     const canvas = card.querySelector(".conceptCard__canvas");
     const concept = view.catalog.find((c) => c.id === card.dataset.concept);
     if (!canvas || !concept) continue;
-    const key = `${view.symbol}|${view.timeframe}|${concept.id}`;
+    const key = `${view.symbol}|${view.timeframe}|${concept.id}|${JSON.stringify((view.states || {})[concept.id] || {})}`;
     if (conceptPreviewCache.has(key)) {
       conceptPreviewPaint(canvas, conceptPreviewCache.get(key), concept, view);
     }
@@ -15342,6 +15603,8 @@ function conceptToggle(id, turnOn) {
 function wireConceptPanel() {
   const body = el("panelBody-concepts");
   if (!body) return;
+  const build = el("conceptBuildIndicator");
+  if (build) build.addEventListener("click", buildConceptIndicator);
   const search = el("conceptSearch");
   if (search) {
     search.addEventListener("input", () => {
@@ -15389,6 +15652,26 @@ function wireConceptPanel() {
   const grid = el("conceptGrid");
   if (grid) {
     grid.addEventListener("click", (event) => {
+      const saveState = event.target.closest("[data-save-concept-state]");
+      if (saveState) {
+        const card = saveState.closest("[data-concept]");
+        if (!card || !activePane || !activePane.setConceptState) return;
+        const parameters = {};
+        for (const input of card.querySelectorAll("[data-state-param]")) parameters[input.dataset.stateParam] = Number(input.value);
+        const applied = activePane.setConceptState(card.dataset.concept, {
+          alias: card.querySelector("[data-state-alias]").value,
+          description: card.querySelector("[data-state-description]").value,
+          included: card.querySelector("[data-state-included]").checked,
+          parameters,
+        });
+        if (!applied) {
+          pageToast("Check parameter values and ordering before applying");
+          return;
+        }
+        pageToast("Trading state applied to this chart");
+        renderConceptPanel();
+        return;
+      }
       const main = event.target.closest(".conceptCard__main");
       if (!main) return;
       const card = main.closest("[data-concept]");
@@ -15430,6 +15713,57 @@ function wireConceptPanel() {
     cancelAnimationFrame(resizeFrame);
     resizeFrame = requestAnimationFrame(repaintConceptPreviews);
   });
+}
+
+async function buildConceptIndicator() {
+  const view = conceptViewState();
+  if (!view || !view.catalog || !activePane) return;
+  const states = Object.entries(view.states || {}).filter(([, state]) => state && state.included).map(([id, state]) => {
+    const concept = view.catalog.find((entry) => entry.id === id);
+    if (!concept) return null;
+    return {
+      state_id: state.state_id,
+      concept_id: id,
+      concept_version: state.version || concept.version,
+      alias: state.alias || concept.name,
+      description: state.description || "",
+      parameters: state.parameters || {},
+    };
+  }).filter(Boolean);
+  if (!states.length) return;
+  const name = (el("conceptCompositionName").value || "My Concept Indicator").trim().slice(0, 80) || "My Concept Indicator";
+  const summary = `Combined concept states: ${states.map((state) => state.alias).join(" + ")}`.slice(0, 280);
+  const working = el("conceptBuildIndicator");
+  working.disabled = true;
+  const oldLabel = working.textContent;
+  working.textContent = "Building…";
+  try {
+    const listed = await api("/indicator-workspaces");
+    const workspaces = Array.isArray(listed) ? listed : (listed.workspaces || []);
+    let workspace = workspaces.find((candidate) => candidate.name === name && candidate.symbol === view.symbol && candidate.timeframe === view.timeframe);
+    if (!workspace) {
+      workspace = await api("/indicator-workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, symbol: view.symbol, timeframe: view.timeframe }),
+      });
+    }
+    const revision = await api(`/indicator-workspaces/${workspace.id}/concept-compositions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, summary, states }),
+    });
+    if (!revision || !revision.preview) throw new Error("The saved revision did not include an indicator preview");
+    activePane.attachIndicator(revision.preview);
+    syncIndicatorChip();
+    loadLibrary();
+    pageToast(`Built "${name}" from ${states.length} concept states`);
+  } catch (error) {
+    pageToast(`Indicator build failed: ${error.message}`);
+  } finally {
+    working.disabled = false;
+    working.textContent = oldLabel;
+  }
 }
 
 /// Ask the active pane for its catalog, then paint.
@@ -16997,7 +17331,10 @@ async function attachWorkspaceRevision(ws, target) {
     syncIndicatorChip();
     return `Attached script "${(preview && preview.name) || ws.name}" to ${target.symbol()} ${target.timeframe()} — it re-runs on every candle`;
   }
-  const live = preview && Array.isArray(preview.concepts) && preview.concepts.length > 0;
+  const live = preview && (
+    (Array.isArray(preview.concepts) && preview.concepts.length > 0) ||
+    (Array.isArray(preview.registry_concepts) && preview.registry_concepts.length > 0)
+  );
   if (preview && (live || !ws.symbol || ws.symbol === target.symbol())) {
     target.attachIndicator(preview);
     syncIndicatorChip();
@@ -18285,9 +18622,9 @@ window.HRZApp = {
   setLayerVisible: (index, visible) => { if (activePane) activePane.setScriptVisible(index, visible); },
   removeLayer: (index) => { if (activePane) activePane.removeScriptAt(index); },
 
-  /// Attach a saved indicator to the active chart without opening Studio.
+  /// Attach a saved indicator to the active chart from AI chat.
   /// The workspace is read rather than taken from the cached list, because
-  /// that list is only loaded when Studio opens and the bar can be used on a
+  /// that list is only loaded when the workspace tools open and the bar can be used on a
   /// page where it never has been. The attach itself is the same helper
   /// `selectWorkspace` uses, so both paths attach identically.
   async attachWorkspace(id) {

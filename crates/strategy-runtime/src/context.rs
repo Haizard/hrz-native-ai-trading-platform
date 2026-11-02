@@ -120,10 +120,31 @@ pub struct MarketContext {
     pub decision_timeframe: String,
     /// One view per declared timeframe, keyed by declared name.
     pub timeframes: BTreeMap<String, TimeframeView>,
+    /// Registry detector readings, keyed by the strategy's local concept name.
+    /// Missing readings mean the detector has not emitted an event yet.
+    #[serde(default)]
+    pub registry_concepts: BTreeMap<String, RegistryConceptValue>,
     /// The open position, if there is one.
     pub position: Option<PositionView>,
     /// Account equity, used for position sizing.
     pub equity: f64,
+}
+
+/// The current interpreted state of one registry concept.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct RegistryConceptValue {
+    /// At least one detector event exists in the visible history.
+    pub exists: bool,
+    /// An event was emitted on the current candle.
+    pub fresh: bool,
+    /// Newest event's upper level, when available.
+    pub top: Option<f64>,
+    /// Newest event's lower level, when available.
+    pub bottom: Option<f64>,
+    /// Latest numeric indicator reading, when this is a series concept.
+    pub value: Option<f64>,
+    /// Newest event's measured mitigation, when the detector reports it.
+    pub mitigated: Option<f64>,
 }
 
 impl MarketContext {
@@ -256,14 +277,10 @@ impl MarketContext {
             Field::SessionDelta => state
                 .session_delta
                 .map_or(FieldValue::Absent, FieldValue::Num),
-            Field::RsiDivergenceDetected => {
-                FieldValue::Bool(state.rsi_divergence.is_some())
-            }
+            Field::RsiDivergenceDetected => FieldValue::Bool(state.rsi_divergence.is_some()),
             Field::RsiDivergenceKindField => state
                 .rsi_divergence
-                .map_or(FieldValue::Absent, |d| {
-                    FieldValue::Str(d.direction.name())
-                }),
+                .map_or(FieldValue::Absent, |d| FieldValue::Str(d.direction.name())),
             Field::VolumeScore => state
                 .volume_score
                 .map_or(FieldValue::Absent, FieldValue::Num),
@@ -600,6 +617,7 @@ mod tests {
             now: 240_000_000_000,
             decision_timeframe: "entry".into(),
             timeframes,
+            registry_concepts: BTreeMap::new(),
             position,
             equity: 10_000.0,
         }

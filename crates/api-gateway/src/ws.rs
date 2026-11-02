@@ -678,6 +678,9 @@ struct AgentWsRequest {
     /// that silently does nothing in the app the user is actually using.
     #[serde(default)]
     chart: Option<ai_agent::ChartContext>,
+    /// Trader-edited registry states from the active chart.
+    #[serde(default)]
+    concept_states: Vec<strategy_dsl::schema::RegistryConcept>,
 }
 
 /// Hands the agent's steps to a channel, so they can be written to the socket
@@ -752,6 +755,10 @@ where
     metrics.count(AGENT_REQUESTS, "Agent runs started", &Labels::none());
 
     let mut ask = ai_agent::AskRequest::new(&request.symbol, &request.question);
+    if let Err(reason) = crate::agent_routes::validate_registry_concept_states(&request.concept_states) {
+        return Some(Frame::Notice { message: format!("concept states could not be used: {reason}") });
+    }
+    ask = ask.with_concept_states(request.concept_states.clone());
     if let Some(skill) = request.skill_id {
         ask = ask.with_skill(skill);
     }
@@ -874,6 +881,13 @@ where
     // where `backtest_strategy` answers "no runner attached".
     let backtests: std::sync::Arc<dyn ai_agent::tools::BacktestRunner> = state.research.clone();
     ask = ask.with_backtests(backtests);
+
+    // The socket is the transport used by the actual chat UI, so expose the
+    // same concept registry and cross-family composition tools as HTTP ask.
+    ask = ask.with_concept_catalog(std::sync::Arc::new(crate::research::RegistryConceptCatalog));
+    ask = ask.with_compositions(std::sync::Arc::new(crate::research::GatewayCompositionRunner {
+        windows: state.windows.clone(),
+    }));
 
     // Web search, exactly as `POST /agent/ask` attaches it: the socket is the
     // path the chat UI actually uses, so it is where an unconfigured

@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 /// returning a label for every tick in a long history.
 pub const MAX_PRIMITIVES: usize = 500;
 
+/// Maximum registry-backed concept layers in one composed indicator.
+pub const MAX_REGISTRY_CONCEPTS: usize = 32;
+
 /// Pivot confirmation half-width for trendline fitting.
 ///
 /// 1 keeps the line honest to recent swings; higher values smooth noise but
@@ -41,6 +44,11 @@ pub struct IndicatorOutput {
     /// are just the preview the generator saw.
     #[serde(default)]
     pub concepts: Vec<analytics_core::concepts::Concept>,
+    /// Trader-owned registry concepts bundled into a composed indicator.
+    /// They retain canonical identity and detector version while carrying a
+    /// local alias and validated parameter set.
+    #[serde(default)]
+    pub registry_concepts: Vec<RegistryIndicatorConcept>,
     /// Named evidence nodes. A connector may only reference nodes in this list.
     #[serde(default)]
     pub evidence: Vec<Evidence>,
@@ -61,6 +69,26 @@ pub struct IndicatorOutput {
     /// geometry.
     #[serde(default)]
     pub trendlines: Vec<IndicatorTrendline>,
+}
+
+/// One registry-backed concept state captured by an indicator revision.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryIndicatorConcept {
+    /// Stable id for this state within the indicator artifact.
+    pub state_id: String,
+    /// Canonical registry identity; never replaced by the trader's alias.
+    pub concept_id: String,
+    /// Exact detector version resolved when the revision was built.
+    pub concept_version: String,
+    /// Trader-facing terminology used in the chart legend.
+    pub alias: String,
+    /// Trader's optional explanation of the state.
+    #[serde(default)]
+    pub description: String,
+    /// Effective parameter values captured by this revision.
+    #[serde(default)]
+    pub parameters: std::collections::BTreeMap<String, f64>,
 }
 
 /// One fitted trendline, in market coordinates.
@@ -92,6 +120,56 @@ impl IndicatorOutput {
     /// Returns a human-readable refusal that can be shown in the workspace chat.
     pub fn validate(&self) -> Result<(), String> {
         non_empty("revision_id", &self.revision_id)?;
+        if self.registry_concepts.len() > MAX_REGISTRY_CONCEPTS {
+            return Err(format!(
+                "indicator has {} registry concepts; the limit is {MAX_REGISTRY_CONCEPTS}",
+                self.registry_concepts.len()
+            ));
+        }
+        let mut state_ids = BTreeSet::new();
+        let mut concept_ids = BTreeSet::new();
+        for (index, concept) in self.registry_concepts.iter().enumerate() {
+            non_empty(
+                &format!("registry_concepts[{index}].state_id"),
+                &concept.state_id,
+            )?;
+            non_empty(
+                &format!("registry_concepts[{index}].concept_id"),
+                &concept.concept_id,
+            )?;
+            non_empty(
+                &format!("registry_concepts[{index}].concept_version"),
+                &concept.concept_version,
+            )?;
+            if concept.alias.trim().is_empty() || concept.alias.len() > 80 {
+                return Err(format!(
+                    "registry_concepts[{index}].alias must be 1..=80 characters"
+                ));
+            }
+            if concept.description.len() > 240 {
+                return Err(format!(
+                    "registry_concepts[{index}].description exceeds 240 characters"
+                ));
+            }
+            if !state_ids.insert(concept.state_id.as_str()) {
+                return Err(format!(
+                    "registry concept state id `{}` is duplicated",
+                    concept.state_id
+                ));
+            }
+            if !concept_ids.insert(concept.concept_id.as_str()) {
+                return Err(format!(
+                    "registry concept `{}` appears more than once",
+                    concept.concept_id
+                ));
+            }
+            for (name, value) in &concept.parameters {
+                finite(
+                    &format!("registry_concepts[{index}].parameters.{name}"),
+                    *value,
+                )?;
+            }
+        }
         let total = self.evidence.len()
             + self.zones.len()
             + self.markers.len()
@@ -123,10 +201,7 @@ impl IndicatorOutput {
                 .windows(2)
                 .any(|pair| pair[1].time < pair[0].time)
             {
-                return Err(format!(
-                    "trendline `{}` is not in time order",
-                    trendline.id
-                ));
+                return Err(format!("trendline `{}` is not in time order", trendline.id));
             }
         }
 
@@ -313,11 +388,7 @@ impl IndicatorOutput {
         // several levels. Different concepts stay separate even when they
         // overlap -- a bull FVG and a demand band describing the same prices are
         // two statements, not one.
-        bands.sort_by(|a, b| {
-            a.0.name
-                .cmp(&b.0.name)
-                .then(a.0.from.cmp(&b.0.from))
-        });
+        bands.sort_by(|a, b| a.0.name.cmp(&b.0.name).then(a.0.from.cmp(&b.0.from)));
         let mut merged: Vec<analytics_core::regions::Region> = Vec::with_capacity(bands.len());
         for (region, _) in bands {
             match merged.last_mut() {
@@ -455,8 +526,11 @@ impl IndicatorOutput {
                 continue;
             }
             if let Some(node) = self.evidence.iter_mut().find(|node| node.id == id) {
-                node.explanation =
-                    format!("{} · {} edge pinned by you", node.explanation, constraint.edge.name());
+                node.explanation = format!(
+                    "{} · {} edge pinned by you",
+                    node.explanation,
+                    constraint.edge.name()
+                );
             }
             report.matched.insert(id, constraint.edge);
         }
@@ -877,6 +951,7 @@ mod tests {
             revision_id: "revision-7".into(),
             name: None,
             concepts: Vec::new(),
+            registry_concepts: Vec::new(),
             trendlines: Vec::new(),
             evidence: vec![Evidence {
                 id: "sweep".into(),
@@ -1267,13 +1342,20 @@ mod tests {
         assert!(report.dropped.is_empty(), "{:?}", report.dropped);
         assert_eq!(report.matched.get(&zone.id), Some(&ZoneEdge::Bottom));
         assert_eq!(output.zones[0].price_low, zone.price_low + 0.5);
-        assert_eq!(output.zones[0].price_high, zone.price_high, "the other edge is untouched");
+        assert_eq!(
+            output.zones[0].price_high, zone.price_high,
+            "the other edge is untouched"
+        );
         assert!(
-            output.evidence[0].explanation.contains("bottom edge pinned by you"),
+            output.evidence[0]
+                .explanation
+                .contains("bottom edge pinned by you"),
             "{}",
             output.evidence[0].explanation
         );
-        output.validate().expect("a pinned zone is still valid output");
+        output
+            .validate()
+            .expect("a pinned zone is still valid output");
     }
 
     #[test]

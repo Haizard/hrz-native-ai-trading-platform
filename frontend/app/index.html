@@ -58,9 +58,6 @@
     <button type="button" class="topNav__btn" data-dest="charts" aria-label="Charts" title="Charts" disabled>
       <span data-icon="chart" data-icon-size="18"></span>
     </button>
-    <button type="button" class="topNav__btn" data-dest="studio" aria-label="Studio" title="Studio" disabled>
-      <span data-icon="studio" data-icon-size="18"></span>
-    </button>
   </nav>
 
   <!--
@@ -170,8 +167,8 @@
         </article>
         <article class="marketCard">
           <span class="marketIcon">🧩</span>
-          <h3>Indicator studio</h3>
-          <p>Describe an indicator in plain words. The AI builds it, plots it and refines it by chat.</p>
+          <h3>Indicator builder</h3>
+          <p>Ask the AI chat to build, plot and refine an indicator from plain language.</p>
         </article>
         <article class="marketCard">
           <span class="marketIcon">🏦</span>
@@ -757,8 +754,7 @@
            aria-label="Resize the dock" tabindex="0"></div>
       <div class="dockTabs">
         <div class="hrz-tabs" id="dockTablist" role="tablist" aria-label="Workbench">
-          <button role="tab" type="button" class="hrz-tab" data-dock="studio" aria-selected="true">Studio</button>
-          <button role="tab" type="button" class="hrz-tab" data-dock="alerts" aria-selected="false">Alerts</button>
+          <button role="tab" type="button" class="hrz-tab" data-dock="alerts" aria-selected="true">Alerts</button>
           <button role="tab" type="button" class="hrz-tab" data-dock="orders" aria-selected="false">Orders</button>
           <button role="tab" type="button" class="hrz-tab" data-dock="console" aria-selected="false">Console</button>
         </div>
@@ -846,7 +842,7 @@
         <h2 class="inspectorPanel__title">Indicator</h2>
         <p class="empty" id="indicatorProjectionEmpty">
           No indicator is on this chart. Attach one from the instrument bar's
-          Attach menu, or build one in Studio.
+          Attach menu, or ask the AI chat to build one.
         </p>
         <div id="indicatorProjection" hidden>
           <p class="indicatorName" id="indicatorName">—</p>
@@ -859,7 +855,7 @@
           <p class="inspectorNote" id="indicatorNote"></p>
           <div class="inspectorActions">
             <button type="button" id="indicatorDetach" class="hrz-btn hrz-btn--secondary hrz-btn--sm">Detach</button>
-            <button type="button" id="indicatorStudio" class="hrz-btn hrz-btn--ghost hrz-btn--sm">Open in Studio</button>
+            <button type="button" id="indicatorStudio" class="hrz-btn hrz-btn--ghost hrz-btn--sm">Open AI chat tools</button>
             <button type="button" id="indicatorAlerts" class="hrz-btn hrz-btn--ghost hrz-btn--sm">Alerts</button>
           </div>
         </div>
@@ -890,6 +886,10 @@
     </div>
   </div>
   <div class="chat-stream" id="chatStream"></div>
+  <details class="chat-workspace-tools" id="chatIndicatorWorkspace">
+    <summary>Indicator workspaces · revisions, code, alerts and publishing</summary>
+    <div id="chatIndicatorWorkbench"></div>
+  </details>
   <div class="chat-compose">
     <div id="chatChips" class="chat-chips" hidden></div>
     <textarea id="chatInput" rows="2" placeholder="Ask anything — analyze this chart, build an indicator, scan the market, create a strategy…"></textarea>
@@ -1213,7 +1213,7 @@
     </div>
 
     <!--
-      AI indicator studio. The chat is the product here, so it leads: a list of
+      Indicator workspaces embedded in AI chat. The chat is the product here, so it leads: a list of
       conversations, then one open conversation with the composer pinned under
       the stream. Revisions and alerts collapse out of the way — they are the
       history of what the chat produced, not the thing you came to do.
@@ -1524,16 +1524,6 @@
   <button type="button" id="asideShow" hidden title="Show the side panel" aria-label="Show the side panel"><span data-icon="chevron-left"></span></button>
     </section>
 
-    <section class="destination" id="dest-studio" aria-labelledby="dest-studio-title" hidden>
-      <h1 class="destHeading" id="dest-studio-title" tabindex="-1">Studio</h1>
-      <div class="hrz-tabs destTabs" id="studioTabs" role="tablist" aria-label="Studio tools">
-        <button role="tab" type="button" class="hrz-tab" data-studio="indicator" aria-selected="true">Builder</button>
-        <button role="tab" type="button" class="hrz-tab" data-studio="scan" aria-selected="false">Scanner</button>
-        <button role="tab" type="button" class="hrz-tab" data-studio="strategy" aria-selected="false">Strategies</button>
-        <button role="tab" type="button" class="hrz-tab" data-studio="skills" aria-selected="false">Skills</button>
-      </div>
-      <div class="destHost" id="studioHost"></div>
-    </section>
   </main>
 </div>
 
@@ -1640,6 +1630,13 @@
             <h3 class="conceptsHead__title" id="conceptHeadTitle">The whole library</h3>
             <p class="conceptsHead__note" id="conceptHeadNote"></p>
           </div>
+          <div class="conceptsBuild">
+            <input id="conceptCompositionName" class="hrz-input" type="text" maxlength="80"
+                   placeholder="Name your combined indicator" aria-label="Combined indicator name">
+            <button type="button" class="hrz-btn hrz-btn--primary hrz-btn--sm" id="conceptBuildIndicator" hidden>
+              Build indicator
+            </button>
+          </div>
           <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm" id="conceptClearGroup" hidden>
             Clear this group
           </button>
@@ -1674,10 +1671,6 @@
   <button type="button" class="phoneNav__btn" data-dest="charts" aria-label="Charts" disabled>
     <span data-icon="chart" data-icon-size="20"></span>
     <span class="phoneNav__label">Charts</span>
-  </button>
-  <button type="button" class="phoneNav__btn" data-dest="studio" aria-label="Studio" disabled>
-    <span data-icon="studio" data-icon-size="20"></span>
-    <span class="phoneNav__label">Studio</span>
   </button>
 </nav>
 
@@ -1832,7 +1825,7 @@
   <div class="barPopList" id="attachPopList"></div>
   <p class="barPopNote" id="attachPopNote" role="status"></p>
   <div class="barPopRow barPopRow--end">
-    <button id="attachStudio" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">Open Studio</button>
+    <button id="attachStudio" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">Open AI chat tools</button>
     <button id="attachCommunity" class="hrz-btn hrz-btn--ghost hrz-btn--sm" type="button">Community library</button>
   </div>
 </div>

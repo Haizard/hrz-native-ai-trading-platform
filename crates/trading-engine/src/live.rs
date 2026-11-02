@@ -41,6 +41,7 @@ use crate::error::ExecutionError;
 use crate::execution::{
     client_order_id, ExchangeAdapter, OrderGateway, OrderRequest, OrderSide, OrderStatus, OrderType,
 };
+use crate::populate_registry_concepts;
 use crate::risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict};
 
 /// What the live bot needs that the document does not say.
@@ -219,6 +220,7 @@ pub struct LiveBot<A: ExchangeAdapter> {
     /// seam the paper bot uses, so the two cannot drift about *where* a decision
     /// comes from any more than they can about what it says.
     strategy: Decisions,
+    registry_concepts: Vec<strategy_dsl::schema::RegistryConcept>,
     risk: RiskEngine,
     rolling: RollingConfig,
     equity: f64,
@@ -263,7 +265,9 @@ impl<A: ExchangeAdapter> LiveBot<A> {
         config: LiveConfig,
     ) -> Self {
         let shape = Shape::of(document.document());
-        Self::from_shape(strategy, adapter, shape, config)
+        let mut bot = Self::from_shape(strategy, adapter, shape, config);
+        bot.registry_concepts = document.document().registry_concepts.clone();
+        bot
     }
 
     /// Which path this bot decides on: native or sandboxed.
@@ -296,6 +300,7 @@ impl<A: ExchangeAdapter> LiveBot<A> {
             decision_resolution: shape.decision_resolution,
             ladder: shape.ladder,
             strategy,
+            registry_concepts: Vec::new(),
             risk: RiskEngine::new(config.limits),
             rolling: config.rolling,
             equity: config.equity,
@@ -512,7 +517,11 @@ impl<A: ExchangeAdapter> LiveBot<A> {
             self.equity,
         );
 
-        let outcome = match context.and_then(|context| self.strategy.on_candle(&context)) {
+        let signal = context.and_then(|mut context| {
+            populate_registry_concepts(&mut context, &self.registry_concepts).ok()?;
+            self.strategy.on_candle(&context)
+        });
+        let outcome = match signal {
             Some(Signal::Enter(enter)) => self.enter(enter, now, candle).await?,
             Some(Signal::Exit(exit)) => self.exit(exit, now, candle).await?,
             None => LiveOutcome::NoSignal,

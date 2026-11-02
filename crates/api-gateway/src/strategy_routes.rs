@@ -275,7 +275,55 @@ fn validate_source(source: &str) -> Result<strategy_dsl::ValidatedStrategy, ApiE
             format!("a strategy document may be at most {MAX_SOURCE_BYTES} bytes"),
         ));
     }
-    strategy_dsl::parse_and_validate(source).map_err(ApiError::from)
+    let validated = strategy_dsl::parse_and_validate(source).map_err(ApiError::from)?;
+    validate_registry_concepts(validated.document())?;
+    Ok(validated)
+}
+
+/// Verify that a document's registry declarations pin detectors and parameter
+/// sets this server can actually evaluate.
+pub(crate) fn validate_registry_concepts(
+    document: &strategy_dsl::schema::StrategyDocument,
+) -> Result<(), ApiError> {
+    for declaration in &document.registry_concepts {
+        market_data::concepts::concept_version(
+            &declaration.concept_id,
+            &declaration.concept_version,
+        )
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "CONCEPT_VERSION_UNAVAILABLE",
+                format!(
+                    "{} version {} is not present in the current or archived concept registry",
+                    declaration.concept_id, declaration.concept_version
+                ),
+            )
+        })?;
+        let mut parameters = market_data::composer::ParameterMap::new();
+        parameters.insert(
+            declaration.concept_id.clone(),
+            declaration
+                .parameters
+                .iter()
+                .map(|(key, value)| (key.clone(), *value))
+                .collect(),
+        );
+        let versions = std::collections::HashMap::from([(
+            declaration.concept_id.clone(),
+            declaration.concept_version.clone(),
+        )]);
+        if let Some(issue) =
+            market_data::composer::validate_parameters_for_versions(&parameters, &versions)
+                .into_iter()
+                .next()
+        {
+            return Err(ApiError::bad_request(
+                "PARAMS_INVALID",
+                format!("{}: {}", issue.path, issue.message),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `POST /strategies/{id}/sweep` body.

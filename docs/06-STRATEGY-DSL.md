@@ -36,6 +36,15 @@ concepts:                    # optional — measurements this document defines i
         op: below
         right: {low: 2}
 
+registry_concepts:            # optional — version-pinned registry detector states
+  - name: london_break        # condition name; can use your trading terminology
+    state_id: "state-london-break"
+    alias: "London break"
+    concept_id: smc.bos
+    concept_version: "1.0.0"
+    description: "My London-session breakout definition"
+    parameters: {swing_lookback: 5}
+
 entry:
   all_of:
     - timeframe: trend
@@ -105,7 +114,8 @@ band is called on the chart, and it is the colour key the shell looks up — so 
 key-like label (`fvg`, `ob`) is the useful choice, and prose with spaces in it will miss
 every key and fall back to the side colour.
 
-A condition reads one of five properties of a concept the document declares:
+A condition reads properties of a concept declared in either `concepts` or
+`registry_concepts`:
 
 | reference | type | what it says |
 |---|---|---|
@@ -114,6 +124,15 @@ A condition reads one of five properties of a concept the document declares:
 | `concepts.<name>.mitigated` | number | how much of it has been, `0.0..=1.0` |
 | `concepts.<name>.top` | number | the newest band's dearer edge |
 | `concepts.<name>.bottom` | number | the newest band's cheaper edge |
+| `concepts.<name>.value` | number | the latest value of a registry indicator series |
+
+Registry declarations pin `concept_id`, `concept_version`, and effective
+`parameters` in the strategy document. Their `name` is the local condition
+reference, while `alias` preserves the trader's preferred terminology for
+display. The backtester, paper bot, live bot, and sandbox receive the same
+closed-candle readings. Event concepts expose `exists`, `fresh`, and available
+levels; indicator-series concepts expose `.value` (for example,
+`concepts.rsi.value > 60`). Inline bands do not have a numeric `.value`.
 
 ```yaml
 entry:

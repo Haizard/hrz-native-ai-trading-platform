@@ -431,6 +431,173 @@ pub async fn create_revision(
     Ok((StatusCode::CREATED, Json(row.into())))
 }
 
+/// Body of `POST /indicator-workspaces/{id}/concept-compositions`.
+#[derive(Debug, Deserialize)]
+pub struct CreateConceptCompositionBody {
+    /// The indicator's trader-facing name.
+    pub name: String,
+    /// A short explanation shown in revision history.
+    pub summary: String,
+    /// The adjusted registry concept states to combine as one chart layer.
+    pub states: Vec<chart_engine::RegistryIndicatorConcept>,
+}
+
+/// Persist a composed set of trader-owned registry concept states as an
+/// immutable, live indicator revision.
+pub async fn create_concept_composition(
+    State(state): State<AppState>,
+    user: UserContext,
+    Path(id): Path<Uuid>,
+    ApiJson(body): ApiJson<CreateConceptCompositionBody>,
+) -> Result<(StatusCode, Json<RevisionResponse>), ApiError> {
+    let name = body.name.trim();
+    let summary = body.summary.trim();
+    if name.is_empty() || name.len() > 80 || summary.is_empty() || summary.len() > 280 {
+        return Err(ApiError::bad_request(
+            "CONCEPT_COMPOSITION_INVALID",
+            "name must be 1..=80 characters and summary 1..=280 characters",
+        ));
+    }
+    if body.states.is_empty() || body.states.len() > chart_engine::MAX_REGISTRY_CONCEPTS {
+        return Err(ApiError::bad_request(
+            "CONCEPT_COMPOSITION_INVALID",
+            format!(
+                "choose between 1 and {} concept states",
+                chart_engine::MAX_REGISTRY_CONCEPTS
+            ),
+        ));
+    }
+
+    let mut seen_ids = std::collections::BTreeSet::new();
+    let mut seen_concepts = std::collections::BTreeSet::new();
+    for (index, state) in body.states.iter().enumerate() {
+        if state.state_id.trim().is_empty() || state.state_id.len() > 80 {
+            return Err(ApiError::bad_request(
+                "CONCEPT_COMPOSITION_INVALID",
+                format!("states[{index}].state_id must be 1..=80 characters"),
+            ));
+        }
+        if !seen_ids.insert(state.state_id.as_str()) {
+            return Err(ApiError::bad_request(
+                "CONCEPT_COMPOSITION_INVALID",
+                format!("state id `{}` is duplicated", state.state_id),
+            ));
+        }
+        if !seen_concepts.insert(state.concept_id.as_str()) {
+            return Err(ApiError::bad_request(
+                "CONCEPT_COMPOSITION_INVALID",
+                format!(
+                    "concept `{}` can appear only once in this composition",
+                    state.concept_id
+                ),
+            ));
+        }
+        market_data::concepts::concept_version(&state.concept_id, &state.concept_version)
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "CONCEPT_VERSION_UNAVAILABLE",
+                    format!(
+                        "{} version {} is not present in the current or archived concept registry",
+                        state.concept_id, state.concept_version
+                    ),
+                )
+            })?;
+        if state.alias.trim().is_empty() || state.alias.len() > 80 || state.description.len() > 240
+        {
+            return Err(ApiError::bad_request(
+                "CONCEPT_COMPOSITION_INVALID",
+                format!("states[{index}] alias must be 1..=80 characters and description at most 240 characters"),
+            ));
+        }
+        let mut parameters = market_data::composer::ParameterMap::new();
+        parameters.insert(
+            state.concept_id.clone(),
+            state.parameters.clone().into_iter().collect(),
+        );
+        let versions = std::collections::HashMap::from([(
+            state.concept_id.clone(),
+            state.concept_version.clone(),
+        )]);
+        if let Some(error) =
+            market_data::composer::validate_parameters_for_versions(&parameters, &versions)
+                .into_iter()
+                .next()
+        {
+            return Err(ApiError::bad_request(
+                "PARAMS_INVALID",
+                format!("{}: {}", error.path, error.message),
+            ));
+        }
+    }
+    let preview = chart_engine::IndicatorOutput {
+        revision_id: format!("registry-concept-composition:{}", Uuid::new_v4()),
+        name: Some(name.to_string()),
+        registry_concepts: body.states,
+        ..chart_engine::IndicatorOutput::default()
+    };
+    preview
+        .validate()
+        .map_err(|reason| ApiError::bad_request("CONCEPT_COMPOSITION_INVALID", reason))?;
+
+    let database = database(&state)?;
+    let workspace = db::get_indicator_workspace(database.pool(), user.user_id, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    let available = market_data::concepts::available_for(&workspace.symbol);
+    if let Some(missing) = preview
+        .registry_concepts
+        .iter()
+        .find(|state| !available.iter().any(|spec| spec.id == state.concept_id))
+    {
+        return Err(ApiError::bad_request(
+            "CONCEPT_UNAVAILABLE",
+            format!(
+                "{} requires market inputs unavailable for {}",
+                missing.concept_id, workspace.symbol
+            ),
+        ));
+    }
+    let yaml_name = serde_json::to_string(name)
+        .map_err(|error| ApiError::internal(format!("could not encode indicator name: {error}")))?;
+    let yaml_market = serde_json::to_string(&workspace.symbol).map_err(|error| {
+        ApiError::internal(format!("could not encode indicator market: {error}"))
+    })?;
+    let yaml_timeframe = serde_json::to_string(&workspace.timeframe).map_err(|error| {
+        ApiError::internal(format!("could not encode indicator timeframe: {error}"))
+    })?;
+    let source = format!(
+        "name: {yaml_name}\nversion: '1'\nkind: indicator\nmarket: {yaml_market}\ntimeframes:\n  entry: {yaml_timeframe}\n",
+    );
+    strategy_dsl::parse_and_validate(&source)
+        .map_err(|error| ApiError::bad_request("CONCEPT_COMPOSITION_INVALID", error.to_string()))?;
+    let preview_json = serde_json::to_value(&preview).map_err(|error| {
+        ApiError::internal(format!(
+            "could not store concept indicator preview: {error}"
+        ))
+    })?;
+    let validation = serde_json::json!({
+        "valid": true,
+        "engine": "registry-concepts-v1",
+        "representation": "registry-concepts",
+        "state_count": preview.registry_concepts.len(),
+    });
+    let revision = db::create_indicator_revision(
+        database.pool(),
+        user.user_id,
+        id,
+        workspace.active_revision_id,
+        &source,
+        summary,
+        "Composed trader-owned concept states",
+        &validation,
+        &preview_json,
+        "validated",
+    )
+    .await?
+    .ok_or_else(|| ApiError::not_found("indicator workspace not found"))?;
+    Ok((StatusCode::CREATED, Json(revision.into())))
+}
+
 /// `GET /indicator-workspaces/{id}/messages`.
 pub async fn messages(
     State(state): State<AppState>,
@@ -699,6 +866,7 @@ async fn run_workspace_turn(
                     revision_id: revision_tag.clone(),
                     name: Some(title.clone()),
                     concepts: Vec::new(),
+                    registry_concepts: Vec::new(),
                     evidence: Vec::new(),
                     zones: Vec::new(),
                     markers: Vec::new(),
@@ -1256,19 +1424,47 @@ pub async fn promote_revision(
         .map(|c| serde_json::to_string(c).unwrap_or_default())
         .collect::<Vec<_>>()
         .join("\n");
+    let registry_states = revision
+        .preview
+        .get("registry_concepts")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let registry_yaml = registry_states
+        .iter()
+        .enumerate()
+        .map(|(index, state)| {
+            let alias = state
+                .get("alias")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("concept");
+            let name = strategy_concept_name(alias, index);
+            let mut declaration = state.clone();
+            if let Some(object) = declaration.as_object_mut() {
+                object.insert("name".into(), serde_json::Value::String(name));
+                object.insert("alias".into(), serde_json::Value::String(alias.to_string()));
+            }
+            serde_json::to_string(&declaration).unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let instruction = body.entry_instruction.as_deref().unwrap_or(
         "Choose the conventional entry: act when a fresh band appears and confirm \
          with reclaim or rejection; stop on the far side of the band; take profit \
          at two times the risk.",
     );
     let description = format!(
-        "Promote this generated indicator into a `kind: strategy` document. The \
-         indicator's concepts are BELOW, verbatim -- carry every one into the \
-         strategy's `concepts:` block unchanged, and write entry, risk and \
-         invalidation conditions that reference them (concepts.<name>.fresh, \
-         .mitigated, .top, .bottom). Entry instruction: {instruction}. Workspace: \
-         {}. Symbol: {}. timeframes.entry MUST be exactly `{}`. The concepts, in \
-         their JSON form, one per line: {concepts_yaml}",
+        "Promote this generated indicator into a `kind: strategy` document. Carry \
+         every inline definition below into `concepts:` unchanged. Carry every \
+         registry declaration below into `registry_concepts:` unchanged, including \
+         its canonical id, version, alias, description, and parameters. Refer to \
+         registry declarations by their local `name` in conditions using \
+         concepts.<name>.fresh/.exists/.value/.top/.bottom/.mitigated. Registry \
+         `.value` reads the latest numeric indicator series value. Write entry, \
+         risk and invalidation rules. Entry instruction: {instruction}. Workspace: \
+         {}. Symbol: {}. timeframes.entry MUST be exactly `{}`. Inline concepts, \
+         JSON form one per line: {concepts_yaml}. Registry declarations, JSON \
+         form one per line: {registry_yaml}",
         workspace.name, workspace.symbol, workspace.timeframe
     );
 
@@ -1290,6 +1486,48 @@ pub async fn promote_revision(
         .map_err(ApiError::from)?;
     let attempts = generated.attempts;
     let document = generated.document().clone();
+    crate::strategy_routes::validate_registry_concepts(&document)?;
+    for (index, expected) in registry_states.iter().enumerate() {
+        let alias = expected
+            .get("alias")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("concept");
+        let expected_name = strategy_concept_name(alias, index);
+        let preserved = document
+            .registry_concepts
+            .iter()
+            .find(|candidate| candidate.name == expected_name)
+            .is_some_and(|candidate| {
+                candidate.state_id.as_deref()
+                    == expected.get("state_id").and_then(serde_json::Value::as_str)
+                    && Some(candidate.concept_id.as_str())
+                        == expected
+                            .get("concept_id")
+                            .and_then(serde_json::Value::as_str)
+                    && Some(candidate.concept_version.as_str())
+                        == expected
+                            .get("concept_version")
+                            .and_then(serde_json::Value::as_str)
+                    && Some(candidate.alias.as_str())
+                        == expected.get("alias").and_then(serde_json::Value::as_str)
+                    && Some(candidate.description.as_str())
+                        == expected
+                            .get("description")
+                            .and_then(serde_json::Value::as_str)
+                    && serde_json::to_value(&candidate.parameters).ok().as_ref()
+                        == expected.get("parameters")
+            });
+        if !preserved {
+            return Err(ApiError::bad_request(
+                "PROMOTION_CONCEPT_STATE_CHANGED",
+                format!(
+                    "strategy generation did not preserve registry concept state {} ({}) exactly",
+                    index + 1,
+                    alias
+                ),
+            ));
+        }
+    }
     let yaml = generated.yaml.clone();
     let validated = generated.into_validated();
     // A promoted document WILL be traded, unlike a preview: the sandbox check
@@ -1324,6 +1562,31 @@ pub async fn promote_revision(
             "attempts": attempts,
         })),
     ))
+}
+
+fn strategy_concept_name(alias: &str, index: usize) -> String {
+    let mut name = String::new();
+    let mut underscore = false;
+    for character in alias.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            name.push(character);
+            underscore = false;
+        } else if !underscore && !name.is_empty() {
+            name.push('_');
+            underscore = true;
+        }
+    }
+    while name.ends_with('_') {
+        name.pop();
+    }
+    if name.is_empty() {
+        name.push_str("concept");
+    }
+    if name.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        name.insert_str(0, "concept_");
+    }
+    name.push_str(&format!("_{index}"));
+    name
 }
 
 /// Body of the draft approval endpoint.
@@ -1521,6 +1784,7 @@ pub async fn submit_script(
                     revision_id: revision_tag.clone(),
                     name: Some(title.clone()),
                     concepts: Vec::new(),
+                    registry_concepts: Vec::new(),
                     evidence: Vec::new(),
                     zones: Vec::new(),
                     markers: Vec::new(),

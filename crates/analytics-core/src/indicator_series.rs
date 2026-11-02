@@ -131,23 +131,72 @@ const PRED_VIOLET: u32 = 0xa78bfa;
 
 /// The pane spec for a concept, or `None` when the concept has no pane.
 pub fn indicator_series(concept: &str, candles: &[Candle]) -> Option<IndicatorSeries> {
+    indicator_series_with_params(concept, candles, &std::collections::HashMap::new())
+}
+
+/// The pane spec for a concept under the supplied, already-validated trader
+/// parameters. Missing values use the same defaults as the original series.
+pub fn indicator_series_with_params(
+    concept: &str,
+    candles: &[Candle],
+    parameters: &std::collections::HashMap<String, f64>,
+) -> Option<IndicatorSeries> {
+    indicator_series_for_version(concept, "1.0.0", candles, parameters)
+}
+
+/// Evaluate a pane under an exact implementation version. Implementations
+/// remain in this dispatcher after a registry version advances, so archived
+/// strategies do not silently acquire new indicator semantics.
+pub fn indicator_series_for_version(
+    concept: &str,
+    version: &str,
+    candles: &[Candle],
+    parameters: &std::collections::HashMap<String, f64>,
+) -> Option<IndicatorSeries> {
+    match version {
+        "1.0.0" => indicator_series_v1(concept, candles, parameters),
+        _ => None,
+    }
+}
+
+/// Whether this binary retains the indicator-series implementation for a
+/// registry version.
+#[must_use]
+pub fn supports_indicator_series_version(version: &str) -> bool {
+    matches!(version, "1.0.0")
+}
+
+fn indicator_series_v1(
+    concept: &str,
+    candles: &[Candle],
+    parameters: &std::collections::HashMap<String, f64>,
+) -> Option<IndicatorSeries> {
+    let period = |name: &str, default: usize| -> usize {
+        parameters.get(name).copied().unwrap_or(default as f64) as usize
+    };
+    let number =
+        |name: &str, default: f64| -> f64 { parameters.get(name).copied().unwrap_or(default) };
     match concept {
-        "indicators.rsi" => rsi_pane(candles, 14, false),
-        "indicators.rsi_divergence" => rsi_pane(candles, 14, true),
+        "indicators.rsi" => rsi_pane(candles, period("period", 14), false),
+        "indicators.rsi_divergence" => rsi_pane(candles, period("period", 14), true),
         "indicators.rsi_pca" => rsi_pca_pane(candles),
         "indicators.rsi_family" => rsi_family_pane(candles),
         "indicators.macd_family" => macd_family_pane(candles),
         "indicators.atr_family" => atr_family_pane(candles),
         "indicators.ema_family" => ema_family_overlay(candles),
-        "indicators.stochastic" => stochastic_pane(candles),
-        "indicators.cci" => cci_pane(candles),
-        "indicators.williams_r" => williams_pane(candles),
-        "indicators.roc" => roc_pane(candles),
+        "indicators.stochastic" => {
+            stochastic_pane(candles, period("period", 14), period("smooth", 3))
+        }
+        "indicators.cci" => cci_pane(candles, period("period", 20)),
+        "indicators.williams_r" => williams_pane(candles, period("period", 14)),
+        "indicators.roc" => roc_pane(candles, period("period", 12)),
         "indicators.obv" => obv_pane(candles),
-        "indicators.adx" => adx_pane(candles),
-        "indicators.bollinger_percent" => percent_b_pane(candles),
+        "indicators.adx" => adx_pane(candles, period("period", 14)),
+        "indicators.bollinger_percent" => {
+            percent_b_pane(candles, period("period", 20), number("deviations", 2.0))
+        }
         "indicators.keltner" => keltner_overlay(candles),
-        "indicators.donchian" => donchian_overlay(candles),
+        "indicators.donchian" => donchian_overlay(candles, period("period", 20)),
         "indicators.supertrend" => supertrend_overlay(candles),
         "indicators.psar" => psar_overlay(candles),
         "indicators.ichimoku" => ichimoku_overlay(candles),
@@ -167,11 +216,28 @@ pub fn indicator_series(concept: &str, candles: &[Candle]) -> Option<IndicatorSe
         "indicators.ar_forecast" => ar_pane(candles),
         "indicators.garch" => garch_pane(candles),
         "indicators.hmm" => hmm_pane(candles),
-        "indicators.macd" => macd_pane(candles),
-        "indicators.atr" => atr_pane(candles),
-        "indicators.ema" => ema_overlay(candles),
-        "indicators.sma" => sma_overlay(candles),
-        "indicators.bollinger" => bollinger_overlay(candles),
+        "indicators.macd" => macd_pane(
+            candles,
+            period("fast_period", 12),
+            period("slow_period", 26),
+            period("signal_period", 9),
+        ),
+        "indicators.atr" => atr_pane(candles, period("period", 14)),
+        "indicators.ema" => ema_overlay(
+            candles,
+            period("fast_period", 20),
+            period("medium_period", 50),
+            period("slow_period", 200),
+        ),
+        "indicators.sma" => sma_overlay(
+            candles,
+            period("fast_period", 20),
+            period("medium_period", 50),
+            period("slow_period", 200),
+        ),
+        "indicators.bollinger" => {
+            bollinger_overlay(candles, period("period", 20), number("deviations", 2.0))
+        }
         _ => None,
     }
 }
@@ -211,7 +277,10 @@ fn rsi_family_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         .collect();
     Some(IndicatorSeries {
         label: "RSI Family (2..24)".to_string(),
-        scale: SeriesScale::Fixed { min: 0.0, max: 100.0 },
+        scale: SeriesScale::Fixed {
+            min: 0.0,
+            max: 100.0,
+        },
         levels: vec![70.0, 30.0],
         lines,
         segments: Vec::new(),
@@ -308,18 +377,29 @@ fn atr_family_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
 }
 
 /// Stochastic (14, 3): %K and %D on the fixed 0..100 scale, 80/20 bands.
-fn stochastic_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
-    let (k_line, d_line) = crate::indicators::oscillators::stochastic(candles, 14, 3);
+fn stochastic_pane(candles: &[Candle], period: usize, smooth: usize) -> Option<IndicatorSeries> {
+    let (k_line, d_line) = crate::indicators::oscillators::stochastic(candles, period, smooth);
     if k_line.iter().all(|v| v.is_none()) {
         return None;
     }
     Some(IndicatorSeries {
-        label: "Stochastic (14, 3)".to_string(),
-        scale: SeriesScale::Fixed { min: 0.0, max: 100.0 },
+        label: format!("Stochastic ({period}, {smooth})"),
+        scale: SeriesScale::Fixed {
+            min: 0.0,
+            max: 100.0,
+        },
         levels: vec![80.0, 20.0],
         lines: vec![
-            SeriesLine { name: "%K".to_string(), color: RSI_BLUE, values: k_line },
-            SeriesLine { name: "%D".to_string(), color: 0xf59e0b, values: d_line },
+            SeriesLine {
+                name: "%K".to_string(),
+                color: RSI_BLUE,
+                values: k_line,
+            },
+            SeriesLine {
+                name: "%D".to_string(),
+                color: 0xf59e0b,
+                values: d_line,
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -331,16 +411,20 @@ fn stochastic_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
 
 /// CCI (20): one line, ±100 reference levels, auto-scaled (a CCI legitimately
 /// runs to several hundred in a trend).
-fn cci_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
-    let values = crate::indicators::oscillators::cci(candles, 20);
+fn cci_pane(candles: &[Candle], period: usize) -> Option<IndicatorSeries> {
+    let values = crate::indicators::oscillators::cci(candles, period);
     if values.iter().all(|v| v.is_none()) {
         return None;
     }
     Some(IndicatorSeries {
-        label: "CCI (20)".to_string(),
+        label: format!("CCI ({period})"),
         scale: SeriesScale::Auto,
         levels: vec![100.0, -100.0],
-        lines: vec![SeriesLine { name: "cci".to_string(), color: PRED_VIOLET, values }],
+        lines: vec![SeriesLine {
+            name: "cci".to_string(),
+            color: PRED_VIOLET,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -350,16 +434,23 @@ fn cci_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
 }
 
 /// Williams %R (14): fixed -100..0, the -80/-20 bands.
-fn williams_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
-    let values = crate::indicators::oscillators::williams_r(candles, 14);
+fn williams_pane(candles: &[Candle], period: usize) -> Option<IndicatorSeries> {
+    let values = crate::indicators::oscillators::williams_r(candles, period);
     if values.iter().all(|v| v.is_none()) {
         return None;
     }
     Some(IndicatorSeries {
-        label: "Williams %R (14)".to_string(),
-        scale: SeriesScale::Fixed { min: -100.0, max: 0.0 },
+        label: format!("Williams %R ({period})"),
+        scale: SeriesScale::Fixed {
+            min: -100.0,
+            max: 0.0,
+        },
         levels: vec![-20.0, -80.0],
-        lines: vec![SeriesLine { name: "%R".to_string(), color: RSI_BLUE, values }],
+        lines: vec![SeriesLine {
+            name: "%R".to_string(),
+            color: RSI_BLUE,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -369,17 +460,21 @@ fn williams_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
 }
 
 /// ROC (12): one line on the zero level, auto-scaled.
-fn roc_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+fn roc_pane(candles: &[Candle], period: usize) -> Option<IndicatorSeries> {
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-    let values = crate::indicators::oscillators::roc(&closes, 12);
+    let values = crate::indicators::oscillators::roc(&closes, period);
     if values.iter().all(|v| v.is_none()) {
         return None;
     }
     Some(IndicatorSeries {
-        label: "ROC (12)".to_string(),
+        label: format!("ROC ({period})"),
         scale: SeriesScale::Auto,
         levels: vec![0.0],
-        lines: vec![SeriesLine { name: "roc".to_string(), color: 0xf59e0b, values }],
+        lines: vec![SeriesLine {
+            name: "roc".to_string(),
+            color: 0xf59e0b,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -398,7 +493,11 @@ fn obv_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "OBV".to_string(),
         scale: SeriesScale::Auto,
         levels: Vec::new(),
-        lines: vec![SeriesLine { name: "obv".to_string(), color: 0x34d399, values }],
+        lines: vec![SeriesLine {
+            name: "obv".to_string(),
+            color: 0x34d399,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -409,19 +508,34 @@ fn obv_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
 
 /// Wilder's ADX (14): the ADX line with +DI and -DI, fixed 0..100, the 25
 /// trend-strength level.
-fn adx_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
-    let (plus, minus, adx_line) = crate::indicators::trend::adx(candles, 14);
+fn adx_pane(candles: &[Candle], period: usize) -> Option<IndicatorSeries> {
+    let (plus, minus, adx_line) = crate::indicators::trend::adx(candles, period);
     if adx_line.iter().all(|v| v.is_none()) {
         return None;
     }
     Some(IndicatorSeries {
-        label: "ADX (14)".to_string(),
-        scale: SeriesScale::Fixed { min: 0.0, max: 100.0 },
+        label: format!("ADX ({period})"),
+        scale: SeriesScale::Fixed {
+            min: 0.0,
+            max: 100.0,
+        },
         levels: vec![25.0],
         lines: vec![
-            SeriesLine { name: "adx".to_string(), color: RSI_BLUE, values: adx_line },
-            SeriesLine { name: "+di".to_string(), color: 0x34d399, values: plus },
-            SeriesLine { name: "-di".to_string(), color: 0xfb7185, values: minus },
+            SeriesLine {
+                name: "adx".to_string(),
+                color: RSI_BLUE,
+                values: adx_line,
+            },
+            SeriesLine {
+                name: "+di".to_string(),
+                color: 0x34d399,
+                values: plus,
+            },
+            SeriesLine {
+                name: "-di".to_string(),
+                color: 0xfb7185,
+                values: minus,
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -434,9 +548,9 @@ fn adx_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
 /// Bollinger %B and bandwidth: where the close sits inside the bands (the
 /// band edges as levels) beside the bands' relative width (the squeeze's
 /// own line).
-fn percent_b_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+fn percent_b_pane(candles: &[Candle], period: usize, deviations: f64) -> Option<IndicatorSeries> {
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-    let bands = crate::indicators::bollinger::bollinger(&closes, 20, 2.0);
+    let bands = crate::indicators::bollinger::bollinger(&closes, period, deviations);
     if bands.iter().all(|b| b.is_none()) {
         return None;
     }
@@ -444,7 +558,11 @@ fn percent_b_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         .map(|i| {
             bands[i].map(|b| {
                 let width = b.upper - b.lower;
-                if width > 0.0 { (closes[i] - b.lower) / width } else { 0.5 }
+                if width > 0.0 {
+                    (closes[i] - b.lower) / width
+                } else {
+                    0.5
+                }
             })
         })
         .collect();
@@ -454,8 +572,16 @@ fn percent_b_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         scale: SeriesScale::Auto,
         levels: vec![1.0, 0.0],
         lines: vec![
-            SeriesLine { name: "%b".to_string(), color: RSI_BLUE, values: pct_b },
-            SeriesLine { name: "bandwidth".to_string(), color: 0xf59e0b, values: bandwidth },
+            SeriesLine {
+                name: "%b".to_string(),
+                color: RSI_BLUE,
+                values: pct_b,
+            },
+            SeriesLine {
+                name: "bandwidth".to_string(),
+                color: 0xf59e0b,
+                values: bandwidth,
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -471,15 +597,29 @@ fn keltner_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
     if bands.iter().all(|b| b.is_none()) {
         return None;
     }
-    let pick = |f: fn((f64, f64, f64)) -> f64| -> Vec<Option<f64>> { bands.iter().map(|b| b.map(f)).collect() };
+    let pick = |f: fn((f64, f64, f64)) -> f64| -> Vec<Option<f64>> {
+        bands.iter().map(|b| b.map(f)).collect()
+    };
     Some(IndicatorSeries {
         label: "Keltner (20, 10, 2)".to_string(),
         scale: SeriesScale::Auto,
         levels: Vec::new(),
         lines: vec![
-            SeriesLine { name: "upper".to_string(), color: 0x94a3b8, values: pick(|(u, _, _)| u) },
-            SeriesLine { name: "center".to_string(), color: 0xf59e0b, values: pick(|(_, c, _)| c) },
-            SeriesLine { name: "lower".to_string(), color: 0x94a3b8, values: pick(|(_, _, l)| l) },
+            SeriesLine {
+                name: "upper".to_string(),
+                color: 0x94a3b8,
+                values: pick(|(u, _, _)| u),
+            },
+            SeriesLine {
+                name: "center".to_string(),
+                color: 0xf59e0b,
+                values: pick(|(_, c, _)| c),
+            },
+            SeriesLine {
+                name: "lower".to_string(),
+                color: 0x94a3b8,
+                values: pick(|(_, _, l)| l),
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -490,20 +630,34 @@ fn keltner_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
 }
 
 /// Donchian (20): the 20-bar high/low channel and its middle, on the plot.
-fn donchian_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
-    let bands = crate::indicators::trend::donchian(candles, 20);
+fn donchian_overlay(candles: &[Candle], period: usize) -> Option<IndicatorSeries> {
+    let bands = crate::indicators::trend::donchian(candles, period);
     if bands.iter().all(|b| b.is_none()) {
         return None;
     }
-    let pick = |f: fn((f64, f64, f64)) -> f64| -> Vec<Option<f64>> { bands.iter().map(|b| b.map(f)).collect() };
+    let pick = |f: fn((f64, f64, f64)) -> f64| -> Vec<Option<f64>> {
+        bands.iter().map(|b| b.map(f)).collect()
+    };
     Some(IndicatorSeries {
         label: "Donchian (20)".to_string(),
         scale: SeriesScale::Auto,
         levels: Vec::new(),
         lines: vec![
-            SeriesLine { name: "upper".to_string(), color: 0x94a3b8, values: pick(|(u, _, _)| u) },
-            SeriesLine { name: "middle".to_string(), color: 0xf59e0b, values: pick(|(_, m, _)| m) },
-            SeriesLine { name: "lower".to_string(), color: 0x94a3b8, values: pick(|(_, _, l)| l) },
+            SeriesLine {
+                name: "upper".to_string(),
+                color: 0x94a3b8,
+                values: pick(|(u, _, _)| u),
+            },
+            SeriesLine {
+                name: "middle".to_string(),
+                color: 0xf59e0b,
+                values: pick(|(_, m, _)| m),
+            },
+            SeriesLine {
+                name: "lower".to_string(),
+                color: 0x94a3b8,
+                values: pick(|(_, _, l)| l),
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -547,7 +701,11 @@ fn psar_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "Parabolic SAR".to_string(),
         scale: SeriesScale::Auto,
         levels: Vec::new(),
-        lines: vec![SeriesLine { name: "psar".to_string(), color: 0xf472b6, values: sar }],
+        lines: vec![SeriesLine {
+            name: "psar".to_string(),
+            color: 0xf472b6,
+            values: sar,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -564,7 +722,9 @@ fn ichimoku_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         return None;
     }
     // The cloud's color by its newest side (A over B is the bullish cloud).
-    let newest = (0..candles.len()).rev().find_map(|i| ic.senkou_a[i].zip(ic.senkou_b[i]));
+    let newest = (0..candles.len())
+        .rev()
+        .find_map(|i| ic.senkou_a[i].zip(ic.senkou_b[i]));
     let bull = newest.map_or(true, |(a, b)| a >= b);
     let (upper, lower) = if bull {
         (ic.senkou_a.clone(), ic.senkou_b.clone())
@@ -576,9 +736,21 @@ fn ichimoku_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         scale: SeriesScale::Auto,
         levels: Vec::new(),
         lines: vec![
-            SeriesLine { name: "tenkan".to_string(), color: 0x22d3ee, values: ic.tenkan },
-            SeriesLine { name: "kijun".to_string(), color: 0xf59e0b, values: ic.kijun },
-            SeriesLine { name: "chikou".to_string(), color: 0x94a3b8, values: ic.chikou },
+            SeriesLine {
+                name: "tenkan".to_string(),
+                color: 0x22d3ee,
+                values: ic.tenkan,
+            },
+            SeriesLine {
+                name: "kijun".to_string(),
+                color: 0xf59e0b,
+                values: ic.kijun,
+            },
+            SeriesLine {
+                name: "chikou".to_string(),
+                color: 0x94a3b8,
+                values: ic.chikou,
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -605,8 +777,16 @@ fn tsi_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         scale: SeriesScale::Auto,
         levels: vec![0.0],
         lines: vec![
-            SeriesLine { name: "tsi".to_string(), color: RSI_BLUE, values: line },
-            SeriesLine { name: "signal".to_string(), color: 0xf59e0b, values: signal },
+            SeriesLine {
+                name: "tsi".to_string(),
+                color: RSI_BLUE,
+                values: line,
+            },
+            SeriesLine {
+                name: "signal".to_string(),
+                color: 0xf59e0b,
+                values: signal,
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -647,7 +827,11 @@ fn ad_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "A/D Line".to_string(),
         scale: SeriesScale::Auto,
         levels: Vec::new(),
-        lines: vec![SeriesLine { name: "ad".to_string(), color: 0x34d399, values }],
+        lines: vec![SeriesLine {
+            name: "ad".to_string(),
+            color: 0x34d399,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -666,7 +850,11 @@ fn cmf_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "CMF (20)".to_string(),
         scale: SeriesScale::Auto,
         levels: vec![0.0],
-        lines: vec![SeriesLine { name: "cmf".to_string(), color: PRED_VIOLET, values }],
+        lines: vec![SeriesLine {
+            name: "cmf".to_string(),
+            color: PRED_VIOLET,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -683,9 +871,16 @@ fn mfi_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
     }
     Some(IndicatorSeries {
         label: "MFI (14)".to_string(),
-        scale: SeriesScale::Fixed { min: 0.0, max: 100.0 },
+        scale: SeriesScale::Fixed {
+            min: 0.0,
+            max: 100.0,
+        },
         levels: vec![80.0, 20.0],
-        lines: vec![SeriesLine { name: "mfi".to_string(), color: RSI_BLUE, values }],
+        lines: vec![SeriesLine {
+            name: "mfi".to_string(),
+            color: RSI_BLUE,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -698,8 +893,14 @@ fn mfi_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
 /// anchors traders actually use), on the price plot.
 fn avwap_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
     let swings = crate::market_structure::find_swings(candles, 3);
-    let hi = swings.iter().rev().find(|s| s.kind == crate::market_structure::SwingKind::High);
-    let lo = swings.iter().rev().find(|s| s.kind == crate::market_structure::SwingKind::Low);
+    let hi = swings
+        .iter()
+        .rev()
+        .find(|s| s.kind == crate::market_structure::SwingKind::High);
+    let lo = swings
+        .iter()
+        .rev()
+        .find(|s| s.kind == crate::market_structure::SwingKind::Low);
     let mut lines = Vec::new();
     if let Some(h) = hi {
         lines.push(SeriesLine {
@@ -743,8 +944,16 @@ fn chandelier_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         scale: SeriesScale::Auto,
         levels: Vec::new(),
         lines: vec![
-            SeriesLine { name: "long stop".to_string(), color: 0x34d399, values: long_stop },
-            SeriesLine { name: "short stop".to_string(), color: 0xfb7185, values: short_stop },
+            SeriesLine {
+                name: "long stop".to_string(),
+                color: 0x34d399,
+                values: long_stop,
+            },
+            SeriesLine {
+                name: "short stop".to_string(),
+                color: 0xfb7185,
+                values: short_stop,
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -765,8 +974,16 @@ fn hv_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         scale: SeriesScale::Auto,
         levels: Vec::new(),
         lines: vec![
-            SeriesLine { name: "hv".to_string(), color: 0xf59e0b, values: hv },
-            SeriesLine { name: "rank".to_string(), color: 0x94a3b8, values: rank },
+            SeriesLine {
+                name: "hv".to_string(),
+                color: 0xf59e0b,
+                values: hv,
+            },
+            SeriesLine {
+                name: "rank".to_string(),
+                color: 0x94a3b8,
+                values: rank,
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -787,7 +1004,11 @@ fn zscore_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "Z-Score (20)".to_string(),
         scale: SeriesScale::Auto,
         levels: vec![2.0, -2.0, 0.0],
-        lines: vec![SeriesLine { name: "z".to_string(), color: PRED_VIOLET, values }],
+        lines: vec![SeriesLine {
+            name: "z".to_string(),
+            color: PRED_VIOLET,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -804,7 +1025,11 @@ fn kalman_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "Kalman".to_string(),
         scale: SeriesScale::Auto,
         levels: Vec::new(),
-        lines: vec![SeriesLine { name: "kalman".to_string(), color: 0x22d3ee, values }],
+        lines: vec![SeriesLine {
+            name: "kalman".to_string(),
+            color: 0x22d3ee,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -824,7 +1049,11 @@ fn changepoint_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "CUSUM (60)".to_string(),
         scale: SeriesScale::Auto,
         levels: vec![2.5, -2.5, 0.0],
-        lines: vec![SeriesLine { name: "cusum".to_string(), color: 0xf59e0b, values }],
+        lines: vec![SeriesLine {
+            name: "cusum".to_string(),
+            color: 0xf59e0b,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -844,7 +1073,11 @@ fn entropy_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "Entropy (60)".to_string(),
         scale: SeriesScale::Fixed { min: 0.0, max: 1.0 },
         levels: vec![0.85, 0.35],
-        lines: vec![SeriesLine { name: "H".to_string(), color: PRED_VIOLET, values }],
+        lines: vec![SeriesLine {
+            name: "H".to_string(),
+            color: PRED_VIOLET,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -860,13 +1093,25 @@ fn bayesian_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
     if means.iter().all(|v| v.is_none()) {
         return None;
     }
-    let upper: Vec<Option<f64>> = means.iter().zip(&sds).map(|(m, s)| m.zip(*s).map(|(m, s)| m + 2.0 * s)).collect();
-    let lower: Vec<Option<f64>> = means.iter().zip(&sds).map(|(m, s)| m.zip(*s).map(|(m, s)| m - 2.0 * s)).collect();
+    let upper: Vec<Option<f64>> = means
+        .iter()
+        .zip(&sds)
+        .map(|(m, s)| m.zip(*s).map(|(m, s)| m + 2.0 * s))
+        .collect();
+    let lower: Vec<Option<f64>> = means
+        .iter()
+        .zip(&sds)
+        .map(|(m, s)| m.zip(*s).map(|(m, s)| m - 2.0 * s))
+        .collect();
     Some(IndicatorSeries {
         label: "Bayesian Drift".to_string(),
         scale: SeriesScale::Auto,
         levels: vec![0.0],
-        lines: vec![SeriesLine { name: "drift".to_string(), color: PRED_VIOLET, values: means }],
+        lines: vec![SeriesLine {
+            name: "drift".to_string(),
+            color: PRED_VIOLET,
+            values: means,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -891,7 +1136,11 @@ fn ar_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "AR(2) Forecast".to_string(),
         scale: SeriesScale::Auto,
         levels: vec![0.0],
-        lines: vec![SeriesLine { name: "forecast".to_string(), color: 0x22d3ee, values }],
+        lines: vec![SeriesLine {
+            name: "forecast".to_string(),
+            color: 0x22d3ee,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -911,7 +1160,11 @@ fn garch_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "GARCH(1,1)".to_string(),
         scale: SeriesScale::Auto,
         levels: Vec::new(),
-        lines: vec![SeriesLine { name: "sigma".to_string(), color: 0xf59e0b, values }],
+        lines: vec![SeriesLine {
+            name: "sigma".to_string(),
+            color: 0xf59e0b,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -931,7 +1184,11 @@ fn hmm_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
         label: "HMM Regime".to_string(),
         scale: SeriesScale::Fixed { min: 0.0, max: 1.0 },
         levels: vec![0.5],
-        lines: vec![SeriesLine { name: "p(volatile)".to_string(), color: 0xfb7185, values }],
+        lines: vec![SeriesLine {
+            name: "p(volatile)".to_string(),
+            color: 0xfb7185,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -948,9 +1205,19 @@ pub fn pair_series(z_line: &[Option<f64>], gate: f64, label: String) -> Indicato
     for i in 1..z_line.len() {
         if let (Some(p), Some(c)) = (z_line[i - 1], z_line[i]) {
             if p >= -2.0 && c < -2.0 {
-                markers.push(SeriesMarker { at: i, value: c, kind: "bullish".to_string(), label: "z<-2".to_string() });
+                markers.push(SeriesMarker {
+                    at: i,
+                    value: c,
+                    kind: "bullish".to_string(),
+                    label: "z<-2".to_string(),
+                });
             } else if p <= 2.0 && c > 2.0 {
-                markers.push(SeriesMarker { at: i, value: c, kind: "bearish".to_string(), label: "z>2".to_string() });
+                markers.push(SeriesMarker {
+                    at: i,
+                    value: c,
+                    kind: "bearish".to_string(),
+                    label: "z>2".to_string(),
+                });
             }
         }
     }
@@ -983,7 +1250,10 @@ fn ema_family_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
     let short: [usize; 6] = [3, 5, 8, 10, 12, 15];
     let long: [usize; 6] = [30, 35, 40, 45, 50, 60];
     let mut lines = Vec::new();
-    for (group, periods, base) in [("s", &short, (0x22u32, 0xd3u32, 0xeeu32)), ("l", &long, (0xf4u32, 0x72u32, 0xb6u32))] {
+    for (group, periods, base) in [
+        ("s", &short, (0x22u32, 0xd3u32, 0xeeu32)),
+        ("l", &long, (0xf4u32, 0x72u32, 0xb6u32)),
+    ] {
         for (i, period) in periods.iter().enumerate() {
             let shade = 1.0 - i as f64 * 0.09; // later lines of a group dim a little
             let color = ((base.0 as f64 * shade) as u32) << 16
@@ -1016,9 +1286,14 @@ fn ema_family_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
 /// MACD (12, 26, 9): the line and its signal as two lines, the histogram as
 /// zero-anchored bars, the zero line as the only reference. Auto-scaled --
 /// a MACD's range is the instrument's own volatility.
-fn macd_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
+fn macd_pane(
+    candles: &[Candle],
+    fast_period: usize,
+    slow_period: usize,
+    signal_period: usize,
+) -> Option<IndicatorSeries> {
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-    let points = crate::indicators::macd::macd(&closes, 12, 26, 9);
+    let points = crate::indicators::macd::macd(&closes, fast_period, slow_period, signal_period);
     if points.iter().all(|p| p.is_none()) {
         return None;
     }
@@ -1026,12 +1301,20 @@ fn macd_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
     let signal: Vec<Option<f64>> = points.iter().map(|p| p.map(|m| m.signal)).collect();
     let histogram: Vec<Option<f64>> = points.iter().map(|p| p.map(|m| m.histogram)).collect();
     Some(IndicatorSeries {
-        label: "MACD (12, 26, 9)".to_string(),
+        label: format!("MACD ({fast_period}, {slow_period}, {signal_period})"),
         scale: SeriesScale::Auto,
         levels: vec![0.0],
         lines: vec![
-            SeriesLine { name: "macd".to_string(), color: RSI_BLUE, values: line },
-            SeriesLine { name: "signal".to_string(), color: 0xf59e0b, values: signal },
+            SeriesLine {
+                name: "macd".to_string(),
+                color: RSI_BLUE,
+                values: line,
+            },
+            SeriesLine {
+                name: "signal".to_string(),
+                color: 0xf59e0b,
+                values: signal,
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -1048,16 +1331,20 @@ fn macd_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
 
 /// Wilder's ATR (14): one line, auto-scaled -- a volatility measurement in
 /// the instrument's own units.
-fn atr_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
-    let values = crate::indicators::atr::atr(candles, 14);
+fn atr_pane(candles: &[Candle], period: usize) -> Option<IndicatorSeries> {
+    let values = crate::indicators::atr::atr(candles, period);
     if values.iter().all(|v| v.is_none()) {
         return None;
     }
     Some(IndicatorSeries {
-        label: "ATR (14)".to_string(),
+        label: format!("ATR ({period})"),
         scale: SeriesScale::Auto,
         levels: Vec::new(),
-        lines: vec![SeriesLine { name: "atr".to_string(), color: 0xf59e0b, values }],
+        lines: vec![SeriesLine {
+            name: "atr".to_string(),
+            color: 0xf59e0b,
+            values,
+        }],
         segments: Vec::new(),
         markers: Vec::new(),
         bars: None,
@@ -1067,9 +1354,14 @@ fn atr_pane(candles: &[Candle]) -> Option<IndicatorSeries> {
 }
 
 /// EMA 20/50/200 on the price plot: the trend stack traders actually watch.
-fn ema_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
+fn ema_overlay(
+    candles: &[Candle],
+    fast: usize,
+    medium: usize,
+    slow: usize,
+) -> Option<IndicatorSeries> {
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-    let lines = [(20, 0x22d3ee), (50, 0xf59e0b), (200, 0xf472b6)]
+    let lines = [(fast, 0x22d3ee), (medium, 0xf59e0b), (slow, 0xf472b6)]
         .iter()
         .map(|(period, color)| SeriesLine {
             name: format!("ema{period}"),
@@ -1078,7 +1370,7 @@ fn ema_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         })
         .collect();
     Some(IndicatorSeries {
-        label: "EMA (20, 50, 200)".to_string(),
+        label: format!("EMA ({fast}, {medium}, {slow})"),
         scale: SeriesScale::Auto, // unused on the overlay: the price frame maps it
         levels: Vec::new(),
         lines,
@@ -1091,9 +1383,14 @@ fn ema_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
 }
 
 /// SMA 20/50/200 on the price plot.
-fn sma_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
+fn sma_overlay(
+    candles: &[Candle],
+    fast: usize,
+    medium: usize,
+    slow: usize,
+) -> Option<IndicatorSeries> {
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-    let lines = [(20, 0x22d3ee), (50, 0xf59e0b), (200, 0xf472b6)]
+    let lines = [(fast, 0x22d3ee), (medium, 0xf59e0b), (slow, 0xf472b6)]
         .iter()
         .map(|(period, color)| SeriesLine {
             name: format!("sma{period}"),
@@ -1102,7 +1399,7 @@ fn sma_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         })
         .collect();
     Some(IndicatorSeries {
-        label: "SMA (20, 50, 200)".to_string(),
+        label: format!("SMA ({fast}, {medium}, {slow})"),
         scale: SeriesScale::Auto,
         levels: Vec::new(),
         lines,
@@ -1115,9 +1412,13 @@ fn sma_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
 }
 
 /// Bollinger bands (20, 2): the basis and both bands on the price plot.
-fn bollinger_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
+fn bollinger_overlay(
+    candles: &[Candle],
+    period: usize,
+    deviations: f64,
+) -> Option<IndicatorSeries> {
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-    let bands = crate::indicators::bollinger::bollinger(&closes, 20, 2.0);
+    let bands = crate::indicators::bollinger::bollinger(&closes, period, deviations);
     if bands.iter().all(|b| b.is_none()) {
         return None;
     }
@@ -1125,13 +1426,25 @@ fn bollinger_overlay(candles: &[Candle]) -> Option<IndicatorSeries> {
         bands.iter().map(|b| b.as_ref().map(|p| f(p))).collect()
     };
     Some(IndicatorSeries {
-        label: "Bollinger (20, 2)".to_string(),
+        label: format!("Bollinger ({period}, {deviations})"),
         scale: SeriesScale::Auto,
         levels: Vec::new(),
         lines: vec![
-            SeriesLine { name: "upper".to_string(), color: 0x94a3b8, values: pick(|p| p.upper) },
-            SeriesLine { name: "middle".to_string(), color: 0xf59e0b, values: pick(|p| p.middle) },
-            SeriesLine { name: "lower".to_string(), color: 0x94a3b8, values: pick(|p| p.lower) },
+            SeriesLine {
+                name: "upper".to_string(),
+                color: 0x94a3b8,
+                values: pick(|p| p.upper),
+            },
+            SeriesLine {
+                name: "middle".to_string(),
+                color: 0xf59e0b,
+                values: pick(|p| p.middle),
+            },
+            SeriesLine {
+                name: "lower".to_string(),
+                color: 0x94a3b8,
+                values: pick(|p| p.lower),
+            },
         ],
         segments: Vec::new(),
         markers: Vec::new(),
@@ -1182,7 +1495,10 @@ fn rsi_pane(candles: &[Candle], period: usize, divergences: bool) -> Option<Indi
         } else {
             format!("RSI ({period})")
         },
-        scale: SeriesScale::Fixed { min: 0.0, max: 100.0 },
+        scale: SeriesScale::Fixed {
+            min: 0.0,
+            max: 100.0,
+        },
         levels: vec![70.0, 30.0],
         lines: vec![SeriesLine {
             name: "RSI".to_string(),
@@ -1269,7 +1585,13 @@ mod tests {
     #[test]
     fn the_plain_rsi_pane_is_the_line_and_the_bands() {
         let spec = indicator_series("indicators.rsi", &moving_series(120)).expect("spec");
-        assert_eq!(spec.scale, SeriesScale::Fixed { min: 0.0, max: 100.0 });
+        assert_eq!(
+            spec.scale,
+            SeriesScale::Fixed {
+                min: 0.0,
+                max: 100.0
+            }
+        );
         assert_eq!(spec.levels, vec![70.0, 30.0]);
         assert_eq!(spec.lines.len(), 1);
         // The line warms up for `period` bars and never lies outside 0..100.
@@ -1277,7 +1599,10 @@ mod tests {
         for v in spec.lines[0].values.iter().flatten() {
             assert!((0.0..=100.0).contains(v), "RSI bounds: {v}");
         }
-        assert!(spec.segments.is_empty(), "the plain RSI draws no divergences");
+        assert!(
+            spec.segments.is_empty(),
+            "the plain RSI draws no divergences"
+        );
     }
 
     #[test]
@@ -1315,20 +1640,39 @@ mod tests {
         let mut price = 100.0;
         let candles: Vec<Candle> = (0..500)
             .map(|i| {
-                price *= 1.0 + (i as f64 / 25.0).sin() * 0.004 + ((i * 7919) % 13) as f64 * 0.0001 - 0.0006;
+                price *= 1.0 + (i as f64 / 25.0).sin() * 0.004 + ((i * 7919) % 13) as f64 * 0.0001
+                    - 0.0006;
                 k(i as i64 * 3_600_000_000_000, price)
             })
             .collect();
         let spec = indicator_series("indicators.rsi_pca", &candles).expect("spec");
-        assert_eq!(spec.scale, SeriesScale::Auto, "a return estimate is not bounded");
-        assert_eq!(spec.levels, vec![0.0], "the zero line anchors the prediction");
+        assert_eq!(
+            spec.scale,
+            SeriesScale::Auto,
+            "a return estimate is not bounded"
+        );
+        assert_eq!(
+            spec.levels,
+            vec![0.0],
+            "the zero line anchors the prediction"
+        );
         // Predictions exist only after the walk-forward warm-up.
-        let first = spec.lines[0].values.iter().position(|v| v.is_some()).expect("some predictions");
-        assert!(first >= 248, "no predictions before the model can honestly fit: {first}");
+        let first = spec.lines[0]
+            .values
+            .iter()
+            .position(|v| v.is_some())
+            .expect("some predictions");
+        assert!(
+            first >= 248,
+            "no predictions before the model can honestly fit: {first}"
+        );
         // Every marker sits on a real bar with a real prediction.
         for m in &spec.markers {
             assert!(m.at < candles.len());
-            assert!(spec.lines[0].values[m.at].is_some(), "the marker rides its bar's prediction");
+            assert!(
+                spec.lines[0].values[m.at].is_some(),
+                "the marker rides its bar's prediction"
+            );
         }
     }
 
@@ -1336,11 +1680,20 @@ mod tests {
     fn the_family_ribbon_is_every_period_on_one_scale() {
         let spec = indicator_series("indicators.rsi_family", &moving_series(120)).expect("spec");
         assert_eq!(spec.lines.len(), 23, "every period 2..=24");
-        assert_eq!(spec.scale, SeriesScale::Fixed { min: 0.0, max: 100.0 });
+        assert_eq!(
+            spec.scale,
+            SeriesScale::Fixed {
+                min: 0.0,
+                max: 100.0
+            }
+        );
         // Each line warms up for exactly its own period.
         for (i, line) in spec.lines.iter().enumerate() {
             let period = i + 2;
-            assert!(line.values[..period].iter().all(|v| v.is_none()), "rsi{period} warms up");
+            assert!(
+                line.values[..period].iter().all(|v| v.is_none()),
+                "rsi{period} warms up"
+            );
             assert!(line.values[period].is_some(), "rsi{period} starts on time");
             for v in line.values.iter().flatten() {
                 assert!((0.0..=100.0).contains(v), "rsi{period} bounded: {v}");
@@ -1374,10 +1727,16 @@ mod tests {
         // The slow=2x fast ratio means the slowest pair (24, 48) warms up
         // last: its line starts later than the fastest pair's (2, 4).
         let first = |values: &[Option<f64>]| values.iter().position(|v| v.is_some()).expect("some");
-        assert!(first(&spec.lines[22].values) > first(&spec.lines[0].values), "slower pairs warm up later");
+        assert!(
+            first(&spec.lines[22].values) > first(&spec.lines[0].values),
+            "slower pairs warm up later"
+        );
         // MACD lines of an oscillating series cross zero somewhere.
         let vs: Vec<f64> = spec.lines[0].values.iter().flatten().copied().collect();
-        assert!(vs.iter().any(|v| *v > 0.0) && vs.iter().any(|v| *v < 0.0), "the fast line swings through zero");
+        assert!(
+            vs.iter().any(|v| *v > 0.0) && vs.iter().any(|v| *v < 0.0),
+            "the fast line swings through zero"
+        );
     }
 
     #[test]
@@ -1397,7 +1756,12 @@ mod tests {
         let spec = indicator_series("indicators.ema_family", &candles).expect("spec");
         assert_eq!(spec.target, SeriesTarget::Overlay);
         assert_eq!(spec.lines.len(), 12, "six short + six long");
-        let names: Vec<&str> = spec.lines.iter().map(|l| l.name.as_str()).filter(|n| !n.is_empty()).collect();
+        let names: Vec<&str> = spec
+            .lines
+            .iter()
+            .map(|l| l.name.as_str())
+            .filter(|n| !n.is_empty())
+            .collect();
         assert_eq!(names, vec!["emas3", "emas15", "emal30", "emal60"]);
         // Every value is a price inside the traded range, and the long group
         // warms up after the short group.
@@ -1412,7 +1776,10 @@ mod tests {
             }
         }
         let first = |values: &[Option<f64>]| values.iter().position(|v| v.is_some()).expect("some");
-        assert!(first(&spec.lines[11].values) > first(&spec.lines[0].values), "ema60 after ema3");
+        assert!(
+            first(&spec.lines[11].values) > first(&spec.lines[0].values),
+            "ema60 after ema3"
+        );
     }
 
     #[test]
@@ -1431,12 +1798,20 @@ mod tests {
         assert_eq!(spec.levels, vec![0.0], "the zero line anchors it");
         // The histogram IS line - signal, bar for bar.
         for (i, h) in bars.values.iter().enumerate() {
-            if let (Some(h), Some(l), Some(sig)) = (h, spec.lines[0].values[i], spec.lines[1].values[i]) {
-                assert!((h - (l - sig)).abs() < 1e-9, "bar {i}: histogram is the difference");
+            if let (Some(h), Some(l), Some(sig)) =
+                (h, spec.lines[0].values[i], spec.lines[1].values[i])
+            {
+                assert!(
+                    (h - (l - sig)).abs() < 1e-9,
+                    "bar {i}: histogram is the difference"
+                );
             }
         }
         // Warm-up: no values before slow + signal - 2 bars.
-        assert!(spec.lines[0].values[..33].iter().all(|v| v.is_none()), "no early MACD");
+        assert!(
+            spec.lines[0].values[..33].iter().all(|v| v.is_none()),
+            "no early MACD"
+        );
         assert!(spec.lines[0].values[40].is_some(), "values after warm-up");
     }
 
@@ -1454,7 +1829,11 @@ mod tests {
         let candles = moving_series(250);
         for id in ["indicators.ema", "indicators.sma", "indicators.bollinger"] {
             let spec = indicator_series(id, &candles).expect(id);
-            assert_eq!(spec.target, SeriesTarget::Overlay, "{id} rides the price frame");
+            assert_eq!(
+                spec.target,
+                SeriesTarget::Overlay,
+                "{id} rides the price frame"
+            );
             assert!(spec.segments.is_empty() && spec.markers.is_empty() && spec.bars.is_none());
             // Every value is a PRICE: inside the series' own traded range.
             let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -1464,7 +1843,11 @@ mod tests {
             }
             for line in &spec.lines {
                 for v in line.values.iter().flatten() {
-                    assert!(*v >= lo * 0.9 && *v <= hi * 1.1, "{id} {} value {v} is a price", line.name);
+                    assert!(
+                        *v >= lo * 0.9 && *v <= hi * 1.1,
+                        "{id} {} value {v} is a price",
+                        line.name
+                    );
                 }
             }
         }

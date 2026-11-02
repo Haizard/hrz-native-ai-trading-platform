@@ -571,6 +571,11 @@ pub struct StrategyDocument {
     /// name twice; conditions resolve by name, not by position.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub concepts: Vec<Concept>,
+    /// Version-pinned registry detectors available to conditions using the
+    /// same `concepts.<name>.<part>` syntax. Trader-facing names are local to
+    /// this document; registry identity and parameters remain reproducible.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub registry_concepts: Vec<RegistryConcept>,
     /// Optional additional exit conditions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<ExitBlock>,
@@ -622,6 +627,14 @@ impl StrategyDocument {
         self.concepts.iter().find(|c| c.name == name)
     }
 
+    /// A version-pinned registry detector declared by trader-facing name.
+    #[must_use]
+    pub fn registry_concept(&self, name: &str) -> Option<&RegistryConcept> {
+        self.registry_concepts
+            .iter()
+            .find(|concept| concept.name == name)
+    }
+
     /// The timeframe the strategy makes decisions on: the **finest** declared
     /// one.
     ///
@@ -654,6 +667,31 @@ impl StrategyDocument {
         }
         self.risk.as_ref().map(|r| r.stop.direction())
     }
+}
+
+/// A registry detector declaration embedded in a strategy for reproducible
+/// evaluation. `name` is the condition vocabulary; `concept_id` is canonical.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryConcept {
+    /// Original state identity from an indicator composition, when promoted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_id: Option<String>,
+    /// Stable local reference used by `concepts.<name>.<part>`.
+    pub name: String,
+    /// Trader-facing terminology preserved for strategy editors and reports.
+    #[serde(default)]
+    pub alias: String,
+    /// Canonical registry ID, for example `smc.bullish_bos`.
+    pub concept_id: String,
+    /// Detector version pinned when the strategy was authored.
+    pub concept_version: String,
+    /// Trader's own description of this state.
+    #[serde(default)]
+    pub description: String,
+    /// Detector parameters pinned in this document.
+    #[serde(default)]
+    pub parameters: BTreeMap<String, f64>,
 }
 
 /// Render `prefix[index]` for error paths and condition tags.

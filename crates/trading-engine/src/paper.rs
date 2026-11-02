@@ -41,6 +41,7 @@ use strategy_runtime::{
 };
 
 use crate::decisions::{DecisionPath, Decisions, Shape};
+use crate::populate_registry_concepts;
 use crate::risk::{OnBreach, RiskEngine, RiskLimits, RiskVerdict};
 
 /// What the bot needs to know that the document does not say.
@@ -161,6 +162,7 @@ pub struct PaperBot {
     /// `strategy` rather than `decisions` because `decisions` is already the
     /// audit trail of what it said.
     strategy: Decisions,
+    registry_concepts: Vec<strategy_dsl::schema::RegistryConcept>,
     simulator: Simulator,
     risk: RiskEngine,
     rolling: RollingConfig,
@@ -211,7 +213,9 @@ impl PaperBot {
         config: PaperConfig,
     ) -> Self {
         let shape = Shape::of(document.document());
-        Self::from_shape(strategy, shape, config)
+        let mut bot = Self::from_shape(strategy, shape, config);
+        bot.registry_concepts = document.document().registry_concepts.clone();
+        bot
     }
 
     /// A bot whose decisions come from a Concept-Registry composition (P3b):
@@ -239,6 +243,7 @@ impl PaperBot {
             decision_resolution: shape.decision_resolution,
             ladder: shape.ladder,
             strategy,
+            registry_concepts: Vec::new(),
             simulator: Simulator::new(config.fills),
             risk: RiskEngine::new(limits),
             rolling: config.rolling,
@@ -472,14 +477,17 @@ impl PaperBot {
         // bar late, because it skipped the bar where the setup first appeared.
         // The replay always asks, so this must too -- `paper-cli run` is what
         // caught it.
-        let signalled = context.map(|context| match self.strategy.on_candle(&context) {
-            Some(strategy_runtime::Signal::Enter(enter)) => self.queue_entry(enter, now),
-            Some(strategy_runtime::Signal::Exit(exit)) => {
-                let trigger = exit.trigger.name().to_string();
-                self.pending = Some(Pending::Exit(exit));
-                DecisionOutcome::ExitFilled { trigger }
-            }
-            None => DecisionOutcome::NoSignal,
+        let signalled = context.and_then(|mut context| {
+            populate_registry_concepts(&mut context, &self.registry_concepts).ok()?;
+            Some(match self.strategy.on_candle(&context) {
+                Some(strategy_runtime::Signal::Enter(enter)) => self.queue_entry(enter, now),
+                Some(strategy_runtime::Signal::Exit(exit)) => {
+                    let trigger = exit.trigger.name().to_string();
+                    self.pending = Some(Pending::Exit(exit));
+                    DecisionOutcome::ExitFilled { trigger }
+                }
+                None => DecisionOutcome::NoSignal,
+            })
         });
 
         // A sandboxed failure has nowhere to be returned to -- `on_candle`

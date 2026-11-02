@@ -272,6 +272,9 @@
 
 .conceptsHead__note { margin: 2px 0 0; font-size: var(--text-xs); color: var(--text-3); }
 
+.conceptsBuild { display: flex; align-items: center; gap: var(--space-2); }
+.conceptsBuild .hrz-input { width: min(230px, 24vw); min-height: 32px; padding: 5px 8px; font-size: var(--text-xs); }
+
 .conceptsGrid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
   gap: var(--space-3); padding: 0 var(--space-5) var(--space-5);
@@ -360,6 +363,18 @@
 .conceptCard--on .conceptCard__chip { border-color: var(--accent-line); color: var(--accent); }
 
 .conceptCard__needs { font-size: 10px; color: var(--warn); }
+
+.conceptCard__state {
+  display: grid; gap: var(--space-2); padding: 0 var(--space-3) var(--space-3);
+  border-top: 1px solid var(--line); color: var(--text-2); font-size: var(--text-2xs);
+}
+.conceptCard__state summary { padding-top: var(--space-2); color: var(--accent); cursor: pointer; }
+.conceptCard__state label { display: grid; gap: 4px; color: var(--text-3); }
+.conceptCard__state .hrz-input { width: 100%; min-height: 30px; padding: 4px 7px; font-size: var(--text-xs); }
+.conceptCard__state textarea.hrz-input { resize: vertical; }
+.conceptCard__state .hrz-btn { justify-self: start; }
+.conceptCard__state .conceptCard__include { display: flex; grid-template-columns: auto 1fr; align-items: center; gap: 7px; }
+.conceptCard__include input { accent-color: var(--accent); }
 
 /* The switch's mark, in the corner the preview leaves free: a ring while the
    concept is off, filled when it is on -- a card reads as chosen without the

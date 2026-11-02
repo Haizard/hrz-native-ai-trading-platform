@@ -437,6 +437,10 @@ pub fn router(state: AppState) -> Router {
                 .post(indicator_workspace_routes::create_revision),
         )
         .route(
+            "/indicator-workspaces/{id}/concept-compositions",
+            post(indicator_workspace_routes::create_concept_composition),
+        )
+        .route(
             "/indicator-workspaces/{id}/scripts",
             post(indicator_workspace_routes::submit_script),
         )
@@ -659,9 +663,9 @@ fn valid_asset_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 200
         && !path.contains('\\')
-        && path
-            .split('/')
-            .all(|segment| !segment.is_empty() && segment != "." && segment != ".." && !segment.starts_with('.'))
+        && path.split('/').all(|segment| {
+            !segment.is_empty() && segment != "." && segment != ".." && !segment.starts_with('.')
+        })
 }
 
 /// The split shell's styles, scripts, fonts and icon at `/assets/{*path}`.

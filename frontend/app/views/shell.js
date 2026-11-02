@@ -34,7 +34,6 @@
   const NAV = [
     { id: "dashboard", kind: "page", label: "Dashboard" },
     { id: "charts", kind: "page", label: "Charts" },
-    { id: "studio", kind: "page", label: "Studio" },
     { id: "community", kind: "panel", label: "Community", width: "wide" },
     { id: "bots", kind: "panel", label: "Bots", width: "wide" },
     { id: "concepts", kind: "panel", label: "Indicators", width: "wide", view: "charts" },
@@ -80,19 +79,19 @@
   const DEST_FROM_LEGACY = {
     chat: "charts", thesis: "charts", book: "charts", trade: "charts",
     watchlist: "charts",
-    indicator: "studio", scan: "studio", strategy: "studio", skills: "studio",
+    indicator: "charts", scan: "charts", strategy: "charts", skills: "charts",
     community: "community", bots: "bots",
     billing: "account", brokers: "account", aimodel: "account",
   };
   const HOSTS = {
     chat: "inspectorPaneHost", book: "inspectorPaneHost",
     trade: "inspectorPaneHost", thesis: "inspectorPaneHost",
-    indicator: "studioHost", scan: "studioHost",
+    indicator: "chatIndicatorWorkbench", scan: "studioHost",
     strategy: "studioHost", skills: "studioHost",
     community: "communityHost", bots: "botsHost",
     billing: "accountHost", brokers: "accountHost", aimodel: "accountHost",
   };
-  const DOCK_TABS = ["studio", "alerts", "orders", "console"];
+  const DOCK_TABS = ["alerts", "orders", "console"];
   /// The dock tabs whose body is a panel in `#dockBody`. Studio has no entry:
   /// its body is `pane-indicator`, moved in by `mountIndicator`.
   const DOCK_PANELS = { alerts: "dockAlerts", orders: "dockOrders", console: "dockConsole" };
@@ -125,7 +124,7 @@
     inspectorOpen: true,
     watchlistCollapsed: false,
     dockOpen: false,
-    dockTab: "studio",
+    dockTab: "alerts",
     dockHeight: DOCK_DEFAULT_HEIGHT,
     studioPane: "indicator",
     accountSection: "plan",
@@ -197,8 +196,7 @@
   function mountIndicator() {
     const pane = el("pane-indicator");
     if (!pane) return;
-    const inDock = state.destination === "charts" && state.dockOpen && state.dockTab === "studio";
-    const host = el(inDock ? "dockBody" : "studioHost");
+    const host = el("chatIndicatorWorkbench");
     if (host && pane.parentElement !== host) host.appendChild(pane);
   }
 
@@ -208,7 +206,8 @@
     const visible = new Set();
     if (state.destination === "charts") {
       if (state.inspectorOpen) visible.add(INSPECTOR_VIEWS[state.inspectorTab]);
-      if (state.dockOpen && state.dockTab === "studio") visible.add("pane-indicator");
+      const workspace = el("chatIndicatorWorkspace");
+      if (workspace && workspace.open) visible.add("pane-indicator");
     } else if (state.destination === "studio") {
       visible.add(STUDIO_PANES[state.studioPane]);
     }
@@ -590,6 +589,12 @@
     const raw = String(hash || "").replace(/^#\/?/, "");
     const parts = raw.split("/").filter(Boolean);
     if (!parts.length) return null;
+    if (parts[0] === "studio") {
+      let workspaceId;
+      try { workspaceId = parts[1] ? decodeURIComponent(parts[1]) : undefined; }
+      catch { workspaceId = parts[1]; }
+      return { page: "charts", panel: null, inspectorTab: "ai", workspaceId, indicatorWorkspace: true };
+    }
     if (PANELS.includes(parts[0])) {
       const route = { page: "charts", panel: parts[0] };
       const section = panelSection(parts[0], parts[1]);
@@ -646,6 +651,10 @@
   }
 
   function setDestination(destination, opts = {}) {
+    if (destination === "studio") {
+      destination = "charts";
+      opts = { ...opts, inspectorTab: "ai", indicatorWorkspace: true };
+    }
     if (!PAGES.includes(destination)) destination = "dashboard";
     const previous = state.destination;
     const changed = previous !== destination;
@@ -664,14 +673,14 @@
       state.inspectorOpen = true;
       load = true;
     }
-    if (destination === "studio" && opts.studioPane && STUDIO_PANES[opts.studioPane] &&
-        opts.studioPane !== state.studioPane) {
-      state.studioPane = opts.studioPane;
+    if (opts.indicatorWorkspace || opts.workspaceId) {
+      state.inspectorTab = "ai";
+      state.inspectorOpen = true;
+      const tools = el("chatIndicatorWorkspace");
+      if (tools) tools.open = true;
       load = true;
     }
-    if (destination === "studio" && opts.workspaceId) {
-      // A chat lives in the builder. A link to one is a link to that tab.
-      state.studioPane = "indicator";
+    if (opts.workspaceId) {
       load = true;
     }
     if (state.panel === "account") {
@@ -699,7 +708,7 @@
     // Opening a chat is the indicator loader's own work: it fetches the same
     // list and then selects. Running both would race two lists, and the loser
     // could repaint the list over the conversation the other just opened.
-    const openingChat = destination === "studio" && Boolean(opts.workspaceId) &&
+    const openingChat = Boolean(opts.workspaceId) &&
       Boolean(app().openWorkspace);
     if (!openingChat) openedWorkspaceId = "";
     if (openingChat) {
@@ -904,7 +913,7 @@
       return;
     }
     if (app().runPaneLoaders) {
-      app().runPaneLoaders(tab === "studio" ? "indicator" : tab);
+      app().runPaneLoaders(tab);
     }
   }
 
@@ -965,6 +974,13 @@
 
   function selectLegacyPane(name) {
     if (!ready || applyingRestore) return;
+    if (name === "indicator") {
+      selectInspector("ai");
+      const tools = el("chatIndicatorWorkspace");
+      if (tools) tools.open = true;
+      if (app().runPaneLoaders) app().runPaneLoaders("indicator");
+      return;
+    }
     const destination = DEST_FROM_LEGACY[name];
     if (!destination) return;
     if (destination === "charts") {
@@ -1188,6 +1204,8 @@
     for (const button of document.querySelectorAll("#dock [data-dock]")) {
       button.addEventListener("click", () => selectDockTab(button.dataset.dock));
     }
+    const indicatorWorkspace = el("chatIndicatorWorkspace");
+    if (indicatorWorkspace) indicatorWorkspace.addEventListener("toggle", showDestination);
     const collapse = el("dockCollapse");
     if (collapse) {
       // The chevron collapses the body, not the bar: the bar is where the
@@ -1246,7 +1264,12 @@
     }
     const toStudio = el("indicatorStudio");
     if (toStudio) {
-      toStudio.addEventListener("click", () => go("studio", { studioPane: "indicator" }));
+      toStudio.addEventListener("click", () => {
+        selectInspector("ai");
+        const tools = el("chatIndicatorWorkspace");
+        if (tools) tools.open = true;
+        if (app().runPaneLoaders) app().runPaneLoaders("indicator");
+      });
     }
     // Alerts is the dock's tab: the same watch events that fire for every
     // chart, not a list owned by this layer. The dock paints them from the

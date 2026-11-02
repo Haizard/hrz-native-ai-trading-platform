@@ -51,6 +51,10 @@ pub struct Header {
     pub equity: f64,
     /// The open position, if there is one.
     pub position: Option<PositionView>,
+    /// Host-evaluated, version-pinned registry readings keyed by timeframe and
+    /// strategy-local concept name.
+    #[serde(default)]
+    pub registry_concepts: BTreeMap<String, strategy_runtime::context::RegistryConceptValue>,
 }
 
 /// The one thing the interpreter needs from outside the sandbox.
@@ -157,6 +161,7 @@ impl Interpreter {
             // boundary could disagree with it.
             decision_timeframe: engine.decision_timeframe().to_string(),
             timeframes,
+            registry_concepts: header.registry_concepts.clone(),
             position: header.position.clone(),
             equity: header.equity,
         };

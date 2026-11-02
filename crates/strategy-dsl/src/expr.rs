@@ -562,9 +562,8 @@ impl fmt::Display for CompareOp {
 
 /// A property of a concept the document declared.
 ///
-/// This is the **whole** surface a condition can read off a concept: five names,
-/// enumerable and individually testable, exactly as `docs/06` requires of every
-/// operator. It is deliberately not "any field of any region" -- the vocabulary
+/// This is the **whole** surface a condition can read off a concept: a finite set
+/// of enumerable, individually testable names. It is deliberately not "any field of any region" -- the vocabulary
 /// stays closed even though the concepts themselves do not, which is what lets
 /// the validator be exhaustive about it.
 ///
@@ -594,16 +593,19 @@ pub enum ConceptPart {
     Top,
     /// The newest band's cheaper edge. Absent when the concept found nothing.
     Bottom,
+    /// The newest numeric value of a registry indicator series.
+    Value,
 }
 
 impl ConceptPart {
     /// Every part, for validation messages and exhaustive tests.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Exists,
         Self::Fresh,
         Self::Mitigated,
         Self::Top,
         Self::Bottom,
+        Self::Value,
     ];
 
     /// Canonical name, as written in a condition.
@@ -615,6 +617,7 @@ impl ConceptPart {
             Self::Mitigated => "mitigated",
             Self::Top => "top",
             Self::Bottom => "bottom",
+            Self::Value => "value",
         }
     }
 
@@ -623,7 +626,7 @@ impl ConceptPart {
     pub const fn type_of(self) -> Type {
         match self {
             Self::Exists | Self::Fresh => Type::Bool,
-            Self::Mitigated | Self::Top | Self::Bottom => Type::Num,
+            Self::Mitigated | Self::Top | Self::Bottom | Self::Value => Type::Num,
         }
     }
 
@@ -644,6 +647,7 @@ impl ConceptPart {
             }
             Self::Top => "the newest band's dearer edge",
             Self::Bottom => "the newest band's cheaper edge",
+            Self::Value => "the latest numeric reading from an indicator concept",
         }
     }
 
@@ -1488,7 +1492,7 @@ mod tests {
     fn a_concept_reference_parses_into_its_own_node() {
         // The point of the node: the *name* is whatever the document called it,
         // so it cannot live in the closed `Field` enum. What stays closed is the
-        // part -- five names, all of them known here.
+        // part -- the finite set of known properties.
         assert_eq!(
             parse("concepts.bullish_gap.fresh"),
             Expr::Concept {

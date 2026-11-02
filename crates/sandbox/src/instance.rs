@@ -422,6 +422,7 @@ impl Session {
             now: context.now,
             equity: context.equity,
             position: context.position.clone(),
+            registry_concepts: context.registry_concepts.clone(),
         };
         let payload = serde_json::to_vec(&header)
             .map_err(|error| SandboxError::Instantiation(error.to_string()))?;

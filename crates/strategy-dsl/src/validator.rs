@@ -24,7 +24,7 @@
 //! * Every declared concept is well-formed by `analytics_core::concepts`' own
 //!   rules -- the same ones the chart applies -- and no two share a name.
 //! * Every concept a condition reads is declared. The concept *vocabulary* is
-//!   closed even though the concepts are not: five properties, and a name that
+//!   closed even though the concepts are not: a fixed property vocabulary, and a name that
 //!   resolves to nothing is an error rather than a condition that is always
 //!   false.
 //! * `max_risk_pct` is positive and under a hard ceiling that a document cannot
@@ -203,13 +203,13 @@ fn check_timeframes(document: &StrategyDocument, limits: &Limits, issues: &mut I
 /// declares, so that half lives in [`check_conditions`] where the parsed
 /// expression is already in hand. This half is about the block itself.
 fn check_concepts(document: &StrategyDocument, limits: &Limits, issues: &mut Issues) {
-    if document.concepts.len() > limits.max_concepts {
+    let total = document.concepts.len() + document.registry_concepts.len();
+    if total > limits.max_concepts {
         issues.push(
             "concepts",
             format!(
                 "declares {} concepts, the limit is {}",
-                document.concepts.len(),
-                limits.max_concepts
+                total, limits.max_concepts
             ),
         );
     }
@@ -228,6 +228,46 @@ fn check_concepts(document: &StrategyDocument, limits: &Limits, issues: &mut Iss
         // that the chart would refuse must not validate here.
         if let Err(e) = analytics_core::concepts::validate(concept) {
             issues.push(&path, e.to_string());
+        }
+    }
+
+    for concept in &document.registry_concepts {
+        let path = format!("registry_concepts.{}", concept.name);
+        if concept.name.trim().is_empty()
+            || concept.name.len() > 80
+            || concept.name.chars().any(char::is_whitespace)
+        {
+            issues.push(
+                &path,
+                "name must be 1..=80 characters and contain no whitespace",
+            );
+        }
+        if !seen.insert(concept.name.as_str()) {
+            issues.push(&path, "a concept with this name is already declared");
+        }
+        if concept.concept_id.trim().is_empty() || concept.concept_version.trim().is_empty() {
+            issues.push(&path, "concept_id and concept_version must not be empty");
+        }
+        if concept
+            .state_id
+            .as_ref()
+            .is_some_and(|id| id.trim().is_empty() || id.len() > 80)
+        {
+            issues.push(&path, "state_id must be 1..=80 characters when supplied");
+        }
+        if concept.description.len() > 240 {
+            issues.push(&path, "description must be at most 240 characters");
+        }
+        if concept.alias.len() > 80 {
+            issues.push(&path, "alias must be at most 80 characters");
+        }
+        for (name, value) in &concept.parameters {
+            if name.trim().is_empty() || !value.is_finite() {
+                issues.push(
+                    &path,
+                    "parameter names must not be empty and values must be finite",
+                );
+            }
         }
     }
 }
@@ -349,10 +389,18 @@ fn check_concept_refs(document: &StrategyDocument, expr: &Expr, path: &str, issu
         // One issue per concept, not per read: a condition that reads `fresh`
         // and `top` of the same undeclared concept has one problem, and saying
         // it twice reads as two.
-        if !reported.insert(name) || document.concept(name).is_some() {
+        if !reported.insert(name)
+            || document.concept(name).is_some()
+            || document.registry_concept(name).is_some()
+        {
             continue;
         }
-        let declared: Vec<&str> = document.concepts.iter().map(|c| c.name.as_str()).collect();
+        let declared: Vec<&str> = document
+            .concepts
+            .iter()
+            .map(|c| c.name.as_str())
+            .chain(document.registry_concepts.iter().map(|c| c.name.as_str()))
+            .collect();
         let message = if declared.is_empty() {
             format!(
                 "reads `concepts.{name}` but the document declares no concepts; add a \

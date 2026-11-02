@@ -3390,6 +3390,36 @@ pub fn detect_patterns(candles: &[Candle], symbol: &str) -> Vec<MarketEvent> {
 /// Detect every event the window's newest closed bar produced.
 #[must_use]
 pub fn detect_events(candles: &[Candle], symbol: &str, config: &EventConfig) -> Vec<MarketEvent> {
+    detect_events_for_version("1.0.0", candles, symbol, config)
+}
+
+/// Detect through the immutable event engine selected by a registry version.
+/// Add a new branch when detector behavior changes and retain the previous
+/// implementation so historical strategy pins continue to execute.
+#[must_use]
+pub fn detect_events_for_version(
+    version: &str,
+    candles: &[Candle],
+    symbol: &str,
+    config: &EventConfig,
+) -> Vec<MarketEvent> {
+    match version {
+        "1.0.0" => detect_events_v1(candles, symbol, config),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether this binary retains the executable event-detector implementation
+/// for a registry version.
+#[must_use]
+pub fn supports_event_version(version: &str) -> bool {
+    matches!(version, "1.0.0")
+}
+
+/// Frozen implementation for registry detector version 1.0.0. Keep this body
+/// unchanged; new semantics belong in a new version function and dispatcher arm.
+#[must_use]
+fn detect_events_v1(candles: &[Candle], symbol: &str, config: &EventConfig) -> Vec<MarketEvent> {
     let config = config.sanitised();
     let Some(last) = candles.last() else {
         return Vec::new();

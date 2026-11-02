@@ -304,6 +304,7 @@ impl RollingLadder {
             now,
             decision_timeframe: decision_timeframe.into(),
             timeframes,
+            registry_concepts: BTreeMap::new(),
             position,
             equity,
         })

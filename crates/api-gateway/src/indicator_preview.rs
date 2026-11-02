@@ -32,11 +32,11 @@ use analytics_core::concepts::{self, detect};
 use analytics_core::regions::Region;
 use analytics_core::types::{self, Timeframe};
 use backtester::replay::{replay, ReplayConfig, ReplayInput, ReplaySignal};
-use serde::Serialize;
 use chart_engine::{
     self, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind, ReplayExit, ReplaySetup,
     SetupDirection,
 };
+use serde::Serialize;
 use strategy_dsl::Direction;
 use strategy_runtime::signal::Signal;
 
@@ -126,6 +126,7 @@ pub fn build_indicator_preview(
         // saw, the concepts are the definition that keeps running.
         name: Some(document_name.to_owned()),
         concepts: concepts.to_vec(),
+        registry_concepts: Vec::new(),
         ..IndicatorOutput::default()
     };
 
@@ -259,15 +260,9 @@ async fn fetch_security_candles(
     to_ns: i64,
 ) -> Vec<types::Candle> {
     let timeframes = std::collections::BTreeMap::from([("sec".to_string(), tf)]);
-    if let Ok(series) = db::loading::load_timeframe_series(
-        database.pool(),
-        sec,
-        &timeframes,
-        from_ns,
-        to_ns,
-        tf,
-    )
-    .await
+    if let Ok(series) =
+        db::loading::load_timeframe_series(database.pool(), sec, &timeframes, from_ns, to_ns, tf)
+            .await
     {
         let stored = series.get("sec").cloned().unwrap_or_default();
         let expected = ((to_ns - from_ns).max(1) / tf.nanos().max(1)) as usize;
@@ -332,8 +327,12 @@ async fn fetch_funding_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, 
         from_ns / 1_000_000,
         to_ns / 1_000_000
     );
-    let Ok(resp) = reqwest::get(&url).await else { return Vec::new() };
-    let Ok(points) = resp.json::<Vec<FundingPoint>>().await else { return Vec::new() };
+    let Ok(resp) = reqwest::get(&url).await else {
+        return Vec::new();
+    };
+    let Ok(points) = resp.json::<Vec<FundingPoint>>().await else {
+        return Vec::new();
+    };
     points
         .into_iter()
         .filter_map(|p| {
@@ -370,8 +369,12 @@ async fn fetch_oi_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, f64)>
         from_ns / 1_000_000,
         to_ns / 1_000_000
     );
-    let Ok(resp) = reqwest::get(&url).await else { return Vec::new() };
-    let Ok(points) = resp.json::<Vec<OiPoint>>().await else { return Vec::new() };
+    let Ok(resp) = reqwest::get(&url).await else {
+        return Vec::new();
+    };
+    let Ok(points) = resp.json::<Vec<OiPoint>>().await else {
+        return Vec::new();
+    };
     points
         .into_iter()
         .filter_map(|p| {
@@ -416,11 +419,7 @@ fn parse_synthetic(sym: &str) -> Option<(String, char, String)> {
 /// pointwise over the shared time grid (both venues align per timeframe),
 /// volume takes the first leg's, and a zero denominator leg yields a
 /// zero-close candle the VM reads as flat -- never a panic.
-fn compose_synthetic(
-    a: &[types::Candle],
-    op: char,
-    b: &[types::Candle],
-) -> Vec<types::Candle> {
+fn compose_synthetic(a: &[types::Candle], op: char, b: &[types::Candle]) -> Vec<types::Candle> {
     let b_by_time: std::collections::HashMap<i64, &types::Candle> =
         b.iter().map(|c| (c.open_time, c)).collect();
     let combine = |x: f64, y: f64| match op {
@@ -461,10 +460,7 @@ mod data_feed_tests {
     #[test]
     fn sparse_points_carry_forward_by_bar_open() {
         // Points at hours 0 and 4; bars are hourly.
-        let points = vec![
-            (0, 0.0001),
-            (4 * 3_600_000_000_000, -0.0002),
-        ];
+        let points = vec![(0, 0.0001), (4 * 3_600_000_000_000, -0.0002)];
         let candles: Vec<types::Candle> = (0..6)
             .map(|i| types::Candle {
                 symbol: "T".to_string(),
@@ -521,7 +517,10 @@ mod synthetic_tests {
         assert_eq!(s.len(), 3);
         assert!((s[0].close - 2.0).abs() < 1e-9, "100/50");
         assert!((s[2].close - 3.0).abs() < 1e-9, "120/40");
-        assert!((s[0].high - 101.0 / 50.5).abs() < 1e-9, "high fields compose too");
+        assert!(
+            (s[0].high - 101.0 / 50.5).abs() < 1e-9,
+            "high fields compose too"
+        );
         // A missing leg bar drops the pair's bar (the shared grid only).
         let b_short = leg("ETHUSDT", &[50.0]);
         let s = compose_synthetic(&a, '/', &b_short);
@@ -540,7 +539,10 @@ mod synthetic_tests {
     }
 }
 
-fn align_security_pooled(primary: &[types::Candle], pooled: &[types::Candle]) -> Vec<types::Candle> {
+fn align_security_pooled(
+    primary: &[types::Candle],
+    pooled: &[types::Candle],
+) -> Vec<types::Candle> {
     if pooled.is_empty() || primary.is_empty() {
         return Vec::new();
     }
@@ -632,15 +634,19 @@ pub async fn replay_script_preview(
         serde_json::Value,
     ),
     String,
->
-{
-    let (header, parsed) =
-        pine_lite::vet(source).map_err(|errs| format!("the script no longer vets: {}", errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; ")))?;
+> {
+    let (header, parsed) = pine_lite::vet(source).map_err(|errs| {
+        format!(
+            "the script no longer vets: {}",
+            errs.iter()
+                .map(|e| e.message.clone())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    })?;
     let to_ns = crate::now_ns();
     let from_ns = to_ns - PREVIEW_WINDOW_NS;
-    let tf = timeframe
-        .parse::<Timeframe>()
-        .unwrap_or(Timeframe::M1);
+    let tf = timeframe.parse::<Timeframe>().unwrap_or(Timeframe::M1);
     // The document replay backfills its window from the venue first; a script
     // preview over an empty store would "draw nothing" for data reasons, so
     // the same backfill runs here -- idempotent on repeat.
@@ -661,10 +667,7 @@ pub async fn replay_script_preview(
             }
         }
     }
-    let timeframes = std::collections::BTreeMap::from([(
-        "entry".to_string(),
-        tf,
-    )]);
+    let timeframes = std::collections::BTreeMap::from([("entry".to_string(), tf)]);
     let series = db::loading::load_timeframe_series(
         database.pool(),
         symbol,
@@ -710,7 +713,9 @@ pub async fn replay_script_preview(
             Some(base) => (base.to_string(), true),
             None => (key, false),
         };
-        let Some((sym, tf_str)) = key.split_once('@') else { continue };
+        let Some((sym, tf_str)) = key.split_once('@') else {
+            continue;
+        };
         // Pine spellings normalize to the venue set: bare numbers are
         // MINUTES ("60" = 1h, "240" = 4h, "1440" = 1d), "D"/"W" are the
         // daily/weekly singles. An unknown string still falls back to the
@@ -740,11 +745,15 @@ pub async fn replay_script_preview(
             // A Deriv symbol: the Deriv API's own candle page (ticks_history
             // style=candles), in our Candle shape already.
             let client = ::market_data::deriv::DerivClient::from_env();
-            let count = (((to_ns - from_ns).max(1) / pooled_tf.nanos().max(1)) as usize).clamp(1, 5000);
-            let fetched = client.candles(code, pooled_tf, count, to_ns).await.unwrap_or_else(|e| {
-                tracing::warn!(%sym, error = %e, "deriv pool fetch failed");
-                Vec::new()
-            });
+            let count =
+                (((to_ns - from_ns).max(1) / pooled_tf.nanos().max(1)) as usize).clamp(1, 5000);
+            let fetched = client
+                .candles(code, pooled_tf, count, to_ns)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(%sym, error = %e, "deriv pool fetch failed");
+                    Vec::new()
+                });
             if fetched.is_empty() {
                 tracing::warn!(%sym, "deriv pool fetch came back empty");
                 continue;
@@ -772,7 +781,11 @@ pub async fn replay_script_preview(
             }
             fetched
         };
-        let pooled = if want_raw { raw } else { align_security_pooled(&candles, &raw) };
+        let pooled = if want_raw {
+            raw
+        } else {
+            align_security_pooled(&candles, &raw)
+        };
         series_pool.insert(if want_raw { format!("{key}#ltf") } else { key }, pooled);
     }
     // Phase 14 (docs/23): `request.data("NAME")` — platform-native feeds.
@@ -783,7 +796,9 @@ pub async fn replay_script_preview(
     // land, with no language change.
     let mut data_series = std::collections::HashMap::new();
     for name in pine_lite::typecheck::collect_data_names(&parsed) {
-        let Some((sym, field)) = name.split_once('.') else { continue };
+        let Some((sym, field)) = name.split_once('.') else {
+            continue;
+        };
         match field {
             // Venue futures feeds: funding rate and open interest, carried
             // per bar. A failed fetch leaves the name missing -- the VM's
@@ -828,7 +843,14 @@ pub async fn replay_script_preview(
     let contracts = ::market_data::broker::VenueSymbol::parse(symbol)
         .channels()
         .is_some_and(|_| ::market_data::broker::VenueSymbol::parse(symbol).broker == "deriv");
-    let inputs = pine_lite::interp::Inputs { security, series_pool, data_series, mintick, contracts, ..pine_lite::interp::Inputs::default() };
+    let inputs = pine_lite::interp::Inputs {
+        security,
+        series_pool,
+        data_series,
+        mintick,
+        contracts,
+        ..pine_lite::interp::Inputs::default()
+    };
     let output = pine_lite::interp::run(&parsed, &candles, &inputs)
         .map_err(|err| format!("the script failed at run time: {err}"))?;
     // Run notes (docs/24 S1: the two-pass strategy mismatch, and any later
@@ -847,9 +869,18 @@ pub async fn replay_script_preview(
         shapes: output.shapes.len(),
         overlays: usize::from(header.overlay),
         strategy: output.simulation.is_some(),
-        trades: output.simulation.as_ref().map_or(0, |s| s.report.total_trades as usize),
-        net_profit: output.simulation.as_ref().map_or(0.0, |s| s.report.net_profit),
-        max_drawdown: output.simulation.as_ref().map_or(0.0, |s| s.report.max_drawdown),
+        trades: output
+            .simulation
+            .as_ref()
+            .map_or(0, |s| s.report.total_trades as usize),
+        net_profit: output
+            .simulation
+            .as_ref()
+            .map_or(0.0, |s| s.report.net_profit),
+        max_drawdown: output
+            .simulation
+            .as_ref()
+            .map_or(0.0, |s| s.report.max_drawdown),
         alerts: output.alerts.len(),
         simulation_note: strategy_simulation_note(output.simulation.as_ref(), candles.len()),
     };
@@ -862,6 +893,7 @@ pub async fn replay_script_preview(
         revision_id: format!("script:{title}"),
         name: Some(title),
         concepts: Vec::new(),
+        registry_concepts: Vec::new(),
         evidence: Vec::new(),
         zones: Vec::new(),
         markers: Vec::new(),
@@ -869,7 +901,12 @@ pub async fn replay_script_preview(
         trendlines: Vec::new(),
     };
     for plot in &output.plots {
-        let finite: Vec<f64> = plot.values.iter().copied().filter(|v| v.is_finite()).collect();
+        let finite: Vec<f64> = plot
+            .values
+            .iter()
+            .copied()
+            .filter(|v| v.is_finite())
+            .collect();
         let (Some(low), Some(high)) = (
             finite.iter().copied().reduce(f64::min),
             finite.iter().copied().reduce(f64::max),
@@ -887,7 +924,9 @@ pub async fn replay_script_preview(
         });
     }
     for shape in &output.shapes {
-        let Some(candle) = candles.get(shape.bar) else { continue };
+        let Some(candle) = candles.get(shape.bar) else {
+            continue;
+        };
         out.markers.push(chart_engine::IndicatorMarker {
             id: format!("{}-shape-{}", out.revision_id, shape.bar),
             evidence_id: String::new(),
@@ -1219,7 +1258,13 @@ mod tests {
                 } else {
                     (40 - i) as f64
                 };
-            series.push(indicator_candle(i, base, base + 0.5, base - 0.5, base + 0.2));
+            series.push(indicator_candle(
+                i,
+                base,
+                base + 0.5,
+                base - 0.5,
+                base + 0.2,
+            ));
         }
         let mut concept = bullish_gap_concept();
         concept.name = "swing_line".into();

@@ -322,6 +322,9 @@ pub struct AskRequest {
     /// gateway: evidence lines the model cites verbatim (levels, not prose).
     /// Attached like every other capability; absent in tools-only builds.
     pub concept_evidence: Option<Vec<String>>,
+    /// Trader-edited concept states from the active chart. These provide the
+    /// canonical detector, user terminology and parameters to the chat agent.
+    pub concept_states: Vec<strategy_dsl::schema::RegistryConcept>,
     /// Images the user attached to the question: a chart photo, a book page,
     /// a drawing. They ride the first user message as image blocks, ahead of
     /// the question text, exactly like chart screenshots.
@@ -353,6 +356,7 @@ impl AskRequest {
             web_search: None,
             capabilities: None,
             concept_evidence: None,
+            concept_states: Vec::new(),
             attachments: Vec::new(),
             attachment_document: None,
         }
@@ -493,6 +497,13 @@ impl AskRequest {
         self.concept_evidence = Some(lines);
         self
     }
+
+    /// Attach the active chart's trader-edited detector states.
+    #[must_use]
+    pub fn with_concept_states(mut self, states: Vec<strategy_dsl::schema::RegistryConcept>) -> Self {
+        self.concept_states = states;
+        self
+    }
 }
 
 /// What the agent hands back for a question.
@@ -538,6 +549,8 @@ pub struct StrategyRequest {
     pub entry_timeframe: String,
     /// Pin a skill whose methodology the document should encode.
     pub skill_id: Option<String>,
+    /// Registry states selected/edited on the active chart, pinned into drafts.
+    pub concept_states: Vec<strategy_dsl::schema::RegistryConcept>,
     /// Validation-retry cap; `None` uses [`DEFAULT_MAX_ATTEMPTS`].
     pub max_attempts: Option<usize>,
     /// Screenshots attached ahead of the description, chart captures most
@@ -575,6 +588,7 @@ impl StrategyRequest {
             market: market.into(),
             entry_timeframe: entry_timeframe.into(),
             skill_id: None,
+            concept_states: Vec::new(),
             max_attempts: None,
             images: Vec::new(),
             base_document: None,
@@ -593,6 +607,13 @@ impl StrategyRequest {
     #[must_use]
     pub fn with_base_document(mut self, source: impl Into<String>) -> Self {
         self.base_document = Some(source.into());
+        self
+    }
+
+    /// Attach the active chart's exact registry states for strategy generation.
+    #[must_use]
+    pub fn with_concept_states(mut self, states: Vec<strategy_dsl::schema::RegistryConcept>) -> Self {
+        self.concept_states = states;
         self
     }
 
@@ -947,6 +968,15 @@ impl Agent {
                 question_text
             ),
             _ => question_text,
+        };
+        let question_text = if request.concept_states.is_empty() {
+            question_text
+        } else {
+            let serialized = serde_json::to_string_pretty(&request.concept_states)
+                .unwrap_or_else(|_| "[]".into());
+            format!(
+                "Trader-edited concept states on the active chart (canonical detector ids, trader terminology, pinned versions and parameters):\n```json\n{serialized}\n```\nUse these states when discussing or composing concepts. Preserve the trader's names and settings unless explicitly asked to change them. States from different concept families can be combined with each other, inline concepts and indicators.\n\n---\n\n{question_text}"
+            )
         };
         first_content.push(ContentBlock::Text(question_text));
         let mut messages = vec![Message {
@@ -1604,13 +1634,21 @@ impl Agent {
         };
 
         let tools = vec![draft_strategy_spec()];
-        let system = strategy_system_prompt(
+        let mut system = strategy_system_prompt(
             &request.market,
             &request.entry_timeframe,
             skill.as_ref(),
             request.base_document.is_some(),
             &tools,
         );
+        if !request.concept_states.is_empty() {
+            let states = serde_json::to_string_pretty(&request.concept_states)
+                .unwrap_or_else(|_| "[]".into());
+            system.push_str("\n## Trader-edited registry concept states from the active chart\n");
+            system.push_str("These are real, version-pinned registry detectors. Include the supplied declarations in `registry_concepts` and refer to them in conditions using `concepts.<name>.<part>`. Preserve their aliases, descriptions, detector versions and parameters unless the user's request explicitly changes a state. When asked to change terminology or detector parameters, update the matching declaration and keep its canonical `concept_id`; never invent detector ids or parameters. Registry concepts can be combined across families and with inline concepts and indicator readings.\n```json\n");
+            system.push_str(&states);
+            system.push_str("\n```\n\n");
+        }
 
         let description = match &request.base_document {
             // Edit mode: the current source rides the first user message, so the
@@ -2509,6 +2547,12 @@ fn strategy_system_prompt(
         "\nThe parts describe the **newest** band the concept finds. A concept that \
          found nothing is `false` for a boolean part and absent for a number, and a \
          comparison against an absent value is false -- never true against zero.\n\n",
+    );
+    out.push_str(
+        "Registry detectors are also available through `registry_concepts`. Each entry pins `name`, `alias`, canonical `concept_id`, exact `concept_version`, `description` and `parameters`; conditions read them with the same `concepts.<name>.<part>` syntax. Prefer an active chart state supplied in the request, preserving its version, alias and parameters. Registry and inline concepts from different families may be combined in one strategy. For an indicator detector's numeric output, use `concepts.<name>.value`. Never fabricate registry ids, versions or parameter names.\n\n",
+    );
+    out.push_str(
+        "Example declaration shape:\n```yaml\nregistry_concepts:\n  - name: registry_smc_bullish_bos\n    alias: Structure break\n    concept_id: smc.bullish_bos\n    concept_version: 1.0.0\n    description: Trader-defined meaning\n    parameters: {}\n```\nUse the exact parameter names and version supplied by the chart state.\n\n",
     );
 
     out.push_str("## Rules that most often fail validation\n");

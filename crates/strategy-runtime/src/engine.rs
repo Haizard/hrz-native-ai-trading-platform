@@ -105,6 +105,11 @@ impl RuntimeConfig {
 pub trait Strategy {
     /// Decide, given everything visible at the close of one candle.
     fn on_candle(&mut self, ctx: &MarketContext) -> Option<Signal>;
+
+    /// Registry detectors this strategy needs evaluated in its context.
+    fn registry_concepts(&self) -> &[strategy_dsl::schema::RegistryConcept] {
+        &[]
+    }
 }
 
 /// A condition that failed to become a trade.
@@ -598,6 +603,10 @@ impl StrategyEngine {
 }
 
 impl Strategy for StrategyEngine {
+    fn registry_concepts(&self) -> &[strategy_dsl::schema::RegistryConcept] {
+        &self.document.registry_concepts
+    }
+
     fn on_candle(&mut self, ctx: &MarketContext) -> Option<Signal> {
         self.candles_seen += 1;
 
@@ -685,7 +694,7 @@ fn eval<'a>(
 
         Expr::Field(field) => Ok(ctx.read(&view.name, *field)),
 
-        Expr::Concept { name, part } => Ok(eval_concept(view, concepts, name, *part)),
+        Expr::Concept { name, part } => Ok(eval_concept(ctx, view, concepts, name, *part)),
 
         Expr::Not(inner) => Ok(FieldValue::Bool(
             !eval(inner, ctx, view, config, concepts)?.truthy(),
@@ -740,11 +749,24 @@ fn eval<'a>(
 /// fabricated `0.0`. It is the same choice [`MarketContext::read`] makes for a
 /// missing view or an unbuilt VWAP.
 fn eval_concept(
+    ctx: &MarketContext,
     view: &TimeframeView,
     concepts: &[Concept],
     name: &str,
     part: ConceptPart,
 ) -> FieldValue<'static> {
+    if let Some(registry) = ctx.registry_concepts.get(&format!("{}::{name}", view.name)) {
+        return match part {
+            ConceptPart::Exists => FieldValue::Bool(registry.exists),
+            ConceptPart::Fresh => FieldValue::Bool(registry.fresh),
+            ConceptPart::Mitigated => registry
+                .mitigated
+                .map_or(FieldValue::Absent, FieldValue::Num),
+            ConceptPart::Top => registry.top.map_or(FieldValue::Absent, FieldValue::Num),
+            ConceptPart::Bottom => registry.bottom.map_or(FieldValue::Absent, FieldValue::Num),
+            ConceptPart::Value => registry.value.map_or(FieldValue::Absent, FieldValue::Num),
+        };
+    }
     let Some(concept) = concepts.iter().find(|concept| concept.name == name) else {
         // Unreachable for a validated document: the validator refuses a
         // condition that reads a concept the document does not declare. Absent
@@ -762,6 +784,7 @@ fn eval_concept(
         return match part {
             ConceptPart::Exists | ConceptPart::Fresh => FieldValue::Bool(false),
             ConceptPart::Mitigated | ConceptPart::Top | ConceptPart::Bottom => FieldValue::Absent,
+            ConceptPart::Value => FieldValue::Absent,
         };
     };
 
@@ -771,6 +794,7 @@ fn eval_concept(
         ConceptPart::Mitigated => FieldValue::Num(newest.mitigated),
         ConceptPart::Top => FieldValue::Num(newest.price_high),
         ConceptPart::Bottom => FieldValue::Num(newest.price_low),
+        ConceptPart::Value => FieldValue::Absent,
     }
 }
 
@@ -1084,6 +1108,7 @@ invalidation:
             now: timeframes["entry"].candle.open_time + Timeframe::M5.nanos(),
             decision_timeframe: "entry".into(),
             timeframes,
+            registry_concepts: BTreeMap::new(),
             position,
             equity: 10_000.0,
         }
@@ -1649,7 +1674,7 @@ invalidation:
         let view = ctx.decision().unwrap();
         for part in ConceptPart::ALL {
             assert!(
-                eval_concept(view, &[], "nobody_declared_this", part).is_absent(),
+                eval_concept(&ctx, view, &[], "nobody_declared_this", part).is_absent(),
                 "`{part}` on an undeclared concept must be absent"
             );
         }

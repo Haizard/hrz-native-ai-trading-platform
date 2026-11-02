@@ -41,6 +41,9 @@ pub struct AskBody {
     /// it says where to look, and carries no numbers the agent may cite.
     #[serde(default)]
     pub chart: Option<ai_agent::ChartContext>,
+    /// Trader-edited concept states from the active chart.
+    #[serde(default)]
+    pub concept_states: Vec<strategy_dsl::schema::RegistryConcept>,
     /// Return every tool call and its raw result alongside the thesis.
     ///
     /// Off by default because a four-timeframe ladder of full `MarketState`s
@@ -125,6 +128,36 @@ pub struct GenerateStrategyBody {
     pub timeframe: Option<String>,
     /// Pin a skill whose methodology to encode.
     pub skill_id: Option<String>,
+    /// States active/included on the chart, with trader terminology and params.
+    #[serde(default)]
+    pub concept_states: Vec<strategy_dsl::schema::RegistryConcept>,
+}
+
+/// Reject stale/unknown detector pins and invalid parameter overrides before
+/// they enter an AI prompt or a generated strategy.
+pub(crate) fn validate_registry_concept_states(
+    states: &[strategy_dsl::schema::RegistryConcept],
+) -> Result<(), String> {
+    if states.len() > 16 {
+        return Err("at most 16 registry concept states may be attached".into());
+    }
+    let mut names = std::collections::HashSet::new();
+    let mut parameters = market_data::composer::ParameterMap::new();
+    let mut versions = std::collections::HashMap::new();
+    for state in states {
+        if !names.insert(state.name.as_str()) {
+            return Err(format!("duplicate registry concept name `{}`", state.name));
+        }
+        if market_data::concepts::concept_version(&state.concept_id, &state.concept_version).is_none() {
+            return Err(format!("unknown or unsupported detector pin {}@{}", state.concept_id, state.concept_version));
+        }
+        versions.insert(state.concept_id.clone(), state.concept_version.clone());
+        parameters.insert(state.concept_id.clone(), state.parameters.iter().map(|(name, value)| (name.clone(), *value)).collect());
+    }
+    if let Some(issue) = market_data::composer::validate_parameters_for_versions(&parameters, &versions).into_iter().next() {
+        return Err(format!("{}: {}", issue.path, issue.message));
+    }
+    Ok(())
 }
 
 /// Response of `POST /agent/generate-strategy`.
@@ -171,6 +204,8 @@ pub async fn ask(
     ApiJson(body): ApiJson<AskBody>,
 ) -> Result<Json<AskResponse>, ApiError> {
     check_agent_limit(&state, &user)?;
+    validate_registry_concept_states(&body.concept_states)
+        .map_err(|reason| ApiError::bad_request("CONCEPT_STATES_INVALID", reason))?;
     // Plan credits are a second, monthly limit: the rate limit bounds a burst,
     // this bounds the month's spend. Charged before the agent is resolved, so
     // a request that cannot pay does no model work.
@@ -186,6 +221,7 @@ pub async fn ask(
     let agent = crate::provider_routes::resolve_agent(&state, &user).await?;
 
     let mut request = AskRequest::new(&body.symbol, &body.question);
+    request = request.with_concept_states(body.concept_states.clone());
     if let Some(id) = &body.skill_id {
         request = request.with_skill(id);
     }
@@ -388,6 +424,8 @@ pub async fn generate_strategy(
     ApiJson(body): ApiJson<GenerateStrategyBody>,
 ) -> Result<Json<GenerateStrategyResponse>, ApiError> {
     check_agent_limit(&state, &user)?;
+    validate_registry_concept_states(&body.concept_states)
+        .map_err(|reason| ApiError::bad_request("CONCEPT_STATES_INVALID", reason))?;
     enforce_usage(
         &state,
         user.user_id,
@@ -403,6 +441,7 @@ pub async fn generate_strategy(
         body.market.as_deref().unwrap_or("BTCUSDT"),
         body.timeframe.as_deref().unwrap_or("5m"),
     );
+    request = request.with_concept_states(body.concept_states);
     request.skill_id = body.skill_id;
 
     // The capability view (docs/39): tool results carry their provenance, and

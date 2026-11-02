@@ -307,7 +307,7 @@
     if (!layers.length) {
       const empty = document.createElement("p");
       empty.className = "barPopNote";
-      empty.textContent = "No script layers on this chart. Attach one from Studio.";
+      empty.textContent = "No script layers on this chart. Ask the AI chat to build one.";
       list.appendChild(empty);
       return;
     }
@@ -550,7 +550,10 @@
 
     byId("attachStudio").addEventListener("click", () => {
       close();
-      if (shell().go) shell().go("studio", { studioPane: "indicator" });
+      if (shell().openInspector) shell().openInspector("ai");
+      const tools = document.getElementById("chatIndicatorWorkspace");
+      if (tools) tools.open = true;
+      if (app().runPaneLoaders) app().runPaneLoaders("indicator");
     });
     byId("attachCommunity").addEventListener("click", () => {
       close();

@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 analytics-core = { workspace = true }
+market-data = { workspace = true }
 strategy-runtime = { workspace = true }
 strategy-dsl = { workspace = true }
 # docs/23: a Pine-lite strategy script is one more `Strategy` source. The

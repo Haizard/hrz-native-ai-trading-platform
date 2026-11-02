@@ -208,6 +208,89 @@ const FVG_PARAMS: &[ConceptParam] = &[ConceptParam {
     description: "the gap's size as a fraction of the middle bar's range",
 }];
 
+/// The standard oscillator window, exposed so a trader can use their own
+/// definition of "short term" without changing the registered detector.
+const PERIOD_PARAM: &[ConceptParam] = &[ConceptParam {
+    name: "period",
+    default: 14.0,
+    min: 2.0,
+    max: 200.0,
+    description: "bars in the measurement window",
+}];
+
+const LONG_PERIOD_PARAM: &[ConceptParam] = &[ConceptParam {
+    name: "period",
+    default: 20.0,
+    min: 2.0,
+    max: 200.0,
+    description: "bars in the measurement window",
+}];
+
+const MACD_PARAMS: &[ConceptParam] = &[
+    ConceptParam {
+        name: "fast_period",
+        default: 12.0,
+        min: 2.0,
+        max: 100.0,
+        description: "fast EMA period",
+    },
+    ConceptParam {
+        name: "slow_period",
+        default: 26.0,
+        min: 3.0,
+        max: 200.0,
+        description: "slow EMA period; must exceed fast_period",
+    },
+    ConceptParam {
+        name: "signal_period",
+        default: 9.0,
+        min: 2.0,
+        max: 100.0,
+        description: "signal smoothing period",
+    },
+];
+
+const BOLLINGER_PARAMS: &[ConceptParam] = &[
+    ConceptParam {
+        name: "period",
+        default: 20.0,
+        min: 2.0,
+        max: 200.0,
+        description: "moving average window",
+    },
+    ConceptParam {
+        name: "deviations",
+        default: 2.0,
+        min: 0.25,
+        max: 5.0,
+        description: "standard deviation band width",
+    },
+];
+
+const STACK_PARAMS: &[ConceptParam] = &[
+    ConceptParam {
+        name: "fast_period",
+        default: 20.0,
+        min: 2.0,
+        max: 100.0,
+        description: "fast moving average period",
+    },
+    ConceptParam {
+        name: "medium_period",
+        default: 50.0,
+        min: 3.0,
+        max: 200.0,
+        description: "medium moving average period",
+    },
+    ConceptParam {
+        name: "slow_period",
+        default: 200.0,
+        min: 4.0,
+        max: 500.0,
+        description: "slow moving average period",
+    },
+];
+
 /// The volume spike tuning.
 const SPIKE_PARAMS: &[ConceptParam] = &[ConceptParam {
     name: "spike_multiple",
@@ -1224,7 +1307,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "RSI",
             description: "Wilder's relative strength index over 14 bars -- the momentum measurement itself, in its own pane with the 30/70 bands",
-            parameters: &[],
+            parameters: PERIOD_PARAM,
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1236,7 +1319,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "RSI Divergence",
             description: "the RSI line plus every confirmed RSI/price divergence in view -- the oscillator and its disagreement with price, one pane",
-            parameters: &[],
+            parameters: PERIOD_PARAM,
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1260,7 +1343,10 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "Stochastic",
             description: "Lane's %K/%D over 14 and 3 -- where the close sits inside its own recent range, with the 80/20 bands",
-            parameters: &[],
+            parameters: &[
+                ConceptParam { name: "period", default: 14.0, min: 2.0, max: 200.0, description: "%K lookback window" },
+                ConceptParam { name: "smooth", default: 3.0, min: 1.0, max: 50.0, description: "%D smoothing window" },
+            ],
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1272,7 +1358,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "CCI",
             description: "Lambert's commodity channel index over 20 -- the typical price's distance from its own mean, in mean deviations",
-            parameters: &[],
+            parameters: LONG_PERIOD_PARAM,
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1284,7 +1370,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "Williams %R",
             description: "the stochastic's mirror on -100..0 -- how far the close sits from the window's high",
-            parameters: &[],
+            parameters: PERIOD_PARAM,
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1296,7 +1382,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "Rate of Change",
             description: "the 12-bar rate of change -- momentum as a plain percentage around the zero line",
-            parameters: &[],
+            parameters: &[ConceptParam { name: "period", default: 12.0, min: 1.0, max: 200.0, description: "bars used to measure price change" }],
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1320,7 +1406,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "ADX",
             description: "Wilder's average directional index with +DI/-DI -- whether a trend exists at all, and which side owns it",
-            parameters: &[],
+            parameters: PERIOD_PARAM,
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1332,7 +1418,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "Bollinger %B + Bandwidth",
             description: "where the close sits inside the bands, beside the bands' own width -- the squeeze made visible",
-            parameters: &[],
+            parameters: BOLLINGER_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1356,7 +1442,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "Donchian Channels",
             description: "the 20-bar highest high and lowest low -- the turtle traders' channel",
-            parameters: &[],
+            parameters: LONG_PERIOD_PARAM,
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: true,
@@ -1644,7 +1730,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "MACD",
             description: "the 12/26 EMA difference, its 9-bar signal, and the histogram between them -- momentum as two lines and bars in one pane",
-            parameters: &[],
+            parameters: MACD_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1656,7 +1742,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "ATR",
             description: "Wilder's average true range over 14 bars -- the volatility measurement itself, one line in its own pane",
-            parameters: &[],
+            parameters: PERIOD_PARAM,
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1668,7 +1754,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "EMA Stack",
             description: "the 20/50/200 exponential averages on the price plot -- the trend stack traders actually watch",
-            parameters: &[],
+            parameters: STACK_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: true,
@@ -1680,7 +1766,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "SMA Stack",
             description: "the 20/50/200 simple averages on the price plot -- the slower read of the same trend",
-            parameters: &[],
+            parameters: STACK_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: true,
@@ -1692,7 +1778,7 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "Bollinger Bands",
             description: "the 20-bar average with its two-sigma bands on the price plot -- volatility as a channel around price",
-            parameters: &[],
+            parameters: BOLLINGER_PARAMS,
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: true,
@@ -2415,6 +2501,34 @@ pub fn concept(id: &str) -> Option<&'static ConceptSpec> {
     concept_registry().iter().find(|c| c.id == id)
 }
 
+/// Immutable archived detector definitions. When a concept receives a new
+/// version, move its previous `ConceptSpec` here without changing its fields;
+/// version-pinned strategies continue to resolve that exact definition.
+///
+/// The registry has not retired any versions yet, so this starts empty. Each
+/// archived entry remains executable through its declared event kinds and the
+/// versioned dispatcher used by `DetectionPlan`.
+pub const ARCHIVED_CONCEPT_VERSIONS: &[ConceptSpec] = &[];
+
+/// Resolve a detector by canonical id and exact version, whether current or
+/// archived. Never substitutes the current version for a missing pin.
+#[must_use]
+pub fn concept_version(id: &str, version: &str) -> Option<&'static ConceptSpec> {
+    let spec = concept_registry()
+        .iter()
+        .chain(ARCHIVED_CONCEPT_VERSIONS.iter())
+        .find(|spec| spec.id == id && spec.version == version)?;
+    if !spec.event_kinds.is_empty() && !analytics_core::events::supports_event_version(version) {
+        return None;
+    }
+    if (spec.pane || spec.overlay)
+        && !analytics_core::indicator_series::supports_indicator_series_version(version)
+    {
+        return None;
+    }
+    Some(spec)
+}
+
 /// The concepts available on one symbol, by the channel rule: a concept is
 /// available exactly when the symbol's product serves every channel the
 /// concept requires. Bare symbols parse as binance:spot.
@@ -2437,6 +2551,18 @@ pub fn as_concept_event(event: &MarketEvent) -> Option<ConceptEvent> {
     let concept = concept_registry()
         .iter()
         .find(|c| c.event_kinds.contains(&event.kind))?;
+    as_concept_event_for(event, concept)
+}
+
+/// Wrap an event using an explicitly resolved concept version.
+#[must_use]
+pub fn as_concept_event_for(
+    event: &MarketEvent,
+    concept: &'static ConceptSpec,
+) -> Option<ConceptEvent> {
+    if !concept.event_kinds.contains(&event.kind) {
+        return None;
+    }
     let direction = match event.side {
         // A break carries the direction of the close; a sweep carries the
         // liquidity's side, and taken sell-side liquidity is bullish evidence.
@@ -2506,7 +2632,11 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), unique, "ids are unique");
         for c in registry {
-            assert!(c.id.starts_with(c.library.prefix()), "{} under its library", c.id);
+            assert!(
+                c.id.starts_with(c.library.prefix()),
+                "{} under its library",
+                c.id
+            );
             assert!(c.version.split('.').count() == 3, "{} semver", c.id);
             // Every declared kind is wrap-able: the catalog must not drift
             // from the engine it consumes.
@@ -2572,135 +2702,161 @@ mod tests {
         assert_eq!(wrapped.zone_low, Some(100.0));
 
         // An FVG is Forming at creation and Expired at fill.
-        let fvg = MarketEvent { kind: EventKind::FvgCreated, ..event };
-        assert_eq!(as_concept_event(&fvg).expect("wraps").status, ConceptStatus::Forming);
-        let fvg = MarketEvent { kind: EventKind::FvgFilled, ..fvg };
-        assert_eq!(as_concept_event(&fvg).expect("wraps").status, ConceptStatus::Expired);
-    }
-#[test]
-fn indicator_signals_map_to_their_concepts() {
-    use analytics_core::events::{EventKind, MarketEvent};
-    use analytics_core::types::{Side, Timeframe};
-    let mk = |kind: EventKind| MarketEvent {
-        kind,
-        symbol: "T".into(),
-        timeframe: Timeframe::H1,
-        bar_time: 1,
-        close: 100.0,
-        price: 100.0,
-        side: Some(Side::Buy),
-        zone_low: Some(99.0),
-        zone_high: Some(101.0),
-        magnitude: None,
-        geometry: None,
-        formed_at: None,
-    };
-    for (kind, want) in [
-        (EventKind::RsiZoneCross, "indicators.rsi"),
-        (EventKind::RsiFamilyConsensus, "indicators.rsi_family"),
-        (EventKind::RsiDivergenceSignal, "indicators.rsi_divergence"),
-        (EventKind::MacdSignalCross, "indicators.macd"),
-        (EventKind::MacdZeroCross, "indicators.macd"),
-        (EventKind::EmaCross, "indicators.ema"),
-        (EventKind::SmaCross, "indicators.sma"),
-        (EventKind::BollingerBreakout, "indicators.bollinger"),
-        (EventKind::AtrExpansion, "indicators.atr"),
-    ] {
-        let mapped = crate::concepts::as_concept_event(&mk(kind));
-        assert!(mapped.is_some(), "{want} maps its signal");
-        assert_eq!(mapped.expect("mapped").concept_id, want);
-    }
-}
-
-#[test]
-fn a_detectors_vertices_ride_the_wire_as_evidence() {
-    use analytics_core::events::{EventGeometry, EventKind, MarketEvent};
-    use analytics_core::types::{Side, Timeframe};
-    let ev = |kind: EventKind, geometry: EventGeometry| MarketEvent {
-        kind,
-        symbol: "T".into(),
-        timeframe: Timeframe::H1,
-        bar_time: 3,
-        close: 100.0,
-        price: 100.0,
-        side: Some(Side::Sell),
-        zone_low: Some(99.0),
-        zone_high: Some(101.0),
-        magnitude: None,
-        geometry: Some(geometry),
-        formed_at: Some(1),
-    };
-    // A chart pattern's pivots travel as points: the router draws the shape
-    // the detector found, not one reconstructed from a level and two bars.
-    let wrapped = as_concept_event(&ev(
-        EventKind::DoubleTopBottom,
-        EventGeometry::path(vec![(1, 101.0), (2, 99.0), (3, 101.0)]),
-    ))
-    .expect("a double top wraps");
-    assert_eq!(
-        wrapped.evidence["points"],
-        serde_json::json!([[1, 101.0], [2, 99.0], [3, 101.0]]),
-        "the pivots, in time order"
-    );
-    // A ladder's rungs and its anchor pair are the measurement itself.
-    let wrapped = as_concept_event(&ev(
-        EventKind::FibRetracement,
-        EventGeometry {
-            points: Vec::new(),
-            rungs: vec![(0.618, 98.0), (0.65, 97.5)],
-            anchors: Some((10, 100.0, 20, 96.0)),
-        },
-    ))
-    .expect("a retracement wraps");
-    assert_eq!(wrapped.evidence["rungs"], serde_json::json!([[0.618, 98.0], [0.65, 97.5]]));
-    assert_eq!(wrapped.evidence["anchors"], serde_json::json!([10, 100.0, 20, 96.0]));
-    // A geometry-less event keeps the wire it always had: no empty keys.
-    let bare = as_concept_event(&ev(EventKind::DoubleTopBottom, EventGeometry::path(Vec::new())))
-        .expect("wraps");
-    assert!(bare.evidence.get("points").is_none(), "an empty rig adds no key");
-    assert!(bare.evidence.get("rungs").is_none());
-    assert!(bare.evidence.get("anchors").is_none());
-}
-
-#[test]
-fn declared_parameter_defaults_are_the_engine_defaults() {
-    use analytics_core::events::EventConfig;
-    let engine = EventConfig::default();
-    let default_of = |id: &str, name: &str| {
-        concept_registry()
-            .iter()
-            .find(|c| c.id == id)
-            .and_then(|c| c.parameters.iter().find(|p| p.name == name))
-            .map(|p| p.default)
-    };
-    // A declared default replayed at another value is a catalog that lies:
-    // the audit measured 10 declared / 3 drawn. Every declared default must
-    // equal the engine's own.
-    for id in ["smc.bos", "smc.choch", "smc.liquidity_sweep"] {
+        let fvg = MarketEvent {
+            kind: EventKind::FvgCreated,
+            ..event
+        };
         assert_eq!(
-            default_of(id, "swing_lookback"),
-            Some(engine.structure_lookback as f64),
-            "{id} draws the engine's swing lookback"
+            as_concept_event(&fvg).expect("wraps").status,
+            ConceptStatus::Forming
+        );
+        let fvg = MarketEvent {
+            kind: EventKind::FvgFilled,
+            ..fvg
+        };
+        assert_eq!(
+            as_concept_event(&fvg).expect("wraps").status,
+            ConceptStatus::Expired
         );
     }
-    assert_eq!(
-        default_of("smc.fvg", "fvg_min_fraction"),
-        Some(engine.fvg_min_fraction)
-    );
-    assert_eq!(
-        default_of("volume.spike", "spike_multiple"),
-        Some(engine.volume_multiplier)
-    );
-    assert_eq!(
-        default_of("order_flow.delta_shift", "spike_multiple"),
-        Some(engine.delta_multiplier)
-    );
-    // The gap lifecycle variants read no config: a declared knob there would
-    // promise tuning that changes nothing.
-    for id in ["smc.ifvg", "smc.bpr"] {
-        let spec = concept_registry().iter().find(|c| c.id == id).expect("registered");
-        assert!(spec.parameters.is_empty(), "{id} declares no parameters");
+    #[test]
+    fn indicator_signals_map_to_their_concepts() {
+        use analytics_core::events::{EventKind, MarketEvent};
+        use analytics_core::types::{Side, Timeframe};
+        let mk = |kind: EventKind| MarketEvent {
+            kind,
+            symbol: "T".into(),
+            timeframe: Timeframe::H1,
+            bar_time: 1,
+            close: 100.0,
+            price: 100.0,
+            side: Some(Side::Buy),
+            zone_low: Some(99.0),
+            zone_high: Some(101.0),
+            magnitude: None,
+            geometry: None,
+            formed_at: None,
+        };
+        for (kind, want) in [
+            (EventKind::RsiZoneCross, "indicators.rsi"),
+            (EventKind::RsiFamilyConsensus, "indicators.rsi_family"),
+            (EventKind::RsiDivergenceSignal, "indicators.rsi_divergence"),
+            (EventKind::MacdSignalCross, "indicators.macd"),
+            (EventKind::MacdZeroCross, "indicators.macd"),
+            (EventKind::EmaCross, "indicators.ema"),
+            (EventKind::SmaCross, "indicators.sma"),
+            (EventKind::BollingerBreakout, "indicators.bollinger"),
+            (EventKind::AtrExpansion, "indicators.atr"),
+        ] {
+            let mapped = crate::concepts::as_concept_event(&mk(kind));
+            assert!(mapped.is_some(), "{want} maps its signal");
+            assert_eq!(mapped.expect("mapped").concept_id, want);
+        }
     }
-}
 
+    #[test]
+    fn a_detectors_vertices_ride_the_wire_as_evidence() {
+        use analytics_core::events::{EventGeometry, EventKind, MarketEvent};
+        use analytics_core::types::{Side, Timeframe};
+        let ev = |kind: EventKind, geometry: EventGeometry| MarketEvent {
+            kind,
+            symbol: "T".into(),
+            timeframe: Timeframe::H1,
+            bar_time: 3,
+            close: 100.0,
+            price: 100.0,
+            side: Some(Side::Sell),
+            zone_low: Some(99.0),
+            zone_high: Some(101.0),
+            magnitude: None,
+            geometry: Some(geometry),
+            formed_at: Some(1),
+        };
+        // A chart pattern's pivots travel as points: the router draws the shape
+        // the detector found, not one reconstructed from a level and two bars.
+        let wrapped = as_concept_event(&ev(
+            EventKind::DoubleTopBottom,
+            EventGeometry::path(vec![(1, 101.0), (2, 99.0), (3, 101.0)]),
+        ))
+        .expect("a double top wraps");
+        assert_eq!(
+            wrapped.evidence["points"],
+            serde_json::json!([[1, 101.0], [2, 99.0], [3, 101.0]]),
+            "the pivots, in time order"
+        );
+        // A ladder's rungs and its anchor pair are the measurement itself.
+        let wrapped = as_concept_event(&ev(
+            EventKind::FibRetracement,
+            EventGeometry {
+                points: Vec::new(),
+                rungs: vec![(0.618, 98.0), (0.65, 97.5)],
+                anchors: Some((10, 100.0, 20, 96.0)),
+            },
+        ))
+        .expect("a retracement wraps");
+        assert_eq!(
+            wrapped.evidence["rungs"],
+            serde_json::json!([[0.618, 98.0], [0.65, 97.5]])
+        );
+        assert_eq!(
+            wrapped.evidence["anchors"],
+            serde_json::json!([10, 100.0, 20, 96.0])
+        );
+        // A geometry-less event keeps the wire it always had: no empty keys.
+        let bare = as_concept_event(&ev(
+            EventKind::DoubleTopBottom,
+            EventGeometry::path(Vec::new()),
+        ))
+        .expect("wraps");
+        assert!(
+            bare.evidence.get("points").is_none(),
+            "an empty rig adds no key"
+        );
+        assert!(bare.evidence.get("rungs").is_none());
+        assert!(bare.evidence.get("anchors").is_none());
+    }
+
+    #[test]
+    fn declared_parameter_defaults_are_the_engine_defaults() {
+        use analytics_core::events::EventConfig;
+        let engine = EventConfig::default();
+        let default_of = |id: &str, name: &str| {
+            concept_registry()
+                .iter()
+                .find(|c| c.id == id)
+                .and_then(|c| c.parameters.iter().find(|p| p.name == name))
+                .map(|p| p.default)
+        };
+        // A declared default replayed at another value is a catalog that lies:
+        // the audit measured 10 declared / 3 drawn. Every declared default must
+        // equal the engine's own.
+        for id in ["smc.bos", "smc.choch", "smc.liquidity_sweep"] {
+            assert_eq!(
+                default_of(id, "swing_lookback"),
+                Some(engine.structure_lookback as f64),
+                "{id} draws the engine's swing lookback"
+            );
+        }
+        assert_eq!(
+            default_of("smc.fvg", "fvg_min_fraction"),
+            Some(engine.fvg_min_fraction)
+        );
+        assert_eq!(
+            default_of("volume.spike", "spike_multiple"),
+            Some(engine.volume_multiplier)
+        );
+        assert_eq!(
+            default_of("order_flow.delta_shift", "spike_multiple"),
+            Some(engine.delta_multiplier)
+        );
+        // The gap lifecycle variants read no config: a declared knob there would
+        // promise tuning that changes nothing.
+        for id in ["smc.ifvg", "smc.bpr"] {
+            let spec = concept_registry()
+                .iter()
+                .find(|c| c.id == id)
+                .expect("registered");
+            assert!(spec.parameters.is_empty(), "{id} declares no parameters");
+        }
+    }
 }

@@ -379,15 +379,23 @@ pub fn warnings(doc: &Composition) -> Vec<String> {
     let mut warnings = Vec::new();
     // Direction contradictions within one `all` tree: a concept required
     // bullish in one branch and bearish in another can never hold together.
-    fn collect_directions(cond: &Condition, out: &mut Vec<(String, DirectionReq, String)>, path: &str) {
+    fn collect_directions(
+        cond: &Condition,
+        out: &mut Vec<(String, DirectionReq, String)>,
+        path: &str,
+    ) {
         match cond {
-            Condition::Concept { concept, direction, .. } => out.push((concept.clone(), *direction, path.to_string())),
+            Condition::Concept {
+                concept, direction, ..
+            } => out.push((concept.clone(), *direction, path.to_string())),
             Condition::All { conditions } | Condition::Any { conditions } => {
                 for (i, c) in conditions.iter().enumerate() {
                     collect_directions(c, out, &format!("{path}.conditions[{i}]"));
                 }
             }
-            Condition::Not { condition } => collect_directions(condition, out, &format!("{path}.condition")),
+            Condition::Not { condition } => {
+                collect_directions(condition, out, &format!("{path}.condition"))
+            }
             Condition::Sequence { steps, .. } => {
                 for (i, step) in steps.iter().enumerate() {
                     collect_directions(&step.condition, out, &format!("{path}.steps[{i}]"));
@@ -401,7 +409,8 @@ pub fn warnings(doc: &Composition) -> Vec<String> {
     if let Condition::All { .. } = doc.conditions {
         for a in &directions {
             for b in &directions {
-                if a.0 == b.0 && a.1 != b.1 && a.1 != DirectionReq::Any && b.1 != DirectionReq::Any {
+                if a.0 == b.0 && a.1 != b.1 && a.1 != DirectionReq::Any && b.1 != DirectionReq::Any
+                {
                     warnings.push(format!(
                         "contradiction: `{}` is required {:?} and {:?} in one `all` -- it can never hold",
                         a.0, a.1, b.1
@@ -413,10 +422,27 @@ pub fn warnings(doc: &Composition) -> Vec<String> {
     // Duplicate measurements: conditions from this known-overlap table measure
     // the same quantity under two names.
     const OVERLAP: &[(&[&str], &str)] = &[
-        (&["indicators.rsi", "indicators.stochastic", "indicators.williams_r", "indicators.mfi"], "the same oscillator zone under different names"),
-        (&["indicators.ema", "indicators.sma"], "two moving-average families measuring the same trend"),
-        (&["smc.fvg", "smc.bpr"], "two imbalance measurements with heavy overlap"),
-        (&["indicators.atr", "indicators.bollinger_percent"], "two volatility-width measurements"),
+        (
+            &[
+                "indicators.rsi",
+                "indicators.stochastic",
+                "indicators.williams_r",
+                "indicators.mfi",
+            ],
+            "the same oscillator zone under different names",
+        ),
+        (
+            &["indicators.ema", "indicators.sma"],
+            "two moving-average families measuring the same trend",
+        ),
+        (
+            &["smc.fvg", "smc.bpr"],
+            "two imbalance measurements with heavy overlap",
+        ),
+        (
+            &["indicators.atr", "indicators.bollinger_percent"],
+            "two volatility-width measurements",
+        ),
     ];
     let mut concept_ids: Vec<String> = Vec::new();
     fn collect_ids(cond: &Condition, out: &mut Vec<String>) {
@@ -440,18 +466,27 @@ pub fn warnings(doc: &Composition) -> Vec<String> {
     }
     collect_ids(&doc.conditions, &mut concept_ids);
     for (group, reason) in OVERLAP {
-        let hits: Vec<&&str> = group.iter().filter(|id| concept_ids.iter().any(|c| c == **id)).collect();
+        let hits: Vec<&&str> = group
+            .iter()
+            .filter(|id| concept_ids.iter().any(|c| c == **id))
+            .collect();
         if hits.len() > 1 {
             warnings.push(format!(
                 "duplicate measurement: {} in one tree -- {}",
-                hits.iter().map(|h| format!("`{h}`")).collect::<Vec<_>>().join(" and "),
+                hits.iter()
+                    .map(|h| format!("`{h}`"))
+                    .collect::<Vec<_>>()
+                    .join(" and "),
                 reason
             ));
         }
     }
     // The sequence gap trap: a step's own lookback longer than the
     // sequence's max_bars means the step can outlive the sequence itself.
-    if let Condition::Sequence { steps, max_bars, .. } = &doc.conditions {
+    if let Condition::Sequence {
+        steps, max_bars, ..
+    } = &doc.conditions
+    {
         for (i, step) in steps.iter().enumerate() {
             if step.lookback_bars.is_some_and(|lb| lb > *max_bars) {
                 warnings.push(format!(
@@ -473,10 +508,17 @@ pub fn validate(doc: &Composition) -> Result<(), Vec<ValidationError>> {
             message: "a composition needs a name".to_string(),
         });
     }
-    if doc.timeframe.parse::<analytics_core::types::Timeframe>().is_err() {
+    if doc
+        .timeframe
+        .parse::<analytics_core::types::Timeframe>()
+        .is_err()
+    {
         errors.push(ValidationError {
             path: "timeframe".to_string(),
-            message: format!("`{}` is not a timeframe this platform serves", doc.timeframe),
+            message: format!(
+                "`{}` is not a timeframe this platform serves",
+                doc.timeframe
+            ),
         });
     }
     validate_condition(&doc.conditions, "conditions", 0, &mut errors);
@@ -484,10 +526,17 @@ pub fn validate(doc: &Composition) -> Result<(), Vec<ValidationError>> {
     // 4h bars; a 4h series cannot make 1m bars). A condition below the
     // document's own timeframe would silently never see an event.
     if let Ok(base) = doc.timeframe.parse::<analytics_core::types::Timeframe>() {
-        fn check_down(cond: &Condition, base: analytics_core::types::Timeframe, path: &str, errors: &mut Vec<ValidationError>) {
+        fn check_down(
+            cond: &Condition,
+            base: analytics_core::types::Timeframe,
+            path: &str,
+            errors: &mut Vec<ValidationError>,
+        ) {
             let tf = match cond {
-                Condition::Concept { timeframe, .. } | Condition::Retrace { timeframe, .. }
-                | Condition::PriceVs { timeframe, .. } | Condition::Indicator { timeframe, .. }
+                Condition::Concept { timeframe, .. }
+                | Condition::Retrace { timeframe, .. }
+                | Condition::PriceVs { timeframe, .. }
+                | Condition::Indicator { timeframe, .. }
                 | Condition::Magnitude { timeframe, .. } => timeframe.clone(),
                 _ => None,
             };
@@ -510,7 +559,9 @@ pub fn validate(doc: &Composition) -> Result<(), Vec<ValidationError>> {
                         check_down(c, base, &format!("{path}.conditions[{i}]"), errors);
                     }
                 }
-                Condition::Not { condition } => check_down(condition, base, &format!("{path}.condition"), errors),
+                Condition::Not { condition } => {
+                    check_down(condition, base, &format!("{path}.condition"), errors)
+                }
                 Condition::Sequence { steps, .. } => {
                     for (i, step) in steps.iter().enumerate() {
                         check_down(&step.condition, base, &format!("{path}.steps[{i}]"), errors);
@@ -548,13 +599,22 @@ pub fn validate(doc: &Composition) -> Result<(), Vec<ValidationError>> {
         }
         _ => {}
     }
-    if errors.is_empty() { Ok(()) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// The deepest a tree may nest (sequence steps inside groups inside groups).
 const MAX_DEPTH: usize = 8;
 
-fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut Vec<ValidationError>) {
+fn validate_condition(
+    cond: &Condition,
+    path: &str,
+    depth: usize,
+    errors: &mut Vec<ValidationError>,
+) {
     if depth > MAX_DEPTH {
         errors.push(ValidationError {
             path: path.to_string(),
@@ -563,7 +623,12 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
         return;
     }
     match cond {
-        Condition::Magnitude { concept, value, lookback_bars, .. } => {
+        Condition::Magnitude {
+            concept,
+            value,
+            lookback_bars,
+            ..
+        } => {
             if crate::concepts::concept(concept).is_none() {
                 errors.push(ValidationError {
                     path: path.to_string(),
@@ -583,11 +648,35 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
                 });
             }
         }
-        Condition::Indicator { indicator, relation, level, .. } => {
+        Condition::Indicator {
+            indicator,
+            relation,
+            level,
+            ..
+        } => {
             let id = indicator.strip_prefix("indicators.").unwrap_or(indicator);
             let known = [
-                "rsi", "ema", "sma", "macd", "supertrend", "keltner", "bollinger", "vwap", "adx", "atr",
-                "stochastic", "cci", "williams_r", "roc", "obv", "cmf", "mfi", "ad_line", "tsi", "psar", "donchian",
+                "rsi",
+                "ema",
+                "sma",
+                "macd",
+                "supertrend",
+                "keltner",
+                "bollinger",
+                "vwap",
+                "adx",
+                "atr",
+                "stochastic",
+                "cci",
+                "williams_r",
+                "roc",
+                "obv",
+                "cmf",
+                "mfi",
+                "ad_line",
+                "tsi",
+                "psar",
+                "donchian",
             ];
             let base = id.split('.').next().unwrap_or(id);
             if !known.contains(&base) {
@@ -596,14 +685,21 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
                     message: format!("`{indicator}` is not an indicator this platform serves (known: rsi, ema, sma, macd, supertrend, keltner, bollinger, vwap, adx, atr, stochastic, cci, williams_r, roc, obv, cmf, mfi, ad_line, tsi, psar, donchian)"),
                 });
             }
-            if matches!(relation, IndicatorRelation::Above | IndicatorRelation::Below | IndicatorRelation::Cross) && level.is_none() {
+            if matches!(
+                relation,
+                IndicatorRelation::Above | IndicatorRelation::Below | IndicatorRelation::Cross
+            ) && level.is_none()
+            {
                 errors.push(ValidationError {
                     path: path.to_string(),
                     message: "a threshold relation needs a constant `level`".to_string(),
                 });
             }
         }
-        Condition::TimeWindow { start_hour, end_hour } => {
+        Condition::TimeWindow {
+            start_hour,
+            end_hour,
+        } => {
             if *start_hour > 23 || *end_hour > 24 {
                 errors.push(ValidationError {
                     path: path.to_string(),
@@ -617,7 +713,12 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
                 });
             }
         }
-        Condition::PriceVs { concept, lookback_bars, tolerance, .. } => {
+        Condition::PriceVs {
+            concept,
+            lookback_bars,
+            tolerance,
+            ..
+        } => {
             if crate::concepts::concept(concept).is_none() {
                 errors.push(ValidationError {
                     path: path.to_string(),
@@ -627,7 +728,8 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
             if *tolerance < 0.0 || *tolerance > 0.5 {
                 errors.push(ValidationError {
                     path: path.to_string(),
-                    message: "tolerance must be between 0 and 0.5 (a fraction of the level)".to_string(),
+                    message: "tolerance must be between 0 and 0.5 (a fraction of the level)"
+                        .to_string(),
                 });
             }
             if lookback_bars.is_some_and(|w| w == 0) {
@@ -637,7 +739,11 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
                 });
             }
         }
-        Condition::Concept { concept, lookback_bars, .. } => {
+        Condition::Concept {
+            concept,
+            lookback_bars,
+            ..
+        } => {
             if crate::concepts::concept(concept).is_none() {
                 errors.push(ValidationError {
                     path: path.to_string(),
@@ -673,7 +779,11 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
         Condition::Not { condition } => {
             validate_condition(condition, &format!("{path}.condition"), depth + 1, errors);
         }
-        Condition::Sequence { steps, max_bars, expires_after_bars } => {
+        Condition::Sequence {
+            steps,
+            max_bars,
+            expires_after_bars,
+        } => {
             if expires_after_bars.is_some_and(|w| w == 0) {
                 errors.push(ValidationError {
                     path: path.to_string(),
@@ -693,15 +803,111 @@ fn validate_condition(cond: &Condition, path: &str, depth: usize, errors: &mut V
                 });
             }
             for (i, step) in steps.iter().enumerate() {
-                validate_condition(&step.condition, &format!("{path}.steps[{i}]"), depth + 1, errors);
+                validate_condition(
+                    &step.condition,
+                    &format!("{path}.steps[{i}]"),
+                    depth + 1,
+                    errors,
+                );
             }
         }
     }
 }
 
 /// Per-concept parameter overrides: concept id → parameter name → value.
-pub type ParameterMap =
-    std::collections::HashMap<String, std::collections::HashMap<String, f64>>;
+pub type ParameterMap = std::collections::HashMap<String, std::collections::HashMap<String, f64>>;
+
+/// A strategy-facing snapshot of one registry detector at a candle close.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RegistryReading {
+    /// Whether the detector produced any event in the visible history.
+    pub exists: bool,
+    /// Whether its newest event belongs to the current candle.
+    pub fresh: bool,
+    /// Newest event's upper edge, or point level.
+    pub top: Option<f64>,
+    /// Newest event's lower edge, or point level.
+    pub bottom: Option<f64>,
+    /// Latest value for indicator-series concepts.
+    pub value: Option<f64>,
+    /// Newest evidence's mitigation measurement when provided.
+    pub mitigated: Option<f64>,
+}
+
+/// Evaluate declared registry states on a closed-candle history. Names are
+/// trader-local; detector IDs and versions stay canonical and pinned.
+pub fn registry_readings(
+    candles: &[analytics_core::types::Candle],
+    symbol: &str,
+    states: &[(&str, &str, &str, &std::collections::HashMap<String, f64>)],
+) -> Result<std::collections::BTreeMap<String, RegistryReading>, String> {
+    if candles.is_empty() || states.is_empty() {
+        return Ok(std::collections::BTreeMap::new());
+    }
+    let mut parameters = ParameterMap::new();
+    let mut versions = std::collections::HashMap::new();
+    for (_, id, version, overrides) in states {
+        let spec = crate::concepts::concept_version(id, version).ok_or_else(|| {
+            format!("unknown or unarchived registry concept version `{id}@{version}`")
+        })?;
+        parameters.insert((*id).to_string(), (*overrides).clone());
+        versions.insert((*id).to_string(), (*version).to_string());
+        let _ = spec;
+    }
+    if let Some(issue) = validate_parameters_for_versions(&parameters, &versions)
+        .into_iter()
+        .next()
+    {
+        return Err(format!("{}: {}", issue.path, issue.message));
+    }
+    let pinned: Vec<(String, String)> = states
+        .iter()
+        .map(|(_, id, version, _)| ((*id).to_string(), (*version).to_string()))
+        .collect();
+    let plan = DetectionPlan::for_versioned_concepts(&parameters, &pinned)?;
+    let events = plan.detect(candles, symbol);
+    let current_time = candles.last().map(|c| c.open_time).unwrap_or_default();
+    let mut readings = std::collections::BTreeMap::new();
+    for (name, id, version, _) in states {
+        let newest = events.iter().rev().find(|event| event.concept_id == *id);
+        let mut reading = newest.map_or_else(RegistryReading::default, |event| RegistryReading {
+            exists: true,
+            fresh: event.event_time_ns == current_time,
+            top: event.zone_high.or(event.price_level),
+            bottom: event.zone_low.or(event.price_level),
+            value: None,
+            mitigated: event
+                .evidence
+                .get("mitigated")
+                .and_then(serde_json::Value::as_f64),
+        });
+        let params = states
+            .iter()
+            .find(|(candidate, _, _, _)| *candidate == *name)
+            .map(|(_, _, _, params)| *params);
+        let empty_params = std::collections::HashMap::new();
+        if let Some(series) = analytics_core::indicator_series::indicator_series_for_version(
+            id,
+            version,
+            candles,
+            params.unwrap_or(&empty_params),
+        ) {
+            reading.value = series
+                .lines
+                .first()
+                .and_then(|line| line.values.last().copied().flatten())
+                .or_else(|| {
+                    series
+                        .bars
+                        .as_ref()
+                        .and_then(|bars| bars.values.last().copied().flatten())
+                });
+            reading.exists |= reading.value.is_some();
+        }
+        readings.insert((*name).to_string(), reading);
+    }
+    Ok(readings)
+}
 
 /// The detection configurations a parameter map asks for, grouped so one
 /// replay serves every concept that shares a config.
@@ -720,7 +926,8 @@ pub struct DetectionPlan {
 #[derive(Debug, Clone)]
 struct DetectionGroup {
     config: analytics_core::events::EventConfig,
-    concepts: Vec<&'static str>,
+    version: &'static str,
+    concepts: Vec<&'static crate::concepts::ConceptSpec>,
 }
 
 impl DetectionPlan {
@@ -728,14 +935,56 @@ impl DetectionPlan {
     /// backscan, which has no composition to narrow the set.
     #[must_use]
     pub fn for_catalog(parameters: &ParameterMap) -> Self {
+        Self::for_specs(
+            parameters,
+            crate::concepts::concept_registry().iter().collect(),
+        )
+    }
+
+    /// The selected registry concepts under their declared parameter overrides.
+    #[must_use]
+    pub fn for_concepts(parameters: &ParameterMap, concept_ids: &[String]) -> Self {
+        Self::for_specs(
+            parameters,
+            crate::concepts::concept_registry()
+                .iter()
+                .filter(|spec| concept_ids.iter().any(|id| id == spec.id))
+                .collect(),
+        )
+    }
+
+    /// Resolve exact current or archived concept versions for execution.
+    pub fn for_versioned_concepts(
+        parameters: &ParameterMap,
+        versions: &[(String, String)],
+    ) -> Result<Self, String> {
+        let specs: Vec<&'static crate::concepts::ConceptSpec> = versions
+            .iter()
+            .map(|(id, version)| {
+                crate::concepts::concept_version(id, version).ok_or_else(|| {
+                    format!("unknown or unarchived registry concept version `{id}@{version}`")
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self::for_specs(parameters, specs))
+    }
+
+    fn for_specs(
+        parameters: &ParameterMap,
+        specs: Vec<&'static crate::concepts::ConceptSpec>,
+    ) -> Self {
         let mut groups: Vec<DetectionGroup> = Vec::new();
-        for spec in crate::concepts::concept_registry() {
+        for spec in specs {
             let config = config_for(spec.id, parameters);
-            match groups.iter_mut().find(|group| group.config == config) {
-                Some(group) => group.concepts.push(spec.id),
+            match groups
+                .iter_mut()
+                .find(|group| group.config == config && group.version == spec.version)
+            {
+                Some(group) => group.concepts.push(spec),
                 None => groups.push(DetectionGroup {
                     config,
-                    concepts: vec![spec.id],
+                    version: spec.version,
+                    concepts: vec![spec],
                 }),
             }
         }
@@ -750,7 +999,7 @@ impl DetectionPlan {
     pub fn config_for(&self, concept_id: &str) -> Option<analytics_core::events::EventConfig> {
         self.groups
             .iter()
-            .find(|group| group.concepts.contains(&concept_id))
+            .find(|group| group.concepts.iter().any(|spec| spec.id == concept_id))
             .map(|group| group.config)
     }
 
@@ -767,16 +1016,23 @@ impl DetectionPlan {
         use analytics_core::events::EventKind;
         let mut kept = Vec::new();
         for group in &self.groups {
-            for event in analytics_core::events::detect_events(candles, symbol, &group.config) {
-                let Some(concept_event) = crate::concepts::as_concept_event(&event) else {
-                    continue;
-                };
-                if self.partitioned
-                    && !group.concepts.contains(&concept_event.concept_id.as_str())
+            for event in analytics_core::events::detect_events_for_version(
+                group.version,
+                candles,
+                symbol,
+                &group.config,
+            ) {
+                if let Some(spec) = group
+                    .concepts
+                    .iter()
+                    .find(|spec| spec.event_kinds.contains(&event.kind))
                 {
-                    continue;
+                    let Some(concept_event) = crate::concepts::as_concept_event_for(&event, spec)
+                    else {
+                        continue;
+                    };
+                    kept.push((event.kind, concept_event));
                 }
-                kept.push((event.kind, concept_event));
             }
         }
         if self.partitioned {
@@ -824,9 +1080,28 @@ fn apply_parameters(
 /// become a different strategy.
 #[must_use]
 pub fn validate_parameters(parameters: &ParameterMap) -> Vec<ValidationError> {
+    validate_parameters_for_versions(parameters, &std::collections::HashMap::new())
+}
+
+/// Validate parameter values against each explicitly pinned concept version.
+#[must_use]
+pub fn validate_parameters_for_versions(
+    parameters: &ParameterMap,
+    versions: &std::collections::HashMap<String, String>,
+) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     for (concept_id, params) in parameters {
-        match crate::concepts::concept(concept_id) {
+        let resolved = versions
+            .get(concept_id)
+            .and_then(|version| crate::concepts::concept_version(concept_id, version))
+            .or_else(|| {
+                if versions.contains_key(concept_id) {
+                    None
+                } else {
+                    crate::concepts::concept(concept_id)
+                }
+            });
+        match resolved {
             None => errors.push(ValidationError {
                 path: format!("parameters.{concept_id}"),
                 message: format!("`{concept_id}` is not a registered concept"),
@@ -847,8 +1122,40 @@ pub fn validate_parameters(parameters: &ParameterMap) -> Vec<ValidationError> {
                                 ),
                             })
                         }
-                        _ => {}
+                        _ => {
+                            if (name == "period" || name == "smooth" || name.ends_with("_period"))
+                                && value.fract() != 0.0
+                            {
+                                errors.push(ValidationError {
+                                    path: format!("parameters.{concept_id}.{name}"),
+                                    message: format!("{name} must be a whole number"),
+                                });
+                            }
+                        }
                     }
+                }
+                let value = |name: &str, default: f64| params.get(name).copied().unwrap_or(default);
+                let invalid_order = match concept_id.as_str() {
+                    "indicators.macd" => {
+                        value("fast_period", 12.0) >= value("slow_period", 26.0)
+                            || value("signal_period", 9.0) >= value("slow_period", 26.0)
+                    }
+                    "indicators.ema" | "indicators.sma" => {
+                        value("fast_period", 20.0) >= value("medium_period", 50.0)
+                            || value("medium_period", 50.0) >= value("slow_period", 200.0)
+                    }
+                    _ => false,
+                };
+                if invalid_order {
+                    errors.push(ValidationError {
+                        path: format!("parameters.{concept_id}"),
+                        message: if concept_id == "indicators.macd" {
+                            "fast_period and signal_period must be less than slow_period"
+                                .to_string()
+                        } else {
+                            "moving-average periods must be in increasing order".to_string()
+                        },
+                    });
                 }
             }
         }
@@ -903,7 +1210,10 @@ impl Composer {
         collect_leaves(&doc.conditions, &mut leaves);
         Self {
             doc,
-            leaves: leaves.into_iter().map(|key| (key, LeafState::default())).collect(),
+            leaves: leaves
+                .into_iter()
+                .map(|key| (key, LeafState::default()))
+                .collect(),
             fired: false,
             last_close: None,
             prev_close: None,
@@ -921,7 +1231,8 @@ impl Composer {
     /// The indicator values for one leaf at the current bar (and the
     /// previous bar), set by the caller alongside each bar's events.
     pub fn set_indicator_values(&mut self, key: &str, current: Option<f64>, previous: Option<f64>) {
-        self.indicator_values.insert(key.to_string(), (current, previous));
+        self.indicator_values
+            .insert(key.to_string(), (current, previous));
     }
 
     /// The newest bar's own time, for the TimeWindow condition.
@@ -940,9 +1251,19 @@ impl Composer {
     /// Feed the events of one bar (bar index `bar`) for one timeframe
     /// (None = the document's own), then evaluate. Returns a signal exactly
     /// on the satisfaction edge.
-    pub fn on_bar(&mut self, bar: usize, events: &[ConceptEvent], timeframe: Option<&str>, symbol: Option<&str>) -> Option<Signal> {
+    pub fn on_bar(
+        &mut self,
+        bar: usize,
+        events: &[ConceptEvent],
+        timeframe: Option<&str>,
+        symbol: Option<&str>,
+    ) -> Option<Signal> {
         for event in events {
-            let key = (symbol.map(str::to_string), timeframe.map(str::to_string), event.concept_id.clone());
+            let key = (
+                symbol.map(str::to_string),
+                timeframe.map(str::to_string),
+                event.concept_id.clone(),
+            );
             if let Some((_, state)) = self.leaves.iter_mut().find(|(id, _)| id == &key) {
                 // The newest matching event wins the slot; an older one must
                 // not overwrite it (events of one bar arrive unordered).
@@ -951,7 +1272,11 @@ impl Composer {
                 if let (Some(lo), Some(hi)) = (event.zone_low, event.zone_high) {
                     state.zone = Some((lo, hi));
                 }
-                if let Some(m) = event.evidence.get("magnitude").and_then(serde_json::Value::as_f64) {
+                if let Some(m) = event
+                    .evidence
+                    .get("magnitude")
+                    .and_then(serde_json::Value::as_f64)
+                {
                     state.magnitude = Some(m);
                 }
             }
@@ -970,7 +1295,10 @@ impl Composer {
             if let Some((lo, hi)) = state.zone {
                 if let Some(close) = self.last_close {
                     if close >= lo && close <= hi {
-                        retrace_latches.push(((key.0.clone(), key.1.clone(), format!("retrace:{}", key.2)), bar));
+                        retrace_latches.push((
+                            (key.0.clone(), key.1.clone(), format!("retrace:{}", key.2)),
+                            bar,
+                        ));
                     }
                 }
             }
@@ -1004,7 +1332,12 @@ impl Composer {
         self.leaves
             .iter()
             .find(|(id, _)| id == key)
-            .and_then(|(_, state)| state.satisfied_at.filter(|at| bar - at <= lookback).map(|at| (at, state.level)))
+            .and_then(|(_, state)| {
+                state
+                    .satisfied_at
+                    .filter(|at| bar - at <= lookback)
+                    .map(|at| (at, state.level))
+            })
     }
 
     /// The newest zone of a leaf: (its bar, low, high) when it has one.
@@ -1030,15 +1363,30 @@ impl Composer {
 
     fn eval(&self, cond: &Condition, bar: usize) -> bool {
         match cond {
-            Condition::Concept { concept, timeframe, symbol, lookback_bars, min_bars_since, .. } => {
+            Condition::Concept {
+                concept,
+                timeframe,
+                symbol,
+                lookback_bars,
+                min_bars_since,
+                ..
+            } => {
                 let lookback = lookback_bars.unwrap_or(DEFAULT_LOOKBACK_BARS);
                 let min_age = min_bars_since.unwrap_or(0);
-                match self.leaf(&(symbol.clone(), timeframe.clone(), concept.clone()), lookback, bar) {
+                match self.leaf(
+                    &(symbol.clone(), timeframe.clone(), concept.clone()),
+                    lookback,
+                    bar,
+                ) {
                     Some((at, _)) => bar - at >= min_age && bar - at <= lookback,
                     None => false,
                 }
             }
-            Condition::Retrace { into, timeframe, lookback_bars } => {
+            Condition::Retrace {
+                into,
+                timeframe,
+                lookback_bars,
+            } => {
                 let lookback = lookback_bars.unwrap_or(20);
                 // The retrace LATCHES: the bar the close first entered the
                 // zone is the event, and it counts for the lookback's whole
@@ -1056,7 +1404,13 @@ impl Composer {
                     None => false,
                 }
             }
-            Condition::PriceVs { side, concept, timeframe, lookback_bars, tolerance } => {
+            Condition::PriceVs {
+                side,
+                concept,
+                timeframe,
+                lookback_bars,
+                tolerance,
+            } => {
                 let lookback = lookback_bars.unwrap_or(20);
                 let key = (None, timeframe.clone(), concept.clone());
                 match self.leaf(&key, lookback, bar) {
@@ -1075,7 +1429,12 @@ impl Composer {
                     _ => false,
                 }
             }
-            Condition::Indicator { indicator, relation, level, timeframe } => {
+            Condition::Indicator {
+                indicator,
+                relation,
+                level,
+                timeframe,
+            } => {
                 let key = match timeframe {
                     Some(tf) => format!("{tf}:{indicator}"),
                     None => indicator.clone(),
@@ -1086,7 +1445,9 @@ impl Composer {
                     .copied()
                     .unwrap_or((None, None));
                 match relation {
-                    IndicatorRelation::Above | IndicatorRelation::Below | IndicatorRelation::Cross => {
+                    IndicatorRelation::Above
+                    | IndicatorRelation::Below
+                    | IndicatorRelation::Cross => {
                         let (Some(c), Some(l)) = (current, *level) else {
                             return false;
                         };
@@ -1099,26 +1460,44 @@ impl Composer {
                             }
                         }
                     }
-                    IndicatorRelation::TouchDown | IndicatorRelation::TouchUp | IndicatorRelation::CrossLine => {
+                    IndicatorRelation::TouchDown
+                    | IndicatorRelation::TouchUp
+                    | IndicatorRelation::CrossLine => {
                         let (Some(c), Some(close)) = (current, self.last_close) else {
                             return false;
                         };
                         let prev_close = self.prev_close.unwrap_or(close);
                         match relation {
-                            IndicatorRelation::TouchDown => close >= c && prev_close >= c && close <= c * 1.001,
-                            IndicatorRelation::TouchUp => close <= c && prev_close <= c && close >= c * 0.999,
-                            IndicatorRelation::CrossLine => (prev_close - c).signum() != (close - c).signum(),
+                            IndicatorRelation::TouchDown => {
+                                close >= c && prev_close >= c && close <= c * 1.001
+                            }
+                            IndicatorRelation::TouchUp => {
+                                close <= c && prev_close <= c && close >= c * 0.999
+                            }
+                            IndicatorRelation::CrossLine => {
+                                (prev_close - c).signum() != (close - c).signum()
+                            }
                             _ => unreachable!(),
                         }
                     }
                 }
             }
-            Condition::Magnitude { concept, op, value, timeframe, lookback_bars } => {
+            Condition::Magnitude {
+                concept,
+                op,
+                value,
+                timeframe,
+                lookback_bars,
+            } => {
                 let lookback = lookback_bars.unwrap_or(20);
                 let key = (None, timeframe.clone(), concept.clone());
                 match self.leaf(&key, lookback, bar) {
                     Some((_, _)) => {
-                        let m = self.leaves.iter().find(|(id, _)| id == &key).and_then(|(_, st)| st.magnitude);
+                        let m = self
+                            .leaves
+                            .iter()
+                            .find(|(id, _)| id == &key)
+                            .and_then(|(_, st)| st.magnitude);
                         match m {
                             Some(m) => match op {
                                 MagnitudeOp::Above => m >= *value,
@@ -1130,7 +1509,10 @@ impl Composer {
                     None => false,
                 }
             }
-            Condition::TimeWindow { start_hour, end_hour } => {
+            Condition::TimeWindow {
+                start_hour,
+                end_hour,
+            } => {
                 const HOUR_NS: i64 = 3_600_000_000_000;
                 const DAY_NS: i64 = 24 * HOUR_NS;
                 match self.bar_time {
@@ -1148,9 +1530,11 @@ impl Composer {
             Condition::All { conditions } => conditions.iter().all(|c| self.eval(c, bar)),
             Condition::Any { conditions } => conditions.iter().any(|c| self.eval(c, bar)),
             Condition::Not { condition } => !self.eval(condition, bar),
-            Condition::Sequence { steps, max_bars, expires_after_bars } => {
-                self.eval_sequence_expiring(steps, *max_bars, *expires_after_bars, bar)
-            }
+            Condition::Sequence {
+                steps,
+                max_bars,
+                expires_after_bars,
+            } => self.eval_sequence_expiring(steps, *max_bars, *expires_after_bars, bar),
         }
     }
 
@@ -1161,7 +1545,13 @@ impl Composer {
         self.eval_sequence_expiring(steps, max_bars, None, bar)
     }
 
-    fn eval_sequence_expiring(&self, steps: &[SequenceStep], max_bars: usize, expires: Option<usize>, bar: usize) -> bool {
+    fn eval_sequence_expiring(
+        &self,
+        steps: &[SequenceStep],
+        max_bars: usize,
+        expires: Option<usize>,
+        bar: usize,
+    ) -> bool {
         let mut previous: Option<usize> = None;
         let mut first_at: Option<usize> = None;
         for step in steps {
@@ -1190,20 +1580,55 @@ impl Composer {
 
     /// The bar a condition's newest required satisfaction sits at (for
     /// sequence ordering), or None when it does not hold.
-    fn condition_bar(&self, cond: &Condition, lookback: Option<usize>, bar: usize) -> Option<usize> {
+    fn condition_bar(
+        &self,
+        cond: &Condition,
+        lookback: Option<usize>,
+        bar: usize,
+    ) -> Option<usize> {
         let default = lookback.unwrap_or(DEFAULT_LOOKBACK_BARS);
         match cond {
-            Condition::Concept { concept, timeframe, symbol, lookback_bars, .. } => {
-                self.leaf(&(symbol.clone(), timeframe.clone(), concept.clone()), lookback_bars.or(lookback).unwrap_or(default), bar).map(|(at, _)| at)
-            }
+            Condition::Concept {
+                concept,
+                timeframe,
+                symbol,
+                lookback_bars,
+                ..
+            } => self
+                .leaf(
+                    &(symbol.clone(), timeframe.clone(), concept.clone()),
+                    lookback_bars.or(lookback).unwrap_or(default),
+                    bar,
+                )
+                .map(|(at, _)| at),
             Condition::Retrace { .. } => self.eval(cond, bar).then_some(bar),
-            Condition::Magnitude { concept, timeframe, lookback_bars, .. } => {
-                self.leaf(&(None, timeframe.clone(), concept.clone()), lookback_bars.or(lookback).unwrap_or(default), bar).map(|(at, _)| at)
+            Condition::Magnitude {
+                concept,
+                timeframe,
+                lookback_bars,
+                ..
+            } => self
+                .leaf(
+                    &(None, timeframe.clone(), concept.clone()),
+                    lookback_bars.or(lookback).unwrap_or(default),
+                    bar,
+                )
+                .map(|(at, _)| at),
+            Condition::TimeWindow { .. } | Condition::Indicator { .. } => {
+                self.eval(cond, bar).then_some(bar)
             }
-            Condition::TimeWindow { .. } | Condition::Indicator { .. } => self.eval(cond, bar).then_some(bar),
-            Condition::PriceVs { concept, timeframe, lookback_bars, .. } => {
-                self.leaf(&(None, timeframe.clone(), concept.clone()), lookback_bars.or(lookback).unwrap_or(default), bar).map(|(at, _)| at)
-            }
+            Condition::PriceVs {
+                concept,
+                timeframe,
+                lookback_bars,
+                ..
+            } => self
+                .leaf(
+                    &(None, timeframe.clone(), concept.clone()),
+                    lookback_bars.or(lookback).unwrap_or(default),
+                    bar,
+                )
+                .map(|(at, _)| at),
             Condition::All { conditions } => {
                 let mut newest = 0;
                 for c in conditions {
@@ -1219,9 +1644,13 @@ impl Composer {
             // contributes nothing, so report the current bar when it holds.
             Condition::Not { condition } => (!self.eval(condition, bar)).then_some(bar),
             Condition::Retrace { .. } => self.eval(cond, bar).then_some(bar),
-            Condition::Sequence { steps, max_bars, expires_after_bars } => {
-                self.eval_sequence_expiring(steps, *max_bars, *expires_after_bars, bar).then_some(bar)
-            }
+            Condition::Sequence {
+                steps,
+                max_bars,
+                expires_after_bars,
+            } => self
+                .eval_sequence_expiring(steps, *max_bars, *expires_after_bars, bar)
+                .then_some(bar),
         }
     }
 
@@ -1266,19 +1695,31 @@ pub type LeafKey = (Option<String>, Option<String>, String);
 
 fn collect_leaves(cond: &Condition, out: &mut Vec<LeafKey>) {
     match cond {
-        Condition::Concept { concept, timeframe, symbol, .. } => {
+        Condition::Concept {
+            concept,
+            timeframe,
+            symbol,
+            ..
+        } => {
             let key = (symbol.clone(), timeframe.clone(), concept.clone());
             if !out.contains(&key) {
                 out.push(key);
             }
         }
-        Condition::PriceVs { concept, timeframe, .. } | Condition::Magnitude { concept, timeframe, .. } => {
+        Condition::PriceVs {
+            concept, timeframe, ..
+        }
+        | Condition::Magnitude {
+            concept, timeframe, ..
+        } => {
             let key = (None, timeframe.clone(), concept.clone());
             if !out.contains(&key) {
                 out.push(key);
             }
         }
-        Condition::Retrace { into, timeframe, .. } => {
+        Condition::Retrace {
+            into, timeframe, ..
+        } => {
             // The retrace's leaf keys SEPARATELY from the concept's own: a
             // 4h FVG and the retrace into it are different states (the
             // concept event must not satisfy the retrace).
@@ -1333,7 +1774,10 @@ pub fn evaluate_mtf(
     symbol: &str,
     base_timeframe: analytics_core::types::Timeframe,
     base_candles: &[analytics_core::types::Candle],
-    extra_series: &[(analytics_core::types::Timeframe, Vec<analytics_core::types::Candle>)],
+    extra_series: &[(
+        analytics_core::types::Timeframe,
+        Vec<analytics_core::types::Candle>,
+    )],
     extra_symbols: &[(String, Vec<analytics_core::types::Candle>)],
 ) -> MtfEvaluation {
     let mut composer = Composer::new(doc.clone());
@@ -1342,7 +1786,11 @@ pub fn evaluate_mtf(
     // composer's setter keys them.
     fn indicator_leaves(cond: &Condition, out: &mut Vec<(Option<String>, String)>) {
         match cond {
-            Condition::Indicator { indicator, timeframe, .. } => {
+            Condition::Indicator {
+                indicator,
+                timeframe,
+                ..
+            } => {
                 let key = (timeframe.clone(), indicator.clone());
                 if !out.contains(&key) {
                     out.push(key);
@@ -1366,19 +1814,27 @@ pub fn evaluate_mtf(
     indicator_leaves(&doc.conditions, &mut ind_leaves);
     // Each leaf's series over the base candles (timeframe overrides read the
     // extra series below), keyed by its setter key.
-    let mut indicator_series: std::collections::HashMap<String, Vec<Option<f64>>> = std::collections::HashMap::new();
+    let mut indicator_series: std::collections::HashMap<String, Vec<Option<f64>>> =
+        std::collections::HashMap::new();
     fn parse_indicator(id: &str) -> Option<(String, usize)> {
         let stripped = id.strip_prefix("indicators.").unwrap_or(id);
         let mut parts = stripped.split('.');
         let base = parts.next()?.to_string();
-        let period = parts.next().and_then(|p| p.parse::<usize>().ok()).unwrap_or(match base.as_str() {
-            "rsi" | "atr" | "stochastic" | "cci" | "williams_r" | "roc" | "mfi" | "tsi" => 14,
-            "ema" | "sma" | "keltner" | "bollinger" | "donchian" => 20,
-            _ => 14,
-        });
+        let period = parts
+            .next()
+            .and_then(|p| p.parse::<usize>().ok())
+            .unwrap_or(match base.as_str() {
+                "rsi" | "atr" | "stochastic" | "cci" | "williams_r" | "roc" | "mfi" | "tsi" => 14,
+                "ema" | "sma" | "keltner" | "bollinger" | "donchian" => 20,
+                _ => 14,
+            });
         Some((base, period))
     }
-    fn series_of(base: &str, period: usize, candles: &[analytics_core::types::Candle]) -> Option<Vec<Option<f64>>> {
+    fn series_of(
+        base: &str,
+        period: usize,
+        candles: &[analytics_core::types::Candle],
+    ) -> Option<Vec<Option<f64>>> {
         use analytics_core::indicators;
         let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
         Some(match base {
@@ -1387,10 +1843,22 @@ pub fn evaluate_mtf(
             "sma" => indicators::sma(&closes, period),
             "atr" => indicators::atr(candles, period),
             "adx" => indicators::trend::adx(candles, period).0,
-            "supertrend" => indicators::trend::supertrend(candles, period, 3.0).into_iter().map(|st| st.map(|(line, _)| line)).collect(),
-            "keltner" => indicators::trend::keltner(candles, period, period, 2.0).into_iter().map(|k| k.map(|(mid, _, _)| mid)).collect(),
-            "bollinger" => indicators::bollinger(&closes, period, 2.0).into_iter().map(|b| b.map(|b| b.middle)).collect(),
-            "donchian" => indicators::trend::donchian(candles, period).into_iter().map(|d| d.map(|(mid, _, _)| mid)).collect(),
+            "supertrend" => indicators::trend::supertrend(candles, period, 3.0)
+                .into_iter()
+                .map(|st| st.map(|(line, _)| line))
+                .collect(),
+            "keltner" => indicators::trend::keltner(candles, period, period, 2.0)
+                .into_iter()
+                .map(|k| k.map(|(mid, _, _)| mid))
+                .collect(),
+            "bollinger" => indicators::bollinger(&closes, period, 2.0)
+                .into_iter()
+                .map(|b| b.map(|b| b.middle))
+                .collect(),
+            "donchian" => indicators::trend::donchian(candles, period)
+                .into_iter()
+                .map(|d| d.map(|(mid, _, _)| mid))
+                .collect(),
             "obv" => indicators::oscillators::obv(candles),
             "cmf" => indicators::misc::cmf(candles, period),
             "mfi" => indicators::misc::mfi(candles, period),
@@ -1400,7 +1868,10 @@ pub fn evaluate_mtf(
             "ad_line" => indicators::misc::ad_line(candles),
             "tsi" => indicators::misc::tsi(&closes, period, period.max(6) / 2, 3).0,
             "stochastic" => indicators::oscillators::stochastic(candles, period, 3).0,
-            "macd" => indicators::macd(&closes, 12, 26, 9).into_iter().map(|m| m.map(|m| m.histogram)).collect(),
+            "macd" => indicators::macd(&closes, 12, 26, 9)
+                .into_iter()
+                .map(|m| m.map(|m| m.histogram))
+                .collect(),
             _ => return None,
         })
     }
@@ -1438,10 +1909,18 @@ pub fn evaluate_mtf(
     // series, mapped onto the base bars by open-time alignment.
     for (tf_name, id) in &ind_leaves {
         let Some(tf_str) = tf_name else { continue };
-        let Ok(tf) = tf_str.parse::<analytics_core::types::Timeframe>() else { continue };
-        let Some((_, candles)) = extra_series.iter().find(|(etf, _)| *etf == tf) else { continue };
-        let Some((base, period)) = parse_indicator(id) else { continue };
-        let Some(values) = series_of(&base, period, candles) else { continue };
+        let Ok(tf) = tf_str.parse::<analytics_core::types::Timeframe>() else {
+            continue;
+        };
+        let Some((_, candles)) = extra_series.iter().find(|(etf, _)| *etf == tf) else {
+            continue;
+        };
+        let Some((base, period)) = parse_indicator(id) else {
+            continue;
+        };
+        let Some(values) = series_of(&base, period, candles) else {
+            continue;
+        };
         let key = format!("{tf_str}:{id}");
         // Align onto base bars: for each base bar, the newest extra bar at
         // or before its time.
@@ -1516,7 +1995,10 @@ pub fn evaluate_mtf(
             let previous = indicator_series
                 .get(&format!("{key}@prev"))
                 .and_then(|p| p.get(bar).copied().flatten())
-                .or_else(|| bar.checked_sub(1).and_then(|b| values.get(b).copied().flatten()));
+                .or_else(|| {
+                    bar.checked_sub(1)
+                        .and_then(|b| values.get(b).copied().flatten())
+                });
             composer.set_indicator_values(key, current, previous);
         }
         let events: Vec<ConceptEvent> = plan
@@ -1540,7 +2022,12 @@ pub fn evaluate_mtf(
 pub fn involved_timeframes(doc: &Composition) -> Vec<String> {
     fn walk(cond: &Condition, out: &mut Vec<String>) {
         match cond {
-            Condition::Concept { timeframe: Some(t), .. } | Condition::Retrace { timeframe: Some(t), .. } => {
+            Condition::Concept {
+                timeframe: Some(t), ..
+            }
+            | Condition::Retrace {
+                timeframe: Some(t), ..
+            } => {
                 if !out.contains(t) {
                     out.push(t.clone());
                 }
@@ -1569,7 +2056,12 @@ mod mtf_tests {
     use super::*;
     use crate::concepts::ConceptStatus;
 
-    fn event(concept: &str, direction: Direction, price: f64, zone: Option<(f64, f64)>) -> ConceptEvent {
+    fn event(
+        concept: &str,
+        direction: Direction,
+        price: f64,
+        zone: Option<(f64, f64)>,
+    ) -> ConceptEvent {
         ConceptEvent {
             concept_id: concept.to_string(),
             concept_version: "1.0.0".to_string(),
@@ -1611,16 +2103,39 @@ mod mtf_tests {
 
         let mut composer = Composer::new(doc);
         // The 4h FVG fires (its zone 100..101), fed with its timeframe tag.
-        let _ = composer.on_bar(10, &[event("smc.fvg", Direction::Bearish, 100.5, Some((100.0, 101.0)))], Some("4h"), None);
-        assert_eq!(composer.on_bar(11, &[], None, None), None, "no signal on the FVG alone");
+        let _ = composer.on_bar(
+            10,
+            &[event(
+                "smc.fvg",
+                Direction::Bearish,
+                100.5,
+                Some((100.0, 101.0)),
+            )],
+            Some("4h"),
+            None,
+        );
+        assert_eq!(
+            composer.on_bar(11, &[], None, None),
+            None,
+            "no signal on the FVG alone"
+        );
         // The retrace: the close lands inside the zone (100.5).
         composer.set_last_close(100.5);
-        assert_eq!(composer.on_bar(12, &[], None, None), None, "retraced, but the 1m confirmation has not come");
+        assert_eq!(
+            composer.on_bar(12, &[], None, None),
+            None,
+            "retraced, but the 1m confirmation has not come"
+        );
         // The close leaves the zone before the BOS: the retrace's lookback
         // is per-bar state, not latched -- the sequence needs the 1m BOS
         // while the close still sits inside (or recently sat inside). The
         // BOS fires on the 1m series (None = the document's timeframe).
-        let fired = composer.on_bar(13, &[event("smc.bos", Direction::Bearish, 100.2, None)], None, None);
+        let fired = composer.on_bar(
+            13,
+            &[event("smc.bos", Direction::Bearish, 100.2, None)],
+            None,
+            None,
+        );
         assert!(fired.is_some(), "the full sequence fires the sell");
         let signal = fired.expect("checked");
         assert!(!signal.long, "a sell, as the user defined it");
@@ -1638,11 +2153,27 @@ mod mtf_tests {
         }))
         .expect("parses");
         let mut composer = Composer::new(doc);
-        let _ = composer.on_bar(10, &[event("smc.fvg", Direction::Bearish, 100.5, Some((100.0, 101.0)))], Some("4h"), None);
+        let _ = composer.on_bar(
+            10,
+            &[event(
+                "smc.fvg",
+                Direction::Bearish,
+                100.5,
+                Some((100.0, 101.0)),
+            )],
+            Some("4h"),
+            None,
+        );
         composer.set_last_close(102.0);
-        assert!(composer.on_bar(11, &[], None, None).is_none(), "outside the zone is no retrace");
+        assert!(
+            composer.on_bar(11, &[], None, None).is_none(),
+            "outside the zone is no retrace"
+        );
         composer.set_last_close(100.5);
-        assert!(composer.on_bar(12, &[], None, None).is_some(), "inside the zone IS the retrace");
+        assert!(
+            composer.on_bar(12, &[], None, None).is_some(),
+            "inside the zone IS the retrace"
+        );
     }
 }
 
@@ -1651,7 +2182,12 @@ mod tier_tests {
     use super::*;
     use crate::concepts::ConceptStatus;
 
-    fn event_at(concept: &str, direction: Direction, price: f64, magnitude: Option<f64>) -> ConceptEvent {
+    fn event_at(
+        concept: &str,
+        direction: Direction,
+        price: f64,
+        magnitude: Option<f64>,
+    ) -> ConceptEvent {
         ConceptEvent {
             concept_id: concept.to_string(),
             concept_version: "1.0.0".to_string(),
@@ -1701,10 +2237,33 @@ mod tier_tests {
         });
         let mut composer = Composer::new(doc);
         // A 0.3% sweep: below the floor.
-        let _ = composer.on_bar(5, &[event_at("smc.liquidity_sweep", Direction::Bullish, 100.0, Some(0.3))], None, None);
-        assert!(composer.on_bar(6, &[], None, None).is_none(), "0.3 is below the 0.5 floor");
+        let _ = composer.on_bar(
+            5,
+            &[event_at(
+                "smc.liquidity_sweep",
+                Direction::Bullish,
+                100.0,
+                Some(0.3),
+            )],
+            None,
+            None,
+        );
+        assert!(
+            composer.on_bar(6, &[], None, None).is_none(),
+            "0.3 is below the 0.5 floor"
+        );
         // A 0.7% sweep: above it.
-        let fired = composer.on_bar(8, &[event_at("smc.liquidity_sweep", Direction::Bullish, 100.0, Some(0.7))], None, None);
+        let fired = composer.on_bar(
+            8,
+            &[event_at(
+                "smc.liquidity_sweep",
+                Direction::Bullish,
+                100.0,
+                Some(0.7),
+            )],
+            None,
+            None,
+        );
         assert!(fired.is_some(), "0.7 is above the floor");
     }
 
@@ -1718,9 +2277,15 @@ mod tier_tests {
         });
         let mut composer = Composer::new(doc);
         composer.set_indicator_values("indicators.rsi", Some(65.0), Some(60.0));
-        assert!(composer.on_bar(5, &[], None, None).is_none(), "65 is below 70");
+        assert!(
+            composer.on_bar(5, &[], None, None).is_none(),
+            "65 is below 70"
+        );
         composer.set_indicator_values("indicators.rsi", Some(75.0), Some(65.0));
-        assert!(composer.on_bar(6, &[], None, None).is_some(), "75 is above 70");
+        assert!(
+            composer.on_bar(6, &[], None, None).is_some(),
+            "75 is above 70"
+        );
     }
 
     #[test]
@@ -1738,7 +2303,10 @@ mod tier_tests {
         let _ = composer.on_bar(5, &[], None, None);
         composer.set_indicator_values("indicators.ema.50", Some(100.0), None);
         composer.set_last_close(100.05);
-        assert!(composer.on_bar(6, &[], None, None).is_some(), "the pullback to the line is the touch");
+        assert!(
+            composer.on_bar(6, &[], None, None).is_some(),
+            "the pullback to the line is the touch"
+        );
     }
 
     #[test]
@@ -1765,11 +2333,27 @@ mod tier_tests {
         });
         let mut composer = Composer::new(doc);
         // ETH's BOS alone: the leader moved, the follower has not confirmed.
-        let _ = composer.on_bar(5, &[event_at("smc.bos", Direction::Bullish, 100.0, None)], None, Some("ETHUSDT"));
-        assert!(composer.on_bar(6, &[], None, None).is_none(), "the follower's confirmation is still owed");
+        let _ = composer.on_bar(
+            5,
+            &[event_at("smc.bos", Direction::Bullish, 100.0, None)],
+            None,
+            Some("ETHUSDT"),
+        );
+        assert!(
+            composer.on_bar(6, &[], None, None).is_none(),
+            "the follower's confirmation is still owed"
+        );
         // BTC's own BOS: the pair is aligned.
-        let fired = composer.on_bar(7, &[event_at("smc.bos", Direction::Bullish, 100.0, None)], None, None);
-        assert!(fired.is_some(), "BTC leads, ETH confirmed -- the pair fires");
+        let fired = composer.on_bar(
+            7,
+            &[event_at("smc.bos", Direction::Bullish, 100.0, None)],
+            None,
+            None,
+        );
+        assert!(
+            fired.is_some(),
+            "BTC leads, ETH confirmed -- the pair fires"
+        );
     }
 
     #[test]
@@ -1785,7 +2369,9 @@ mod tier_tests {
         doc.timeframe = "4h".to_string();
         let errors = validate(&doc).expect_err("a down-timeframe condition is an error");
         assert!(
-            errors.iter().any(|e| e.message.contains("below the document's own timeframe")),
+            errors
+                .iter()
+                .any(|e| e.message.contains("below the document's own timeframe")),
             "the error names the rule: {errors:?}"
         );
     }
@@ -1796,7 +2382,12 @@ mod feature_tests {
     use super::*;
     use crate::concepts::ConceptStatus;
 
-    fn event(concept: &str, direction: Direction, price: f64, zone: Option<(f64, f64)>) -> ConceptEvent {
+    fn event(
+        concept: &str,
+        direction: Direction,
+        price: f64,
+        zone: Option<(f64, f64)>,
+    ) -> ConceptEvent {
         ConceptEvent {
             concept_id: concept.to_string(),
             concept_version: "1.0.0".to_string(),
@@ -1845,11 +2436,22 @@ mod feature_tests {
             tolerance: 0.0,
         });
         let mut composer = Composer::new(doc);
-        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None, None);
+        let _ = composer.on_bar(
+            5,
+            &[event("smc.bos", Direction::Bullish, 100.0, None)],
+            None,
+            None,
+        );
         composer.set_last_close(99.0);
-        assert!(composer.on_bar(6, &[], None, None).is_none(), "below the level fails");
+        assert!(
+            composer.on_bar(6, &[], None, None).is_none(),
+            "below the level fails"
+        );
         composer.set_last_close(101.0);
-        assert!(composer.on_bar(7, &[], None, None).is_some(), "above the level holds");
+        assert!(
+            composer.on_bar(7, &[], None, None).is_some(),
+            "above the level holds"
+        );
     }
 
     #[test]
@@ -1863,9 +2465,20 @@ mod feature_tests {
             min_bars_since: Some(5),
         });
         let mut composer = Composer::new(doc);
-        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None, None);
-        assert!(composer.on_bar(8, &[], None, None).is_none(), "3 bars is too fresh");
-        assert!(composer.on_bar(11, &[], None, None).is_some(), "6 bars is old enough");
+        let _ = composer.on_bar(
+            5,
+            &[event("smc.bos", Direction::Bullish, 100.0, None)],
+            None,
+            None,
+        );
+        assert!(
+            composer.on_bar(8, &[], None, None).is_none(),
+            "3 bars is too fresh"
+        );
+        assert!(
+            composer.on_bar(11, &[], None, None).is_some(),
+            "6 bars is old enough"
+        );
     }
 
     #[test]
@@ -1880,17 +2493,31 @@ mod feature_tests {
                     timeframe: None,
                     min_bars_since: None,
                 },
-                Condition::TimeWindow { start_hour: 12, end_hour: 15 },
+                Condition::TimeWindow {
+                    start_hour: 12,
+                    end_hour: 15,
+                },
             ],
         });
         let mut composer = Composer::new(doc);
-        let _ = composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 100.0, None)], None, None);
+        let _ = composer.on_bar(
+            5,
+            &[event("smc.bos", Direction::Bullish, 100.0, None)],
+            None,
+            None,
+        );
         // 04:00 UTC: outside the killzone.
         composer.set_bar_time(4 * 3_600_000_000_000);
-        assert!(composer.on_bar(6, &[], None, None).is_none(), "outside the window fails");
+        assert!(
+            composer.on_bar(6, &[], None, None).is_none(),
+            "outside the window fails"
+        );
         // 13:30 UTC: inside.
         composer.set_bar_time(13 * 3_600_000_000_000 + 30 * 60_000_000_000);
-        assert!(composer.on_bar(7, &[], None, None).is_some(), "inside the window holds");
+        assert!(
+            composer.on_bar(7, &[], None, None).is_some(),
+            "inside the window holds"
+        );
     }
 
     #[test]
@@ -1924,9 +2551,24 @@ mod feature_tests {
             expires_after_bars: Some(10),
         });
         let mut composer = Composer::new(doc);
-        let _ = composer.on_bar(5, &[event("smc.liquidity_sweep", Direction::Bullish, 100.0, None)], None, None);
+        let _ = composer.on_bar(
+            5,
+            &[event(
+                "smc.liquidity_sweep",
+                Direction::Bullish,
+                100.0,
+                None,
+            )],
+            None,
+            None,
+        );
         // The confirmation at bar 18: 13 bars after the sweep -- expired.
-        let fired = composer.on_bar(18, &[event("smc.bos", Direction::Bullish, 100.0, None)], None, None);
+        let fired = composer.on_bar(
+            18,
+            &[event("smc.bos", Direction::Bullish, 100.0, None)],
+            None,
+            None,
+        );
         assert!(fired.is_none(), "past the expiry, the sequence is dead");
     }
 
@@ -1953,7 +2595,10 @@ mod feature_tests {
             ],
         });
         let w = warnings(&doc);
-        assert!(w.iter().any(|m| m.contains("contradiction")), "the contradiction is named: {w:?}");
+        assert!(
+            w.iter().any(|m| m.contains("contradiction")),
+            "the contradiction is named: {w:?}"
+        );
         let dup = doc_with(Condition::All {
             conditions: vec![
                 Condition::Concept {
@@ -1975,7 +2620,10 @@ mod feature_tests {
             ],
         });
         let w = warnings(&dup);
-        assert!(w.iter().any(|m| m.contains("duplicate measurement")), "the overlap is named: {w:?}");
+        assert!(
+            w.iter().any(|m| m.contains("duplicate measurement")),
+            "the overlap is named: {w:?}"
+        );
     }
 }
 
@@ -2081,20 +2729,41 @@ mod tests {
             symbol: None,
             direction: DirectionReq::Bullish,
             lookback_bars: Some(3),
-                min_bars_since: None,
-                timeframe: None,
+            min_bars_since: None,
+            timeframe: None,
         });
         let mut composer = Composer::new(document.clone());
-        assert!(composer.on_bar(0, &[event("smc.bos", Direction::Bullish, 100.0)], None, None).is_some());
+        assert!(
+            composer
+                .on_bar(
+                    0,
+                    &[event("smc.bos", Direction::Bullish, 100.0)],
+                    None,
+                    None
+                )
+                .is_some()
+        );
         // Edge-triggered: the same bar must not fire twice.
         assert!(composer.on_bar(0, &[], None, None).is_none());
-        assert!(composer.on_bar(3, &[], None, None).is_none(), "still inside the lookback, already fired");
+        assert!(
+            composer.on_bar(3, &[], None, None).is_none(),
+            "still inside the lookback, already fired"
+        );
         // The lookback lapses without a fresh event.
         for bar in 4..=4 {
             assert!(composer.on_bar(bar, &[], None, None).is_none());
         }
         // A fresh event re-arms it.
-        assert!(composer.on_bar(5, &[event("smc.bos", Direction::Bullish, 105.0)], None, None).is_some());
+        assert!(
+            composer
+                .on_bar(
+                    5,
+                    &[event("smc.bos", Direction::Bullish, 105.0)],
+                    None,
+                    None
+                )
+                .is_some()
+        );
     }
 
     #[test]
@@ -2107,8 +2776,8 @@ mod tests {
                         symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
-                min_bars_since: None,
-                timeframe: None,
+                        min_bars_since: None,
+                        timeframe: None,
                     },
                     lookback_bars: None,
                 },
@@ -2118,8 +2787,8 @@ mod tests {
                         symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
-                min_bars_since: None,
-                timeframe: None,
+                        min_bars_since: None,
+                        timeframe: None,
                     },
                     lookback_bars: None,
                 },
@@ -2129,16 +2798,58 @@ mod tests {
         });
         // Wrong order: bos before the sweep never fires.
         let mut composer = Composer::new(document.clone());
-        composer.on_bar(0, &[event("smc.bos", Direction::Bullish, 100.0)], None, None);
-        assert!(composer.on_bar(1, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)], None, None).is_none());
+        composer.on_bar(
+            0,
+            &[event("smc.bos", Direction::Bullish, 100.0)],
+            None,
+            None,
+        );
+        assert!(
+            composer
+                .on_bar(
+                    1,
+                    &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)],
+                    None,
+                    None
+                )
+                .is_none()
+        );
         // Right order inside the window: sweep at 0, bos at 2 (gap 2 <= 3).
         let mut composer = Composer::new(document.clone());
-        composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)], None, None);
-        assert!(composer.on_bar(2, &[event("smc.bos", Direction::Bullish, 100.0)], None, None).is_some());
+        composer.on_bar(
+            0,
+            &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)],
+            None,
+            None,
+        );
+        assert!(
+            composer
+                .on_bar(
+                    2,
+                    &[event("smc.bos", Direction::Bullish, 100.0)],
+                    None,
+                    None
+                )
+                .is_some()
+        );
         // Right order but too wide: gap 4 > 3.
         let mut composer = Composer::new(document.clone());
-        composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)], None, None);
-        assert!(composer.on_bar(4, &[event("smc.bos", Direction::Bullish, 100.0)], None, None).is_none());
+        composer.on_bar(
+            0,
+            &[event("smc.liquidity_sweep", Direction::Bullish, 99.0)],
+            None,
+            None,
+        );
+        assert!(
+            composer
+                .on_bar(
+                    4,
+                    &[event("smc.bos", Direction::Bullish, 100.0)],
+                    None,
+                    None
+                )
+                .is_none()
+        );
     }
 
     #[test]
@@ -2150,8 +2861,8 @@ mod tests {
                     symbol: None,
                     direction: DirectionReq::Bullish,
                     lookback_bars: Some(5),
-                min_bars_since: None,
-                timeframe: None,
+                    min_bars_since: None,
+                    timeframe: None,
                 },
                 Condition::Not {
                     condition: Box::new(Condition::Concept {
@@ -2159,19 +2870,36 @@ mod tests {
                         symbol: None,
                         direction: DirectionReq::Any,
                         lookback_bars: Some(2),
-                min_bars_since: None,
-                timeframe: None,
+                        min_bars_since: None,
+                        timeframe: None,
                     }),
                 },
             ],
         });
         let mut composer = Composer::new(document.clone());
-        composer.on_bar(0, &[event("volume.spike", Direction::Neutral, 100.0)], None, None);
+        composer.on_bar(
+            0,
+            &[event("volume.spike", Direction::Neutral, 100.0)],
+            None,
+            None,
+        );
         // The spike vetoes within its lookback.
-        assert!(composer.on_bar(1, &[event("smc.bos", Direction::Bullish, 100.0)], None, None).is_none());
+        assert!(
+            composer
+                .on_bar(
+                    1,
+                    &[event("smc.bos", Direction::Bullish, 100.0)],
+                    None,
+                    None
+                )
+                .is_none()
+        );
         // The spike's lookback (2 bars) lapses at bar 4 while the bos's (5)
         // still holds -- so the veto lifts and the group fires here.
-        assert!(composer.on_bar(4, &[], None, None).is_some(), "the lapsed veto lets the bos through");
+        assert!(
+            composer.on_bar(4, &[], None, None).is_some(),
+            "the lapsed veto lets the bos through"
+        );
     }
 
     #[test]
@@ -2181,8 +2909,8 @@ mod tests {
             symbol: None,
             direction: DirectionReq::Bullish,
             lookback_bars: None,
-                min_bars_since: None,
-                timeframe: None,
+            min_bars_since: None,
+            timeframe: None,
         });
         // A trader's own swing lookback validates and lands on that concept's
         // own config.
@@ -2198,12 +2926,22 @@ mod tests {
             [("swing_lookback".to_string(), 12.0)].into_iter().collect(),
         );
         let plan = DetectionPlan::for_catalog(&document.parameters);
-        assert_eq!(plan.config_for("smc.bos").expect("bos").structure_lookback, 5);
         assert_eq!(
-            plan.config_for("smc.liquidity_sweep").expect("sweep").structure_lookback,
+            plan.config_for("smc.bos").expect("bos").structure_lookback,
+            5
+        );
+        assert_eq!(
+            plan.config_for("smc.liquidity_sweep")
+                .expect("sweep")
+                .structure_lookback,
             12
         );
-        assert_eq!(plan.config_for("smc.choch").expect("choch").structure_lookback, 3);
+        assert_eq!(
+            plan.config_for("smc.choch")
+                .expect("choch")
+                .structure_lookback,
+            3
+        );
         // A spike override hits both spike thresholds.
         document.parameters.insert(
             "volume.spike".to_string(),
@@ -2213,29 +2951,47 @@ mod tests {
         let spike = plan.config_for("volume.spike").expect("spike");
         assert_eq!(spike.volume_multiplier, 4.0);
         assert_eq!(spike.delta_multiplier, 4.0);
-        assert_eq!(plan.config_for("smc.bos").expect("bos").volume_multiplier, 2.5);
+        assert_eq!(
+            plan.config_for("smc.bos").expect("bos").volume_multiplier,
+            2.5
+        );
         // The gap detector's own knob is now declared, so it validates.
         document.parameters.insert(
             "smc.fvg".to_string(),
-            [("fvg_min_fraction".to_string(), 0.3)].into_iter().collect(),
+            [("fvg_min_fraction".to_string(), 0.3)]
+                .into_iter()
+                .collect(),
         );
-        assert!(validate(&document).is_ok(), "{:?}", validate(&document).err());
+        assert!(
+            validate(&document).is_ok(),
+            "{:?}",
+            validate(&document).err()
+        );
         let plan = DetectionPlan::for_catalog(&document.parameters);
-        assert_eq!(plan.config_for("smc.fvg").expect("fvg").fvg_min_fraction, 0.3);
+        assert_eq!(
+            plan.config_for("smc.fvg").expect("fvg").fvg_min_fraction,
+            0.3
+        );
         // Out of range: refused with the parameter's own limits.
         document.parameters.insert(
             "smc.bos".to_string(),
             [("swing_lookback".to_string(), 99.0)].into_iter().collect(),
         );
         let errors = validate(&document).expect_err("out of range");
-        assert!(errors.iter().any(|e| e.path.contains("swing_lookback")), "{errors:?}");
+        assert!(
+            errors.iter().any(|e| e.path.contains("swing_lookback")),
+            "{errors:?}"
+        );
         // An unknown parameter: refused by name.
         document.parameters.insert(
             "smc.bos".to_string(),
             [("wick_mode".to_string(), 1.0)].into_iter().collect(),
         );
         let errors = validate(&document).expect_err("unknown param");
-        assert!(errors.iter().any(|e| e.message.contains("not a parameter")), "{errors:?}");
+        assert!(
+            errors.iter().any(|e| e.message.contains("not a parameter")),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -2248,8 +3004,8 @@ mod tests {
                         symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
-                min_bars_since: None,
-                timeframe: None,
+                        min_bars_since: None,
+                        timeframe: None,
                     },
                     lookback_bars: None,
                 },
@@ -2259,8 +3015,8 @@ mod tests {
                         symbol: None,
                         direction: DirectionReq::Bullish,
                         lookback_bars: None,
-                min_bars_since: None,
-                timeframe: None,
+                        min_bars_since: None,
+                        timeframe: None,
                     },
                     lookback_bars: None,
                 },
@@ -2269,13 +3025,27 @@ mod tests {
             expires_after_bars: None,
         });
         let mut composer = Composer::new(document.clone());
-        composer.on_bar(0, &[event("smc.liquidity_sweep", Direction::Bullish, 98.5)], None, None);
+        composer.on_bar(
+            0,
+            &[event("smc.liquidity_sweep", Direction::Bullish, 98.5)],
+            None,
+            None,
+        );
         let signal = composer
-            .on_bar(1, &[event("smc.bos", Direction::Bullish, 101.0)], None, None)
+            .on_bar(
+                1,
+                &[event("smc.bos", Direction::Bullish, 101.0)],
+                None,
+                None,
+            )
             .expect("fires");
         assert_eq!(signal.bar, 1);
         assert!(signal.long);
-        assert_eq!(signal.stop_level, Some(101.0), "the newest satisfying level");
+        assert_eq!(
+            signal.stop_level,
+            Some(101.0),
+            "the newest satisfying level"
+        );
         assert!(signal.evidence.contains(&"smc.bos".to_string()));
         assert!(signal.evidence.contains(&"smc.liquidity_sweep".to_string()));
     }

@@ -53,11 +53,12 @@ pub use drawing::{
     Anchor, AnchorCount, Drawing, DrawingKind, DrawingOptions, DrawingPart, Extend, Fraction,
     LevelProfile, Overlay, OverlayRole, PlacedTimePrice, SceneDrawing, SceneOverlay, ScenePoint,
     ToolGroup, ToolSpec, FIB_LEVELS, REGISTRY,
-};pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
+};
+pub use footprint::{layout as layout_footprint, Column as FootprintColumn, Grid};
 pub use indicator::{
     Evidence, EvidenceLink, IndicatorMarker, IndicatorOutput, IndicatorTrendline, IndicatorZone,
-    MarkerKind, ReplayExit, ReplaySetup, SetupDirection, TrendPoint, ZoneState,
-    MAX_PRIMITIVES,
+    MarkerKind, RegistryIndicatorConcept, ReplayExit, ReplaySetup, SetupDirection, TrendPoint,
+    ZoneState, MAX_PRIMITIVES, MAX_REGISTRY_CONCEPTS,
 };
 pub use scene::{
     build, heikin_ashi, Bar, LastPrice, Level, Mode, Plot, Point, ProfileBar, Request, Scene,
@@ -194,7 +195,12 @@ mod abi {
             y,
             price_min,
             price_max,
-            &super::Plot { x: 0.0, y: plot_y, w: 0.0, h: plot_h },
+            &super::Plot {
+                x: 0.0,
+                y: plot_y,
+                w: 0.0,
+                h: plot_h,
+            },
             scale,
         )
     }

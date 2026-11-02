@@ -73,13 +73,15 @@
       },
       {
         id: "action:chat",
-        // The builder creates a chat from its own name field. The palette does
-        // not invent a name: it opens the builder and puts the caret where the
-        // user has to type anyway.
+        // The AI chat owns indicator workspaces now; focus its create-name
+        // field so the palette does not invent a workspace name.
         label: "New indicator chat",
-        hint: "Studio",
+        hint: "AI chat",
         run: () => {
-          if (shell()) shell().go("studio", { studioPane: "indicator" });
+          if (shell()) shell().openInspector("ai");
+          const tools = document.getElementById("chatIndicatorWorkspace");
+          if (tools) tools.open = true;
+          if (app() && app().runPaneLoaders) app().runPaneLoaders("indicator");
           if (app() && app().newWorkspace) app().newWorkspace();
         },
       },
@@ -127,7 +129,7 @@
       id: `chat:${chat.id}`,
       label: chat.name || "Untitled chat",
       hint: [chat.symbol, chat.timeframe].filter(Boolean).join(" "),
-      run: () => shell() && shell().go("studio", { workspaceId: chat.id }),
+      run: () => shell() && shell().go("charts", { workspaceId: chat.id, indicatorWorkspace: true }),
     }));
   }
 
@@ -496,7 +498,7 @@
     }
     // TradingView binds `/` to its indicator dialog and the concept library is
     // the same kind of door, so the same key opens it. It goes through the shell
-    // rather than the dialog, because a panel is a route: from Dashboard or Studio
+    // rather than the dialog, because a panel is a route: from Dashboard or Charts
     // this means Charts first, and the address gains the segment a reload repeats.
     if (!mod && !event.altKey && (event.key === "/" || event.code === "Slash")) {
       if (!shell()) return;

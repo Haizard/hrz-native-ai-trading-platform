@@ -150,6 +150,7 @@ fn context() -> MarketContext {
         now: 40 * timeframe.nanos(),
         decision_timeframe: "entry".into(),
         timeframes,
+        registry_concepts: BTreeMap::new(),
         position: None,
         equity: 10_000.0,
     }

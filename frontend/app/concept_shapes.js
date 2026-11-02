@@ -185,7 +185,7 @@
   ]);
 
   /// Map the events to semantic concept shapes, filtered by the enabled ids.
-  function from(events, enabled) {
+  function from(events, enabled, aliases = {}) {
     if (!enabled.size || !events.length) return [];
     const out = [];
     // Lifecycle boxes merge their events: a gap's creation, fill and flip are
@@ -205,7 +205,7 @@
       if (!enabled.has(e.concept_id)) continue;
       const shape = shapeOf(e.concept_id);
       if (!shape) continue;
-      const short = shortName(e);
+      const short = aliases[e.concept_id] || shortName(e);
       const color = conceptColor(e);
       const origin = originOf(e);
       if (shape === "bar_marker") {
@@ -251,7 +251,7 @@
         out.push({
           type: "time_line",
           at_ns: e.event_time_ns,
-          label: (e.evidence && e.evidence.label) || short,
+          label: aliases[e.concept_id] || (e.evidence && e.evidence.label) || short,
           color: NEUT,
         });
       } else if (shape === "level_run") {

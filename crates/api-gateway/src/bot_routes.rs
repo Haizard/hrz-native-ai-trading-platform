@@ -336,6 +336,7 @@ pub async fn create(
     }
 
     let validated = strategy_dsl::parse_and_validate(&source).map_err(ApiError::from)?;
+    crate::strategy_routes::validate_registry_concepts(validated.document())?;
     let document = validated.document().clone();
 
     let limits = RiskLimits {

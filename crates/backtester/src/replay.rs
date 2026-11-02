@@ -350,7 +350,7 @@ pub fn replay<S: Strategy>(
             continue;
         };
 
-        let Some(context) = ladder.context(
+        let Some(mut context) = ladder.context(
             &config.symbol,
             now,
             &decision_name,
@@ -359,6 +359,48 @@ pub fn replay<S: Strategy>(
         ) else {
             continue;
         };
+
+        let declarations = strategy.registry_concepts();
+        if !declarations.is_empty() {
+            for (frame_name, view) in &context.timeframes {
+                let params: Vec<std::collections::HashMap<String, f64>> = declarations
+                    .iter()
+                    .map(|declaration| declaration.parameters.clone().into_iter().collect())
+                    .collect();
+                let states: Vec<(&str, &str, &str, &std::collections::HashMap<String, f64>)> =
+                    declarations
+                        .iter()
+                        .zip(&params)
+                        .map(|(declaration, params)| {
+                            (
+                                declaration.name.as_str(),
+                                declaration.concept_id.as_str(),
+                                declaration.concept_version.as_str(),
+                                params,
+                            )
+                        })
+                        .collect();
+                let readings = market_data::composer::registry_readings(
+                    &view.history,
+                    &config.symbol,
+                    &states,
+                )
+                .map_err(BacktestError::Report)?;
+                for (name, reading) in readings {
+                    context.registry_concepts.insert(
+                        format!("{frame_name}::{name}"),
+                        strategy_runtime::RegistryConceptValue {
+                            exists: reading.exists,
+                            fresh: reading.fresh,
+                            top: reading.top,
+                            bottom: reading.bottom,
+                            value: reading.value,
+                            mitigated: reading.mitigated,
+                        },
+                    );
+                }
+            }
+        }
 
         let regime = decision_frame
             .state()

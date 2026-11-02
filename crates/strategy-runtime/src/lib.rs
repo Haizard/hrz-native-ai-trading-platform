@@ -75,7 +75,7 @@ pub mod simulator;
 
 pub use context::{
     divergence_name, swept_level_price, swept_side, trend_name, FieldValue, MarketContext,
-    PositionView, TimeframeView,
+    PositionView, RegistryConceptValue, TimeframeView,
 };
 pub use engine::{RuntimeConfig, SkipRecord, Strategy, StrategyEngine};
 pub use error::RuntimeError;

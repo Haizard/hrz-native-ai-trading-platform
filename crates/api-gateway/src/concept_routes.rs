@@ -210,6 +210,8 @@ pub struct ScanQuery {
     /// its declared default. Each concept detects under its own set -- one
     /// concept's lookback does not move another's.
     pub params: Option<String>,
+    /// Pinned detector versions, as JSON: `{"smc.bos":"1.0.0"}`.
+    pub versions: Option<String>,
 }
 
 /// Parse and validate the scan's per-concept overrides. The catalog's own
@@ -217,6 +219,7 @@ pub struct ScanQuery {
 /// outside its range is a 400, never a silently different detector.
 fn parse_param_overrides(
     raw: Option<&str>,
+    versions: &std::collections::HashMap<String, String>,
 ) -> Result<market_data::composer::ParameterMap, ApiError> {
     let Some(raw) = raw else {
         return Ok(market_data::composer::ParameterMap::new());
@@ -227,7 +230,7 @@ fn parse_param_overrides(
             format!("`params` must be a JSON object of concept -> {{name: number}}: {e}"),
         )
     })?;
-    if let Some(error) = market_data::composer::validate_parameters(&parsed)
+    if let Some(error) = market_data::composer::validate_parameters_for_versions(&parsed, versions)
         .into_iter()
         .next()
     {
@@ -235,6 +238,30 @@ fn parse_param_overrides(
             "PARAMS_INVALID",
             format!("{}: {}", error.path, error.message),
         ));
+    }
+    // Series parameters affect `/indicator-series` only for now. The event
+    // replay has no matching EventConfig fields, so accepting them here would
+    // make the scan silently display events from the registry defaults.
+    for (concept_id, values) in &parsed {
+        if values.is_empty() {
+            continue;
+        }
+        let spec = versions
+            .get(concept_id)
+            .and_then(|version| market_data::concepts::concept_version(concept_id, version))
+            .or_else(|| {
+                if versions.contains_key(concept_id) {
+                    None
+                } else {
+                    market_data::concepts::concept(concept_id)
+                }
+            });
+        if spec.is_some_and(|spec| spec.pane || spec.overlay) {
+            return Err(ApiError::bad_request(
+                "PARAMS_INVALID",
+                format!("`{concept_id}` series parameters belong on `/indicator-series`, not event scans"),
+            ));
+        }
     }
     Ok(parsed)
 }
@@ -250,6 +277,28 @@ pub async fn scan(
     State(state): State<AppState>,
     Query(query): Query<ScanQuery>,
 ) -> Result<Json<ConceptEventsResponse>, ApiError> {
+    let versions: std::collections::HashMap<String, String> = if let Some(raw) =
+        query.versions.as_deref()
+    {
+        let versions: std::collections::HashMap<String, String> = serde_json::from_str(raw)
+            .map_err(|error| {
+                ApiError::bad_request(
+                    "CONCEPT_VERSION_INVALID",
+                    format!("`versions` must be a JSON object of concept id to version: {error}"),
+                )
+            })?;
+        for (id, version) in &versions {
+            if market_data::concepts::concept_version(id, version).is_none() {
+                return Err(ApiError::bad_request(
+                    "CONCEPT_VERSION_UNAVAILABLE",
+                    format!("{id} version {version} is not present in the current or archived concept registry"),
+                ));
+            }
+        }
+        versions
+    } else {
+        std::collections::HashMap::new()
+    };
     let symbol = query.symbol.to_uppercase();
     let tf: analytics_core::types::Timeframe = query.timeframe.parse().map_err(|_| {
         ApiError::bad_request(
@@ -261,9 +310,21 @@ pub async fn scan(
         )
     })?;
     let limit = query.limit.unwrap_or(500).clamp(50, 1000);
-    let plan = market_data::composer::DetectionPlan::for_catalog(
-        &parse_param_overrides(query.params.as_deref())?,
-    );
+    let parameters = parse_param_overrides(query.params.as_deref(), &versions)?;
+    let pinned: Vec<(String, String)> = market_data::concepts::concept_registry()
+        .iter()
+        .map(|spec| {
+            (
+                spec.id.to_string(),
+                versions
+                    .get(spec.id)
+                    .cloned()
+                    .unwrap_or_else(|| spec.version.to_string()),
+            )
+        })
+        .collect();
+    let plan = market_data::composer::DetectionPlan::for_versioned_concepts(&parameters, &pinned)
+        .map_err(|reason| ApiError::bad_request("CONCEPT_VERSION_UNAVAILABLE", reason))?;
     let to_ns = crate::now_ns();
     let from_ns = to_ns - limit as i64 * tf.nanos();
     let window = state
@@ -322,10 +383,82 @@ pub struct IndicatorSeriesQuery {
     pub timeframe: String,
     /// The pane concept (`indicators.rsi` and friends; required).
     pub concept: String,
+    /// Optional pinned registry version; a stale revision is refused.
+    pub version: Option<String>,
     /// The second instrument, for the pairs concept only.
     pub symbol2: Option<String>,
     /// How many bars to compute over (default 500, capped at 1000).
     pub limit: Option<usize>,
+    /// The concept's parameter overrides, as JSON: `{"period": 9}`.
+    /// Omitted values use the registered defaults.
+    pub params: Option<String>,
+}
+
+fn parse_indicator_series_parameters(
+    concept: &str,
+    version: &str,
+    raw: Option<&str>,
+) -> Result<std::collections::HashMap<String, f64>, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let params: std::collections::HashMap<String, f64> =
+        serde_json::from_str(raw).map_err(|e| {
+            ApiError::bad_request(
+                "PARAMS_INVALID",
+                format!("`params` must be a JSON object of parameter names to numbers: {e}"),
+            )
+        })?;
+    let mut all = market_data::composer::ParameterMap::new();
+    all.insert(concept.to_owned(), params.clone());
+    let versions = std::collections::HashMap::from([(concept.to_owned(), version.to_owned())]);
+    if let Some(error) = market_data::composer::validate_parameters_for_versions(&all, &versions)
+        .into_iter()
+        .next()
+    {
+        return Err(ApiError::bad_request(
+            "PARAMS_INVALID",
+            format!("{}: {}", error.path, error.message),
+        ));
+    }
+    for (name, value) in &params {
+        let is_period = name == "period" || name == "smooth" || name.ends_with("_period");
+        if is_period && value.fract() != 0.0 {
+            return Err(ApiError::bad_request(
+                "PARAMS_INVALID",
+                format!("parameters.{concept}.{name} must be a whole number"),
+            ));
+        }
+    }
+    let number = |name: &str, default: f64| params.get(name).copied().unwrap_or(default);
+    let ordered = match concept {
+        "indicators.macd" => Some(("fast_period", 12.0, "slow_period", 26.0)),
+        "indicators.ema" | "indicators.sma" => Some(("fast_period", 20.0, "medium_period", 50.0)),
+        _ => None,
+    };
+    if let Some((left, left_default, right, right_default)) = ordered {
+        if number(left, left_default) >= number(right, right_default) {
+            return Err(ApiError::bad_request(
+                "PARAMS_INVALID",
+                format!("parameters.{concept}.{left} must be less than {right}"),
+            ));
+        }
+        if concept != "indicators.macd"
+            && number(right, right_default) >= number("slow_period", 200.0)
+        {
+            return Err(ApiError::bad_request(
+                "PARAMS_INVALID",
+                format!("parameters.{concept}.{right} must be less than slow_period"),
+            ));
+        }
+    }
+    if concept == "indicators.macd" && number("slow_period", 26.0) <= number("signal_period", 9.0) {
+        return Err(ApiError::bad_request(
+            "PARAMS_INVALID",
+            "parameters.indicators.macd.slow_period must exceed signal_period",
+        ));
+    }
+    Ok(params)
 }
 
 /// The series response: the spec the engine's generic series pane consumes,
@@ -359,13 +492,13 @@ pub async fn indicator_series(
     })?;
     // The concept must be a registered pane concept: an unregistered id is a
     /// client bug, and a non-pane id is a category error, both 400s.
-    let spec_entry = market_data::concepts::concept_registry()
-        .iter()
-        .find(|c| c.id == query.concept)
-        .ok_or_else(|| {
+    let version = query.version.as_deref().unwrap_or_else(|| {
+        market_data::concepts::concept(&query.concept).map_or("", |c| c.version)
+    });
+    let spec_entry = market_data::concepts::concept_version(&query.concept, version).ok_or_else(|| {
             ApiError::bad_request(
-                "CONCEPT_UNKNOWN",
-                format!("`{}` is not a registered concept", query.concept),
+                "CONCEPT_VERSION_UNAVAILABLE",
+                format!("{} version {version} is not present in the current or archived concept registry", query.concept),
             )
         })?;
     if !spec_entry.pane && !spec_entry.overlay {
@@ -374,6 +507,11 @@ pub async fn indicator_series(
             format!("`{}` has no indicator series", query.concept),
         ));
     }
+    let parameters = parse_indicator_series_parameters(
+        &query.concept,
+        spec_entry.version,
+        query.params.as_deref(),
+    )?;
     let limit = query.limit.unwrap_or(500).clamp(50, 1000);
     let to_ns = crate::now_ns();
     let from_ns = to_ns - limit as i64 * tf.nanos();
@@ -432,13 +570,18 @@ pub async fn indicator_series(
             spec,
         }));
     }
-    let spec = analytics_core::indicator_series::indicator_series(&query.concept, &candles)
-        .ok_or_else(|| {
-            ApiError::bad_request(
-                "SERIES_UNAVAILABLE",
-                format!("`{}` produced no series over this window", query.concept),
-            )
-        })?;
+    let spec = analytics_core::indicator_series::indicator_series_for_version(
+        &query.concept,
+        spec_entry.version,
+        &candles,
+        &parameters,
+    )
+    .ok_or_else(|| {
+        ApiError::bad_request(
+            "SERIES_UNAVAILABLE",
+            format!("`{}` produced no series over this window", query.concept),
+        )
+    })?;
     Ok(Json(IndicatorSeriesResponse {
         symbol,
         times: candles.iter().map(|c| c.open_time).collect(),
