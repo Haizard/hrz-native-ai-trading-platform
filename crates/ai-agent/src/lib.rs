@@ -56,7 +56,7 @@ pub mod web_search;
 pub use agent::draft_strategy_spec;
 pub use agent::{
     Agent, AgentAnswer, AgentConfig, AskRequest, DrawingsContext, GeneratedStrategy,
-    MemoryContext, ReviewRequest, SnapshotsContext, StrategyRequest, DEFAULT_MAX_ATTEMPTS,
+    IndicatorContext, IndicatorReading, MemoryContext, ReviewRequest, SnapshotsContext, StrategyRequest, DEFAULT_MAX_ATTEMPTS,
     DEFAULT_MAX_TURNS, DRAFT_STRATEGY,
 };
 pub use agent_memory::{

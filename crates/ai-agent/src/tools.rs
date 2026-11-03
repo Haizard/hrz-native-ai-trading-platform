@@ -98,6 +98,8 @@ pub struct ConceptInfo {
     pub pane: bool,
     /// Whether it renders overlay lines.
     pub overlay: bool,
+    /// Whether the registry exposes event kinds usable by strategy conditions.
+    pub strategy_eligible: bool,
 }
 
 /// The concept catalog, reached by trait so the agent's dependency graph
@@ -1764,7 +1766,7 @@ const CREATE_INDICATOR: &str = "Create a chart indicator from a natural-language
     once the spec is agreed, passing the enriched description you settled on.";
 
 /// `create_strategy` — build a backtestable strategy from a description.
-const LIST_CONCEPTS: &str = "List the concept catalog -- every detector the platform runs, with its meaning and its family (smc, indicators, chart, candles, price action, volume, session, harmonics, fibonacci, supply/demand, order flow, econ). Call this FIRST when composing a strategy so the conditions are written in ids that exist. Filter by keyword or family.";
+const LIST_CONCEPTS: &str = "List the concept catalog -- every detector the platform runs, with its meaning, family, and strategy_eligible flag. Call this FIRST when composing a strategy so conditions use ids that exist. Only concepts marked strategy_eligible can be used as backtestable conditions; pane measurements (including broker_convexity) are chart indicators, not event signals. Filter by keyword or family.";
 
 const CONCEPT_SIGNALS: &str = "Read what the concepts are firing RIGHT NOW on an instrument -- the newest events with direction and price. Call after list_concepts to see what evidence the market is offering before composing from it.";
 

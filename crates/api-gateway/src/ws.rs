@@ -681,6 +681,9 @@ struct AgentWsRequest {
     /// Trader-edited registry states from the active chart.
     #[serde(default)]
     concept_states: Vec<strategy_dsl::schema::RegistryConcept>,
+    /// Compact readings and provenance for broker-aware chart indicators.
+    #[serde(default)]
+    indicator_context: Vec<ai_agent::IndicatorContext>,
 }
 
 /// Hands the agent's steps to a channel, so they can be written to the socket
@@ -759,6 +762,23 @@ where
         return Some(Frame::Notice { message: format!("concept states could not be used: {reason}") });
     }
     ask = ask.with_concept_states(request.concept_states.clone());
+    if request.indicator_context.len() > 4
+        || request.indicator_context.iter().any(|item| {
+            item.id != "market_structure.broker_convexity"
+                || item.mode.len() > 96
+                || item.status.len() > 32
+                || item.note.len() > 1200
+                || item.data_basis.len() > 8
+                || item.data_basis.iter().any(|basis| basis.len() > 160)
+                || item.readings.len() > 16
+                || item.readings.iter().any(|reading| {
+                    reading.name.len() > 120 || !reading.value.is_finite()
+                })
+        })
+    {
+        return Some(Frame::Notice { message: "indicator context was invalid or too large".into() });
+    }
+    ask = ask.with_indicator_context(request.indicator_context.clone());
     if let Some(skill) = request.skill_id {
         ask = ask.with_skill(skill);
     }

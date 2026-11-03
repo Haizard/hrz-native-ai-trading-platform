@@ -7416,6 +7416,34 @@ function createChartPane(root, hooks = {}) {
       return packet;
     },
 
+    /// Latest broker-aware pane readings and server provenance for the AI.
+    /// This sends only plotted values, never candle history.
+    indicatorContextPacket() {
+      const body = indicatorSeries.get("market_structure.broker_convexity");
+      if (!body || !body.provenance || !body.spec) return [];
+      const readings = [];
+      for (const line of body.spec.lines || []) {
+        const values = Array.isArray(line.values) ? line.values : [];
+        for (let i = values.length - 1; i >= 0; i--) {
+          const value = values[i];
+          if (typeof value === "number" && Number.isFinite(value)) {
+            readings.push({ name: String(line.name || "value").slice(0, 120), value });
+            break;
+          }
+        }
+      }
+      const p = body.provenance;
+      return [{
+        id: "market_structure.broker_convexity",
+        mode: String(p.mode || "unknown").slice(0, 96),
+        status: String(p.status || "unknown").slice(0, 32),
+        data_basis: (Array.isArray(p.data_basis) ? p.data_basis : []).slice(0, 8).map((v) => String(v).slice(0, 160)),
+        note: String(p.note || "").slice(0, 1200),
+        options_gex: p.options_gex === true,
+        readings,
+      }];
+    },
+
     /// Rebuild this pane's series options from the coverage the page read.
     ///
     /// The pane owns its selects, so the pane fills them; the page owns the list,
@@ -11260,6 +11288,10 @@ async function ask() {
       timeframes: [activeTimeframe()],
       concept_states: activeConceptStateDeclarations(),
     };
+    if (activePane) {
+      const indicatorContext = activePane.indicatorContextPacket();
+      if (indicatorContext.length) message.indicator_context = indicatorContext;
+    }
     // Chat attachments ride the same socket message the author interview uses;
     // the server validates them and the model sees them ahead of the question.
     if (pendingAskAttachments) {

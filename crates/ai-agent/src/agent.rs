@@ -325,6 +325,8 @@ pub struct AskRequest {
     /// Trader-edited concept states from the active chart. These provide the
     /// canonical detector, user terminology and parameters to the chat agent.
     pub concept_states: Vec<strategy_dsl::schema::RegistryConcept>,
+    /// Measurements currently displayed by broker-specific chart indicators.
+    pub indicator_context: Vec<IndicatorContext>,
     /// Images the user attached to the question: a chart photo, a book page,
     /// a drawing. They ride the first user message as image blocks, ahead of
     /// the question text, exactly like chart screenshots.
@@ -357,6 +359,7 @@ impl AskRequest {
             capabilities: None,
             concept_evidence: None,
             concept_states: Vec::new(),
+            indicator_context: Vec::new(),
             attachments: Vec::new(),
             attachment_document: None,
         }
@@ -504,6 +507,41 @@ impl AskRequest {
         self.concept_states = states;
         self
     }
+
+    /// Attach measurements and provenance for the active chart indicators.
+    #[must_use]
+    pub fn with_indicator_context(mut self, context: Vec<IndicatorContext>) -> Self {
+        self.indicator_context = context;
+        self
+    }
+}
+
+/// A compact reading from a chart indicator, including the data model used.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IndicatorContext {
+    /// Registry concept identifier.
+    pub id: String,
+    /// Broker-specific calculation mode.
+    pub mode: String,
+    /// Data readiness status reported by the server.
+    pub status: String,
+    /// Source data types used for this calculation.
+    pub data_basis: Vec<String>,
+    /// Human-readable limits and data availability notes.
+    pub note: String,
+    /// Whether this represents actual options-chain GEX.
+    pub options_gex: bool,
+    /// Latest plotted value for each available line.
+    pub readings: Vec<IndicatorReading>,
+}
+
+/// One finite, latest plotted value from an indicator line.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IndicatorReading {
+    /// Chart line label.
+    pub name: String,
+    /// Numeric measurement.
+    pub value: f64,
 }
 
 /// What the agent hands back for a question.
@@ -976,6 +1014,15 @@ impl Agent {
                 .unwrap_or_else(|_| "[]".into());
             format!(
                 "Trader-edited concept states on the active chart (canonical detector ids, trader terminology, pinned versions and parameters):\n```json\n{serialized}\n```\nUse these states when discussing or composing concepts. Preserve the trader's names and settings unless explicitly asked to change them. States from different concept families can be combined with each other, inline concepts and indicators.\n\n---\n\n{question_text}"
+            )
+        };
+        let question_text = if request.indicator_context.is_empty() {
+            question_text
+        } else {
+            let serialized = serde_json::to_string_pretty(&request.indicator_context)
+                .unwrap_or_else(|_| "[]".into());
+            format!(
+                "Active chart indicator readings and provenance (measurements from the displayed pane; do not infer unavailable inputs):\n```json\n{serialized}\n```\nTreat these as broker/data-source-specific measurements, not dealer options gamma exposure. `options_gex: false` means no options-chain GEX is being measured. This pane is an indicator for chart analysis, not a registry event or backtestable strategy condition. Do not claim it was backtested or use its readings as a strategy signal; explain the mode, data basis, status, and limitations when relevant.\n\n---\n\n{question_text}"
             )
         };
         first_content.push(ContentBlock::Text(question_text));

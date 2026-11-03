@@ -291,6 +291,7 @@ impl ai_agent::tools::ConceptCatalog for RegistryConceptCatalog {
                 library: c.id.split('.').next().unwrap_or("").to_string(),
                 pane: c.pane,
                 overlay: c.overlay,
+                strategy_eligible: !c.event_kinds.is_empty(),
             })
             .collect()
     }
