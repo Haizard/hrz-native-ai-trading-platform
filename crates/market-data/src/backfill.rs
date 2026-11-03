@@ -290,6 +290,55 @@ impl BackfillClient {
         Ok(out)
     }
 
+    /// Fetch the most recent candles ending at `to_ns`, without a start time.
+    ///
+    /// Binance applies `startTime` before it selects a page. For a delisted
+    /// pair, a cold chart's recent window can therefore be empty forever even
+    /// though Binance still serves that pair's older klines. Omitting the start
+    /// asks for the newest page that exists, which lets the chart open on the
+    /// pair's last available history.
+    pub async fn fetch_latest_klines(
+        &self,
+        symbol: &str,
+        timeframe: Timeframe,
+        to_ns: i64,
+        limit: usize,
+    ) -> Result<Vec<crate::exchanges::venue::RawKline>, MarketDataError> {
+        let parsed = crate::broker::VenueSymbol::parse(symbol);
+        let request_symbol = if parsed.broker == "binance" && parsed.product == "spot" {
+            parsed.symbol
+        } else if parsed.broker == "binance" {
+            return Err(MarketDataError::Normalization(format!(
+                "Binance REST history does not support the `{}` product namespace",
+                parsed.product
+            )));
+        } else {
+            symbol.to_string()
+        };
+        let interval = self.venue.interval(timeframe).ok_or_else(|| {
+            MarketDataError::Normalization(format!(
+                "{} does not serve {} klines",
+                self.venue.name(), timeframe
+            ))
+        })?;
+        let end_ms = (to_ns / 1_000_000).saturating_sub(1);
+        let body: serde_json::Value = self.client
+            .get(format!("{}{}", self.venue.rest_url(), self.venue.klines_path()))
+            .query(&[
+                ("symbol", request_symbol.to_uppercase()),
+                ("interval", interval.to_string()),
+                (self.venue.end_param(), end_ms.to_string()),
+                ("limit", limit.clamp(1, self.venue.page_limit()).to_string()),
+            ])
+            .send().await
+            .map_err(|e| MarketDataError::Transport(format!("latest klines request failed: {e}")))?
+            .error_for_status()
+            .map_err(|e| MarketDataError::Transport(format!("latest klines HTTP error: {e}")))?
+            .json().await
+            .map_err(|e| MarketDataError::Normalization(format!("latest klines decode: {e}")))?;
+        self.venue.parse_klines(&body)
+    }
+
     /// Fetch aggregate trades over a window, chunked into 1-hour requests.
     ///
     /// # Errors

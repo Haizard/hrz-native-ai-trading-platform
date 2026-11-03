@@ -268,6 +268,7 @@ impl WindowService {
         // for bars already in hand.
         let oldest_we_have = buffered.first().map_or(to_ns, |c| c.open_time);
         let mut fetched = Vec::new();
+        let deriv_code = crate::deriv::code_for_namespaced(&symbol);
         if from_ns < oldest_we_have {
             let gap_end = oldest_we_have.min(to_ns);
             let width = timeframe.nanos().max(1);
@@ -287,7 +288,6 @@ impl WindowService {
             // The multi-broker route: a namespaced Deriv symbol fetches from
             // the Deriv API, everything else from the crypto venues. Rows
             // arrive as finished candles either way.
-            let deriv_code = crate::deriv::code_for_namespaced(&symbol);
             match (deriv_code, &self.deriv) {
                 (Some(code), Some(client)) => {
                     match client.candles(code, timeframe, wanted, fetch_to).await {
@@ -329,6 +329,21 @@ impl WindowService {
             }
         }
         let venue = fetched.len();
+
+        // A cold request for an old/delisted Binance pair has no bars in the
+        // wall-clock window. Binance can still retain its older kline history;
+        // ask for the newest page with endTime only so restart/cold-cache does
+        // not make the instrument look like it never traded.
+        if fetched.is_empty() && buffered.is_empty() && deriv_code.is_none() {
+            match self.backfill.fetch_latest_klines(&symbol, timeframe, to_ns, wanted_bars(from_ns, to_ns, timeframe)).await {
+                Ok(rows) if !rows.is_empty() => {
+                    tracing::info!(symbol, %timeframe, count = rows.len(), "loaded latest retained venue candles outside requested window");
+                    fetched = rows.iter().map(|row| self.candle_from_kline(&symbol, timeframe, row)).collect();
+                }
+                Ok(_) => {}
+                Err(error) => tracing::debug!(symbol, %timeframe, %error, "latest retained candle lookup found no history"),
+            }
+        }
 
         let candles = merge(buffered, fetched);
         let gaps = count_gaps(&candles, timeframe);
@@ -412,6 +427,12 @@ impl WindowService {
     ) -> Candle {
         row.to_candle(symbol, timeframe)
     }
+}
+
+fn wanted_bars(from_ns: i64, to_ns: i64, timeframe: Timeframe) -> usize {
+    usize::try_from((to_ns.saturating_sub(from_ns)) / timeframe.nanos().max(1))
+        .unwrap_or(MAX_VENUE_BARS)
+        .clamp(1, MAX_VENUE_BARS)
 }
 
 /// Merge buffered and venue bars, preferring the buffer on a shared bucket.
