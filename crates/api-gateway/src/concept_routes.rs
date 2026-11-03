@@ -486,6 +486,9 @@ pub struct IndicatorSeriesResponse {
     pub times: Vec<i64>,
     /// The pane spec (engine `SubPaneSpec::Series` field-for-field).
     pub spec: analytics_core::indicator_series::IndicatorSeries,
+    /// Broker-aware retracement bands for the chart's native zone renderer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<chart_engine::indicator::IndicatorZone>,
     /// Provider-specific calculation provenance for broker-aware measurements.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provenance: Option<IndicatorProvenance>,
@@ -599,6 +602,7 @@ pub async fn indicator_series(
             symbol,
             times,
             spec,
+            zones: Vec::new(),
             provenance: None,
         }));
     }
@@ -800,10 +804,12 @@ pub async fn indicator_series(
                 },
             )
         };
+        let zones = broker_retracement_zones(&candles, tf.nanos());
         return Ok(Json(IndicatorSeriesResponse {
             symbol,
             times,
             spec,
+            zones,
             provenance: Some(provenance),
         }));
     }
@@ -823,8 +829,102 @@ pub async fn indicator_series(
         symbol,
         times: candles.iter().map(|c| c.open_time).collect(),
         spec,
+        zones: Vec::new(),
         provenance: None,
     }))
+}
+
+/// Find recent broker-confirmed swing areas where price may retrace.
+/// Binance uses aggressor-side flow confirmation; quote-only feeds use candle
+/// rejection shape. These are market-structure estimates, not options GEX.
+fn broker_retracement_zones(
+    candles: &[analytics_core::types::Candle],
+    timeframe_ns: i64,
+) -> Vec<chart_engine::indicator::IndicatorZone> {
+    use chart_engine::indicator::{IndicatorZone, ZoneState};
+
+    if candles.len() < 5 || timeframe_ns <= 0 {
+        return Vec::new();
+    }
+    let last = candles.len() - 1;
+    let end_time = candles[last]
+        .open_time
+        .saturating_add(timeframe_ns.saturating_mul(120));
+    let has_aggressor_flow = candles.iter().any(|c| c.buy_volume + c.sell_volume > 0.0);
+    let mut demand = Vec::new();
+    let mut supply = Vec::new();
+
+    for i in 2..last.saturating_sub(1) {
+        let candle = &candles[i];
+        let range = candle.high - candle.low;
+        if !range.is_finite() || range <= 0.0 {
+            continue;
+        }
+        let is_pivot_low = candle.low <= candles[i - 1].low
+            && candle.low <= candles[i - 2].low
+            && candle.low <= candles[i + 1].low
+            && candle.low <= candles[i + 2].low;
+        let is_pivot_high = candle.high >= candles[i - 1].high
+            && candle.high >= candles[i - 2].high
+            && candle.high >= candles[i + 1].high
+            && candle.high >= candles[i + 2].high;
+        let total = candle.buy_volume + candle.sell_volume;
+        let imbalance = (total > 0.0).then(|| (candle.buy_volume - candle.sell_volume) / total);
+        let lower_rejection = candle.open.min(candle.close) - candle.low;
+        let upper_rejection = candle.high - candle.open.max(candle.close);
+        let demand_confirmed = if has_aggressor_flow {
+            imbalance.is_some_and(|v| v >= 0.15) || lower_rejection / range >= 0.35
+        } else {
+            lower_rejection / range >= 0.2
+        };
+        let supply_confirmed = if has_aggressor_flow {
+            imbalance.is_some_and(|v| v <= -0.15) || upper_rejection / range >= 0.35
+        } else {
+            upper_rejection / range >= 0.2
+        };
+
+        if is_pivot_low && demand_confirmed {
+            let high = candle.open.max(candle.close).min(candle.high);
+            if high > candle.low {
+                demand.push((i, candle.low, high));
+            }
+        }
+        if is_pivot_high && supply_confirmed {
+            let low = candle.open.min(candle.close).max(candle.low);
+            if candle.high > low {
+                supply.push((i, low, candle.high));
+            }
+        }
+    }
+
+    let mut zones = Vec::new();
+    for (side, candidates) in [("demand", demand), ("supply", supply)] {
+        for (i, low, high) in candidates.into_iter().rev().take(2) {
+            let current = &candles[last];
+            let (touched, invalidated) = if side == "demand" {
+                (current.low <= high, current.close < low)
+            } else {
+                (current.high >= low, current.close > high)
+            };
+            let state = if invalidated {
+                ZoneState::Invalidated
+            } else if touched {
+                ZoneState::Tapped
+            } else {
+                ZoneState::Active
+            };
+            zones.push(IndicatorZone {
+                id: format!("broker-convexity-{side}-{i}"),
+                start_time: candles[i].open_time,
+                end_time,
+                price_low: low,
+                price_high: high,
+                label: format!("Convexity {side} · retracement"),
+                state,
+            });
+        }
+    }
+    zones
 }
 
 fn book_depth_imbalance(book: &analytics_core::types::OrderBookSnapshot) -> Option<f64> {
@@ -1234,9 +1334,53 @@ pub async fn generate(
 #[cfg(test)]
 mod tests {
     use super::{
-        broker_convexity_status, is_recent_order_book, latest_source_time,
+        broker_convexity_status, broker_retracement_zones, is_recent_order_book, latest_source_time,
         LIVE_ORDER_BOOK_MAX_AGE_NS,
     };
+
+    fn test_candle(
+        index: usize,
+        low: f64,
+        high: f64,
+        open: f64,
+        close: f64,
+    ) -> analytics_core::types::Candle {
+        analytics_core::types::Candle {
+            symbol: "TESTUSDT".into(),
+            timeframe: analytics_core::types::Timeframe::M1,
+            open_time: index as i64 * 60_000_000_000,
+            open,
+            high,
+            low,
+            close,
+            volume: 10.0,
+            buy_volume: 0.0,
+            sell_volume: 0.0,
+        }
+    }
+
+    #[test]
+    fn broker_retracement_zones_use_quote_rejections_and_extend_forward() {
+        let bars = vec![
+            test_candle(0, 103.0, 106.0, 104.0, 105.0),
+            test_candle(1, 102.0, 105.0, 103.0, 104.0),
+            test_candle(2, 100.0, 104.0, 101.0, 103.0),
+            test_candle(3, 102.0, 105.0, 103.0, 104.0),
+            test_candle(4, 103.0, 106.0, 104.0, 105.0),
+            test_candle(5, 104.0, 107.0, 105.0, 106.0),
+            test_candle(6, 105.0, 108.0, 106.0, 107.0),
+        ];
+        let zones = broker_retracement_zones(&bars, 60_000_000_000);
+        let demand = zones
+            .iter()
+            .find(|zone| zone.label.contains("demand"))
+            .expect("demand zone");
+        assert_eq!(demand.start_time, bars[2].open_time);
+        assert_eq!(demand.price_low, 100.0);
+        assert!(demand.price_high > demand.price_low);
+        assert!(demand.end_time > bars.last().unwrap().open_time);
+        assert_eq!(demand.state, chart_engine::indicator::ZoneState::Active);
+    }
 
     #[test]
     fn latest_source_time_never_reports_a_carried_future_observation() {

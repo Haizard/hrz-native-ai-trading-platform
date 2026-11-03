@@ -299,6 +299,10 @@ pub struct Request {
     /// Absent means the pane shows no generated indicator.
     #[serde(default)]
     pub live_indicator: Option<LiveIndicator>,
+    /// Broker-derived retracement zones, positioned by the same market-coordinate
+    /// path as generated supply/demand zones.
+    #[serde(default)]
+    pub broker_zones: Vec<crate::indicator::IndicatorZone>,
     /// The user's pinned zone edges (docs/34): applied to the live layer
     /// after each re-detection, matched on `(label, start_time)` — the birth
     /// anchor, which survives the merge-extension that can move a live
@@ -574,6 +578,7 @@ impl Default for Request {
             concept_shapes: Vec::new(),
             indicator: None,
             live_indicator: None,
+            broker_zones: Vec::new(),
             zone_constraints: Vec::new(),
             forecast: None,
             diff_indicator: None,
@@ -2169,6 +2174,30 @@ pub fn build(request: &Request) -> Scene {
                     live.name
                 ),
             );
+        }
+    }
+
+    if !request.broker_zones.is_empty() {
+        let output = crate::indicator::IndicatorOutput {
+            revision_id: "broker-convexity-zones".into(),
+            zones: request.broker_zones.clone(),
+            ..crate::indicator::IndicatorOutput::default()
+        };
+        match indicator_parts(&output, &frame, &Default::default()) {
+            Ok(mut market_zones) => {
+                let indicator = scene.indicator.get_or_insert_with(|| SceneIndicator {
+                    revision_id: output.revision_id,
+                    zones: Vec::new(),
+                    markers: Vec::new(),
+                    links: Vec::new(),
+                    trendlines: Vec::new(),
+                });
+                indicator.zones.append(&mut market_zones.zones);
+            }
+            Err(reason) => add_note(
+                &mut scene.note,
+                format!("broker retracement zones are not drawn: {reason}"),
+            ),
         }
     }
 
@@ -7307,6 +7336,7 @@ mod tests {
         let output = IndicatorOutput {
             revision_id: "revision-7".into(),
             name: None,
+            registry_concepts: Vec::new(),
             concepts: Vec::new(),
             trendlines: Vec::new(),
             evidence: vec![
@@ -7355,6 +7385,27 @@ mod tests {
     }
 
     #[test]
+    fn broker_retracement_bands_use_the_native_indicator_zone_renderer() {
+        let scene = build(&Request {
+            broker_zones: vec![IndicatorZone {
+                id: "broker-convexity-demand-20".into(),
+                start_time: 20 * 300_000_000_000,
+                end_time: 150 * 300_000_000_000,
+                price_low: 109.0,
+                price_high: 112.0,
+                label: "Convexity demand · retracement".into(),
+                state: ZoneState::Active,
+            }],
+            ..request(100)
+        });
+        let zone = &scene.indicator.expect("broker zones share indicator layer").zones[0];
+        assert_eq!(zone.label, "Convexity demand · retracement");
+        assert_eq!(zone.price_low, 109.0);
+        assert_eq!(zone.price_high, 112.0);
+        assert!(zone.w > 0.0 && zone.h > 0.0);
+    }
+
+    #[test]
     fn a_zone_carries_its_birth_evidence_and_its_prices_for_the_inspector() {
         // docs/26: the inspector tooltip is fed entirely by the zone itself --
         // the price band and times as numbers, and the *reason the zone
@@ -7365,6 +7416,7 @@ mod tests {
         let output = IndicatorOutput {
             revision_id: "revision-8".into(),
             name: None,
+            registry_concepts: Vec::new(),
             concepts: Vec::new(),
             trendlines: Vec::new(),
             evidence: vec![Evidence {
@@ -7419,6 +7471,7 @@ mod tests {
         let output = IndicatorOutput {
             revision_id: "revision-9".into(),
             name: None,
+            registry_concepts: Vec::new(),
             concepts: Vec::new(),
             trendlines: Vec::new(),
             evidence: vec![],
@@ -7465,6 +7518,7 @@ mod tests {
         let output = IndicatorOutput {
             revision_id: "revision-cull".into(),
             name: None,
+            registry_concepts: Vec::new(),
             concepts: Vec::new(),
             trendlines: Vec::new(),
             evidence: vec![

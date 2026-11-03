@@ -3575,6 +3575,9 @@ function createChartPane(root, hooks = {}) {
       // withheld: their events carry a measurement (RSI's 30/70), not a price,
       // and a mark at 70 on a BTC chart is a level that does not exist.
       concept_shapes: ConceptShapes.from(conceptEvents, priceFrameConcepts(), conceptAliasesForRequest()),
+      // The broker-aware convexity pane shares the existing supply/demand zone
+      // rendering path; only its bounded price bands are sent to the scene.
+      broker_zones: brokerConvexityZonesForRequest(),
       // The profile's edge, in the engine's own spelling. Assigned only when
       // set: absent means Right, which keeps every existing request byte-identical.
       ...(profileLeft ? { profile_anchor: "left" } : {}),
@@ -6424,6 +6427,11 @@ function createChartPane(root, hooks = {}) {
       }
     }
     return out;
+  }
+
+  function brokerConvexityZonesForRequest() {
+    const body = indicatorSeries.get("market_structure.broker_convexity");
+    return body && Array.isArray(body.zones) ? body.zones : [];
   }
 
   /// The concept path -- events to shapes, shapes to pixels -- is in
