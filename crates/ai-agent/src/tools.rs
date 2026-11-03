@@ -1784,7 +1784,10 @@ const CREATE_STRATEGY: &str = "Create a backtestable trading strategy from a \
     do NOT call yet. `search_web` the concept first, then brainstorm the \
     build with the user -- their trading style, timeframe, risk per trade, \
     plus 2-3 enrichments you suggest -- and call this only once the spec is \
-    agreed, passing the enriched description you settled on.";
+    agreed, passing the enriched description you settled on. Use only concepts \
+    whose catalog entry has strategy_eligible=true as detector conditions. \
+    Chart-only measurements such as broker_convexity can inform the discussion, \
+    but cannot be claimed as strategy inputs or backtested conditions.";
 
 /// `scan_market` — rank the market by one measurement.
 const SCAN_MARKET: &str = "Scan the market: rank many symbols by one measurement \
@@ -3013,10 +3016,12 @@ async fn list_concepts(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, Age
         reason: "no concept catalog is attached to this agent".into(),
     })?;
     let concepts = catalog.search(keyword.as_deref(), library.as_deref());
+    let eligible = concepts.iter().filter(|concept| concept.strategy_eligible).count();
     Ok(serde_json::json!({
         "concepts": concepts,
         "count": concepts.len(),
-        "note": "compose with conditions written in THESE ids; a concept the catalog does not list does not exist.",
+        "strategy_eligible_count": eligible,
+        "note": "compose backtestable conditions only from entries with strategy_eligible=true; pane measurements are chart context, not event signals.",
     }))
 }
 

@@ -629,12 +629,7 @@ fn validate_condition(
             lookback_bars,
             ..
         } => {
-            if crate::concepts::concept(concept).is_none() {
-                errors.push(ValidationError {
-                    path: path.to_string(),
-                    message: format!("`{concept}` is not a registered concept (GET /concepts)"),
-                });
-            }
+            validate_strategy_concept(concept, path, errors);
             if *value < 0.0 {
                 errors.push(ValidationError {
                     path: path.to_string(),
@@ -719,12 +714,7 @@ fn validate_condition(
             tolerance,
             ..
         } => {
-            if crate::concepts::concept(concept).is_none() {
-                errors.push(ValidationError {
-                    path: path.to_string(),
-                    message: format!("`{concept}` is not a registered concept (GET /concepts)"),
-                });
-            }
+            validate_strategy_concept(concept, path, errors);
             if *tolerance < 0.0 || *tolerance > 0.5 {
                 errors.push(ValidationError {
                     path: path.to_string(),
@@ -744,12 +734,7 @@ fn validate_condition(
             lookback_bars,
             ..
         } => {
-            if crate::concepts::concept(concept).is_none() {
-                errors.push(ValidationError {
-                    path: path.to_string(),
-                    message: format!("`{concept}` is not a registered concept (GET /concepts)"),
-                });
-            }
+            validate_strategy_concept(concept, path, errors);
             if lookback_bars.is_some_and(|w| w == 0) {
                 errors.push(ValidationError {
                     path: path.to_string(),
@@ -758,12 +743,7 @@ fn validate_condition(
             }
         }
         Condition::Retrace { into, .. } => {
-            if crate::concepts::concept(into).is_none() {
-                errors.push(ValidationError {
-                    path: path.to_string(),
-                    message: format!("`{into}` is not a registered concept (GET /concepts)"),
-                });
-            }
+            validate_strategy_concept(into, path, errors);
         }
         Condition::All { conditions } | Condition::Any { conditions } => {
             if conditions.is_empty() {
@@ -811,6 +791,23 @@ fn validate_condition(
                 );
             }
         }
+    }
+}
+
+/// A strategy condition needs a detector event stream, not just a pane series.
+fn validate_strategy_concept(concept: &str, path: &str, errors: &mut Vec<ValidationError>) {
+    match crate::concepts::concept(concept) {
+        None => errors.push(ValidationError {
+            path: path.to_string(),
+            message: format!("`{concept}` is not a registered concept (GET /concepts)"),
+        }),
+        Some(spec) if spec.event_kinds.is_empty() => errors.push(ValidationError {
+            path: path.to_string(),
+            message: format!(
+                "`{concept}` has no backtest event stream; it is a chart measurement or context concept, not a strategy condition"
+            ),
+        }),
+        Some(_) => {}
     }
 }
 
