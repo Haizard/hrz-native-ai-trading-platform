@@ -69,6 +69,198 @@ pub struct VolumeProfile {
     pub lvn: Vec<f64>,
 }
 
+/// Session profile estimate learned from completed candle sessions.
+///
+/// The estimate is intentionally deterministic: it uses normalized prior
+/// session histograms and a shrinkage estimate of session drift. It is an
+/// approximation from OHLCV candles, not exchange-provided volume-at-price.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionBayesianProfile {
+    /// Current UTC session's opening timestamp.
+    pub session_start: i64,
+    /// Current session opening price.
+    pub session_open: f64,
+    /// Forecast center after shrinkage of prior-session drift.
+    pub forecast_center: f64,
+    /// Confidence proxy based on the number and consistency of prior sessions.
+    pub confidence: f64,
+    /// Forecast volume share at or above the session open.
+    pub bullish_share: f64,
+    /// Number of completed sessions informing the estimate.
+    pub training_sessions: usize,
+    /// Forecast bins in ascending price order.
+    pub forecast: Vec<VolumeNode>,
+    /// Candle-derived observed profile for the current session.
+    pub observed: VolumeProfile,
+}
+
+/// Learn a session profile from prior sessions and forecast the latest session.
+///
+/// Completed sessions are mapped onto a common price axis centered on each
+/// session's open and scaled by its high-low range. The latest session is
+/// excluded from training. Historical normalized shapes are averaged and
+/// smoothed; the projected center uses a sample-size shrinkage of prior
+/// midpoint drift. This is a practical candle-data analogue of a Bayesian
+/// particle profile, without claiming access to intrabar trade distributions.
+#[must_use]
+pub fn calculate_session_bayesian_profile(
+    candles: &[Candle],
+    bucket_size: f64,
+    session_nanos: i64,
+    max_training_sessions: usize,
+) -> Option<SessionBayesianProfile> {
+    use std::collections::BTreeMap;
+    if candles.len() < 2 || !bucket_size.is_finite() || bucket_size <= 0.0 || session_nanos <= 0 {
+        return None;
+    }
+    let bucket_start = |ts: i64| {
+        if session_nanos == 7 * 24 * 60 * 60 * 1_000_000_000i64 {
+            let monday_offset = 4 * 24 * 60 * 60 * 1_000_000_000i64;
+            (ts - monday_offset).div_euclid(session_nanos) * session_nanos + monday_offset
+        } else {
+            ts.div_euclid(session_nanos) * session_nanos
+        }
+    };
+    let mut grouped: BTreeMap<i64, Vec<&Candle>> = BTreeMap::new();
+    for candle in candles {
+        if candle.open_time >= 0
+            && candle.low.is_finite()
+            && candle.high.is_finite()
+            && candle.open.is_finite()
+            && candle.close.is_finite()
+            && candle.high >= candle.low
+            && candle.volume.is_finite()
+            && candle.volume >= 0.0
+        {
+            grouped
+                .entry(bucket_start(candle.open_time))
+                .or_default()
+                .push(candle);
+        }
+    }
+    if grouped.len() < 2 {
+        return None;
+    }
+    let current_start = *grouped.keys().next_back()?;
+    let current = grouped.get(&current_start)?;
+    let open = current.first()?.open;
+    let mut completed: Vec<_> = grouped
+        .iter()
+        .filter(|(start, _)| **start < current_start)
+        .collect();
+    if max_training_sessions > 0 && completed.len() > max_training_sessions {
+        completed.drain(..completed.len() - max_training_sessions);
+    }
+    if completed.is_empty() {
+        return None;
+    }
+
+    const SHAPE_BINS: usize = 41;
+    let mut shape = [0.0f64; SHAPE_BINS];
+    let mut offsets = Vec::with_capacity(completed.len());
+    let mut ranges = Vec::with_capacity(completed.len());
+    for (_, session) in &completed {
+        let first = session.first()?;
+        let (lo, hi) = session
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |a, c| {
+                (a.0.min(c.low), a.1.max(c.high))
+            });
+        let range = (hi - lo).max(bucket_size);
+        let mid = (hi + lo) * 0.5;
+        offsets.push((mid - first.open) / range);
+        ranges.push(range);
+        for candle in session.iter() {
+            let span = (candle.high - candle.low).max(bucket_size);
+            // Some quote-only feeds publish zero candle volume. In that case
+            // each candle is one activity observation, not zero information.
+            let activity = if candle.volume > 0.0 {
+                candle.volume
+            } else {
+                1.0
+            };
+            let weight = activity / SHAPE_BINS as f64;
+            for (i, slot) in shape.iter_mut().enumerate() {
+                let z = (i as f64 - (SHAPE_BINS as f64 - 1.0) / 2.0) / 10.0;
+                let price = first.open + z * range;
+                if price >= candle.low && price <= candle.high {
+                    *slot += weight * (bucket_size / span).min(1.0);
+                }
+            }
+        }
+    }
+    let shape_total: f64 = shape.iter().sum();
+    if shape_total <= 0.0 {
+        return None;
+    }
+    let mean_offset = offsets.iter().sum::<f64>() / offsets.len() as f64;
+    let mean_range = ranges.iter().sum::<f64>() / ranges.len() as f64;
+    let drift_trust = (offsets.len() as f64 / (offsets.len() as f64 + 3.0)).clamp(0.0, 0.85);
+    let forecast_center = open + mean_offset * mean_range * drift_trust;
+    let confidence = (drift_trust
+        * (1.0
+            - (offsets.iter().map(|v| (v - mean_offset).abs()).sum::<f64>()
+                / offsets.len() as f64)
+                .min(1.0)))
+    .clamp(0.0, 1.0);
+    let mut forecast = Vec::with_capacity(SHAPE_BINS);
+    let mut bullish_volume = 0.0;
+    for (i, mass) in shape.iter().enumerate() {
+        // Smooth neighboring samples into a compact kernel estimate.
+        let smoothed = [-2isize, -1, 0, 1, 2]
+            .iter()
+            .map(|offset| {
+                let index = i as isize + offset;
+                if index >= 0 && index < SHAPE_BINS as isize {
+                    shape[index as usize]
+                        * if *offset == 0 {
+                            3.0
+                        } else if offset.abs() == 1 {
+                            2.0
+                        } else {
+                            1.0
+                        }
+                } else {
+                    0.0
+                }
+            })
+            .sum::<f64>()
+            / 9.0;
+        let z = (i as f64 - (SHAPE_BINS as f64 - 1.0) / 2.0) / 10.0;
+        let price = forecast_center + z * mean_range;
+        let volume = if smoothed.is_finite() {
+            smoothed
+        } else {
+            *mass
+        };
+        if price >= open {
+            bullish_volume += volume;
+        }
+        forecast.push(VolumeNode {
+            price_level: price,
+            volume,
+            buy_volume: 0.0,
+            sell_volume: 0.0,
+        });
+    }
+    let total = forecast.iter().map(|node| node.volume).sum::<f64>();
+    if total <= 0.0 {
+        return None;
+    }
+    let current_candles: Vec<Candle> = current.iter().map(|candle| (**candle).clone()).collect();
+    let observed = calculate_volume_profile_from_candles(&current_candles, bucket_size);
+    Some(SessionBayesianProfile {
+        session_start: current_start,
+        session_open: open,
+        forecast_center,
+        confidence,
+        bullish_share: (bullish_volume / total).clamp(0.0, 1.0),
+        training_sessions: completed.len(),
+        forecast,
+        observed,
+    })
+}
+
 impl VolumeProfile {
     /// An empty profile, returned when the input cannot produce one.
     #[must_use]
@@ -312,7 +504,11 @@ pub fn calculate_quote_tick_profile(prices: &[f64], bucket_size: f64) -> VolumeP
     if prices.is_empty() || !bucket_size.is_finite() || bucket_size <= 0.0 {
         return VolumeProfile::empty(bucket_size);
     }
-    let finite: Vec<f64> = prices.iter().copied().filter(|price| price.is_finite()).collect();
+    let finite: Vec<f64> = prices
+        .iter()
+        .copied()
+        .filter(|price| price.is_finite())
+        .collect();
     let (Some(min_price), Some(max_price)) = (
         finite.iter().copied().reduce(f64::min),
         finite.iter().copied().reduce(f64::max),
@@ -519,7 +715,6 @@ mod tests {
         assert!(!profile.is_empty());
     }
 
-
     use super::*;
     use crate::types::Timeframe;
 
@@ -547,6 +742,34 @@ mod tests {
             buy_volume: volume / 2.0,
             sell_volume: volume / 2.0,
         }
+    }
+
+    #[test]
+    fn session_bayesian_profile_learns_prior_and_reports_live_session() {
+        let day = Timeframe::D1.nanos();
+        let mut prior = candle(105.0, 95.0, 103.0, 100.0);
+        prior.open = 100.0;
+        prior.open_time = day;
+        let mut live = candle(108.0, 99.0, 105.0, 60.0);
+        live.open = 102.0;
+        live.open_time = day * 2;
+        let result = calculate_session_bayesian_profile(&[prior, live], 0.5, day, 8).unwrap();
+        assert_eq!(result.training_sessions, 1);
+        assert_eq!(result.session_start, day * 2);
+        assert_eq!(result.session_open, 102.0);
+        assert!(!result.forecast.is_empty());
+        assert!(!result.observed.is_empty());
+        assert!((0.0..=1.0).contains(&result.confidence));
+        assert!((0.0..=1.0).contains(&result.bullish_share));
+    }
+
+    #[test]
+    fn session_bayesian_profile_waits_for_a_completed_session() {
+        let mut first = candle(105.0, 95.0, 100.0, 10.0);
+        first.open_time = Timeframe::D1.nanos();
+        assert!(
+            calculate_session_bayesian_profile(&[first], 1.0, Timeframe::D1.nanos(), 8).is_none()
+        );
     }
 
     #[test]

@@ -603,6 +603,19 @@
           <option value="area">Area</option>
           <option value="footprint">Footprint (volume by price)</option>
         </select>
+        <select class="profileType" title="Volume profile method">
+          <option value="standard">Standard volume profile</option>
+          <option value="session_bayesian">Type 1 · Session forecast</option>
+        </select>
+        <select class="profileSession" title="Session size for Session Bayesian profile">
+          <option value="1h">1 hour</option><option value="4h">4 hours</option>
+          <option value="1d" selected>1 day</option><option value="1w">1 week</option>
+        </select>
+        <select class="profileHistory" title="Completed sessions used to learn the forecast">
+          <option value="3">Learn from 3 sessions</option><option value="5">Learn from 5 sessions</option>
+          <option value="8" selected>Learn from 8 sessions</option><option value="0">Learn from all history</option>
+        </select>
+        <label class="profileHeatmapControl" title="Shade forecast density over the elapsed session"><input class="profileHeatmap" type="checkbox" checked />Forecast heatmap</label>
         <!--
           Supply/demand zones. A toggle rather than a chart type, because a zone is
           an overlay on whatever rendering is selected -- the same series read the

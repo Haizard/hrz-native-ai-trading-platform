@@ -529,7 +529,7 @@ function buildScene(request) {
 /// that quietly answered for `#thesis` would be a bug nothing points at.
 const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartNote",
-  "footprintStats", "symbol", "timeframe", "limit", "mode", "zones", "forecast", "volScale", "fit", "logScale", "pctScale",
+  "footprintStats", "symbol", "timeframe", "limit", "mode", "profileType", "profileSession", "profileHistory", "profileHeatmap", "zones", "forecast", "volScale", "fit", "logScale", "pctScale",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
   "magnet", "aiLayer", "profileAnchor", "undo", "redo",
   // The pane's own chrome (title, zoom/collapse buttons) and the hidden bar
@@ -2958,7 +2958,67 @@ function createChartPane(root, hooks = {}) {
   }
 
   function drawProfile(ctx, scene) {
-    for (const bar of scene.profile) {
+    const meta = scene.profile_projection_meta;
+    if (Array.isArray(scene.profile_heatmap) && scene.profile_heatmap.length) {
+      for (const row of scene.profile_heatmap) {
+        const side = row.in_value_area;
+        ctx.fillStyle = side ? `rgba(59, 157, 255, ${0.025 + row.volume * 0.13})` : `rgba(206, 66, 235, ${0.025 + row.volume * 0.13})`;
+        ctx.fillRect(row.x, row.y, row.w, row.h);
+      }
+    }
+    if (Array.isArray(scene.profile_projection_lines)) {
+      for (const line of scene.profile_projection_lines) {
+        ctx.save();
+        ctx.strokeStyle = line.kind === "session_open" ? "rgba(230, 221, 243, 0.56)" : "rgba(230, 235, 245, 0.86)";
+        ctx.setLineDash(line.kind === "session_open" ? [5, 4] : []);
+        ctx.beginPath();
+        ctx.moveTo(line.x1, line.y);
+        ctx.lineTo(line.x2, line.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+    }
+    if (Array.isArray(scene.profile_projection) && scene.profile_projection.length) {
+      ctx.save();
+      ctx.globalAlpha = meta ? 0.35 + 0.55 * Math.max(0, Math.min(1, meta.confidence)) : 0.65;
+      for (const bar of scene.profile_projection) {
+        ctx.fillStyle = bar.in_value_area ? "#258df0" : "#a832bd";
+        ctx.strokeStyle = bar.in_value_area ? "#79c3ff" : "#df75ef";
+        ctx.fillRect(bar.x, bar.y, bar.w, bar.h);
+        ctx.strokeRect(bar.x + 0.5, bar.y + 0.5, Math.max(0, bar.w - 1), Math.max(0, bar.h - 1));
+      }
+      if (meta) {
+        const baseX = Math.max(...scene.profile_projection.map((bar) => bar.x + bar.w));
+        const top = Math.min(...scene.profile_projection.map((bar) => bar.y));
+        const bottom = Math.max(...scene.profile_projection.map((bar) => bar.y + bar.h));
+        const split = Math.max(top, Math.min(bottom, meta.session_open_y));
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = "#258df0";
+        ctx.fillRect(baseX - 15, top, 15, Math.max(0, split - top));
+        ctx.fillStyle = "#a832bd";
+        ctx.fillRect(baseX - 15, split, 15, Math.max(0, bottom - split));
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 10px ui-monospace, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(`${(meta.bullish_share * 100).toFixed(1)}%`, baseX - 7.5, (top + split) / 2 + 3);
+        ctx.fillText(`${((1 - meta.bullish_share) * 100).toFixed(1)}%`, baseX - 7.5, (split + bottom) / 2 + 3);
+        ctx.textAlign = "left";
+      }
+      ctx.restore();
+    }
+    if (meta && scene.profile_projection.length) {
+      // The right-hand profile is realized session activity, rendered in
+      // neutral gray so it reads separately from the blue/magenta forecast.
+      ctx.save();
+      ctx.fillStyle = "rgba(181, 196, 211, 0.50)";
+      ctx.strokeStyle = "rgba(220, 231, 241, 0.72)";
+      for (const bar of scene.profile) {
+        ctx.fillRect(bar.x, bar.y, bar.w, bar.h);
+        ctx.strokeRect(bar.x + 0.5, bar.y + 0.5, Math.max(0, bar.w - 1), Math.max(0, bar.h - 1));
+      }
+      ctx.restore();
+    } else for (const bar of scene.profile) {
       // Buy share on the left, sell on the right, so the split is visible without
       // a second chart.
       ctx.fillStyle = COLORS.profile;
@@ -2967,6 +3027,14 @@ function createChartPane(root, hooks = {}) {
       ctx.globalAlpha = 0.55;
       ctx.fillRect(bar.x, bar.y, bar.w * bar.buy_ratio, bar.h);
       ctx.globalAlpha = 1;
+    }
+    if (meta && scene.profile_projection.length) {
+      ctx.save();
+      ctx.font = "10px ui-monospace, monospace";
+      ctx.fillStyle = "#c7b7ff";
+      const label = `SESSION FORECAST · ${(meta.bullish_share * 100).toFixed(0)}% bullish / ${((1 - meta.bullish_share) * 100).toFixed(0)}% bearish · ${(meta.confidence * 100).toFixed(0)}% confidence · ${meta.training_sessions} sessions`;
+      ctx.fillText(label, scene.plot.x + 5, scene.plot.y + 14, Math.max(80, scene.plot.w - 10));
+      ctx.restore();
     }
   }
 
@@ -3583,6 +3651,10 @@ function createChartPane(root, hooks = {}) {
       // The profile's edge, in the engine's own spelling. Assigned only when
       // set: absent means Right, which keeps every existing request byte-identical.
       ...(profileLeft ? { profile_anchor: "left" } : {}),
+      profile_type: el("profileType").value || "standard",
+      profile_session: el("profileSession").value || "1d",
+      profile_history: Number(el("profileHistory").value || 8),
+      profile_heatmap: el("profileHeatmap").checked,
       profile_quotes: quoteProfileState.points,
       profile_quotes_truncated: quoteProfileState.truncated,
       // The forecast cone (docs/35): present only when the toggle is on, so an
@@ -7022,6 +7094,10 @@ function createChartPane(root, hooks = {}) {
       scheduleRender();
     });
     el("mode").addEventListener("change", () => applyMode(el("mode").value));
+    el("profileType").addEventListener("change", render);
+    el("profileSession").addEventListener("change", render);
+    el("profileHistory").addEventListener("change", render);
+    el("profileHeatmap").addEventListener("change", render);
     el("timeframe").addEventListener("change", () => applyTimeframe(el("timeframe").value));
     el("symbol").addEventListener("change", () => applySymbol(el("symbol").value));
     el("fit").addEventListener("click", applyFit);
@@ -7269,6 +7345,10 @@ function createChartPane(root, hooks = {}) {
         symbol: el("symbol").value,
         timeframe: el("timeframe").value,
         mode: el("mode").value,
+        profile_type: el("profileType").value,
+        profile_session: el("profileSession").value,
+        profile_history: el("profileHistory").value,
+        profile_heatmap: el("profileHeatmap").checked,
         limit: el("limit").value,
         indicator: indicator ? JSON.parse(JSON.stringify(indicator)) : null,
         concept_states: JSON.parse(JSON.stringify(conceptStates)),
@@ -7287,6 +7367,10 @@ function createChartPane(root, hooks = {}) {
     applyState(saved) {
       if (!saved) return;
       if (saved.mode) el("mode").value = saved.mode;
+      if (saved.profile_type) el("profileType").value = saved.profile_type;
+      if (saved.profile_session) el("profileSession").value = saved.profile_session;
+      if (saved.profile_history != null) el("profileHistory").value = String(saved.profile_history);
+      if (saved.profile_heatmap != null) el("profileHeatmap").checked = saved.profile_heatmap !== false;
       if (saved.limit) el("limit").value = saved.limit;
       indicator = saved.indicator || null;
       conceptStates = saved.concept_states && typeof saved.concept_states === "object" ? saved.concept_states : {};

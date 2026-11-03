@@ -38,7 +38,7 @@ use analytics_core::regions::{detect_zones, Region, RegionOrigin, ZoneConfig};
 use analytics_core::types::{Candle, Timeframe};
 use analytics_core::volume_profile::{
     calculate_quote_range_activity_profile, calculate_quote_tick_profile,
-    calculate_volume_profile_from_candles, VolumeProfile,
+    calculate_session_bayesian_profile, calculate_volume_profile_from_candles, VolumeProfile,
 };
 use analytics_core::vwap::calculate_vwap;
 use serde::{Deserialize, Serialize};
@@ -196,6 +196,18 @@ pub struct Request {
     /// sits -- the same reason `lines` defaults rather than demands.
     #[serde(default)]
     pub profile_anchor: ProfileAnchor,
+    /// Profile calculation selected by this chart.
+    #[serde(default)]
+    pub profile_type: ProfileType,
+    /// Session size used by the learned profile.
+    #[serde(default = "default_profile_session")]
+    pub profile_session: Timeframe,
+    /// Maximum number of completed sessions to learn from; zero means all available.
+    #[serde(default = "default_profile_history")]
+    pub profile_history: usize,
+    /// Whether the learned density is shaded across elapsed session candles.
+    #[serde(default = "default_profile_heatmap")]
+    pub profile_heatmap: bool,
     /// Deriv's observed quote prices and timestamps for a quote-activity profile.
     #[serde(default)]
     pub profile_quotes: Vec<ProfileQuote>,
@@ -576,6 +588,10 @@ impl Default for Request {
             footprint_trades: 0,
             lines: default_lines(),
             profile_anchor: ProfileAnchor::default(),
+            profile_type: ProfileType::default(),
+            profile_session: default_profile_session(),
+            profile_history: default_profile_history(),
+            profile_heatmap: default_profile_heatmap(),
             profile_quotes: Vec::new(),
             profile_quotes_truncated: false,
             price_scale: PriceScale::Linear,
@@ -602,6 +618,21 @@ impl Default for Request {
             scripts: Vec::new(),
         }
     }
+}
+
+fn default_profile_session() -> Timeframe { Timeframe::D1 }
+fn default_profile_history() -> usize { 8 }
+fn default_profile_heatmap() -> bool { true }
+
+/// Selectable volume-profile calculation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileType {
+    /// Visible-window volume-by-price histogram.
+    #[default]
+    Standard,
+    /// Learned forecast beside the current session's observed profile.
+    SessionBayesian,
 }
 
 /// The levels drawn when a request does not say.
@@ -1067,6 +1098,18 @@ pub struct Scene {
     pub line: Vec<Point>,
     /// Volume-profile bars, cheapest first.
     pub profile: Vec<ProfileBar>,
+    /// Predicted density mirrored from the current session boundary opposite the observed profile.
+    #[serde(default)]
+    pub profile_projection: Vec<ProfileBar>,
+    /// Faint forecast-density bands across the elapsed current session.
+    #[serde(default)]
+    pub profile_heatmap: Vec<ProfileBar>,
+    /// Expected upper/lower means and session-open reference lines.
+    #[serde(default)]
+    pub profile_projection_lines: Vec<ProfileProjectionLine>,
+    /// Forecast confidence, bias and training context when available.
+    #[serde(default)]
+    pub profile_projection_meta: Option<ProfileProjectionMeta>,
     /// Overlay levels.
     pub levels: Vec<Level>,
     /// Supply/demand zones, when the request asked for them.
@@ -1171,6 +1214,36 @@ pub struct Scene {
     pub snap_points: Vec<SnapPoint>,
     /// A caveat about what is being shown, when there is one.
     pub note: Option<String>,
+}
+
+/// Confidence and bias summary for a learned session profile.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ProfileProjectionMeta {
+    /// Model confidence proxy, normalized to 0..1.
+    pub confidence: f64,
+    /// Predicted share of profile density at or above the session open.
+    pub bullish_share: f64,
+    /// Count of completed sessions used to learn the model.
+    pub training_sessions: usize,
+    /// Predicted profile center after drift shrinkage.
+    pub forecast_center: f64,
+    /// Current session opening price.
+    pub session_open: f64,
+    /// Canvas y-coordinate of the session open, the forecast's bull/bear split.
+    pub session_open_y: f64,
+}
+
+/// A reference price line for the learned session distribution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileProjectionLine {
+    /// Start x, at the current session's first candle.
+    pub x1: f64,
+    /// End x, at the current candle.
+    pub x2: f64,
+    /// Canvas y-coordinate of the reference price.
+    pub y: f64,
+    /// `upper_mean`, `session_open`, or `lower_mean`.
+    pub kind: String,
 }
 
 /// One sub-pane laid out and filled in: an oscillator with its own y-scale
@@ -1677,6 +1750,10 @@ pub fn build(request: &Request) -> Scene {
         candles: Vec::new(),
         line: Vec::new(),
         profile: Vec::new(),
+        profile_projection: Vec::new(),
+        profile_heatmap: Vec::new(),
+        profile_projection_lines: Vec::new(),
+        profile_projection_meta: None,
         levels: Vec::new(),
         regions: Vec::new(),
         ticks: Vec::new(),
@@ -1911,13 +1988,96 @@ pub fn build(request: &Request) -> Scene {
     } else {
         Vec::new()
     };
-    let profile = if quote_only_venue && !profile_quote_prices.is_empty() {
+    let mut profile = if quote_only_venue && !profile_quote_prices.is_empty() {
         calculate_quote_tick_profile(&profile_quote_prices, bucket_size)
     } else if quote_only_venue {
         calculate_quote_range_activity_profile(visible_real, bucket_size)
     } else {
         calculate_volume_profile_from_candles(visible_real, bucket_size)
     };
+
+    let mut learned_session_start = None;
+    if request.profile_type == ProfileType::SessionBayesian {
+        if let Some(model) = calculate_session_bayesian_profile(
+            visible_real, bucket_size, request.profile_session.nanos(), request.profile_history,
+        ) {
+            let session_first_index = visible_real.iter().position(|c| c.open_time >= model.session_start)
+                .unwrap_or(visible_real.len().saturating_sub(1));
+            let boundary_index = visible_real.len().saturating_sub(1);
+            learned_session_start = Some(model.session_start);
+            let boundary_x = plot.x + slot * (boundary_index as f64 + 0.5);
+            let session_first_x = plot.x + slot * (session_first_index as f64 + 0.5);
+            let session_candles: Vec<_> = visible_real.iter()
+                .filter(|c| c.open_time >= model.session_start).cloned().collect();
+            profile = if quote_only_venue {
+                calculate_quote_range_activity_profile(&session_candles, bucket_size)
+            } else { model.observed.clone() };
+
+            let mut forecast_profile = VolumeProfile::empty(bucket_size);
+            forecast_profile.histogram = model.forecast.clone();
+            forecast_profile.total_volume = model.forecast.iter().map(|node| node.volume).sum();
+            forecast_profile.poc = model.forecast.iter().max_by(|a, b| a.volume.total_cmp(&b.volume))
+                .map_or(0.0, |node| node.price_level);
+            forecast_profile.val = model.session_open;
+            forecast_profile.vah = model.forecast.last().map_or(model.session_open, |node| node.price_level);
+            scene.profile_projection = profile_bars_at(
+                &forecast_profile, &plot, scene.price_min, scene.price_max, boundary_x, true, scale_map,
+            );
+
+            let peak = model.forecast.iter().map(|node| node.volume).fold(0.0, f64::max);
+            let row_height = (plot.h / PROFILE_ROWS).max(1.0);
+            if request.profile_heatmap && peak > 0.0 {
+                scene.profile_heatmap = model.forecast.iter()
+                    .filter(|node| node.price_level >= scene.price_min && node.price_level <= scene.price_max)
+                    .map(|node| {
+                        let y = price_to_y(node.price_level, scene.price_min, scene.price_max, &plot, scale_map);
+                        ProfileBar {
+                            x: session_first_x, y: y - row_height / 2.0,
+                            w: (boundary_x - session_first_x).max(0.0), h: row_height,
+                            volume: node.volume / peak, buy_ratio: model.bullish_share,
+                            in_value_area: node.price_level >= model.session_open,
+                        }
+                    }).collect();
+            }
+            let weighted_mean = |above_open: bool| {
+                let mut mass = 0.0;
+                let mut weighted_price = 0.0;
+                for node in &model.forecast {
+                    if (node.price_level >= model.session_open) == above_open {
+                        mass += node.volume;
+                        weighted_price += node.price_level * node.volume;
+                    }
+                }
+                (mass > 0.0).then_some(weighted_price / mass)
+            };
+            for (kind, price) in [
+                ("upper_mean", weighted_mean(true)),
+                ("session_open", Some(model.session_open)),
+                ("lower_mean", weighted_mean(false)),
+            ] {
+                if let Some(price) = price.filter(|p| *p >= scene.price_min && *p <= scene.price_max) {
+                    scene.profile_projection_lines.push(ProfileProjectionLine {
+                        x1: session_first_x, x2: boundary_x,
+                        y: price_to_y(price, scene.price_min, scene.price_max, &plot, scale_map),
+                        kind: kind.into(),
+                    });
+                }
+            }
+            scene.profile_projection_meta = Some(ProfileProjectionMeta {
+                confidence: model.confidence, bullish_share: model.bullish_share,
+                training_sessions: model.training_sessions, forecast_center: model.forecast_center,
+                session_open: model.session_open,
+                session_open_y: price_to_y(model.session_open, scene.price_min, scene.price_max, &plot, scale_map),
+            });
+            scene.note = Some(if quote_only_venue {
+                "Session forecast: Deriv quote/candle activity proxy learned from prior UTC sessions; it is not traded volume-at-price.".into()
+            } else {
+                "Session forecast (blue above open, magenta below) versus realized candle-range allocation (gray). Learned from prior UTC sessions. OHLCV cannot reveal true intrabar volume-at-price; forecast is an estimate, not a guarantee.".into()
+            });
+        } else {
+            scene.note = Some("Session forecast needs at least one completed and one current session in the selected timeframe. Showing the standard profile until history is available.".into());
+        }
+    }
 
     if request.mode.shows_profile() {
         scene.profile = profile_bars(
@@ -1928,6 +2088,25 @@ pub fn build(request: &Request) -> Scene {
             request.profile_anchor,
             scale_map,
         );
+        if !scene.profile_projection.is_empty() {
+            if let Some(start) = learned_session_start {
+                if let Some(index) = visible_real.iter().position(|c| c.open_time >= start) {
+                    let boundary_x = plot.x + slot * ((visible_real.len().saturating_sub(1)) as f64 + 0.5);
+                    let current = if quote_only_venue {
+                        let from = visible_real[index].open_time;
+                        let to = visible_real.last().map_or(from, |c| c.open_time.saturating_add(c.timeframe.nanos()));
+                        let prices: Vec<f64> = request.profile_quotes.iter()
+                            .filter(|q| q.time >= from && q.time < to && q.price.is_finite())
+                            .map(|q| q.price).collect();
+                        if prices.is_empty() { calculate_quote_range_activity_profile(&visible_real[index..], bucket_size) }
+                        else { calculate_quote_tick_profile(&prices, bucket_size) }
+                    } else { calculate_volume_profile_from_candles(&visible_real[index..], bucket_size) };
+                    scene.profile = profile_bars_at(
+                        &current, &plot, scene.price_min, scene.price_max, boundary_x, false, scale_map,
+                    );
+                }
+            }
+        }
     }
 
     match request.mode {
@@ -3981,6 +4160,22 @@ fn profile_bars(
     anchor: ProfileAnchor,
     scale: ScaleMap,
 ) -> Vec<ProfileBar> {
+    let (x, grow_left) = match anchor {
+        ProfileAnchor::Right => (plot.x + plot.w, true),
+        ProfileAnchor::Left => (plot.x, false),
+    };
+    profile_bars_at(profile, plot, price_min, price_max, x, grow_left, scale)
+}
+
+fn profile_bars_at(
+    profile: &VolumeProfile,
+    plot: &Plot,
+    price_min: f64,
+    price_max: f64,
+    base: f64,
+    grow_left: bool,
+    scale: ScaleMap,
+) -> Vec<ProfileBar> {
     let peak = profile
         .histogram
         .iter()
@@ -3989,13 +4184,6 @@ fn profile_bars(
     if peak <= 0.0 {
         return Vec::new();
     }
-    // The x a zero-volume bar would take: the edge the histogram grows from.
-    // One subtraction either side of it, so mirroring the anchor mirrors one
-    // line and cannot split the two halves of the geometry.
-    let base = match anchor {
-        ProfileAnchor::Right => plot.x + plot.w,
-        ProfileAnchor::Left => plot.x,
-    };
     let row_height = (plot.h / PROFILE_ROWS).max(1.0);
 
     profile
@@ -4007,10 +4195,7 @@ fn profile_bars(
             let w = node.volume / peak * PROFILE_WIDTH;
             let total = node.buy_volume + node.sell_volume;
             ProfileBar {
-                x: match anchor {
-                    ProfileAnchor::Right => base - w,
-                    ProfileAnchor::Left => base,
-                },
+                x: if grow_left { base - w } else { base },
                 y: y - row_height / 2.0,
                 w,
                 h: row_height,
@@ -5484,6 +5669,33 @@ mod tests {
         let scene = build(&request(300));
         assert!(scene.profile.iter().any(|bar| bar.in_value_area));
         assert!(scene.profile.iter().any(|bar| !bar.in_value_area));
+    }
+
+    #[test]
+    fn session_bayesian_profile_emits_forecast_and_observed_geometry() {
+        let day = Timeframe::D1.nanos();
+        let candles: Vec<_> = (0..48).map(|i| {
+            let mut bar = candle(i, 100.0 + (i % 24) as f64 * 0.1, 100.5 + (i % 24) as f64 * 0.1);
+            bar.timeframe = Timeframe::H1;
+            bar.open_time = day + i * Timeframe::H1.nanos();
+            bar.volume = 10.0;
+            bar
+        }).collect();
+        let scene = build(&Request {
+            candles,
+            profile_type: ProfileType::SessionBayesian,
+            profile_session: Timeframe::D1,
+            ..Request::default()
+        });
+        assert!(!scene.profile_projection.is_empty());
+        assert!(!scene.profile_heatmap.is_empty());
+        assert!(scene.profile_projection_lines.len() >= 2);
+        assert!(!scene.profile.is_empty());
+        let meta = scene.profile_projection_meta.expect("model context is exposed");
+        assert_eq!(meta.training_sessions, 1);
+        assert!((0.0..=1.0).contains(&meta.confidence));
+        assert!(meta.session_open_y.is_finite());
+        assert!(scene.profile_projection.iter().all(|bar| bar.x < scene.plot.x + scene.plot.w));
     }
 
     #[test]
