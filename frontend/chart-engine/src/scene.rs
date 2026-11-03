@@ -2144,17 +2144,38 @@ pub fn build(request: &Request) -> Scene {
 
     let mut learned_session_start = None;
     if request.profile_type == ProfileType::SessionBayesian {
+        // Learn from every candle up to the right edge of the viewport. The
+        // profile is drawn on the visible window, but limiting its training
+        // data to that window makes Type 1 silently revert to Standard as soon
+        // as the trader zooms in far enough to hide the previous session.
+        let history_end = window.end().min(request.candles.len());
+        let profile_history = &request.candles[..history_end];
+        let session_nanos = request.profile_session.nanos();
+        let latest_time = profile_history.last().map_or(0, |c| c.open_time);
+        let week_nanos = 7 * 24 * 60 * 60 * 1_000_000_000i64;
+        let session_start = if session_nanos == week_nanos {
+            let monday_offset = 4 * 24 * 60 * 60 * 1_000_000_000i64;
+            (latest_time - monday_offset).div_euclid(session_nanos) * session_nanos + monday_offset
+        } else if session_nanos > 0 {
+            latest_time.div_euclid(session_nanos) * session_nanos
+        } else {
+            latest_time
+        };
+        let session_candles: Vec<_> = profile_history
+            .iter()
+            .filter(|c| c.open_time >= session_start)
+            .cloned()
+            .collect();
+        learned_session_start = Some(session_start);
         if let Some(model) = calculate_session_bayesian_profile(
-            visible_real, bucket_size, request.profile_session.nanos(), request.profile_history,
+            profile_history, bucket_size, session_nanos, request.profile_history,
         ) {
             let session_first_index = visible_real.iter().position(|c| c.open_time >= model.session_start)
-                .unwrap_or(visible_real.len().saturating_sub(1));
+                .unwrap_or(0);
             let boundary_index = visible_real.len().saturating_sub(1);
             learned_session_start = Some(model.session_start);
             let boundary_x = plot.x + slot * (boundary_index as f64 + 0.5);
             let session_first_x = plot.x + slot * (session_first_index as f64 + 0.5);
-            let session_candles: Vec<_> = visible_real.iter()
-                .filter(|c| c.open_time >= model.session_start).cloned().collect();
             profile = if quote_only_venue {
                 calculate_quote_range_activity_profile(&session_candles, bucket_size)
             } else { model.observed.clone() };
@@ -2221,7 +2242,20 @@ pub fn build(request: &Request) -> Scene {
                 "Session forecast (blue above open, magenta below) versus realized candle-range allocation (gray). Learned from prior UTC sessions. OHLCV cannot reveal true intrabar volume-at-price; forecast is an estimate, not a guarantee.".into()
             });
         } else {
-            scene.note = Some("Session forecast needs at least one completed and one current session in the selected timeframe. Showing the standard profile until history is available.".into());
+            // Type 1 remains a session profile even when the history window
+            // does not yet contain a completed session to train its forecast.
+            // Show the current session's observed distribution instead of
+            // silently drawing the unrelated all-window Standard profile.
+            profile = if quote_only_venue {
+                calculate_quote_range_activity_profile(&session_candles, bucket_size)
+            } else {
+                calculate_volume_profile_from_candles(&session_candles, bucket_size)
+            };
+            scene.note = Some(if quote_only_venue {
+                "Session profile: current Deriv quote/candle activity proxy. Forecast shading appears after a completed session is available; this is not traded volume-at-price.".into()
+            } else {
+                "Session profile: current session's observed candle-range allocation. Forecast shading appears after a completed session is available. OHLCV cannot reveal true intrabar volume-at-price.".into()
+            });
         }
     }
 
@@ -6055,11 +6089,14 @@ mod tests {
             candles,
             profile_type: ProfileType::SessionBayesian,
             profile_session: Timeframe::D1,
+            // Keep the current session on screen while hiding earlier bars.
+            // Type 1 must still learn from loaded history outside the viewport.
+            viewport: crate::viewport::Viewport { from: 36, count: Some(12), price: None },
             ..Request::default()
         });
         assert!(!scene.profile_projection.is_empty());
         assert!(!scene.profile_heatmap.is_empty());
-        assert!(scene.profile_projection_lines.len() >= 2);
+        assert_eq!(scene.profile_projection_meta.as_ref().unwrap().training_sessions, 1);
         assert!(!scene.profile.is_empty());
         let meta = scene.profile_projection_meta.expect("model context is exposed");
         assert_eq!(meta.training_sessions, 1);
