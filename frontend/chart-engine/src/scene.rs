@@ -1380,6 +1380,8 @@ pub struct ProfileStructureEvent {
     pub kind: String,
     /// `up` or `down`.
     pub direction: String,
+    /// Chart annotation from the confirmed break direction, not an order.
+    pub signal: String,
     /// Whether this event kind is enabled in the chart settings.
     pub visible: bool,
 }
@@ -2302,9 +2304,9 @@ pub fn build(request: &Request) -> Scene {
             profile = active;
         }
         scene.note = Some(if quote_only_venue {
-            "Structure profiles re-anchor at confirmed BOS/CHoCH events. Deriv profiles use observed quote activity or candle-range activity, not traded volume.".into()
+            "Structure profiles use observed Deriv quote activity (or candle-range activity when quotes are unavailable), not traded volume. BUY/SELL marks label confirmed BOS/CHoCH direction as chart signals; they do not place trades.".into()
         } else {
-            "Structure profiles re-anchor at confirmed BOS/CHoCH events. Candle volume is distributed across each candle's high-low range; it is an OHLCV estimate, not tick-level volume-at-price.".into()
+            "Structure profiles use candle-range volume estimates, not tick-level volume-at-price. BUY/SELL marks label confirmed BOS/CHoCH direction as chart signals; they do not place trades.".into()
         });
     }
 
@@ -4541,6 +4543,7 @@ fn structure_profile_layers(
             y: price_to_y(event.level, price_min, price_max, plot, scale),
             kind: match event.kind { BreakKind::Bos => "bos", BreakKind::Choch => "choch" }.into(),
             direction: direction.into(),
+            signal: if direction == "up" { "buy" } else { "sell" }.into(),
             visible: match event.kind { BreakKind::Bos => show_bos, BreakKind::Choch => show_choch },
         });
         start = end;
@@ -6132,6 +6135,38 @@ mod tests {
         assert!(scene.structure_profiles.iter().all(|profile| profile.vah_y >= 0.0 && profile.val_y >= 0.0));
         assert!(scene.profile.is_empty(), "the unsegmented histogram is suppressed");
         assert!(scene.sub_panes.iter().any(|pane| pane.label.starts_with("CVD")));
+    }
+
+    #[test]
+    fn deriv_structure_profile_uses_quote_activity_and_marks_chart_signal() {
+        let highs = [101.0, 103.0, 105.0, 110.0, 106.0, 104.0, 105.0, 112.0];
+        let lows = [99.0, 99.5, 100.0, 100.0, 101.0, 100.0, 101.0, 105.0];
+        let closes = [100.0, 102.0, 104.0, 108.0, 105.0, 103.0, 104.0, 111.0];
+        let candles: Vec<_> = (0..highs.len()).map(|i| {
+            let mut bar = candle(i as i64, closes[i] - 0.1, closes[i]);
+            bar.symbol = "DERIV:Volatility 75".into();
+            bar.high = highs[i];
+            bar.low = lows[i];
+            bar.volume = 0.0;
+            bar.buy_volume = 0.0;
+            bar.sell_volume = 0.0;
+            bar
+        }).collect();
+        let quotes = candles.iter().map(|bar| ProfileQuote {
+            time: bar.open_time,
+            price: bar.close,
+        }).collect();
+        let scene = build(&Request {
+            candles,
+            profile_type: ProfileType::StructureAnchored,
+            profile_quotes: quotes,
+            ..Request::default()
+        });
+        assert_eq!(scene.structure_events.len(), 1);
+        assert_eq!(scene.structure_events[0].kind, "bos");
+        assert_eq!(scene.structure_events[0].signal, "buy");
+        assert!(scene.structure_profiles.iter().any(|profile| profile.active && !profile.bars.is_empty()));
+        assert!(scene.note.as_deref().is_some_and(|note| note.contains("quote activity") && note.contains("chart signals")));
     }
 
     #[test]

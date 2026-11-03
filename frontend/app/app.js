@@ -3013,6 +3013,9 @@ function createChartPane(root, hooks = {}) {
       for (const event of scene.structure_events || []) {
         if (event.visible === false) continue;
         const color = event.kind === "bos" ? "#8f63ed" : "#f05add";
+        const signal = event.signal || (event.direction === "up" ? "buy" : "sell");
+        const signalColor = signal === "buy" ? "#49d69a" : "#ff6b78";
+        const labelX = Math.max(scene.plot.x + 2, Math.min(event.x2 + 3, scene.plot.x + scene.plot.w - 52));
         ctx.globalAlpha = 0.9;
         ctx.strokeStyle = color;
         ctx.beginPath();
@@ -3021,7 +3024,10 @@ function createChartPane(root, hooks = {}) {
         ctx.stroke();
         ctx.fillStyle = color;
         ctx.font = "bold 10px ui-monospace, monospace";
-        ctx.fillText(event.kind.toUpperCase(), event.x2 + 3, event.y - 4);
+        ctx.fillText(event.kind.toUpperCase(), labelX, event.y - 4);
+        ctx.fillStyle = signalColor;
+        ctx.font = "bold 9px ui-monospace, monospace";
+        ctx.fillText(signal.toUpperCase(), labelX, event.y + 9);
       }
       ctx.restore();
     }
