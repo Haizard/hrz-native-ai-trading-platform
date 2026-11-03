@@ -505,9 +505,9 @@
     <section class="chartPane">
       <!--
         The pane's own chrome is deliberately tiny: what this chart is (filled
-        from the controls below by `paintTitle`), the zoom pair, the collapse and
-        expand pair, and the close button. Everything else -- symbol, timeframe,
-        bar limit, chart type, zones, fit, reload, the drawing tools -- lives in
+        from the controls below by `paintTitle`), the always-visible volume
+        profile selector, zoom pair, collapse and expand pair, and close button.
+        The other settings -- symbol, timeframe, bar limit, chart type, zones, fit, reload, the drawing tools -- live in
         the hidden `.chartBar`/`.tools` blocks underneath and reaches the screen
         only through the right-click menu on the chart (`wireContextMenu` in
         `app.js`). The menu *moves* those live nodes into itself while open and
@@ -516,6 +516,14 @@
       -->
       <div class="paneHead">
         <span class="paneTitle" title="This chart's symbol, timeframe and type">…</span>
+        <label class="profileQuick" title="Choose the volume profile shown on this chart">
+          <span>Profile</span>
+          <select class="profileType" aria-label="Volume profile type">
+            <option value="standard">Standard</option>
+            <option value="session_bayesian">Type 1 · Session</option>
+            <option value="structure_anchored">Type 2 · Structure</option>
+          </select>
+        </label>
         <!--
           The generated-indicator chip. Present only while a generated
           indicator is attached to this chart; the × removes it. A live
@@ -602,11 +610,6 @@
           <option value="line">Line</option>
           <option value="area">Area</option>
           <option value="footprint">Footprint (volume by price)</option>
-        </select>
-        <select class="profileType" title="Volume profile method">
-          <option value="standard">Standard volume profile</option>
-          <option value="session_bayesian">Type 1 · Session forecast</option>
-          <option value="structure_anchored">Type 2 · Market structure anchored</option>
         </select>
         <select class="profileSession" title="Session size for Session Bayesian profile">
           <option value="1h">1 hour</option><option value="4h">4 hours</option>

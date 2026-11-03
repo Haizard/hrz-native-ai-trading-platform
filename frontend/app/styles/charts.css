@@ -426,9 +426,9 @@
 .conceptChipRemove:hover { color: var(--text); background: color-mix(in srgb, var(--down) 25%, transparent); }
 
 /*
-  The pane's own chrome. One line: what the chart is, then four buttons that
-  belong to the chart itself -- zoom out, zoom in, collapse, expand -- and the
-  close. Everything else the old bar carried moved to the right-click menu;
+  The pane's own chrome. One line: what the chart is, the volume profile
+  selector, then four buttons that belong to the chart itself -- zoom out,
+  zoom in, collapse, expand -- and close. Other settings live in the chart menu;
   these four are here because they are used constantly and a menu is a
   journey.
 */
@@ -487,6 +487,19 @@
      would shove every chart's plot down mid-grid. */
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0;
 }
+
+/* Volume profile selector is kept in the pane header because it changes what
+   is drawn immediately; secondary profile tuning stays in the chart menu. */
+.profileQuick {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto;
+  min-width: 0; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px;
+  color: var(--muted); background: var(--bg); font-size: 10px; white-space: nowrap;
+}
+.profileQuick select {
+  width: 132px; max-width: 22vw; min-width: 94px; padding: 1px 3px;
+  border: 0; color: var(--text); background: transparent; font-size: 10px;
+}
+.profileQuick:focus-within { border-color: var(--accent); }
 
 /* The active chart is the one the rail, the bar, the watchlist and the aside
    all act on. A dot says so; the old 2px inset line read as a row selection. */
