@@ -606,6 +606,7 @@
         <select class="profileType" title="Volume profile method">
           <option value="standard">Standard volume profile</option>
           <option value="session_bayesian">Type 1 · Session forecast</option>
+          <option value="structure_anchored">Type 2 · Market structure anchored</option>
         </select>
         <select class="profileSession" title="Session size for Session Bayesian profile">
           <option value="1h">1 hour</option><option value="4h">4 hours</option>
@@ -616,6 +617,25 @@
           <option value="8" selected>Learn from 8 sessions</option><option value="0">Learn from all history</option>
         </select>
         <label class="profileHeatmapControl" title="Shade forecast density over the elapsed session"><input class="profileHeatmap" type="checkbox" checked />Forecast heatmap</label>
+        <select class="profileCvdReset" title="Type 2 cumulative delta reset rule">
+          <option value="choch" selected>CVD reset · CHoCH</option>
+          <option value="bos_and_choch">CVD reset · BOS + CHoCH</option>
+          <option value="day">CVD reset · day</option>
+          <option value="week">CVD reset · week</option>
+        </select>
+        <label class="profilePocControl" title="Draw structure profile points of control"><input class="profileShowPoc" type="checkbox" />Show POCs</label>
+        <label class="profileVaControl" title="Draw structure profile value-area high and low"><input class="profileShowVa" type="checkbox" checked />Show value area</label>
+        <label class="profileNakedControl" title="Only retain POCs not retested by price"><input class="profileNakedPoc" type="checkbox" checked />Naked POCs</label>
+        <label class="profileExtendControl" title="Extend POC lines until price retests them"><input class="profileExtendPoc" type="checkbox" checked />Extend POCs</label>
+        <label class="profileBosControl" title="Show break-of-structure events"><input class="profileShowBos" type="checkbox" checked />Show BOS</label>
+        <label class="profileChochControl" title="Show change-of-character events"><input class="profileShowChoch" type="checkbox" checked />Show CHoCH</label>
+        <label class="profileCandleColorControl" title="Color candles by detected market-structure direction"><input class="profileColorCandles" type="checkbox" />Color by structure</label>
+        <label class="profileStatsControl" title="Show range, buy/sell volume, delta, and return for each segment"><input class="profileShowStats" type="checkbox" />Structure statistics</label>
+        <label class="profileVolumeLevelControl" title="Print volume values beside profile rows"><input class="profileShowVolumeAtLevel" type="checkbox" />Volume at level</label>
+        <select class="structureProfileBins" title="Number of price bins per structure profile">
+          <option value="10">10 profile rows</option><option value="20" selected>20 profile rows</option>
+          <option value="40">40 profile rows</option><option value="80">80 profile rows</option>
+        </select>
         <!--
           Supply/demand zones. A toggle rather than a chart type, because a zone is
           an overlay on whatever rendering is selected -- the same series read the

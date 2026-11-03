@@ -529,7 +529,7 @@ function buildScene(request) {
 /// that quietly answered for `#thesis` would be a bug nothing points at.
 const PANE_ELS = new Set([
   "chart", "chartWrap", "tools", "chartMsg", "chartNote",
-  "footprintStats", "symbol", "timeframe", "limit", "mode", "profileType", "profileSession", "profileHistory", "profileHeatmap", "zones", "forecast", "volScale", "fit", "logScale", "pctScale",
+  "footprintStats", "symbol", "timeframe", "limit", "mode", "profileType", "profileSession", "profileHistory", "profileHeatmap", "profileCvdReset", "profileShowPoc", "profileShowVa", "profileNakedPoc", "profileExtendPoc", "profileShowBos", "profileShowChoch", "profileColorCandles", "profileShowStats", "profileShowVolumeAtLevel", "structureProfileBins", "zones", "forecast", "volScale", "fit", "logScale", "pctScale",
   "feedStatus", "load", "close", "deleteDrawing", "clearDrawings",
   "magnet", "aiLayer", "profileAnchor", "undo", "redo",
   // The pane's own chrome (title, zoom/collapse buttons) and the hidden bar
@@ -1119,7 +1119,7 @@ function createChartPane(root, hooks = {}) {
       drawRegions(sctx, scene);
       drawIndicatorZones(sctx, scene);
       if (scene.footprint) drawFootprintGrid(sctx, scene);
-      if (scene.profile.length) drawProfile(sctx, scene);
+      if (scene.profile.length || scene.structure_profiles?.length || scene.profile_projection?.length) drawProfile(sctx, scene);
       staticLayerKey = cacheKey;
     }
     ctx.drawImage(staticLayer, 0, 0, width, height);
@@ -2958,6 +2958,73 @@ function createChartPane(root, hooks = {}) {
   }
 
   function drawProfile(ctx, scene) {
+    const compactVolume = (value) => {
+      const abs = Math.abs(Number(value) || 0);
+      const unit = abs >= 1e9 ? "B" : abs >= 1e6 ? "M" : abs >= 1e3 ? "K" : "";
+      const scale = unit === "B" ? 1e9 : unit === "M" ? 1e6 : unit === "K" ? 1e3 : 1;
+      return `${(Number(value) / scale).toFixed(unit ? 1 : 0)}${unit}`;
+    };
+    if (Array.isArray(scene.structure_profiles) && scene.structure_profiles.length) {
+      ctx.save();
+      for (const profile of scene.structure_profiles) {
+        const bos = profile.kind === "bos";
+        const baseColor = bos ? "#6332c7" : profile.kind === "choch" ? "#cf3bbd" : (profile.direction === "up" ? "#3a79d8" : "#bd4e8e");
+        const brightColor = bos ? "#a782ff" : profile.kind === "choch" ? "#ff8aea" : (profile.direction === "up" ? "#91c4ff" : "#ffb1dc");
+        ctx.globalAlpha = profile.active ? 0.82 : 0.46;
+        for (const bar of profile.bars || []) {
+          ctx.fillStyle = baseColor;
+          ctx.fillRect(bar.x, bar.y, bar.w, bar.h);
+          ctx.fillStyle = bar.in_value_area ? brightColor : baseColor;
+          ctx.globalAlpha = profile.active ? 0.82 : 0.60;
+          ctx.fillRect(bar.x, bar.y, bar.w * bar.buy_ratio, bar.h);
+          ctx.globalAlpha = profile.active ? 0.82 : 0.46;
+          if (profile.show_volume_at_level && bar.h >= 9) {
+            ctx.fillStyle = "#eef2ff";
+            ctx.font = "9px ui-monospace, monospace";
+            ctx.fillText(compactVolume(bar.volume), bar.x + bar.w + 3, bar.y + bar.h - 1);
+          }
+        }
+        if (profile.show_stats) {
+          ctx.globalAlpha = 0.88;
+          ctx.fillStyle = brightColor;
+          ctx.font = "9px ui-monospace, monospace";
+          const label = `${profile.kind.toUpperCase()} · H ${fmtNum(profile.high)} L ${fmtNum(profile.low)} · Δ ${compactVolume(profile.buy_volume - profile.sell_volume)} · ${profile.return_pct.toFixed(2)}%`;
+          ctx.fillText(label, profile.x_start, Math.max(scene.plot.y + 10, profile.vah_y - 7), Math.max(100, profile.x_end - profile.x_start));
+        }
+        ctx.globalAlpha = profile.active ? 0.84 : 0.5;
+        ctx.strokeStyle = brightColor;
+        if (profile.vah_y >= 0 && profile.val_y >= 0) {
+          for (const y of [profile.vah_y, profile.val_y]) {
+            ctx.beginPath();
+            ctx.moveTo(profile.x_start, y);
+            ctx.lineTo(profile.x_end, y);
+            ctx.stroke();
+          }
+        }
+        if (profile.poc_x2 >= 0) {
+          ctx.setLineDash(profile.poc_naked ? [] : [3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(profile.x_start, profile.poc_y);
+          ctx.lineTo(profile.poc_x2, profile.poc_y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+      for (const event of scene.structure_events || []) {
+        if (event.visible === false) continue;
+        const color = event.kind === "bos" ? "#8f63ed" : "#f05add";
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(event.x1, event.y);
+        ctx.lineTo(event.x2, event.y);
+        ctx.stroke();
+        ctx.fillStyle = color;
+        ctx.font = "bold 10px ui-monospace, monospace";
+        ctx.fillText(event.kind.toUpperCase(), event.x2 + 3, event.y - 4);
+      }
+      ctx.restore();
+    }
     const meta = scene.profile_projection_meta;
     if (Array.isArray(scene.profile_heatmap) && scene.profile_heatmap.length) {
       for (const row of scene.profile_heatmap) {
@@ -3655,6 +3722,17 @@ function createChartPane(root, hooks = {}) {
       profile_session: el("profileSession").value || "1d",
       profile_history: Number(el("profileHistory").value || 8),
       profile_heatmap: el("profileHeatmap").checked,
+      profile_cvd_reset: el("profileCvdReset").value || "choch",
+      profile_show_poc: el("profileShowPoc").checked,
+      profile_show_va: el("profileShowVa").checked,
+      profile_naked_poc: el("profileNakedPoc").checked,
+      profile_extend_poc: el("profileExtendPoc").checked,
+      profile_show_bos: el("profileShowBos").checked,
+      profile_show_choch: el("profileShowChoch").checked,
+      profile_color_candles: el("profileColorCandles").checked,
+      profile_show_stats: el("profileShowStats").checked,
+      profile_show_volume_at_level: el("profileShowVolumeAtLevel").checked,
+      structure_profile_bins: Number(el("structureProfileBins").value || 20),
       profile_quotes: quoteProfileState.points,
       profile_quotes_truncated: quoteProfileState.truncated,
       // The forecast cone (docs/35): present only when the toggle is on, so an
@@ -7098,6 +7176,17 @@ function createChartPane(root, hooks = {}) {
     el("profileSession").addEventListener("change", render);
     el("profileHistory").addEventListener("change", render);
     el("profileHeatmap").addEventListener("change", render);
+    el("profileCvdReset").addEventListener("change", render);
+    el("profileShowPoc").addEventListener("change", render);
+    el("profileShowVa").addEventListener("change", render);
+    el("profileNakedPoc").addEventListener("change", render);
+    el("profileExtendPoc").addEventListener("change", render);
+    el("profileShowBos").addEventListener("change", render);
+    el("profileShowChoch").addEventListener("change", render);
+    el("profileColorCandles").addEventListener("change", render);
+    el("profileShowStats").addEventListener("change", render);
+    el("profileShowVolumeAtLevel").addEventListener("change", render);
+    el("structureProfileBins").addEventListener("change", render);
     el("timeframe").addEventListener("change", () => applyTimeframe(el("timeframe").value));
     el("symbol").addEventListener("change", () => applySymbol(el("symbol").value));
     el("fit").addEventListener("click", applyFit);
@@ -7349,6 +7438,17 @@ function createChartPane(root, hooks = {}) {
         profile_session: el("profileSession").value,
         profile_history: el("profileHistory").value,
         profile_heatmap: el("profileHeatmap").checked,
+        profile_cvd_reset: el("profileCvdReset").value,
+        profile_show_poc: el("profileShowPoc").checked,
+        profile_show_va: el("profileShowVa").checked,
+        profile_naked_poc: el("profileNakedPoc").checked,
+        profile_extend_poc: el("profileExtendPoc").checked,
+        profile_show_bos: el("profileShowBos").checked,
+        profile_show_choch: el("profileShowChoch").checked,
+        profile_color_candles: el("profileColorCandles").checked,
+        profile_show_stats: el("profileShowStats").checked,
+        profile_show_volume_at_level: el("profileShowVolumeAtLevel").checked,
+        structure_profile_bins: el("structureProfileBins").value,
         limit: el("limit").value,
         indicator: indicator ? JSON.parse(JSON.stringify(indicator)) : null,
         concept_states: JSON.parse(JSON.stringify(conceptStates)),
@@ -7371,6 +7471,17 @@ function createChartPane(root, hooks = {}) {
       if (saved.profile_session) el("profileSession").value = saved.profile_session;
       if (saved.profile_history != null) el("profileHistory").value = String(saved.profile_history);
       if (saved.profile_heatmap != null) el("profileHeatmap").checked = saved.profile_heatmap !== false;
+      if (saved.profile_cvd_reset) el("profileCvdReset").value = saved.profile_cvd_reset;
+      if (saved.profile_show_poc != null) el("profileShowPoc").checked = saved.profile_show_poc === true;
+      if (saved.profile_show_va != null) el("profileShowVa").checked = saved.profile_show_va !== false;
+      if (saved.profile_naked_poc != null) el("profileNakedPoc").checked = saved.profile_naked_poc !== false;
+      if (saved.profile_extend_poc != null) el("profileExtendPoc").checked = saved.profile_extend_poc !== false;
+      if (saved.profile_show_bos != null) el("profileShowBos").checked = saved.profile_show_bos !== false;
+      if (saved.profile_show_choch != null) el("profileShowChoch").checked = saved.profile_show_choch !== false;
+      if (saved.profile_color_candles != null) el("profileColorCandles").checked = saved.profile_color_candles === true;
+      if (saved.profile_show_stats != null) el("profileShowStats").checked = saved.profile_show_stats === true;
+      if (saved.profile_show_volume_at_level != null) el("profileShowVolumeAtLevel").checked = saved.profile_show_volume_at_level === true;
+      if (saved.structure_profile_bins != null) el("structureProfileBins").value = String(saved.structure_profile_bins);
       if (saved.limit) el("limit").value = saved.limit;
       indicator = saved.indicator || null;
       conceptStates = saved.concept_states && typeof saved.concept_states === "object" ? saved.concept_states : {};

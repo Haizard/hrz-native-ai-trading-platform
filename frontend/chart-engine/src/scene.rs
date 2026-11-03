@@ -40,6 +40,7 @@ use analytics_core::volume_profile::{
     calculate_quote_range_activity_profile, calculate_quote_tick_profile,
     calculate_session_bayesian_profile, calculate_volume_profile_from_candles, VolumeProfile,
 };
+use analytics_core::market_structure::{detect_market_structure, BreakKind, StructureConfig, Trend};
 use analytics_core::vwap::calculate_vwap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -208,6 +209,39 @@ pub struct Request {
     /// Whether the learned density is shaded across elapsed session candles.
     #[serde(default = "default_profile_heatmap")]
     pub profile_heatmap: bool,
+    /// Reset rule for the Type 2 cumulative-delta pane.
+    #[serde(default)]
+    pub profile_cvd_reset: CvdReset,
+    /// Show POC lines for structure segments.
+    #[serde(default)]
+    pub profile_show_poc: bool,
+    /// Show value-area boundaries for structure segments.
+    #[serde(default = "default_profile_show_va")]
+    pub profile_show_va: bool,
+    /// Extend POC lines until they are crossed or the visible chart edge.
+    #[serde(default = "default_profile_extend_poc")]
+    pub profile_extend_poc: bool,
+    /// Keep only POCs that price has not crossed since the segment ended.
+    #[serde(default = "default_profile_naked_poc")]
+    pub profile_naked_poc: bool,
+    /// Show BOS markers over the profiles.
+    #[serde(default = "default_true")]
+    pub profile_show_bos: bool,
+    /// Show CHoCH markers over the profiles.
+    #[serde(default = "default_true")]
+    pub profile_show_choch: bool,
+    /// Color candles with the currently detected structure direction.
+    #[serde(default)]
+    pub profile_color_candles: bool,
+    /// Show range, volume, delta, and return statistics per structure segment.
+    #[serde(default)]
+    pub profile_show_stats: bool,
+    /// Show numeric volume labels beside each profile row.
+    #[serde(default)]
+    pub profile_show_volume_at_level: bool,
+    /// Number of bins used to calculate each structure profile.
+    #[serde(default = "default_structure_profile_bins")]
+    pub structure_profile_bins: usize,
     /// Deriv's observed quote prices and timestamps for a quote-activity profile.
     #[serde(default)]
     pub profile_quotes: Vec<ProfileQuote>,
@@ -432,6 +466,11 @@ pub enum SubPaneSpec {
         /// Oversold level, drawn as the lower band.
         oversold: f64,
     },
+    /// Cumulative delta, with reset boundaries chosen by the profile type.
+    Cvd {
+        /// Boundary used to restart cumulative delta.
+        reset: CvdReset,
+    },
     /// A client-computed indicator pane: lines, an optional histogram,
     /// segment and point marks, reference levels, on a fixed or data-fit
     /// scale. The engine positions; the measurement arrived as values per
@@ -461,6 +500,21 @@ pub enum SubPaneSpec {
         #[serde(default)]
         markers: Vec<SeriesMarker>,
     },
+}
+
+/// Boundary at which the structure profile's cumulative delta restarts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CvdReset {
+    /// Restart at each confirmed change of character.
+    #[default]
+    Choch,
+    /// Restart at every confirmed BOS or CHoCH.
+    BosAndChoch,
+    /// Restart at each UTC day.
+    Day,
+    /// Restart at each Monday-aligned UTC week.
+    Week,
 }
 
 /// The series pane's y-scale.
@@ -592,6 +646,17 @@ impl Default for Request {
             profile_session: default_profile_session(),
             profile_history: default_profile_history(),
             profile_heatmap: default_profile_heatmap(),
+            profile_cvd_reset: CvdReset::default(),
+            profile_show_poc: false,
+            profile_show_va: default_profile_show_va(),
+            profile_extend_poc: default_profile_extend_poc(),
+            profile_naked_poc: default_profile_naked_poc(),
+            profile_show_bos: true,
+            profile_show_choch: true,
+            profile_color_candles: false,
+            profile_show_stats: false,
+            profile_show_volume_at_level: false,
+            structure_profile_bins: default_structure_profile_bins(),
             profile_quotes: Vec::new(),
             profile_quotes_truncated: false,
             price_scale: PriceScale::Linear,
@@ -623,6 +688,11 @@ impl Default for Request {
 fn default_profile_session() -> Timeframe { Timeframe::D1 }
 fn default_profile_history() -> usize { 8 }
 fn default_profile_heatmap() -> bool { true }
+fn default_profile_show_va() -> bool { true }
+fn default_profile_extend_poc() -> bool { true }
+fn default_profile_naked_poc() -> bool { true }
+fn default_true() -> bool { true }
+fn default_structure_profile_bins() -> usize { 20 }
 
 /// Selectable volume-profile calculation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,6 +703,8 @@ pub enum ProfileType {
     Standard,
     /// Learned forecast beside the current session's observed profile.
     SessionBayesian,
+    /// Re-anchors a profile at every confirmed BOS or CHoCH.
+    StructureAnchored,
 }
 
 /// The levels drawn when a request does not say.
@@ -1110,6 +1182,12 @@ pub struct Scene {
     /// Forecast confidence, bias and training context when available.
     #[serde(default)]
     pub profile_projection_meta: Option<ProfileProjectionMeta>,
+    /// Volume profiles segmented by confirmed market-structure events.
+    #[serde(default)]
+    pub structure_profiles: Vec<StructureProfile>,
+    /// BOS/CHoCH break lines and labels for the structure-anchored profile.
+    #[serde(default)]
+    pub structure_events: Vec<ProfileStructureEvent>,
     /// Overlay levels.
     pub levels: Vec<Level>,
     /// Supply/demand zones, when the request asked for them.
@@ -1244,6 +1322,66 @@ pub struct ProfileProjectionLine {
     pub y: f64,
     /// `upper_mean`, `session_open`, or `lower_mean`.
     pub kind: String,
+}
+
+/// One volume profile measured over a single market-structure regime.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructureProfile {
+    /// `bos`, `choch`, or `live` for the still-forming regime.
+    pub kind: String,
+    /// `up`, `down`, or `ranging` direction of the segment.
+    pub direction: String,
+    /// Whether the profile belongs to the current live segment.
+    pub active: bool,
+    /// Segment beginning, for its value-area marker and POC history.
+    pub x_start: f64,
+    /// Segment end, in chart coordinates.
+    pub x_end: f64,
+    /// Segment's split-profile center.
+    pub center_x: f64,
+    /// POC line y-coordinate.
+    pub poc_y: f64,
+    /// End x for its POC line (extended only until first retest if configured).
+    pub poc_x2: f64,
+    /// Whether this POC remains untouched after its profile segment.
+    pub poc_naked: bool,
+    /// Value-area high y-coordinate.
+    pub vah_y: f64,
+    /// Value-area low y-coordinate.
+    pub val_y: f64,
+    /// Volume-by-price bars, already positioned.
+    pub bars: Vec<ProfileBar>,
+    /// Segment high.
+    pub high: f64,
+    /// Segment low.
+    pub low: f64,
+    /// Aggressor-side totals where the venue supplies them.
+    pub buy_volume: f64,
+    /// Aggressor-side totals where the venue supplies them.
+    pub sell_volume: f64,
+    /// Segment close-to-open return in percent.
+    pub return_pct: f64,
+    /// Whether row volumes should be printed beside the histogram.
+    pub show_volume_at_level: bool,
+    /// Whether segment statistics should be printed above the profile.
+    pub show_stats: bool,
+}
+
+/// Confirmed BOS/CHoCH event associated with a profile boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileStructureEvent {
+    /// The broken swing's x-coordinate.
+    pub x1: f64,
+    /// The candle that confirmed the break.
+    pub x2: f64,
+    /// Canvas y-coordinate of the broken swing level.
+    pub y: f64,
+    /// `bos` or `choch`.
+    pub kind: String,
+    /// `up` or `down`.
+    pub direction: String,
+    /// Whether this event kind is enabled in the chart settings.
+    pub visible: bool,
 }
 
 /// One sub-pane laid out and filled in: an oscillator with its own y-scale
@@ -1698,7 +1836,13 @@ pub fn build(request: &Request) -> Scene {
         .collect();
     let script_pane_count = vetted.iter().filter(|h| h.as_ref().is_some_and(|h| !h.overlay)).count()
         + vetted.iter().filter(|h| h.as_ref().is_some_and(|h| h.strategy.is_some())).count();
-    let sub_height = sub_pane_heights(&request.sub_panes, script_pane_count);
+    let mut pane_specs = request.sub_panes.clone();
+    if request.profile_type == ProfileType::StructureAnchored
+        && !pane_specs.iter().any(|spec| matches!(spec, SubPaneSpec::Cvd { .. }))
+    {
+        pane_specs.push(SubPaneSpec::Cvd { reset: request.profile_cvd_reset });
+    }
+    let sub_height = sub_pane_heights(&pane_specs, script_pane_count);
     // A gap before every pane -- including the first -- so the last pane's
     // bottom edge lands exactly on the bottom padding line, never inside the
     // time-axis strip.
@@ -1754,6 +1898,8 @@ pub fn build(request: &Request) -> Scene {
         profile_heatmap: Vec::new(),
         profile_projection_lines: Vec::new(),
         profile_projection_meta: None,
+        structure_profiles: Vec::new(),
+        structure_events: Vec::new(),
         levels: Vec::new(),
         regions: Vec::new(),
         ticks: Vec::new(),
@@ -2079,7 +2225,56 @@ pub fn build(request: &Request) -> Scene {
         }
     }
 
-    if request.mode.shows_profile() {
+    if request.profile_type == ProfileType::StructureAnchored {
+        let (profiles, events, active_profile) = structure_profile_layers(
+            visible_real,
+            &request.profile_quotes,
+            quote_only_venue,
+            bucket_size,
+            &plot,
+            scene.price_min,
+            scene.price_max,
+            slot,
+            scale_map,
+            request.profile_show_poc,
+            request.profile_extend_poc,
+            request.profile_naked_poc,
+            request.profile_show_va,
+            request.profile_show_bos,
+            request.profile_show_choch,
+            request.structure_profile_bins.clamp(5, 500),
+            request.profile_show_stats,
+            request.profile_show_volume_at_level,
+        );
+        scene.structure_profiles = profiles;
+        scene.structure_events = events;
+        if request.profile_color_candles {
+            let structure = detect_market_structure(visible_real, StructureConfig::default());
+            let mut direction = Trend::Ranging;
+            let mut next_break = 0usize;
+            for (index, bar) in scene.candles.iter_mut().enumerate() {
+                while next_break < structure.breaks.len() && structure.breaks[next_break].index <= index {
+                    direction = if structure.breaks[next_break].direction == analytics_core::types::Side::Buy { Trend::Bullish } else { Trend::Bearish };
+                    next_break += 1;
+                }
+                bar.color = Some(match direction {
+                    Trend::Bullish => 0xff55ffda,
+                    Trend::Bearish => 0xffff7474,
+                    Trend::Ranging => 0xff9aa4b2,
+                });
+            }
+        }
+        if let Some(active) = active_profile {
+            profile = active;
+        }
+        scene.note = Some(if quote_only_venue {
+            "Structure profiles re-anchor at confirmed BOS/CHoCH events. Deriv profiles use observed quote activity or candle-range activity, not traded volume.".into()
+        } else {
+            "Structure profiles re-anchor at confirmed BOS/CHoCH events. Candle volume is distributed across each candle's high-low range; it is an OHLCV estimate, not tick-level volume-at-price.".into()
+        });
+    }
+
+    if request.mode.shows_profile() && request.profile_type != ProfileType::StructureAnchored {
         scene.profile = profile_bars(
             &profile,
             &plot,
@@ -2131,14 +2326,16 @@ pub fn build(request: &Request) -> Scene {
                 // imbalances it never had. That is why `analytics-core` refuses
                 // to build one, and why this falls back to a different chart
                 // rather than a worse version of the same one.
-                scene.profile = profile_bars(
-                    &profile,
-                    &plot,
-                    scene.price_min,
-                    scene.price_max,
-                    request.profile_anchor,
-                    scale_map,
-                );
+                if request.profile_type != ProfileType::StructureAnchored {
+                    scene.profile = profile_bars(
+                        &profile,
+                        &plot,
+                        scene.price_min,
+                        scene.price_max,
+                        request.profile_anchor,
+                        scale_map,
+                    );
+                }
                 scene.note = Some(
                     "no trades are stored for this window, so there is no ladder to draw. This is \
                      the volume profile instead -- a real chart, but not a footprint. Run \
@@ -2482,7 +2679,7 @@ pub fn build(request: &Request) -> Scene {
     let fold_y = height - bottom_pad;
     let mut pane_top = plot.y + plot.h + SUB_PANE_GAP - pane_scroll;
     let mut below_fold = 0usize;
-    for (spec, height) in request.sub_panes.iter().zip(sub_height.iter().copied()) {
+    for (spec, height) in pane_specs.iter().zip(sub_height.iter().copied()) {
         let pane_plot = Plot {
             x: plot.x,
             y: pane_top,
@@ -2620,7 +2817,7 @@ pub fn build(request: &Request) -> Scene {
     // with its own chart is the failure this window rule exists to prevent.
     // An overlay script's plots join the price pane instead, mapped through
     // the frame the candles already use.
-    let script_heights = &sub_height[request.sub_panes.len()..];
+    let script_heights = &sub_height[pane_specs.len()..];
     for (script_index, (spec, height)) in request.scripts.iter().zip(script_heights.iter().copied().chain(
         std::iter::repeat(SUB_PANE_HEIGHT),
     )).enumerate() {
@@ -2752,6 +2949,7 @@ fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], value_offset: usize, slot: f
             overbought,
             oversold,
         } => rsi_pane(candles, slot, plot, *period, *overbought, *oversold),
+        SubPaneSpec::Cvd { reset } => cvd_pane(candles, slot, plot, *reset),
         SubPaneSpec::Series {
             label,
             scale,
@@ -2763,6 +2961,54 @@ fn sub_pane(spec: &SubPaneSpec, candles: &[Candle], value_offset: usize, slot: f
             markers,
         } => series_pane(candles, value_offset, slot, plot, label, *scale, levels, lines, fills, bars.as_ref(), segments, markers),
     }
+}
+
+fn cvd_pane(candles: &[Candle], slot: f64, plot: &Plot, reset: CvdReset) -> Option<ScenePane> {
+    if candles.is_empty() { return None; }
+    let quote_only = candles.first().is_some_and(|c| market_data::broker::VenueSymbol::parse(&c.symbol).broker == "deriv");
+    let structure = detect_market_structure(candles, StructureConfig::default());
+    let breaks: BTreeMap<usize, BreakKind> = structure.breaks.iter().map(|event| (event.index, event.kind)).collect();
+    let mut value = 0.0;
+    let mut values = Vec::with_capacity(candles.len());
+    let mut previous_bucket = None;
+    for (index, candle) in candles.iter().enumerate() {
+        let bucket = match reset {
+            CvdReset::Day => Some(Timeframe::D1.bucket_of(candle.open_time)),
+            CvdReset::Week => Some(Timeframe::W1.bucket_of(candle.open_time)),
+            _ => None,
+        };
+        let time_reset = bucket.is_some() && previous_bucket.is_some() && bucket != previous_bucket;
+        let structure_reset = breaks.get(&index).is_some_and(|kind| match reset {
+            CvdReset::Choch => *kind == BreakKind::Choch,
+            CvdReset::BosAndChoch => true,
+            CvdReset::Day | CvdReset::Week => false,
+        });
+        if time_reset || structure_reset { value = 0.0; }
+        let delta = if quote_only {
+            let previous = index.checked_sub(1).and_then(|i| candles.get(i)).map_or(candle.open, |prior| prior.close);
+            (candle.close - previous).signum() * candle.volume.max(1.0)
+        } else {
+            candle.buy_volume - candle.sell_volume
+        };
+        value += delta;
+        values.push(Some(value));
+        previous_bucket = bucket.or(previous_bucket);
+    }
+    let label = match reset {
+        CvdReset::Choch if quote_only => "Activity delta proxy · reset on CHoCH",
+        CvdReset::BosAndChoch if quote_only => "Activity delta proxy · reset on BOS / CHoCH",
+        CvdReset::Day if quote_only => "Activity delta proxy · daily reset",
+        CvdReset::Week if quote_only => "Activity delta proxy · weekly reset",
+        CvdReset::Choch => "CVD · reset on CHoCH",
+        CvdReset::BosAndChoch => "CVD · reset on BOS / CHoCH",
+        CvdReset::Day => "CVD · daily reset",
+        CvdReset::Week => "CVD · weekly reset",
+    };
+    let line = SeriesLine { name: "CVD".into(), color: 0x8c63ef, values };
+    series_pane(
+        candles, 0, slot, plot, label,
+        SeriesScale::Auto, &[0.0], &[line], &[], None, &[], &[],
+    )
 }
 
 /// The generic series pane: the client's measurements, positioned. The
@@ -4209,6 +4455,130 @@ fn profile_bars_at(
             }
         })
         .collect()
+}
+
+/// Build one profile for each confirmed market-structure regime and the live
+/// regime after the latest break. Breaks from the shared analytics detector
+/// are confirmed on closes, so profiles do not use future/unconfirmed swings.
+fn structure_profile_layers(
+    candles: &[Candle],
+    quotes: &[ProfileQuote],
+    quote_only_venue: bool,
+    bucket_size: f64,
+    plot: &Plot,
+    price_min: f64,
+    price_max: f64,
+    slot: f64,
+    scale: ScaleMap,
+    show_poc: bool,
+    extend_poc: bool,
+    naked_poc_only: bool,
+    show_va: bool,
+    show_bos: bool,
+    show_choch: bool,
+    profile_bins: usize,
+    show_stats: bool,
+    show_volume_at_level: bool,
+) -> (Vec<StructureProfile>, Vec<ProfileStructureEvent>, Option<VolumeProfile>) {
+    if candles.is_empty() {
+        return (Vec::new(), Vec::new(), None);
+    }
+    let structure = detect_market_structure(candles, StructureConfig::default());
+    let mut segments: Vec<(usize, usize, String, String, bool)> = Vec::new();
+    let mut events = Vec::new();
+    let mut start = 0usize;
+    for event in &structure.breaks {
+        let end = event.index.min(candles.len());
+        if end > start {
+            let kind = match event.kind { BreakKind::Bos => "bos", BreakKind::Choch => "choch" };
+            let direction = if event.direction == analytics_core::types::Side::Buy { "up" } else { "down" };
+            segments.push((start, end, kind.into(), direction.into(), false));
+        }
+        let swing_index = structure.points.iter()
+            .filter(|point| point.index < event.index && (point.price - event.level).abs() <= f64::EPSILON.max(event.level.abs() * 1e-12))
+            .max_by_key(|point| point.index)
+            .map_or(event.index.saturating_sub(1), |point| point.index);
+        let direction = if event.direction == analytics_core::types::Side::Buy { "up" } else { "down" };
+        let event_x = plot.x + slot * (event.index as f64 + 0.5);
+        let swing_x = plot.x + slot * (swing_index as f64 + 0.5);
+        events.push(ProfileStructureEvent {
+            x1: swing_x,
+            x2: event_x,
+            y: price_to_y(event.level, price_min, price_max, plot, scale),
+            kind: match event.kind { BreakKind::Bos => "bos", BreakKind::Choch => "choch" }.into(),
+            direction: direction.into(),
+            visible: match event.kind { BreakKind::Bos => show_bos, BreakKind::Choch => show_choch },
+        });
+        start = end;
+    }
+    let direction = match structure.trend {
+        Trend::Bullish => "up",
+        Trend::Bearish => "down",
+        Trend::Ranging => "ranging",
+    };
+    if start < candles.len() {
+        segments.push((start, candles.len(), "live".into(), direction.into(), true));
+    }
+
+    // Keep a bounded number of recent structure regimes so long chart windows
+    // stay inexpensive and the profile labels remain readable.
+    let skip = segments.len().saturating_sub(12);
+    let mut profiles = Vec::new();
+    let mut active_profile = None;
+    for (from, to, kind, direction, active) in segments.into_iter().skip(skip) {
+        let Some(segment) = candles.get(from..to).filter(|segment| !segment.is_empty()) else { continue };
+        let (low, high) = segment.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |acc, candle| {
+            (acc.0.min(candle.low), acc.1.max(candle.high))
+        });
+        let mini_bucket = analytics_core::volume_profile::round_bucket(high - low, profile_bins).max(bucket_size * 0.25);
+        let profile = if quote_only_venue {
+            let first = segment.first().map_or(0, |c| c.open_time);
+            let last = segment.last().map_or(first, |c| c.open_time.saturating_add(c.timeframe.nanos()));
+            let prices: Vec<_> = quotes.iter().filter(|q| q.time >= first && q.time < last && q.price.is_finite()).map(|q| q.price).collect();
+            if prices.is_empty() { calculate_quote_range_activity_profile(segment, mini_bucket) }
+            else { calculate_quote_tick_profile(&prices, mini_bucket) }
+        } else {
+            calculate_volume_profile_from_candles(segment, mini_bucket)
+        };
+        if profile.is_empty() { continue; }
+        if active { active_profile = Some(profile.clone()); }
+        let x_start = plot.x + slot * (from as f64 + 0.5);
+        let end_index = to.saturating_sub(1);
+        let x_end = plot.x + slot * (end_index as f64 + 0.5);
+        let center_x = (x_start + x_end) * 0.5;
+        let bars = profile_bars_at(&profile, plot, price_min, price_max, center_x, true, scale);
+        let poc_naked = !candles[to..].iter().any(|c| c.low <= profile.poc && c.high >= profile.poc);
+        let first_touch = candles[to..].iter().position(|c| c.low <= profile.poc && c.high >= profile.poc)
+            .map(|offset| to + offset);
+        let mut poc_x2 = if extend_poc {
+            first_touch.map_or(plot.x + slot * (candles.len() as f64 - 0.5), |index| plot.x + slot * (index as f64 + 0.5))
+        } else { x_end };
+        if !show_poc || (naked_poc_only && !poc_naked) { poc_x2 = -1.0; }
+        profiles.push(StructureProfile {
+            kind,
+            direction,
+            active,
+            x_start,
+            x_end,
+            center_x,
+            poc_y: price_to_y(profile.poc, price_min, price_max, plot, scale),
+            poc_x2,
+            poc_naked,
+            vah_y: if show_va { price_to_y(profile.vah, price_min, price_max, plot, scale) } else { -1.0 },
+            val_y: if show_va { price_to_y(profile.val, price_min, price_max, plot, scale) } else { -1.0 },
+            bars,
+            high,
+            low,
+            buy_volume: segment.iter().map(|c| c.buy_volume).sum(),
+            sell_volume: segment.iter().map(|c| c.sell_volume).sum(),
+            return_pct: if segment[0].open.abs() > f64::EPSILON {
+                (segment.last().map_or(segment[0].close, |c| c.close) / segment[0].open - 1.0) * 100.0
+            } else { 0.0 },
+            show_volume_at_level,
+            show_stats,
+        });
+    }
+    (profiles, events, active_profile)
 }
 
 /// The overlay levels, measured over the **visible window**.
@@ -5696,6 +6066,35 @@ mod tests {
         assert!((0.0..=1.0).contains(&meta.confidence));
         assert!(meta.session_open_y.is_finite());
         assert!(scene.profile_projection.iter().all(|bar| bar.x < scene.plot.x + scene.plot.w));
+    }
+
+    #[test]
+    fn structure_anchored_profile_restarts_after_a_confirmed_bos() {
+        let highs = [101.0, 103.0, 105.0, 110.0, 106.0, 104.0, 105.0, 112.0];
+        let lows = [99.0, 99.5, 100.0, 100.0, 101.0, 100.0, 101.0, 105.0];
+        let closes = [100.0, 102.0, 104.0, 108.0, 105.0, 103.0, 104.0, 111.0];
+        let candles: Vec<_> = (0..highs.len()).map(|i| {
+            let mut bar = candle(i as i64, closes[i] - 0.1, closes[i]);
+            bar.high = highs[i];
+            bar.low = lows[i];
+            bar
+        }).collect();
+        let scene = build(&Request {
+            candles,
+            profile_type: ProfileType::StructureAnchored,
+            profile_show_poc: true,
+            profile_show_va: true,
+            ..Request::default()
+        });
+        assert_eq!(scene.structure_events.len(), 1);
+        assert_eq!(scene.structure_events[0].kind, "bos");
+        assert!(scene.structure_profiles.iter().any(|profile| profile.kind == "bos"));
+        assert!(scene.structure_profiles.iter().any(|profile| profile.active));
+        assert!(scene.structure_profiles.iter().all(|profile| !profile.bars.is_empty()));
+        assert!(scene.structure_profiles.iter().any(|profile| profile.poc_x2 >= 0.0));
+        assert!(scene.structure_profiles.iter().all(|profile| profile.vah_y >= 0.0 && profile.val_y >= 0.0));
+        assert!(scene.profile.is_empty(), "the unsegmented histogram is suppressed");
+        assert!(scene.sub_panes.iter().any(|pane| pane.label.starts_with("CVD")));
     }
 
     #[test]
