@@ -131,8 +131,10 @@ pub struct DerivStreamMsg {
 #[derive(Debug, Deserialize)]
 pub struct DerivTickHistory {
     /// Prices, oldest first.
+    #[serde(default)]
     pub prices: Vec<f64>,
     /// Unix seconds, aligned with `prices`.
+    #[serde(default)]
     pub times: Vec<i64>,
 }
 
@@ -168,6 +170,7 @@ struct DerivCandle {
 #[derive(Debug, Deserialize)]
 struct DerivResponse {
     candles: Option<Vec<DerivCandle>>,
+    history: Option<DerivTickHistory>,
     error: Option<DerivError>,
 }
 
@@ -331,6 +334,72 @@ impl DerivClient {
             return Ok(fetched);
         }
         Ok(analytics_core::resample::resample(&fetched, tf))
+    }
+
+    /// Fetch historical quote observations for a price-by-tick-activity profile.
+    /// Quote observations are counts of published prices, not executed trades.
+    pub async fn quote_history(
+        &self,
+        code: &str,
+        from_ns: i64,
+        to_ns: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, f64)>, MarketDataError> {
+        if from_ns < 0 || to_ns < from_ns {
+            return Err(MarketDataError::Normalization(
+                "invalid Deriv quote-history time range".into(),
+            ));
+        }
+        let mut socket = self.connect().await?;
+        let request = serde_json::json!({
+            "ticks_history": code,
+            "start": from_ns / 1_000_000_000,
+            "end": (to_ns / 1_000_000_000).to_string(),
+            "count": limit.clamp(1, 5000),
+            "style": "ticks",
+        });
+        socket
+            .send(Message::Text(request.to_string().into()))
+            .await
+            .map_err(|e| MarketDataError::Normalization(format!("deriv send failed: {e}")))?;
+        let reply: DerivResponse = loop {
+            let Some(frame) = socket.next().await else {
+                return Err(MarketDataError::Normalization(
+                    "deriv closed the socket before answering quote history".into(),
+                ));
+            };
+            let frame = frame.map_err(|e| {
+                MarketDataError::Normalization(format!("deriv socket error: {e}"))
+            })?;
+            let Message::Text(text) = frame else { continue };
+            let parsed: DerivResponse = serde_json::from_str(&text).map_err(|e| {
+                MarketDataError::Normalization(format!("deriv quote reply did not parse: {e}"))
+            })?;
+            if parsed.history.is_some() || parsed.error.is_some() {
+                break parsed;
+            }
+        };
+        if let Some(err) = reply.error {
+            return Err(MarketDataError::Normalization(format!(
+                "deriv {}: {}",
+                err.code.unwrap_or_else(|| "error".into()),
+                err.message.unwrap_or_else(|| "unknown".into())
+            )));
+        }
+        let history = reply.history.unwrap_or(DerivTickHistory {
+            prices: Vec::new(),
+            times: Vec::new(),
+        });
+        Ok(history
+            .prices
+            .into_iter()
+            .zip(history.times)
+            .filter_map(|(price, time)| {
+                let time_ns = time.saturating_mul(1_000_000_000);
+                (price.is_finite() && time_ns >= from_ns && time_ns <= to_ns)
+                    .then_some((time_ns, price))
+            })
+            .collect())
     }
 }
 
@@ -551,6 +620,17 @@ pub fn code_for_namespaced(symbol: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quote_history_response_preserves_observed_price_and_time_pairs() {
+        let response: DerivResponse = serde_json::from_str(
+            r#"{"history":{"prices":[100.25,100.5],"times":[1700000000,1700000001]}}"#,
+        )
+        .expect("quote history response");
+        let history = response.history.expect("history payload");
+        assert_eq!(history.prices, vec![100.25, 100.5]);
+        assert_eq!(history.times, vec![1_700_000_000, 1_700_000_001]);
+    }
 
     #[test]
     fn the_symbol_map_round_trips() {

@@ -3204,6 +3204,7 @@ function createChartPane(root, hooks = {}) {
   }
 
   let candles = [];
+  let quoteProfileState = { key: "", points: [], truncated: false };
   // The trade-level ladders, when the mode asks for them and the window has
   // trades. Kept beside `candles` rather than inside them: a footprint needs both
   // the OHLC for the axis and the ladders for the grid, and they come from two
@@ -3357,6 +3358,7 @@ function createChartPane(root, hooks = {}) {
       const wasEmpty = candles.length === 0;
       candles = mergeSeries(candles, incoming);
       render();
+      refreshDerivQuoteProfile();
       // The card previews crop this window, so a face opened before the first
       // batch arrived had nothing to crop and drew a hairline. This is the moment
       // there is a chart to crop; without it the previews wait for the next thing
@@ -3581,6 +3583,8 @@ function createChartPane(root, hooks = {}) {
       // The profile's edge, in the engine's own spelling. Assigned only when
       // set: absent means Right, which keeps every existing request byte-identical.
       ...(profileLeft ? { profile_anchor: "left" } : {}),
+      profile_quotes: quoteProfileState.points,
+      profile_quotes_truncated: quoteProfileState.truncated,
       // The forecast cone (docs/35): present only when the toggle is on, so an
       // off request is byte-identical to a pre-forecast one. The empty object
       // asks for the engine's defaults (30 bars out, 500 paths).
@@ -4482,6 +4486,7 @@ function createChartPane(root, hooks = {}) {
   function resetSeries() {
     resetViewport();
     candles = [];
+    quoteProfileState = { key: "", points: [], truncated: false };
     // A live indicator (one carrying its concepts) survives the reset: its
     // definition is not tied to a series, and the next render re-detects it on
     // the new one. A snapshot-only preview is dropped -- its coordinates
@@ -6307,6 +6312,38 @@ function createChartPane(root, hooks = {}) {
       }
     }));
     indicatorSeries = next;
+  }
+
+  /// Deriv supplies quote prices without traded volume. Fetch the bounded
+  /// historical quote tape once per loaded chart window so the profile can count
+  /// observed prices instead of drawing a fake volume histogram.
+  async function refreshDerivQuoteProfile() {
+    const symbol = el("symbol") && el("symbol").value;
+    const timeframe = el("timeframe") && el("timeframe").value;
+    if (!symbol || !symbol.startsWith("DERIV:") && !symbol.startsWith("DERIV-FX:")) {
+      quoteProfileState = { key: "", points: [], truncated: false };
+      return;
+    }
+    if (!timeframe || !candles.length) return;
+    const first = candles[0].open_time ?? candles[0].time;
+    const last = candles[candles.length - 1].open_time ?? candles[candles.length - 1].time;
+    const key = `${symbol}|${timeframe}|${first}|${last}`;
+    if (quoteProfileState.key === key) return;
+    quoteProfileState = { key, points: [], truncated: false };
+    const limit = Math.min(1000, Math.max(50, candles.length));
+    try {
+      const body = await api(`/quote-profile?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`);
+      if (quoteProfileState.key !== key) return;
+      quoteProfileState = {
+        key,
+        points: Array.isArray(body && body.points) ? body.points : [],
+        truncated: body && body.truncated === true,
+      };
+      renderNow();
+    } catch {
+      // The chart engine draws its clearly labeled candle-range fallback when
+      // quote history is unavailable.
+    }
   }
 
   /// One concept's series, asked for a card preview instead of for the chart. A

@@ -29,15 +29,16 @@
 //! A true footprint is built from **trades** -- buy-aggressed and sell-aggressed
 //! volume at each price. This deployment has no tick data (`trades` is empty),
 //! so the footprint mode renders a candle-derived profile fallback. Binance
-//! profiles use reported candle volume; Deriv's quote-only candles use equal
-//! per-bar range coverage and are explicitly identified in [`Scene::note`].
-//! Neither fallback fabricates a trade ladder.
+//! profiles use reported candle volume; Deriv uses observed quote-tick counts,
+//! with equal per-bar range coverage only as an explicitly identified fallback
+//! in [`Scene::note`]. Neither path fabricates a trade ladder.
 
 use analytics_core::concepts::{detect as detect_concept, validate as validate_concept, Concept};
 use analytics_core::regions::{detect_zones, Region, RegionOrigin, ZoneConfig};
 use analytics_core::types::{Candle, Timeframe};
 use analytics_core::volume_profile::{
-    calculate_quote_range_activity_profile, calculate_volume_profile_from_candles, VolumeProfile,
+    calculate_quote_range_activity_profile, calculate_quote_tick_profile,
+    calculate_volume_profile_from_candles, VolumeProfile,
 };
 use analytics_core::vwap::calculate_vwap;
 use serde::{Deserialize, Serialize};
@@ -195,6 +196,12 @@ pub struct Request {
     /// sits -- the same reason `lines` defaults rather than demands.
     #[serde(default)]
     pub profile_anchor: ProfileAnchor,
+    /// Deriv's observed quote prices and timestamps for a quote-activity profile.
+    #[serde(default)]
+    pub profile_quotes: Vec<ProfileQuote>,
+    /// True when the quote-history request reached its provider cap.
+    #[serde(default)]
+    pub profile_quotes_truncated: bool,
     /// Whether to detect and draw supply/demand zones.
     ///
     /// Detection runs **here**, on the candles the request already carries,
@@ -569,6 +576,8 @@ impl Default for Request {
             footprint_trades: 0,
             lines: default_lines(),
             profile_anchor: ProfileAnchor::default(),
+            profile_quotes: Vec::new(),
+            profile_quotes_truncated: false,
             price_scale: PriceScale::Linear,
             zones: false,
             concepts: Vec::new(),
@@ -679,16 +688,25 @@ pub struct ProfileBar {
     pub x: f64,
     /// Top edge.
     pub y: f64,
-    /// Width, proportional to volume.
+    /// Width, proportional to the bucket's volume or quote-count weight.
     pub w: f64,
     /// Height, the bucket's price thickness.
     pub h: f64,
-    /// Volume traded in this bucket.
+    /// Bucket weight: traded volume on volume-bearing feeds, quote count on Deriv.
     pub volume: f64,
     /// Buy-aggressed share, 0..1.
     pub buy_ratio: f64,
     /// Whether this bucket is inside the value area.
     pub in_value_area: bool,
+}
+
+/// A Deriv quote observation used for a quote-activity profile.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ProfileQuote {
+    /// Quote timestamp, unix nanoseconds.
+    pub time: i64,
+    /// Published quote price.
+    pub price: f64,
 }
 
 /// A horizontal level.
@@ -1874,7 +1892,28 @@ pub fn build(request: &Request) -> Scene {
     let quote_only_venue = visible_real.first().is_some_and(|candle| {
         market_data::broker::VenueSymbol::parse(&candle.symbol).broker == "deriv"
     });
-    let profile = if quote_only_venue {
+    let profile_quote_prices: Vec<f64> = if quote_only_venue {
+        match (visible_real.first(), visible_real.last()) {
+            (Some(first), Some(last)) => {
+                let from = first.open_time;
+                let to = last.open_time.saturating_add(last.timeframe.nanos());
+                request
+                    .profile_quotes
+                    .iter()
+                    .filter(|quote| {
+                        quote.time >= from && quote.time < to && quote.price.is_finite()
+                    })
+                    .map(|quote| quote.price)
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    let profile = if quote_only_venue && !profile_quote_prices.is_empty() {
+        calculate_quote_tick_profile(&profile_quote_prices, bucket_size)
+    } else if quote_only_venue {
         calculate_quote_range_activity_profile(visible_real, bucket_size)
     } else {
         calculate_volume_profile_from_candles(visible_real, bucket_size)
@@ -1996,10 +2035,16 @@ pub fn build(request: &Request) -> Scene {
     }
 
     if quote_only_venue && request.mode.shows_profile() {
-        add_note(
-            &mut scene.note,
-            "Deriv quote-range activity profile: each candle contributes one equal unit across its high-low range. Deriv quote ticks have no traded-volume field; this is not traded volume.".into(),
-        );
+        let note = if !profile_quote_prices.is_empty() {
+            if request.profile_quotes_truncated {
+                "Deriv quote-tick profile: each observed quote contributes one count at its price. It is quote activity, not traded volume; provider history reached its 5,000-tick cap and may cover only part of the window."
+            } else {
+                "Deriv quote-tick profile: each observed quote contributes one count at its price. It is quote activity, not traded volume."
+            }
+        } else {
+            "Deriv quote-range activity fallback: each candle contributes one equal unit across its high-low range. Deriv quote ticks have no traded-volume field; this is not traded volume."
+        };
+        add_note(&mut scene.note, note.into());
     }
 
     // Concept documents are checked before anything is drawn. A document that
@@ -6358,6 +6403,29 @@ mod tests {
         let actual_total: f64 = scene.profile.iter().map(|bar| bar.volume).sum();
         let expected_total: f64 = expected.histogram.iter().map(|node| node.volume).sum();
         assert!((actual_total - expected_total).abs() < 1e-9);
+    }
+
+    #[test]
+    fn deriv_profile_uses_observed_quote_prices_when_available() {
+        let mut request = request(100);
+        request.bucket_size = Some(0.5);
+        for candle in &mut request.candles {
+            candle.symbol = "DERIV:Volatility 75".into();
+            candle.volume = 0.0;
+            candle.buy_volume = 0.0;
+            candle.sell_volume = 0.0;
+        }
+        request.profile_quotes = vec![
+            ProfileQuote { time: 40 * 300_000_000_000, price: 120.0 },
+            ProfileQuote { time: 41 * 300_000_000_000, price: 120.1 },
+            ProfileQuote { time: 42 * 300_000_000_000, price: 121.0 },
+        ];
+        let scene = build(&request);
+        let expected = calculate_quote_tick_profile(&[120.0, 120.1, 121.0], 0.5);
+        let expected_total: f64 = expected.histogram.iter().map(|node| node.volume).sum();
+        let actual_total: f64 = scene.profile.iter().map(|bar| bar.volume).sum();
+        assert!((actual_total - expected_total).abs() < 1e-9);
+        assert!(scene.note.as_deref().is_some_and(|note| note.contains("quote-tick profile")));
     }
 
     #[test]

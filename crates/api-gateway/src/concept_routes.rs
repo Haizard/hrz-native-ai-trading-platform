@@ -494,6 +494,82 @@ pub struct IndicatorSeriesResponse {
     pub provenance: Option<IndicatorProvenance>,
 }
 
+/// `/quote-profile`: bounded Deriv quote observations for chart profiling.
+#[derive(Debug, Deserialize)]
+pub struct QuoteProfileQuery {
+    /// Namespaced Deriv symbol.
+    pub symbol: String,
+    /// Chart timeframe; determines the candle window whose quote history is requested.
+    pub timeframe: String,
+    /// Requested candle-window size, capped to limit provider traffic.
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuoteProfileResponse {
+    pub symbol: String,
+    pub points: Vec<chart_engine::scene::ProfileQuote>,
+    pub truncated: bool,
+}
+
+/// Fetch actual quote prices (not trades) to build a Deriv quote-activity profile.
+pub async fn quote_profile(
+    State(state): State<AppState>,
+    Query(query): Query<QuoteProfileQuery>,
+) -> Result<Json<QuoteProfileResponse>, ApiError> {
+    let symbol = query.symbol.to_uppercase();
+    let code = market_data::deriv::code_for_namespaced(&symbol).ok_or_else(|| {
+        ApiError::bad_request(
+            "QUOTE_PROFILE_VENUE",
+            "quote-activity profiles are available only for registered Deriv symbols",
+        )
+    })?;
+    let tf: analytics_core::types::Timeframe = query.timeframe.parse().map_err(|_| {
+        ApiError::bad_request(
+            "TIMEFRAME_UNKNOWN",
+            format!("`{}` is not a timeframe this platform serves", query.timeframe),
+        )
+    })?;
+    let limit = query.limit.unwrap_or(500).clamp(50, 1000);
+    let to_ns = crate::now_ns();
+    let from_ns = to_ns - limit as i64 * tf.nanos();
+    let window = state
+        .windows
+        .candles_capped(&symbol, tf, from_ns, to_ns, limit)
+        .await
+        .map_err(|e| ApiError::unavailable(format!("no candles for {symbol}: {e}")))?;
+    let Some(first) = window.candles.first() else {
+        return Ok(Json(QuoteProfileResponse {
+            symbol,
+            points: Vec::new(),
+            truncated: false,
+        }));
+    };
+    let Some(last) = window.candles.last() else {
+        return Ok(Json(QuoteProfileResponse {
+            symbol,
+            points: Vec::new(),
+            truncated: false,
+        }));
+    };
+    let from = first.open_time;
+    let to = last.open_time.saturating_add(tf.nanos());
+    let observations = market_data::deriv::DerivClient::from_env()
+        .quote_history(code, from, to, 5000)
+        .await
+        .map_err(|error| ApiError::unavailable(format!("Deriv quote history unavailable: {error}")))?;
+    let truncated = observations.len() >= 5000;
+    let points = observations
+        .into_iter()
+        .map(|(time, price)| chart_engine::scene::ProfileQuote { time, price })
+        .collect();
+    Ok(Json(QuoteProfileResponse {
+        symbol,
+        points,
+        truncated,
+    }))
+}
+
 /// States what the pane measured and which data supported it.
 #[derive(Debug, Serialize)]
 pub struct IndicatorProvenance {

@@ -305,6 +305,41 @@ pub fn calculate_quote_range_activity_profile(
     calculate_volume_profile_from_candles(&quote_bars, bucket_size)
 }
 
+/// Price-by-quote-tick profile. Each finite quote observation contributes one
+/// count at its observed price; these are quote updates, not traded volume.
+#[must_use]
+pub fn calculate_quote_tick_profile(prices: &[f64], bucket_size: f64) -> VolumeProfile {
+    if prices.is_empty() || !bucket_size.is_finite() || bucket_size <= 0.0 {
+        return VolumeProfile::empty(bucket_size);
+    }
+    let finite: Vec<f64> = prices.iter().copied().filter(|price| price.is_finite()).collect();
+    let (Some(min_price), Some(max_price)) = (
+        finite.iter().copied().reduce(f64::min),
+        finite.iter().copied().reduce(f64::max),
+    ) else {
+        return VolumeProfile::empty(bucket_size);
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let bucket_count = ((max_price - min_price) / bucket_size).floor() as usize + 1;
+    if bucket_count == 0 || bucket_count > MAX_BUCKETS {
+        return VolumeProfile::empty(bucket_size);
+    }
+    let mut nodes: Vec<VolumeNode> = (0..bucket_count)
+        .map(|i| VolumeNode {
+            price_level: min_price + (i as f64 + 0.5) * bucket_size,
+            volume: 0.0,
+            buy_volume: 0.0,
+            sell_volume: 0.0,
+        })
+        .collect();
+    for price in finite {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let index = ((price - min_price) / bucket_size).floor() as usize;
+        nodes[index.min(bucket_count - 1)].volume += 1.0;
+    }
+    finalize(nodes, bucket_size, DEFAULT_VALUE_AREA_PCT, 2)
+}
+
 fn finalize(
     nodes: Vec<VolumeNode>,
     bucket_size: f64,
@@ -659,6 +694,18 @@ mod tests {
         let profile = calculate_quote_range_activity_profile(&bars, 1.0);
         assert!(!profile.is_empty());
         assert!((profile.total_volume - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn quote_tick_profile_counts_observed_prices_without_claiming_volume() {
+        let profile = calculate_quote_tick_profile(&[100.0, 100.1, 100.1, 101.0, f64::NAN], 0.5);
+        assert!((profile.total_volume - 4.0).abs() < 1e-9);
+        let busiest = profile
+            .histogram
+            .iter()
+            .max_by(|a, b| a.volume.total_cmp(&b.volume))
+            .expect("price buckets");
+        assert!((busiest.price_level - 100.25).abs() < 1e-9);
     }
 
     #[test]

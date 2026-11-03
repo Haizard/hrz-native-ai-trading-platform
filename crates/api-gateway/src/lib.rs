@@ -316,6 +316,7 @@ pub fn router(state: AppState) -> Router {
         .route("/news/latest", get(econ_routes::news_latest))
         .route("/news/sentiment", get(econ_routes::news_sentiment))
         .route("/indicator-series", get(concept_routes::indicator_series))
+        .route("/quote-profile", get(concept_routes::quote_profile))
         .route("/concept-events/smt", get(concept_routes::smt))
         .route("/compositions/backtest", post(concept_routes::backtest))
         .route("/compositions/generate", post(concept_routes::generate))
