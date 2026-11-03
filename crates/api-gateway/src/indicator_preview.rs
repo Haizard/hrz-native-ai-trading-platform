@@ -318,6 +318,14 @@ pub(crate) struct OiPoint {
     pub(crate) timestamp: i64,
 }
 
+/// One public Binance futures positioning-ratio observation.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct LongShortPoint {
+    #[serde(rename = "longShortRatio")]
+    pub(crate) long_short_ratio: String,
+    pub(crate) timestamp: i64,
+}
+
 /// Fetch the funding-rate series for request.data("SYM.funding"): venue
 /// futures REST, ascending (time_ms, rate). Empty on any failure -- the
 /// data-missing error downstream is the truth, not a zero.
@@ -380,6 +388,56 @@ pub(crate) async fn fetch_oi_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<
         .filter_map(|p| {
             let v = p.sum_open_interest.parse::<f64>().ok()?;
             Some((p.timestamp * 1_000_000, v))
+        })
+        .collect()
+}
+
+/// Fetch a Binance futures positioning ratio. `metric` is selected only by
+/// the caller from the two fixed public endpoint names used below.
+pub(crate) async fn fetch_long_short_ratio(
+    sym: &str,
+    from_ns: i64,
+    to_ns: i64,
+    metric: &str,
+) -> Vec<(i64, f64)> {
+    let minutes = ((to_ns - from_ns) / 60_000_000_000).max(1);
+    let period = if minutes / 5 <= 480 {
+        "5m"
+    } else if minutes / 15 <= 480 {
+        "15m"
+    } else if minutes / 30 <= 480 {
+        "30m"
+    } else if minutes / 60 <= 480 {
+        "1h"
+    } else if minutes / 120 <= 480 {
+        "2h"
+    } else if minutes / 240 <= 480 {
+        "4h"
+    } else if minutes / 720 <= 480 {
+        "12h"
+    } else {
+        "1d"
+    };
+    let endpoint = match metric {
+        "globalLongShortAccountRatio" | "topLongShortPositionRatio" => metric,
+        _ => return Vec::new(),
+    };
+    let url = format!(
+        "https://fapi.binance.com/futures/data/{endpoint}?symbol={sym}&period={period}&startTime={}&endTime={}&limit=500",
+        from_ns / 1_000_000,
+        to_ns / 1_000_000
+    );
+    let Ok(resp) = reqwest::get(&url).await else {
+        return Vec::new();
+    };
+    let Ok(points) = resp.json::<Vec<LongShortPoint>>().await else {
+        return Vec::new();
+    };
+    points
+        .into_iter()
+        .filter_map(|p| {
+            let ratio = p.long_short_ratio.parse::<f64>().ok()?;
+            (ratio.is_finite() && ratio > 0.0).then_some((p.timestamp * 1_000_000, ratio))
         })
         .collect()
 }

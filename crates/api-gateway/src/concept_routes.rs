@@ -656,9 +656,16 @@ pub async fn indicator_series(
             if venue.product == "usdt-m" {
                 let code = venue.symbol.as_str();
                 let from = candles.first().map_or(from_ns, |c| c.open_time);
-                let funding =
-                    crate::indicator_preview::fetch_funding_series(code, from, to_ns).await;
-                let oi = crate::indicator_preview::fetch_oi_series(code, from, to_ns).await;
+                let (funding, oi, global_ratio, top_position_ratio) = tokio::join!(
+                    crate::indicator_preview::fetch_funding_series(code, from, to_ns),
+                    crate::indicator_preview::fetch_oi_series(code, from, to_ns),
+                    crate::indicator_preview::fetch_long_short_ratio(
+                        code, from, to_ns, "globalLongShortAccountRatio"
+                    ),
+                    crate::indicator_preview::fetch_long_short_ratio(
+                        code, from, to_ns, "topLongShortPositionRatio"
+                    ),
+                );
                 if !funding.is_empty() {
                     let values = carry_market_points(&funding, &candles);
                     spec.lines
@@ -690,7 +697,38 @@ pub async fn indicator_series(
                         });
                     data_basis.push("Binance USDT-M open-interest history".into());
                 }
-                note.push_str(" Funding and open interest are shown only when Binance returns points for this window; liquidation flow is not yet connected to this pane.");
+                for (points, name, basis) in [
+                    (
+                        global_ratio,
+                        "Global account long/short imbalance",
+                        "Binance global long/short account ratio",
+                    ),
+                    (
+                        top_position_ratio,
+                        "Top-trader position long/short imbalance",
+                        "Binance top-trader long/short position ratio",
+                    ),
+                ] {
+                    if !points.is_empty() {
+                        let normalized = points
+                            .into_iter()
+                            .map(|(time, ratio)| {
+                                (time, ((ratio - 1.0) / (ratio + 1.0)).clamp(-1.0, 1.0))
+                            })
+                            .collect::<Vec<_>>();
+                        let values = carry_market_points(&normalized, &candles);
+                        spec.lines.push(analytics_core::indicator_series::SeriesLine {
+                            name: name.into(),
+                            color: if name.starts_with("Global") { 0xf472b6 } else { 0xa78bfa },
+                            values: values
+                                .into_iter()
+                                .map(|v| v.map(|x| x * 3.0))
+                                .collect(),
+                        });
+                        data_basis.push(basis.into());
+                    }
+                }
+                note.push_str(" Funding, open interest and positioning ratios appear only when Binance returns observations for this window. Long/short ratio history is limited to the latest 30 days and uses the coarsest supported interval needed to fit the requested window. Ratio lines are normalized around 1:1 and are positioning context, not dealer gamma or a forecast. Liquidation history is not supplied by the available public history endpoint.");
             }
             (
                 spec,
