@@ -37,6 +37,10 @@ use chart_engine::{
     SetupDirection,
 };
 use serde::Serialize;
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 use strategy_dsl::Direction;
 use strategy_runtime::signal::Signal;
 
@@ -334,28 +338,103 @@ pub(crate) struct BasisPoint {
     pub(crate) timestamp: i64,
 }
 
+const FUTURES_METRIC_CACHE_TTL: Duration = Duration::from_secs(15);
+const FUTURES_METRIC_ERROR_TTL: Duration = Duration::from_secs(5);
+
+struct FuturesMetricCacheEntry {
+    inserted_at: Option<Instant>,
+    values: Vec<(i64, f64)>,
+}
+
+static FUTURES_METRIC_CACHE: OnceLock<
+    tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<FuturesMetricCacheEntry>>>>,
+> = OnceLock::new();
+static FUTURES_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn futures_http_client() -> &'static reqwest::Client {
+    FUTURES_HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(4))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+async fn cached_futures_metric<F>(key: String, fetch: F) -> Vec<(i64, f64)>
+where
+    F: Future<Output = Vec<(i64, f64)>>,
+{
+    let cache = FUTURES_METRIC_CACHE.get_or_init(Default::default);
+    let cell = {
+        let mut entries = cache.lock().await;
+        entries.retain(|_, cell| match cell.try_lock() {
+            Ok(entry) => entry
+                .inserted_at
+                .is_none_or(|inserted| inserted.elapsed() < FUTURES_METRIC_CACHE_TTL),
+            Err(_) => true,
+        });
+        entries
+            .entry(key)
+            .or_insert_with(|| {
+                Arc::new(tokio::sync::Mutex::new(FuturesMetricCacheEntry {
+                    inserted_at: None,
+                    values: Vec::new(),
+                }))
+            })
+            .clone()
+    };
+    let mut entry = cell.lock().await;
+    let ttl = if entry.values.is_empty() {
+        FUTURES_METRIC_ERROR_TTL
+    } else {
+        FUTURES_METRIC_CACHE_TTL
+    };
+    if entry
+        .inserted_at
+        .is_some_and(|inserted| inserted.elapsed() < ttl)
+    {
+        return entry.values.clone();
+    }
+    let values = fetch.await;
+    entry.inserted_at = Some(Instant::now());
+    entry.values = values.clone();
+    values
+}
+
+fn futures_metric_cache_key(metric: &str, symbol: &str, from_ns: i64, to_ns: i64) -> String {
+    // `to` moves with every request. Bucket its cache identity to 15 seconds;
+    // old values still carry their exact source timestamp into the chart/AI.
+    format!("{metric}:{symbol}:{from_ns}:{}", to_ns / 15_000_000_000)
+}
+
 /// Fetch the funding-rate series for request.data("SYM.funding"): venue
 /// futures REST, ascending (time_ms, rate). Empty on any failure -- the
 /// data-missing error downstream is the truth, not a zero.
 pub(crate) async fn fetch_funding_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, f64)> {
-    let url = format!(
-        "https://fapi.binance.com/fapi/v1/fundingRate?symbol={sym}&startTime={}&endTime={}&limit=1000",
-        from_ns / 1_000_000,
-        to_ns / 1_000_000
-    );
-    let Ok(resp) = reqwest::get(&url).await else {
-        return Vec::new();
-    };
-    let Ok(points) = resp.json::<Vec<FundingPoint>>().await else {
-        return Vec::new();
-    };
-    points
-        .into_iter()
-        .filter_map(|p| {
-            let rate = p.funding_rate.parse::<f64>().ok()?;
-            Some((p.funding_time * 1_000_000, rate))
-        })
-        .collect()
+    cached_futures_metric(
+        futures_metric_cache_key("funding", sym, from_ns, to_ns),
+        async {
+            let url = format!(
+                "https://fapi.binance.com/fapi/v1/fundingRate?symbol={sym}&startTime={}&endTime={}&limit=1000",
+                from_ns / 1_000_000,
+                to_ns / 1_000_000
+            );
+            let Ok(resp) = futures_http_client().get(&url).send().await else {
+                return Vec::new();
+            };
+            let Ok(points) = resp.json::<Vec<FundingPoint>>().await else {
+                return Vec::new();
+            };
+            points
+                .into_iter()
+                .filter_map(|p| {
+                    let rate = p.funding_rate.parse::<f64>().ok()?;
+                    rate.is_finite().then_some((p.funding_time * 1_000_000, rate))
+                })
+                .collect()
+        },
+    )
+    .await
 }
 
 /// Fetch open interest for request.data("SYM.oi"). The venue caps at 500
@@ -380,24 +459,30 @@ pub(crate) async fn fetch_oi_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<
     } else {
         "1d"
     };
-    let url = format!(
-        "https://fapi.binance.com/futures/data/openInterestHist?symbol={sym}&period={period}&startTime={}&endTime={}&limit=500",
-        from_ns / 1_000_000,
-        to_ns / 1_000_000
-    );
-    let Ok(resp) = reqwest::get(&url).await else {
-        return Vec::new();
-    };
-    let Ok(points) = resp.json::<Vec<OiPoint>>().await else {
-        return Vec::new();
-    };
-    points
-        .into_iter()
-        .filter_map(|p| {
-            let v = p.sum_open_interest.parse::<f64>().ok()?;
-            Some((p.timestamp * 1_000_000, v))
-        })
-        .collect()
+    cached_futures_metric(
+        futures_metric_cache_key(&format!("oi:{period}"), sym, from_ns, to_ns),
+        async {
+            let url = format!(
+                "https://fapi.binance.com/futures/data/openInterestHist?symbol={sym}&period={period}&startTime={}&endTime={}&limit=500",
+                from_ns / 1_000_000,
+                to_ns / 1_000_000
+            );
+            let Ok(resp) = futures_http_client().get(&url).send().await else {
+                return Vec::new();
+            };
+            let Ok(points) = resp.json::<Vec<OiPoint>>().await else {
+                return Vec::new();
+            };
+            points
+                .into_iter()
+                .filter_map(|p| {
+                    let value = p.sum_open_interest.parse::<f64>().ok()?;
+                    value.is_finite().then_some((p.timestamp * 1_000_000, value))
+                })
+                .collect()
+        },
+    )
+    .await
 }
 
 /// Fetch a Binance futures positioning ratio. `metric` is selected only by
@@ -430,24 +515,43 @@ pub(crate) async fn fetch_long_short_ratio(
         "globalLongShortAccountRatio" | "topLongShortPositionRatio" => metric,
         _ => return Vec::new(),
     };
-    let url = format!(
-        "https://fapi.binance.com/futures/data/{endpoint}?symbol={sym}&period={period}&startTime={}&endTime={}&limit=500",
-        from_ns / 1_000_000,
-        to_ns / 1_000_000
-    );
-    let Ok(resp) = reqwest::get(&url).await else {
-        return Vec::new();
-    };
-    let Ok(points) = resp.json::<Vec<LongShortPoint>>().await else {
-        return Vec::new();
-    };
-    points
-        .into_iter()
-        .filter_map(|p| {
-            let ratio = p.long_short_ratio.parse::<f64>().ok()?;
-            (ratio.is_finite() && ratio > 0.0).then_some((p.timestamp * 1_000_000, ratio))
-        })
-        .collect()
+    cached_futures_metric(
+        futures_metric_cache_key(&format!("{endpoint}:{period}"), sym, from_ns, to_ns),
+        async {
+            let api_key = if endpoint == "globalLongShortAccountRatio" {
+                None
+            } else {
+                std::env::var("BINANCE_API_KEY").ok().filter(|key| !key.trim().is_empty())
+            };
+            if endpoint != "globalLongShortAccountRatio" && api_key.is_none() {
+                return Vec::new();
+            }
+            let url = format!(
+                "https://fapi.binance.com/futures/data/{endpoint}?symbol={sym}&period={period}&startTime={}&endTime={}&limit=500",
+                from_ns / 1_000_000,
+                to_ns / 1_000_000
+            );
+            let mut request = futures_http_client().get(&url);
+            if let Some(api_key) = api_key {
+                request = request.header("X-MBX-APIKEY", api_key);
+            }
+            let Ok(resp) = request.send().await else {
+                return Vec::new();
+            };
+            let Ok(points) = resp.json::<Vec<LongShortPoint>>().await else {
+                return Vec::new();
+            };
+            points
+                .into_iter()
+                .filter_map(|p| {
+                    let ratio = p.long_short_ratio.parse::<f64>().ok()?;
+                    (ratio.is_finite() && ratio > 0.0)
+                        .then_some((p.timestamp * 1_000_000, ratio))
+                })
+                .collect()
+        },
+    )
+    .await
 }
 
 /// Fetch public USDⓈ-M perpetual basis observations (maximum 30-day history).
@@ -476,24 +580,30 @@ pub(crate) async fn fetch_basis_series(
     } else {
         "1d"
     };
-    let url = format!(
-        "https://fapi.binance.com/futures/data/basis?pair={pair}&contractType=PERPETUAL&period={period}&startTime={}&endTime={}&limit=500",
-        from_ns / 1_000_000,
-        to_ns / 1_000_000
-    );
-    let Ok(resp) = reqwest::get(&url).await else {
-        return Vec::new();
-    };
-    let Ok(points) = resp.json::<Vec<BasisPoint>>().await else {
-        return Vec::new();
-    };
-    points
-        .into_iter()
-        .filter_map(|p| {
-            let basis = p.basis_rate.parse::<f64>().ok()?;
-            basis.is_finite().then_some((p.timestamp * 1_000_000, basis))
-        })
-        .collect()
+    cached_futures_metric(
+        futures_metric_cache_key(&format!("basis:{period}"), pair, from_ns, to_ns),
+        async {
+            let url = format!(
+                "https://fapi.binance.com/futures/data/basis?pair={pair}&contractType=PERPETUAL&period={period}&startTime={}&endTime={}&limit=500",
+                from_ns / 1_000_000,
+                to_ns / 1_000_000
+            );
+            let Ok(resp) = futures_http_client().get(&url).send().await else {
+                return Vec::new();
+            };
+            let Ok(points) = resp.json::<Vec<BasisPoint>>().await else {
+                return Vec::new();
+            };
+            points
+                .into_iter()
+                .filter_map(|p| {
+                    let basis = p.basis_rate.parse::<f64>().ok()?;
+                    basis.is_finite().then_some((p.timestamp * 1_000_000, basis))
+                })
+                .collect()
+        },
+    )
+    .await
 }
 
 /// Carry a sparse (time, value) series onto the chart's bars: each bar
@@ -1277,6 +1387,31 @@ mod tests {
             max_risk_pct: 1.0,
             reasons: vec!["delta > 0".into()],
         })
+    }
+
+    #[test]
+    fn public_futures_metric_payloads_preserve_source_timestamps() {
+        let ratio: LongShortPoint = serde_json::from_str(
+            r#"{"longShortRatio":"1.5","timestamp":1730000000000}"#,
+        )
+        .expect("ratio payload");
+        let basis: BasisPoint = serde_json::from_str(
+            r#"{"basisRate":"0.0004","timestamp":1730000000000}"#,
+        )
+        .expect("basis payload");
+        assert_eq!(ratio.long_short_ratio, "1.5");
+        assert_eq!(ratio.timestamp, 1_730_000_000_000);
+        assert_eq!(basis.basis_rate, "0.0004");
+        assert_eq!(basis.timestamp, 1_730_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn futures_metric_cache_reuses_recent_results() {
+        let key = format!("test:{}", Uuid::new_v4());
+        let first = cached_futures_metric(key.clone(), async { vec![(10, 1.5)] }).await;
+        let second = cached_futures_metric(key, async { vec![(20, 2.5)] }).await;
+        assert_eq!(first, vec![(10, 1.5)]);
+        assert_eq!(second, first);
     }
 
     #[test]

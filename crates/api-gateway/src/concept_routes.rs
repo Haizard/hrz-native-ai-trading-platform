@@ -633,7 +633,13 @@ pub async fn indicator_series(
             )
         } else {
             let book = state.windows.live().book(&symbol);
-            let book_imbalance = book.as_ref().and_then(book_depth_imbalance);
+            let book_is_fresh = book
+                .as_ref()
+                .is_some_and(|snapshot| is_recent_order_book(snapshot.timestamp, crate::now_ns()));
+            let book_imbalance = book
+                .as_ref()
+                .filter(|_| book_is_fresh)
+                .and_then(book_depth_imbalance);
             let mode = if venue.product == "usdt-m" {
                 "Binance futures flow reflexivity · not options GEX"
             } else {
@@ -660,17 +666,9 @@ pub async fn indicator_series(
             let mut note = if book_imbalance.is_some() {
                 "Historical bars use Binance's measured aggressor-side volume split; the book line is a current snapshot on the newest bar only.".to_string()
             } else {
-                "Historical bars use Binance's measured aggressor-side volume split. The live order book has not warmed up, so its line is unavailable.".to_string()
+                "Historical bars use Binance's measured aggressor-side volume split. No fresh live order-book snapshot is available, so its line is omitted.".to_string()
             };
-            let status = if candles.len() >= lookback {
-                if book_imbalance.is_some() {
-                    "ready"
-                } else {
-                    "warming_up"
-                }
-            } else {
-                "warming_up"
-            };
+            let status = broker_convexity_status(candles.len(), lookback, book_imbalance.is_some());
             if venue.product == "usdt-m" {
                 let code = venue.symbol.as_str();
                 let from = candles.first().map_or(from_ns, |c| c.open_time);
@@ -783,7 +781,7 @@ pub async fn indicator_series(
                         }
                     }
                 }
-                note.push_str(" Funding, open interest, positioning ratios and perpetual basis appear only when Binance returns observations for this window. Positioning ratios and basis history are limited to the latest 30 days and use the coarsest supported interval needed to fit the requested window. Ratio and basis lines are normalized around neutral; they are market context, not dealer gamma or a forecast. Liquidation history is not supplied by the available public history endpoint.");
+                note.push_str(" Funding, open interest, positioning ratios and perpetual basis appear only when Binance returns observations for this window. Top-trader ratios require BINANCE_API_KEY on the server. Positioning ratios and basis history are limited to the latest 30 days and use the coarsest supported interval needed to fit the requested window. Ratio and basis lines are normalized around neutral; they are market context, not dealer gamma or a forecast. Liquidation history is not supplied by the available public history endpoint.");
             }
             (
                 spec,
@@ -834,6 +832,23 @@ fn book_depth_imbalance(book: &analytics_core::types::OrderBookSnapshot) -> Opti
     let ask: f64 = book.asks.iter().take(20).map(|level| level.quantity).sum();
     let total = bid + ask;
     (total > 0.0).then_some((bid - ask) / total)
+}
+
+const LIVE_ORDER_BOOK_MAX_AGE_NS: i64 = 30_000_000_000;
+
+fn is_recent_order_book(timestamp_ns: i64, now_ns: i64) -> bool {
+    let age = now_ns.saturating_sub(timestamp_ns);
+    (0..=LIVE_ORDER_BOOK_MAX_AGE_NS).contains(&age)
+}
+
+fn broker_convexity_status(candle_count: usize, lookback: usize, has_fresh_book: bool) -> &'static str {
+    if candle_count < lookback {
+        "warming_up"
+    } else if has_fresh_book {
+        "ready"
+    } else {
+        "partial"
+    }
 }
 
 fn carry_market_points(
@@ -1218,6 +1233,30 @@ pub async fn generate(
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        broker_convexity_status, is_recent_order_book, latest_source_time,
+        LIVE_ORDER_BOOK_MAX_AGE_NS,
+    };
+
+    #[test]
+    fn latest_source_time_never_reports_a_carried_future_observation() {
+        let points = [(100, 1.0), (200, 2.0), (300, f64::NAN)];
+        assert_eq!(latest_source_time(&points, 250), Some(200));
+        assert_eq!(latest_source_time(&points, 400), Some(200));
+        assert_eq!(latest_source_time(&points, 50), None);
+    }
+
+    #[test]
+    fn live_book_freshness_and_partial_status_are_explicit() {
+        assert!(is_recent_order_book(1_000, 1_000));
+        assert!(is_recent_order_book(0, LIVE_ORDER_BOOK_MAX_AGE_NS));
+        assert!(!is_recent_order_book(0, LIVE_ORDER_BOOK_MAX_AGE_NS + 1));
+        assert!(!is_recent_order_book(1_001, 1_000));
+        assert_eq!(broker_convexity_status(19, 20, true), "warming_up");
+        assert_eq!(broker_convexity_status(20, 20, true), "ready");
+        assert_eq!(broker_convexity_status(20, 20, false), "partial");
+    }
+
     #[test]
     fn the_catalog_covers_the_seed_concepts_with_channel_names() {
         let entries: Vec<&str> = market_data::concepts::concept_registry()

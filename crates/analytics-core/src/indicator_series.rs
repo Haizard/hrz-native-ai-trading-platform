@@ -195,7 +195,11 @@ pub fn broker_flow_convexity_series(
             let variance =
                 history.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / history.len() as f64;
             let sd = variance.sqrt();
-            (sd > f64::EPSILON).then(|| ((value - mean) / sd).clamp(-3.0, 3.0))
+            Some(if sd > f64::EPSILON {
+                ((value - mean) / sd).clamp(-3.0, 3.0)
+            } else {
+                0.0
+            })
         });
         impact.push(z);
     }
@@ -252,7 +256,7 @@ pub fn price_path_curvature_series(
     for i in 2..candles.len() {
         let current = returns[i - 1];
         let prior = returns[i - 2];
-        let start = (i - period).max(0);
+        let start = i.saturating_sub(period);
         let sample: Vec<f64> = returns[start..i - 1].iter().filter_map(|v| *v).collect();
         let sd = if sample.len() >= 3 {
             let mean = sample.iter().sum::<f64>() / sample.len() as f64;
@@ -1721,6 +1725,55 @@ mod tests {
                 k(i as i64 * 3_600_000_000_000, price)
             })
             .collect()
+    }
+
+    #[test]
+    fn broker_flow_series_keeps_all_lines_aligned_and_bounded() {
+        let mut candles = moving_series(40);
+        for (i, candle) in candles.iter_mut().enumerate() {
+            candle.buy_volume = if i % 2 == 0 { 8.0 } else { 2.0 };
+            candle.sell_volume = if i % 2 == 0 { 2.0 } else { 8.0 };
+        }
+        let spec = broker_flow_convexity_series(&candles, 20, Some(0.25), "test model");
+        assert_eq!(spec.lines.len(), 3);
+        assert!(spec.lines.iter().all(|line| line.values.len() == candles.len()));
+        assert!((spec.lines[0].values[0].expect("aggressor line") - 1.8).abs() < 1e-12);
+        assert_eq!(spec.lines[2].values.last(), Some(&Some(0.75)));
+        for value in spec.lines.iter().flat_map(|line| line.values.iter().flatten()) {
+            assert!(value.is_finite() && (-3.0..=3.0).contains(value));
+        }
+    }
+
+    #[test]
+    fn broker_flow_handles_no_volume_and_zero_variance_history() {
+        let mut candles = moving_series(12);
+        for candle in &mut candles {
+            candle.buy_volume = 0.0;
+            candle.sell_volume = 0.0;
+        }
+        let spec = broker_flow_convexity_series(&candles, 5, None, "test model");
+        assert!(spec.lines[0].values.iter().all(Option::is_none));
+        assert!(spec.lines[1].values.iter().all(Option::is_none));
+        assert!(spec.lines[2].values.iter().all(Option::is_none));
+
+        let mut flat = vec![k(0, 100.0); 12];
+        for candle in &mut flat {
+            candle.buy_volume = 8.0;
+            candle.sell_volume = 2.0;
+        }
+        let spec = broker_flow_convexity_series(&flat, 5, None, "flat model");
+        assert_eq!(spec.lines[1].values[5], Some(0.0));
+    }
+
+    #[test]
+    fn deriv_quote_path_series_has_no_flow_lines_and_stays_bounded() {
+        let candles = moving_series(80);
+        let spec = price_path_curvature_series(&candles, 20, "deriv test");
+        assert_eq!(spec.lines.len(), 2);
+        assert!(spec.lines.iter().all(|line| line.values.len() == candles.len()));
+        for value in spec.lines.iter().flat_map(|line| line.values.iter().flatten()) {
+            assert!(value.is_finite() && (-3.0..=3.0).contains(value));
+        }
     }
 
     #[test]
