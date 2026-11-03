@@ -326,6 +326,14 @@ pub(crate) struct LongShortPoint {
     pub(crate) timestamp: i64,
 }
 
+/// One USDⓈ-M perpetual futures/index basis observation.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct BasisPoint {
+    #[serde(rename = "basisRate")]
+    pub(crate) basis_rate: String,
+    pub(crate) timestamp: i64,
+}
+
 /// Fetch the funding-rate series for request.data("SYM.funding"): venue
 /// futures REST, ascending (time_ms, rate). Empty on any failure -- the
 /// data-missing error downstream is the truth, not a zero.
@@ -438,6 +446,52 @@ pub(crate) async fn fetch_long_short_ratio(
         .filter_map(|p| {
             let ratio = p.long_short_ratio.parse::<f64>().ok()?;
             (ratio.is_finite() && ratio > 0.0).then_some((p.timestamp * 1_000_000, ratio))
+        })
+        .collect()
+}
+
+/// Fetch public USDⓈ-M perpetual basis observations (maximum 30-day history).
+pub(crate) async fn fetch_basis_series(
+    pair: &str,
+    from_ns: i64,
+    to_ns: i64,
+) -> Vec<(i64, f64)> {
+    let minutes = ((to_ns - from_ns) / 60_000_000_000).max(1);
+    let period = if minutes / 5 <= 480 {
+        "5m"
+    } else if minutes / 15 <= 480 {
+        "15m"
+    } else if minutes / 30 <= 480 {
+        "30m"
+    } else if minutes / 60 <= 480 {
+        "1h"
+    } else if minutes / 120 <= 480 {
+        "2h"
+    } else if minutes / 240 <= 480 {
+        "4h"
+    } else if minutes / 360 <= 480 {
+        "6h"
+    } else if minutes / 720 <= 480 {
+        "12h"
+    } else {
+        "1d"
+    };
+    let url = format!(
+        "https://fapi.binance.com/futures/data/basis?pair={pair}&contractType=PERPETUAL&period={period}&startTime={}&endTime={}&limit=500",
+        from_ns / 1_000_000,
+        to_ns / 1_000_000
+    );
+    let Ok(resp) = reqwest::get(&url).await else {
+        return Vec::new();
+    };
+    let Ok(points) = resp.json::<Vec<BasisPoint>>().await else {
+        return Vec::new();
+    };
+    points
+        .into_iter()
+        .filter_map(|p| {
+            let basis = p.basis_rate.parse::<f64>().ok()?;
+            basis.is_finite().then_some((p.timestamp * 1_000_000, basis))
         })
         .collect()
 }

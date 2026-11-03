@@ -674,7 +674,7 @@ pub async fn indicator_series(
             if venue.product == "usdt-m" {
                 let code = venue.symbol.as_str();
                 let from = candles.first().map_or(from_ns, |c| c.open_time);
-                let (funding, oi, global_ratio, top_position_ratio) = tokio::join!(
+                let (funding, oi, global_ratio, top_position_ratio, basis) = tokio::join!(
                     crate::indicator_preview::fetch_funding_series(code, from, to_ns),
                     crate::indicator_preview::fetch_oi_series(code, from, to_ns),
                     crate::indicator_preview::fetch_long_short_ratio(
@@ -683,6 +683,7 @@ pub async fn indicator_series(
                     crate::indicator_preview::fetch_long_short_ratio(
                         code, from, to_ns, "topLongShortPositionRatio"
                     ),
+                    crate::indicator_preview::fetch_basis_series(code, from, to_ns),
                 );
                 if !funding.is_empty() {
                     let values = carry_market_points(&funding, &candles);
@@ -728,6 +729,24 @@ pub async fn indicator_series(
                         }
                     }
                 }
+                if !basis.is_empty() {
+                    let basis_values = carry_market_points(&basis, &candles);
+                    spec.lines.push(analytics_core::indicator_series::SeriesLine {
+                        name: "Perpetual-index basis (bps)".into(),
+                        color: 0xfacc15,
+                        values: basis_values
+                            .into_iter()
+                            .map(|v| v.map(|x| (x * 10_000.0).clamp(-3.0, 3.0)))
+                            .collect(),
+                    });
+                    data_basis.push("Binance USDⓈ-M perpetual/index basis rate".into());
+                    if let Some(latest_bar) = candles.last().map(|c| c.open_time) {
+                        if let Some(time) = latest_source_time(&basis, latest_bar) {
+                            line_observed_at_ns
+                                .insert("Perpetual-index basis (bps)".into(), time);
+                        }
+                    }
+                }
                 for (points, name, basis) in [
                     (
                         global_ratio,
@@ -764,7 +783,7 @@ pub async fn indicator_series(
                         }
                     }
                 }
-                note.push_str(" Funding, open interest and positioning ratios appear only when Binance returns observations for this window. Long/short ratio history is limited to the latest 30 days and uses the coarsest supported interval needed to fit the requested window. Ratio lines are normalized around 1:1 and are positioning context, not dealer gamma or a forecast. Liquidation history is not supplied by the available public history endpoint.");
+                note.push_str(" Funding, open interest, positioning ratios and perpetual basis appear only when Binance returns observations for this window. Positioning ratios and basis history are limited to the latest 30 days and use the coarsest supported interval needed to fit the requested window. Ratio and basis lines are normalized around neutral; they are market context, not dealer gamma or a forecast. Liquidation history is not supplied by the available public history endpoint.");
             }
             (
                 spec,
