@@ -772,7 +772,9 @@ where
                 || item.data_basis.iter().any(|basis| basis.len() > 160)
                 || item.readings.len() > 16
                 || item.readings.iter().any(|reading| {
-                    reading.name.len() > 120 || !reading.value.is_finite()
+                    reading.name.len() > 120
+                        || !reading.value.is_finite()
+                        || reading.observed_at_ms.is_some_and(|t| t < 0)
                 })
         })
     {

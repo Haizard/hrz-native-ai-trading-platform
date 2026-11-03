@@ -542,6 +542,9 @@ pub struct IndicatorReading {
     pub name: String,
     /// Numeric measurement.
     pub value: f64,
+    /// Millisecond timestamp of this line's actual source observation, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at_ms: Option<i64>,
 }
 
 /// What the agent hands back for a question.
@@ -1022,7 +1025,7 @@ impl Agent {
             let serialized = serde_json::to_string_pretty(&request.indicator_context)
                 .unwrap_or_else(|_| "[]".into());
             format!(
-                "Active chart indicator readings and provenance (measurements from the displayed pane; do not infer unavailable inputs):\n```json\n{serialized}\n```\nTreat these as broker/data-source-specific measurements, not dealer options gamma exposure. `options_gex: false` means no options-chain GEX is being measured. This pane is an indicator for chart analysis, not a registry event or backtestable strategy condition. Do not claim it was backtested or use its readings as a strategy signal; explain the mode, data basis, status, and limitations when relevant.\n\n---\n\n{question_text}"
+                "Active chart indicator readings and provenance (measurements from the displayed pane; do not infer unavailable inputs):\n```json\n{serialized}\n```\nA reading's `observed_at_ms` is the time of its latest actual source observation; call out older observations as stale instead of treating carried-forward values as live. Treat these as broker/data-source-specific measurements, not dealer options gamma exposure. `options_gex: false` means no options-chain GEX is being measured. This pane is an indicator for chart analysis, not a registry event or backtestable strategy condition. Do not claim it was backtested or use its readings as a strategy signal; explain the mode, data basis, status, observation age, and limitations when relevant.\n\n---\n\n{question_text}"
             )
         };
         first_content.push(ContentBlock::Text(question_text));

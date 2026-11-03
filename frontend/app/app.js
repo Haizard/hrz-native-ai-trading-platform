@@ -7427,7 +7427,10 @@ function createChartPane(root, hooks = {}) {
         for (let i = values.length - 1; i >= 0; i--) {
           const value = values[i];
           if (typeof value === "number" && Number.isFinite(value)) {
-            readings.push({ name: String(line.name || "value").slice(0, 120), value });
+            const timeNs = Array.isArray(body.times) ? Number(body.times[i]) : NaN;
+            const reading = { name: String(line.name || "value").slice(0, 120), value };
+            if (Number.isFinite(timeNs) && timeNs >= 0) reading.observed_at_ms = Math.trunc(timeNs / 1_000_000);
+            readings.push(reading);
             break;
           }
         }
