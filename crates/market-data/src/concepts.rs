@@ -54,6 +54,8 @@ pub enum Library {
     Indicators,
     /// Economic events as market catalysts (BLS releases and friends).
     Econ,
+    /// Broker-specific price convexity and flow reflexivity measurements.
+    MarketStructure,
 }
 
 impl Library {
@@ -73,6 +75,7 @@ impl Library {
             Self::Fibonacci => "fib",
             Self::Indicators => "indicators",
             Self::Econ => "econ",
+            Self::MarketStructure => "market_structure",
         }
     }
 }
@@ -300,6 +303,14 @@ const SPIKE_PARAMS: &[ConceptParam] = &[ConceptParam {
     description: "multiple of the recent average that counts as a spike",
 }];
 
+const CONVEXITY_PARAMS: &[ConceptParam] = &[ConceptParam {
+    name: "lookback_period",
+    default: 20.0,
+    min: 5.0,
+    max: 100.0,
+    description: "bars used to normalize price impact or quote-path curvature",
+}];
+
 /// The registry itself: every concept the platform knows, newest-last within
 /// a library so the id order reads as the catalog was built.
 #[must_use]
@@ -435,7 +446,10 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: false,
-            event_kinds: &[EventKind::RejectionBlockCreated, EventKind::RejectionBlockMitigated],
+            event_kinds: &[
+                EventKind::RejectionBlockCreated,
+                EventKind::RejectionBlockMitigated,
+            ],
         },
         ConceptSpec {
             id: "smc.mitigation_block",
@@ -447,7 +461,11 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: false,
-            event_kinds: &[EventKind::MitigationBlockCreated, EventKind::MitigationBlockMitigated, EventKind::MitigationBlockInvalidated],
+            event_kinds: &[
+                EventKind::MitigationBlockCreated,
+                EventKind::MitigationBlockMitigated,
+                EventKind::MitigationBlockInvalidated,
+            ],
         },
         ConceptSpec {
             id: "smc.liquidity_grab",
@@ -1344,8 +1362,20 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             name: "Stochastic",
             description: "Lane's %K/%D over 14 and 3 -- where the close sits inside its own recent range, with the 80/20 bands",
             parameters: &[
-                ConceptParam { name: "period", default: 14.0, min: 2.0, max: 200.0, description: "%K lookback window" },
-                ConceptParam { name: "smooth", default: 3.0, min: 1.0, max: 50.0, description: "%D smoothing window" },
+                ConceptParam {
+                    name: "period",
+                    default: 14.0,
+                    min: 2.0,
+                    max: 200.0,
+                    description: "%K lookback window",
+                },
+                ConceptParam {
+                    name: "smooth",
+                    default: 3.0,
+                    min: 1.0,
+                    max: 50.0,
+                    description: "%D smoothing window",
+                },
             ],
             required_channels: DataChannels::CANDLES,
             pane: true,
@@ -1382,7 +1412,13 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             library: Library::Indicators,
             name: "Rate of Change",
             description: "the 12-bar rate of change -- momentum as a plain percentage around the zero line",
-            parameters: &[ConceptParam { name: "period", default: 12.0, min: 1.0, max: 200.0, description: "bars used to measure price change" }],
+            parameters: &[ConceptParam {
+                name: "period",
+                default: 12.0,
+                min: 1.0,
+                max: 200.0,
+                description: "bars used to measure price change",
+            }],
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
@@ -1482,7 +1518,12 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: true,
-            event_kinds: &[EventKind::IchimokuTenkanKijunCross, EventKind::IchimokuKijunCross, EventKind::IchimokuCloudBreakout, EventKind::IchimokuKumoTwist],
+            event_kinds: &[
+                EventKind::IchimokuTenkanKijunCross,
+                EventKind::IchimokuKijunCross,
+                EventKind::IchimokuCloudBreakout,
+                EventKind::IchimokuKumoTwist,
+            ],
         },
         ConceptSpec {
             id: "indicators.tsi",
@@ -1734,7 +1775,11 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: true,
             overlay: false,
-            event_kinds: &[EventKind::MacdSignalCross, EventKind::MacdZeroCross, EventKind::MacdDivergenceSignal],
+            event_kinds: &[
+                EventKind::MacdSignalCross,
+                EventKind::MacdZeroCross,
+                EventKind::MacdDivergenceSignal,
+            ],
         },
         ConceptSpec {
             id: "indicators.atr",
@@ -1854,7 +1899,10 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: false,
-            event_kinds: &[EventKind::InitialBalanceBreakout, EventKind::InitialBalanceReversal],
+            event_kinds: &[
+                EventKind::InitialBalanceBreakout,
+                EventKind::InitialBalanceReversal,
+            ],
         },
         ConceptSpec {
             id: "volume.single_prints",
@@ -1962,7 +2010,11 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             required_channels: DataChannels::CANDLES,
             pane: false,
             overlay: false,
-            event_kinds: &[EventKind::CrtBullish, EventKind::CrtBearish, EventKind::CrtDistribution],
+            event_kinds: &[
+                EventKind::CrtBullish,
+                EventKind::CrtBearish,
+                EventKind::CrtDistribution,
+            ],
         },
         ConceptSpec {
             id: "candles.hammer",
@@ -2504,6 +2556,18 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             overlay: false,
             event_kinds: &[EventKind::RegimeShift],
         },
+        ConceptSpec {
+            id: "market_structure.broker_convexity",
+            version: "1.0.0",
+            library: Library::MarketStructure,
+            name: "Broker-Aware Convexity",
+            description: "selects a price-path or flow-reflexivity model from the broker data actually available; never presents a proxy as options GEX",
+            parameters: CONVEXITY_PARAMS,
+            required_channels: DataChannels::CANDLES,
+            pane: true,
+            overlay: false,
+            event_kinds: &[],
+        },
     ]
 }
 
@@ -2595,7 +2659,10 @@ pub fn as_concept_event_for(
     };
     let mut evidence = serde_json::Map::new();
     evidence.insert("close".to_string(), serde_json::json!(event.close));
-    evidence.insert("event_kind".to_string(), serde_json::json!(event.kind.name()));
+    evidence.insert(
+        "event_kind".to_string(),
+        serde_json::json!(event.kind.name()),
+    );
     if let Some(magnitude) = event.magnitude {
         evidence.insert("magnitude".to_string(), serde_json::json!(magnitude));
     }

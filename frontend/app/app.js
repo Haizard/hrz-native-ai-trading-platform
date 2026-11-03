@@ -3748,7 +3748,13 @@ function createChartPane(root, hooks = {}) {
             : ""
         }`
       : "";
-    el("chartNote").textContent = feedNotice || scene.note || aiReason;
+    const modelNotes = [...indicatorSeries.values()]
+      .map((series) => series.provenance)
+      .filter((source) => source && source.note)
+      .map((source) => `${source.mode.replace(/_/g, " ")} (${source.status}): ${source.note}`);
+    el("chartNote").textContent = [feedNotice || scene.note || aiReason, ...modelNotes]
+      .filter(Boolean)
+      .join(" · ");
     // The order-flow panel re-renders the strip with the *scene* grid, so the
     // strip keeps the engine's formatted numbers instead of falling back to the
     // raw response, which has no rendered text fields.
@@ -6389,9 +6395,12 @@ function createChartPane(root, hooks = {}) {
         const dots = !!(globalThis.ConceptShapes && globalThis.ConceptShapes.shapeOf(id) === "series_dots");
         out.push({ overlay: true, lines, fills, dots });
       } else {
+        const sourceStatus = body.provenance
+          ? ` · ${body.provenance.status.replace(/_/g, " ")}`
+          : "";
         out.push({
           kind: "series",
-          label: alias || spec.label,
+          label: alias || `${spec.label}${sourceStatus}`,
           scale: spec.scale,
           levels: spec.levels || [],
           lines,

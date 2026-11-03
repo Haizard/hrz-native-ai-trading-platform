@@ -4,7 +4,7 @@
 //! exactly, so the shell forwards the spec untouched -- a new indicator
 //! adopts the pane by adding one function here and one registry flag.
 
-use crate::rsi_divergence::{rsi_divergences, rsi_series, RsiDivergenceConfig};
+use crate::rsi_divergence::{RsiDivergenceConfig, rsi_divergences, rsi_series};
 use crate::types::Candle;
 use serde::Serialize;
 
@@ -156,6 +156,147 @@ pub fn indicator_series_for_version(
     match version {
         "1.0.0" => indicator_series_v1(concept, candles, parameters),
         _ => None,
+    }
+}
+
+/// Broker-aware spot/futures flow reflexivity from the real candle-side split.
+/// The returned values are normalized diagnostics, not options gamma.
+pub fn broker_flow_convexity_series(
+    candles: &[Candle],
+    lookback: usize,
+    book_imbalance: Option<f64>,
+    label: impl Into<String>,
+) -> IndicatorSeries {
+    let period = lookback.clamp(5, 100);
+    let mut flow = Vec::with_capacity(candles.len());
+    let mut impact = Vec::with_capacity(candles.len());
+    for (i, candle) in candles.iter().enumerate() {
+        let total = candle.buy_volume + candle.sell_volume;
+        let imbalance = (total > 0.0).then(|| (candle.delta() / total).clamp(-1.0, 1.0));
+        flow.push(imbalance.map(|v| v * 3.0));
+        let previous = i.checked_sub(1).and_then(|j| candles.get(j));
+        let ret = previous
+            .filter(|p| p.close > 0.0 && candle.close > 0.0)
+            .map(|p| (candle.close / p.close).ln());
+        let coefficient = match (ret, imbalance) {
+            (Some(r), Some(f)) if f.abs() >= 0.05 => Some(r / f),
+            _ => None,
+        };
+        let start = i.saturating_sub(period);
+        let history: Vec<f64> = impact[start..]
+            .iter()
+            .filter_map(|v: &Option<f64>| *v)
+            .collect();
+        let z = coefficient.and_then(|value| {
+            if history.len() < 3 {
+                return Some(0.0);
+            }
+            let mean = history.iter().sum::<f64>() / history.len() as f64;
+            let variance =
+                history.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / history.len() as f64;
+            let sd = variance.sqrt();
+            (sd > f64::EPSILON).then(|| ((value - mean) / sd).clamp(-3.0, 3.0))
+        });
+        impact.push(z);
+    }
+    let mut book = vec![None; candles.len()];
+    if let (Some(last), Some(value)) = (book.last_mut(), book_imbalance) {
+        *last = Some(value.clamp(-1.0, 1.0) * 3.0);
+    }
+    IndicatorSeries {
+        label: label.into(),
+        scale: SeriesScale::Fixed {
+            min: -3.0,
+            max: 3.0,
+        },
+        levels: vec![-2.0, 0.0, 2.0],
+        lines: vec![
+            SeriesLine {
+                name: "Aggressor imbalance ×3".into(),
+                color: 0x38bdf8,
+                values: flow,
+            },
+            SeriesLine {
+                name: "Price impact z-score".into(),
+                color: 0xfbbf24,
+                values: impact,
+            },
+            SeriesLine {
+                name: "Live book imbalance ×3".into(),
+                color: 0xc084fc,
+                values: book,
+            },
+        ],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
+    }
+}
+
+/// Quote-path curvature for feeds without executed trade side or a book.
+/// This measures recent price acceleration only; it is not order flow or GEX.
+pub fn price_path_curvature_series(
+    candles: &[Candle],
+    lookback: usize,
+    label: impl Into<String>,
+) -> IndicatorSeries {
+    let period = lookback.clamp(5, 100);
+    let returns: Vec<Option<f64>> = candles
+        .windows(2)
+        .map(|w| (w[0].close > 0.0 && w[1].close > 0.0).then(|| (w[1].close / w[0].close).ln()))
+        .collect();
+    let mut curvature = vec![None; candles.len()];
+    let mut volatility = vec![None; candles.len()];
+    for i in 2..candles.len() {
+        let current = returns[i - 1];
+        let prior = returns[i - 2];
+        let start = (i - period).max(0);
+        let sample: Vec<f64> = returns[start..i - 1].iter().filter_map(|v| *v).collect();
+        let sd = if sample.len() >= 3 {
+            let mean = sample.iter().sum::<f64>() / sample.len() as f64;
+            (sample.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / sample.len() as f64).sqrt()
+        } else {
+            0.0
+        };
+        if let (Some(now), Some(before)) = (current, prior) {
+            curvature[i] = Some(if sd > f64::EPSILON {
+                ((now - before) / sd).clamp(-3.0, 3.0)
+            } else {
+                0.0
+            });
+            volatility[i] = Some(if sd > f64::EPSILON {
+                (now.abs() / sd).clamp(0.0, 3.0)
+            } else {
+                0.0
+            });
+        }
+    }
+    IndicatorSeries {
+        label: label.into(),
+        scale: SeriesScale::Fixed {
+            min: -3.0,
+            max: 3.0,
+        },
+        levels: vec![-2.0, 0.0, 2.0],
+        lines: vec![
+            SeriesLine {
+                name: "Return curvature z-score".into(),
+                color: 0x60a5fa,
+                values: curvature,
+            },
+            SeriesLine {
+                name: "Return impulse z-score".into(),
+                color: 0xf97316,
+                values: volatility,
+            },
+        ],
+        segments: Vec::new(),
+        markers: Vec::new(),
+        bars: None,
+        target: SeriesTarget::Pane,
+        fills: Vec::new(),
     }
 }
 

@@ -11,12 +11,12 @@
 //!   the same events `/events` serves, projected through the registry so the
 //!   chart, the thesis agent, and the skills read one shape.
 
-use axum::extract::{Query, State};
 use axum::Json;
+use axum::extract::{Query, State};
 use serde::{Deserialize, Serialize};
 
-use crate::error::ApiError;
 use crate::AppState;
+use crate::error::ApiError;
 
 /// `/concepts` query: the optional instrument for availability.
 #[derive(Debug, Deserialize)]
@@ -259,7 +259,9 @@ fn parse_param_overrides(
         if spec.is_some_and(|spec| spec.pane || spec.overlay) {
             return Err(ApiError::bad_request(
                 "PARAMS_INVALID",
-                format!("`{concept_id}` series parameters belong on `/indicator-series`, not event scans"),
+                format!(
+                    "`{concept_id}` series parameters belong on `/indicator-series`, not event scans"
+                ),
             ));
         }
     }
@@ -291,7 +293,9 @@ pub async fn scan(
             if market_data::concepts::concept_version(id, version).is_none() {
                 return Err(ApiError::bad_request(
                     "CONCEPT_VERSION_UNAVAILABLE",
-                    format!("{id} version {version} is not present in the current or archived concept registry"),
+                    format!(
+                        "{id} version {version} is not present in the current or archived concept registry"
+                    ),
                 ));
             }
         }
@@ -482,6 +486,19 @@ pub struct IndicatorSeriesResponse {
     pub times: Vec<i64>,
     /// The pane spec (engine `SubPaneSpec::Series` field-for-field).
     pub spec: analytics_core::indicator_series::IndicatorSeries,
+    /// Provider-specific calculation provenance for broker-aware measurements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<IndicatorProvenance>,
+}
+
+/// States what the pane measured and which data supported it.
+#[derive(Debug, Serialize)]
+pub struct IndicatorProvenance {
+    pub mode: String,
+    pub data_basis: Vec<String>,
+    pub status: String,
+    pub note: String,
+    pub options_gex: bool,
 }
 
 /// `GET /indicator-series`: a pane concept's measurements, computed by
@@ -578,6 +595,124 @@ pub async fn indicator_series(
             symbol,
             times,
             spec,
+            provenance: None,
+        }));
+    }
+    if query.concept == "market_structure.broker_convexity" {
+        let lookback = parameters
+            .get("lookback_period")
+            .copied()
+            .unwrap_or(20.0)
+            .round() as usize;
+        let venue = market_data::broker::VenueSymbol::parse(&symbol);
+        let times = candles.iter().map(|c| c.open_time).collect();
+        let (spec, provenance) = if venue.broker == "deriv" {
+            (
+                analytics_core::indicator_series::price_path_curvature_series(
+                    &candles,
+                    lookback,
+                    "Deriv quote-path curvature · not options GEX",
+                ),
+                IndicatorProvenance {
+                    mode: "deriv_quote_path_curvature".into(),
+                    data_basis: vec!["tick-derived candles".into()],
+                    status: if candles.len() >= lookback { "ready" } else { "warming_up" }.into(),
+                    note: "Deriv provides quote ticks without trade size, aggressor side, or an order book in this integration. This measures price-path curvature only.".into(),
+                    options_gex: false,
+                },
+            )
+        } else {
+            let book = state.windows.live().book(&symbol);
+            let book_imbalance = book.as_ref().and_then(book_depth_imbalance);
+            let mode = if venue.product == "usdt-m" {
+                "Binance futures flow reflexivity · not options GEX"
+            } else {
+                "Binance spot flow convexity · not options GEX"
+            };
+            let mut spec = analytics_core::indicator_series::broker_flow_convexity_series(
+                &candles,
+                lookback,
+                book_imbalance,
+                mode,
+            );
+            let mut data_basis = vec!["Binance candle aggressor-side volume split".into()];
+            if book_imbalance.is_some() {
+                data_basis.push("current live order-book depth imbalance".into());
+            }
+            let mut note = if book_imbalance.is_some() {
+                "Historical bars use Binance's measured aggressor-side volume split; the book line is a current snapshot on the newest bar only.".to_string()
+            } else {
+                "Historical bars use Binance's measured aggressor-side volume split. The live order book has not warmed up, so its line is unavailable.".to_string()
+            };
+            let status = if candles.len() >= lookback {
+                if book_imbalance.is_some() {
+                    "ready"
+                } else {
+                    "warming_up"
+                }
+            } else {
+                "warming_up"
+            };
+            if venue.product == "usdt-m" {
+                let code = venue.symbol.as_str();
+                let from = candles.first().map_or(from_ns, |c| c.open_time);
+                let funding =
+                    crate::indicator_preview::fetch_funding_series(code, from, to_ns).await;
+                let oi = crate::indicator_preview::fetch_oi_series(code, from, to_ns).await;
+                if !funding.is_empty() {
+                    let values = carry_market_points(&funding, &candles);
+                    spec.lines
+                        .push(analytics_core::indicator_series::SeriesLine {
+                            name: "Funding rate (bps)".into(),
+                            color: 0xfb7185,
+                            values: values
+                                .into_iter()
+                                .map(|v| v.map(|x| (x * 10_000.0).clamp(-3.0, 3.0)))
+                                .collect(),
+                        });
+                    data_basis.push("Binance USDT-M funding history".into());
+                }
+                if !oi.is_empty() {
+                    let raw = carry_market_points(&oi, &candles);
+                    let mut values = vec![None; raw.len()];
+                    for i in 1..raw.len() {
+                        if let (Some(prev), Some(now)) = (raw[i - 1], raw[i]) {
+                            if prev > 0.0 {
+                                values[i] = Some((((now / prev) - 1.0) * 100.0).clamp(-3.0, 3.0));
+                            }
+                        }
+                    }
+                    spec.lines
+                        .push(analytics_core::indicator_series::SeriesLine {
+                            name: "Open-interest change (%)".into(),
+                            color: 0x34d399,
+                            values,
+                        });
+                    data_basis.push("Binance USDT-M open-interest history".into());
+                }
+                note.push_str(" Funding and open interest are shown only when Binance returns points for this window; liquidation flow is not yet connected to this pane.");
+            }
+            (
+                spec,
+                IndicatorProvenance {
+                    mode: if venue.product == "usdt-m" {
+                        "binance_futures_flow_reflexivity"
+                    } else {
+                        "binance_spot_flow_convexity"
+                    }
+                    .into(),
+                    data_basis,
+                    status: status.into(),
+                    note,
+                    options_gex: false,
+                },
+            )
+        };
+        return Ok(Json(IndicatorSeriesResponse {
+            symbol,
+            times,
+            spec,
+            provenance: Some(provenance),
         }));
     }
     let spec = analytics_core::indicator_series::indicator_series_for_version(
@@ -596,7 +731,35 @@ pub async fn indicator_series(
         symbol,
         times: candles.iter().map(|c| c.open_time).collect(),
         spec,
+        provenance: None,
     }))
+}
+
+fn book_depth_imbalance(book: &analytics_core::types::OrderBookSnapshot) -> Option<f64> {
+    let bid: f64 = book.bids.iter().take(20).map(|level| level.quantity).sum();
+    let ask: f64 = book.asks.iter().take(20).map(|level| level.quantity).sum();
+    let total = bid + ask;
+    (total > 0.0).then_some((bid - ask) / total)
+}
+
+fn carry_market_points(
+    points: &[(i64, f64)],
+    candles: &[analytics_core::types::Candle],
+) -> Vec<Option<f64>> {
+    let mut ordered = points.to_vec();
+    ordered.sort_by_key(|point| point.0);
+    let mut cursor = 0;
+    let mut latest = None;
+    candles
+        .iter()
+        .map(|candle| {
+            while cursor < ordered.len() && ordered[cursor].0 <= candle.open_time {
+                latest = Some(ordered[cursor].1);
+                cursor += 1;
+            }
+            latest
+        })
+        .collect()
 }
 
 /// `POST /compositions/backtest` body.

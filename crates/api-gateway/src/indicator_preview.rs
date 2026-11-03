@@ -31,7 +31,7 @@ use crate::AppState;
 use analytics_core::concepts::{self, detect};
 use analytics_core::regions::Region;
 use analytics_core::types::{self, Timeframe};
-use backtester::replay::{replay, ReplayConfig, ReplayInput, ReplaySignal};
+use backtester::replay::{ReplayConfig, ReplayInput, ReplaySignal, replay};
 use chart_engine::{
     self, IndicatorMarker, IndicatorOutput, IndicatorZone, MarkerKind, ReplayExit, ReplaySetup,
     SetupDirection,
@@ -303,25 +303,25 @@ async fn fetch_security_candles(
 /// One venue funding-rate point (USDT-M futures endpoint, market DATA
 /// even on a spot chart).
 #[derive(Debug, serde::Deserialize)]
-struct FundingPoint {
+pub(crate) struct FundingPoint {
     #[serde(rename = "fundingRate")]
-    funding_rate: String,
+    pub(crate) funding_rate: String,
     #[serde(rename = "fundingTime")]
-    funding_time: i64,
+    pub(crate) funding_time: i64,
 }
 
 /// One open-interest snapshot.
 #[derive(Debug, serde::Deserialize)]
-struct OiPoint {
+pub(crate) struct OiPoint {
     #[serde(rename = "sumOpenInterest")]
-    sum_open_interest: String,
-    timestamp: i64,
+    pub(crate) sum_open_interest: String,
+    pub(crate) timestamp: i64,
 }
 
 /// Fetch the funding-rate series for request.data("SYM.funding"): venue
 /// futures REST, ascending (time_ms, rate). Empty on any failure -- the
 /// data-missing error downstream is the truth, not a zero.
-async fn fetch_funding_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, f64)> {
+pub(crate) async fn fetch_funding_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, f64)> {
     let url = format!(
         "https://fapi.binance.com/fapi/v1/fundingRate?symbol={sym}&startTime={}&endTime={}&limit=1000",
         from_ns / 1_000_000,
@@ -345,7 +345,7 @@ async fn fetch_funding_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, 
 /// Fetch open interest for request.data("SYM.oi"). The venue caps at 500
 /// points per page, so the period adapts to the window: the coarsest
 /// granularity that still covers it in one page.
-async fn fetch_oi_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, f64)> {
+pub(crate) async fn fetch_oi_series(sym: &str, from_ns: i64, to_ns: i64) -> Vec<(i64, f64)> {
     let minutes = ((to_ns - from_ns) / 60_000_000_000).max(1);
     let period = if minutes / 5 <= 480 {
         "5m"
