@@ -499,6 +499,10 @@ pub struct IndicatorProvenance {
     pub status: String,
     pub note: String,
     pub options_gex: bool,
+    /// Actual source timestamps by plotted line. Sparse API values are carried
+    /// onto bars for drawing, so the bar time alone would overstate freshness.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub line_observed_at_ns: std::collections::BTreeMap<String, i64>,
 }
 
 /// `GET /indicator-series`: a pane concept's measurements, computed by
@@ -606,7 +610,12 @@ pub async fn indicator_series(
             .round() as usize;
         let venue = market_data::broker::VenueSymbol::parse(&symbol);
         let times = candles.iter().map(|c| c.open_time).collect();
+        let mut line_observed_at_ns = std::collections::BTreeMap::new();
         let (spec, provenance) = if venue.broker == "deriv" {
+            if let Some(latest) = candles.last().map(|c| c.open_time) {
+                line_observed_at_ns.insert("Return curvature z-score".into(), latest);
+                line_observed_at_ns.insert("Return impulse z-score".into(), latest);
+            }
             (
                 analytics_core::indicator_series::price_path_curvature_series(
                     &candles,
@@ -619,6 +628,7 @@ pub async fn indicator_series(
                     status: if candles.len() >= lookback { "ready" } else { "warming_up" }.into(),
                     note: "Deriv provides quote ticks without trade size, aggressor side, or an order book in this integration. This measures price-path curvature only.".into(),
                     options_gex: false,
+                    line_observed_at_ns: line_observed_at_ns.clone(),
                 },
             )
         } else {
@@ -635,6 +645,14 @@ pub async fn indicator_series(
                 book_imbalance,
                 mode,
             );
+            if let Some(latest) = candles.last().map(|c| c.open_time) {
+                line_observed_at_ns.insert("Aggressor imbalance ×3".into(), latest);
+                line_observed_at_ns.insert("Price impact z-score".into(), latest);
+            }
+            if let Some(snapshot) = book.as_ref().filter(|_| book_imbalance.is_some()) {
+                line_observed_at_ns
+                    .insert("Live book imbalance ×3".into(), snapshot.timestamp);
+            }
             let mut data_basis = vec!["Binance candle aggressor-side volume split".into()];
             if book_imbalance.is_some() {
                 data_basis.push("current live order-book depth imbalance".into());
@@ -678,6 +696,11 @@ pub async fn indicator_series(
                                 .collect(),
                         });
                     data_basis.push("Binance USDT-M funding history".into());
+                    if let Some(latest_bar) = candles.last().map(|c| c.open_time) {
+                        if let Some(time) = latest_source_time(&funding, latest_bar) {
+                            line_observed_at_ns.insert("Funding rate (bps)".into(), time);
+                        }
+                    }
                 }
                 if !oi.is_empty() {
                     let raw = carry_market_points(&oi, &candles);
@@ -696,6 +719,14 @@ pub async fn indicator_series(
                             values,
                         });
                     data_basis.push("Binance USDT-M open-interest history".into());
+                    if oi.len() >= 2 {
+                        if let Some(latest_bar) = candles.last().map(|c| c.open_time) {
+                            if let Some(time) = latest_source_time(&oi, latest_bar) {
+                                line_observed_at_ns
+                                    .insert("Open-interest change (%)".into(), time);
+                            }
+                        }
+                    }
                 }
                 for (points, name, basis) in [
                     (
@@ -726,6 +757,11 @@ pub async fn indicator_series(
                                 .collect(),
                         });
                         data_basis.push(basis.into());
+                        if let Some(latest_bar) = candles.last().map(|c| c.open_time) {
+                            if let Some(time) = latest_source_time(&normalized, latest_bar) {
+                                line_observed_at_ns.insert(name.into(), time);
+                            }
+                        }
                     }
                 }
                 note.push_str(" Funding, open interest and positioning ratios appear only when Binance returns observations for this window. Long/short ratio history is limited to the latest 30 days and uses the coarsest supported interval needed to fit the requested window. Ratio lines are normalized around 1:1 and are positioning context, not dealer gamma or a forecast. Liquidation history is not supplied by the available public history endpoint.");
@@ -743,6 +779,7 @@ pub async fn indicator_series(
                     status: status.into(),
                     note,
                     options_gex: false,
+                    line_observed_at_ns,
                 },
             )
         };
@@ -798,6 +835,14 @@ fn carry_market_points(
             latest
         })
         .collect()
+}
+
+fn latest_source_time(points: &[(i64, f64)], at_or_before_ns: i64) -> Option<i64> {
+    points
+        .iter()
+        .filter(|(time, value)| *time <= at_or_before_ns && value.is_finite())
+        .map(|(time, _)| *time)
+        .max()
 }
 
 /// `POST /compositions/backtest` body.

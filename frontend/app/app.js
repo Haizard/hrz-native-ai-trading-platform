@@ -7429,7 +7429,9 @@ function createChartPane(root, hooks = {}) {
           if (typeof value === "number" && Number.isFinite(value)) {
             const timeNs = Array.isArray(body.times) ? Number(body.times[i]) : NaN;
             const reading = { name: String(line.name || "value").slice(0, 120), value };
-            if (Number.isFinite(timeNs) && timeNs >= 0) reading.observed_at_ms = Math.trunc(timeNs / 1_000_000);
+            const actualTimeNs = body.provenance.line_observed_at_ns && body.provenance.line_observed_at_ns[line.name];
+            const sourceTimeNs = Number.isFinite(Number(actualTimeNs)) ? Number(actualTimeNs) : timeNs;
+            if (Number.isFinite(sourceTimeNs) && sourceTimeNs >= 0) reading.observed_at_ms = Math.trunc(sourceTimeNs / 1_000_000);
             readings.push(reading);
             break;
           }
