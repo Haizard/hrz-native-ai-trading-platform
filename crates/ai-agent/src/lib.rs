@@ -72,7 +72,7 @@ pub use chart_context::{
 };
 pub use error::AgentError;
 pub use llm_client::{
-    ContentBlock, LlmClient, LlmRequest, LlmResponse, Message, Role, StopReason, ToolCall,
+    ContentBlock, GeneratedImage, LlmClient, LlmRequest, LlmResponse, Message, Role, StopReason, ToolCall,
     ToolChoice, ToolResult, ToolSpec, Usage,
 };
 pub use multi_timeframe::{LadderView, TimeframeLadder};

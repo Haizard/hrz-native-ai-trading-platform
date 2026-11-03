@@ -578,6 +578,11 @@ pub fn router(state: AppState) -> Router {
         .route("/events", get(event_engine::events))
         .route("/ws/events/{symbol}", get(event_engine::stream))
         .route("/agent/ask", post(agent_routes::ask))
+        .route(
+            "/agent/generate-image",
+            post(agent_routes::generate_image)
+                .layer(axum::extract::DefaultBodyLimit::max(18 * 1024 * 1024)),
+        )
         .route("/agent/captures", post(agent_routes::upload_capture))
         .route(
             "/watch-monitors",

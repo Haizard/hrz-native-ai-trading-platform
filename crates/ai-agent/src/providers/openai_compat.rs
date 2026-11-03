@@ -476,6 +476,106 @@ impl LlmClient for OpenAiCompatClient {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn supports_image_input(&self) -> bool {
+        let model = self.config.model_id.to_ascii_lowercase();
+        match self.config.provider {
+            super::ProviderId::Gemini => true,
+            super::ProviderId::Cloudflare => {
+                model.contains("llama-4-scout") || model.contains("llama-3.2-11b-vision")
+            }
+            _ => {
+                model.contains("gpt-4o")
+                    || model.contains("gpt-4.1")
+                    || model.contains("gpt-5")
+                    || model.contains("claude-3")
+                    || model.contains("claude-sonnet")
+                    || model.contains("claude-opus")
+                    || model.contains("gemini")
+                    || model.contains("llama-4-scout")
+                    || model.contains("vision")
+            }
+        }
+    }
+
+    fn supports_image_generation(&self) -> bool {
+        matches!(self.config.provider, super::ProviderId::Gemini | super::ProviderId::Cloudflare)
+    }
+
+    async fn generate_image(
+        &self,
+        prompt: &str,
+        reference_images: &[(String, String)],
+    ) -> Result<crate::llm_client::GeneratedImage, AgentError> {
+        let (provider, model, url, request, key_header) = match self.config.provider {
+            super::ProviderId::Gemini => {
+                let model = std::env::var("GEMINI_IMAGE_MODEL")
+                    .unwrap_or_else(|_| "gemini-3.1-flash-image".into());
+                let mut input = Vec::with_capacity(reference_images.len() + 1);
+                for (media_type, data) in reference_images {
+                    input.push(json!({"type":"image", "mime_type":media_type, "data":data}));
+                }
+                input.push(json!({"type":"text", "text":prompt}));
+                (
+                    "gemini",
+                    model,
+                    "https://generativelanguage.googleapis.com/v1beta/interactions".to_string(),
+                    json!({
+                        "model": std::env::var("GEMINI_IMAGE_MODEL").unwrap_or_else(|_| "gemini-3.1-flash-image".into()),
+                        "input": if reference_images.is_empty() { json!(prompt) } else { json!(input) },
+                        "response_format": {"type":"image", "mime_type":"image/png", "aspect_ratio":"16:9", "image_size":"1K"}
+                    }),
+                    "x-goog-api-key",
+                )
+            }
+            super::ProviderId::Cloudflare => {
+                if !reference_images.is_empty() {
+                    return Err(AgentError::Llm("Cloudflare image editing is not enabled on this model; configure Gemini for reference-image generation".into()));
+                }
+                let model = std::env::var("CLOUDFLARE_IMAGE_MODEL")
+                    .unwrap_or_else(|_| "@cf/black-forest-labs/flux-1-schnell".into());
+                let root = self.config.base_url.trim_end_matches("/ai/v1");
+                (
+                    "cloudflare",
+                    model.clone(),
+                    format!("{root}/ai/run/{model}"),
+                    json!({"prompt": prompt}),
+                    "Authorization",
+                )
+            }
+            _ => return Err(AgentError::Llm("image generation requires Gemini or Cloudflare Workers AI".into())),
+        };
+        let header_value = if key_header == "Authorization" {
+            format!("Bearer {}", self.config.api_key)
+        } else {
+            self.config.api_key.clone()
+        };
+        let response = self.http.post(url).header(key_header, header_value)
+            .header("content-type", "application/json").json(&request).send().await
+            .map_err(|error| AgentError::Llm(format!("{provider} image transport failed: {error}")))?;
+        let status = response.status();
+        let body = response.text().await.map_err(|error| AgentError::Llm(format!("{provider} image response failed: {error}")))?;
+        if !status.is_success() {
+            return Err(AgentError::Llm(format!("{provider} image request returned HTTP {status}: {}", body.chars().take(300).collect::<String>())));
+        }
+        let value: Value = serde_json::from_str(&body).map_err(|error| AgentError::Llm(format!("{provider} image response was invalid JSON: {error}")))?;
+        let data = value.pointer("/output_image/data").and_then(Value::as_str)
+            .or_else(|| value.get("image").and_then(Value::as_str))
+            .or_else(|| value.get("steps").and_then(Value::as_array).and_then(|steps| steps.iter()
+                .flat_map(|step| step.get("content").and_then(Value::as_array).into_iter().flatten())
+                .find(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+                .and_then(|block| block.get("data").and_then(Value::as_str))))
+            .ok_or_else(|| AgentError::Llm(format!("{provider} returned no generated image")))?;
+        let media_type = value.pointer("/output_image/mime_type").and_then(Value::as_str)
+            .or_else(|| value.get("steps").and_then(Value::as_array).and_then(|steps| steps.iter()
+                .flat_map(|step| step.get("content").and_then(Value::as_array).into_iter().flatten())
+                .find(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+                .and_then(|block| block.get("mime_type").and_then(Value::as_str))))
+            .unwrap_or(if provider == "cloudflare" { "image/jpeg" } else { "image/png" }).to_string();
+        Ok(crate::llm_client::GeneratedImage {
+            provider: provider.into(), model, media_type, data_base64: data.to_string(),
+        })
+    }
 }
 
 #[cfg(test)]

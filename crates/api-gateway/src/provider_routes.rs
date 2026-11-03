@@ -156,7 +156,7 @@ pub async fn put(
             "PROVIDER_UNKNOWN",
             format!(
                 "`{}` is not a known provider. Known: bedrock, openai, anthropic, openrouter, \
-                 deepseek, grok, huggingface, openai-compat.",
+                 deepseek, grok, huggingface, gemini, cloudflare, openai-compat.",
                 body.provider
             ),
         )
@@ -195,6 +195,15 @@ pub async fn put(
                 ),
             )
         })?;
+
+    if provider == ProviderId::Cloudflare
+        && body.base_url.as_deref().map(str::trim).filter(|url| !url.is_empty()).is_none()
+    {
+        return Err(ApiError::bad_request(
+            "BASE_URL_REQUIRED",
+            "Cloudflare needs its account-specific API root: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+        ));
+    }
 
     let extra_headers = parse_extra_headers(&body.extra_headers)?;
     let _ = extra_headers; // validated here; serialised from `body` on the write
@@ -369,13 +378,17 @@ pub(crate) async fn resolve_agent(
                 llm_config.base_url = base_url.clone();
             }
             llm_config.extra_headers = config.extra_headers;
-            let client = ai_agent::OpenAiCompatClient::new(llm_config).map_err(|e| {
+            let client: Arc<dyn ai_agent::LlmClient> = Arc::new(ai_agent::OpenAiCompatClient::new(llm_config).map_err(|e| {
                 ApiError::coded(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "PROVIDER_NOT_USABLE",
                     e.to_string(),
                 )
-            })?;
+            })?);
+            let mut clients = vec![client];
+            clients.extend(ai_agent::providers::fallback_clients_from_env(Some(config.provider)));
+            let client: Arc<dyn ai_agent::LlmClient> =
+                Arc::new(ai_agent::providers::FallbackClient::new(clients));
             tracing::debug!(
                 target: "api_gateway",
                 user = %user.user_id,
@@ -384,7 +397,7 @@ pub(crate) async fn resolve_agent(
                 "agent running on the user's own provider"
             );
             Ok(Arc::new(Agent::new(
-                Arc::new(client),
+                client,
                 skills,
                 ai_agent::AgentConfig::default(),
             )))

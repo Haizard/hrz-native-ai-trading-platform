@@ -56,6 +56,10 @@ pub enum ProviderId {
     Grok,
     /// HuggingFace Inference providers.
     HuggingFace,
+    /// Google Gemini Developer API.
+    Gemini,
+    /// Cloudflare Workers AI / AI Gateway.
+    Cloudflare,
     /// Any other OpenAI-compatible endpoint (Codex gateways, vLLM, LiteLLM,
     /// Ollama, Azure OpenAI with `AI_BASE_URL`).
     OpenAiCompat,
@@ -76,6 +80,8 @@ impl ProviderId {
             "deepseek" => Some(Self::DeepSeek),
             "grok" | "xai" | "x.ai" => Some(Self::Grok),
             "huggingface" | "hf" | "hugging-face" => Some(Self::HuggingFace),
+            "gemini" | "google" | "google-ai" => Some(Self::Gemini),
+            "cloudflare" | "workers-ai" => Some(Self::Cloudflare),
             "openai-compat" | "openai_compat" | "compatible" | "custom" => Some(Self::OpenAiCompat),
             _ => None,
         }
@@ -92,6 +98,8 @@ impl ProviderId {
             Self::DeepSeek => "deepseek",
             Self::Grok => "grok",
             Self::HuggingFace => "huggingface",
+            Self::Gemini => "gemini",
+            Self::Cloudflare => "cloudflare",
             Self::OpenAiCompat => "openai-compat",
         }
     }
@@ -109,6 +117,8 @@ impl ProviderId {
             Self::DeepSeek => "https://api.deepseek.com/v1",
             Self::Grok => "https://api.x.ai/v1",
             Self::HuggingFace => "https://router.huggingface.co/v1",
+            Self::Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
+            Self::Cloudflare => "",
             Self::Bedrock | Self::OpenAiCompat => "",
         }
     }
@@ -129,6 +139,8 @@ impl ProviderId {
             Self::DeepSeek => "deepseek-chat",
             Self::Grok => "grok-3",
             Self::HuggingFace => "meta-llama/Llama-3.3-70B-Instruct",
+            Self::Gemini => "gemini-3.8-flash",
+            Self::Cloudflare => "@cf/meta/llama-4-scout-17b-16e-instruct",
             Self::OpenAiCompat => "",
         }
     }
@@ -144,6 +156,85 @@ impl ProviderId {
     }
 }
 
+/// Runs configured providers in order, skips models that cannot accept the
+/// current image inputs, and tries the next provider after any provider error
+/// (including exhausted quota, throttling and temporary outages).
+pub struct FallbackClient {
+    clients: Vec<std::sync::Arc<dyn crate::llm_client::LlmClient>>,
+    name: String,
+}
+
+impl FallbackClient {
+    /// Build a client that tries the supplied providers in order.
+    #[must_use]
+    pub fn new(clients: Vec<std::sync::Arc<dyn crate::llm_client::LlmClient>>) -> Self {
+        let name = format!("fallback[{}]", clients.iter().map(|client| client.name()).collect::<Vec<_>>().join(" -> "));
+        Self { clients, name }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::llm_client::LlmClient for FallbackClient {
+    async fn complete(
+        &self,
+        request: crate::llm_client::LlmRequest,
+    ) -> Result<crate::llm_client::LlmResponse, AgentError> {
+        let needs_vision = request.messages.iter().flat_map(|message| &message.content).any(
+            |block| matches!(block, crate::llm_client::ContentBlock::Image { .. }),
+        );
+        let mut last_error = None;
+        let mut attempted = 0usize;
+        for client in &self.clients {
+            if needs_vision && !client.supports_image_input() {
+                continue;
+            }
+            attempted += 1;
+            match client.complete(request.clone()).await {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    tracing::warn!(target: "ai_agent", provider = client.name(), "AI provider failed; trying next configured provider");
+                    last_error = Some(format!("{}: {error}", client.name()));
+                }
+            }
+        }
+        if attempted == 0 && needs_vision {
+            return Err(AgentError::Llm(
+                "the configured AI providers cannot process image input; configure a vision-capable Gemini or Cloudflare model".into(),
+            ));
+        }
+        Err(AgentError::Llm(last_error.unwrap_or_else(|| "no AI provider is configured".into())))
+    }
+
+    fn name(&self) -> &str { &self.name }
+
+    fn supports_image_input(&self) -> bool {
+        self.clients.iter().any(|client| client.supports_image_input())
+    }
+
+    fn supports_image_generation(&self) -> bool {
+        self.clients.iter().any(|client| client.supports_image_generation())
+    }
+
+    async fn generate_image(
+        &self,
+        prompt: &str,
+        reference_images: &[(String, String)],
+    ) -> Result<crate::llm_client::GeneratedImage, AgentError> {
+        let mut last_error = None;
+        for client in &self.clients {
+            if !client.supports_image_generation() { continue; }
+            match client.generate_image(prompt, reference_images).await {
+                Ok(image) => return Ok(image),
+                Err(error) => {
+                    tracing::warn!(target: "ai_agent", provider = client.name(), "image provider failed; trying next configured provider");
+                    last_error = Some(format!("{}: {error}", client.name()));
+                }
+            }
+        }
+        Err(AgentError::Llm(last_error.unwrap_or_else(|| "no image-generation provider is configured".into())))
+    }
+}
+
 /// Environment variable naming the deployment's primary provider.
 pub const ENV_PROVIDER: &str = "AI_PROVIDER";
 /// Environment variable naming the primary model id.
@@ -154,6 +245,51 @@ pub const ENV_API_KEY: &str = "AI_API_KEY";
 pub const ENV_BASE_URL: &str = "AI_BASE_URL";
 /// Environment variable setting the primary provider's request timeout.
 pub const ENV_TIMEOUT_SECS: &str = "AI_TIMEOUT_SECS";
+/// Ordered backup providers used after the primary is unavailable or out of quota.
+pub const ENV_FALLBACK_ORDER: &str = "AI_FALLBACK_ORDER";
+
+/// Build the configured Cloudflare and Gemini backups without exposing their
+/// credentials. Missing credentials simply make that provider unavailable.
+pub fn fallback_clients_from_env(
+    exclude: Option<ProviderId>,
+) -> Vec<std::sync::Arc<dyn crate::llm_client::LlmClient>> {
+    let order = std::env::var(ENV_FALLBACK_ORDER).unwrap_or_else(|_| "cloudflare,gemini".into());
+    order.split(',').filter_map(|name| {
+        let provider = ProviderId::from_name(name.trim())?;
+        if Some(provider) == exclude { return None; }
+        let (model, key, base_url) = match provider {
+            ProviderId::Cloudflare => {
+                let account = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok()?;
+                let key = std::env::var("CLOUDFLARE_API_TOKEN").ok()?;
+                let model = std::env::var("CLOUDFLARE_AI_MODEL")
+                    .unwrap_or_else(|_| provider.default_model().into());
+                let base = format!("https://api.cloudflare.com/client/v4/accounts/{}/ai/v1", account.trim());
+                (model, key, base)
+            }
+            ProviderId::Gemini => {
+                let key = std::env::var("GEMINI_API_KEY").ok()?;
+                let model = std::env::var("GEMINI_MODEL")
+                    .unwrap_or_else(|_| provider.default_model().into());
+                (model, key, provider.default_base_url().into())
+            }
+            _ => return None,
+        };
+        if key.trim().is_empty() || model.trim().is_empty() { return None; }
+        let mut config = OpenAiCompatConfig::for_provider(provider, model.trim(), key.trim());
+        config.base_url = base_url;
+        let client = OpenAiCompatClient::new(config).ok()?;
+        Some(std::sync::Arc::new(client) as std::sync::Arc<dyn crate::llm_client::LlmClient>)
+    }).collect()
+}
+
+fn with_env_fallbacks(
+    primary: std::sync::Arc<dyn crate::llm_client::LlmClient>,
+    provider: ProviderId,
+) -> std::sync::Arc<dyn crate::llm_client::LlmClient> {
+    let mut clients = vec![primary];
+    clients.extend(fallback_clients_from_env(Some(provider)));
+    std::sync::Arc::new(FallbackClient::new(clients))
+}
 
 /// The configured deployment-wide primary model, ready for the orchestrator.
 ///
@@ -176,7 +312,7 @@ pub fn from_deployment_env(
         Some(name) => ProviderId::from_name(name).ok_or_else(|| {
             AgentError::NotConfigured(format!(
                 "{ENV_PROVIDER} is `{name}`, which is not a known provider. Known: bedrock, \
-                 openai, anthropic, openrouter, deepseek, grok, huggingface, openai-compat."
+                 openai, anthropic, openrouter, deepseek, grok, huggingface, gemini, cloudflare, openai-compat."
             ))
         })?,
     };
@@ -195,7 +331,7 @@ pub fn from_deployment_env(
             // place, and this registry adds no third spelling of them.
             let client = BedrockClient::from_env()?;
             let model = client.model_id().to_string();
-            Ok((std::sync::Arc::new(client), model))
+            Ok((with_env_fallbacks(std::sync::Arc::new(client), ProviderId::Bedrock), model))
         }
         provider @ (ProviderId::OpenAi
         | ProviderId::Anthropic
@@ -203,12 +339,23 @@ pub fn from_deployment_env(
         | ProviderId::DeepSeek
         | ProviderId::Grok
         | ProviderId::HuggingFace
+        | ProviderId::Gemini
+        | ProviderId::Cloudflare
         | ProviderId::OpenAiCompat) => {
             // `provider` already carries the matched id here -- a shadowing
             // re-bind would be a no-op, and current clippy flags exactly that.
             let model = match std::env::var(ENV_MODEL) {
                 Ok(model) if !model.trim().is_empty() => model.trim().to_string(),
-                _ => provider.default_model().to_string(),
+                _ => {
+                    let provider_model_var = match provider {
+                        ProviderId::Gemini => Some("GEMINI_MODEL"),
+                        ProviderId::Cloudflare => Some("CLOUDFLARE_AI_MODEL"),
+                        _ => None,
+                    };
+                    provider_model_var.and_then(|name| std::env::var(name).ok())
+                        .filter(|model| !model.trim().is_empty())
+                        .unwrap_or_else(|| provider.default_model().to_string())
+                },
             };
             if model.is_empty() {
                 return Err(AgentError::NotConfigured(format!(
@@ -218,9 +365,15 @@ pub fn from_deployment_env(
                 )));
             }
 
+            let provider_key_var = match provider {
+                ProviderId::Gemini => Some("GEMINI_API_KEY"),
+                ProviderId::Cloudflare => Some("CLOUDFLARE_API_TOKEN"),
+                _ => None,
+            };
             let api_key = std::env::var(ENV_API_KEY)
-                .map(|key| key.trim().to_string())
-                .unwrap_or_default();
+                .ok()
+                .or_else(|| provider_key_var.and_then(|name| std::env::var(name).ok()))
+                .unwrap_or_default().trim().to_string();
             if api_key.is_empty() && provider.needs_api_key() {
                 return Err(AgentError::NotConfigured(format!(
                     "{ENV_API_KEY} is not set; the `{}` provider cannot be used without it. \
@@ -237,21 +390,32 @@ pub fn from_deployment_env(
                     config.base_url = base;
                 }
             }
+            if provider == ProviderId::Cloudflare && config.base_url.is_empty() {
+                if let Ok(account) = std::env::var("CLOUDFLARE_ACCOUNT_ID") {
+                    config.base_url = format!(
+                        "https://api.cloudflare.com/client/v4/accounts/{}/ai/v1",
+                        account.trim()
+                    );
+                }
+            }
             // A custom base URL frequently means a gateway doing its own auth
             // (a local vLLM, a sidecar): an empty key is legitimate there, so
             // the key requirement above is only enforced against the provider
             // default, not against an operator-chosen endpoint.
-            if provider == ProviderId::OpenAiCompat && config.base_url.is_empty() {
+            if matches!(provider, ProviderId::OpenAiCompat | ProviderId::Cloudflare)
+                && config.base_url.is_empty()
+            {
                 return Err(AgentError::NotConfigured(format!(
-                    "{ENV_PROVIDER} is `openai-compat`, which has no default endpoint. \
-                     Set {ENV_BASE_URL} to the API root, e.g. https://gateway.internal/v1."
+                    "{ENV_PROVIDER} is `{}`, which has no default endpoint. Set {ENV_BASE_URL} \
+                     to its API root (Cloudflare requires the account id in the URL).",
+                    provider.wire_name()
                 )));
             }
 
             let model = config.model_id.clone();
             let client = OpenAiCompatClient::new(config)
                 .map_err(|e| AgentError::NotConfigured(e.to_string()))?;
-            Ok((std::sync::Arc::new(client), model))
+            Ok((with_env_fallbacks(std::sync::Arc::new(client), provider), model))
         }
     }
 }
@@ -270,6 +434,8 @@ mod tests {
             ProviderId::DeepSeek,
             ProviderId::Grok,
             ProviderId::HuggingFace,
+            ProviderId::Gemini,
+            ProviderId::Cloudflare,
             ProviderId::OpenAiCompat,
         ] {
             assert_eq!(ProviderId::from_name(provider.wire_name()), Some(provider));

@@ -298,6 +298,19 @@ pub struct LlmResponse {
     pub usage: Usage,
 }
 
+/// An image returned by a provider's image-generation capability.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeneratedImage {
+    /// Provider that produced the image.
+    pub provider: String,
+    /// Provider's image model id.
+    pub model: String,
+    /// Image MIME type, normally `image/png`.
+    pub media_type: String,
+    /// Base64-encoded image bytes.
+    pub data_base64: String,
+}
+
 impl LlmResponse {
     /// The tool calls requested by the model.
     #[must_use]
@@ -326,6 +339,22 @@ pub trait LlmClient: Send + Sync {
     /// Returns [`AgentError::Llm`] for transport failures and for payloads the
     /// provider accepted but this client cannot interpret.
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, AgentError>;
+
+    /// Whether this configured model can read image blocks. The agent uses
+    /// this before sending chart captures or user attachments.
+    fn supports_image_input(&self) -> bool { false }
+
+    /// Whether this provider can generate image output.
+    fn supports_image_generation(&self) -> bool { false }
+
+    /// Generate one image. Text-only clients leave the default unavailable.
+    async fn generate_image(
+        &self,
+        _prompt: &str,
+        _reference_images: &[(String, String)],
+    ) -> Result<GeneratedImage, AgentError> {
+        Err(AgentError::Llm("the configured provider does not generate images".into()))
+    }
 
     /// A short name for logging, e.g. `"bedrock(qwen.qwen3-coder-next)"`.
     fn name(&self) -> &str;

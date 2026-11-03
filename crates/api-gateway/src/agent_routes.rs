@@ -53,6 +53,19 @@ pub struct AskBody {
     pub include_trace: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GenerateImageBody {
+    pub prompt: String,
+    #[serde(default)]
+    pub images: Vec<GenerateImageInput>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GenerateImageInput {
+    pub media_type: String,
+    pub data: String,
+}
+
 /// Response of `POST /agent/ask`.
 #[derive(Debug, Serialize)]
 pub struct AskResponse {
@@ -415,6 +428,43 @@ pub async fn ask(
         body.include_trace,
         request.chart.as_ref(),
     )))
+}
+
+/// Generate an image through the configured Gemini/Cloudflare providers.
+/// The fallback client selects only providers that implement image output.
+pub async fn generate_image(
+    State(state): State<AppState>,
+    user: UserContext,
+    ApiJson(body): ApiJson<GenerateImageBody>,
+) -> Result<Json<ai_agent::GeneratedImage>, ApiError> {
+    check_agent_limit(&state, &user)?;
+    let prompt = body.prompt.trim();
+    if prompt.is_empty() || prompt.chars().count() > 2000 {
+        return Err(ApiError::bad_request(
+            "IMAGE_PROMPT_INVALID",
+            "image prompt must contain between 1 and 2000 characters",
+        ));
+    }
+    if body.images.len() > 2 || body.images.iter().any(|image| image.data.len() > 8_000_000
+        || !matches!(image.media_type.as_str(), "image/png" | "image/jpeg" | "image/webp" | "image/gif"))
+    {
+        return Err(ApiError::bad_request(
+            "IMAGE_INPUT_INVALID",
+            "image generation accepts up to two PNG, JPEG, WebP or GIF reference images (8 MB each)",
+        ));
+    }
+    enforce_usage(&state, user.user_id, UsageMetric::AiCredit, CREDIT_CHART_ANALYSIS).await?;
+    let agent = crate::provider_routes::resolve_agent(&state, &user).await?;
+    let references: Vec<(String, String)> = body.images.into_iter()
+        .map(|image| (image.media_type, image.data)).collect();
+    let image = agent.llm().generate_image(prompt, &references).await.map_err(|error| {
+        ApiError::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "IMAGE_GENERATION_UNAVAILABLE",
+            error.to_string(),
+        )
+    })?;
+    Ok(Json(image))
 }
 
 /// `POST /agent/generate-strategy`

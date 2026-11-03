@@ -13668,6 +13668,8 @@ const AI_PROVIDERS = [
   { id: "deepseek", name: "DeepSeek", base: "https://api.deepseek.com/v1", models: ["deepseek-chat", "deepseek-reasoner"] },
   { id: "grok", name: "xAI (Grok)", base: "https://api.x.ai/v1", models: ["grok-3", "grok-3-mini"] },
   { id: "huggingface", name: "HuggingFace", base: "https://router.huggingface.co/v1", models: ["meta-llama/Llama-3.3-70B-Instruct"] },
+  { id: "gemini", name: "Google Gemini", base: "https://generativelanguage.googleapis.com/v1beta/openai", models: ["gemini-3.8-flash", "gemini-3.6-flash"] },
+  { id: "cloudflare", name: "Cloudflare Workers AI", base: "", models: ["@cf/meta/llama-4-scout-17b-16e-instruct"] },
   { id: "openai-compat", name: "Custom (OpenAI-compatible)", base: "", models: [] },
 ];
 
@@ -13705,7 +13707,10 @@ function paintAiModelHints() {
   }
   // Bedrock is not reachable per-user (it authenticates with the deployment's
   // AWS credentials), and a custom endpoint is the one row that needs a URL.
-  el("aiBaseUrlRow").hidden = !(provider && provider.id === "openai-compat");
+  el("aiBaseUrlRow").hidden = !(provider && ["openai-compat", "cloudflare"].includes(provider.id));
+  el("aiBaseUrl").placeholder = provider && provider.id === "cloudflare"
+    ? "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+    : "Base URL override (optional)";
 }
 
 async function refreshAiModel() {
@@ -13732,6 +13737,7 @@ async function refreshAiModel() {
       `${config.base_url ? ` · endpoint: ${escapeHtml(config.base_url)}` : ""}</span>`;
     out.append(card);
     paintAiProviderOptions(config.provider);
+    paintAiModelHints();
     el("aiModelId").value = config.model_id;
     el("aiBaseUrl").value = config.base_url || "";
   } catch (e) {
@@ -13739,6 +13745,7 @@ async function refreshAiModel() {
       out.innerHTML =
         '<p class="empty">You are using the platform\'s primary model. Store your own below to override it.</p>';
       paintAiProviderOptions("");
+      paintAiModelHints();
       el("aiModelId").value = "";
     } else {
       out.innerHTML = `<p class="fail">${escapeHtml(e.message)}</p>`;
@@ -17353,6 +17360,7 @@ let wsWorkspaces = []; // the user's indicator workspaces
 let wsActiveId = null; // currently selected workspace id
 let wsRevisions = []; // revisions for the active workspace
 let wsMessages = []; // chat messages for the active workspace
+const wsGeneratedImages = new Map(); // generated artifacts for this browser session, by workspace
 let wsAlerts = []; // alert preferences for the active workspace
 
 async function loadWorkspaces() {
@@ -18023,7 +18031,42 @@ async function viewRevision(wsId, revId) {
       </div>
     `;
   }).join("");
+  for (const generated of wsGeneratedImages.get(wsId) || []) {
+    appendGeneratedImageCard(out, generated, false);
+  }
   out.scrollTop = out.scrollHeight;
+}
+
+function appendGeneratedImageCard(out, generated, includePrompt = true) {
+  const row = document.createElement("div");
+  row.className = "msg ai";
+  const avatar = document.createElement("div");
+  avatar.className = "avatar";
+  avatar.textContent = "✦";
+  const body = document.createElement("div");
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  if (includePrompt) {
+    const prompt = document.createElement("p");
+    prompt.textContent = `Generated image: ${generated.prompt}`;
+    bubble.append(prompt);
+  }
+  const image = document.createElement("img");
+  image.alt = generated.prompt || "AI generated image";
+  image.src = `data:${generated.media_type};base64,${generated.data_base64}`;
+  image.loading = "lazy";
+  image.style.cssText = "display:block;max-width:min(100%,640px);max-height:520px;border-radius:8px";
+  bubble.append(image);
+  const download = document.createElement("a");
+  download.href = image.src;
+  download.download = "generated-image.png";
+  download.textContent = `Download · ${generated.provider} / ${generated.model}`;
+  download.className = "muted";
+  download.style.display = "block";
+  bubble.append(download);
+  body.append(bubble);
+  row.append(avatar, body);
+  out.append(row);
 }
 
   /// Screenshots pending attachment to the next workspace message.
@@ -18253,6 +18296,28 @@ async function viewRevision(wsId, revId) {
   sendBtn.textContent = "■";
   sendBtn.title = "Stop waiting — the generation may still finish server-side and appear on the next refresh";
   try {
+    const wantsImageOutput = /\b(generate|create|draw|make|render|illustrate|design)\b.{0,48}\b(image|picture|illustration|thumbnail|poster|visual|artwork|logo)\b/i.test(content);
+    if (wantsImageOutput && !document) {
+      const generated = await api("/agent/generate-image", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: content, images }),
+        signal: wsGenAbort.signal,
+      });
+      const history = wsGeneratedImages.get(wsActiveId) || [];
+      history.push({ ...generated, prompt: content });
+      wsGeneratedImages.set(wsActiveId, history.slice(-6));
+      const chat = el("wsChat");
+      const userRow = document.createElement("div");
+      userRow.className = "msg user";
+      userRow.innerHTML = `<div class="avatar" aria-hidden="true">🧑</div><div><div class="bubble"></div><div class="meta">You</div></div>`;
+      userRow.querySelector(".bubble").textContent = content;
+      chat.append(userRow);
+      appendGeneratedImageCard(chat, { ...generated, prompt: content });
+      chat.scrollTop = chat.scrollHeight;
+      msg.textContent = `Image created with ${generated.provider}; quota failures automatically fall back to the next image provider.`;
+      return;
+    }
     // docs/36: stream the pipeline's real events while the turn runs; an old
     // gateway without the route falls back to the plain POST inside.
     const resp = await streamWorkspaceMessage(content, images, document, wsGenAbort.signal);
