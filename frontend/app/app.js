@@ -3170,9 +3170,24 @@ function createChartPane(root, hooks = {}) {
     const symbol = el("symbol").value;
     const timeframe = el("timeframe").value;
     const limit = el("limit").value;
-    const response = await api(
-      `/candles?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`
-    );
+    let response;
+    let lastError;
+    // A cold symbol can race the server's first venue backfill. Retry an
+    // empty/degraded first answer before the chart falls through to showing
+    // only candles collected after it was opened.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        response = await api(
+          `/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${encodeURIComponent(limit)}`
+        );
+        if ((response.candles || []).length > 0 || attempt === 2) break;
+      } catch (error) {
+        lastError = error;
+        if (attempt === 2) throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+    if (!response && lastError) throw lastError;
     // Say where the bars came from, so "is this live or a fallback?" is
     // answered on the page instead of guessed at. memory = the live in-memory
     // buffer the feed fills; venue = REST-fetched history for this window.
@@ -5993,7 +6008,7 @@ function createChartPane(root, hooks = {}) {
     // not the bar the selects live in.
     el("chartWrap").appendChild(tools);
     bar.hidden = true;
-    tools.hidden = true;
+    tools.hidden = false;
     menu.classList.remove("open");
     menu.replaceChildren();
     delete menu.dataset.owner;
@@ -6181,12 +6196,38 @@ function createChartPane(root, hooks = {}) {
     try {
       const body = await api(conceptEventScanUrl(symbol, timeframe));
       let events = (body && body.events) || [];
+      // A concept may pin one or more source timeframes. Fetch those source
+      // detections separately and paint them on this chart regardless of its
+      // current timeframe; the trader's checkbox is the explicit opt-in.
+      const sourceIds = new Map();
+      for (const id of wanted) {
+        const selected = (conceptStates[id] && conceptStates[id].display_timeframes) || [];
+        for (const sourceTf of selected) {
+          if (sourceTf === timeframe) continue;
+          if (!sourceIds.has(sourceTf)) sourceIds.set(sourceTf, new Set());
+          sourceIds.get(sourceTf).add(id);
+        }
+      }
+      const sourceResults = await Promise.all([...sourceIds].map(async ([sourceTf, ids]) => {
+        try {
+          const result = await api(conceptEventScanUrl(symbol, sourceTf));
+          return ((result && result.events) || []).filter((event) =>
+            ids.has(event.concept_id) && event.timeframe === sourceTf);
+        } catch { return []; }
+      }));
+      events = events.concat(...sourceResults);
       // The pair concept is not in the per-symbol answer; ask the pair route
       // only when the trader has switched it on.
       if (wanted.has("smc.smt_divergence")) {
         events = events.concat(await ensurePairEvents(symbol, timeframe));
       }
-      conceptEvents = events;
+      const seen = new Set();
+      conceptEvents = events.filter((event) => {
+        const key = [event.concept_id, event.timeframe, event.event_time_ns, event.direction, event.price_level].join("|");
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
     } catch {
       conceptEvents = [];
     }
@@ -6387,6 +6428,10 @@ function createChartPane(root, hooks = {}) {
       alias: String(state.alias || "").trim().slice(0, 80),
       description: String(state.description || "").trim().slice(0, 240),
       included: Boolean(state.included),
+      display_timeframes: (Array.isArray(state.display_timeframes)
+        ? state.display_timeframes
+        : (Array.isArray(previous.display_timeframes) ? previous.display_timeframes : []))
+        .filter((tf) => ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"].includes(tf)),
       parameters: {},
     };
     for (const parameter of entry.parameters || []) {
@@ -14600,6 +14645,23 @@ function conceptLibraryCard(concept, view) {
   includeInput.dataset.stateIncluded = "";
   includeLabel.append(includeInput, document.createTextNode("Include in combined indicator"));
   editor.append(includeLabel);
+  const timeframeLabel = document.createElement("label");
+  timeframeLabel.textContent = "Also show detections from these timeframes";
+  const timeframeSelect = document.createElement("select");
+  timeframeSelect.className = "hrz-input";
+  timeframeSelect.multiple = true;
+  timeframeSelect.size = 4;
+  timeframeSelect.dataset.stateTimeframes = "";
+  const displayTimeframes = new Set(Array.isArray(state.display_timeframes) ? state.display_timeframes : []);
+  for (const tf of ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]) {
+    const option = document.createElement("option");
+    option.value = tf;
+    option.textContent = tf;
+    option.selected = displayTimeframes.has(tf);
+    timeframeSelect.append(option);
+  }
+  timeframeLabel.append(timeframeSelect);
+  editor.append(timeframeLabel);
   for (const parameter of concept.parameters || []) {
     const label = document.createElement("label");
     label.textContent = `${parameter.name.replace(/_/g, " ")} · ${parameter.description || ""}`;
@@ -15432,6 +15494,11 @@ function previewEvents(frame, events, scale) {
       ctx.moveTo(left, scale(shape.price));
       ctx.lineTo(Math.max(left + 2, right), scale(shape.price));
       ctx.stroke();
+      if (shape.label) {
+        ctx.fillStyle = tone(shape.color);
+        ctx.font = "8px ui-sans-serif, system-ui";
+        ctx.fillText(shape.label, Math.max(left + 2, right - 70), scale(shape.price) - 2);
+      }
     } else if (shape.type === "lifecycle_box") {
       const left = xAt(shape.from_ns);
       const right = shape.state === "forming" ? width : Math.max(left + 2, xAt(shape.to_ns));
@@ -15662,6 +15729,7 @@ function wireConceptPanel() {
           alias: card.querySelector("[data-state-alias]").value,
           description: card.querySelector("[data-state-description]").value,
           included: card.querySelector("[data-state-included]").checked,
+          display_timeframes: [...card.querySelector("[data-state-timeframes]").selectedOptions].map((option) => option.value),
           parameters,
         });
         if (!applied) {

@@ -414,9 +414,12 @@ pub async fn search_symbols(
     // cannot look them up when it can, from the copy it already holds.
     state.symbols.refresh_if_stale(&state.backfill).await;
 
-    let results = state
+    let mut results: Vec<InstrumentResponse> = state
         .symbols
-        .search(&q, limit)
+        // Merge before applying the requested limit. Otherwise an empty
+        // query fills its first page with Binance rows and silently drops the
+        // separate Deriv catalogue at the end of the list.
+        .search(&q, MAX_SEARCH_LIMIT)
         .into_iter()
         .map(|instrument| InstrumentResponse {
             symbol: instrument.symbol,
@@ -426,7 +429,52 @@ pub async fn search_symbols(
         })
         .collect();
 
-    let indexed = state.symbols.len();
+    // Deriv is a separate venue and is not present in Binance's exchangeInfo
+    // index. Include the supported Deriv catalogue in the same search so a
+    // trader can discover it without knowing the venue namespace. Keep the
+    // namespace in the returned symbol: candles, live feeds and order routes
+    // use it to select the correct provider.
+    let deriv_matches = ::market_data::deriv::DERIV_INSTRUMENTS
+        .iter()
+        .filter_map(|instrument| {
+            let symbol = if instrument.product == "forex-cfd" {
+                format!("DERIV-FX:{}", instrument.symbol)
+            } else {
+                format!("DERIV:{}", instrument.symbol)
+            };
+            let base = instrument.symbol.to_ascii_uppercase();
+            let code = instrument.code.to_ascii_uppercase();
+            let matches = q.is_empty()
+                || symbol.to_ascii_uppercase().contains(&q)
+                || base.contains(&q)
+                || code.contains(&q);
+            matches.then_some(InstrumentResponse {
+                symbol,
+                base: instrument.symbol.to_string(),
+                quote: "DERIV".to_string(),
+                trading: true,
+            })
+        })
+        .collect::<Vec<_>>();
+    for instrument in deriv_matches {
+        if !results.iter().any(|row| row.symbol.eq_ignore_ascii_case(&instrument.symbol)) {
+            results.push(instrument);
+        }
+    }
+    if q.is_empty() {
+        // Reserve space in the default page for the second venue even when a
+        // crypto exchange lists more than MAX_SEARCH_LIMIT instruments.
+        results.sort_by(|a, b| {
+            let a_deriv = a.symbol.starts_with("DERIV");
+            let b_deriv = b.symbol.starts_with("DERIV");
+            b_deriv.cmp(&a_deriv).then_with(|| a.symbol.cmp(&b.symbol))
+        });
+    } else {
+        results.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+    }
+    results.truncate(limit);
+
+    let indexed = state.symbols.len() + ::market_data::deriv::DERIV_INSTRUMENTS.len();
     let fetched_at = state.symbols.fetched_at();
 
     Ok(Json(SearchResponse {

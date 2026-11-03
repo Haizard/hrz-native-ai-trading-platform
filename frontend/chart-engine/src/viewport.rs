@@ -50,14 +50,11 @@ const MIN_PRICE_FRACTION: f64 = 1.0e-6;
 /// How much of the window's own fitted price span must stay on screen after a
 /// vertical pan.
 ///
-/// An unbounded price drag can slide the visible range past the bars it
-/// frames until the chart shows empty space with no candles anywhere -- and
-/// nothing on the canvas says how to get back. TradingView's rule for the
-/// same gesture is that the data may run to the edge of the screen but never
-/// past it; this clamp is that rule. Fit and the axis double-click remain the
-/// explicit reset -- the clamp makes sure they are never *needed* to find the
-/// series again.
-const MIN_VISIBLE_PRICE_OVERLAP: f64 = 0.10;
+/// An unbounded price drag can slide nearly the whole candle range offscreen,
+/// leaving only a sliver to recover from. Keep at least half of the fitted
+/// range visible while allowing the trader to reposition it. Fit and the axis
+/// double-click remain the explicit reset.
+const MIN_VISIBLE_PRICE_OVERLAP: f64 = 0.50;
 
 /// How much empty space the user may drag in past the newest bar, as a
 /// fraction of the window's own width.

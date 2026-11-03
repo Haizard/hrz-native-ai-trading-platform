@@ -208,7 +208,60 @@
       const short = aliases[e.concept_id] || shortName(e);
       const color = conceptColor(e);
       const origin = originOf(e);
-      if (shape === "bar_marker") {
+      if (e.concept_id === "candles.crt" && e.zone_low != null && e.zone_high != null) {
+        const points = e.evidence && e.evidence.points;
+        const sweep = Array.isArray(points) && points.length >= 3 ? points[2] : null;
+        const distribution = e.evidence && e.evidence.event_kind === "crt_distribution";
+        const equilibrium = Array.isArray(points) && points.length >= 4
+          ? points[3][1]
+          : (e.zone_low + e.zone_high) / 2;
+        const bullish = e.direction === "bullish";
+        out.push({
+          type: "lifecycle_box",
+          from_ns: origin,
+          to_ns: e.event_time_ns,
+          low: e.zone_low,
+          high: e.zone_high,
+          label: `CRT ${e.timeframe || ""} accumulation range`,
+          color,
+          state: "confirmed",
+        });
+        // Parent range edges, the 50% equilibrium, and the liquidity target
+        // all project right from the range candle. Labels distinguish the
+        // untouched target from the side the sweep reclaimed.
+        out.push({
+          type: "level_run", from_ns: origin, until_ns: 0,
+          price: e.zone_high, label: bullish ? "CRH · target" : "CRH", color,
+        });
+        out.push({
+          type: "level_run", from_ns: origin, until_ns: 0,
+          price: equilibrium, label: "EQL · 50%", color,
+        });
+        out.push({
+          type: "level_run", from_ns: origin, until_ns: 0,
+          price: e.zone_low, label: bullish ? "CRL" : "CRL · target", color,
+        });
+        if (sweep && Number.isFinite(sweep[1])) {
+          out.push({
+            type: "bar_marker",
+            at_ns: sweep[0] || e.event_time_ns,
+            price: sweep[1],
+            below: bullish,
+            glyph: `CRT manipulation ${bullish ? "▲" : "▼"}`,
+            color,
+          });
+        }
+        if (distribution && Array.isArray(points) && points[3]) {
+          out.push({
+            type: "bar_marker",
+            at_ns: e.event_time_ns,
+            price: points[3][1],
+            below: bullish,
+            glyph: `CRT distribution ${bullish ? "▲" : "▼"}`,
+            color,
+          });
+        }
+      } else if (shape === "bar_marker") {
         // The glyph is the mark; the name is the panel's. Below the candle
         // for bullish patterns, above for bearish, beside for neutral.
         const below = e.direction !== "bearish";

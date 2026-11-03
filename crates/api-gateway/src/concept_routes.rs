@@ -336,12 +336,48 @@ pub async fn scan(
     let mut events: Vec<market_data::concepts::ConceptEvent> = Vec::new();
     // The replay: per bar, detect on the trailing window, keep only the
     // events that bar itself produced (the engine's own replay rule).
-    for bar in 22..candles.len() {
+    // Replay only bars whose full interval has closed. The venue may include
+    // its currently-forming Binance kline in the REST response; CRT's sweep
+    // reclaim is a confirmed-close condition and must not appear/disappear
+    // intrabar in the chart backscan.
+    let closed_len = candles
+        .iter()
+        .take_while(|candle| candle.open_time.saturating_add(tf.nanos()) <= to_ns)
+        .count();
+    // Run from the first possible pattern bar. Individual detectors enforce
+    // their own lookback requirements; CRT only needs the previous candle.
+    for bar in 1..closed_len {
         events.extend(
             plan.detect(&candles[..=bar], &symbol)
                 .into_iter()
                 .filter(|e| e.event_time_ns == candles[bar].open_time),
         );
+    }
+    // Add the nearest practical higher-timeframe CRT read from the same
+    // confirmed chart history. The chart can then show parent-range context
+    // alongside the local three-candle sequence without inventing HTF bars.
+    let htf = analytics_core::types::Timeframe::all()
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.nanos() > tf.nanos())
+        .min_by_key(|candidate| {
+            let duration = candidate.nanos();
+            if duration >= tf.nanos().saturating_mul(4) {
+                duration
+            } else {
+                i64::MAX / 2 + duration
+            }
+        });
+    if let Some(htf) = htf {
+        let higher = analytics_core::resample::resample(&candles[..closed_len], htf);
+        for bar in 1..higher.len() {
+            events.extend(
+                plan.detect(&higher[..=bar], &symbol)
+                    .into_iter()
+                    .filter(|event| event.concept_id == "candles.crt"
+                        && event.event_time_ns == higher[bar].open_time),
+            );
+        }
     }
     // A release is a clock fact, not a bar replay: merge the macro store's
     // releases inside the same window so the econ concepts draw their

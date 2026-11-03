@@ -9,7 +9,7 @@
 //! Same event vocabulary as always: one `MarketEvent` per detected bar, the
 //! pattern bar's own extremes riding as the zone.
 
-use crate::events::{EventKind, MarketEvent};
+use crate::events::{EventGeometry, EventKind, MarketEvent};
 use crate::types::{Candle, Side};
 
 /// One bar's shape vocabulary.
@@ -279,6 +279,83 @@ pub fn detect_candlesticks(candles: &[Candle], symbol: &str) -> Vec<MarketEvent>
             && third.close > first.close
         {
             push(EventKind::UpsideGapTwoCrows, Side::Sell, &third);
+        }
+    }
+
+    // Candle Range Theory's confirmed two-candle core: the older bar sets
+    // the range, then a closed bar takes exactly one side and closes back
+    // inside. A two-sided outside bar is ambiguous, so it is not a CRT.
+    if prev.high > prev.low {
+        let swept_low = last.low < prev.low && last.high <= prev.high;
+        let swept_high = last.high > prev.high && last.low >= prev.low;
+        let reclaimed = last.close > prev.low && last.close < prev.high;
+        if reclaimed && (swept_low ^ swept_high) {
+            let bullish = swept_low;
+            let kind = if bullish { EventKind::CrtBullish } else { EventKind::CrtBearish };
+            let sweep = if bullish { last.low } else { last.high };
+            let equilibrium = (prev.high + prev.low) / 2.0;
+            out.push(MarketEvent {
+                kind,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                // The unswept parent extreme is the measured draw-on-liquidity
+                // target; direction is carried by side, not inferred by UI.
+                price: if bullish { prev.high } else { prev.low },
+                side: Some(if bullish { Side::Buy } else { Side::Sell }),
+                zone_low: Some(prev.low),
+                zone_high: Some(prev.high),
+                magnitude: None,
+                formed_at: Some(prev.open_time),
+                geometry: Some(EventGeometry::path(vec![
+                    (prev.open_time, prev.high),
+                    (prev.open_time, prev.low),
+                    (bar_time, sweep),
+                    (prev.open_time, equilibrium),
+                ])),
+            });
+        }
+    }
+
+    // Three-candle CRT distribution: candle one establishes accumulation,
+    // candle two raids and reclaims exactly one edge, and candle three
+    // expands through the manipulation candle in the direction of the draw.
+    if candles.len() >= 3 {
+        let range = &candles[n - 2];
+        let manipulation = &candles[n - 1];
+        let bullish_sweep = manipulation.low < range.low
+            && manipulation.high <= range.high
+            && manipulation.close > range.low
+            && manipulation.close < range.high;
+        let bearish_sweep = manipulation.high > range.high
+            && manipulation.low >= range.low
+            && manipulation.close > range.low
+            && manipulation.close < range.high;
+        let distribution = (bullish_sweep && last.close > manipulation.high)
+            || (bearish_sweep && last.close < manipulation.low);
+        if distribution {
+            let bullish = bullish_sweep;
+            let sweep = if bullish { manipulation.low } else { manipulation.high };
+            out.push(MarketEvent {
+                kind: EventKind::CrtDistribution,
+                symbol: symbol.to_string(),
+                timeframe: tf,
+                bar_time,
+                close: last.close,
+                price: if bullish { range.high } else { range.low },
+                side: Some(if bullish { Side::Buy } else { Side::Sell }),
+                zone_low: Some(range.low),
+                zone_high: Some(range.high),
+                magnitude: None,
+                formed_at: Some(range.open_time),
+                geometry: Some(EventGeometry::path(vec![
+                    (range.open_time, range.high),
+                    (range.open_time, range.low),
+                    (manipulation.open_time, sweep),
+                    (bar_time, last.close),
+                ])),
+            });
         }
     }
     out

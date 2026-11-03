@@ -715,6 +715,8 @@
   every time the last pane closed.
 */
 .globalTools {
+  position: relative;
+  z-index: 30;
   flex: 0 0 36px;
   width: 36px;
   display: flex;

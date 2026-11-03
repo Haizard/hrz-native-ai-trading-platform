@@ -685,7 +685,7 @@
           version that did this on one click was labelled `Clear` and read as "clear
           what I have selected", and the user only found out afterwards.
         -->
-        <!-- Hidden in the pane; hosted by the right-click chart menu when open. -->
+        <!-- Visible on the chart and hosted by the right-click chart menu when open. -->
         <!--
           The drawing tools. The five `data-tool` buttons below are a **fallback**:
           once the engine has loaded, the shell replaces them with the tool
@@ -694,7 +694,7 @@
           what it can actually draw. Delete / Clear all / Magnet / Undo / Redo
           are controls, not tools, and stay here.
         -->
-        <div class="tools" role="toolbar" aria-label="Drawing tools" hidden>
+        <div class="tools" role="toolbar" aria-label="Drawing tools">
           <button data-tool="cursor" aria-pressed="true" title="Select a drawing, move its anchors, or pan the chart">Cursor</button>
           <button data-tool="trendline" aria-pressed="false" title="Drag from one point to another">Trend</button>
           <button data-tool="hline" aria-pressed="false" title="Click a price to mark it across the chart">H-line</button>

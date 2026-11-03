@@ -1953,6 +1953,18 @@ pub fn concept_registry() -> &'static [ConceptSpec] {
             event_kinds: &[EventKind::DeltaShift],
         },
         ConceptSpec {
+            id: "candles.crt",
+            version: "1.0.0",
+            library: Library::Candles,
+            name: "Candle Range Theory (CRT)",
+            description: "a closed candle sweeps one side of the prior candle's high-low range and reclaims it; the untouched extreme is the projected target",
+            parameters: &[],
+            required_channels: DataChannels::CANDLES,
+            pane: false,
+            overlay: false,
+            event_kinds: &[EventKind::CrtBullish, EventKind::CrtBearish, EventKind::CrtDistribution],
+        },
+        ConceptSpec {
             id: "candles.hammer",
             version: "1.0.0",
             library: Library::Candles,
@@ -2583,6 +2595,7 @@ pub fn as_concept_event_for(
     };
     let mut evidence = serde_json::Map::new();
     evidence.insert("close".to_string(), serde_json::json!(event.close));
+    evidence.insert("event_kind".to_string(), serde_json::json!(event.kind.name()));
     if let Some(magnitude) = event.magnitude {
         evidence.insert("magnitude".to_string(), serde_json::json!(magnitude));
     }

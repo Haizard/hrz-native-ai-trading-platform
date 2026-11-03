@@ -182,6 +182,24 @@ impl BackfillClient {
         from_ns: i64,
         to_ns: i64,
     ) -> Result<Vec<crate::exchanges::venue::RawKline>, MarketDataError> {
+        // The chart and broker layers use canonical venue-qualified ids
+        // (`BINANCE:BTCUSDT`), while Binance's REST API accepts the instrument
+        // code only. Strip the spot namespace at this provider boundary; keep
+        // the caller's original id outside this function so history rows can
+        // still be associated with the chart that requested them.
+        let parsed_symbol = crate::broker::VenueSymbol::parse(symbol);
+        let request_symbol = if parsed_symbol.broker == "binance"
+            && parsed_symbol.product == "spot"
+        {
+            parsed_symbol.symbol
+        } else if parsed_symbol.broker == "binance" {
+            return Err(MarketDataError::Normalization(format!(
+                "Binance REST history does not support the `{}` product namespace",
+                parsed_symbol.product
+            )));
+        } else {
+            symbol.to_string()
+        };
         // The venue's own spelling, and a refusal when it has none. Emitting a
         // Binance string at a venue that does not use it produces a 400 that
         // names the parameter but not the resolution -- so the platform would
@@ -214,7 +232,7 @@ impl BackfillClient {
                 .client
                 .get(url)
                 .query(&[
-                    ("symbol", symbol.to_uppercase()),
+                    ("symbol", request_symbol.to_uppercase()),
                     ("interval", interval.to_string()),
                     (self.venue.start_param(), cursor_ms.to_string()),
                     (self.venue.end_param(), end_ms.to_string()),

@@ -465,6 +465,12 @@ pub enum EventKind {
     ZoneStrength,
     /// The same price zone present on two timeframes at once.
     MtfZoneAlignment,
+    /// A closed candle swept the reference range's low and reclaimed it.
+    CrtBullish,
+    /// A closed candle swept the reference range's high and reclaimed it.
+    CrtBearish,
+    /// Price expanded away from a confirmed CRT manipulation toward its target.
+    CrtDistribution,
 }
 
 impl EventKind {
@@ -660,11 +666,14 @@ impl EventKind {
             Self::ProximalDistal => "proximal_distal",
             Self::ZoneStrength => "zone_strength",
             Self::MtfZoneAlignment => "mtf_zone_alignment",
+            Self::CrtBullish => "crt_bullish",
+            Self::CrtBearish => "crt_bearish",
+            Self::CrtDistribution => "crt_distribution",
         }
     }
 
     /// Every kind, for a client that wants to build a filter menu.
-    pub const ALL: [Self; 188] = [
+    pub const ALL: [Self; 191] = [
         Self::LiquiditySweep,
         Self::Bos,
         Self::Choch,
@@ -853,6 +862,9 @@ impl EventKind {
         Self::ProximalDistal,
         Self::ZoneStrength,
         Self::MtfZoneAlignment,
+        Self::CrtBullish,
+        Self::CrtBearish,
+        Self::CrtDistribution,
     ];
 }
 
