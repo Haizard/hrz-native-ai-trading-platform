@@ -3198,7 +3198,7 @@ function createChartPane(root, hooks = {}) {
     }
     // The concept events ride the same pulse: bar-close facts, no extra
     // cadence of their own. The pane series ride it too.
-    refreshConceptEvents();
+    refreshConceptEvents().then(() => render());
     refreshIndicatorSeries();
     return response.candles || [];
   }
@@ -6035,6 +6035,7 @@ function createChartPane(root, hooks = {}) {
   let conceptStates = {};
   let conceptCatalog = null;     // /concepts entries for the pane's symbol
   let conceptEvents = [];        // the enabled concepts' events
+  let conceptEventRequestId = 0;
   // The whole scan, enabled or not. The route answers for the instrument, and the
   // panel's preview needs the concepts the trader has *not* switched on -- so the
   // raw list is kept beside the filtered one instead of fetched twice.
@@ -6189,6 +6190,7 @@ function createChartPane(root, hooks = {}) {
   /// screen, not to wait for the next bar. Bar-close cadenced like the
   /// pane's own refresh.
   async function refreshConceptEvents() {
+    const requestId = ++conceptEventRequestId;
     const symbol = el("symbol") && el("symbol").value;
     const timeframe = el("timeframe") && el("timeframe").value;
     const wanted = requestedConceptIds();
@@ -6222,14 +6224,34 @@ function createChartPane(root, hooks = {}) {
         events = events.concat(await ensurePairEvents(symbol, timeframe));
       }
       const seen = new Set();
-      conceptEvents = events.filter((event) => {
+      const unique = events.filter((event) => {
         const key = [event.concept_id, event.timeframe, event.event_time_ns, event.direction, event.price_level].join("|");
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
+      // Keep only the two newest historical detections for each concept and
+      // source timeframe. Since this backscan runs on every candle refresh,
+      // newly closed bars roll into the same two-slot window automatically.
+      // This keeps just the latest historical patterns visible per source.
+      const newestFirst = unique.sort((a, b) =>
+        (b.event_time_ns - a.event_time_ns) || String(a.concept_id).localeCompare(String(b.concept_id))
+      );
+      const counts = new Map();
+      const nextEvents = newestFirst.filter((event) => {
+        const key = `${event.concept_id}|${event.timeframe || timeframe}`;
+        const count = counts.get(key) || 0;
+        if (count >= 2) return false;
+        counts.set(key, count + 1);
+        return true;
+      }).reverse();
+      if (requestId === conceptEventRequestId
+          && symbol === (el("symbol") && el("symbol").value)
+          && timeframe === (el("timeframe") && el("timeframe").value)) {
+        conceptEvents = nextEvents;
+      }
     } catch {
-      conceptEvents = [];
+      if (requestId === conceptEventRequestId) conceptEvents = [];
     }
   }
 
