@@ -15,7 +15,7 @@
 //!
 //! ## The math is not here either
 //!
-//! Volume profile, VWAP and the POC/VAH/VAL levels come from `analytics-core`.
+//! Volume profiles, VWAP and the POC/VAH/VAL levels come from `analytics-core`.
 //! This module only decides *where* they go. That is `docs/14`'s hard rule: the
 //! chart engine calls the same Rust analytics code the backend does, and a
 //! second implementation of the trading math in JavaScript must never exist.
@@ -28,16 +28,17 @@
 //!
 //! A true footprint is built from **trades** -- buy-aggressed and sell-aggressed
 //! volume at each price. This deployment has no tick data (`trades` is empty),
-//! so the footprint mode renders the **candle-derived** volume-by-price
-//! histogram instead: the same `analytics-core` profile, with its buy/sell
-//! split. That is a real chart of a real quantity, and the scene says which one
-//! it is in [`Scene::note`] rather than letting the label imply tick data that
-//! does not exist.
+//! so the footprint mode renders a candle-derived profile fallback. Binance
+//! profiles use reported candle volume; Deriv's quote-only candles use equal
+//! per-bar range coverage and are explicitly identified in [`Scene::note`].
+//! Neither fallback fabricates a trade ladder.
 
 use analytics_core::concepts::{detect as detect_concept, validate as validate_concept, Concept};
 use analytics_core::regions::{detect_zones, Region, RegionOrigin, ZoneConfig};
 use analytics_core::types::{Candle, Timeframe};
-use analytics_core::volume_profile::{calculate_volume_profile_from_candles, VolumeProfile};
+use analytics_core::volume_profile::{
+    calculate_quote_range_activity_profile, calculate_volume_profile_from_candles, VolumeProfile,
+};
 use analytics_core::vwap::calculate_vwap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -1870,7 +1871,14 @@ pub fn build(request: &Request) -> Scene {
     // plausible, which is exactly why it is worth being explicit: the note for
     // that mode promises the real series, and this is where that promise is
     // kept. `levels()` is handed the same slice for the same reason.
-    let profile = calculate_volume_profile_from_candles(visible_real, bucket_size);
+    let quote_only_venue = visible_real.first().is_some_and(|candle| {
+        market_data::broker::VenueSymbol::parse(&candle.symbol).broker == "deriv"
+    });
+    let profile = if quote_only_venue {
+        calculate_quote_range_activity_profile(visible_real, bucket_size)
+    } else {
+        calculate_volume_profile_from_candles(visible_real, bucket_size)
+    };
 
     if request.mode.shows_profile() {
         scene.profile = profile_bars(
@@ -1985,6 +1993,13 @@ pub fn build(request: &Request) -> Scene {
             }
         }
         Mode::Candles | Mode::Bars | Mode::Line | Mode::Area => {}
+    }
+
+    if quote_only_venue && request.mode.shows_profile() {
+        add_note(
+            &mut scene.note,
+            "Deriv quote-range activity profile: each candle contributes one equal unit across its high-low range. Deriv quote ticks have no traded-volume field; this is not traded volume.".into(),
+        );
     }
 
     // Concept documents are checked before anything is drawn. A document that
@@ -6314,6 +6329,35 @@ mod tests {
             "the window's vwap ({}) should differ from the series' ({whole})",
             vwap.price
         );
+    }
+
+    #[test]
+    fn deriv_displays_a_clearly_labeled_quote_range_profile() {
+        let mut request = request(100);
+        request.bucket_size = Some(0.5);
+        for candle in &mut request.candles {
+            candle.symbol = "DERIV:Volatility 75".into();
+            candle.volume = 0.0;
+            candle.buy_volume = 0.0;
+            candle.sell_volume = 0.0;
+        }
+        let scene = build(&request);
+        assert!(
+            !scene.profile.is_empty(),
+            "Deriv should have a usable range profile"
+        );
+        assert!(
+            scene
+                .note
+                .as_deref()
+                .is_some_and(|note| note.contains("not traded volume")),
+            "the profile must explain its quote-only basis: {:?}",
+            scene.note
+        );
+        let expected = calculate_quote_range_activity_profile(&request.candles, 0.5);
+        let actual_total: f64 = scene.profile.iter().map(|bar| bar.volume).sum();
+        let expected_total: f64 = expected.histogram.iter().map(|node| node.volume).sum();
+        assert!((actual_total - expected_total).abs() < 1e-9);
     }
 
     #[test]

@@ -3755,7 +3755,7 @@ function createChartPane(root, hooks = {}) {
       .map((series) => series.provenance)
       .filter((source) => source && source.note)
       .map((source) => `${source.mode.replace(/_/g, " ")} (${source.status}): ${source.note}`);
-    el("chartNote").textContent = [feedNotice || scene.note || aiReason, ...modelNotes]
+    el("chartNote").textContent = [scene.note || feedNotice || aiReason, ...modelNotes]
       .filter(Boolean)
       .join(" · ");
     // The order-flow panel re-renders the strip with the *scene* grid, so the

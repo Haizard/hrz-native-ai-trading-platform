@@ -284,6 +284,27 @@ pub fn calculate_volume_profile_from_candles(
     finalize(nodes, bucket_size, DEFAULT_VALUE_AREA_PCT, 2)
 }
 
+/// Price-range activity profile for quote-only candles such as Deriv
+/// synthetics. Each candle contributes one equal unit, spread evenly over its
+/// high-low range. This is a bar-range coverage estimate, never traded volume.
+#[must_use]
+pub fn calculate_quote_range_activity_profile(
+    candles: &[Candle],
+    bucket_size: f64,
+) -> VolumeProfile {
+    let quote_bars: Vec<Candle> = candles
+        .iter()
+        .cloned()
+        .map(|mut candle| {
+            candle.volume = 1.0;
+            candle.buy_volume = 0.0;
+            candle.sell_volume = 0.0;
+            candle
+        })
+        .collect();
+    calculate_volume_profile_from_candles(&quote_bars, bucket_size)
+}
+
 fn finalize(
     nodes: Vec<VolumeNode>,
     bucket_size: f64,
@@ -627,6 +648,17 @@ mod tests {
             assert!((node.volume - 3.0).abs() < 1e-9, "got {}", node.volume);
         }
         assert!((profile.total_volume - 9.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn quote_range_activity_profile_counts_bars_without_claiming_volume() {
+        let bars = [
+            candle(102.0, 100.0, 101.0, 80.0),
+            candle(104.0, 101.0, 103.0, 250.0),
+        ];
+        let profile = calculate_quote_range_activity_profile(&bars, 1.0);
+        assert!(!profile.is_empty());
+        assert!((profile.total_volume - 2.0).abs() < 1e-9);
     }
 
     #[test]
