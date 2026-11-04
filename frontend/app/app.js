@@ -19127,6 +19127,88 @@ function showSkillMessage(msg) {
 
 // Wire up workspace event listeners in main().
 
+let indicatorHeatmapRequest = 0;
+let indicatorHeatmapTimer = 0;
+
+function heatmapStateClass(value) {
+  const state = String(value || "").toLowerCase();
+  if (state.includes("bullish") || state.includes("positive")) return "is-up";
+  if (state.includes("bearish") || state.includes("negative")) return "is-down";
+  if (state.includes("compression")) return "is-compressed";
+  if (state.includes("expand") || state.includes("high range")) return "is-expanded";
+  if (state.includes("unavailable") || state.includes("warming")) return "is-muted";
+  return "is-mixed";
+}
+
+function renderIndicatorHeatmap(data) {
+  const status = document.getElementById("heatmapStatus");
+  const results = document.getElementById("heatmapResults");
+  const context = document.getElementById("heatmapContext");
+  const consensusNode = document.getElementById("heatmapConsensus");
+  const alignment = document.getElementById("heatmapAlignmentFill");
+  const disclaimer = document.getElementById("heatmapDisclaimer");
+  const familiesNode = document.getElementById("heatmapFamilies");
+  if (!status || !results || !data) return;
+  const frames = Array.isArray(data.frames) ? data.frames : [];
+  const consensus = data.consensus || {};
+  const familyOrder = ["volume", "trend", "momentum", "volatility", "statistical"];
+  const families = (frames[0]?.families || []).slice().sort((a, b) => familyOrder.indexOf(a.id) - familyOrder.indexOf(b.id));
+  const score = Number(consensus.score) || 0;
+  const tone = heatmapStateClass(score > 20 ? "bullish" : score < -20 ? "bearish" : "mixed");
+  const scoreText = `${score > 0 ? "+" : ""}${score.toFixed(0)}`;
+  const alignmentPct = Math.max(0, Math.min(100, Number(consensus.alignment_pct) || 0));
+  const confidence = Math.max(0, Math.min(100, Number(consensus.confidence) || 0));
+  context.textContent = `${data.symbol} · ${frames.map((frame) => frame.timeframe).join(" / ")} · ${frames.map((frame) => Number(frame.bars) || 0).join(" / ")} bars`;
+  consensusNode.innerHTML = `<div class="heatmapConsensus__signal ${tone}"><span>MTF CONFLUENCE</span><strong>${escapeHtml(consensus.signal || "warming up")}</strong></div><div class="heatmapConsensus__stats"><span><b>${scoreText}</b><small>direction score</small></span><span><b>${alignmentPct.toFixed(0)}%</b><small>family alignment</small></span><span><b>${confidence.toFixed(0)}%</b><small>evidence quality</small></span></div>`;
+  alignment.style.width = `${alignmentPct}%`;
+  disclaimer.textContent = consensus.note || "Confluence is context, not an execution instruction.";
+  familiesNode.innerHTML = families.map((family) => {
+    const cells = frames.map((frame) => {
+      const reading = (frame.families || []).find((candidate) => candidate.id === family.id);
+      if (!reading) return `<div class="heatmapCell is-muted"><span>${escapeHtml(frame.timeframe)}</span><b>no reading</b></div>`;
+      const cellTone = heatmapStateClass(reading.state);
+      const scoreText = Number.isFinite(Number(reading.score)) ? `${Number(reading.score) > 0 ? "+" : ""}${Number(reading.score).toFixed(0)}` : "—";
+      const metrics = (reading.metrics || []).map((metric) => `<div><dt>${escapeHtml(metric.name)}</dt><dd>${escapeHtml(metric.value)}</dd></div>`).join("");
+      return `<details class="heatmapCell ${cellTone}"><summary><span>${escapeHtml(frame.timeframe)}</span><b>${escapeHtml(reading.state)}</b><em>${scoreText}</em></summary><dl>${metrics}</dl><small>${escapeHtml(reading.basis || "OHLC candles")}</small>${reading.note ? `<p>${escapeHtml(reading.note)}</p>` : ""}</details>`;
+    }).join("");
+    return `<section class="heatmapFamily"><header><strong>${escapeHtml(family.name)}</strong><span>${family.id === "volatility" ? "risk regime" : "directional evidence"}</span></header><div class="heatmapFamily__cells">${cells}</div></section>`;
+  }).join("");
+  status.hidden = true;
+  results.hidden = false;
+}
+
+async function refreshIndicatorHeatmap() {
+  const status = document.getElementById("heatmapStatus");
+  const results = document.getElementById("heatmapResults");
+  if (!status || !results) return;
+  const info = window.HRZApp?.activePaneInfo?.();
+  if (!info?.symbol || !info?.timeframe) {
+    status.hidden = false; status.textContent = "Open a chart to calculate the heatmap."; results.hidden = true; return;
+  }
+  const requestId = ++indicatorHeatmapRequest;
+  status.hidden = false; status.textContent = `Calculating ${info.symbol} across timeframes…`;
+  try {
+    const response = await api(`/indicator-heatmap?symbol=${encodeURIComponent(info.symbol)}&timeframe=${encodeURIComponent(info.timeframe)}`);
+    const current = window.HRZApp?.activePaneInfo?.();
+    if (requestId !== indicatorHeatmapRequest || current?.symbol !== info.symbol || current?.timeframe !== info.timeframe) return;
+    renderIndicatorHeatmap(response);
+  } catch (error) {
+    if (requestId !== indicatorHeatmapRequest) return;
+    status.hidden = false; status.textContent = error?.message || "Heatmap data is unavailable."; results.hidden = true;
+  }
+}
+
+document.addEventListener("hrz:inspector", (event) => {
+  if (event.detail?.tab === "heatmap") refreshIndicatorHeatmap();
+});
+document.addEventListener("hrz:pane", () => {
+  if (window.Shell?.state?.().inspectorTab === "heatmap") refreshIndicatorHeatmap();
+});
+document.getElementById("heatmapRefresh")?.addEventListener("click", refreshIndicatorHeatmap);
+indicatorHeatmapTimer = setInterval(() => {
+  if (window.Shell?.state?.().inspectorTab === "heatmap") refreshIndicatorHeatmap();
+}, 15_000);
+
 /// The shell's window into the app. Questions only, no state handing: everything
 /// else the shell needs is in the DOM, and everything here is a question about
 /// the instruments the app owns.

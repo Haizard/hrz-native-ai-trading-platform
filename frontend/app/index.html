@@ -894,6 +894,7 @@
       <div class="hrz-tabs" id="inspectorTabs" role="tablist" aria-label="Inspector">
         <button role="tab" type="button" class="hrz-tab" data-inspector="ai" aria-selected="true">AI</button>
         <button role="tab" type="button" class="hrz-tab" data-inspector="indicator" aria-selected="false">Indicator</button>
+        <button role="tab" type="button" class="hrz-tab" data-inspector="heatmap" aria-selected="false">Heatmap</button>
         <button role="tab" type="button" class="hrz-tab" data-inspector="book" aria-selected="false">Book</button>
         <button role="tab" type="button" class="hrz-tab" data-inspector="trade" aria-selected="false">Trade</button>
         <button role="tab" type="button" class="hrz-tab" data-inspector="details" aria-selected="false">Details</button>
@@ -926,6 +927,19 @@
           </div>
         </div>
       </div>
+      <section class="inspectorPanel indicatorHeatmap" id="inspectorHeatmap" hidden aria-label="Multi-timeframe indicator heatmap">
+        <div class="heatmapHeader">
+          <div><h2 class="inspectorPanel__title">Indicator confluence</h2><p id="heatmapContext" class="heatmapContext">Select a chart to compare indicator families across timeframes.</p></div>
+          <button type="button" class="hrz-btn hrz-btn--ghost hrz-btn--sm" id="heatmapRefresh" title="Recalculate indicator heatmap">↻</button>
+        </div>
+        <div id="heatmapStatus" class="heatmapStatus" role="status">Waiting for a chart.</div>
+        <div id="heatmapResults" hidden>
+          <div class="heatmapConsensus" id="heatmapConsensus"></div>
+          <div class="heatmapAlignment" aria-hidden="true"><span id="heatmapAlignmentFill"></span></div>
+          <p class="heatmapDisclaimer" id="heatmapDisclaimer"></p>
+          <div class="heatmapFamilies" id="heatmapFamilies"></div>
+        </div>
+      </section>
     </div>
 
     <!--

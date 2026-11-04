@@ -67,6 +67,7 @@ pub mod event_engine;
 pub mod extract;
 pub mod footprint_routes;
 pub mod indicator_alerts;
+pub mod indicator_heatmap;
 pub mod indicator_preview;
 pub mod indicator_workspace_routes;
 pub mod market_data;
@@ -316,6 +317,7 @@ pub fn router(state: AppState) -> Router {
         .route("/news/latest", get(econ_routes::news_latest))
         .route("/news/sentiment", get(econ_routes::news_sentiment))
         .route("/indicator-series", get(concept_routes::indicator_series))
+        .route("/indicator-heatmap", get(indicator_heatmap::get))
         .route("/quote-profile", get(concept_routes::quote_profile))
         .route("/concept-events/smt", get(concept_routes::smt))
         .route("/compositions/backtest", post(concept_routes::backtest))

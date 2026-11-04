@@ -43,9 +43,9 @@
   const PAGES = NAV.filter((entry) => entry.kind === "page").map((entry) => entry.id);
   const PANELS = NAV.filter((entry) => entry.kind === "panel").map((entry) => entry.id);
   const TITLES = Object.fromEntries(NAV.map((entry) => [entry.id, entry.label]));
-  const INSPECTOR_TABS = ["ai", "indicator", "book", "trade", "details"];
+  const INSPECTOR_TABS = ["ai", "indicator", "heatmap", "book", "trade", "details"];
   const INSPECTOR_VIEWS = {
-    ai: "pane-chat", indicator: "inspectorIndicator",
+    ai: "pane-chat", indicator: "inspectorIndicator", heatmap: "inspectorHeatmap",
     book: "pane-book", trade: "pane-trade", details: "pane-thesis",
   };
   const TAB_FROM_LEGACY = { chat: "ai", thesis: "details", book: "book", trade: "trade" };
@@ -228,6 +228,8 @@
     // not a panel of its own), so it is toggled by the same visible set.
     const projection = el("inspectorIndicator");
     if (projection) projection.hidden = !visible.has("inspectorIndicator");
+    const heatmap = el("inspectorHeatmap");
+    if (heatmap) heatmap.hidden = !visible.has("inspectorHeatmap");
     const profile = el("accountProfile");
     if (profile) profile.hidden = !visible.has("accountProfile");
   }
@@ -413,6 +415,7 @@
     syncDock();
     mountIndicator();
     showPanes();
+    document.dispatchEvent(new CustomEvent("hrz:inspector", { detail: { tab: state.inspectorTab } }));
     refreshPane();
     if (state.destination === "charts" && app().resizePanes) app().resizePanes();
     // The dashboard keeps a clock, and it is told when it is on screen rather
