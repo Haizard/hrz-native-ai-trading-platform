@@ -9400,31 +9400,27 @@ function executeUiCommand(cmd) {
   } else if (cmd.action === "generate_strategy") {
     chatRunStrategy((cmd.extra && cmd.extra.description) || cmd.description || "");
   } else if (cmd.action === "capture_chart") {
-    // A capture request from a run in flight (docs/48): switch the screen if
-    // the command names somewhere else, wait for the redraw, then upload the
-    // canvas over HTTP -- the agent socket is busy running the ask, so the
-    // image takes the plain route back. A failure is silent here by design:
-    // the run reports an unanswered capture itself, with better words than a
-    // toast mid-analysis would.
+    // A capture request from a run in flight (docs/48). The agent asked to
+    // *see* a frame, not to be taken there, so this never retargets the user's
+    // chart: the series is photographed from a pane that already holds it or
+    // rendered offscreen, the picture goes up on the review card exactly like a
+    // ladder rung, and the image comes back over HTTP because this socket is
+    // busy running the ask. A failure is silent here by design: the run reports
+    // an unanswered capture itself, with better words than a toast mid-analysis
+    // would.
     (async () => {
       try {
-        if (!activePane) return;
-        if (cmd.symbol || cmd.timeframe) {
-          activePane.fillSeries(
-            coverage,
-            (cmd.symbol || activePane.symbol()).toUpperCase(),
-            cmd.timeframe || activePane.timeframe()
-          );
-          // fillSeries is async: a capture taken now would photograph the old
-          // chart and the model would reason about a view nobody is on.
-          await new Promise((resolve) => setTimeout(resolve, 1200));
-        } else {
-          // Still a beat: the pane repaints continuously, and mid-frame
-          // captures read as smears to a vision model.
-          await new Promise((resolve) => setTimeout(resolve, 150));
-        }
-        const shot = captureChart(activePane.canvas, activePane.timeframe());
+        const symbol = (cmd.symbol || (activePane && activePane.symbol()) || "").toUpperCase();
+        const timeframe = cmd.timeframe || (activePane ? activePane.timeframe() : "");
+        if (!symbol || !timeframe) return;
+        const shot = await captureSeries(symbol, timeframe);
         if (!shot) return;
+        enqueueAiReview({
+          symbol,
+          timeframe,
+          image: shot,
+          caption: `AI LOOK · ${symbol} · ${timeframe.toUpperCase()}`,
+        });
         await fetch("/agent/captures", {
           method: "POST",
           headers: {
@@ -9442,6 +9438,26 @@ function executeUiCommand(cmd) {
       }
     })();
   }
+}
+
+/// One series' picture, taken from wherever it can be had honestly: a pane
+/// already showing that symbol and timeframe, otherwise an offscreen render of
+/// its candle history. Null when the symbol has no such series -- photographing
+/// a chart that does not exist is not an option.
+async function captureSeries(symbol, timeframe) {
+  const openPane = panes.find(
+    (pane) => pane.symbol() === symbol && pane.timeframe() === timeframe
+  );
+  if (openPane) {
+    // A beat even for a pane already on it: the chart repaints continuously,
+    // and a capture taken mid-frame reads to a vision model as a smear.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    return captureChart(openPane.canvas, timeframe);
+  }
+  const entry = coverage.find((instrument) => instrument.symbol === symbol);
+  const frame = entry && entry.timeframes.find((f) => f.timeframe === timeframe);
+  if (!frame || frame.candles === 0) return null;
+  return renderOffscreen(symbol, timeframe);
 }
 
 /// Take a pane off the page.
@@ -9878,6 +9894,10 @@ const STAGE_TEXT = {
       : `analysing (turn ${p.turn} of ${p.total})`,
   tool: (p) => `calling ${p.name}`,
   tool_done: (p) => `${p.name} ${p.ok ? "returned" : "failed"}`,
+  review_frame: (p) =>
+    p.total > 1
+      ? `reviewing ${p.timeframe} chart (${p.index}/${p.total})`
+      : `reviewing ${p.timeframe} chart`,
   correcting: (p) => `rejected, asking for a correction: ${p.reason}`,
   ui_command: (p) =>
     p.action === "open_chart"
@@ -10149,6 +10169,16 @@ async function onAgentFrame(event) {
 
 function applyAgentFrame(frame, turn) {
   if (frame.type === "progress") {
+    if (frame.payload?.stage === "review_frame") showAiReviewFrame(turn, frame.payload);
+    // The agent's marks land as it makes them, not when the answer arrives. A
+    // lesson whose drawings appear only at the end is a lecture: the user cannot
+    // see the step being explained. A delete has to repaint too, or the object
+    // the agent just removed stays on the chart looking like it is still part of
+    // the argument.
+    if (frame.payload?.stage === "tool_done" && frame.payload.ok && AI_DRAWING_TOOLS.has(frame.payload.name)) {
+      showAiDrawingsOnCharts();
+      for (const pane of panes) pane.reloadDrawings(turn.symbol);
+    }
     // A screen command (docs/47) is executed as it arrives -- the panel's
     // step line still records that the agent asked for it.
     if (frame.payload && frame.payload.stage === "ui_command") {
@@ -10157,6 +10187,8 @@ function applyAgentFrame(frame, turn) {
     turn.steps.push(frame.payload);
     renderTranscript();
   } else if (frame.type === "data") {
+    endAiReview();
+    turn.chartScreenshots = [];
     // An interview beat arrives on the same socket as a thesis; the `author`
     // payload is what tells them apart (docs/47).
     if (frame.payload && frame.payload.author) {
@@ -10181,6 +10213,8 @@ function applyAgentFrame(frame, turn) {
       updateMcpStatus(frame.payload.capabilities);
     }
   } else if (frame.type === "error") {
+    endAiReview();
+    turn.chartScreenshots = [];
     // A billing refusal from a socket turn. Same code and wording as the REST
     // path, so one exhausted quota reads the same wherever it happened.
     turn.error = frame.message;
@@ -10191,6 +10225,8 @@ function applyAgentFrame(frame, turn) {
     redrawThesis();
     billingUpgradePrompt(frame);
   } else if (frame.type === "notice") {
+    endAiReview();
+    turn.chartScreenshots = [];
     // In the interview a notice is an answer in the conversation, not an
     // error on a thesis turn.
     if (authorMode) {
@@ -10214,6 +10250,123 @@ function applyAgentFrame(frame, turn) {
     showAiDrawingsOnCharts();
     for (const pane of panes) pane.reloadDrawings(turn.symbol);
   }
+}
+
+// ---------------------------------------------------------------------------
+// The review overlay
+//
+// The agent reads the ladder top-down and names each rung just before it reads
+// it (`Progress::ReviewFrame`). Without this, that step line is the whole show
+// and the user cannot see the thing they paid for: the model looking at their
+// 1w chart, then their 4h, then their 5m. So the matching picture goes on the
+// chart while the read runs, one frame at a time.
+//
+// Three rules make it survive the awkward cases:
+// - A frame holds for at least `AI_REVIEW_DWELL_MS`. A ladder read is
+//   database-fast -- five frames can arrive inside a second -- and a card that
+//   flips through faster than an eye follows shows nothing at all.
+// - The card sits on a pane of the symbol under review, and the chart below it
+//   is never retargeted. Watching the agent work is not a reason to move the
+//   user's screen.
+// - No picture, no card. The transcript already names the read; a caption
+//   beside an empty frame would claim the agent is looking at something it is
+//   not being shown.
+// ---------------------------------------------------------------------------
+const AI_REVIEW_DWELL_MS = 900;
+const aiReviewQueue = [];
+let aiReviewTimer = 0;
+
+/// The tools that change what sits on the chart. The shell re-fetches the
+/// drawing list when one of them answers, so the agent's marks appear while it
+/// is still working rather than after the thesis lands.
+const AI_DRAWING_TOOLS = new Set(["create_drawing", "update_drawing", "delete_drawing"]);
+
+function showAiReviewFrame(turn, progress) {
+  const symbol = progress.symbol || turn.symbol;
+  const timeframe = String(progress.timeframe || "");
+  if (!symbol || !timeframe) return;
+  // A single read has no ladder to be a rung of, so it is not counted: "1/1"
+  // on a one-frame question reads like a ladder that lost its other rungs.
+  const counter = progress.total > 1 ? ` · ${progress.index}/${progress.total}` : "";
+  enqueueAiReview({
+    symbol,
+    timeframe,
+    image: reviewImageFor(turn, symbol, timeframe),
+    caption: `AI REVIEW · ${symbol.toUpperCase()} · ${timeframe.toUpperCase()}${counter}`,
+  });
+}
+
+/// The picture for one reviewed rung: the capture already attached to the
+/// request, or a live pane showing that timeframe. Null when neither exists.
+function reviewImageFor(turn, symbol, timeframe) {
+  const wanted = `${timeframe.toLowerCase()} chart`;
+  const attached = (turn.chartScreenshots || []).find(
+    (image) => image.data && String(image.label || "").toLowerCase().includes(wanted)
+  );
+  if (attached) return attached;
+  const pane = panes.find((candidate) => candidate.symbol() === symbol && candidate.timeframe() === timeframe);
+  return pane ? captureChart(pane.canvas, timeframe) : null;
+}
+
+function enqueueAiReview(frame) {
+  aiReviewQueue.push(frame);
+  // The newest rung is the one worth showing. A queue that grows during a fast
+  // ladder read would still be replaying rung one after the answer landed, so
+  // only the last few are ever kept.
+  while (aiReviewQueue.length > 3) aiReviewQueue.shift();
+  pumpAiReview();
+}
+
+function pumpAiReview() {
+  if (aiReviewTimer) return;
+  const frame = aiReviewQueue.shift();
+  if (!frame) return;
+  const host = frame.image ? reviewHost(frame.symbol) : null;
+  paintAiReviewCard(host, frame);
+  aiReviewTimer = setTimeout(() => {
+    aiReviewTimer = 0;
+    pumpAiReview();
+  }, AI_REVIEW_DWELL_MS);
+}
+
+/// Which chart carries the card: a pane of the symbol under review -- the
+/// active one when several show it -- and any chart at all when none does.
+function reviewHost(symbol) {
+  const candidates = panes.filter((pane) => pane.symbol() === symbol);
+  const pane = candidates.find((candidate) => candidate === activePane)
+    || candidates[0] || activePane || panes[0];
+  return pane ? pane.root.querySelector(".chartWrap") : null;
+}
+
+function paintAiReviewCard(host, frame) {
+  clearAiReviewCards();
+  if (!host) return;
+  const overlay = document.createElement("div");
+  overlay.className = "aiReviewOverlay";
+  overlay.setAttribute("role", "status");
+  const image = document.createElement("img");
+  image.alt = `AI reviewing ${frame.symbol} ${frame.timeframe} chart`;
+  image.src = `data:${frame.image.media_type};base64,${frame.image.data}`;
+  const caption = document.createElement("span");
+  caption.textContent = frame.caption;
+  overlay.append(image, caption);
+  host.appendChild(overlay);
+}
+
+function clearAiReviewCards() {
+  document.querySelectorAll(".aiReviewOverlay").forEach((node) => node.remove());
+}
+
+/// Take the review display down and stop replaying queued rungs. Called when a
+/// run ends -- answer, error, or notice -- because a card naming the frame the
+/// agent read three minutes ago is a lie about what is happening now.
+function endAiReview() {
+  aiReviewQueue.length = 0;
+  if (aiReviewTimer) {
+    clearTimeout(aiReviewTimer);
+    aiReviewTimer = 0;
+  }
+  clearAiReviewCards();
 }
 
 /// Put the current thesis on every chart, and take the old one off.
@@ -11717,11 +11870,17 @@ async function ask() {
 
   try {
     const ws = await ensureAgentSocket();
+    // A lesson is drawn on the chart, so it needs the chart: mentor mode turns
+    // the attachment on rather than teaching about a viewport the agent never
+    // got. `teaching` is the flag the run carries either way, so the model's
+    // behaviour does not depend on guessing the intent from the wording.
+    if (mentorMode) enableChartAttach();
     const message = {
       symbol: activeSymbol(),
       question,
       timeframes: [activeTimeframe()],
       concept_states: activeConceptStateDeclarations(),
+      teaching: mentorMode,
     };
     if (activePane) {
       const indicatorContext = activePane.indicatorContextPacket();
@@ -11753,12 +11912,20 @@ async function ask() {
       const packet = activePane.chartPacket();
       if (packet) {
         // The primary image is the chart the user is looking at. The rest of
-        // the ladder -- 1d, 4h, 1h, 5m of the same symbol -- is then captured
-        // automatically: an open pane of the right timeframe is photographed,
-        // and any rung nothing open shows is rendered offscreen from that
-        // timeframe's candle history, so the agent sees the setup across
-        // timeframes whether or not the user opened four charts.
+        // the ladder -- every rung in LADDER_TIMEFRAMES of the same symbol --
+        // is then captured automatically: an open pane of the right timeframe
+        // is photographed, and any rung nothing open shows is rendered offscreen
+        // from that timeframe's candle history, so the agent sees the setup
+        // across timeframes whether or not the user opened any charts at all.
         const { primary: primaryShot, shots } = await captureLadder(activePane.symbol());
+        turn.chartScreenshots = [primaryShot, ...shots].filter(Boolean).sort((a, b) => {
+          const rank = (shot) => {
+            const label = String(shot.label || "").toLowerCase();
+            const timeframe = LADDER_TIMEFRAMES.find((tf) => label.includes(`${tf} chart`));
+            return timeframe ? LADDER_TIMEFRAMES.indexOf(timeframe) : LADDER_TIMEFRAMES.length;
+          };
+          return rank(a) - rank(b);
+        });
         if (primaryShot) packet.screenshot = primaryShot;
         // Timeframes the symbol has no series for are simply not attached:
         // capturing a chart that does not exist is not an option, the agent
@@ -11783,6 +11950,10 @@ async function ask() {
     ws.send(JSON.stringify(message));
   } catch (e) {
     turn.error = e.message;
+    // A socket that died never sends the frame that would have taken the
+    // review card down, so a rung named three minutes ago would still be
+    // glowing on the chart.
+    endAiReview();
     asking = false;
     paintAsk();
     renderTranscript();
@@ -11791,6 +11962,11 @@ async function ask() {
 
 /// Whether to attach the chart's viewport and a screenshot to each question.
 let attachChart = false;
+
+/// Whether the next question is a lesson. Sent as `teaching` on the socket, and
+/// it turns chart attachment on with it -- a mentor that cannot see the chart
+/// has nothing to point at.
+let mentorMode = false;
 
 /// Most a screenshot may be, in bytes, before the shell downscales.
 ///
@@ -11808,11 +11984,12 @@ const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
 /// `docs/14` uses for presentation, applied to what leaves the page.
 const MAX_SCREENSHOT_EDGE = 1600;
 
-/// The most images one question attaches.
+/// The most images one question attaches, beyond the primary.
 ///
-/// Mirrors the server's `MAX_SCREENSHOTS`: a primary plus a 1d/4h/1h/5m ladder
-/// fills it exactly, and sending more would only have them dropped.
-const MAX_ATTACHED_IMAGES = 3;
+/// Mirrors the server's `MAX_SCREENSHOTS` less the primary view: a top-down
+/// review is 1w/1d/4h/1h/15m/5m under the chart the user is on, and sending a
+/// seventh image would only have it dropped.
+const MAX_ATTACHED_IMAGES = 5;
 
 /// Capture the chart canvas as a PNG the agent can see.
 ///
@@ -11871,14 +12048,17 @@ function captureChart(canvas, timeframeLabel = "") {
 /*
   The auto screenshot ladder.
 
-  One question about one market carries four pictures of it -- 1d, 4h, 1h, 5m,
-  in that order, because that is the order an analysis reads a market in. The
-  active pane's own image goes first as the primary; every other rung is filled
-  from an open pane of the right timeframe, or rendered offscreen from that
-  timeframe's candle history when no pane holds it -- so the ladder does not
-  depend on which charts the user happened to open.
+  One question about one market carries a picture of every rung it is read on,
+  highest first -- 1w, 1d, 4h, 1h, 15m, 5m -- because top-down is the order an
+  analysis reads a market in and the order the review overlay walks. The active
+  pane's own image goes first as the primary; every other rung is filled from an
+  open pane of the right timeframe, or rendered offscreen from that timeframe's
+  candle history when no pane holds it -- so the ladder does not depend on which
+  charts the user happened to open. Rungs past the image budget are trimmed by
+  the slice below, which keeps the highest ones: dropping the weekly picture of
+  a 1m question loses the context the question needs most.
 */
-const LADDER_TIMEFRAMES = ["1d", "4h", "1h", "5m"];
+const LADDER_TIMEFRAMES = ["1w", "1d", "4h", "1h", "15m", "5m"];
 
 async function captureLadder(symbol) {
   const activeTf = activePane ? activePane.timeframe() : "";
@@ -11967,12 +12147,31 @@ function screenshotFromUrl(url, timeframeLabel = "") {
 }
 
 /// Turn chart attachment on and off.
+///
+/// The note under the two chips says what now rides each question, and mentor
+/// mode owns the line while it is on -- a lesson is drawn on the chart, so what
+/// the user needs to know is that the agent will teach, not which rungs happen
+/// to be in the ladder.
 function paintAttach() {
   const button = el("attachChart");
   button.setAttribute("aria-pressed", attachChart ? "true" : "false");
-  el("attachNote").textContent = attachChart
-    ? "the chart's viewport, drawings and a 1d/4h/1h/5m screenshot ladder of this symbol go with each question"
-    : "";
+  el("attachNote").textContent = mentorMode
+    ? "the agent teaches this chart: it reads the ladder top-down and draws each point as it explains it"
+    : attachChart
+      ? `the chart's viewport, drawings and a ${LADDER_TIMEFRAMES.join("/")} screenshot ladder of this symbol go with each question`
+      : "";
+}
+
+/// Turn mentor mode on and off.
+///
+/// The chip is a mode, not a one-shot: a lesson is usually a sequence of
+/// questions, and a toggle that resets after each answer has to be re-pressed
+/// for every step -- after which the agent is back to answering in prose while
+/// the user is waiting for the drawing that would explain it.
+function paintMentor() {
+  const button = el("mentorMode");
+  if (button) button.setAttribute("aria-pressed", mentorMode ? "true" : "false");
+  paintAttach();
 }
 
 
@@ -17725,6 +17924,12 @@ el("authorChips").addEventListener("click", (event) => {
     paintAttach();
   });
   paintAttach();
+
+  el("mentorMode").addEventListener("click", () => {
+    mentorMode = !mentorMode;
+    paintMentor();
+  });
+  paintMentor();
 
   el("example").addEventListener("change", (e) => loadExample(e.target.value));
   el("validate").addEventListener("click", validateStrategy);

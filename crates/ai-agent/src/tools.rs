@@ -365,6 +365,9 @@ pub struct ToolContext<'a> {
     /// than answer from the model's training data and call it current -- the
     /// same honest-absence posture as every other capability here.
     pub web_search: Option<&'a dyn crate::web_search::WebSearcher>,
+    /// Live progress stream, used by multi-timeframe tools to report each
+    /// frame immediately before its data read starts.
+    pub progress: Option<&'a dyn crate::progress::ProgressSink>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -390,6 +393,7 @@ impl<'a> ToolContext<'a> {
             snapshots: None,
             captures: None,
             web_search: None,
+            progress: None,
         }
     }
 
@@ -497,6 +501,13 @@ impl<'a> ToolContext<'a> {
     #[must_use]
     pub fn with_web_search(mut self, searcher: &'a dyn crate::web_search::WebSearcher) -> Self {
         self.web_search = Some(searcher);
+        self
+    }
+
+    /// Attach the asking turn's progress stream.
+    #[must_use]
+    pub fn with_progress(mut self, progress: &'a dyn crate::progress::ProgressSink) -> Self {
+        self.progress = Some(progress);
         self
     }
 
@@ -746,8 +757,8 @@ impl ToolRegistry {
                     input_schema: serde_json::json!({
                         "type": "object",
                         "properties": {
-                            "symbol": {"type": "string", "description": "Switch the screen to this symbol before capturing; omit to capture what the user is looking at."},
-                            "timeframe": {"type": "string", "description": "Switch the screen to this resolution before capturing; omit to keep the user's own."}
+                            "symbol": {"type": "string", "description": "Symbol whose chart to photograph; omit to use the one the user is on. This does not move their screen."},
+                            "timeframe": {"type": "string", "description": "Resolution to photograph; omit to keep the user's own. A rung nothing is showing is rendered offscreen for the capture."}
                         },
                         "required": []
                     }),
@@ -1313,12 +1324,13 @@ fn drawing_write_schema(with_id: bool) -> Value {
         "symbol": {"type": "string", "description": "Trading symbol, e.g. BTCUSDT"},
         "kind": {
             "type": "string",
-            "description": "What to draw. Kinds: trendline, hline, vline, ray, extended, rect, fib, measure, channel, angle, arc, circle, triangle, position_long, position_short, dateprice_range",
+            "description": "What to draw. Kinds include trendline, hline, vline, ray, rect, fib, measure, channel, triangle, polyline. Use polyline for a freeform multi-point path or teaching sketch; use separate polylines for disconnected strokes.",
         },
         "points": {
             "type": "array",
             "minItems": 1,
-            "description": "The anchors, in the order the kind reads them: {\"time_ms\": milliseconds since the epoch, \"price\": number}. One point for hline and vline; two for trendline, ray, extended, rect, fib, measure, angle, circle and the positions — first point is the start or corner, second the end or opposite corner; three for channel, arc and triangle. A kind given the wrong number of points is refused with the count it takes.",
+            "maxItems": 64,
+            "description": "The anchors, in order: {\"time_ms\": milliseconds since the epoch, \"price\": number}. Fixed shapes require their declared number of points. A polyline takes 2–64 points and connects them in order; use multiple polylines for disconnected strokes. Wrong point counts are refused.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -1741,13 +1753,16 @@ const SET_CHART: &str = "Switch the chart the user is looking at to another `sym
     the same panel but look elsewhere. The command is issued, not confirmed -- verify with \
     a later screenshot when it matters.";
 
-const LOOK_AT_CHART: &str = "Capture a fresh image of the chart on the user's screen and see it \
-    yourself, mid-analysis. Use it when the numbers are not enough -- you need to SEE the \
-    pattern, the wicks, how price is treating a zone -- or to verify what an open_chart / \
-    set_chart command actually produced. Optional `symbol` / `timeframe` switch the screen \
-    first; omit both to capture what the user is looking at. The image arrives with the tool \
-    result when the screen answers; if no screen is attached (the user is away, a server-side \
-    run) the result says so instead. Budget a few captures per run, not one per turn.";
+const LOOK_AT_CHART: &str = "Capture a fresh image of a chart and see it yourself, mid-analysis. \
+    Use it when the numbers are not enough -- you need to SEE the pattern, the wicks, how price is \
+    treating a zone -- or to verify what an open_chart / set_chart command actually produced. \
+    Optional `symbol` / `timeframe` choose which series to photograph; omit both for the chart the \
+    user is on. Looking does not move the user's screen: a frame nothing is showing is rendered for \
+    the capture and the picture appears on their review card, so their layout survives the \
+    analysis. If you want them to LOOK at a frame, say so or use set_chart -- those are different \
+    asks. The image arrives with the tool result when the screen answers; if no screen is attached \
+    (the user is away, a server-side run) the result says so instead. Budget a few captures per \
+    run, not one per turn.";
 
 /// `create_indicator` — build a chart indicator from a description.
 const CREATE_INDICATOR: &str = "Create a chart indicator from a natural-language \
@@ -1815,8 +1830,8 @@ const GET_USER_DRAWINGS: &str = "The levels and shapes the user themselves drew 
     a drawn level is the user's own analysis, and citing it beats rediscovering it.";
 
 const CREATE_DRAWING: &str = "Draw an object on the user's chart -- a level, a zone, a trendline, \
-    a Fibonacci retracement. Use it when the analysis produced something worth seeing: a \
-    resistance zone, a fair-value gap, the entry and stop of a setup. Anchors are absolute \
+    a Fibonacci retracement, or a freeform polyline teaching sketch. Use it when the analysis produced something worth seeing: a \
+    resistance zone, a fair-value gap, the entry and stop of a setup. Polyline accepts 2–64 ordered anchors; create separate polylines for disconnected strokes. For illustrative requests such as drawing an animal, use get_candles to bound the sketch to the chart's observed time and price range, label it as an illustration, and do not present it as market evidence. Anchors are absolute \
     (epoch milliseconds and price), which you can get from get_candles. Always give a reason: \
     it is stored with the object and the user can read it. Mark created objects are recorded \
     as yours, and the user can hide or delete them like any other drawing.";
@@ -1896,6 +1911,14 @@ async fn analyze_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<Value,
     const TOOL: &str = "analyze_timeframe";
     let symbol = string_arg(args, "symbol", TOOL)?;
     let timeframe = timeframe_arg(args, TOOL)?;
+    if let Some(progress) = ctx.progress {
+        progress.report(crate::progress::Progress::ReviewFrame {
+            symbol: symbol.clone(),
+            timeframe: timeframe.to_string(),
+            index: 1,
+            total: 1,
+        });
+    }
     let lookback = ctx.window_lookback(optional_u64(args, "lookback", TOOL)?, &symbol, timeframe);
     let (state, _, _) = state_for(ctx, &symbol, timeframe, lookback).await?;
     Ok(render_state(&state, ctx.capabilities.as_ref()))
@@ -1940,7 +1963,16 @@ async fn analyze_multi_timeframe(ctx: &ToolContext<'_>, args: &Value) -> Result<
     // uniform. The standing default keeps the ladder honest.
     let lookback = ctx.clamp_lookback(optional_u64(args, "lookback", TOOL)?);
     let mut frames = Vec::new();
-    for timeframe in timeframes {
+    let total = timeframes.len();
+    for (index, timeframe) in timeframes.into_iter().enumerate() {
+        if let Some(progress) = ctx.progress {
+            progress.report(crate::progress::Progress::ReviewFrame {
+                symbol: symbol.clone(),
+                timeframe: timeframe.to_string(),
+                index: index + 1,
+                total,
+            });
+        }
         match state_for(ctx, &symbol, timeframe, lookback).await {
             Ok((state, _, _)) => frames.push(render_state(&state, ctx.capabilities.as_ref())),
             // One missing timeframe must not sink the whole ladder: the higher
@@ -3521,6 +3553,9 @@ fn points_arg(args: &Value, tool: &str) -> Result<Vec<AgentPoint>, AgentError> {
     let items = value
         .as_array()
         .ok_or_else(|| invalid("`points` must be an array of {time_ms, price} objects".into()))?;
+    if items.len() > 64 {
+        return Err(invalid("`points` exceeds the 64-anchor limit for one AI drawing".into()));
+    }
     if items.is_empty() {
         return Err(invalid(
             "`points` has no anchors — a drawing with nowhere to sit is not a drawing".into(),
@@ -4419,6 +4454,99 @@ fn the_concept_strategy_tools_are_in_the_base_set() {
                 "{name} is advertised but has no dispatch arm"
             );
         }
+    }
+
+    /// The chart's review overlay is driven by these announcements, not by the
+    /// result: a rung that never reports itself is a picture the user never
+    /// sees, and one reported out of order reads on screen as a bottom-up
+    /// analysis -- which is the opposite of the review the product promises.
+    #[tokio::test]
+    async fn a_ladder_read_announces_every_rung_in_order() {
+        let fixture = Fixture::rising(40);
+        let sink = crate::progress::Collected::default();
+        let ctx = ToolContext::new(&fixture).with_progress(&sink);
+
+        analyze_multi_timeframe(
+            &ctx,
+            &json!({"symbol": "BTCUSDT", "timeframes": ["1d", "4h", "1h"]}),
+        )
+        .await
+        .expect("the ladder reads");
+
+        let frames: Vec<(String, usize, usize)> = sink
+            .steps()
+            .into_iter()
+            .filter_map(|step| match step {
+                crate::progress::Progress::ReviewFrame {
+                    timeframe,
+                    index,
+                    total,
+                    ..
+                } => Some((timeframe, index, total)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            frames,
+            vec![
+                ("1d".into(), 1, 3),
+                ("4h".into(), 2, 3),
+                ("1h".into(), 3, 3),
+            ],
+            "one announcement per rung, in the order the ladder is read"
+        );
+    }
+
+    /// A single-timeframe read still announces itself -- it is the frame the
+    /// overlay shows when the user asks about one chart -- and it arrives before
+    /// the data read, because after it there is nothing left to watch.
+    #[tokio::test]
+    async fn a_single_timeframe_read_announces_its_frame() {
+        let fixture = Fixture::rising(40);
+        let sink = crate::progress::Collected::default();
+        let ctx = ToolContext::new(&fixture).with_progress(&sink);
+
+        analyze_timeframe(&ctx, &json!({"symbol": "BTCUSDT", "timeframe": "4h"}))
+            .await
+            .expect("the timeframe reads");
+
+        let frames = sink
+            .steps()
+            .into_iter()
+            .filter(|step| matches!(step, crate::progress::Progress::ReviewFrame { .. }))
+            .count();
+        assert_eq!(frames, 1, "one frame for one read");
+    }
+
+    /// A teaching sketch is a polyline of many anchors, and one drawing with
+    /// ten thousand points is a chart that stops responding. The ceiling has to
+    /// be a refusal the model can act on, not a silent truncation -- a sketch
+    /// that lost its tail would still be presented as finished.
+    #[test]
+    fn a_drawing_takes_many_anchors_but_not_unbounded_ones() {
+        let points: Vec<AgentPoint> = (0..64)
+            .map(|i| AgentPoint::at(f64::from(i) * 1_000.0, 100.0 + f64::from(i)))
+            .collect();
+        let args = json!({
+            "points": points
+                .iter()
+                .map(|p| json!({"time_ms": p.time_ms, "price": p.price}))
+                .collect::<Vec<_>>(),
+        });
+        let accepted = points_arg(&args, "create_drawing").expect("64 anchors is a sketch");
+        assert_eq!(accepted.len(), 64);
+
+        let mut over: Vec<Value> = accepted
+            .iter()
+            .map(|p| json!({"time_ms": p.time_ms, "price": p.price}))
+            .collect();
+        over.push(json!({"time_ms": 999_000.0, "price": 200.0}));
+        let refused = points_arg(&json!({"points": over}), "create_drawing")
+            .expect_err("65 anchors must be refused");
+        assert!(
+            refused.to_string().contains("64"),
+            "the refusal must name the limit: {refused}"
+        );
     }
 
     #[tokio::test]

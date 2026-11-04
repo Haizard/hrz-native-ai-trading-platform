@@ -56,6 +56,18 @@ pub enum Progress {
         /// Whether it returned an error the model will see.
         ok: bool,
     },
+    /// A chart timeframe the agent is examining now. The shell can show the
+    /// matching captured image in its chart overlay while this read runs.
+    ReviewFrame {
+        /// Instrument under review.
+        symbol: String,
+        /// Timeframe being read, e.g. `4h`.
+        timeframe: String,
+        /// One-based position in this review sequence.
+        index: usize,
+        /// Number of frames in this review sequence.
+        total: usize,
+    },
     /// The thesis cited a level no tool reported, and the model has been asked
     /// to correct it.
     ///
@@ -190,6 +202,31 @@ mod tests {
         NoProgress.report(Progress::Correcting {
             reason: "stop 64000 was never reported by a tool".into(),
         });
+        NoProgress.report(Progress::ReviewFrame {
+            symbol: "BTCUSDT".into(),
+            timeframe: "4h".into(),
+            index: 1,
+            total: 3,
+        });
+    }
+
+    /// The shell branches on `stage` and reads the counter to caption the card.
+    /// A rename on either side is invisible to the compiler and shows up as a
+    /// chart that never gets a review picture, so the wire shape is pinned.
+    #[test]
+    fn a_review_frame_is_the_shape_the_shell_reads() {
+        let value = serde_json::to_value(Progress::ReviewFrame {
+            symbol: "BTCUSDT".into(),
+            timeframe: "4h".into(),
+            index: 2,
+            total: 5,
+        })
+        .expect("progress serializes");
+        assert_eq!(value["stage"], "review_frame");
+        assert_eq!(value["symbol"], "BTCUSDT");
+        assert_eq!(value["timeframe"], "4h");
+        assert_eq!(value["index"], 2);
+        assert_eq!(value["total"], 5);
     }
 
     #[test]

@@ -688,6 +688,17 @@
 #econAlert .close { margin-left: auto; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; }
 
 .chartWrap { flex: 1; position: relative; min-width: 0; min-height: 0; }
+.aiReviewOverlay {
+  position:absolute; z-index:24; top:12px; right:12px; width:min(32%,300px); min-width:180px;
+  display:grid; gap:6px; padding:7px; border:1px solid color-mix(in srgb,var(--ai) 65%,var(--line));
+  border-radius:9px; background:color-mix(in srgb,var(--panel) 94%,transparent);
+  box-shadow:0 8px 26px #0008; pointer-events:none; animation:aiReviewIn .18s ease-out;
+}
+.aiReviewOverlay img { display:block; width:100%; max-height:170px; object-fit:contain; border-radius:5px; background:var(--bg-canvas); }
+.aiReviewOverlay span { color:var(--ai); font:600 9px var(--font-mono); letter-spacing:.06em;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+@keyframes aiReviewIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
+@media (max-width:620px) { .aiReviewOverlay { width:min(45%,220px); min-width:132px; top:7px; right:7px; } .aiReviewOverlay img { max-height:115px; } }
 
 /*
   `touch-action: none` so a drag on a touchscreen pans the chart instead of

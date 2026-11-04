@@ -984,6 +984,15 @@
       <button id="chatAgent" type="button" title="Choose which agent answers">🤖</button>
       <span id="chatAgentLabel" class="chat-agent-label">any</span>
       <div id="chatAgentMenu" class="chat-attach-menu" hidden></div>
+      <!--
+        Mentor is a mode, like Attach chart: the agent stops calling a trade and
+        teaches the chart instead, drawing each point as it explains it. It is
+        here rather than only in the wording because a lesson is a sequence of
+        questions, and the user should not have to re-earn the behaviour in prose
+        for every one of them.
+      -->
+      <button id="mentorMode" type="button" aria-pressed="false"
+              title="Mentor: the agent walks you through this chart, drawing each point as it explains it">🎓 Mentor</button>
       <span class="chat-toolbar-spacer"></span>
       <button id="chatModel" type="button" title="Model settings">⚙️</button>
       <div id="chatModelCard" class="chat-model-card" hidden>

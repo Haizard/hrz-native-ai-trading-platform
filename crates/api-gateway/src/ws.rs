@@ -684,6 +684,9 @@ struct AgentWsRequest {
     /// Compact readings and provenance for broker-aware chart indicators.
     #[serde(default)]
     indicator_context: Vec<ai_agent::IndicatorContext>,
+    /// Teach mode (the chat's Mentor chip): explain the chart by drawing on it.
+    #[serde(default)]
+    teaching: bool,
 }
 
 /// Hands the agent's steps to a channel, so they can be written to the socket
@@ -758,6 +761,7 @@ where
     metrics.count(AGENT_REQUESTS, "Agent runs started", &Labels::none());
 
     let mut ask = ai_agent::AskRequest::new(&request.symbol, &request.question);
+    ask = ask.with_teaching(request.teaching);
     if let Err(reason) = crate::agent_routes::validate_registry_concept_states(&request.concept_states) {
         return Some(Frame::Notice { message: format!("concept states could not be used: {reason}") });
     }

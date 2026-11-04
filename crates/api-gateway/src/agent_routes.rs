@@ -51,6 +51,11 @@ pub struct AskBody {
     /// The calls are always logged server-side regardless.
     #[serde(default)]
     pub include_trace: bool,
+    /// Teach mode: the user asked to be walked through the chart, so the run
+    /// marks each point as it makes it. Same flag the socket carries, so a REST
+    /// client and the chat cannot disagree about what a lesson looks like.
+    #[serde(default)]
+    pub teaching: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -234,6 +239,7 @@ pub async fn ask(
     let agent = crate::provider_routes::resolve_agent(&state, &user).await?;
 
     let mut request = AskRequest::new(&body.symbol, &body.question);
+    request = request.with_teaching(body.teaching);
     request = request.with_concept_states(body.concept_states.clone());
     if let Some(id) = &body.skill_id {
         request = request.with_skill(id);
@@ -246,7 +252,7 @@ pub async fn ask(
     }
     if let Some(mut chart) = body.chart {
         // A busy chart is not an error, so the clamps trim rather than refuse:
-        // drawings past the cap and images past the four-image budget (or a
+        // drawings past the cap and images past the MAX_SCREENSHOTS budget (or a
         // capture the shell should never have sent -- an svg, an empty payload)
         // are dropped here, before the rate limit is spent, with the survivors
         // validated against the same rules the server would refuse on.

@@ -331,6 +331,15 @@ pub struct AskRequest {
     /// a drawing. They ride the first user message as image blocks, ahead of
     /// the question text, exactly like chart screenshots.
     pub attachments: Vec<AuthorImage>,
+    /// Teach mode: the user asked the agent to explain the chart, not to call
+    /// a trade.
+    ///
+    /// A toggle the shell can force on, because "explain what's happening here"
+    /// is answered just as well by a thesis with nothing drawn. With this set,
+    /// the run teaches by drawing -- one object per step, in reading order --
+    /// and the same behaviour is available to the model on its own when the
+    /// wording asks for a lesson and the toggle was never touched.
+    pub teaching: bool,
     /// A document the user attached (PDF, text): its extracted text precedes
     /// the question, named, so the model can quote it against the market.
     pub attachment_document: Option<AuthorDocument>,
@@ -362,7 +371,15 @@ impl AskRequest {
             indicator_context: Vec::new(),
             attachments: Vec::new(),
             attachment_document: None,
+            teaching: false,
         }
+    }
+
+    /// Teach mode: explain the chart by drawing on it, step by step.
+    #[must_use]
+    pub fn with_teaching(mut self, teaching: bool) -> Self {
+        self.teaching = teaching;
+        self
     }
 
     /// Attach images and an optional document to the question.
@@ -962,6 +979,7 @@ impl Agent {
             request.chart.as_ref(),
             memories.as_deref(),
             can_draw,
+            request.teaching,
         );
         // Screenshots ride on the first user message, primary view first. It is
         // attached here rather than as a separate message because Bedrock
@@ -1039,7 +1057,13 @@ impl Agent {
         // answer. The drawings source is the same shape, and so is the
         // backtest runner -- attached by the gateway, absent in tests and
         // tools-only builds, reported honestly either way.
-        let mut ctx = ToolContext::new(data).with_config(self.config.market_state.clone());
+        let mut ctx = ToolContext::new(data)
+            .with_config(self.config.market_state.clone())
+            // The asking turn's progress stream rides into the tools, so a
+            // ladder read announces each timeframe *before* it runs and the
+            // shell can put that frame's picture on screen while the model is
+            // still reading it. `ask` passes `NoProgress`, which discards.
+            .with_progress(progress);
         // The chart the user is looking at sets the DEFAULT data window: a
         // tool call without its own limit on this symbol+timeframe reads the
         // candles the user sees -- leftmost visible bar through the newest --
@@ -1176,7 +1200,15 @@ impl Agent {
             // while the duty is owed, so the gate's "draw first" correction is
             // one the model can still obey; once a drawing has landed, the
             // phase collapses to submit-only as before.
-            let drawing_owed = can_draw && skill_requires_drawing && !drew_this_run;
+            //
+            // Mentor mode owes the duty too, and for a different reason: its
+            // deliverable *is* the marks, and the point being made when the
+            // answer phase begins is usually the one still needing a drawing.
+            // The skill gate below keeps its own skill-specific correction
+            // wording -- a lesson with no skill pinned must not borrow it.
+            let drawing_owed = can_draw
+                && !drew_this_run
+                && (skill_requires_drawing || request.teaching);
             let (turn_tools, tool_choice) = if answering {
                 if drawing_owed {
                     // submit + the write side of the drawing family. The read
@@ -1292,7 +1324,8 @@ impl Agent {
                                     call.name
                                 ),
                                 "instruction": if drawing_owed {
-                                    "Draw the skill's objects with create_drawing, then call submit_thesis."
+                                    "Draw the objects your analysis named with \
+                                     create_drawing, then call submit_thesis."
                                 } else {
                                     "Call submit_thesis with the thesis you have."
                                 },
@@ -2136,6 +2169,7 @@ fn ask_system_prompt(
     chart: Option<&crate::chart_context::ChartContext>,
     memories: Option<&[crate::agent_memory::MemoryRow]>,
     can_draw: bool,
+    teaching: bool,
 ) -> String {
     let mut out = String::new();
     out.push_str("You are the market analyst for an order-flow trading terminal.\n\n");
@@ -2227,11 +2261,61 @@ fn ask_system_prompt(
              analysis no longer supports it or the user asks you to remove it. \
              Draw few, draw precisely, and say in the narrative what you drew and \
              why.\n\
+             An explain / teach / show-me request, or a request to draw a \
+             picture -- an animal, a shape, a sketch -- is answered the same \
+             way whether or not teaching mode is on: mark each point as you \
+             make it, and use `polyline` for a freeform outline.\n\
              Draw each object as soon as the analysis supports it -- do not save \
              every drawing for the last turn. The analysis budget is finite, and \
              a drawing that lands early can be refined later; one planned for \
              'after one more read' may never happen.\n\n",
         );
+    }
+    // Teach mode is a different job from calling a trade: the deliverable is
+    // the user understanding their own chart. Announce it only when the writing
+    // door is actually open -- a lesson promised in pictures on a host with no
+    // writer is the same broken promise the drawing section above refuses to
+    // make, so the fallback says plainly what the run can still do.
+    if teaching {
+        if can_draw {
+            out.push_str(
+                "## Teaching mode: explain by drawing\n\
+                 The user wants to UNDERSTAND this chart, not to be handed a \
+                 signal. Teach the way a mentor sits beside them: read the \
+                 ladder top-down -- highest resolution first, down to the one \
+                 they are looking at -- say what each resolution shows, and \
+                 mark the thing you are talking about at the moment you say it.\n\
+                 One object per point, in the order the points are made: the \
+                 level you name gets an `hline`, the zone gets a `rect`, the \
+                 slope gets a `trendline`, the measured swing gets a `fib`. \
+                 Give every object a `label` in the words a student would use \
+                 (\"HTF supply\", \"break of structure\", \"equal highs\") and \
+                 put the one-line explanation in `reason` -- the user reads \
+                 both on the chart, so a lesson must be followable from the \
+                 drawings alone. Then reference the labels in the narrative \
+                 (\"the rectangle labelled HTF supply is where price stalled\") \
+                 rather than pointing at prices the user has to hunt for.\n\
+                 Sketches are allowed: `polyline` takes 2-64 ordered anchors \
+                 and connects them, and separate polylines draw disconnected \
+                 strokes. Use it for anything the fixed kinds cannot express -- \
+                 an arrow path, a head-and-shoulders outline, an animal, a \
+                 shape the user asks you to draw. Take the anchors from the \
+                 chart's real time and price range (read them with \
+                 `get_candles`), space the points so the outline is legible, \
+                 and label an illustrative sketch as an illustration. A sketch \
+                 is a teaching aid, never market evidence, and must never be \
+                 cited as a level.\n\n",
+            );
+        } else {
+            out.push_str(
+                "## Teaching mode\n\
+                 The user wants to understand this chart. Walk the ladder \
+                 top-down and explain each resolution in plain words. You \
+                 cannot draw on their chart in this session -- say which \
+                 objects you would have marked (the level, the zone, the slope) \
+                 instead of pretending the marks exist.\n\n",
+            );
+        }
     }
 
     if !skills.is_empty() {
@@ -4792,6 +4876,105 @@ invalidation: []
         let answer = agent.ask(&request, &source).await.expect("one clean turn");
         assert_eq!(answer.turns, 1);
         assert!(writer.created.lock().expect("lock poisoned").is_empty());
+    }
+
+    /// Mentor mode is a promise the shell renders -- a card that waits for
+    /// drawings, a review that walks the ladder -- and the model only keeps it
+    /// if the prompt says so. Asserted on the prompt the orchestrator actually
+    /// sent, because a `with_teaching` that never reaches the builder is the
+    /// failure this feature would ship with.
+    #[tokio::test]
+    async fn teaching_mode_rewrites_the_job_in_the_prompt() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer);
+        let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
+            100_100.0, 100_000.0, 100_400.0,
+        )]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        let request = AskRequest::new("BTCUSDT", "walk me through this chart")
+            .with_drawings(drawings)
+            .with_teaching(true);
+        agent
+            .ask(&request, &source)
+            .await
+            .expect("the lesson completes");
+
+        let system = system_prompt_of(&llm);
+        assert!(
+            system.contains("Teaching mode: explain by drawing"),
+            "a lesson the model was never told it is teaching: {system}"
+        );
+        assert!(
+            system.contains("top-down") && system.contains("One object per point"),
+            "the prompt must carry the method, not just the label"
+        );
+        assert!(
+            system.contains("polyline"),
+            "a freeform sketch is the whole point of the drawing contract"
+        );
+    }
+
+    /// The toggle off is the ordinary run: no lesson, and no drawing duty the
+    /// skill never asked for. Without this half, "mentor" would be a flag that
+    /// silently changed every question.
+    #[tokio::test]
+    async fn an_ordinary_question_gets_no_lesson_prompt() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user").with_writer(writer);
+        let llm = Arc::new(ScriptedClient::new(vec![thesis_call(
+            100_100.0, 100_000.0, 100_400.0,
+        )]));
+        let agent = Agent::new(llm.clone(), SkillLibrary::new(), AgentConfig::default());
+
+        agent
+            .ask(&AskRequest::new("BTCUSDT", "is this level holding"), &source)
+            .await
+            .expect("the thesis lands");
+
+        let system = system_prompt_of(&llm);
+        assert!(
+            !system.contains("Teaching mode"),
+            "teaching leaked into a question that did not ask for it"
+        );
+    }
+
+    /// Mentor mode with no skill pinned still owes the marks in the answer
+    /// phase. This is the difference between a lesson and a receipt: the point
+    /// the model is making when its reads run out is the one that still needs a
+    /// drawing, and refusing the tool there leaves the user watching a chart
+    /// with nothing on it.
+    #[tokio::test]
+    async fn a_lesson_draws_in_the_answer_phase_without_a_skill() {
+        let source = Fixture::new();
+        let writer = Arc::new(RecordingWriter::default());
+        let analysis_turns = AgentConfig::default().max_turns;
+        let mut responses: Vec<LlmResponse> = (0..analysis_turns)
+            .map(|i| read_call(&format!("r{i}")))
+            .collect();
+        responses.push(draw_call("d1"));
+        responses.push(thesis_call(100_100.0, 100_000.0, 100_400.0));
+        let llm = Arc::new(ScriptedClient::new(responses));
+        let agent = Agent::new(llm, SkillLibrary::new(), AgentConfig::default());
+
+        let drawings = DrawingsContext::new(Arc::new(NoDrawings), "test-user")
+            .with_writer(writer.clone());
+        let request = AskRequest::new("BTCUSDT", "teach me this structure")
+            .with_drawings(drawings)
+            .with_teaching(true);
+
+        agent
+            .ask(&request, &source)
+            .await
+            .expect("the mark landed in the answer phase");
+
+        assert_eq!(
+            writer.created.lock().expect("lock poisoned").len(),
+            1,
+            "a lesson's drawing must run in the answer phase, not be refused"
+        );
     }
 
     fn read_call(id: &str) -> LlmResponse {

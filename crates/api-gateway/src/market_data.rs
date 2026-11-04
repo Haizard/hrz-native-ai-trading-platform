@@ -717,4 +717,37 @@ mod tests {
             "the buffer's bar must win, and no venue call is needed to find it"
         );
     }
+
+    /// A teaching sketch is one polyline with many anchors, and this adapter is
+    /// the door the model writes through. The engine's arity rule lets a polyline
+    /// have two points or sixty; the door has to agree with the engine rather than
+    /// keep its own count, or the sketch is refused for a reason no one wrote down.
+    #[test]
+    fn a_freeform_sketch_goes_through_the_write_door() {
+        let point = |index: u32| {
+            ai_agent::AgentPoint::at(
+                1_700_000_000_000.0 + f64::from(index) * 60_000.0,
+                100.0 + f64::from(index),
+            )
+        };
+        let sketch = ai_agent::NewAgentDrawing {
+            kind: "polyline".into(),
+            label: Some("horse outline".into()),
+            points: (0..12).map(point).collect(),
+            provenance: None,
+        };
+        DbDrawingWriter::validate(&sketch).expect("twelve anchors is a sketch, not an error");
+
+        // A one-point path is not a shape the engine can stroke, and the
+        // refusal is the model's only chance to fix it before the thesis lands.
+        let stub = ai_agent::NewAgentDrawing {
+            points: vec![point(0)],
+            ..sketch
+        };
+        let refused = DbDrawingWriter::validate(&stub).expect_err("one anchor is not a path");
+        assert!(
+            refused.to_string().contains("at least 2"),
+            "the refusal must name the arity the engine wants: {refused}"
+        );
+    }
 }

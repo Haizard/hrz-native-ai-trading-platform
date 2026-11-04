@@ -185,18 +185,21 @@ pub struct ChartContext {
     /// the same symbol sends each one here, labelled. [`Self::screenshot`]
     /// stays the primary view (the chart the user is looking at); these ride
     /// behind it. Capped by [`MAX_SCREENSHOTS`] in
-    /// [`Self::clamp_screenshots`] -- every image is paid for in tokens, and
-    /// a fifth chart has never been the difference in a thesis.
+    /// [`Self::clamp_screenshots`] -- every image is paid for in tokens, so the
+    /// ladder is bounded even though it is the ladder a top-down review reads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screenshots: Vec<ChartScreenshot>,
 }
 
 /// The most images one question may carry.
 ///
-/// Four -- one primary plus the 1d/4h/1h/5m ladder a shell can plausibly
-/// chart. Images dominate a request's token cost, and a vision pass over more
-/// than four charts reads none of them well.
-pub const MAX_SCREENSHOTS: usize = 4;
+/// Six -- one primary plus a five-rung ladder the shell can plausibly chart.
+/// The count follows the review the product asks for: a top-down read walks
+/// 1d -> 4h -> 1h -> 15m -> 5m, and a rung with no picture is a rung the model
+/// reads blind while the user watches an overlay name it. Images still dominate
+/// the request's token cost, so the ladder stops at five rather than at every
+/// resolution the engine offers.
+pub const MAX_SCREENSHOTS: usize = 6;
 
 impl ChartContext {
     /// Whether the packet carries nothing worth rendering.
@@ -290,9 +293,10 @@ impl ChartContext {
         dropped
     }
 
-    /// Every image the packet carries, primary first.
+    /// Every image the packet carries, ordered from higher to lower timeframe.
     ///
-    /// What the orchestrator walks when building the message blocks.
+    /// Captions and image blocks use this same order, so the model and the
+    /// on-chart review overlay follow a coherent top-down analysis.
     #[must_use]
     pub fn all_screenshots(&self) -> Vec<&ChartScreenshot> {
         let mut out = Vec::new();
@@ -300,6 +304,17 @@ impl ChartContext {
             out.push(primary);
         }
         out.extend(self.screenshots.iter());
+        // Coarse to fine, and the sequence is load-bearing: a label is matched
+        // by substring, so "15m chart" also contains "5m chart". Scanning
+        // highest-first means the longer resolution is always tried before the
+        // shorter one it contains. Reorder this list and the 15m picture starts
+        // claiming the 5m slot in the review order.
+        const ORDER: [&str; 11] = ["1w", "1d", "12h", "8h", "4h", "2h", "1h", "30m", "15m", "5m", "1m"];
+        out.sort_by_key(|shot| {
+            let label = shot.label.as_deref().unwrap_or_default().to_ascii_lowercase();
+            ORDER.iter().position(|timeframe| label.contains(&format!("{timeframe} chart")))
+                .unwrap_or(ORDER.len())
+        });
         out
     }
 
@@ -808,21 +823,23 @@ mod tests {
     }
 
     #[test]
-    fn multiple_screenshots_are_capped_and_validated_primary_first() {
+    fn multiple_screenshots_are_capped_and_validated_before_review_ordering() {
         let shot = |label: &str, ok: bool| ChartScreenshot {
             media_type: "image/png".into(),
             data: if ok { "AAAA".into() } else { String::new() },
             label: Some(label.into()),
         };
 
-        // Primary + four extras: with the primary held, one extra is past the
-        // four-image budget and must be dropped, not refused.
+        // Primary + six extras: with the primary held, one extra is past the
+        // six-image budget and must be dropped, not refused.
         let mut context = ChartContext {
             screenshot: Some(shot("4h chart", true)),
             screenshots: vec![
                 shot("1d chart", true),
                 shot("1h chart", true),
                 shot("5m chart", true),
+                shot("15m chart", true),
+                shot("1m chart", true),
                 shot("trailing chart", true),
             ],
             ..Default::default()
@@ -871,12 +888,40 @@ mod tests {
             rendered.contains("Images of the user's charts are attached"),
             "{rendered}"
         );
-        let primary_at = rendered.find("1. 4h chart").expect("primary named first");
-        let extra1_at = rendered.find("2. 1d chart").expect("first extra named");
+        let extra1_at = rendered.find("1. 1d chart").expect("highest timeframe first");
+        let primary_at = rendered.find("2. 4h chart").expect("next lower timeframe follows");
         let extra2_at = rendered.find("3. ").expect("unlabelled image still listed");
         assert!(
-            primary_at < extra1_at && extra1_at < extra2_at,
+            extra1_at < primary_at && primary_at < extra2_at,
             "{rendered}"
+        );
+    }
+
+    /// The review order also drives the on-chart review card, and two rungs are
+    /// a trap: `15m chart` contains `5m chart`. A ranking that matched the short
+    /// label first would file the fifteen-minute picture under five minutes and
+    /// the ladder would read out of order on screen.
+    #[test]
+    fn rungs_rank_coarse_to_fine_when_one_label_contains_another() {
+        let shot = |label: &str| ChartScreenshot {
+            media_type: "image/png".into(),
+            data: "AAAA".into(),
+            label: Some(label.into()),
+        };
+        let context = ChartContext {
+            screenshot: Some(shot("5m chart")),
+            screenshots: vec![shot("15m chart"), shot("1w chart"), shot("1h chart")],
+            ..Default::default()
+        };
+        let labels: Vec<&str> = context
+            .all_screenshots()
+            .iter()
+            .map(|image| image.label.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["1w chart", "1h chart", "15m chart", "5m chart"],
+            "weekly, hourly, fifteen-minute, five-minute -- not the order they arrived"
         );
     }
 
