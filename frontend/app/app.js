@@ -19171,7 +19171,16 @@ function renderIndicatorHeatmap(data) {
       const metrics = (reading.metrics || []).map((metric) => `<div><dt>${escapeHtml(metric.name)}</dt><dd>${escapeHtml(metric.value)}</dd></div>`).join("");
       return `<details class="heatmapCell ${cellTone}"><summary><span>${escapeHtml(frame.timeframe)}</span><b>${escapeHtml(reading.state)}</b><em>${scoreText}</em></summary><dl>${metrics}</dl><small>${escapeHtml(reading.basis || "OHLC candles")}</small>${reading.note ? `<p>${escapeHtml(reading.note)}</p>` : ""}</details>`;
     }).join("");
-    return `<section class="heatmapFamily"><header><strong>${escapeHtml(family.name)}</strong><span>${family.id === "volatility" ? "risk regime" : "directional evidence"}</span></header><div class="heatmapFamily__cells">${cells}</div></section>`;
+    const indicators = (family.indicators || []).map((indicator) => {
+      const readings = frames.map((frame) => {
+        const frameFamily = (frame.families || []).find((candidate) => candidate.id === family.id);
+        const item = (frameFamily?.indicators || []).find((candidate) => candidate.id === indicator.id);
+        if (!item) return `<span class="heatmapIndicatorCell is-muted">${escapeHtml(frame.timeframe)} · —</span>`;
+        return `<span class="heatmapIndicatorCell ${heatmapStateClass(item.state)}" title="${escapeHtml(item.note || item.value)}"><b>${escapeHtml(frame.timeframe)}</b> ${escapeHtml(item.value)} <em>${escapeHtml(item.state)}</em></span>`;
+      }).join("");
+      return `<div class="heatmapIndicator"><div class="heatmapIndicator__name"><strong>${escapeHtml(indicator.name)}</strong><small>${escapeHtml(indicator.id)}</small></div><div class="heatmapIndicator__frames">${readings}</div></div>`;
+    }).join("");
+    return `<section class="heatmapFamily"><header><strong>${escapeHtml(family.name)}</strong><span>${(family.indicators || []).length} registered indicators · ${family.id === "volatility" ? "risk regime" : "directional evidence"}</span></header><div class="heatmapFamily__cells">${cells}</div><div class="heatmapIndicators">${indicators}</div></section>`;
   }).join("");
   status.hidden = true;
   results.hidden = false;

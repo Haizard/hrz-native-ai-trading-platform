@@ -66,6 +66,19 @@
 .heatmapCell.is-expanded summary > b { color:#f6a75c; }
 .heatmapCell.is-compressed summary > b { color:#8c91ff; }
 .heatmapCell.is-muted { opacity:.65; }
+.heatmapIndicators { display:grid; gap:4px; margin-top:8px; }
+.heatmapIndicator { display:grid; grid-template-columns:minmax(90px,.7fr) minmax(0,1.3fr); gap:6px; align-items:center; padding:5px 0; border-top:1px solid var(--line); }
+.heatmapIndicator__name { min-width:0; display:flex; flex-direction:column; gap:2px; }
+.heatmapIndicator__name strong { color:var(--text-2); font-size:10px; font-weight:600; }
+.heatmapIndicator__name small { color:var(--text-3); font:8px var(--font-mono); overflow-wrap:anywhere; }
+.heatmapIndicator__frames { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
+.heatmapIndicatorCell { max-width:100%; padding:3px 5px; border:1px solid var(--line); border-radius:4px; color:var(--text-2); background:var(--panel); font:8px var(--font-mono); overflow-wrap:anywhere; }
+.heatmapIndicatorCell b { color:var(--text-3); font-weight:500; }
+.heatmapIndicatorCell em { color:var(--text-3); font:normal 8px var(--font-ui); }
+.heatmapIndicatorCell.is-up { color:var(--up); }
+.heatmapIndicatorCell.is-down { color:var(--down); }
+.heatmapIndicatorCell.is-muted { opacity:.65; }
+@media (max-width:520px) { .heatmapIndicator { grid-template-columns:1fr; } .heatmapIndicator__frames { justify-content:flex-start; } }
 
 /* The Deriv trade ticket (chart menu, Deriv symbols only). */
 .tradeTicket { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; }

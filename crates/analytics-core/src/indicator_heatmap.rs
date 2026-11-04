@@ -19,6 +19,23 @@ pub struct HeatmapMetric {
     pub value: String,
 }
 
+/// One registered indicator's latest value inside a concept family.
+#[derive(Debug, Clone, Serialize)]
+pub struct IndicatorReading {
+    /// Registry concept id.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Latest plotted value(s), or an explicit availability message.
+    pub value: String,
+    /// Interpreted state when the indicator has a meaningful one.
+    pub state: String,
+    /// Directional contribution when the reading supports one.
+    pub score: Option<f64>,
+    /// Data or warm-up caveat.
+    pub note: Option<String>,
+}
+
 /// One indicator family on one timeframe.
 #[derive(Debug, Clone, Serialize)]
 pub struct FamilyReading {
@@ -34,6 +51,8 @@ pub struct FamilyReading {
     pub confidence: f64,
     /// Diagnostic readings that explain the score.
     pub metrics: Vec<HeatmapMetric>,
+    /// Every indicator assigned to this family by the chart concept taxonomy.
+    pub indicators: Vec<IndicatorReading>,
     /// Where the family inputs came from.
     pub basis: String,
     /// Why the reading is limited or unavailable.
@@ -186,6 +205,7 @@ fn reading(
                 value,
             })
             .collect(),
+        indicators: Vec::new(),
         basis: basis.into(),
         note,
     }
@@ -498,7 +518,7 @@ fn calculate_frame(candles: &[Candle], quote_activity: Option<&[f64]>) -> Vec<Fa
     } else {
         None
     };
-    vec![
+    let mut families = vec![
         reading(
             "volume",
             "Volume",
@@ -575,7 +595,407 @@ fn calculate_frame(candles: &[Candle], quote_activity: Option<&[f64]>) -> Vec<Fa
             stat_metrics,
             note,
         ),
-    ]
+    ];
+    for family in &mut families {
+        family.indicators = indicator_readings(family.id.as_str(), candles, quote_activity);
+    }
+    families
+}
+
+/// Keep this mapping in lockstep with `frontend/app/concept_taxonomy.js`.
+/// Evaluations reuse the same indicator-series implementation as the chart.
+fn indicator_readings(
+    family: &str,
+    candles: &[Candle],
+    quote_activity: Option<&[f64]>,
+) -> Vec<IndicatorReading> {
+    let specs: &[(&str, &str)] = match family {
+        "trend" => &[
+            ("indicators.ema", "EMA Stack"),
+            ("indicators.sma", "SMA Stack"),
+            ("indicators.ema_family", "EMA Ribbon (GMMA)"),
+            ("indicators.supertrend", "Supertrend"),
+            ("indicators.psar", "Parabolic SAR"),
+            ("indicators.adx", "ADX"),
+            ("indicators.macd", "MACD"),
+            ("indicators.macd_family", "MACD Family"),
+            ("indicators.keltner", "Keltner Channels"),
+            ("indicators.donchian", "Donchian Channels"),
+            ("indicators.ichimoku", "Ichimoku Cloud"),
+            ("indicators.chandelier", "Chandelier Exit"),
+        ],
+        "momentum" => &[
+            ("indicators.rsi", "RSI"),
+            ("indicators.rsi_divergence", "RSI Divergence"),
+            ("indicators.rsi_family", "RSI Family"),
+            ("indicators.rsi_pca", "RSI-PCA Model"),
+            ("indicators.stochastic", "Stochastic"),
+            ("indicators.cci", "CCI"),
+            ("indicators.williams_r", "Williams %R"),
+            ("indicators.roc", "Rate of Change"),
+            ("indicators.tsi", "True Strength Index"),
+            ("indicators.awesome", "Awesome Oscillator"),
+        ],
+        "volatility" => &[
+            ("indicators.bollinger", "Bollinger Bands"),
+            ("indicators.bollinger_percent", "Bollinger %B + Bandwidth"),
+            ("indicators.atr", "ATR"),
+            ("indicators.atr_family", "ATR Family"),
+        ],
+        "volume" => &[
+            ("indicators.obv", "On-Balance Volume"),
+            ("indicators.ad_line", "A/D Line"),
+            ("indicators.cmf", "Chaikin Money Flow"),
+            ("indicators.mfi", "Money Flow Index"),
+            ("indicators.anchored_vwap", "Anchored VWAP"),
+        ],
+        "statistical" => &[
+            ("indicators.hv", "Historical Volatility"),
+            ("indicators.zscore", "Z-Score"),
+            ("indicators.kalman", "Kalman Filter"),
+            ("indicators.changepoint", "CUSUM Change-Point"),
+            ("indicators.entropy", "Shannon Entropy"),
+            ("indicators.bayesian_drift", "Bayesian Drift"),
+            ("indicators.ar_forecast", "AR(2) Forecast"),
+            ("indicators.garch", "GARCH(1,1)"),
+            ("indicators.hmm", "HMM Regime"),
+            ("indicators.pairs", "Pairs (Cointegration)"),
+        ],
+        _ => &[],
+    };
+    specs
+        .iter()
+        .map(|(id, name)| evaluate_indicator(id, name, family, candles, quote_activity))
+        .collect()
+}
+
+fn evaluate_indicator(
+    id: &str,
+    name: &str,
+    family: &str,
+    candles: &[Candle],
+    quote_activity: Option<&[f64]>,
+) -> IndicatorReading {
+    if id == "indicators.pairs" {
+        return indicator_unavailable(id, name, "requires a second symbol; no pair was selected");
+    }
+    if candles.len() < 30 {
+        return indicator_unavailable(id, name, "warming up; more candle history is required");
+    }
+    if family == "volume" && candles.iter().all(|c| c.volume <= 0.0) && quote_activity.is_none() {
+        return indicator_unavailable(
+            id,
+            name,
+            "this feed has no usable traded-volume observations",
+        );
+    }
+    if family == "volume" && candles.iter().all(|c| c.volume <= 0.0) {
+        if let Some(activity) = quote_activity {
+            let (value, score) = quote_volume_proxy(id, candles, activity);
+            return IndicatorReading {
+                id: id.into(),
+                name: name.into(),
+                value,
+                state: "activity proxy".into(),
+                score: None,
+                note: Some(format!(
+                    "Quote-update proxy only; directional score withheld. The indicator cannot infer aggressor trades or true traded volume. Proxy direction estimate: {score:+.0}."
+                )),
+            };
+        }
+    }
+    let Some(series) = crate::indicator_series::indicator_series(id, candles) else {
+        return indicator_unavailable(
+            id,
+            name,
+            "indicator series is not available for this registry concept",
+        );
+    };
+    let mut latest_values: Vec<(String, f64)> = Vec::new();
+    if let Some(bars) = &series.bars {
+        if let Some(value) = bars.values.iter().rev().find_map(|v| *v) {
+            latest_values.push((bars.name.clone(), value));
+        }
+    }
+    for line in &series.lines {
+        if let Some(value) = line.values.iter().rev().find_map(|v| *v) {
+            latest_values.push((line.name.clone(), value));
+        }
+    }
+    if latest_values.is_empty() {
+        if let Some(marker) = series.markers.last() {
+            return IndicatorReading {
+                id: id.into(),
+                name: name.into(),
+                value: marker.label.clone(),
+                state: marker.kind.clone(),
+                score: Some(if marker.kind == "bullish" {
+                    70.0
+                } else {
+                    -70.0
+                }),
+                note: None,
+            };
+        }
+        return indicator_unavailable(id, name, "no valid value in this candle window");
+    }
+    let value = latest_values
+        .iter()
+        .take(3)
+        .map(|(label, value)| format!("{label}: {}", compact_value(*value)))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let latest_close = *closes.last().unwrap_or(&0.0);
+    let mut directional_values = Vec::new();
+    for (label, current) in &latest_values {
+        let line = series.lines.iter().find(|line| line.name == *label);
+        let previous = line.and_then(|line| line.values.iter().rev().nth(4).and_then(|v| *v));
+        let vote = match family {
+            "trend" if *current > 0.0 && latest_close > 0.0 => {
+                if id.ends_with("ema")
+                    || id.ends_with("sma")
+                    || id.ends_with("ema_family")
+                    || id.ends_with("supertrend")
+                    || id.ends_with("psar")
+                    || id.ends_with("keltner")
+                    || id.ends_with("donchian")
+                    || id.ends_with("ichimoku")
+                    || id.ends_with("chandelier")
+                {
+                    Some(if latest_close > *current { 75.0 } else { -75.0 })
+                } else if id.ends_with("adx") {
+                    None
+                } else {
+                    Some(if *current > 0.0 { 55.0 } else { -55.0 })
+                }
+            }
+            "momentum" => Some(momentum_vote(id, *current)),
+            "volume" if id.ends_with("cmf") || id.ends_with("ad_line") || id.ends_with("obv") => {
+                let prior = series
+                    .lines
+                    .iter()
+                    .find(|line| line.name == *label)
+                    .and_then(|line| line.values.iter().rev().nth(5).and_then(|v| *v));
+                prior.map(|prior| {
+                    if *current > prior {
+                        70.0
+                    } else if *current < prior {
+                        -70.0
+                    } else {
+                        0.0
+                    }
+                })
+            }
+            "volume" if id.ends_with("mfi") => Some((*current - 50.0).clamp(-50.0, 50.0) * 2.0),
+            "volume" if id.ends_with("anchored_vwap") => Some(if latest_close >= *current {
+                70.0
+            } else {
+                -70.0
+            }),
+            "statistical" if id.ends_with("kalman") => Some(if latest_close >= *current {
+                65.0
+            } else {
+                -65.0
+            }),
+            "statistical"
+                if id.ends_with("entropy")
+                    || id.ends_with("hmm")
+                    || id.ends_with("garch")
+                    || id.ends_with("hv") =>
+            {
+                None
+            }
+            "statistical" => Some(if *current > 0.0 {
+                60.0
+            } else if *current < 0.0 {
+                -60.0
+            } else {
+                0.0
+            }),
+            _ => None,
+        };
+        if let Some(vote) = vote {
+            directional_values.push(vote);
+        }
+        if family == "trend" {
+            if let Some(previous) = previous.filter(|v| *v != 0.0) {
+                directional_values
+                    .push(((*current / previous - 1.0) * 1200.0).clamp(-100.0, 100.0));
+            }
+        }
+    }
+    let score = if family == "volatility"
+        || (family == "volume"
+            && quote_activity.is_some()
+            && candles.iter().all(|c| c.volume <= 0.0))
+    {
+        None
+    } else if directional_values.is_empty() {
+        None
+    } else {
+        Some(directional_values.iter().sum::<f64>() / directional_values.len() as f64)
+    };
+    let state = match (family, score) {
+        ("volatility", _) => "risk regime",
+        ("volume", _) if quote_activity.is_some() && candles.iter().all(|c| c.volume <= 0.0) => {
+            "activity proxy"
+        }
+        (_, Some(value)) if value >= 20.0 => "bullish",
+        (_, Some(value)) if value <= -20.0 => "bearish",
+        (_, Some(_)) => "mixed / neutral",
+        _ => "measured",
+    };
+    IndicatorReading {
+        id: id.into(),
+        name: name.into(),
+        value,
+        state: state.into(),
+        score,
+        note: if family == "volume"
+            && quote_activity.is_some()
+            && candles.iter().all(|c| c.volume <= 0.0)
+        {
+            Some("Displayed chart series uses quote activity, not traded volume; directional volume score is withheld.".into())
+        } else {
+            None
+        },
+    }
+}
+
+fn indicator_unavailable(id: &str, name: &str, reason: &str) -> IndicatorReading {
+    IndicatorReading {
+        id: id.into(),
+        name: name.into(),
+        value: "—".into(),
+        state: "unavailable".into(),
+        score: None,
+        note: Some(reason.into()),
+    }
+}
+
+fn compact_value(value: f64) -> String {
+    if value.abs() >= 1_000.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.3}")
+    }
+}
+
+fn momentum_vote(id: &str, value: f64) -> f64 {
+    if id == "indicators.rsi"
+        || id == "indicators.rsi_family"
+        || id == "indicators.stochastic"
+        || id == "indicators.rsi_divergence"
+    {
+        (value - 50.0).clamp(-50.0, 50.0) * 2.0
+    } else if id.ends_with("williams_r") {
+        (value + 50.0).clamp(-50.0, 50.0) * 2.0
+    } else if value > 0.0 {
+        65.0
+    } else if value < 0.0 {
+        -65.0
+    } else {
+        0.0
+    }
+}
+
+fn quote_volume_proxy(id: &str, candles: &[Candle], activity: &[f64]) -> (String, f64) {
+    let start = candles.len().saturating_sub(30);
+    let mut signed_activity = 0.0;
+    let mut total_activity = 0.0;
+    let mut positive_flow = 0.0;
+    let mut negative_flow = 0.0;
+    let mut weighted_price = 0.0;
+    for index in start..candles.len() {
+        let candle = &candles[index];
+        let count = activity.get(index).copied().unwrap_or(0.0).max(0.0);
+        total_activity += count;
+        signed_activity += if index > 0 {
+            let previous_close = candles[index - 1].close;
+            if candle.close > previous_close {
+                count
+            } else if candle.close < previous_close {
+                -count
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+        let typical = (candle.high + candle.low + candle.close) / 3.0;
+        weighted_price += typical * count;
+        if index > 0 {
+            let previous =
+                (candles[index - 1].high + candles[index - 1].low + candles[index - 1].close) / 3.0;
+            if typical > previous {
+                positive_flow += typical * count;
+            } else if typical < previous {
+                negative_flow += typical * count;
+            }
+        }
+    }
+    let clv_flow = candles
+        .iter()
+        .zip(activity)
+        .skip(start)
+        .map(|(candle, count)| {
+            ((2.0 * candle.close - candle.high - candle.low)
+                / (candle.high - candle.low).max(f64::EPSILON))
+                * count.max(0.0)
+        })
+        .sum::<f64>();
+    let cmf = if total_activity > 0.0 {
+        clv_flow / total_activity
+    } else {
+        0.0
+    };
+    let obv = if total_activity > 0.0 {
+        signed_activity / total_activity * 100.0
+    } else {
+        0.0
+    };
+    let mfi = if negative_flow <= 0.0 {
+        if positive_flow > 0.0 { 100.0 } else { 50.0 }
+    } else {
+        100.0 - 100.0 / (1.0 + positive_flow / negative_flow)
+    };
+    let vwap = if total_activity > 0.0 {
+        weighted_price / total_activity
+    } else {
+        candles.last().map_or(0.0, |c| c.close)
+    };
+    let close = candles.last().map_or(0.0, |c| c.close);
+    let score = match id {
+        "indicators.obv" | "indicators.ad_line" => obv,
+        "indicators.cmf" => (cmf * 100.0).clamp(-100.0, 100.0),
+        "indicators.mfi" => (mfi - 50.0) * 2.0,
+        _ => {
+            if close >= vwap {
+                70.0
+            } else {
+                -70.0
+            }
+        }
+    };
+    let value = match id {
+        "indicators.obv" => format!(
+            "OBV activity slope {obv:+.1} / 100 · {} ticks",
+            total_activity.round()
+        ),
+        "indicators.ad_line" => format!(
+            "A/D activity flow {clv_flow:+.1} · {} ticks",
+            total_activity.round()
+        ),
+        "indicators.cmf" => format!("CMF proxy {cmf:+.3} · {} ticks", total_activity.round()),
+        "indicators.mfi" => format!("MFI proxy {mfi:.1} · {} ticks", total_activity.round()),
+        _ => format!(
+            "Quote-weighted AVWAP {} · close {}",
+            compact_value(vwap),
+            compact_value(close)
+        ),
+    };
+    (value, score)
 }
 
 fn state(score: f64, threshold: f64) -> &'static str {
@@ -725,5 +1145,36 @@ mod tests {
             .unwrap();
         assert_eq!(volume.state, "unavailable");
         assert!(volume.score.is_none());
+    }
+
+    #[test]
+    fn every_indicator_in_the_five_chart_taxonomy_families_is_present() {
+        let heatmap = calculate(
+            "TEST",
+            Timeframe::M5,
+            &[(Timeframe::M5, candles(0.2, 100.0), None)],
+        );
+        let expected = [
+            ("trend", 12),
+            ("momentum", 10),
+            ("volatility", 4),
+            ("volume", 5),
+            ("statistical", 10),
+        ];
+        for (family_id, count) in expected {
+            let family = heatmap.frames[0]
+                .families
+                .iter()
+                .find(|family| family.id == family_id)
+                .unwrap();
+            assert_eq!(family.indicators.len(), count, "{family_id}");
+            assert!(
+                family
+                    .indicators
+                    .iter()
+                    .all(|indicator| indicator.id.starts_with("indicators."))
+            );
+        }
+        assert_eq!(expected.iter().map(|(_, count)| count).sum::<usize>(), 41);
     }
 }
