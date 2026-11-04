@@ -780,6 +780,19 @@
            the routes answer nothing -- a panel that always shows is a panel
            nobody reads. -->
       <div class="footprintStats orderflowPanel" id="orderflowPanel" hidden></div>
+      <details class="footprintGuide" id="footprintGuide" hidden>
+        <summary>Footprint guide · read the auction</summary>
+        <div class="footprintGuideBody">
+          <p class="footprintGuideBasis" id="footprintGuideBasis"></p>
+          <ol>
+            <li id="footprintGuideRows"><b>Read each row:</b> left is sell-side aggression at the bid, right is buy-side aggression at the ask. Delta is the difference; the outlined row is that candle's point of control (POC).</li>
+            <li><b>Read the colors:</b> green/red shows which direction had more activity at that price; stronger shading means more activity relative to that candle's busiest row. Outlines mark diagonal imbalances; adjacent outlines form a stacked imbalance.</li>
+            <li><b>Look for effort versus result:</b> heavy aggression with little price progress can be consistent with absorption, but a footprint alone cannot prove who was absorbing or why.</li>
+            <li><b>Use a sequence:</b> first define market context, then a meaningful location (such as a value edge or prior swing), then wait for rejection and a shift in order-flow pressure. Avoid treating a single colored cell as an entry signal.</li>
+          </ol>
+          <p class="footprintGuideCaveat">This is analysis context, not an execution signal. Plan the invalidation level before a trade. Deriv displays quote-tick pressure estimates; it does not provide traded volume-at-price or aggressor-side fills.</p>
+        </div>
+      </details>
       <div class="chartNote"></div>
     </section>
   </div>

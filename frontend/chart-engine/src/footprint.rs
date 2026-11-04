@@ -35,6 +35,12 @@ pub struct ColumnCell {
     pub ask: f64,
     /// `ask - bid`.
     pub delta: f64,
+    /// Total activity: volume for executed trades, observation count for tick proxies.
+    #[serde(default)]
+    pub activity: Option<f64>,
+    /// Activity without an up/down direction in a quote-tick proxy.
+    #[serde(default)]
+    pub neutral: Option<f64>,
     /// Present when this level is part of a diagonal imbalance.
     #[serde(default)]
     pub imbalance: Option<Imbalance>,
@@ -70,6 +76,9 @@ pub struct Column {
     pub bid_volume: f64,
     /// Total ask volume.
     pub ask_volume: f64,
+    /// Deriv quote observations without an up/down tick direction.
+    #[serde(default)]
+    pub neutral_volume: f64,
     /// `ask - bid` for the candle.
     pub delta: f64,
     /// The level with the most volume.
@@ -117,6 +126,10 @@ pub struct CellScene {
     pub ask_text: String,
     /// `ask - bid`.
     pub delta: f64,
+    /// Total activity used by the heatmap.
+    pub activity: f64,
+    /// Unsigned activity, if the data basis carries it.
+    pub neutral: f64,
     /// `buy`, `sell`, or absent.
     pub side: Option<String>,
     /// Dominant over opposing, when imbalanced.
@@ -202,6 +215,9 @@ pub struct Stats {
     pub bid_text: String,
     /// Total ask volume, formatted.
     pub ask_text: String,
+    /// Neutral activity, nonzero only for quote-tick proxies.
+    #[serde(default)]
+    pub neutral_text: String,
     /// Total volume, formatted.
     pub total_text: String,
     /// Total delta, formatted.
@@ -230,6 +246,9 @@ pub struct Note {
 /// How the grid came out.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Grid {
+    /// `executed_trades` or `quote_tick_proxy`.
+    #[serde(default = "default_basis")]
+    pub basis: String,
     /// The shared price axis, ascending by price (so descending on canvas).
     pub rows: Vec<Row>,
     /// The columns, in time order.
@@ -263,6 +282,10 @@ pub struct Grid {
     /// Reported rather than recomputed, because a second copy of this
     /// arithmetic in the shell is the defect this field replaces.
     pub min_cell_px: f64,
+}
+
+fn default_basis() -> String {
+    "executed_trades".into()
 }
 
 /// Width of the stats band's label gutter, in pixels.
@@ -508,6 +531,8 @@ pub fn layout(
     let mut min_delta = f64::INFINITY;
     let mut total_bid = 0.0;
     let mut total_ask = 0.0;
+    let mut total_neutral = 0.0;
+    let mut total_activity = 0.0;
 
     // CVD accumulates across the **drawn** window, oldest to newest, so the
     // summary row's last column is the window's cumulative delta and every
@@ -535,6 +560,10 @@ pub fn layout(
                     min_delta = min_delta.min(cell.delta);
                     total_bid += cell.bid;
                     total_ask += cell.ask;
+                    let neutral = cell.neutral.unwrap_or(0.0).max(0.0);
+                    let activity = cell.activity.unwrap_or(cell.bid + cell.ask + neutral).max(0.0);
+                    total_neutral += neutral;
+                    total_activity += activity;
 
                     let is_poc = column
                         .poc
@@ -550,6 +579,8 @@ pub fn layout(
                         bid_text: compact(cell.bid),
                         ask_text: compact(cell.ask),
                         delta: cell.delta,
+                        activity,
+                        neutral,
                         side: cell.imbalance.as_ref().map(|i| i.side.clone()),
                         ratio: cell.imbalance.as_ref().map(|i| i.ratio),
                         stacked: cell.imbalance.as_ref().map(|i| i.stacked),
@@ -579,7 +610,14 @@ pub fn layout(
                     y: summary_y,
                     w: slot,
                     h: summary_height,
-                    volume_text: compact(column.volume),
+                    // The summary must describe the ladder's data basis. For
+                    // Deriv that is counted quote observations; for Binance it
+                    // is the executed volume represented by these cells.
+                    volume_text: compact(column.cells.iter().map(|cell| {
+                        cell.activity.unwrap_or(
+                            cell.bid + cell.ask + cell.neutral.unwrap_or(0.0),
+                        )
+                    }).sum()),
                     delta_text: signed(column.delta),
                     delta_positive: column.delta >= 0.0,
                     close_text: compact(column.close),
@@ -647,12 +685,14 @@ pub fn layout(
     };
 
     Some(Grid {
+        basis: default_basis(),
         rows,
         columns: columns_scene,
         stats: Stats {
             bid_text: compact(total_bid),
             ask_text: compact(total_ask),
-            total_text: compact(total_bid + total_ask),
+            neutral_text: compact(total_neutral),
+            total_text: compact(total_activity),
             delta_text: signed(total_delta),
             delta_positive: total_delta >= 0.0,
             max_delta_text: signed(max_delta),
@@ -688,6 +728,8 @@ mod tests {
             bid,
             ask,
             delta: ask - bid,
+            activity: Some(bid + ask),
+            neutral: Some(0.0),
             imbalance: None,
         }
     }
@@ -704,6 +746,7 @@ mod tests {
             volume: bid + ask,
             bid_volume: bid,
             ask_volume: ask,
+            neutral_volume: 0.0,
             delta: ask - bid,
             poc: cells
                 .iter()

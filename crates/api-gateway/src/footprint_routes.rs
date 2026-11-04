@@ -21,6 +21,7 @@
 use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use analytics_core::types::{Side, Timeframe};
 use analytics_core::{build_footprints, detect_imbalances_with, ImbalanceConfig};
@@ -81,6 +82,163 @@ fn iso(nanos: i64) -> String {
     )
 }
 
+#[derive(Default, Clone, Copy)]
+struct TickCounts {
+    down: f64,
+    up: f64,
+    flat: f64,
+}
+
+/// Build a clearly labeled tick-activity proxy for venues that publish quote
+/// ticks but no executed trades. The tick rule assigns higher/lower prices to
+/// directional counts; unchanged quotes inherit the last nonzero direction.
+/// This is intentionally not called bid/ask volume or Lee-Ready trade flow.
+fn build_quote_tick_footprint(
+    candles: &[analytics_core::Candle],
+    observations: &[(i64, f64)],
+    bucket_size: f64,
+    ratio: f64,
+) -> (Vec<FootprintCandleResponse>, usize) {
+    let mut observations = observations
+        .iter()
+        .copied()
+        .filter(|(time, price)| *time >= 0 && price.is_finite())
+        .collect::<Vec<_>>();
+    observations.sort_by_key(|(time, _)| *time);
+    let bucket = if bucket_size.is_finite() && bucket_size > 0.0 {
+        bucket_size
+    } else {
+        1.0
+    };
+    let mut direction = 0i8;
+    let mut previous_price = None;
+    let mut by_candle = vec![BTreeMap::<i64, TickCounts>::new(); candles.len()];
+    let mut totals = vec![TickCounts::default(); candles.len()];
+    let mut assigned = 0usize;
+
+    for (time, price) in &observations {
+        if let Some(previous) = previous_price {
+            if *price > previous {
+                direction = 1;
+            } else if *price < previous {
+                direction = -1;
+            }
+        }
+        previous_price = Some(*price);
+        let index = candles.partition_point(|candle| {
+            candle.open_time.saturating_add(candle.timeframe.nanos()) <= *time
+        });
+        let Some(candle) = candles.get(index) else { continue };
+        if *time < candle.open_time {
+            continue;
+        }
+        let price_index = (*price / bucket).floor() as i64;
+        let counts = by_candle[index].entry(price_index).or_default();
+        match direction {
+            1 => {
+                counts.up += 1.0;
+                totals[index].up += 1.0;
+            }
+            -1 => {
+                counts.down += 1.0;
+                totals[index].down += 1.0;
+            }
+            _ => {
+                counts.flat += 1.0;
+                totals[index].flat += 1.0;
+            }
+        }
+        assigned += 1;
+    }
+
+    let ratio = if ratio.is_finite() && ratio > 1.0 { ratio } else { 3.0 };
+    let mut result = Vec::with_capacity(candles.len());
+    for (index, candle) in candles.iter().enumerate() {
+        let low_index = (candle.low / bucket).floor() as i64;
+        let high_index = (candle.high / bucket).floor() as i64;
+        let span = high_index.saturating_sub(low_index).clamp(0, 512);
+        let mut raw = Vec::with_capacity(span as usize + 1);
+        for price_index in low_index..=low_index.saturating_add(span) {
+            let counts = by_candle[index].get(&price_index).copied().unwrap_or_default();
+            let price = (price_index as f64 + 0.5) * bucket;
+            raw.push((price, counts));
+        }
+        let mut events: Vec<Option<(&'static str, f64)>> = vec![None; raw.len()];
+        for row in 0..raw.len() {
+            let current = raw[row].1;
+            if current.up > 0.0 && row > 0 && raw[row - 1].1.down > 0.0 {
+                let value = current.up / raw[row - 1].1.down;
+                if value >= ratio {
+                    events[row] = Some(("buy", value));
+                }
+            }
+            if current.down > 0.0 && row + 1 < raw.len() && raw[row + 1].1.up > 0.0 {
+                let value = current.down / raw[row + 1].1.up;
+                if value >= ratio && events[row].is_none() {
+                    events[row] = Some(("sell", value));
+                }
+            }
+        }
+        let cells = raw
+            .iter()
+            .enumerate()
+            .map(|(row, (price, counts))| {
+                let imbalance = events[row].map(|(side, value)| {
+                    let mut start = row;
+                    let mut end = row;
+                    while start > 0 && events[start - 1].is_some_and(|e| e.0 == side) {
+                        start -= 1;
+                    }
+                    while end + 1 < events.len() && events[end + 1].is_some_and(|e| e.0 == side) {
+                        end += 1;
+                    }
+                    ImbalanceResponse {
+                        side,
+                        ratio: value,
+                        stacked: end - start + 1,
+                    }
+                });
+                let activity = counts.down + counts.up + counts.flat;
+                LevelResponse {
+                    price: *price,
+                    bid: counts.down,
+                    ask: counts.up,
+                    delta: counts.up - counts.down,
+                    activity,
+                    neutral: counts.flat,
+                    imbalance,
+                }
+            })
+            .collect::<Vec<_>>();
+        let total = totals[index];
+        let volume = total.down + total.up + total.flat;
+        let poc = cells
+            .iter()
+            .filter(|cell| cell.activity > 0.0)
+            .max_by(|a, b| a.activity.total_cmp(&b.activity))
+            .map(|cell| cell.price);
+        result.push(FootprintCandleResponse {
+            open_time: candle.open_time,
+            open: candle.open,
+            high: candle.high,
+            low: candle.low,
+            close: candle.close,
+            volume,
+            bid_volume: total.down,
+            ask_volume: total.up,
+            delta: total.up - total.down,
+            neutral_volume: total.flat,
+            poc,
+            levels: cells.len(),
+            upticks: total.up as usize,
+            downticks: total.down as usize,
+            unchanged: total.flat as usize,
+            cells,
+        });
+    }
+    (result, assigned)
+}
+
 /// One price level of one candle.
 #[derive(Debug, Serialize)]
 pub struct LevelResponse {
@@ -92,6 +250,12 @@ pub struct LevelResponse {
     pub ask: f64,
     /// `ask - bid`.
     pub delta: f64,
+    /// Total activity at the level: traded volume for Binance, quote count for Deriv.
+    #[serde(default)]
+    pub activity: f64,
+    /// Deriv observations that could not be assigned an up/down tick direction.
+    #[serde(default)]
+    pub neutral: f64,
     /// Whether this level is part of a diagonal imbalance.
     pub imbalance: Option<ImbalanceResponse>,
 }
@@ -128,10 +292,21 @@ pub struct FootprintCandleResponse {
     pub ask_volume: f64,
     /// `ask - bid` for the whole candle.
     pub delta: f64,
+    /// Deriv ticks with no assigned up/down direction.
+    #[serde(default)]
+    pub neutral_volume: f64,
     /// The price with the most volume, when the ladder is non-empty.
     pub poc: Option<f64>,
     /// How many levels the ladder holds.
     pub levels: usize,
+    /// Tick-rule directional counts; populated only for Deriv quote proxies.
+    #[serde(default)]
+    pub upticks: usize,
+    #[serde(default)]
+    pub downticks: usize,
+    /// Flat ticks with no prior nonzero tick direction.
+    #[serde(default)]
+    pub unchanged: usize,
     /// The ladder, ascending by price.
     pub cells: Vec<LevelResponse>,
 }
@@ -147,6 +322,10 @@ pub struct FootprintResponse {
     pub bucket_size: f64,
     /// Imbalance ratio used.
     pub ratio: f64,
+    /// `executed_trades` or `quote_tick_proxy`.
+    pub basis: String,
+    /// Trade prints or quote observations, as indicated by `basis`.
+    pub observations: usize,
     /// Trades that fell inside the window.
     pub trades: usize,
     /// One entry per candle, ascending by time.
@@ -175,6 +354,8 @@ pub struct CoverageResponse {
     pub trades: i64,
     /// How many whole minutes the span covers, for a caller sizing a window.
     pub minutes: i64,
+    /// `executed_trades` or `quote_tick_proxy`.
+    pub basis: String,
 }
 
 /// `GET /footprint/coverage`
@@ -193,6 +374,42 @@ pub async fn coverage(
     ApiQuery(query): ApiQuery<CoverageQuery>,
 ) -> Result<Json<CoverageResponse>, ApiError> {
     let symbol = query.symbol.to_uppercase();
+    if market_data::broker::VenueSymbol::parse(&symbol).broker == "deriv" {
+        let code = market_data::deriv::code_for_namespaced(&symbol).ok_or_else(|| {
+            ApiError::bad_request("SYMBOL_INVALID", format!("unknown Deriv symbol `{symbol}`"))
+        })?;
+        let client = market_data::deriv::DerivClient::from_env();
+        let (socket, history, early) = client
+            .subscribe_ticks(code, 5_000)
+            .await
+            .map_err(|error| {
+                ApiError::coded(
+                    axum::http::StatusCode::BAD_GATEWAY,
+                    "DERIV_TICK_HISTORY_FAILED",
+                    format!("could not load recent Deriv quote ticks for {symbol}: {error}"),
+                )
+            })?;
+        drop(socket);
+        let ticks: Vec<_> = history.into_iter().chain(early).collect();
+        let (Some(first), Some(last)) = (
+            ticks.iter().map(|tick| tick.epoch).min(),
+            ticks.iter().map(|tick| tick.epoch).max(),
+        ) else {
+            return Err(ApiError::coded(
+                axum::http::StatusCode::NOT_FOUND,
+                "NO_TICK_DATA",
+                format!("Deriv returned no quote ticks for {symbol}"),
+            ));
+        };
+        return Ok(Json(CoverageResponse {
+            symbol,
+            from: first.saturating_mul(1_000),
+            to: last.saturating_mul(1_000).saturating_add(1_000),
+            trades: ticks.len() as i64,
+            minutes: (last - first) / 60,
+            basis: "quote_tick_proxy".into(),
+        }));
+    }
     state.bots.ensure_feed_for(&symbol);
 
     let tape = state.bots.live().tape(&symbol);
@@ -217,7 +434,55 @@ pub async fn coverage(
         to: last / 1_000_000 + 1,
         trades: tape.len() as i64,
         minutes: (last - first) / 60_000_000_000,
+        basis: "executed_trades".into(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deriv_quote_ticks_build_a_labeled_price_activity_proxy() {
+        let candle = analytics_core::Candle {
+            symbol: "DERIV:Volatility 75".into(),
+            timeframe: Timeframe::M1,
+            open_time: 0,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.25,
+            volume: 0.0,
+            buy_volume: 0.0,
+            sell_volume: 0.0,
+        };
+        let ticks = [
+            (5, 100.25),
+            (1, 100.0),
+            (4, 99.75),
+            (3, 100.25),
+            (2, 100.25),
+        ];
+        let (bars, observations) =
+            build_quote_tick_footprint(&[candle], &ticks, 0.5, 2.0);
+        assert_eq!(observations, 5);
+        assert_eq!(bars.len(), 1);
+        let bar = &bars[0];
+        assert_eq!(bar.volume, 5.0, "the proxy counts observations, not volume");
+        assert_eq!(bar.upticks, 3);
+        assert_eq!(bar.downticks, 1);
+        assert_eq!(bar.unchanged, 1);
+        assert_eq!(bar.delta, 2.0, "tick pressure is up ticks minus down ticks");
+        assert_eq!(bar.poc, Some(100.25));
+        let buy_imbalance = bar
+            .cells
+            .iter()
+            .find(|cell| cell.price == 100.25)
+            .and_then(|cell| cell.imbalance.as_ref())
+            .expect("diagonal tick-count imbalance");
+        assert_eq!(buy_imbalance.side, "buy");
+        assert!(buy_imbalance.ratio >= 2.0);
+    }
 }
 
 /// `GET /footprint`
@@ -273,6 +538,62 @@ pub async fn footprint(
                 query.timeframe
             ),
         ));
+    }
+
+    if market_data::broker::VenueSymbol::parse(&symbol).broker == "deriv" {
+        let code = market_data::deriv::code_for_namespaced(&symbol).ok_or_else(|| {
+            ApiError::bad_request("SYMBOL_INVALID", format!("unknown Deriv symbol `{symbol}`"))
+        })?;
+        let bucket_size = query
+            .bucket_size
+            .filter(|size| size.is_finite() && *size > 0.0)
+            .unwrap_or_else(|| {
+                let low = candles.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+                let high = candles
+                    .iter()
+                    .map(|c| c.high)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                analytics_core::volume_profile::round_bucket(high - low, TARGET_ROWS)
+            });
+        let observations = market_data::deriv::DerivClient::from_env()
+            .quote_history(code, from_ns, to_ns, 5_000)
+            .await
+            .map_err(|error| {
+                ApiError::coded(
+                    axum::http::StatusCode::BAD_GATEWAY,
+                    "DERIV_TICK_HISTORY_FAILED",
+                    format!("could not load Deriv quote ticks for {symbol}: {error}"),
+                )
+            })?;
+        if observations.is_empty() {
+            return Err(ApiError::coded(
+                axum::http::StatusCode::NOT_FOUND,
+                "NO_TICK_DATA",
+                format!("no Deriv quote ticks are available for {symbol} in this window"),
+            ));
+        }
+        let (candles, observations_count) = build_quote_tick_footprint(
+            &candles,
+            &observations,
+            bucket_size,
+            ratio,
+        );
+        let observed = observations_count;
+        let mut note = "Deriv footprint proxy: each tick is a price observation, not a fill. Up/down counts use the tick rule; they are not bid/ask volume, aggressor-side trades, depth, or iceberg data. Read heat as quote activity and directional pressure only.".to_owned();
+        if observations_count >= 5_000 {
+            note.push_str(" Deriv returned the 5,000-observation request cap, so earlier ticks in this window may be missing.");
+        }
+        return Ok(Json(FootprintResponse {
+            symbol,
+            timeframe: query.timeframe,
+            bucket_size,
+            ratio,
+            basis: "quote_tick_proxy".into(),
+            observations: observed,
+            trades: observed,
+            candles,
+            note: Some(note),
+        }));
     }
 
     let tape = state.bots.live().tape(&symbol);
@@ -397,6 +718,8 @@ pub async fn footprint(
                         bid: cell.bid_volume,
                         ask: cell.ask_volume,
                         delta: cell.delta,
+                        activity: cell.total_volume(),
+                        neutral: 0.0,
                         imbalance: event.map(|event| ImbalanceResponse {
                             side: match event.side {
                                 Side::Buy => "buy",
@@ -432,8 +755,12 @@ pub async fn footprint(
                 bid_volume,
                 ask_volume,
                 delta: ask_volume - bid_volume,
+                neutral_volume: 0.0,
                 poc,
                 levels: cells.len(),
+                upticks: 0,
+                downticks: 0,
+                unchanged: 0,
                 cells,
             }
         })
@@ -446,6 +773,8 @@ pub async fn footprint(
         timeframe: query.timeframe,
         bucket_size,
         ratio,
+        basis: "executed_trades".into(),
+        observations: trades.len(),
         trades: trades.len(),
         candles: response,
         note: match (total_levels, note) {

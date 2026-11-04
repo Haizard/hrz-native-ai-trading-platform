@@ -2514,6 +2514,7 @@ function createChartPane(root, hooks = {}) {
     }
 
     for (const column of grid.columns) {
+      const peakActivity = Math.max(1, ...(column.cells || []).map((cell) => Number(cell.activity) || Number(cell.bid) + Number(cell.ask)));
       // Plain black field, then the frame. The blue-grey "draft" tint read as
       // noise behind the cell colours -- the user asked for a plain black
       // background, and the cells are the colour story; the column edge is
@@ -2526,20 +2527,27 @@ function createChartPane(root, hooks = {}) {
 
       for (const cell of column.cells) {
         const total = cell.bid + cell.ask;
+        const activity = Math.max(0, Number(cell.activity) || total + (Number(cell.neutral) || 0));
         // A price level with no volume is background. It has a row on the shared
         // axis -- that is what the axis is -- but nothing traded there.
-        if (total <= 0) continue;
+        if (activity <= 0) continue;
 
         // `side` is the *diagonal* imbalance: this level measured against the one
         // below it, not simply which of this cell's two numbers is larger. That
         // is why a bid-heavy cell can still be flagged as a buy imbalance, and
         // why the tint here answers a different question from `side`.
-        const buyShare = cell.ask / total;
+        const buyShare = total > 0 ? cell.ask / total : 0.5;
         const leansBuy = buyShare >= 0.5;
         const oneSided = Math.abs(buyShare - 0.5) * 2;
-        const colour = leansBuy ? COLORS.footBuy : COLORS.footSell;
+        const activityIntensity = Math.sqrt(Math.min(1, activity / peakActivity));
+        const colour = total === 0 ? "#a6adba" : leansBuy ? COLORS.footBuy : COLORS.footSell;
 
-        ctx.globalAlpha = 0.3 + oneSided * 0.42;
+        // Color encodes directional pressure; opacity encodes activity relative
+        // to the busiest price in this candle, so one tiny tick cannot look like
+        // the session's main auction node.
+        ctx.globalAlpha = total === 0
+          ? 0.18 + activityIntensity * 0.28
+          : 0.12 + activityIntensity * (0.18 + oneSided * 0.48);
         ctx.fillStyle = colour;
         ctx.fillRect(cell.x + 1, cell.y, cell.w - 2, cell.h - 1);
         ctx.globalAlpha = 1;
@@ -2571,7 +2579,10 @@ function createChartPane(root, hooks = {}) {
         }
 
         if (!showText) continue;
-        const pair = `${cell.bid_text} x ${cell.ask_text}`;
+        const quoteProxy = grid.basis === "quote_tick_proxy";
+        const pair = quoteProxy && total === 0
+          ? `flat ${Number(cell.neutral).toLocaleString()}`
+          : `${cell.bid_text} x ${cell.ask_text}`;
         // A pair that does not fit is not drawn at all: a truncated number is a
         // wrong number, and a ladder of wrong numbers is worse than a ladder of
         // colours. Below ~54px a column is a heat map, which is the honest thing
@@ -2630,7 +2641,9 @@ function createChartPane(root, hooks = {}) {
       const first = grid.columns[0].summary;
       const lineH = first.h / 4;
       const gutterRight = first.x - 6;
-      const labels = ["Volume", "Delta", "CVD", "Ask/Bid"];
+      const labels = grid.basis === "quote_tick_proxy"
+        ? ["Ticks", "Δ ticks", "CVD ticks", "Up/Down"]
+        : ["Volume", "Delta", "CVD", "Ask/Bid"];
       if (scene.plot.x >= 52) {
         ctx.fillStyle = "#8a90a0";
         ctx.textAlign = "right";
@@ -2676,22 +2689,39 @@ function createChartPane(root, hooks = {}) {
   /// The window totals, as a strip under the chart.
   function renderFootprintStats(grid) {
     const node = el("footprintStats");
+    const guide = el("footprintGuide");
     if (!grid) {
       node.hidden = true;
       node.innerHTML = "";
+      if (guide) guide.hidden = true;
       return;
     }
+    if (guide) guide.hidden = false;
+    const guideBasis = el("footprintGuideBasis");
+    if (guideBasis) {
+      guideBasis.textContent = grid.basis === "quote_tick_proxy"
+        ? "DATA BASIS · Deriv quote ticks. Each observation counts once; rising/falling prices create up/down tick pressure. These are estimates, not trades, bid/ask volume, or passive-book data."
+        : "DATA BASIS · Binance executed trades classified by the exchange's buyer-maker flag. Each cell shows seller aggression at bid × buyer aggression at ask.";
+    }
+    const guideRows = el("footprintGuideRows");
+    if (guideRows) {
+      guideRows.innerHTML = grid.basis === "quote_tick_proxy"
+        ? "<b>Read each row:</b> down-tick counts are on the left and up-tick counts on the right; unchanged quotes are shown as flat activity. Delta is up minus down. The outlined row is that candle's busiest price (POC)."
+        : "<b>Read each row:</b> left is sell-side aggression at the bid, right is buy-side aggression at the ask. Delta is the difference; the outlined row is that candle's point of control (POC).";
+    }
     const s = grid.stats;
+    const quoteProxy = grid.basis === "quote_tick_proxy";
     const field = (label, value, className) =>
       `<span><b>${label}</b><span class="${className || ""}">${escapeHtml(value)}</span></span>`;
     node.innerHTML = [
-      field("trades", s.trades.toLocaleString()),
+      field(quoteProxy ? "ticks" : "trades", s.trades.toLocaleString()),
       field("columns", s.columns),
       field("rows", s.rows),
-      field("bid", s.bid_text),
-      field("ask", s.ask_text),
-      field("total", s.total_text),
-      field("delta", s.delta_text, s.delta_positive ? "pass" : "fail"),
+      field(quoteProxy ? "down ticks" : "bid", s.bid_text),
+      field(quoteProxy ? "up ticks" : "ask", s.ask_text),
+      ...(quoteProxy && Number(s.neutral_text) > 0 ? [field("unchanged", s.neutral_text)] : []),
+      field(quoteProxy ? "tick activity" : "total", s.total_text),
+      field(quoteProxy ? "tick Δ" : "delta", s.delta_text, s.delta_positive ? "pass" : "fail"),
       field("max Δ", s.max_delta_text, "pass"),
       field("min Δ", s.min_delta_text, "fail"),
       // POC and VPIN arrive from the order-flow routes, which ride behind the
@@ -2718,6 +2748,22 @@ function createChartPane(root, hooks = {}) {
     }
     const field = (label, value, className) =>
       `<span><b>${label}</b><span class="${className || ""}">${escapeHtml(value)}</span></span>`;
+    if (footprint.basis === "quote_tick_proxy") {
+      const counts = footprint.candles.reduce((totals, candle) => ({
+        up: totals.up + (Number(candle.upticks) || 0),
+        down: totals.down + (Number(candle.downticks) || 0),
+        flat: totals.flat + (Number(candle.unchanged) || 0),
+      }), { up: 0, down: 0, flat: 0 });
+      const seconds = Math.max(1, footprint.candles.length * (BAR_MS[el("timeframe").value] || 300_000) / 1000);
+      node.innerHTML = [
+        field("source", "Deriv quote proxy", "muted"),
+        field("up / down ticks", `${counts.up.toLocaleString()} / ${counts.down.toLocaleString()}`, counts.up >= counts.down ? "pass" : "fail"),
+        field("unchanged", counts.flat.toLocaleString(), ""),
+        field("avg tick rate", `${(footprint.observations / seconds).toFixed(2)} / sec`, ""),
+      ].join("");
+      node.hidden = false;
+      return;
+    }
     // Quantities are base-asset units (BTC-sized), so integers are wrong two
     // orders of magnitude away from 1: keep two decimals in the human range.
     const qty = (v) =>
@@ -2785,6 +2831,14 @@ function createChartPane(root, hooks = {}) {
   /// route being unavailable must not blank the others.
   async function loadOrderflow() {
     if (!footprint || !footprint.candles.length) return;
+    if (footprint.basis === "quote_tick_proxy") {
+      // Trade-size CVD, passive depth, icebergs and trade-based VPIN are not
+      // derivable from Deriv price ticks. The panel instead reports the tick
+      // counts actually used by this displayed proxy.
+      orderflow = {};
+      renderOrderflowPanel();
+      return;
+    }
     const features = billingFeatures();
     // The server refuses these with a 402; asking anyway turns "upgrade" into
     // three silent failures in a strip that then reads as "no flow here".
@@ -3778,7 +3832,8 @@ function createChartPane(root, hooks = {}) {
       // that bar's last trade -- and null whenever there is not one yet.
       last_price: livePrice(),
       footprint: footprint ? footprint.candles : [],
-      footprint_trades: footprint ? footprint.trades : 0,
+      footprint_trades: footprint ? (footprint.observations ?? footprint.trades ?? 0) : 0,
+      footprint_basis: footprint?.basis || "executed_trades",
       // The user's drawings, with the one being placed appended. A point may be
       // a `fraction` here -- that is how placing and dragging work -- and the scene
       // answers with every point absolute, which is the only form the API accepts.
@@ -4026,7 +4081,7 @@ function createChartPane(root, hooks = {}) {
       .map((series) => series.provenance)
       .filter((source) => source && source.note)
       .map((source) => `${source.mode.replace(/_/g, " ")} (${source.status}): ${source.note}`);
-    el("chartNote").textContent = [scene.note || feedNotice || aiReason, ...modelNotes]
+    el("chartNote").textContent = [footprint?.note, scene.note || feedNotice || aiReason, ...modelNotes]
       .filter(Boolean)
       .join(" · ");
     // The order-flow panel re-renders the strip with the *scene* grid, so the
@@ -5766,7 +5821,11 @@ function createChartPane(root, hooks = {}) {
   }
 
   /// Milliseconds per bar, for sizing a footprint window.
-  const BAR_MS = { "1m": 60_000, "5m": 300_000, "1h": 3_600_000, "4h": 14_400_000 };
+  const BAR_MS = {
+    "1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
+    "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000, "6h": 21_600_000,
+    "12h": 43_200_000, "1d": 86_400_000, "1w": 604_800_000,
+  };
 
   /// Fetch a footprint for a window that actually has trades.
   ///
@@ -5815,7 +5874,7 @@ function createChartPane(root, hooks = {}) {
     const cellPx = footCellPx || SEED_CELL_PX;
     const columns = Math.max(8, Math.min(60, Math.floor(plotW / cellPx)));
 
-    const coverage = await api(`/footprint/coverage?symbol=${symbol}`);
+    const coverage = await api(`/footprint/coverage?symbol=${encodeURIComponent(symbol)}`);
     const bar = BAR_MS[timeframe] || 300_000;
     // The newest `columns` bars of the covered span.
     const to = coverage.to;
@@ -5824,7 +5883,7 @@ function createChartPane(root, hooks = {}) {
     // No bucket_size: the route picks one from the window's own price range, so
     // the row count is readable whatever the instrument costs.
     return await api(
-      `/footprint?symbol=${symbol}&timeframe=${timeframe}&from=${from}&to=${to}`
+      `/footprint?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&from=${from}&to=${to}`
     );
   }
 

@@ -27,11 +27,12 @@
 //! ## What "footprint" means here, honestly
 //!
 //! A true footprint is built from **trades** -- buy-aggressed and sell-aggressed
-//! volume at each price. This deployment has no tick data (`trades` is empty),
-//! so the footprint mode renders a candle-derived profile fallback. Binance
-//! profiles use reported candle volume; Deriv uses observed quote-tick counts,
-//! with equal per-bar range coverage only as an explicitly identified fallback
-//! in [`Scene::note`]. Neither path fabricates a trade ladder.
+//! volume at each price. If no ladder is supplied, footprint mode renders a
+//! candle-derived profile fallback. Binance profiles use reported candle
+//! volume; Deriv can use observed quote-tick counts, with equal per-bar range
+//! coverage only as an explicitly identified fallback in [`Scene::note`]. The
+//! API can also supply executed-trade ladders for Binance or a separately
+//! labeled quote-tick proxy for Deriv. Neither path fabricates trade prints.
 
 use analytics_core::concepts::{detect as detect_concept, validate as validate_concept, Concept};
 use analytics_core::market_structure::{
@@ -180,6 +181,9 @@ pub struct Request {
     /// Trades behind `footprint`, for the footer.
     #[serde(default)]
     pub footprint_trades: usize,
+    /// `executed_trades` or `quote_tick_proxy`; controls honest labels in the grid.
+    #[serde(default = "default_footprint_basis")]
+    pub footprint_basis: String,
     /// Overlay levels to draw.
     ///
     /// `serde(default = "default_lines")` rather than a bare `#[serde(default)]`:
@@ -653,6 +657,7 @@ impl Default for Request {
             bucket_size: None,
             footprint: Vec::new(),
             footprint_trades: 0,
+            footprint_basis: default_footprint_basis(),
             lines: default_lines(),
             vwap_anchor: VwapAnchor::default(),
             vwap_source: VwapSource::default(),
@@ -725,6 +730,9 @@ fn default_true() -> bool {
 }
 fn default_structure_profile_bins() -> usize {
     20
+}
+fn default_footprint_basis() -> String {
+    "executed_trades".into()
 }
 fn default_vwap_multiplier() -> f64 {
     1.0
@@ -2865,6 +2873,9 @@ pub fn build(request: &Request) -> Scene {
                     request.footprint_trades,
                     Some(price_bounds),
                 );
+                if let Some(grid) = scene.footprint.as_mut() {
+                    grid.basis = request.footprint_basis.clone();
+                }
                 // The caveat comes off the grid rather than being recomputed here:
                 // the row cap depends on the plot height, and working it out a
                 // second time is a second answer waiting to disagree.
@@ -8021,6 +8032,8 @@ mod tests {
             bid: 0.4,
             ask: 2.4,
             delta: 2.0,
+            activity: Some(2.8),
+            neutral: Some(0.0),
             imbalance: None,
         };
         imbalanced.imbalance = Some(footprint::Imbalance {
@@ -8041,6 +8054,7 @@ mod tests {
                 volume: bid + ask,
                 bid_volume: bid,
                 ask_volume: ask,
+                neutral_volume: 0.0,
                 delta: ask - bid,
                 poc: Some(100.0),
                 cells,
@@ -8058,6 +8072,8 @@ mod tests {
                         bid: 1.0,
                         ask: 1.0,
                         delta: 0.0,
+                        activity: Some(2.0),
+                        neutral: Some(0.0),
                         imbalance: None,
                     }],
                 ),
@@ -8071,6 +8087,7 @@ mod tests {
         assert_eq!(grid.columns.len(), 2);
         assert_eq!(grid.rows.len(), 1, "one shared price level");
         assert_eq!(grid.stats.trades, 1_234);
+        assert_eq!(grid.basis, "executed_trades");
         // The fallback must not also run: two footprints at once would draw a
         // profile over the ladder.
         assert!(scene.profile.is_empty());
@@ -8156,6 +8173,43 @@ mod tests {
             last.x + last.w > right - slot && last.x + last.w <= right + 1.0,
             "the last visible bar reaches the right edge: {last:?}"
         );
+    }
+
+    #[test]
+    fn quote_tick_footprints_preserve_unsigned_activity_and_basis_labels() {
+        let mut request = request(1);
+        request.mode = Mode::Footprint;
+        request.footprint_basis = "quote_tick_proxy".into();
+        request.footprint_trades = 2;
+        request.footprint = vec![footprint::Column {
+            open_time: 0,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.0,
+            volume: 2.0,
+            bid_volume: 0.0,
+            ask_volume: 0.0,
+            neutral_volume: 2.0,
+            delta: 0.0,
+            poc: Some(100.0),
+            cells: vec![footprint::ColumnCell {
+                price: 100.0,
+                bid: 0.0,
+                ask: 0.0,
+                delta: 0.0,
+                activity: Some(2.0),
+                neutral: Some(2.0),
+                imbalance: None,
+            }],
+        }];
+        let scene = build(&request);
+        let grid = scene.footprint.expect("tick activity still draws a footprint grid");
+        assert_eq!(grid.basis, "quote_tick_proxy");
+        assert_eq!(grid.columns[0].cells[0].activity, 2.0);
+        assert_eq!(grid.columns[0].cells[0].neutral, 2.0);
+        assert_eq!(grid.stats.total_text, "2.00");
+        assert_eq!(grid.stats.neutral_text, "2.00");
     }
 
     #[test]
